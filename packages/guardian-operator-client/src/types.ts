@@ -258,7 +258,7 @@ export interface PagedResult<T> {
   nextCursor: string | null;
 }
 
-export type DashboardDeltaStatus = 'candidate' | 'canonical' | 'discarded';
+export type DashboardDeltaStatus = 'candidate' | 'canonical' | 'retained' | 'discarded';
 
 /**
  * Closed enumeration of dashboard delta categories. Adding a value
@@ -601,6 +601,9 @@ export interface DashboardInfoResponse {
   deltaStatusCounts: {
     candidate: number;
     canonical: number;
+    /** Retry-exhausted candidates kept for background reconciliation
+     * (issue #345). */
+    retained: number;
     discarded: number;
   };
   inFlightProposalCount: number;

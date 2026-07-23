@@ -183,6 +183,7 @@ mod tests {
                 abandon_quarantine_seconds: 15,
                 abandon_quarantine_checks: 2,
                 max_concurrent_accounts: 4,
+                retained_ttl_seconds: 86_400,
             }),
             3,
             true,

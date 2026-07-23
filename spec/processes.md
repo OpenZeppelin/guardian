@@ -224,7 +224,9 @@ sequenceDiagram
 ### Configuration
 - Current server builder defaults: submission_grace_period_seconds = 600
   (10m), check_interval_seconds = 10, max_retries = 48,
-  divergence_confirmations = 2, max_concurrent_accounts = 10.
+  divergence_confirmations = 2, max_concurrent_accounts = 10,
+  retained_ttl_seconds = 86400 (24h; 0 disables retention and restores
+  the historical delete-on-give-up behavior).
 - These values are configured in code, not through server env vars —
   except `max_concurrent_accounts`, which
   `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` overrides at
@@ -252,8 +254,10 @@ sequenceDiagram
       re-verifies against the new base.
     - Matches the candidate's `prev_commitment` (its transaction has not
       landed yet), or the comparison itself failed (RPC error): defer within
-      `submission_grace_period_seconds`, then consume retry budget each tick
-      and discard after `max_retries`.
+      `submission_grace_period_seconds`, then consume retry budget each tick.
+      After `max_retries` the candidate is parked as `retained` with reason
+      `retry_exhausted` (issue #345) — not deleted — and the account's
+      pending-candidate flag is cleared. The proposal is kept.
     - Matches the candidate's `prev_commitment` AND the candidate carries a
       client abandon intent (`abandon_requested_at`, recorded by
       `POST /delta/candidate/abandon`): count the observation toward the
@@ -266,13 +270,30 @@ sequenceDiagram
       and clear the pending-candidate flag. A divergent observation resets
       the abandon-confirmation streak; a landed transaction always wins
       and canonicalizes normally.
-    - Matches neither — the account advanced past the candidate's base
-      state, so the candidate can never verify: after
-      `divergence_confirmations` consecutive such observations (default 2,
-      to tolerate a single stale RPC read) discard immediately, bypassing
-      the grace period, delete the matching proposal, and clear the
-      account's pending-candidate flag so new proposals stop returning
-      `409 conflict_pending_delta`.
+    - Matches neither — the account appears to have advanced past the
+      candidate's base state: after `divergence_confirmations` consecutive
+      such observations (default 2, to tolerate a single stale RPC read),
+      bypass the grace period and park the candidate as `retained` with
+      reason `diverged` (issue #345), clearing the account's
+      pending-candidate flag so new proposals stop returning
+      `409 conflict_pending_delta`. Retention (rather than deletion)
+      matters because a diverged verdict is an observation, not proof —
+      a lagging RPC node can produce one for a transaction that landed.
+      With `retained_ttl_seconds = 0` the historical behavior applies:
+      delete the delta and its matching proposal.
+- For each account holding `retained` deltas and no in-flight candidate
+  (reconciliation never runs under a pending candidate — promoting would
+  move the stored base out from under a signed proposal):
+  - Drop any retained delta older than `retained_ttl_seconds` (with its
+    matching proposal).
+  - Otherwise re-run the exact candidate verification: apply the delta to
+    the stored base and compare the recomputed commitment on-chain. A
+    match promotes the delta to `canonical` through the same fenced
+    promotion (auto-recovering an account whose stored state fell behind
+    the chain); anything else waits for the next tick — the TTL is the
+    only bound. Consecutive retained nonces can chain within one pass.
+  - A new candidate submission at a retained delta's nonce supersedes
+    (deletes) the retained row inside the submission transaction.
 
 EVM proposals are not processed by Miden canonicalization. They are stored in the EVM proposal store and deleted lazily when expired or when the configured EntryPoint nonce indicates finality.
 
@@ -307,7 +328,10 @@ sequenceDiagram
 ```
 
 ### State Machine
-- candidate -> canonical | discarded. Discarded deltas MUST NOT be returned by default APIs.
+- candidate -> canonical | retained | discarded; retained -> canonical
+  (reconciled) | superseded (deleted by a new submission at its nonce) |
+  dropped (TTL expiry). Discarded deltas MUST NOT be returned by default
+  APIs.
 
 ### Failure Handling
 - Transient failures SHOULD be retried with backoff. Malformed candidates SHOULD be quarantined with logs/metrics.

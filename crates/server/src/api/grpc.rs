@@ -409,6 +409,9 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
         crate::delta_object::DeltaStatus::Canonical { timestamp } => {
             (Some(timestamp.clone()), Some(timestamp.clone()), None)
         }
+        // No legacy timestamp column carries retention; consumers of the
+        // typed status oneof see `retained_at` below.
+        crate::delta_object::DeltaStatus::Retained { .. } => (None, None, None),
         crate::delta_object::DeltaStatus::Discarded { timestamp, .. } => {
             (None, None, Some(timestamp.clone()))
         }
@@ -439,6 +442,7 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                     },
                 )),
                 discard_reason: String::new(),
+                retain_reason: String::new(),
             })
         }
         crate::delta_object::DeltaStatus::Candidate { timestamp, .. } => Some(DeltaStatusGrpc {
@@ -446,12 +450,27 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                 timestamp.clone(),
             )),
             discard_reason: String::new(),
+            retain_reason: String::new(),
         }),
         crate::delta_object::DeltaStatus::Canonical { timestamp } => Some(DeltaStatusGrpc {
             status: Some(guardian::delta_status::Status::CanonicalAt(
                 timestamp.clone(),
             )),
             discard_reason: String::new(),
+            retain_reason: String::new(),
+        }),
+        crate::delta_object::DeltaStatus::Retained { timestamp, reason } => Some(DeltaStatusGrpc {
+            status: Some(guardian::delta_status::Status::RetainedAt(
+                timestamp.clone(),
+            )),
+            discard_reason: String::new(),
+            retain_reason: match reason {
+                Some(crate::delta_object::RetainReason::RetryExhausted) => {
+                    "retry_exhausted".to_string()
+                }
+                Some(crate::delta_object::RetainReason::Diverged) => "diverged".to_string(),
+                None => String::new(),
+            },
         }),
         crate::delta_object::DeltaStatus::Discarded { timestamp, reason } => {
             Some(DeltaStatusGrpc {
@@ -464,6 +483,7 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                     }
                     None => String::new(),
                 },
+                retain_reason: String::new(),
             })
         }
     };

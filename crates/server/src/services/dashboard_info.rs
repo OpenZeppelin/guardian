@@ -53,6 +53,7 @@ pub enum DashboardServiceStatus {
 pub struct DashboardDeltaStatusCounts {
     pub candidate: u64,
     pub canonical: u64,
+    pub retained: u64,
     pub discarded: u64,
 }
 
@@ -257,6 +258,7 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
         Ok(counts) => {
             response.delta_status_counts.candidate = counts.candidate;
             response.delta_status_counts.canonical = counts.canonical;
+            response.delta_status_counts.retained = counts.retained;
             response.delta_status_counts.discarded = counts.discarded;
         }
         Err(e) => {
@@ -496,6 +498,7 @@ mod tests {
             crate::storage::DeltaStatusCounts {
                 candidate: 1,
                 canonical: 1,
+                retained: 1,
                 discarded: 1,
             },
             2,
@@ -621,6 +624,7 @@ mod tests {
             submission_grace_period_seconds: 42,
             divergence_confirmations: 2,
             max_concurrent_accounts: 4,
+            retained_ttl_seconds: 86_400,
         });
         let info = get_dashboard_info(&state).await.unwrap();
         let cfg = info.backend.canonicalization.expect("config present");

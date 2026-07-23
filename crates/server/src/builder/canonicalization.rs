@@ -38,6 +38,16 @@ pub struct CanonicalizationConfig {
     /// worker finalizes the abandon. A divergent observation resets the
     /// streak, mirroring `divergence_confirmations`.
     pub abandon_quarantine_checks: u32,
+
+    /// How long a retry-exhausted candidate is kept as `retained`
+    /// (issue #345) for background reconciliation before being dropped
+    /// for good. While retained, every worker tick re-checks
+    /// `stored base + delta` against the on-chain commitment and
+    /// promotes the delta if they ever match — recovering an account
+    /// whose stored state fell permanently behind after an RPC outage
+    /// or worker downtime. `0` disables retention and restores the
+    /// historical delete-on-exhaustion behavior.
+    pub retained_ttl_seconds: u64,
     /// How many accounts one canonicalization pass processes concurrently.
     /// Candidates within an account are always sequential (nonce order);
     /// this only overlaps the per-account work — dominated by the Miden
@@ -58,6 +68,7 @@ impl Default for CanonicalizationConfig {
             divergence_confirmations: 2,          // Two ticks to rule out a stale read
             abandon_quarantine_seconds: 15,       // Let a late-landing tx surface first
             abandon_quarantine_checks: 2,         // Two ticks to rule out a stale read
+            retained_ttl_seconds: 86_400,         // Reconcile a stuck base for up to a day (#345)
             max_concurrent_accounts: 10, // Overlaps per-account chain RPCs; prod Terraform sets 50
         }
     }
@@ -106,6 +117,14 @@ impl CanonicalizationConfig {
     /// before an abandon request is finalized.
     pub fn with_abandon_quarantine_checks(mut self, checks: u32) -> Self {
         self.abandon_quarantine_checks = checks;
+        self
+    }
+
+    /// Override how long retry-exhausted candidates are retained for
+    /// background reconciliation. `0` disables retention (historical
+    /// delete-on-exhaustion behavior).
+    pub fn with_retained_ttl_seconds(mut self, seconds: u64) -> Self {
+        self.retained_ttl_seconds = seconds;
         self
     }
 

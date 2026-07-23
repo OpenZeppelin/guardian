@@ -202,6 +202,19 @@ impl StorageBackend for EncryptedStorage {
             .collect()
     }
 
+    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        self.inner
+            .pull_retained_deltas(account_id)
+            .await?
+            .into_iter()
+            .map(|delta| self.decrypt_delta(delta))
+            .collect()
+    }
+
+    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String> {
+        self.inner.list_accounts_with_retained_deltas().await
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -311,11 +324,12 @@ impl StorageBackend for EncryptedStorage {
         metadata: &dyn crate::metadata::MetadataStore,
         account_id: &str,
         nonce: u64,
+        kind: DeltaStatusKind,
         now: &str,
         fence: Option<&LeaseFence>,
     ) -> Result<CanonicalWrite, String> {
         self.inner
-            .discard_candidate(metadata, account_id, nonce, now, fence)
+            .discard_candidate(metadata, account_id, nonce, kind, now, fence)
             .await
     }
 

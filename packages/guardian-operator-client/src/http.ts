@@ -912,6 +912,16 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
         'canonical',
         'dashboard info.delta_status_counts',
       ),
+      // Absent on servers that predate retain-and-reconcile (issue
+      // #345); default to 0 so old servers keep decoding.
+      retained:
+        'retained' in counts
+          ? requireInteger(
+              counts,
+              'retained',
+              'dashboard info.delta_status_counts',
+            )
+          : 0,
       discarded: requireInteger(
         counts,
         'discarded',

@@ -614,6 +614,7 @@ fn derive_status_columns(
         DeltaStatus::Pending { .. } => "pending",
         DeltaStatus::Candidate { .. } => "candidate",
         DeltaStatus::Canonical { .. } => "canonical",
+        DeltaStatus::Retained { .. } => "retained",
         DeltaStatus::Discarded { .. } => "discarded",
     };
     let raw = status.timestamp();
@@ -1117,6 +1118,41 @@ impl StorageBackend for PostgresService {
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
 
+    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let rows: Vec<DeltaRow> = deltas::table
+            .filter(deltas::account_id.eq(account_id))
+            .filter(deltas::status_kind.eq("retained"))
+            .order(deltas::nonce.asc())
+            .select(DeltaRow::as_select())
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to pull retained deltas: {e}"))?;
+
+        Ok(rows.into_iter().map(|r| r.into()).collect())
+    }
+
+    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        deltas::table
+            .filter(deltas::status_kind.eq("retained"))
+            .select(deltas::account_id)
+            .distinct()
+            .load::<String>(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to list accounts with retained deltas: {e}"))
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -1446,6 +1482,18 @@ impl StorageBackend for PostgresService {
                     return Ok(CandidateSubmission::Conflict);
                 }
 
+                // A retained row (issue #345) at this nonce is a
+                // best-effort recovery artifact, never settled history:
+                // the client re-supplying its intent for the slot
+                // supersedes it, so the reconcile pass can never
+                // resurrect a base out from under this new candidate.
+                diesel::delete(deltas::table)
+                    .filter(deltas::account_id.eq(&delta.account_id))
+                    .filter(deltas::nonce.eq(delta.nonce as i64))
+                    .filter(deltas::status_kind.eq("retained"))
+                    .execute(conn)
+                    .await?;
+
                 // DO NOTHING (not upsert): a row already at this nonce is
                 // settled history and must never be overwritten by a
                 // delayed submission.
@@ -1530,10 +1578,14 @@ impl StorageBackend for PostgresService {
                         return Ok(PromoteWrite::StaleLease);
                     }
 
+                    // Retained rows (issue #345) are promotable too: the
+                    // reconcile pass runs the same verification as the
+                    // candidate pass, and the base gate below protects the
+                    // state either way.
                     let flipped = diesel::update(deltas::table)
                         .filter(deltas::account_id.eq(&delta.account_id))
                         .filter(deltas::nonce.eq(delta.nonce as i64))
-                        .filter(deltas::status_kind.eq("candidate"))
+                        .filter(deltas::status_kind.eq_any(["candidate", "retained"]))
                         .set((
                             deltas::status.eq(&status_json),
                             deltas::status_kind.eq(status_kind),
@@ -1598,6 +1650,7 @@ impl StorageBackend for PostgresService {
         _metadata: &dyn MetadataStore,
         account_id: &str,
         nonce: u64,
+        kind: DeltaStatusKind,
         now: &str,
         fence: Option<&LeaseFence>,
     ) -> Result<CanonicalWrite, String> {
@@ -1625,7 +1678,7 @@ impl StorageBackend for PostgresService {
                 let deleted = diesel::delete(deltas::table)
                     .filter(deltas::account_id.eq(&account_id))
                     .filter(deltas::nonce.eq(nonce as i64))
-                    .filter(deltas::status_kind.eq("candidate"))
+                    .filter(deltas::status_kind.eq(kind.as_str()))
                     .execute(conn)
                     .await?;
                 if deleted == 0 {
@@ -1962,6 +2015,7 @@ impl StorageBackend for PostgresService {
             match kind.as_str() {
                 "candidate" => counts.candidate = n,
                 "canonical" => counts.canonical = n,
+                "retained" => counts.retained = n,
                 "discarded" => counts.discarded = n,
                 // `pending` is exposed via count_in_flight_proposals,
                 // not the delta status counts.
@@ -2908,7 +2962,14 @@ mod tests {
         );
 
         let stale_discard = service
-            .discard_candidate(&metadata_store, &account_id, 1, &now, Some(&stale_fence))
+            .discard_candidate(
+                &metadata_store,
+                &account_id,
+                1,
+                DeltaStatusKind::Candidate,
+                &now,
+                Some(&stale_fence),
+            )
             .await
             .expect("stale discard resolves");
         assert_eq!(stale_discard, CanonicalWrite::StaleLease);
@@ -3037,7 +3098,14 @@ mod tests {
         );
 
         let discard_canonical = service
-            .discard_candidate(&metadata_store, &account_id, 1, &now, Some(&current_fence))
+            .discard_candidate(
+                &metadata_store,
+                &account_id,
+                1,
+                DeltaStatusKind::Candidate,
+                &now,
+                Some(&current_fence),
+            )
             .await
             .expect("discard of canonical resolves");
         assert_eq!(

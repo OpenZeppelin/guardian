@@ -537,6 +537,36 @@ impl StorageBackend for FilesystemService {
         Ok(deltas)
     }
 
+    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        let deltas_filenames = self.list_delta_filenames(account_id).await?;
+        let mut deltas = Vec::new();
+
+        for filename in deltas_filenames {
+            if let Some(nonce_str) = filename.strip_suffix(".json")
+                && let Ok(nonce) = nonce_str.parse::<u64>()
+            {
+                let delta = self.pull_delta(account_id, nonce).await?;
+                if delta.status.is_retained() {
+                    deltas.push(delta);
+                }
+            }
+        }
+
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
+    }
+
+    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String> {
+        let account_ids = self.fanout_account_ids().await?;
+        let mut with_retained = Vec::new();
+        for account_id in account_ids {
+            if !self.pull_retained_deltas(&account_id).await?.is_empty() {
+                with_retained.push(account_id);
+            }
+        }
+        Ok(with_retained)
+    }
+
     // Delta proposal methods - stored separately from executed deltas
     async fn submit_delta_proposal(
         &self,
@@ -738,10 +768,12 @@ impl StorageBackend for FilesystemService {
         metadata: &dyn crate::metadata::MetadataStore,
         account_id: &str,
         nonce: u64,
+        kind: DeltaStatusKind,
         now: &str,
         _fence: Option<&crate::storage::LeaseFence>,
     ) -> Result<crate::storage::CanonicalWrite, String> {
-        crate::storage::discard_candidate_sequential(self, metadata, account_id, nonce, now).await
+        crate::storage::discard_candidate_sequential(self, metadata, account_id, nonce, kind, now)
+            .await
     }
 
     async fn update_candidate_status(
@@ -873,9 +905,7 @@ impl StorageBackend for FilesystemService {
             for delta in deltas {
                 let kind = match &delta.status {
                     DeltaStatus::Pending { .. } => continue,
-                    DeltaStatus::Candidate { .. } => DeltaStatusKind::Candidate,
-                    DeltaStatus::Canonical { .. } => DeltaStatusKind::Canonical,
-                    DeltaStatus::Discarded { .. } => DeltaStatusKind::Discarded,
+                    status => DeltaStatusKind::of(status),
                 };
                 if let Some(allowed) = &status_filter
                     && !allowed.contains(&kind)
@@ -997,6 +1027,7 @@ impl StorageBackend for FilesystemService {
                 match delta.status {
                     DeltaStatus::Candidate { .. } => counts.candidate += 1,
                     DeltaStatus::Canonical { .. } => counts.canonical += 1,
+                    DeltaStatus::Retained { .. } => counts.retained += 1,
                     DeltaStatus::Discarded { .. } => counts.discarded += 1,
                     DeltaStatus::Pending { .. } => {}
                 }
@@ -1156,6 +1187,166 @@ mod tests {
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             auth_scheme: String::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn test_pull_retained_deltas_filters_and_orders() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let canonical = create_test_delta(account_id, 1);
+        let mut retained_late = create_test_delta(account_id, 3);
+        retained_late.status = DeltaStatus::retained(
+            "2024-11-14T12:00:00Z".to_string(),
+            crate::delta_object::RetainReason::RetryExhausted,
+        );
+        let mut retained_early = create_test_delta(account_id, 2);
+        retained_early.status = DeltaStatus::retained(
+            "2024-11-14T12:00:00Z".to_string(),
+            crate::delta_object::RetainReason::Diverged,
+        );
+        for delta in [&canonical, &retained_late, &retained_early] {
+            storage.submit_delta(delta).await.expect("submit works");
+        }
+
+        let retained = storage
+            .pull_retained_deltas(account_id)
+            .await
+            .expect("retained read works");
+        assert_eq!(
+            retained.iter().map(|d| d.nonce).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert!(retained.iter().all(|d| d.status.is_retained()));
+
+        let accounts = storage
+            .list_accounts_with_retained_deltas()
+            .await
+            .expect("account scan works");
+        assert_eq!(accounts, vec![account_id.to_string()]);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_discard_kind_guard_spares_other_lifecycles() {
+        // The expected-kind guard: a candidate-kind discard must never
+        // delete a retained row and vice versa — a stale worker's delayed
+        // discard cannot remove a row that moved on.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut retained = create_test_delta(account_id, 1);
+        retained.status = DeltaStatus::retained(
+            "2024-11-14T12:00:00Z".to_string(),
+            crate::delta_object::RetainReason::RetryExhausted,
+        );
+        storage.submit_delta(&retained).await.expect("submit works");
+
+        let outcome = storage
+            .discard_candidate(
+                &metadata_store,
+                account_id,
+                1,
+                DeltaStatusKind::Candidate,
+                "2024-11-14T12:05:00Z",
+                None,
+            )
+            .await
+            .expect("discard resolves");
+        assert_eq!(outcome, crate::storage::CanonicalWrite::NotCandidate);
+        assert!(
+            storage.pull_delta(account_id, 1).await.is_ok(),
+            "a candidate-kind discard spares the retained row"
+        );
+
+        let outcome = storage
+            .discard_candidate(
+                &metadata_store,
+                account_id,
+                1,
+                DeltaStatusKind::Retained,
+                "2024-11-14T12:06:00Z",
+                None,
+            )
+            .await
+            .expect("discard resolves");
+        assert_eq!(outcome, crate::storage::CanonicalWrite::Applied);
+        assert!(
+            storage.pull_delta(account_id, 1).await.is_err(),
+            "a retained-kind discard removes the retained row"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_submit_candidate_supersedes_retained_row() {
+        // A fresh candidate at a retained row's nonce replaces it: the
+        // client re-supplied its intent for that slot, and the reconcile
+        // pass must never resurrect a base under the new candidate.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        crate::metadata::MetadataStore::set(
+            &metadata_store,
+            crate::metadata::AccountMetadata {
+                account_id: account_id.to_string(),
+                auth: crate::metadata::auth::Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                created_at: "2024-11-14T12:00:00Z".to_string(),
+                updated_at: "2024-11-14T12:00:00Z".to_string(),
+                has_pending_candidate: false,
+                last_auth_timestamp: None,
+                paused_at: None,
+                paused_reason: None,
+                released_at: None,
+            },
+        )
+        .await
+        .expect("metadata seed");
+
+        let mut retained = create_test_delta(account_id, 1);
+        retained.status = DeltaStatus::retained(
+            "2024-11-14T12:00:00Z".to_string(),
+            crate::delta_object::RetainReason::Diverged,
+        );
+        storage.submit_delta(&retained).await.expect("submit works");
+
+        let mut candidate = create_test_delta(account_id, 1);
+        candidate.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        let submission = storage
+            .submit_candidate(&metadata_store, &candidate, "2024-11-14T12:10:00Z")
+            .await
+            .expect("submission resolves");
+        assert_eq!(submission, crate::storage::CandidateSubmission::Submitted);
+
+        let stored = storage
+            .pull_delta(account_id, 1)
+            .await
+            .expect("row survives");
+        assert!(stored.status.is_candidate(), "the candidate replaced it");
+
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[tokio::test]

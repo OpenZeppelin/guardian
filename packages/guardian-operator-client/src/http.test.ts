@@ -236,6 +236,9 @@ describe('GuardianOperatorHttpClient', () => {
       deltaStatusCounts: {
         candidate: 7,
         canonical: 8902,
+        // Absent from the (pre-#345) server payload above: the decoder
+        // defaults it so old servers keep decoding.
+        retained: 0,
         discarded: 21,
       },
       inFlightProposalCount: 12,

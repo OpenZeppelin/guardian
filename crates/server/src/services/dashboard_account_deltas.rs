@@ -32,6 +32,7 @@ use crate::storage::AccountDeltaCursor;
 pub enum DashboardDeltaStatus {
     Candidate,
     Canonical,
+    Retained,
     Discarded,
 }
 
@@ -93,6 +94,9 @@ pub(crate) fn decode_delta_status(
         )),
         DeltaStatus::Canonical { timestamp } => {
             Some((DashboardDeltaStatus::Canonical, None, timestamp.clone()))
+        }
+        DeltaStatus::Retained { timestamp, .. } => {
+            Some((DashboardDeltaStatus::Retained, None, timestamp.clone()))
         }
         DeltaStatus::Discarded { timestamp, .. } => {
             Some((DashboardDeltaStatus::Discarded, None, timestamp.clone()))

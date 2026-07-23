@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use crate::canonicalization::CanonicalizationConfig;
 use crate::coordination::{AlwaysLeader, CANONICALIZATION_LEASE, LeaderElector, Lease};
-use crate::delta_object::{DeltaObject, DeltaStatus};
+use crate::delta_object::{DeltaObject, DeltaStatus, RetainReason};
 use crate::error::{GuardianError, Result};
 use crate::network::StateVerification;
 use crate::state::AppState;
 use crate::state_object::StateObject;
-use crate::storage::{CandidatePromotion, CanonicalWrite, LeaseFence, PromoteWrite};
+use crate::storage::{
+    CandidatePromotion, CanonicalWrite, DeltaStatusKind, LeaseFence, PromoteWrite,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
@@ -75,6 +77,7 @@ struct DeltasProcessorBase {
     abandon_quarantine_seconds: u64,
     abandon_quarantine_checks: u32,
     max_concurrent_accounts: usize,
+    retained_ttl_seconds: u64,
 }
 
 impl DeltasProcessorBase {
@@ -131,12 +134,39 @@ impl DeltasProcessorBase {
     }
 
     async fn process_all_accounts(&self) -> Result<PassSummary> {
-        let account_ids = self
+        let mut account_ids = self
             .state
             .metadata
             .list_with_pending_candidates()
             .await
             .map_err(|e| GuardianError::StorageError(format!("Failed to list accounts: {e}")))?;
+
+        // Retained deltas (issue #345) do not hold the pending-candidate
+        // flag — by design, so they never re-lock the account — which
+        // means their accounts need their own scan to enter the pass.
+        // A failure here degrades to candidates-only rather than sinking
+        // the whole pass; retained rows just wait for the next tick.
+        match self
+            .state
+            .storage
+            .list_accounts_with_retained_deltas()
+            .await
+        {
+            Ok(retained_accounts) => {
+                for account_id in retained_accounts {
+                    if !account_ids.contains(&account_id) {
+                        account_ids.push(account_id);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to list accounts with retained deltas; \
+                     reconciling them on a later pass"
+                );
+            }
+        }
 
         tracing::info!(
             accounts_with_candidates = account_ids.len(),
@@ -232,7 +262,15 @@ impl DeltasProcessorBase {
                     "Failed to clear stale has_pending_candidate flag"
                 );
             }
-            return Ok(());
+            return self.reconcile_retained_deltas(account_id).await;
+        }
+
+        // Reconciliation only runs while no candidate is in flight: a
+        // reconcile promotion moves the stored base, and doing that under
+        // an in-flight candidate would strand a signed proposal — the
+        // exact race issue #345 rejects for a syncState-driven write.
+        if candidates.is_empty() {
+            return self.reconcile_retained_deltas(account_id).await;
         }
 
         tracing::info!(
@@ -322,8 +360,13 @@ impl DeltasProcessorBase {
                     )
                     .increment(1);
                 }
-                self.canonicalize_verified_delta(delta, new_state_json, recomputed_commitment)
-                    .await
+                self.canonicalize_verified_delta(
+                    delta,
+                    new_state_json,
+                    recomputed_commitment,
+                    crate::metrics::labels::CandidateOutcome::Canonicalized,
+                )
+                .await
             }
             // The chain has never seen this account: its first transaction
             // has not landed yet — the not-yet-landed case, categorically
@@ -633,6 +676,43 @@ impl DeltasProcessorBase {
             return Ok(());
         }
 
+        let now = self.state.clock.now().to_rfc3339();
+
+        // A confirmed divergence is still only an observation, and it
+        // has been wrong before: the pre-#326 empty-digest misread
+        // condemned new accounts' first transactions as diverged while
+        // they were still proving, and a consistently lagging RPC node
+        // can beat the confirmation streak the same way. So the
+        // candidate is retained-and-labeled (issue #345), not deleted:
+        // the account is released either way, a spurious verdict heals
+        // through reconciliation, and a genuine one ages out at the TTL
+        // (monotonicity guarantees it can never start matching).
+        if self.retained_ttl_seconds > 0 {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                on_chain = %on_chain,
+                prev_commitment = %delta.prev_commitment,
+                observations,
+                "Account advanced past candidate's base state on-chain; \
+                 retaining the candidate for background reconciliation \
+                 and releasing the account"
+            );
+
+            match self
+                .retain_candidate(&delta, RetainReason::Diverged, &now)
+                .await?
+            {
+                CanonicalWrite::Applied => {
+                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
+                }
+                CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "diverged_retain"),
+            }
+
+            return Ok(());
+        }
+
         tracing::warn!(
             account_id = %delta.account_id,
             nonce = delta.nonce,
@@ -643,8 +723,10 @@ impl DeltasProcessorBase {
              unsatisfiable candidate and releasing the account"
         );
 
-        let now = self.state.clock.now().to_rfc3339();
-        match self.remove_candidate(&delta, &now).await? {
+        match self
+            .remove_delta(&delta, DeltaStatusKind::Candidate, &now)
+            .await?
+        {
             CanonicalWrite::Applied => {
                 record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
             }
@@ -681,6 +763,42 @@ impl DeltasProcessorBase {
         let now = now.to_rfc3339();
 
         if new_retry >= self.max_retries {
+            // Retry exhaustion never proved the delta wrong — verification
+            // just never observed its expected commitment (RPC outage,
+            // worker downtime, slow proving). Keep it as `retained`
+            // (issue #345) so the reconcile pass can promote it if the
+            // chain ever shows it landed; deleting it here is what left
+            // stored state permanently behind the on-chain nonce. An
+            // abandon-requested candidate keeps the historical delete —
+            // the client explicitly wants it gone, not resurrected.
+            if self.retained_ttl_seconds > 0 && delta.status.abandon_requested_at().is_none() {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    retries = new_retry,
+                    max_retries = self.max_retries,
+                    error = %reason,
+                    "Delta verification failed after max retries; retaining \
+                     for background reconciliation and releasing the account"
+                );
+
+                match self
+                    .retain_candidate(&delta, RetainReason::RetryExhausted, &now)
+                    .await?
+                {
+                    CanonicalWrite::Applied => {
+                        record_candidate_outcome(
+                            crate::metrics::labels::CandidateOutcome::Retained,
+                        );
+                    }
+                    CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                    CanonicalWrite::NotCandidate => {
+                        Self::log_not_candidate(&delta, "retain");
+                    }
+                }
+                return Ok(());
+            }
+
             tracing::warn!(
                 account_id = %delta.account_id,
                 nonce = delta.nonce,
@@ -690,7 +808,10 @@ impl DeltasProcessorBase {
                 "Delta verification failed after max retries, discarding"
             );
 
-            match self.remove_candidate(&delta, &now).await? {
+            match self
+                .remove_delta(&delta, DeltaStatusKind::Candidate, &now)
+                .await?
+            {
                 CanonicalWrite::Applied => {
                     record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
                 }
@@ -740,13 +861,20 @@ impl DeltasProcessorBase {
         Ok(())
     }
 
-    /// Delete a candidate that can never be canonicalized, delete its
+    /// Delete a delta that can never be canonicalized, delete its
     /// matching proposal, and release the account's pending-candidate lock.
     /// The delete, the fence validation, and the conditional flag clear
     /// commit as one fenced storage write; the delete only touches a row
-    /// still in candidate status, so a stale discard can never remove a
-    /// delta another owner promoted to canonical.
-    async fn remove_candidate(&self, delta: &DeltaObject, now: &str) -> Result<CanonicalWrite> {
+    /// still in the expected lifecycle `kind` (candidate for the classic
+    /// discard, retained for the issue #345 TTL expiry), so a stale
+    /// discard can never remove a delta another owner promoted to
+    /// canonical.
+    async fn remove_delta(
+        &self,
+        delta: &DeltaObject,
+        kind: DeltaStatusKind,
+        now: &str,
+    ) -> Result<CanonicalWrite> {
         let storage_backend = self.state.storage.clone();
 
         let outcome = storage_backend
@@ -754,6 +882,7 @@ impl DeltasProcessorBase {
                 self.state.metadata.as_ref(),
                 &delta.account_id,
                 delta.nonce,
+                kind,
                 now,
                 self.fence().as_ref(),
             )
@@ -808,11 +937,238 @@ impl DeltasProcessorBase {
         Ok(CanonicalWrite::Applied)
     }
 
+    /// Keep a retry-exhausted candidate as `retained` (issue #345) and
+    /// release the account: the status flip drops the row out of the
+    /// pending-candidate lock scan, and the conditional flag clear
+    /// re-checks the delta store so a candidate committed concurrently
+    /// is never masked. The matching proposal is deliberately kept — a
+    /// later reconcile promotion or the TTL expiry resolves it.
+    async fn retain_candidate(
+        &self,
+        delta: &DeltaObject,
+        reason: RetainReason,
+        now: &str,
+    ) -> Result<CanonicalWrite> {
+        let outcome = self
+            .state
+            .storage
+            .update_candidate_status(
+                &delta.account_id,
+                delta.nonce,
+                DeltaStatus::retained(now.to_string(), reason),
+                self.fence().as_ref(),
+            )
+            .await
+            .map_err(|e| GuardianError::StorageError(format!("Failed to retain delta: {e}")))?;
+        if outcome != CanonicalWrite::Applied {
+            return Ok(outcome);
+        }
+
+        if let Err(e) = self
+            .state
+            .metadata
+            .clear_pending_candidate_if_none(&delta.account_id, now)
+            .await
+        {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                error = %e,
+                "Failed to clear has_pending_candidate flag after retaining; \
+                 the stale-flag heal clears it on a later run"
+            );
+        }
+
+        Ok(CanonicalWrite::Applied)
+    }
+
+    fn retained_age_seconds(&self, delta: &DeltaObject, now: DateTime<Utc>) -> Option<u64> {
+        let DeltaStatus::Retained { timestamp, .. } = &delta.status else {
+            return None;
+        };
+
+        let retained_at = DateTime::parse_from_rfc3339(timestamp).ok()?;
+        let age = now.signed_duration_since(retained_at.with_timezone(&Utc));
+        Some(age.num_seconds().max(0) as u64)
+    }
+
+    /// Reconcile an account's retained deltas (issue #345), nonce order.
+    /// Only called while the account has no candidate in flight. A
+    /// successful reconcile advances the stored base, so consecutive
+    /// retained nonces can chain within one pass.
+    async fn reconcile_retained_deltas(&self, account_id: &str) -> Result<()> {
+        let retained = self
+            .state
+            .storage
+            .pull_retained_deltas(account_id)
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to pull retained deltas: {e}"))
+            })?;
+        if retained.is_empty() {
+            return Ok(());
+        }
+
+        tracing::info!(
+            account_id = %account_id,
+            retained = retained.len(),
+            "Reconciling retained deltas"
+        );
+
+        let mut first_error = None;
+        for delta in retained {
+            if self.pass.cancel.is_cancelled() {
+                tracing::warn!(
+                    account_id = %account_id,
+                    "Canonicalization pass cancelled (lease lost); \
+                     stopping before next retained delta"
+                );
+                break;
+            }
+            let nonce = delta.nonce;
+            if let Err(e) = self.reconcile_retained_delta(delta).await {
+                tracing::error!(
+                    account_id = %account_id,
+                    nonce = nonce,
+                    error = %e,
+                    "Failed to reconcile retained delta"
+                );
+                first_error.get_or_insert(e);
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    /// One retained delta: drop it once its TTL is spent, otherwise run
+    /// the exact verification the candidate pass runs — apply the delta
+    /// to the stored base and compare the recomputed commitment against
+    /// the chain — and promote on a match. Anything short of a match
+    /// simply waits for the next tick: no retry budget applies, the TTL
+    /// is the bound, and monotonicity means a genuinely diverged delta
+    /// can never start matching, so it ages out.
+    async fn reconcile_retained_delta(&self, delta: DeltaObject) -> Result<()> {
+        let now = self.state.clock.now();
+
+        // An unreadable retention timestamp counts as expired: the TTL
+        // exists so no row can outlive the feature's bound, and a row
+        // whose age cannot be established must not become immortal.
+        let age = self.retained_age_seconds(&delta, now);
+        if age.is_none_or(|age| age >= self.retained_ttl_seconds) {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                retained_age_seconds = age,
+                retained_ttl_seconds = self.retained_ttl_seconds,
+                "Retained delta expired without ever verifying; dropping it"
+            );
+
+            match self
+                .remove_delta(&delta, DeltaStatusKind::Retained, &now.to_rfc3339())
+                .await?
+            {
+                CanonicalWrite::Applied => {
+                    record_candidate_outcome(
+                        crate::metrics::labels::CandidateOutcome::ReconcileExpired,
+                    );
+                }
+                CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::NotCandidate => {
+                    Self::log_not_candidate(&delta, "reconcile_expiry");
+                }
+            }
+            return Ok(());
+        }
+
+        let current_state = self
+            .state
+            .storage
+            .pull_state(&delta.account_id)
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to get current state: {e}"))
+            })?;
+
+        // A base the delta no longer applies to (e.g. the client
+        // re-supplied state via configure) is a deferral, not an account
+        // failure: the row ages out through the TTL.
+        let applied = {
+            let client = self.state.network_client.clone();
+            let prev_state_json = current_state.state_json;
+            let delta_payload = Arc::new(delta.delta_payload.clone());
+            crate::network::reconstructor()
+                .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
+                .await
+        };
+        let (new_state_json, recomputed_commitment) = match applied {
+            Ok(applied) => applied,
+            Err(e) => {
+                tracing::info!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    error = %GuardianError::from(e),
+                    "Retained delta no longer applies to the stored base; \
+                     deferring until it expires"
+                );
+                record_candidate_outcome(
+                    crate::metrics::labels::CandidateOutcome::ReconcileDeferred,
+                );
+                return Ok(());
+            }
+        };
+
+        let verify_result = self
+            .state
+            .network_client
+            .verify_commitment(&delta.account_id, &recomputed_commitment)
+            .await;
+
+        match verify_result {
+            Ok(StateVerification::Match) => {
+                tracing::info!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    "Retained delta now verifies against the on-chain \
+                     commitment; promoting the recovered state"
+                );
+                self.canonicalize_verified_delta(
+                    delta,
+                    new_state_json,
+                    recomputed_commitment,
+                    crate::metrics::labels::CandidateOutcome::Reconciled,
+                )
+                .await
+            }
+            Ok(_) => {
+                record_candidate_outcome(
+                    crate::metrics::labels::CandidateOutcome::ReconcileDeferred,
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::info!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    error = %e,
+                    "Retained delta verification unavailable; deferring"
+                );
+                record_candidate_outcome(
+                    crate::metrics::labels::CandidateOutcome::ReconcileDeferred,
+                );
+                Ok(())
+            }
+        }
+    }
+
     async fn canonicalize_verified_delta(
         &self,
         delta: DeltaObject,
         new_state_json: serde_json::Value,
         verified_commitment: String,
+        success_outcome: crate::metrics::labels::CandidateOutcome,
     ) -> Result<()> {
         tracing::info!(
             account_id = %delta.account_id,
@@ -964,7 +1320,7 @@ impl DeltasProcessorBase {
         )
         .await;
 
-        record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Canonicalized);
+        record_candidate_outcome(success_outcome);
         Ok(())
     }
 }
@@ -1005,6 +1361,7 @@ impl DeltasProcessor {
                 abandon_quarantine_seconds: config.abandon_quarantine_seconds,
                 abandon_quarantine_checks: config.abandon_quarantine_checks,
                 max_concurrent_accounts: config.max_concurrent_accounts,
+                retained_ttl_seconds: config.retained_ttl_seconds,
             },
         }
     }
@@ -1037,6 +1394,7 @@ impl TestDeltasProcessor {
                 abandon_quarantine_seconds: 0,      // ...and resolves abandons immediately
                 abandon_quarantine_checks: 1,
                 max_concurrent_accounts: 1, // ...and stays deterministic
+                retained_ttl_seconds: u64::MAX, // ...nor expires retained deltas
             },
         }
     }
@@ -1849,11 +2207,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_diverged_candidate_confirmed_discards_and_releases() {
+    async fn test_diverged_candidate_confirmed_retains_and_releases() {
         // Second consecutive diverged observation reaches the default
-        // confirmation threshold (2): the unsatisfiable candidate is deleted
-        // and the account lock released immediately, well within the grace
-        // period.
+        // confirmation threshold (2): the candidate is retained-and-labeled
+        // (issue #345) — not deleted — and the account lock released
+        // immediately, well within the grace period. Retention matters
+        // because a diverged verdict has been spurious before (the
+        // pre-#326 empty-digest misread of new accounts).
         let account_id = "0xtest_account";
         let mut candidate = create_candidate_delta(account_id, 1);
         candidate.status = DeltaStatus::Candidate {
@@ -1901,11 +2261,25 @@ mod tests {
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
 
-        assert_eq!(
-            storage.get_delete_delta_calls(),
-            vec![(account_id.to_string(), 1)]
+        assert!(
+            storage.get_delete_delta_calls().is_empty(),
+            "a diverged candidate is retained, never deleted"
         );
-        assert!(storage.get_update_delta_status_calls().is_empty());
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(status_writes.len(), 1);
+        assert!(status_writes[0].2.is_retained());
+        assert_eq!(
+            status_writes[0].2.retain_reason(),
+            Some(crate::delta_object::RetainReason::Diverged)
+        );
+        assert!(
+            storage
+                .delete_delta_proposal_calls
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "the proposal survives retention for a possible reconcile"
+        );
         assert!(
             metadata
                 .get_set_calls()
@@ -1915,7 +2289,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_divergence_confirmations_of_one_discards_immediately() {
+    async fn test_diverged_candidate_retention_disabled_discards() {
+        // `retained_ttl_seconds = 0` restores the historical #312
+        // behavior: a confirmed divergence deletes the candidate.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = DeltaStatus::Candidate {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            retry_count: 0,
+            divergence_count: 1,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
+        };
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "0xsome_other_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(600)
+            .with_retained_ttl_seconds(0);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert_eq!(
+            storage.get_delete_delta_calls(),
+            vec![(account_id.to_string(), 1)]
+        );
+        assert!(storage.get_update_delta_status_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_divergence_confirmations_of_one_retains_immediately() {
         let account_id = "0xtest_account";
         let candidate = create_candidate_delta(account_id, 1);
 
@@ -1958,11 +2391,10 @@ mod tests {
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
 
-        assert_eq!(
-            storage.get_delete_delta_calls(),
-            vec![(account_id.to_string(), 1)]
-        );
-        assert!(storage.get_update_delta_status_calls().is_empty());
+        assert!(storage.get_delete_delta_calls().is_empty());
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(status_writes.len(), 1);
+        assert!(status_writes[0].2.is_retained());
     }
 
     #[tokio::test]
@@ -2144,6 +2576,365 @@ mod tests {
 
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
+    }
+
+    fn create_retained_delta(account_id: &str, nonce: u64, retained_at: &str) -> DeltaObject {
+        let mut delta = create_candidate_delta(account_id, nonce);
+        delta.status = DeltaStatus::retained(
+            retained_at.to_string(),
+            crate::delta_object::RetainReason::RetryExhausted,
+        );
+        delta
+    }
+
+    #[tokio::test]
+    async fn test_max_retries_retains_candidate_for_reconciliation() {
+        // Exhausting the retry budget parks the candidate as `retained`
+        // (issue #345) instead of deleting it: the delta was never proven
+        // wrong, and deleting it is what left stored state permanently
+        // behind the on-chain nonce. The account lock is released and the
+        // proposal survives for a possible reconcile.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status =
+            DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 17);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Err("Verification failed".to_string()));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+        let metadata = Arc::new(mock_metadata);
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(mock_network),
+            metadata.clone(),
+        );
+
+        // retry_count 17 + 1 = 18 >= max_retries 18; the default config
+        // retains (TTL > 0).
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert!(storage.get_delete_delta_calls().is_empty());
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(status_writes.len(), 1);
+        assert!(status_writes[0].2.is_retained());
+        assert_eq!(
+            status_writes[0].2.retain_reason(),
+            Some(crate::delta_object::RetainReason::RetryExhausted)
+        );
+        assert!(
+            storage
+                .delete_delta_proposal_calls
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "the proposal survives retention"
+        );
+        assert!(
+            metadata
+                .get_set_calls()
+                .iter()
+                .any(|m| !m.has_pending_candidate),
+            "retention releases the account lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_max_retries_retention_disabled_discards() {
+        // `retained_ttl_seconds = 0` restores the historical behavior:
+        // retry exhaustion deletes the candidate.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status =
+            DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 17);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Err("Verification failed".to_string()));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::new(10, 18).with_retained_ttl_seconds(0);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert_eq!(
+            storage.get_delete_delta_calls(),
+            vec![(account_id.to_string(), 1)]
+        );
+        assert!(storage.get_update_delta_status_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_promotes_matching_retained_delta() {
+        // The core issue #345 recovery: a retained delta whose recomputed
+        // commitment now matches the chain is promoted to canonical, and
+        // the stored base catches up to the on-chain nonce. The account
+        // enters the pass through the retained-account scan, not the
+        // pending-candidate flag.
+        let account_id = "0xtest_account";
+        let retained = create_retained_delta(account_id, 1, "2024-01-01T00:00:00Z");
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_retained_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_retained_deltas(Ok(vec![retained]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
+
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_should_update_auth(Ok(None)),
+        );
+
+        let mut account_metadata = create_test_metadata(account_id);
+        account_metadata.has_pending_candidate = false;
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![]))
+            .with_get(Ok(Some(account_metadata)))
+            .with_set(Ok(()));
+
+        // Ten minutes into retention: well inside the default TTL.
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 10, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network.clone(),
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        let states = storage.get_submit_state_calls();
+        assert_eq!(states.len(), 1, "reconcile advances the stored state");
+        assert_eq!(states[0].commitment, "new_commitment");
+        let deltas = storage.get_submit_delta_calls();
+        assert!(
+            deltas.iter().any(|d| d.status.is_canonical()),
+            "the retained delta is promoted to canonical"
+        );
+        assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_defers_while_chain_lags() {
+        // No match yet: the retained delta is left untouched for the next
+        // tick — no retry budget applies, the TTL is the only bound.
+        let account_id = "0xtest_account";
+        let retained = create_retained_delta(account_id, 1, "2024-01-01T00:00:00Z");
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_retained_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_retained_deltas(Ok(vec![retained]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "prev_commitment".to_string(),
+                })),
+        );
+
+        let mut account_metadata = create_test_metadata(account_id);
+        account_metadata.has_pending_candidate = false;
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![]))
+            .with_get(Ok(Some(account_metadata)))
+            .with_set(Ok(()));
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 10, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network.clone(),
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert!(storage.get_submit_state_calls().is_empty());
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert!(storage.get_update_delta_status_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_expires_retained_delta_past_ttl() {
+        // A retained delta that outlives the TTL without ever verifying
+        // is dropped for good, together with its proposal path.
+        let account_id = "0xtest_account";
+        let retained = create_retained_delta(account_id, 1, "2024-01-01T00:00:00Z");
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_retained_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_retained_deltas(Ok(vec![retained.clone()]))
+                // The sequential discard re-reads the row to enforce the
+                // expected-kind guard.
+                .with_pull_delta(Ok(retained)),
+        );
+
+        let mock_network = Arc::new(MockNetworkClient::new());
+
+        let mut account_metadata = create_test_metadata(account_id);
+        account_metadata.has_pending_candidate = false;
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![]))
+            .with_get(Ok(Some(account_metadata)))
+            .with_set(Ok(()));
+
+        // Two days after retention began: past the one-day default TTL.
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 3, 0, 0, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network.clone(),
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert_eq!(
+            storage.get_discard_candidate_calls(),
+            vec![(
+                account_id.to_string(),
+                1,
+                crate::storage::DeltaStatusKind::Retained
+            )]
+        );
+        assert_eq!(
+            storage.get_delete_delta_calls(),
+            vec![(account_id.to_string(), 1)]
+        );
+        assert!(storage.get_submit_state_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_waits_for_in_flight_candidate() {
+        // While a candidate is pending, retained deltas are not touched:
+        // a reconcile promotion would move the stored base out from under
+        // the in-flight (signed) candidate — the exact race issue #345
+        // rejects for a syncState-driven write.
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 2);
+        let retained = create_retained_delta(account_id, 1, "2024-01-01T00:00:00Z");
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_retained_deltas(Ok(vec![retained]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                // The candidate defers within the grace period.
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "prev_commitment".to_string(),
+                })),
+        );
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network.clone(),
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert_eq!(
+            storage.pull_retained_deltas_responses.lock().unwrap().len(),
+            1,
+            "the retained queue is never read while a candidate is in flight"
+        );
+        assert!(storage.get_submit_state_calls().is_empty());
     }
 
     #[tokio::test]

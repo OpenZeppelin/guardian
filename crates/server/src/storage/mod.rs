@@ -25,10 +25,23 @@ pub enum DeltaStatusKind {
     Pending,
     Candidate,
     Canonical,
+    Retained,
     Discarded,
 }
 
 impl DeltaStatusKind {
+    /// The typed kind of a full [`DeltaStatus`], the single mapping the
+    /// backends and the dashboard wire layer share.
+    pub fn of(status: &DeltaStatus) -> Self {
+        match status {
+            DeltaStatus::Pending { .. } => DeltaStatusKind::Pending,
+            DeltaStatus::Candidate { .. } => DeltaStatusKind::Candidate,
+            DeltaStatus::Canonical { .. } => DeltaStatusKind::Canonical,
+            DeltaStatus::Retained { .. } => DeltaStatusKind::Retained,
+            DeltaStatus::Discarded { .. } => DeltaStatusKind::Discarded,
+        }
+    }
+
     /// Stable lower-snake-case name for the Postgres `status_kind`
     /// column and the dashboard status-filter wire shape.
     pub fn as_str(&self) -> &'static str {
@@ -36,6 +49,7 @@ impl DeltaStatusKind {
             DeltaStatusKind::Pending => "pending",
             DeltaStatusKind::Candidate => "candidate",
             DeltaStatusKind::Canonical => "canonical",
+            DeltaStatusKind::Retained => "retained",
             DeltaStatusKind::Discarded => "discarded",
         }
     }
@@ -92,6 +106,7 @@ pub struct GlobalProposalCursor {
 pub struct DeltaStatusCounts {
     pub candidate: u64,
     pub canonical: u64,
+    pub retained: u64,
     pub discarded: u64,
 }
 
@@ -229,6 +244,14 @@ pub(crate) async fn submit_candidate_sequential(
     delta: &DeltaObject,
     now: &str,
 ) -> Result<CandidateSubmission, String> {
+    // A retained row (issue #345) is a best-effort recovery artifact,
+    // never settled history: a fresh candidate at its nonce supersedes
+    // it — the client just re-supplied its intent for that slot.
+    if let Ok(existing) = storage.pull_delta(&delta.account_id, delta.nonce).await
+        && existing.status.is_retained()
+    {
+        storage.delete_delta(&delta.account_id, delta.nonce).await?;
+    }
     storage.submit_delta(delta).await?;
     metadata
         .set_has_pending_candidate(&delta.account_id, true, now)
@@ -272,8 +295,18 @@ pub(crate) async fn discard_candidate_sequential(
     metadata: &dyn crate::metadata::MetadataStore,
     account_id: &str,
     nonce: u64,
+    kind: DeltaStatusKind,
     now: &str,
 ) -> Result<CanonicalWrite, String> {
+    // Guard the delete on the expected lifecycle kind so a stale discard
+    // can never remove a row that was promoted meanwhile. A read error
+    // keeps the historical plain-delete path (mocks without a canned
+    // read; a missing row makes the delete itself the no-op/error).
+    if let Ok(existing) = storage.pull_delta(account_id, nonce).await
+        && DeltaStatusKind::of(&existing.status) != kind
+    {
+        return Ok(CanonicalWrite::NotCandidate);
+    }
     storage.delete_delta(account_id, nonce).await?;
     if let Err(e) = metadata
         .clear_pending_candidate_if_none(account_id, now)
@@ -438,6 +471,27 @@ pub trait StorageBackend: Send + Sync {
         deltas.sort_by_key(|delta| delta.nonce);
         Ok(deltas)
     }
+    /// Retained deltas (issue #345) for one account, nonce-ascending —
+    /// the background reconcile pass's read. The default filters the
+    /// full history in memory; backends with a typed status column
+    /// override it so only retained rows leave the store.
+    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        let mut deltas: Vec<DeltaObject> = self
+            .pull_deltas_after(account_id, 0)
+            .await?
+            .into_iter()
+            .filter(|delta| delta.status.is_retained())
+            .collect();
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
+    }
+
+    /// Accounts that currently hold at least one retained delta (issue
+    /// #345). Retained rows do not set the `has_pending_candidate`
+    /// flag — by design, so they never re-lock the account — so the
+    /// reconcile pass needs its own scan to find them.
+    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String>;
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -528,15 +582,19 @@ pub trait StorageBackend: Send + Sync {
         promotion: CandidatePromotion,
     ) -> Result<PromoteWrite, String>;
 
-    /// Discard an unsatisfiable candidate: delete the delta row only if
-    /// it is still a candidate (a row another owner already promoted to
-    /// canonical must survive a stale discard) and release the
-    /// pending-candidate flag, gated on the lease fence.
+    /// Discard an unsatisfiable delta: delete the row only if it is
+    /// still in the expected lifecycle `kind` (a row another owner
+    /// already promoted to canonical must survive a stale discard) and
+    /// release the pending-candidate flag, gated on the lease fence.
+    /// `kind` is [`DeltaStatusKind::Candidate`] for the classic worker
+    /// discard and [`DeltaStatusKind::Retained`] for the TTL expiry of
+    /// a retained delta (issue #345).
     async fn discard_candidate(
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         account_id: &str,
         nonce: u64,
+        kind: DeltaStatusKind,
         now: &str,
         fence: Option<&LeaseFence>,
     ) -> Result<CanonicalWrite, String>;

@@ -139,6 +139,22 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        timed(
+            "pull_retained_deltas",
+            self.inner.pull_retained_deltas(account_id),
+        )
+        .await
+    }
+
+    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String> {
+        timed(
+            "list_accounts_with_retained_deltas",
+            self.inner.list_accounts_with_retained_deltas(),
+        )
+        .await
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -256,13 +272,14 @@ impl StorageBackend for InstrumentedStorage {
         metadata: &dyn crate::metadata::MetadataStore,
         account_id: &str,
         nonce: u64,
+        kind: crate::storage::DeltaStatusKind,
         now: &str,
         fence: Option<&LeaseFence>,
     ) -> Result<CanonicalWrite, String> {
         timed(
             "discard_candidate",
             self.inner
-                .discard_candidate(metadata, account_id, nonce, now, fence),
+                .discard_candidate(metadata, account_id, nonce, kind, now, fence),
         )
         .await
     }

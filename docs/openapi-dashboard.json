@@ -1991,6 +1991,7 @@
         "enum": [
           "candidate",
           "canonical",
+          "retained",
           "discarded"
         ]
       },
@@ -1999,6 +2000,7 @@
         "required": [
           "candidate",
           "canonical",
+          "retained",
           "discarded"
         ],
         "properties": {
@@ -2013,6 +2015,11 @@
             "minimum": 0
           },
           "discarded": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "retained": {
             "type": "integer",
             "format": "int64",
             "minimum": 0

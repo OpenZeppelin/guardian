@@ -134,10 +134,17 @@ message DeltaStatus {
     string candidate_at = 2;
     string canonical_at = 3;
     string discarded_at = 4;
+    // Retry-exhausted candidate kept for background reconciliation
+    // (issue #345); promoted to canonical if the chain ever shows it
+    // landed, dropped after a server-side TTL otherwise.
+    string retained_at = 6;
   }
   // Why a discarded delta was discarded ("client_abandoned"); empty for
   // other statuses and for discards without a recorded reason.
   string discard_reason = 5;
+  // Why a retained delta was retained ("retry_exhausted" / "diverged");
+  // empty for other statuses.
+  string retain_reason = 7;
 }
 
 // Pending status with cosigner signatures
