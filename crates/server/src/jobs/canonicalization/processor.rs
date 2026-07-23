@@ -260,13 +260,17 @@ impl DeltasProcessorBase {
             let (page_accounts, page_failed_accounts) = self.process_recent_page(candidates).await;
             accounts += page_accounts;
             failed_accounts += page_failed_accounts;
+
+            if self.admission_closed() {
+                self.fast_promotion_state.set_cursor(None);
+                break;
+            }
+
             cursor = Some(next_cursor);
             self.fast_promotion_state.set_cursor(cursor.clone());
 
             if page_len < FAST_PROMOTION_PAGE_SIZE as usize {
-                if !self.fast_deadline_reached() {
-                    self.fast_promotion_state.set_cursor(None);
-                }
+                self.fast_promotion_state.set_cursor(None);
                 break;
             }
         }
