@@ -820,12 +820,18 @@ export class Multisig {
       throw new Error('Amount must be greater than 0');
     }
 
+    // Read the vault from the web client's store, not the `this.account` snapshot:
+    // `executeForSummary` below executes against the store, and other flows (e.g.
+    // consume-notes finalize) sync the store without refreshing the snapshot.
+    const account =
+      (await webClient.getAccount(AccountId.fromHex(this._accountId))) ?? this.account;
+
     const { request, salt } = buildP2idTransactionRequest(
       this._accountId,
       recipientId,
       faucetId,
       amount,
-      this.account,
+      account,
     );
 
     const summary = await executeForSummary(webClient, this._accountId, request);
@@ -1680,12 +1686,16 @@ export class Multisig {
         throw new UnsupportedMetadataVersionError(version);
       }
       case 'p2id': {
+        // Same store-vs-snapshot rule as createP2idProposal: the rebuilt request is
+        // executed against the web client's store, so resolve the vault from it.
+        const account =
+          (await webClient.getAccount(AccountId.fromHex(this._accountId))) ?? this.account;
         const { request } = buildP2idTransactionRequest(
           this._accountId,
           metadata.recipientId,
           metadata.faucetId,
           BigInt(metadata.amount),
-          this.account,
+          account,
           { salt, signatureAdviceMap }
         );
         return request;
