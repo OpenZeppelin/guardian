@@ -215,6 +215,19 @@ export class Multisig {
   }
 
   /**
+   * Resolve the account from the web client's store, falling back to the
+   * `account` snapshot when the store has no record.
+   *
+   * Transaction execution reads the store, and other flows (e.g. consume-notes
+   * finalize) update it without refreshing the snapshot, so vault lookups must
+   * source from the store to see the same state execution will.
+   */
+  async getStoreAccount(): Promise<Account> {
+    const webClient = await this.getRawClient();
+    return (await webClient.getAccount(AccountId.fromHex(this._accountId))) ?? this.account;
+  }
+
+  /**
    * Maps a proposal type to the procedure that determines its threshold.
    */
   private getProposalProcedure(proposalType: ProposalType): ProcedureName | null {
@@ -820,11 +833,7 @@ export class Multisig {
       throw new Error('Amount must be greater than 0');
     }
 
-    // Read the vault from the web client's store, not the `this.account` snapshot:
-    // `executeForSummary` below executes against the store, and other flows (e.g.
-    // consume-notes finalize) sync the store without refreshing the snapshot.
-    const account =
-      (await webClient.getAccount(AccountId.fromHex(this._accountId))) ?? this.account;
+    const account = await this.getStoreAccount();
 
     const { request, salt } = buildP2idTransactionRequest(
       this._accountId,
@@ -1686,10 +1695,7 @@ export class Multisig {
         throw new UnsupportedMetadataVersionError(version);
       }
       case 'p2id': {
-        // Same store-vs-snapshot rule as createP2idProposal: the rebuilt request is
-        // executed against the web client's store, so resolve the vault from it.
-        const account =
-          (await webClient.getAccount(AccountId.fromHex(this._accountId))) ?? this.account;
+        const account = await this.getStoreAccount();
         const { request } = buildP2idTransactionRequest(
           this._accountId,
           metadata.recipientId,
