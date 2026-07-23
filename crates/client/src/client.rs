@@ -3,11 +3,12 @@ use crate::error::{ClientError, ClientResult};
 use crate::keystore::Signer;
 use crate::proto::guardian_client::GuardianClient as GuardianGrpcClient;
 use crate::proto::{
-    AuthConfig, ConfigureRequest, ConfigureResponse, GetAccountByKeyCommitmentRequest,
-    GetAccountByKeyCommitmentResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
-    GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
-    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
-    GetStateResponse, ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
+    AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AuthConfig, ConfigureRequest,
+    ConfigureResponse, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
+    GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
+    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
+    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
+    ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
     PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
     SignDeltaProposalResponse,
 };
@@ -389,6 +390,43 @@ impl GuardianClient {
         self.add_auth_metadata(&mut request, account_id)?;
 
         let response = self.client.sign_delta_proposal(request).await?;
+        let inner = response.into_inner();
+
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+
+        Ok(inner)
+    }
+
+    /// Request abandonment of a pending canonicalization candidate whose
+    /// transaction will never land on-chain (issue #319).
+    ///
+    /// The request records an abandon *intent*: the delta stays a
+    /// candidate — the account stays locked — until the guardian's
+    /// canonicalization worker confirms over the abandon quarantine that
+    /// the transaction did not land, then discards the delta as
+    /// `client_abandoned` and releases the account (typically well under
+    /// a minute). Poll `get_delta` for the resolution; the returned
+    /// `state` is `"pending"` or, when already resolved, `"abandoned"`.
+    ///
+    /// `nonce` pins the exact candidate (learned from the delta feed).
+    /// The server refuses with `GUARDIAN_CANDIDATE_LANDED` when the
+    /// transaction actually landed. Retries are idempotent and preserve
+    /// the original request timestamp.
+    pub async fn abandon_candidate(
+        &mut self,
+        account_id: &AccountId,
+        nonce: u64,
+    ) -> ClientResult<AbandonDeltaCandidateResponse> {
+        let mut request = tonic::Request::new(AbandonDeltaCandidateRequest {
+            account_id: account_id.to_string(),
+            nonce,
+        });
+
+        self.add_auth_metadata(&mut request, account_id)?;
+
+        let response = self.client.abandon_delta_candidate(request).await?;
         let inner = response.into_inner();
 
         if !inner.success {

@@ -1,5 +1,9 @@
 use std::time::Duration;
 
+/// Environment override for [`CanonicalizationConfig::max_concurrent_accounts`].
+/// The other canonicalization knobs remain code-configured.
+pub const ENV_MAX_CONCURRENT_ACCOUNTS: &str = "GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS";
+
 /// Configuration for delta canonicalization behavior
 /// When Some: deltas are saved as candidates and later verified/canonicalized
 /// When None: deltas are immediately saved as canonical (optimistic mode)
@@ -21,6 +25,28 @@ pub struct CanonicalizationConfig {
     /// against acting on a single stale RPC read; the divergence discard
     /// bypasses the submission grace period.
     pub divergence_confirmations: u32,
+
+    /// Minimum age a client abandon request (issue #319) must reach before
+    /// the worker may finalize it. Together with
+    /// `abandon_quarantine_checks` this quarantine reduces the risk of
+    /// abandoning a transaction that lands late; like the divergence
+    /// discard, abandon resolution bypasses the submission grace period.
+    pub abandon_quarantine_seconds: u64,
+
+    /// Consecutive worker ticks that must observe the on-chain commitment
+    /// still at the candidate's base after an abandon request before the
+    /// worker finalizes the abandon. A divergent observation resets the
+    /// streak, mirroring `divergence_confirmations`.
+    pub abandon_quarantine_checks: u32,
+    /// How many accounts one canonicalization pass processes concurrently.
+    /// Candidates within an account are always sequential (nonce order);
+    /// this only overlaps the per-account work — dominated by the Miden
+    /// RPC round trip — across accounts. `1` reproduces the fully
+    /// sequential pass and is the safe rollback value. A DB connection is
+    /// held only during the short fenced transactions, so this may exceed
+    /// `GUARDIAN_DB_POOL_MAX_SIZE`; simultaneous write bursts queue
+    /// briefly at the pool rather than failing.
+    pub max_concurrent_accounts: usize,
 }
 
 impl Default for CanonicalizationConfig {
@@ -30,6 +56,9 @@ impl Default for CanonicalizationConfig {
             max_retries: 18,                      // 18 attempts (total: ~3 minutes)
             submission_grace_period_seconds: 600, // Allow proving/submission to settle first
             divergence_confirmations: 2,          // Two ticks to rule out a stale read
+            abandon_quarantine_seconds: 15,       // Let a late-landing tx surface first
+            abandon_quarantine_checks: 2,         // Two ticks to rule out a stale read
+            max_concurrent_accounts: 10, // Overlaps per-account chain RPCs; prod Terraform sets 50
         }
     }
 }
@@ -40,8 +69,7 @@ impl CanonicalizationConfig {
         Self {
             check_interval_seconds,
             max_retries,
-            submission_grace_period_seconds: Self::default().submission_grace_period_seconds,
-            divergence_confirmations: Self::default().divergence_confirmations,
+            ..Self::default()
         }
     }
 
@@ -66,5 +94,110 @@ impl CanonicalizationConfig {
     pub fn with_divergence_confirmations(mut self, confirmations: u32) -> Self {
         self.divergence_confirmations = confirmations;
         self
+    }
+
+    /// Override the abandon quarantine duration.
+    pub fn with_abandon_quarantine_seconds(mut self, seconds: u64) -> Self {
+        self.abandon_quarantine_seconds = seconds;
+        self
+    }
+
+    /// Override the number of consecutive at-base observations required
+    /// before an abandon request is finalized.
+    pub fn with_abandon_quarantine_checks(mut self, checks: u32) -> Self {
+        self.abandon_quarantine_checks = checks;
+        self
+    }
+
+    /// Override how many accounts one pass processes concurrently.
+    /// `1` reproduces the fully sequential pass.
+    pub fn with_max_concurrent_accounts(mut self, accounts: usize) -> Self {
+        assert!(
+            accounts > 0,
+            "max_concurrent_accounts must be at least 1 (1 = fully sequential)"
+        );
+        self.max_concurrent_accounts = accounts;
+        self
+    }
+
+    /// Apply the [`ENV_MAX_CONCURRENT_ACCOUNTS`] override when set. An
+    /// unset variable keeps the built-in default; a present-but-invalid
+    /// value fails startup loudly — a silently ignored typo here would
+    /// run production at the wrong concurrency.
+    pub fn with_max_concurrent_accounts_from_env(self) -> Result<Self, String> {
+        self.max_concurrent_accounts_from_var(ENV_MAX_CONCURRENT_ACCOUNTS)
+    }
+
+    fn max_concurrent_accounts_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let accounts = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("{var_name} must be a positive integer, got '{value}'"))?;
+                if accounts == 0 {
+                    return Err(format!("{var_name} must be greater than zero"));
+                }
+                Ok(self.with_max_concurrent_accounts(accounts))
+            }
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains invalid UTF-8"))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::env_lock::ENV_LOCK;
+
+    #[test]
+    fn env_override_missing_keeps_default() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_CONCURRENCY_TEST_MISSING";
+        unsafe { std::env::remove_var(var_name) };
+
+        let config = CanonicalizationConfig::default()
+            .max_concurrent_accounts_from_var(var_name)
+            .expect("missing variable is not an error");
+
+        assert_eq!(config.max_concurrent_accounts, 10);
+    }
+
+    #[test]
+    fn env_override_applies_parsed_value() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_CONCURRENCY_TEST_PRESENT";
+        unsafe { std::env::set_var(var_name, "24") };
+
+        let config = CanonicalizationConfig::default()
+            .max_concurrent_accounts_from_var(var_name)
+            .expect("valid value applies");
+
+        assert_eq!(config.max_concurrent_accounts, 24);
+        unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[test]
+    fn env_override_rejects_zero_and_garbage() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_CONCURRENCY_TEST_INVALID";
+
+        unsafe { std::env::set_var(var_name, "0") };
+        assert!(
+            CanonicalizationConfig::default()
+                .max_concurrent_accounts_from_var(var_name)
+                .is_err()
+        );
+
+        unsafe { std::env::set_var(var_name, "not-a-number") };
+        assert!(
+            CanonicalizationConfig::default()
+                .max_concurrent_accounts_from_var(var_name)
+                .is_err()
+        );
+
+        unsafe { std::env::remove_var(var_name) };
     }
 }

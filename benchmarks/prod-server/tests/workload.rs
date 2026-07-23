@@ -2,7 +2,9 @@ use guardian_prod_benchmarks::config::SchemeDistribution;
 use guardian_prod_benchmarks::model::AuthScheme;
 use guardian_prod_benchmarks::operations::OperationKind;
 use guardian_prod_benchmarks::schemes::build_scheme_plan;
-use guardian_prod_benchmarks::workload::{operation_for_index, warmup_operation};
+use guardian_prod_benchmarks::workload::{
+    canonicalization_sample_decision, operation_for_index, warmup_operation,
+};
 
 #[test]
 fn operation_cycle_should_match_four_reads_per_push() {
@@ -46,4 +48,13 @@ fn scheme_plan_should_respect_distribution() {
 #[test]
 fn warmup_should_stay_read_only() {
     assert_eq!(warmup_operation(), OperationKind::GetState);
+}
+
+#[test]
+fn canonicalization_sampling_should_respect_rate_bounds() {
+    assert!(!canonicalization_sample_decision(0.0, 0.0));
+    assert!(!canonicalization_sample_decision(0.0, 0.5));
+    assert!(canonicalization_sample_decision(0.05, 0.04));
+    assert!(!canonicalization_sample_decision(0.05, 0.05));
+    assert!(canonicalization_sample_decision(1.0, 0.999));
 }

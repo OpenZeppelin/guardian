@@ -7,6 +7,7 @@ use base64::Engine;
 use serde_json::Value;
 use std::sync::Arc;
 
+mod abandon_candidate;
 pub mod account_status;
 mod configure_account;
 mod dashboard_account_delta_detail;
@@ -32,6 +33,10 @@ pub mod release_on_switch;
 mod sign_delta_proposal;
 mod status;
 pub mod unpause_account;
+
+pub use abandon_candidate::{
+    AbandonCandidateParams, AbandonCandidateResult, AbandonState, abandon_candidate,
+};
 
 pub use crate::jobs::canonicalization::{
     process_canonicalizations_now, start_canonicalization_worker,
@@ -401,7 +406,6 @@ mod tests {
     use crate::metadata::auth::Auth;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::{TimeZone, Utc};
-    use tokio::sync::Mutex;
 
     async fn create_test_state_with_mocks_and_clock(
         metadata: MockMetadataStore,
@@ -420,7 +424,7 @@ mod tests {
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(network)),
+            network_client: Arc::new(network),
             ack,
             canonicalization: None,
             clock: Arc::new(clock),

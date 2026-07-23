@@ -55,7 +55,7 @@ pub async fn configure_account(
     let scheme = params.auth.scheme();
 
     let commitment = {
-        let client = state.network_client.lock().await;
+        let client = &state.network_client;
         let expected_guardian_commitment = state.ack.commitment(&scheme);
 
         // Validates that the credential is valid for the account state.
@@ -214,7 +214,6 @@ mod tests {
     use crate::storage::StorageBackend;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     async fn create_test_app_state(
         network_client: MockNetworkClient,
@@ -234,7 +233,7 @@ mod tests {
         AppState {
             storage,
             metadata: Arc::new(metadata_store),
-            network_client: Arc::new(Mutex::new(network_client)),
+            network_client: Arc::new(network_client),
             ack,
             canonicalization: None, // Optimistic mode for tests
             clock: Arc::new(crate::clock::test::MockClock::default()),

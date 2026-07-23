@@ -16,6 +16,7 @@ mod io;
 mod notes;
 mod offline;
 mod proposals;
+pub use proposals::{AbandonRequestState, AbandonStatus};
 
 use std::path::PathBuf;
 use std::sync::Arc;

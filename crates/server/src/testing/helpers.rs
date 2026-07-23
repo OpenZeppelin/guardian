@@ -30,19 +30,22 @@ pub use tonic::{Request, metadata::MetadataValue};
 
 pub struct IntegrationMockNetworkClient {
     miden_client: crate::network::miden::MidenNetworkClient,
-    initial_commitments: HashMap<String, String>,
+    initial_commitments: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl IntegrationMockNetworkClient {
     pub fn new(miden_client: crate::network::miden::MidenNetworkClient) -> Self {
         Self {
             miden_client,
-            initial_commitments: HashMap::new(),
+            initial_commitments: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
     pub fn register_account(&mut self, account_id: String, commitment: String) {
-        self.initial_commitments.insert(account_id, commitment);
+        self.initial_commitments
+            .lock()
+            .expect("commitments lock")
+            .insert(account_id, commitment);
     }
 }
 
@@ -64,28 +67,20 @@ impl NetworkClient for IntegrationMockNetworkClient {
         Ok(local_commitment_hex)
     }
 
-    async fn verify_state(
-        &mut self,
+    async fn verify_commitment(
+        &self,
         account_id: &str,
-        state_json: &serde_json::Value,
+        expected_commitment: &str,
     ) -> Result<StateVerification, String> {
-        use miden_protocol::account::Account;
-
-        let account = Account::from_json(state_json)
-            .map_err(|e| format!("Failed to deserialize account: {e}"))?;
-
-        let local_commitment = account.to_commitment();
-        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
-
-        if let Some(on_chain_commitment) = self.initial_commitments.get(account_id) {
-            if &local_commitment_hex != on_chain_commitment {
+        let mut commitments = self.initial_commitments.lock().expect("commitments lock");
+        if let Some(on_chain_commitment) = commitments.get(account_id) {
+            if expected_commitment != on_chain_commitment {
                 return Ok(StateVerification::Mismatch {
                     on_chain: on_chain_commitment.clone(),
                 });
             }
         } else {
-            self.initial_commitments
-                .insert(account_id.to_string(), local_commitment_hex.clone());
+            commitments.insert(account_id.to_string(), expected_commitment.to_string());
         }
 
         Ok(StateVerification::Match)
@@ -157,7 +152,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
     }
 
     async fn should_update_auth(
-        &mut self,
+        &self,
         state_json: &serde_json::Value,
         current_auth: &Auth,
     ) -> Result<Option<Auth>, String> {
@@ -196,7 +191,7 @@ pub async fn create_test_app_state() -> AppState {
     AppState {
         storage: storage_backend,
         metadata: Arc::new(metadata),
-        network_client: Arc::new(tokio::sync::Mutex::new(mock_client)),
+        network_client: Arc::new(mock_client),
         ack,
         canonicalization: Some(crate::canonicalization::CanonicalizationConfig::default()),
         clock: Arc::new(crate::clock::SystemClock),
@@ -783,7 +778,7 @@ pub async fn update_mock_on_chain_commitment(
 
 pub fn create_test_app_state_with_mocks(
     storage: Arc<dyn StorageBackend>,
-    network_client: Arc<tokio::sync::Mutex<dyn NetworkClient>>,
+    network_client: Arc<dyn NetworkClient>,
     metadata: Arc<dyn crate::metadata::MetadataStore>,
 ) -> AppState {
     let keystore_dir =

@@ -22,6 +22,10 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   AccountId: {
     fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
   },
+  NoteType: {
+    Private: 0,
+    Public: 1,
+  },
   TransactionSummary: {
     deserialize: vi.fn().mockReturnValue({
       toCommitment: () => ({
@@ -87,6 +91,14 @@ vi.mock('./transaction.js', () => ({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
   }),
+  // Mirrors the real implementations against the mocked NoteType values
+  // (Private = 0, Public = 1).
+  parseP2idNoteType: vi.fn((value?: string) => {
+    if (value === undefined || value === 'public') return 1;
+    if (value === 'private') return 0;
+    throw new Error(`unsupported metadata.noteType '${value}': expected 'public' or 'private'`);
+  }),
+  p2idNoteTypeToMetadata: vi.fn((noteType?: number) => (noteType === 0 ? 'private' : undefined)),
 }));
 
 vi.mock('./utils/signature.js', async () => {
@@ -1252,6 +1264,81 @@ describe('Multisig', () => {
       const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1);
 
       expect(proposal.metadata.description).toBe('Send 100 of asset 0xfaucet... to 0xrecipien...');
+    });
+
+    it('threads a private noteType into the request and wire metadata (issue #322)', async () => {
+      const { executeForSummary, buildP2idTransactionRequest } = await import('./transaction.js');
+      const { NoteType } = await import('@miden-sdk/miden-sdk');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'p2id',
+            recipient_id: '0xrecipient',
+            faucet_id: '0xfaucet',
+            amount: '100',
+            note_type: 'private',
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1, {
+        noteType: NoteType.Private,
+      });
+
+      // Propose path builds the private note...
+      expect(vi.mocked(buildP2idTransactionRequest)).toHaveBeenCalledWith(
+        expect.any(String),
+        '0xrecipient',
+        '0xfaucet',
+        100n,
+        { noteType: NoteType.Private },
+      );
+      // ...and the rebuild-from-metadata path parses note_type back to Private.
+      const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
+      expect(lastCall[4]).toMatchObject({ noteType: NoteType.Private });
+
+      // The pushed wire metadata carries note_type so cosigners rebuild the
+      // same private note at verification/execution.
+      const pushBody = JSON.parse(mockFetch.mock.calls.at(-1)![1].body as string);
+      expect(pushBody.delta_payload.metadata.note_type).toBe('private');
+
+      expect(proposal.metadata.proposalType).toBe('p2id');
+      expect((proposal.metadata as { noteType?: string }).noteType).toBe('private');
     });
   });
 

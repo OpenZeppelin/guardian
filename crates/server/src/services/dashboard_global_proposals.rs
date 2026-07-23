@@ -259,7 +259,6 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let account_ids: Vec<String> = account_metas.iter().map(|(id, _)| id.clone()).collect();
 
@@ -283,7 +282,7 @@ mod tests {
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -314,7 +313,7 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
+
         let metadata = MockMetadataStore::new();
         let storage = MockStorageBackend::new()
             .with_list_global_proposals_paged(Err("storage unreachable".into()));
@@ -325,7 +324,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

@@ -319,7 +319,6 @@ mod tests {
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient};
     use std::sync::Arc;
     use tempfile::TempDir;
-    use tokio::sync::Mutex;
 
     fn miden_meta(account_id: &str, updated_at: &str) -> AccountMetadata {
         AccountMetadata {
@@ -449,7 +448,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(svc),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

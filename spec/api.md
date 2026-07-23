@@ -147,6 +147,8 @@ Miden delta proposals use:
 
 `metadata.proposal_type` is required and must be a non-empty string, but its value is **not** restricted to a fixed set: the server accepts any label (issue #266). The first-party multisig operations use `add_signer`, `remove_signer`, `change_threshold`, `update_procedure_threshold`, `switch_guardian`, `consume_notes`, and `p2id`; any other label is accepted and surfaced verbatim. Clients that do not model a given label bucket it as `custom` while preserving the original string for display. The server makes no security decision based on `proposal_type` — integrity comes from the tx_summary/state-commitment check, the cosigner threshold, and the GUARDIAN ack. Restricting which types an account may submit is a policy-layer concern, not a core-server one.
 
+`p2id` metadata carries `recipient_id`, `faucet_id`, `amount`, and an optional `note_type` (`"public"` or `"private"`, issue #322). Clients emit `note_type` only when the note is private; an absent field means public, which keeps proposals created before the field existed valid. The value is part of the signed metadata: verifiers rebuild the transaction from it, so a tampered `note_type` fails the tx_summary commitment check.
+
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
 
 EVM proposal creation request:
@@ -270,6 +272,7 @@ component schemas.
 | client | `GET /delta/proposal` | signed headers | List pending proposals |
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
+| client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
 | dashboard | `GET /auth/challenge` | public | Operator login challenge |
 | dashboard | `POST /auth/verify` | public | Verify challenge, establish session |
 | dashboard | `POST /auth/logout` | session | Invalidate the operator session |
@@ -461,10 +464,14 @@ behavior.
 | `guardian_storage_operations_total` | counter | `operation`, `outcome` |
 | `guardian_storage_operation_duration_seconds` | histogram | `operation` |
 | `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | `pool` (`storage`/`metadata`; postgres builds) |
-| `guardian_canonicalization_runs_total` | counter | `outcome` |
+| `guardian_canonicalization_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |
-| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`) |
+| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`) |
 | `guardian_canonicalization_retries_total` | counter | — |
+| `guardian_canonicalization_commitment_mismatches_total` | counter | — |
+| `guardian_canonicalization_pass_accounts` | gauge | — |
+| `guardian_canonicalization_deltas_fetched_total` | counter | — |
+| `guardian_canonicalization_candidate_age_seconds` | histogram | — |
 | `guardian_deltas_submitted_total` | counter | `kind` (`direct`/`proposal_commit`) |
 | `guardian_proposals_total` | counter | `event` (`created`/`signed`/`finalized`) |
 | `guardian_operator_auth_challenges_total` | counter | `outcome` |
@@ -481,7 +488,9 @@ behavior.
 
 Durations use seconds with explicit buckets from 1ms to 10s, except
 `guardian_canonicalization_run_duration_seconds` (a full pass over all
-accounts) which uses extended buckets up to 5 minutes. The
+accounts) which uses extended buckets up to 5 minutes, and
+`guardian_canonicalization_candidate_age_seconds` which spans 1 second
+to 24 hours so stuck candidates stay visible. The
 authoritative taxonomy (including help text and the enforced label
 allowlist) lives in `crates/server/src/metrics/names.rs`; the closed
 label value sets live in `crates/server/src/metrics/labels.rs`.

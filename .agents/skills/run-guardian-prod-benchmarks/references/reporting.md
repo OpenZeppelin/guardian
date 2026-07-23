@@ -9,6 +9,8 @@ Read these artifacts for the run:
 - `run-report.json`
 - `summary.md`
 - `cleanup-manifest.json`
+- `canonicalization-samples.json` (present when the profile set
+  `canonicalization.sample_rate > 0`)
 
 ## Required Metrics
 
@@ -32,6 +34,18 @@ For latency, always include:
 - `p95`
 - `p99`
 - `max`
+
+For runs with canonicalization sampling enabled, also report the
+`canonicalization` section of the run report:
+
+- sampled / canonical / discarded / timed-out / observation-failed counts
+- accepted→canonical wait `p50`, `p95`, `p99`, `max` (this is the
+  background canonicalization lag, not request latency — server per-call
+  latency can be flat while this number grows)
+- the `timeout_seconds` bound, since timed-out samples right-censor the
+  wait distribution
+- observation failures and their raw artifact errors; do not interpret them
+  as canonicalization lag
 
 ## Caveats to Call Out
 

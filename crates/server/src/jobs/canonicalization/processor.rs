@@ -7,9 +7,10 @@ use crate::error::{GuardianError, Result};
 use crate::network::StateVerification;
 use crate::state::AppState;
 use crate::state_object::StateObject;
-use crate::storage::{CandidatePromotion, CanonicalWrite, LeaseFence};
+use crate::storage::{CandidatePromotion, CanonicalWrite, LeaseFence, PromoteWrite};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 /// A leader handle for a single canonicalization pass: who we are, the fence we
@@ -37,9 +38,20 @@ impl PassLease {
     }
 }
 
+/// What one canonicalization pass actually did. Per-account failures and
+/// lease-loss cancellation are absorbed by the pass loop, so `Ok(())`
+/// alone could not distinguish a clean pass from a degraded one — the
+/// worker's run-outcome metric needs the distinction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PassSummary {
+    pub accounts: usize,
+    pub failed_accounts: usize,
+    pub cancelled: bool,
+}
+
 #[async_trait]
 pub trait Processor: Send + Sync {
-    async fn process_all_accounts(&self) -> Result<()>;
+    async fn process_all_accounts(&self) -> Result<PassSummary>;
 
     #[allow(dead_code)]
     async fn process_account(&self, account_id: &str) -> Result<()>;
@@ -54,23 +66,15 @@ fn record_candidate_outcome(outcome: crate::metrics::labels::CandidateOutcome) {
     .increment(1);
 }
 
-fn get_candidates(deltas: &[DeltaObject]) -> Vec<DeltaObject> {
-    let mut candidates: Vec<DeltaObject> = deltas
-        .iter()
-        .filter(|delta| delta.status.is_candidate())
-        .cloned()
-        .collect();
-
-    candidates.sort_by_key(|d| d.nonce);
-    candidates
-}
-
 struct DeltasProcessorBase {
     state: AppState,
     pass: PassLease,
     max_retries: u32,
     submission_grace_period_seconds: u64,
     divergence_confirmations: u32,
+    abandon_quarantine_seconds: u64,
+    abandon_quarantine_checks: u32,
+    max_concurrent_accounts: usize,
 }
 
 impl DeltasProcessorBase {
@@ -126,7 +130,7 @@ impl DeltasProcessorBase {
         Some(age.num_seconds().max(0) as u64)
     }
 
-    async fn process_all_accounts(&self) -> Result<()> {
+    async fn process_all_accounts(&self) -> Result<PassSummary> {
         let account_ids = self
             .state
             .metadata
@@ -138,28 +142,57 @@ impl DeltasProcessorBase {
             accounts_with_candidates = account_ids.len(),
             "Running canonicalization process"
         );
+        metrics::gauge!(crate::metrics::names::CANONICALIZATION_PASS_ACCOUNTS)
+            .set(account_ids.len() as f64);
 
-        for account_id in account_ids {
-            if self.pass.cancel.is_cancelled() {
-                tracing::warn!(
-                    "Canonicalization pass cancelled (lease lost); stopping before next account"
-                );
-                break;
-            }
-            if let Err(e) = self.process_account(&account_id).await {
+        // Account concurrency overlaps independent RPC waits; synchronous
+        // reconstruction is separately bounded by `Reconstructor`. Candidates
+        // within one account stay strictly sequential (nonce order), and every
+        // custody write remains individually fenced.
+        let accounts = account_ids.len();
+        let failed_accounts = futures::stream::iter(account_ids)
+            .map(|account_id| async move { self.process_account_absorbing(&account_id).await })
+            .buffer_unordered(self.max_concurrent_accounts.max(1))
+            .fold(0, |failed, account_failed| async move {
+                failed + usize::from(account_failed)
+            })
+            .await;
+
+        if self.pass.cancel.is_cancelled() {
+            tracing::warn!(
+                "Canonicalization pass cancelled (lease lost); remaining accounts skipped"
+            );
+        }
+
+        Ok(PassSummary {
+            accounts,
+            failed_accounts,
+            cancelled: self.pass.cancel.is_cancelled(),
+        })
+    }
+
+    /// One account inside a concurrent pass: cancellation-checked at
+    /// admission (in-flight tasks stop at their own checkpoints), errors
+    /// absorbed into a failed flag so one account never sinks the pass.
+    async fn process_account_absorbing(&self, account_id: &str) -> bool {
+        if self.pass.cancel.is_cancelled() {
+            return false;
+        }
+        match self.process_account(account_id).await {
+            Ok(()) => false,
+            Err(e) => {
                 tracing::error!(
                     account_id = %account_id,
                     error = %e,
                     "Failed to process canonicalizations for account"
                 );
+                true
             }
         }
-
-        Ok(())
     }
 
     async fn process_account(&self, account_id: &str) -> Result<()> {
-        let _account_metadata = self
+        let account_metadata = self
             .state
             .metadata
             .get(account_id)
@@ -169,26 +202,48 @@ impl DeltasProcessorBase {
 
         let storage_backend = self.state.storage.clone();
 
-        let all_deltas = storage_backend
-            .pull_deltas_after(account_id, 0)
+        let candidates = storage_backend
+            .pull_candidate_deltas(account_id)
             .await
             .map_err(|e| GuardianError::StorageError(format!("Failed to pull deltas: {e}")))?;
 
-        tracing::debug!(
-            account_id = %account_id,
-            total_deltas = all_deltas.len(),
-            "Pulled deltas from storage"
-        );
-
-        let candidates = get_candidates(&all_deltas);
+        // Heal a stale pending-candidate flag: the flag can be left set
+        // when a best-effort flag-clear fails after the candidate delta
+        // was already removed. Without this, the account stays in
+        // `list_with_pending_candidates` and is rescanned on every tick
+        // forever. The conditional clear re-checks the delta store, so a
+        // candidate committed concurrently is never masked.
+        if candidates.is_empty() && account_metadata.has_pending_candidate {
+            tracing::warn!(
+                account_id = %account_id,
+                "Account flagged with pending candidate but no candidate delta \
+                 exists; clearing stale flag"
+            );
+            let now = self.state.clock.now_rfc3339();
+            if let Err(e) = self
+                .state
+                .metadata
+                .clear_pending_candidate_if_none(account_id, &now)
+                .await
+            {
+                tracing::warn!(
+                    account_id = %account_id,
+                    error = %e,
+                    "Failed to clear stale has_pending_candidate flag"
+                );
+            }
+            return Ok(());
+        }
 
         tracing::info!(
             account_id = %account_id,
-            total_deltas = all_deltas.len(),
             candidates = candidates.len(),
             "Processing delta candidates"
         );
+        metrics::counter!(crate::metrics::names::CANONICALIZATION_DELTAS_FETCHED_TOTAL)
+            .increment(candidates.len() as u64);
 
+        let mut first_error = None;
         for delta in candidates {
             if self.pass.cancel.is_cancelled() {
                 tracing::warn!(
@@ -205,20 +260,22 @@ impl DeltasProcessorBase {
                     error = %e,
                     "Failed to canonicalize delta"
                 );
+                first_error.get_or_insert(e);
             }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
         }
 
         Ok(())
     }
 
     async fn process_candidate(&self, delta: DeltaObject) -> Result<()> {
-        let _account_metadata = self
-            .state
-            .metadata
-            .get(&delta.account_id)
-            .await
-            .map_err(|e| GuardianError::StorageError(format!("Failed to get metadata: {e}")))?
-            .ok_or_else(|| GuardianError::AccountNotFound(delta.account_id.clone()))?;
+        if let Some(age) = self.candidate_age_seconds(&delta, self.state.clock.now()) {
+            metrics::histogram!(crate::metrics::names::CANONICALIZATION_CANDIDATE_AGE_SECONDS)
+                .record(age as f64);
+        }
 
         let storage_backend = self.state.storage.clone();
 
@@ -229,33 +286,61 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to get current state: {e}"))
             })?;
 
-        let (new_state_json, _) = {
-            let client = self.state.network_client.lock().await;
-            client
-                .apply_delta(&current_state.state_json, &delta.delta_payload)
-                .map_err(GuardianError::InvalidDelta)?
+        let (new_state_json, recomputed_commitment) = {
+            let client = self.state.network_client.clone();
+            let prev_state_json = current_state.state_json;
+            let delta_payload = Arc::new(delta.delta_payload.clone());
+            crate::network::reconstructor()
+                .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
+                .await?
         };
 
-        let verify_result = {
-            let mut client = self.state.network_client.lock().await;
-            client
-                .verify_state(&delta.account_id, &new_state_json)
-                .await
-        };
+        let verify_result = self
+            .state
+            .network_client
+            .verify_commitment(&delta.account_id, &recomputed_commitment)
+            .await;
 
         match verify_result {
+            // Verification proved the recomputed commitment is what the
+            // chain holds, so it — not the client-claimed `new_commitment` —
+            // is what promotion persists. A differing (or absent) claim is a
+            // client defect worth surfacing, never a reason to strand a
+            // landed transaction as a candidate forever.
             Ok(StateVerification::Match) => {
-                if let Some(new_commitment) = delta.new_commitment.clone() {
-                    self.canonicalize_verified_delta(delta, new_state_json, new_commitment)
-                        .await
-                } else {
-                    tracing::error!(
+                if delta.new_commitment.as_deref() != Some(recomputed_commitment.as_str()) {
+                    tracing::warn!(
                         account_id = %delta.account_id,
                         nonce = delta.nonce,
-                        "Delta has no new_commitment, cannot canonicalize"
+                        claimed = ?delta.new_commitment,
+                        recomputed = %recomputed_commitment,
+                        "Client-claimed commitment is missing or differs from the verified \
+                         recomputed commitment; promoting with the verified one"
                     );
-                    Ok(())
+                    metrics::counter!(
+                        crate::metrics::names::CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL
+                    )
+                    .increment(1);
                 }
+                self.canonicalize_verified_delta(delta, new_state_json, recomputed_commitment)
+                    .await
+            }
+            // The chain has never seen this account: its first transaction
+            // has not landed yet — the not-yet-landed case, categorically
+            // distinct from divergence (where the account moved to a
+            // *different* state past the candidate's base). Treat it as
+            // defer/retry and clear any divergence streak a lagging node
+            // may have started.
+            Ok(StateVerification::Absent) => {
+                let delta = self.reset_divergence_streak(delta).await?;
+                // An absent account is equally strong "did not land"
+                // evidence as an at-base read: a dead FIRST transaction
+                // must be abandonable too, not held for the grace window.
+                if delta.status.abandon_requested_at().is_some() {
+                    return self.handle_abandon_confirmation(delta).await;
+                }
+                self.handle_unverified_candidate(delta, "account not yet on chain")
+                    .await
             }
             // The account advanced past the state this candidate was built
             // on: its transaction is anchored to `prev_commitment`, so it can
@@ -267,12 +352,18 @@ impl DeltasProcessorBase {
                 self.handle_diverged_candidate(delta, &on_chain).await
             }
             // On-chain still shows the candidate's base state: the
-            // transaction simply has not landed yet. Defer within the
-            // grace period, then consume retry budget, as before. This
-            // read also proves any earlier diverged observation was
-            // stale, so the divergence streak starts over.
+            // transaction simply has not landed yet. This read also proves
+            // any earlier diverged observation was stale, so the
+            // divergence streak starts over. A client abandon request is
+            // resolved on this arm — an at-base observation is exactly the
+            // evidence the abandon quarantine counts — and takes
+            // precedence over the grace/retry deferral, which would
+            // otherwise hold the abandon for the full grace window.
             Ok(StateVerification::Mismatch { on_chain }) => {
                 let delta = self.reset_divergence_streak(delta).await?;
+                if delta.status.abandon_requested_at().is_some() {
+                    return self.handle_abandon_confirmation(delta).await;
+                }
                 self.handle_unverified_candidate(
                     delta,
                     &format!("on-chain commitment still at candidate base {on_chain}"),
@@ -284,6 +375,173 @@ impl DeltasProcessorBase {
             // untouched and the grace/retry behavior applies.
             Err(e) => self.handle_unverified_candidate(delta, &e).await,
         }
+    }
+
+    /// Count one at-base observation toward resolving a client abandon
+    /// request (issue #319), and finalize once the quarantine is
+    /// satisfied: enough consecutive at-base observations AND enough wall
+    /// time since the request for a late-landing transaction to surface.
+    async fn handle_abandon_confirmation(&self, delta: DeltaObject) -> Result<()> {
+        let requested_at = delta
+            .status
+            .abandon_requested_at()
+            .unwrap_or_default()
+            .to_string();
+        let confirmations = delta.status.abandon_confirm_count() + 1;
+
+        let now = self.state.clock.now();
+        let request_age_seconds = DateTime::parse_from_rfc3339(&requested_at)
+            .map(|at| {
+                now.signed_duration_since(at.with_timezone(&Utc))
+                    .num_seconds()
+                    .max(0) as u64
+            })
+            .unwrap_or(u64::MAX);
+
+        if confirmations >= self.abandon_quarantine_checks
+            && request_age_seconds >= self.abandon_quarantine_seconds
+        {
+            return self.finalize_abandoned_candidate(delta).await;
+        }
+
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            confirmations,
+            abandon_quarantine_checks = self.abandon_quarantine_checks,
+            request_age_seconds,
+            abandon_quarantine_seconds = self.abandon_quarantine_seconds,
+            "Abandon requested and on-chain still at candidate base; \
+             deferring until the quarantine is satisfied"
+        );
+
+        let new_status = delta.status.with_incremented_abandon_confirm();
+        let outcome = self
+            .state
+            .storage
+            .update_candidate_status(
+                &delta.account_id,
+                delta.nonce,
+                new_status,
+                self.fence().as_ref(),
+            )
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to update delta status: {e}"))
+            })?;
+        match outcome {
+            CanonicalWrite::Applied => {}
+            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "abandon_confirm"),
+        }
+
+        Ok(())
+    }
+
+    /// Resolve a confirmed abandon: finalize the matching proposal first,
+    /// transition the delta to `Discarded { reason: ClientAbandoned }`
+    /// (kept as history), then release the pending-candidate flag. Any
+    /// cleanup failure leaves the candidate in place for the next worker
+    /// run to retry.
+    async fn finalize_abandoned_candidate(&self, delta: DeltaObject) -> Result<()> {
+        let storage_backend = self.state.storage.clone();
+
+        let proposal_id = self.state.network_client.delta_proposal_id(
+            &delta.account_id,
+            delta.nonce,
+            &delta.delta_payload,
+        );
+        match proposal_id {
+            Ok(id) => {
+                match storage_backend
+                    .pull_delta_proposal(&delta.account_id, &id)
+                    .await
+                {
+                    Ok(_existing) => {
+                        if let Err(e) = storage_backend
+                            .delete_delta_proposal(&delta.account_id, &id)
+                            .await
+                        {
+                            tracing::warn!(
+                                account_id = %delta.account_id,
+                                proposal_id = %id,
+                                error = %e,
+                                "Failed to delete proposal for abandoned candidate; \
+                                 retrying on the next worker run"
+                            );
+                            return Ok(());
+                        }
+                    }
+                    Err(e) if crate::storage::is_storage_not_found(&e) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            account_id = %delta.account_id,
+                            proposal_id = %id,
+                            error = %e,
+                            "Failed to check proposal for abandoned candidate; \
+                             retrying on the next worker run"
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    error = %e,
+                    "Could not derive proposal id for abandoned candidate; \
+                     retrying on the next worker run"
+                );
+                return Ok(());
+            }
+        }
+
+        let now = self.state.clock.now_rfc3339();
+        let outcome = self
+            .state
+            .storage
+            .update_candidate_status(
+                &delta.account_id,
+                delta.nonce,
+                DeltaStatus::discarded_client_abandoned(now.clone()),
+                self.fence().as_ref(),
+            )
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to discard abandoned delta: {e}"))
+            })?;
+        match outcome {
+            CanonicalWrite::Applied => {}
+            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::NotCandidate => {
+                Self::log_not_candidate(&delta, "abandon_finalize");
+                return Ok(());
+            }
+        }
+
+        if let Err(e) = self
+            .state
+            .metadata
+            .clear_pending_candidate_if_none(&delta.account_id, &now)
+            .await
+        {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                error = %e,
+                "Failed to clear has_pending_candidate flag after abandon; \
+                 the stale-flag heal clears it on a later run"
+            );
+        }
+
+        record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Abandoned);
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            "Client-abandoned candidate discarded; account released"
+        );
+
+        Ok(())
     }
 
     /// Reset a candidate's persisted divergence streak after a read showed
@@ -509,7 +767,7 @@ impl DeltasProcessorBase {
         // leaving it would strand it as `pending` forever and let clients re-submit a
         // stale intent.
         let proposal_id = {
-            let client = self.state.network_client.lock().await;
+            let client = &self.state.network_client;
             match client.delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload) {
                 Ok(id) => Some(id),
                 Err(e) => {
@@ -554,7 +812,7 @@ impl DeltasProcessorBase {
         &self,
         delta: DeltaObject,
         new_state_json: serde_json::Value,
-        new_commitment: String,
+        verified_commitment: String,
     ) -> Result<()> {
         tracing::info!(
             account_id = %delta.account_id,
@@ -584,14 +842,14 @@ impl DeltasProcessorBase {
         let updated_state = StateObject {
             account_id: delta.account_id.clone(),
             state_json: new_state_json.clone(),
-            commitment: new_commitment,
+            commitment: verified_commitment,
             created_at: current_state.created_at.clone(),
             updated_at: now.clone(),
             auth_scheme: String::new(),
         };
 
         let new_auth = {
-            let mut client = self.state.network_client.lock().await;
+            let client = &self.state.network_client;
             client
                 .should_update_auth(&new_state_json, &account_metadata.auth)
                 .await
@@ -606,9 +864,12 @@ impl DeltasProcessorBase {
             );
         }
 
-        // The typed `metadata` blob is populated at push time; this
-        // path just flips the status.
+        // The typed `metadata` blob is populated at push time. The
+        // commitment is the verified one: a missing or mismatched client
+        // claim must not survive on the canonical record while the state
+        // row carries the value verification proved on-chain.
         let mut canonical_delta = delta.clone();
+        canonical_delta.new_commitment = Some(updated_state.commitment.clone());
         canonical_delta.status = DeltaStatus::canonical(now.clone());
 
         // State, auth, delta status, and the pending-candidate flag commit
@@ -630,16 +891,27 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to canonicalize delta: {e}"))
             })?;
         match outcome {
-            CanonicalWrite::Applied => {}
-            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
-            CanonicalWrite::NotCandidate => {
+            PromoteWrite::Applied => {}
+            PromoteWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            PromoteWrite::NotCandidate => {
                 Self::log_not_candidate(&delta, "promote");
+                return Ok(());
+            }
+            PromoteWrite::StaleBase => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    prev_commitment = %delta.prev_commitment,
+                    "Stored state moved off the candidate's base during the pass; \
+                     promotion rolled back, next pass re-verifies against the new base"
+                );
+                record_candidate_outcome(crate::metrics::labels::CandidateOutcome::StaleBase);
                 return Ok(());
             }
         }
 
         let proposal_id = {
-            let client = self.state.network_client.lock().await;
+            let client = &self.state.network_client;
             client
                 .delta_proposal_id(&delta.account_id, delta.nonce, &delta.delta_payload)
                 .ok()
@@ -730,6 +1002,9 @@ impl DeltasProcessor {
                 max_retries: config.max_retries,
                 submission_grace_period_seconds: config.submission_grace_period_seconds,
                 divergence_confirmations: config.divergence_confirmations,
+                abandon_quarantine_seconds: config.abandon_quarantine_seconds,
+                abandon_quarantine_checks: config.abandon_quarantine_checks,
+                max_concurrent_accounts: config.max_concurrent_accounts,
             },
         }
     }
@@ -737,7 +1012,7 @@ impl DeltasProcessor {
 
 #[async_trait]
 impl Processor for DeltasProcessor {
-    async fn process_all_accounts(&self) -> Result<()> {
+    async fn process_all_accounts(&self) -> Result<PassSummary> {
         self.base.process_all_accounts().await
     }
 
@@ -759,6 +1034,9 @@ impl TestDeltasProcessor {
                 max_retries: u32::MAX, // Test processor doesn't discard on retries
                 submission_grace_period_seconds: 0,
                 divergence_confirmations: u32::MAX, // ...nor on divergence
+                abandon_quarantine_seconds: 0,      // ...and resolves abandons immediately
+                abandon_quarantine_checks: 1,
+                max_concurrent_accounts: 1, // ...and stays deterministic
             },
         }
     }
@@ -766,7 +1044,7 @@ impl TestDeltasProcessor {
 
 #[async_trait]
 impl Processor for TestDeltasProcessor {
-    async fn process_all_accounts(&self) -> Result<()> {
+    async fn process_all_accounts(&self) -> Result<PassSummary> {
         self.base.process_all_accounts().await
     }
 
@@ -808,7 +1086,7 @@ mod tests {
     fn create_test_state(account_id: &str) -> StateObject {
         StateObject {
             account_id: account_id.to_string(),
-            commitment: "old_commitment".to_string(),
+            commitment: "prev_commitment".to_string(),
             state_json: serde_json::json!({"balance": 100}),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
@@ -831,24 +1109,9 @@ mod tests {
         }
     }
 
-    fn create_canonical_delta(account_id: &str, nonce: u64) -> DeltaObject {
-        DeltaObject {
-            account_id: account_id.to_string(),
-            nonce,
-            prev_commitment: "prev_commitment".to_string(),
-            new_commitment: Some("new_commitment".to_string()),
-            delta_payload: serde_json::json!({"test": "payload"}),
-            ack_sig: String::new(),
-            ack_pubkey: String::new(),
-            ack_scheme: String::new(),
-            status: DeltaStatus::canonical("2024-01-01T00:00:00Z".to_string()),
-            metadata: None,
-        }
-    }
-
     fn create_test_app_state_with_clock(
         storage: Arc<dyn crate::storage::StorageBackend>,
-        network_client: Arc<tokio::sync::Mutex<dyn crate::network::NetworkClient>>,
+        network_client: Arc<dyn crate::network::NetworkClient>,
         metadata: Arc<dyn crate::metadata::MetadataStore>,
         clock: Arc<dyn crate::clock::Clock>,
     ) -> AppState {
@@ -857,57 +1120,56 @@ mod tests {
         state
     }
 
-    #[test]
-    fn test_get_candidates_filters_only_candidates() {
+    #[tokio::test]
+    async fn processor_consumes_the_candidate_filtered_read() {
+        // The pass must go through `pull_candidate_deltas` (the
+        // store-side filter), not re-fetch the full history: only the
+        // filtered queue is populated here, and the promotion still runs.
         let account_id = "0xtest_account";
-        let deltas = vec![
-            create_candidate_delta(account_id, 1),
-            create_canonical_delta(account_id, 2),
-            create_candidate_delta(account_id, 3),
-        ];
+        let candidate = create_candidate_delta(account_id, 1);
 
-        let candidates = get_candidates(&deltas);
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
 
-        assert_eq!(candidates.len(), 2);
-        assert!(candidates.iter().all(|d| d.status.is_candidate()));
-    }
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_should_update_auth(Ok(None)),
+        );
 
-    #[test]
-    fn test_get_candidates_sorts_by_nonce() {
-        let account_id = "0xtest_account";
-        let deltas = vec![
-            create_candidate_delta(account_id, 5),
-            create_candidate_delta(account_id, 2),
-            create_candidate_delta(account_id, 8),
-            create_candidate_delta(account_id, 1),
-        ];
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
 
-        let candidates = get_candidates(&deltas);
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            mock_network.clone(),
+            Arc::new(mock_metadata),
+        );
 
-        assert_eq!(candidates.len(), 4);
-        assert_eq!(candidates[0].nonce, 1);
-        assert_eq!(candidates[1].nonce, 2);
-        assert_eq!(candidates[2].nonce, 5);
-        assert_eq!(candidates[3].nonce, 8);
-    }
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
 
-    #[test]
-    fn test_get_candidates_empty_input() {
-        let deltas: Vec<DeltaObject> = vec![];
-        let candidates = get_candidates(&deltas);
-        assert!(candidates.is_empty());
-    }
-
-    #[test]
-    fn test_get_candidates_no_candidates() {
-        let account_id = "0xtest_account";
-        let deltas = vec![
-            create_canonical_delta(account_id, 1),
-            create_canonical_delta(account_id, 2),
-        ];
-
-        let candidates = get_candidates(&deltas);
-        assert!(candidates.is_empty());
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+        assert_eq!(storage.get_submit_state_calls().len(), 1);
+        assert_eq!(
+            mock_network.get_verify_commitment_calls(),
+            vec![(account_id.to_string(), "new_commitment".to_string())],
+        );
     }
 
     #[tokio::test]
@@ -918,7 +1180,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -938,7 +1200,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -965,16 +1227,22 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
         let config = CanonicalizationConfig::default();
         let processor = DeltasProcessor::new(state, config);
 
-        // process_all_accounts should continue even if one account fails
-        let result = processor.process_all_accounts().await;
-        assert!(result.is_ok());
+        // process_all_accounts should continue even if one account fails,
+        // and the pass summary must count the failure.
+        let summary = processor
+            .process_all_accounts()
+            .await
+            .expect("per-account failures do not fail the pass");
+        assert_eq!(summary.accounts, 1);
+        assert_eq!(summary.failed_accounts, 1);
+        assert!(!summary.cancelled);
     }
 
     #[tokio::test]
@@ -989,7 +1257,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1001,6 +1269,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_process_account_clears_stale_pending_flag() {
+        // Account is listed with a pending candidate and its metadata flag
+        // is set, but no candidate delta exists (e.g. a best-effort
+        // flag-clear failed after the delta was deleted). The worker must
+        // heal the stale flag so the account leaves the scan list.
+        let account_id = "0xtest_account";
+
+        // The indexed candidate read returns nothing (mock default).
+        let mock_storage = MockStorageBackend::new();
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata.clone()),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let set_calls = mock_metadata.get_set_calls();
+        assert_eq!(set_calls.len(), 1, "expected exactly one healing write");
+        assert!(!set_calls[0].has_pending_candidate);
+    }
+
+    #[tokio::test]
+    async fn test_process_account_no_candidates_and_clear_flag_skips_write() {
+        // Same as above but the metadata flag is already clear (the account
+        // reached the worker through a stale listing): no healing write.
+        let account_id = "0xtest_account";
+
+        let mut metadata_obj = create_test_metadata(account_id);
+        metadata_obj.has_pending_candidate = false;
+
+        let mock_storage = MockStorageBackend::new().with_pull_deltas_after(Ok(vec![]));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(metadata_obj)));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata.clone()),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        assert!(mock_metadata.get_set_calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_process_candidate_verification_succeeds() {
         let account_id = "0xtest_account";
         let candidate = create_candidate_delta(account_id, 1);
@@ -1008,7 +1336,8 @@ mod tests {
         let mock_storage = MockStorageBackend::new()
             .with_pull_deltas_after(Ok(vec![candidate.clone()]))
             .with_pull_state(Ok(create_test_state(account_id)))
-            .with_pull_state(Ok(create_test_state(account_id))) // Called twice
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_pull_state(Ok(create_test_state(account_id)))
             .with_submit_state(Ok(()))
             .with_submit_delta(Ok(()));
 
@@ -1017,7 +1346,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1029,7 +1358,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1038,6 +1367,60 @@ mod tests {
 
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stale_base_promotion_leaves_candidate_intact() {
+        // The stored state moves off the candidate's base between the pass
+        // reading it and the promotion write: the promotion must refuse,
+        // leave the candidate and the pending flag untouched, and skip the
+        // trailing proposal cleanup.
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+        let mut moved_state = create_test_state(account_id);
+        moved_state.commitment = "some_other_commitment".to_string();
+
+        // LIFO queue: the moved state is pushed first so the promotion's
+        // base check (third read) is the one that observes it.
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(moved_state))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Match))
+            .with_should_update_auth(Ok(None));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(mock_network),
+            metadata.clone(),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert!(storage.get_submit_state_calls().is_empty());
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert!(storage.get_pull_delta_proposal_calls().is_empty());
+        assert!(metadata.get_set_calls().is_empty());
     }
 
     #[tokio::test]
@@ -1054,7 +1437,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Err("Verification failed".to_string()));
+            .with_verify_commitment(Err("Verification failed".to_string()));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -1063,7 +1446,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1091,7 +1474,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Err("Verification failed".to_string()));
+            .with_verify_commitment(Err("Verification failed".to_string()));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -1103,7 +1486,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1134,7 +1517,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "prev_commitment".to_string(),
             }));
 
@@ -1148,7 +1531,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1161,6 +1544,255 @@ mod tests {
         assert!(storage.get_update_delta_status_calls().is_empty());
         assert!(storage.get_delete_delta_calls().is_empty());
         assert!(metadata.get_set_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_abandon_intent_confirms_and_bypasses_grace() {
+        // A candidate with a recorded abandon intent, observed still at
+        // its base INSIDE the submission grace period: the abandon
+        // quarantine takes precedence over the grace deferral, so a
+        // confirmation is persisted instead of nothing happening.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string());
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        // 5s after the request: age is far under the 600s grace AND under
+        // the quarantine, and only one at-base observation exists — defer,
+        // but persist the confirmation.
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(mock_network),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(600)
+            .with_abandon_quarantine_seconds(30)
+            .with_abandon_quarantine_checks(2);
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(
+            status_writes.len(),
+            1,
+            "the abandon confirmation must be persisted despite the grace period"
+        );
+        let (_, _, written) = &status_writes[0];
+        assert!(written.is_candidate(), "status must remain candidate");
+        assert_eq!(written.abandon_confirm_count(), 1);
+        assert_eq!(written.abandon_requested_at(), Some("2024-01-01T00:00:00Z"));
+        assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_abandon_finalizes_after_quarantine() {
+        // Quarantine satisfied: enough consecutive at-base confirmations
+        // and enough wall time since the request. The delta transitions to
+        // Discarded { reason: ClientAbandoned } — preserved as history —
+        // and the pending-candidate flag is released.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string())
+            .with_incremented_abandon_confirm();
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        // 60s after the request: second at-base observation, age >= 30s.
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 1, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(mock_network),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(600)
+            .with_abandon_quarantine_seconds(30)
+            .with_abandon_quarantine_checks(2);
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(status_writes.len(), 1, "exactly the discard transition");
+        let (_, _, written) = &status_writes[0];
+        assert!(
+            written.is_client_abandoned(),
+            "delta must be discarded as client-abandoned, got {written:?}"
+        );
+        // History preserved, not deleted.
+        assert!(storage.get_delete_delta_calls().is_empty());
+        // The pending-candidate flag was released.
+        let set_calls = metadata.get_set_calls();
+        assert!(
+            set_calls.iter().any(|m| !m.has_pending_candidate),
+            "flag must be cleared after the abandon finalizes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_abandon_quarantine_waits_for_request_age() {
+        // Confirmation count is satisfied but the request is too fresh:
+        // the quarantine keeps waiting so a late-landing transaction can
+        // still surface.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string())
+            .with_incremented_abandon_confirm();
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let metadata = Arc::new(mock_metadata);
+
+        // Only 10s after the request: under the 30s quarantine.
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 10).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(mock_network),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_abandon_quarantine_seconds(30)
+            .with_abandon_quarantine_checks(2);
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(status_writes.len(), 1);
+        let (_, _, written) = &status_writes[0];
+        assert!(written.is_candidate(), "must still be a candidate");
+        assert_eq!(written.abandon_confirm_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_landed_candidate_canonicalizes_despite_abandon_intent() {
+        // The transaction landed while the abandon was pending: the landed
+        // outcome wins — the delta canonicalizes exactly as without intent.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string());
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Match))
+            .with_should_update_auth(Ok(None));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+        let metadata = Arc::new(mock_metadata);
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 1, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(mock_network),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+
+        let submitted = storage.get_submit_delta_calls();
+        assert!(
+            submitted.iter().any(|d| d.status.is_canonical()),
+            "the landed delta must canonicalize despite the abandon intent"
+        );
     }
 
     #[tokio::test]
@@ -1183,7 +1815,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }));
 
@@ -1197,7 +1829,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1228,6 +1860,8 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             retry_count: 0,
             divergence_count: 1,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
         };
 
         let storage = Arc::new(
@@ -1241,7 +1875,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }));
 
@@ -1256,7 +1890,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1296,7 +1930,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }));
 
@@ -1311,7 +1945,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1332,6 +1966,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_absent_on_chain_account_is_not_discarded_as_diverged() {
+        // A first transaction that has not landed yet verifies as `Absent`:
+        // the network client reports the chain has never seen the account.
+        // That is the not-yet-landed case, never divergence — the account
+        // has not advanced past its base, it simply is not there yet. Even
+        // with divergence_confirmations == 1 (which would discard a genuine
+        // divergence on the first observation) the candidate must survive
+        // and take the retry path.
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Absent));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+        let metadata = Arc::new(mock_metadata);
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(mock_network),
+            metadata.clone(),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(0)
+            .with_divergence_confirmations(1);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert!(
+            storage.get_delete_delta_calls().is_empty(),
+            "an account absent from chain must not be discarded as diverged",
+        );
+        assert!(
+            !storage.get_update_delta_status_calls().is_empty(),
+            "the not-yet-landed candidate should take the retry path",
+        );
+    }
+
+    #[tokio::test]
     async fn test_divergence_streak_resets_on_base_observation() {
         // diverged -> base -> diverged must NOT accumulate to the threshold:
         // the base read proves the earlier diverged read was stale, so the
@@ -1344,6 +2037,8 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             retry_count: 0,
             divergence_count: 1,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
         };
 
         // Response queues are LIFO (`Vec::pop`), so tick 3's responses are
@@ -1364,15 +2059,15 @@ mod tests {
 
         let mock_network = MockNetworkClient::new()
             // tick 3: diverged again
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }))
             // tick 2: back at the candidate's base
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "prev_commitment".to_string(),
             }))
             // tick 1: diverged
-            .with_verify_state(Ok(StateVerification::Mismatch {
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0xsome_other_commitment".to_string(),
             }));
 
@@ -1388,7 +2083,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             metadata.clone(),
             clock,
         );
@@ -1429,7 +2124,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Err("Verification failed".to_string()));
+            .with_verify_commitment(Err("Verification failed".to_string()));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -1439,7 +2134,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1452,39 +2147,117 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_candidate_no_new_commitment() {
+    async fn test_missing_claimed_commitment_promotes_with_recomputed() {
+        // A verified candidate without a client-claimed commitment must not
+        // stay a candidate forever: verification proved the recomputed
+        // commitment, so promotion proceeds with it.
         let account_id = "0xtest_account";
         let mut candidate = create_candidate_delta(account_id, 1);
-        candidate.new_commitment = None; // No commitment
+        candidate.new_commitment = None;
 
-        let mock_storage = MockStorageBackend::new()
-            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
-            .with_pull_state(Ok(create_test_state(account_id)));
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
 
         let mock_network = MockNetworkClient::new()
             .with_apply_delta(Ok((
                 serde_json::json!({"new": "state"}),
-                "new_commitment".to_string(),
+                "recomputed_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match));
+            .with_verify_commitment(Ok(StateVerification::Match))
+            .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
             .with_get(Ok(Some(create_test_metadata(account_id))))
-            .with_get(Ok(Some(create_test_metadata(account_id))));
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
 
         let state = create_test_app_state_with_mocks(
-            Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            storage.clone(),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
         let config = CanonicalizationConfig::default();
         let processor = DeltasProcessor::new(state, config);
 
-        // Should succeed but log error about missing commitment
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
+
+        let submitted = storage.get_submit_state_calls();
+        assert_eq!(submitted.len(), 1);
+        assert_eq!(submitted[0].commitment, "recomputed_commitment");
+        let deltas = storage.get_submit_delta_calls();
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(
+            deltas[0].new_commitment.as_deref(),
+            Some("recomputed_commitment")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_claim_mismatch_promotes_with_recomputed_commitment() {
+        // The chain matched the recomputed commitment, so a differing
+        // client claim never blocks promotion — the verified value is
+        // what gets persisted.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.new_commitment = Some("claimed_commitment".to_string());
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "recomputed_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Match))
+            .with_should_update_auth(Ok(None));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::default();
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        let submitted = storage.get_submit_state_calls();
+        assert_eq!(submitted.len(), 1);
+        assert_eq!(submitted[0].commitment, "recomputed_commitment");
+        let deltas = storage.get_submit_delta_calls();
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(
+            deltas[0].new_commitment.as_deref(),
+            Some("recomputed_commitment")
+        );
     }
 
     #[tokio::test]
@@ -1506,16 +2279,18 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
         let config = CanonicalizationConfig::default();
         let processor = DeltasProcessor::new(state, config);
 
-        // Should continue processing even on error
-        let result = processor.process_all_accounts().await;
-        assert!(result.is_ok());
+        let summary = processor
+            .process_all_accounts()
+            .await
+            .expect("candidate failures do not abort the pass");
+        assert_eq!(summary.failed_accounts, 1);
     }
 
     #[tokio::test]
@@ -1531,6 +2306,7 @@ mod tests {
             .with_pull_deltas_after(Ok(vec![candidate.clone()]))
             .with_pull_state(Ok(create_test_state(account_id)))
             .with_pull_state(Ok(create_test_state(account_id)))
+            .with_pull_state(Ok(create_test_state(account_id)))
             .with_submit_state(Ok(()))
             .with_submit_delta(Ok(()));
 
@@ -1539,7 +2315,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(Some(new_auth)));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1552,7 +2328,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1571,7 +2347,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1588,7 +2364,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1616,7 +2392,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1638,7 +2414,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1660,7 +2436,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1689,7 +2465,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1701,7 +2477,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1731,7 +2507,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
 
         let mock_metadata = MockMetadataStore::new()
@@ -1743,7 +2519,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1763,7 +2539,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
-            Arc::new(tokio::sync::Mutex::new(mock_network)),
+            Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
@@ -1816,12 +2592,110 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn concurrent_pass_processes_every_account() {
+        // Three accounts under the default concurrency of 4: every account
+        // promotes its candidate, and the summary reflects a clean pass.
+        // All mock responses are identical, so completion order is free.
+        let account_ids: Vec<String> = (1..=3).map(|i| format!("0xtest_account_{i}")).collect();
+
+        let mut storage = MockStorageBackend::new();
+        let mut network = MockNetworkClient::new();
+        let mut metadata =
+            MockMetadataStore::new().with_list_with_pending_candidates(Ok(account_ids.clone()));
+        for account_id in &account_ids {
+            storage = storage
+                .with_pull_candidate_deltas(Ok(vec![create_candidate_delta(account_id, 1)]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(()));
+            network = network
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_should_update_auth(Ok(None));
+            metadata = metadata
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(()));
+        }
+        let storage = Arc::new(storage);
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(network),
+            Arc::new(metadata),
+        );
+
+        let processor = DeltasProcessor::new(state, CanonicalizationConfig::default());
+
+        let summary = processor
+            .process_all_accounts()
+            .await
+            .expect("pass completes");
+
+        assert_eq!(summary.accounts, 3);
+        assert_eq!(summary.failed_accounts, 0);
+        assert!(!summary.cancelled);
+        assert_eq!(
+            storage.get_submit_state_calls().len(),
+            3,
+            "every account's candidate must promote",
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_pass_admits_no_account_work() {
+        // A pre-cancelled token: no account task starts. The mock queues
+        // are deliberately empty — had any account been processed, its
+        // metadata read would have failed and the summary would count it.
+        let account_ids = vec![
+            "0xtest_account_1".to_string(),
+            "0xtest_account_2".to_string(),
+        ];
+
+        let storage = Arc::new(MockStorageBackend::new());
+        let metadata = MockMetadataStore::new().with_list_with_pending_candidates(Ok(account_ids));
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(MockNetworkClient::new()),
+            Arc::new(metadata),
+        );
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let pass = PassLease::single_process();
+        let processor = DeltasProcessor::with_lease(
+            state,
+            CanonicalizationConfig::default(),
+            pass.leader,
+            pass.lease,
+            cancel,
+        );
+
+        let summary = processor
+            .process_all_accounts()
+            .await
+            .expect("cancelled pass still reports a summary");
+
+        assert_eq!(summary.accounts, 2);
+        assert_eq!(summary.failed_accounts, 0);
+        assert!(summary.cancelled);
+        assert!(storage.get_submit_state_calls().is_empty());
+    }
+
     fn promotion_mocks(
         account_id: &str,
     ) -> (MockStorageBackend, MockNetworkClient, MockMetadataStore) {
         let candidate = create_candidate_delta(account_id, 1);
         let storage = MockStorageBackend::new()
             .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)))
             .with_pull_state(Ok(create_test_state(account_id)))
             .with_pull_state(Ok(create_test_state(account_id)))
             .with_submit_state(Ok(()))
@@ -1831,7 +2705,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Ok(StateVerification::Match))
+            .with_verify_commitment(Ok(StateVerification::Match))
             .with_should_update_auth(Ok(None));
         let metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -1850,7 +2724,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = fenced_processor(state, CanonicalizationConfig::default());
@@ -1878,7 +2752,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = DeltasProcessor::new(state, CanonicalizationConfig::default());
@@ -1898,13 +2772,12 @@ mod tests {
     async fn stale_lease_promotion_skips_proposal_cleanup() {
         let account_id = "0xtest_account";
         let (storage, network, metadata) = promotion_mocks(account_id);
-        let storage = Arc::new(
-            storage.with_promote_candidate(Ok(crate::storage::CanonicalWrite::StaleLease)),
-        );
+        let storage =
+            Arc::new(storage.with_promote_candidate(Ok(crate::storage::PromoteWrite::StaleLease)));
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = fenced_processor(state, CanonicalizationConfig::default());
@@ -1928,12 +2801,12 @@ mod tests {
         let account_id = "0xtest_account";
         let (storage, network, metadata) = promotion_mocks(account_id);
         let storage = Arc::new(
-            storage.with_promote_candidate(Ok(crate::storage::CanonicalWrite::NotCandidate)),
+            storage.with_promote_candidate(Ok(crate::storage::PromoteWrite::NotCandidate)),
         );
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = fenced_processor(state, CanonicalizationConfig::default());
@@ -1966,7 +2839,7 @@ mod tests {
                 serde_json::json!({"new": "state"}),
                 "new_commitment".to_string(),
             )))
-            .with_verify_state(Err("Verification failed".to_string()));
+            .with_verify_commitment(Err("Verification failed".to_string()));
         let metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
             .with_get(Ok(Some(create_test_metadata(account_id))))
@@ -1974,7 +2847,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             storage.clone(),
-            Arc::new(tokio::sync::Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         let processor = fenced_processor(state, CanonicalizationConfig::new(10, 18));

@@ -13,6 +13,17 @@ Current scaffold status:
 - local `aggregate` for distributed worker artifacts is implemented
 - profile parsing, artifact layout, report models, and cleanup manifest models are implemented
 - cleanup uses ECS exec against the live server task
+- canonicalization sampling is implemented: after a successful `push_delta`, a
+  worker samples the push with probability `canonicalization.sample_rate` and
+  polls `get_delta` every `poll_interval_ms` until the delta reports
+  `canonical_at` or `discarded_at` (bounded by `timeout_seconds`), recording
+  the accepted→canonical wait; polling failures are recorded separately from
+  canonicalization timeouts; sampled workers pause load generation while
+  polling, so keep `sample_rate` low on profiles that do not retire accounts
+  after their first push
+- sampled waits land in `reports/<run-id>/canonicalization-samples.json` and
+  as a `canonicalization` section (p50/p95/p99/max wait) in the run report
+  and summary
 
 Profiles live in `profiles/`.
 Run artifacts live under `reports/<run-id>/`.

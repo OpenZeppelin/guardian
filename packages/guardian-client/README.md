@@ -69,6 +69,22 @@ console.log('Commitment:', state.commitment);
 console.log('State data:', state.state_json.data);
 ```
 
+### Abandon a Stuck Candidate
+
+If an approved transaction died client-side after guardian approval, its
+candidate keeps the account locked (`409 conflict_pending_delta` on new
+proposals). Record an abandon intent and poll for the resolution:
+
+```typescript
+const accepted = await client.abandonCandidate(accountId, nonce);
+console.log(accepted.state); // 'pending'
+
+// The guardian's worker confirms over a short quarantine that the tx did
+// not land, then releases the account.
+const status = await client.abandonStatus(accountId, nonce);
+// 'waiting' | 'landed' | 'abandoned' | 'unexpected'
+```
+
 ### Look Up An Account By Key Commitment
 
 When a wallet only holds a signing key, it cannot derive the account ID

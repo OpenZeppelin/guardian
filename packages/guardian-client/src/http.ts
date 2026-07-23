@@ -1,4 +1,10 @@
+import {
+  type GuardianErrorCode,
+  normalizeGuardianErrorCode,
+} from './error-codes.js';
 import type {
+  AbandonCandidateResponse,
+  AbandonStatus,
   ConfigureRequest,
   ConfigureResponse,
   DeltaObject,
@@ -16,6 +22,8 @@ import type {
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
 import type {
+  ServerAbandonCandidateRequest,
+  ServerAbandonCandidateResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
   ServerLookupResponse,
@@ -51,7 +59,10 @@ export interface GuardianErrorMeta {
 }
 
 interface ParsedGuardianError {
-  code: string;
+  /** Typed code, or `null` when the wire code is outside the known vocabulary. */
+  code: GuardianErrorCode | null;
+  /** Verbatim wire code, kept even when it does not narrow to the union. */
+  rawCode: string;
   message: string;
   meta: GuardianErrorMeta;
 }
@@ -80,6 +91,7 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   }
   const rawMeta = obj.meta as Record<string, unknown>;
   if (typeof rawMeta.retryable !== 'boolean') return undefined;
+  const code = normalizeGuardianErrorCode(obj.code);
   const meta: GuardianErrorMeta = { retryable: rawMeta.retryable };
   if (
     typeof rawMeta.retry_after_secs === 'number' &&
@@ -98,7 +110,7 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
     meta.pausedReason = rawMeta.paused_reason as string | null;
   }
-  return { code: obj.code, message: obj.message, meta };
+  return { code, rawCode: obj.code, message: obj.message, meta };
 }
 
 /**
@@ -107,13 +119,23 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
  */
 export class GuardianHttpError extends Error {
   /**
-   * Stable machine-readable error code from the server's `{ code, message,
-   * meta }` error object (e.g. `GUARDIAN_ACCOUNT_RELEASED`,
-   * `GUARDIAN_ACCOUNT_PAUSED`, `commitment_mismatch`), or `null` when the
-   * body is not a conforming JSON envelope. Callers SHOULD branch on this
-   * rather than on `body` text or the HTTP status alone.
+   * Typed, compiler-checked Guardian error code (issue #318), normalized to
+   * snake_case (e.g. `account_paused`, `account_released`,
+   * `commitment_mismatch`). `null` when the body is not a conforming JSON
+   * envelope OR the server emitted a code outside this client's known
+   * vocabulary — in the latter case {@link rawCode} still carries the
+   * verbatim wire string. Branch on this rather than on `body` text or the
+   * HTTP status alone; comparing against a non-member literal is a type
+   * error, so typos are caught at compile time.
    */
-  public readonly code: string | null;
+  public readonly code: GuardianErrorCode | null;
+  /**
+   * Verbatim wire code as the server sent it (e.g.
+   * `GUARDIAN_ACCOUNT_PAUSED`), including codes a newer server may emit
+   * that this client does not know. `null` only when the body carried no
+   * conforming envelope. For logging/telemetry; branch on {@link code}.
+   */
+  public readonly rawCode: string | null;
   /** Short, user-safe message — safe to display verbatim in a wallet UI. */
   readonly userMessage?: string;
   /** Structured side-data (`retryable`, `retryAfterSecs`, …). */
@@ -121,8 +143,8 @@ export class GuardianHttpError extends Error {
   /**
    * RFC 3339 UTC timestamp at which the guardian released the account
    * after it switched to a different guardian. Convenience accessor for
-   * `meta.releasedAt`; present only when
-   * `code === 'GUARDIAN_ACCOUNT_RELEASED'` (HTTP 409); the account is
+   * `meta.releasedAt`; present only when `code === 'account_released'`
+   * (wire form `GUARDIAN_ACCOUNT_RELEASED`, HTTP 409); the account is
    * terminal on this server until re-onboarded via `configure`.
    */
   public readonly releasedAt: string | null;
@@ -139,6 +161,7 @@ export class GuardianHttpError extends Error {
     super(`GUARDIAN HTTP error ${status}: ${statusText}${parsed ? ` - ${parsed.message}` : ''}`);
     this.name = 'GuardianHttpError';
     this.code = parsed?.code ?? null;
+    this.rawCode = parsed?.rawCode ?? null;
     this.userMessage = parsed?.message;
     this.meta = parsed?.meta;
     this.releasedAt = parsed?.meta.releasedAt ?? null;
@@ -265,6 +288,65 @@ export class GuardianHttpClient {
       commitment: server.commitment,
     };
   }
+
+  /**
+   * Request abandonment of a pending canonicalization candidate whose
+   * transaction will never land on-chain (issue #319).
+   *
+   * Records an abandon *intent* (`202 Accepted`): the delta stays a
+   * candidate — the account stays locked — until the guardian's worker
+   * confirms over the abandon quarantine that the transaction did not
+   * land, then discards the delta as `client_abandoned` and releases the
+   * account (typically well under a minute). Poll {@link abandonStatus}
+   * for the resolution. Refused with `GUARDIAN_CANDIDATE_LANDED` (409)
+   * when the transaction actually landed. Retries are idempotent and
+   * preserve the original request timestamp.
+   */
+  async abandonCandidate(accountId: string, nonce: number): Promise<AbandonCandidateResponse> {
+    const serverRequest: ServerAbandonCandidateRequest = { account_id: accountId, nonce };
+    const response = await this.fetchAuthenticated('/delta/candidate/abandon', {
+      method: 'POST',
+      body: JSON.stringify(serverRequest),
+    }, accountId, serverRequest);
+    const server = (await response.json()) as ServerAbandonCandidateResponse;
+    return {
+      accountId: server.account_id,
+      nonce: server.nonce,
+      state: server.state,
+      abandonRequestedAt: server.abandon_requested_at,
+    };
+  }
+
+  /**
+   * Poll the resolution of an abandon request made with
+   * {@link abandonCandidate}: `'waiting'` while the quarantine runs,
+   * `'landed'` if the transaction landed after all (the delta
+   * canonicalized), `'abandoned'` once the delta is discarded as
+   * client-abandoned and the account released, `'unexpected'` for any
+   * state no abandon flow produces (including a missing delta).
+   */
+  async abandonStatus(accountId: string, nonce: number): Promise<AbandonStatus> {
+    let delta: DeltaObject;
+    try {
+      delta = await this.getDelta(accountId, nonce);
+    } catch (e) {
+      if (e instanceof GuardianHttpError && e.code === 'delta_not_found') {
+        return 'unexpected';
+      }
+      throw e;
+    }
+    switch (delta.status.status) {
+      case 'candidate':
+        return 'waiting';
+      case 'canonical':
+        return 'landed';
+      case 'discarded':
+        return delta.status.reason === 'client_abandoned' ? 'abandoned' : 'unexpected';
+      default:
+        return 'unexpected';
+    }
+  }
+
 
   async signDeltaProposal(request: SignProposalRequest): Promise<DeltaObject> {
     const serverRequest = toServerSignProposalRequest(request);

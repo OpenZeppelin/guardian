@@ -114,6 +114,7 @@ pub async fn build_final_transaction_request(
             recipient,
             faucet_id,
             amount,
+            note_type,
         } => {
             let asset = build_transfer_asset(*faucet_id, *amount)?;
 
@@ -121,6 +122,7 @@ pub async fn build_final_transaction_request(
                 account,
                 *recipient,
                 vec![asset.into()],
+                *note_type,
                 salt,
                 signature_advice,
             )

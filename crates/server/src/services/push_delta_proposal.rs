@@ -125,7 +125,7 @@ pub async fn push_delta_proposal(
     // Validate delta using network client (check validity but don't apply)
     // and compute the delta commitment
     let commitment = {
-        let client = state.network_client.lock().await;
+        let client = &state.network_client;
         client
             .verify_delta(
                 &current_state.commitment,
@@ -242,7 +242,6 @@ mod tests {
     use chrono::TimeZone;
     use guardian_shared::ProposalSignature;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     fn create_test_state() -> (
         AppState,
@@ -256,7 +255,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 
@@ -827,6 +826,8 @@ mod tests {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 retry_count: 0,
                 divergence_count: 0,
+                abandon_requested_at: None,
+                abandon_confirm_count: 0,
             },
             metadata: None,
         };

@@ -486,6 +486,7 @@ mod tests {
                     recipient: account_id,
                     faucet_id: account_id,
                     amount: 10,
+                    note_type: miden_protocol::note::NoteType::Public,
                 })
                 .expect("threshold"),
             1

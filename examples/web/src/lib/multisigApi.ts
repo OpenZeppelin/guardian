@@ -18,7 +18,7 @@ import {
   AccountInspector,
   type DetectedMultisigConfig,
 } from '@openzeppelin/miden-multisig-client';
-import type { MidenClient } from '@miden-sdk/miden-sdk';
+import type { MidenClient, NoteType } from '@miden-sdk/miden-sdk';
 import type { SignerInfo } from '@/types';
 import type { WalletSource } from '@/wallets/types';
 
@@ -355,6 +355,7 @@ export async function createP2idProposal(
   recipientId: string,
   faucetId: string,
   amount: bigint,
+  noteType?: NoteType,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createP2idProposal(
@@ -362,6 +363,7 @@ export async function createP2idProposal(
       faucetId,
       amount,
       proposalNonce(multisig),
+      { noteType },
     ));
 }
 

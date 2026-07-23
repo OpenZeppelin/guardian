@@ -9,9 +9,10 @@ use super::envelope::RecordAad;
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, CandidatePromotion, CandidateSubmission,
-    CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor, GlobalDeltaRow,
-    GlobalProposalCursor, LeaseFence, ProposalRecord, StorageBackend, StorageType,
+    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
+    CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageBackend,
+    StorageType,
 };
 use crate::utils::normalize_commitment_hex;
 
@@ -189,6 +190,18 @@ impl StorageBackend for EncryptedStorage {
             .collect()
     }
 
+    // Forwarded explicitly: the trait default would route through
+    // `pull_deltas_after` and decrypt the full history just to keep the
+    // candidates — the store-side filter must survive this layer.
+    async fn pull_candidate_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        self.inner
+            .pull_candidate_deltas(account_id)
+            .await?
+            .into_iter()
+            .map(|delta| self.decrypt_delta(delta))
+            .collect()
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -247,6 +260,17 @@ impl StorageBackend for EncryptedStorage {
         self.inner.delete_delta(account_id, nonce).await
     }
 
+    async fn request_candidate_abandon(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+    ) -> Result<AbandonIntent, String> {
+        self.inner
+            .request_candidate_abandon(account_id, nonce, now)
+            .await
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,
@@ -273,7 +297,7 @@ impl StorageBackend for EncryptedStorage {
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         promotion: CandidatePromotion,
-    ) -> Result<CanonicalWrite, String> {
+    ) -> Result<PromoteWrite, String> {
         let promotion = CandidatePromotion {
             state: self.encrypt_state(&promotion.state)?,
             delta: self.encrypt_delta(&promotion.delta)?,
@@ -454,6 +478,35 @@ mod tests {
             enc.pull_delta("acct1", 1).await.unwrap().delta_payload,
             json!({ "move": 7 })
         );
+    }
+
+    #[tokio::test]
+    async fn pull_candidate_deltas_forwards_the_filter_and_decrypts() {
+        let (_dir, fs) = fs_backend().await;
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+
+        let canonical = DeltaObject {
+            account_id: "acct1".to_string(),
+            nonce: 1,
+            delta_payload: json!({ "move": 1 }),
+            status: DeltaStatus::canonical("2024-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+        let candidate = DeltaObject {
+            account_id: "acct1".to_string(),
+            nonce: 2,
+            delta_payload: json!({ "move": 2 }),
+            status: DeltaStatus::candidate("2024-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+        enc.submit_delta(&canonical).await.unwrap();
+        enc.submit_delta(&candidate).await.unwrap();
+
+        let candidates = enc.pull_candidate_deltas("acct1").await.unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].nonce, 2);
+        assert_eq!(candidates[0].delta_payload, json!({ "move": 2 }));
     }
 
     #[tokio::test]

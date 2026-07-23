@@ -86,6 +86,11 @@ pub struct ExportedMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<u64>,
 
+    /// P2ID note visibility, `"public"` or `"private"` (issue #322).
+    /// Absent => public (pre-#322 exports).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_type: Option<String>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids_hex: Vec<String>,
 
@@ -120,6 +125,7 @@ impl ExportedProposal {
             recipient_hex: self.metadata.recipient_hex.clone(),
             faucet_id_hex: self.metadata.faucet_id_hex.clone(),
             amount: self.metadata.amount,
+            note_type: self.metadata.note_type.clone(),
             note_ids_hex: self.metadata.note_ids_hex.clone(),
             consume_notes_metadata_version: self.metadata.consume_notes_metadata_version,
             consume_notes_notes: self
@@ -278,6 +284,7 @@ impl ExportedProposal {
             recipient_hex: proposal.metadata.recipient_hex.clone(),
             faucet_id_hex: proposal.metadata.faucet_id_hex.clone(),
             amount: proposal.metadata.amount,
+            note_type: proposal.metadata.note_type.clone(),
             note_ids_hex: proposal.metadata.note_ids_hex.clone(),
             consume_notes_metadata_version: proposal.metadata.consume_notes_metadata_version,
             consume_notes_notes: proposal
@@ -487,6 +494,7 @@ mod tests {
             recipient_hex: None,
             faucet_id_hex: None,
             amount: None,
+            note_type: None,
             note_ids_hex: vec![],
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),

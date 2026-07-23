@@ -2,6 +2,7 @@ import {
   MidenClient,
   Word,
   type AdviceMap,
+  type NoteType,
   type TransactionRequest,
 } from '@miden-sdk/miden-sdk';
 import {
@@ -316,6 +317,7 @@ export async function createP2idProposal(
   recipientId: string,
   faucetId: string,
   amount: bigint,
+  noteType?: NoteType,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createP2idProposal(
@@ -323,6 +325,7 @@ export async function createP2idProposal(
       faucetId,
       amount,
       proposalNonce(multisig),
+      { noteType },
     ));
 }
 

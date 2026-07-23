@@ -27,8 +27,8 @@ fn delta_to_proposal_record(proposal: DeltaObject) -> crate::storage::ProposalRe
 
 #[derive(Clone, Default)]
 pub struct MockNetworkClient {
-    pub verify_state_responses: Arc<StdMutex<Vec<StdResult<StateVerification, String>>>>,
-    pub verify_state_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
+    pub verify_commitment_responses: Arc<StdMutex<Vec<StdResult<StateVerification, String>>>>,
+    pub verify_commitment_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub get_state_commitment_responses: Arc<StdMutex<Vec<StdResult<String, String>>>>,
     pub get_state_commitment_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
@@ -44,8 +44,11 @@ impl MockNetworkClient {
         Self::default()
     }
 
-    pub fn with_verify_state(self, response: StdResult<StateVerification, String>) -> Self {
-        self.verify_state_responses.lock().unwrap().push(response);
+    pub fn with_verify_commitment(self, response: StdResult<StateVerification, String>) -> Self {
+        self.verify_commitment_responses
+            .lock()
+            .unwrap()
+            .push(response);
         self
     }
 
@@ -105,8 +108,8 @@ impl MockNetworkClient {
         self
     }
 
-    pub fn get_verify_state_calls(&self) -> Vec<(String, serde_json::Value)> {
-        self.verify_state_calls.lock().unwrap().clone()
+    pub fn get_verify_commitment_calls(&self) -> Vec<(String, String)> {
+        self.verify_commitment_calls.lock().unwrap().clone()
     }
 
     pub fn get_state_commitment_calls(&self) -> Vec<(String, serde_json::Value)> {
@@ -136,17 +139,17 @@ impl NetworkClient for MockNetworkClient {
         Ok(commitment_hex)
     }
 
-    async fn verify_state(
-        &mut self,
+    async fn verify_commitment(
+        &self,
         account_id: &str,
-        state_json: &serde_json::Value,
+        expected_commitment: &str,
     ) -> StdResult<StateVerification, String> {
-        self.verify_state_calls
+        self.verify_commitment_calls
             .lock()
             .unwrap()
-            .push((account_id.to_string(), state_json.clone()));
+            .push((account_id.to_string(), expected_commitment.to_string()));
 
-        self.verify_state_responses
+        self.verify_commitment_responses
             .lock()
             .unwrap()
             .pop()
@@ -228,7 +231,7 @@ impl NetworkClient for MockNetworkClient {
     }
 
     async fn should_update_auth(
-        &mut self,
+        &self,
         _state_json: &serde_json::Value,
         _current_auth: &Auth,
     ) -> StdResult<Option<Auth>, String> {
@@ -267,6 +270,7 @@ pub struct MockStorageBackend {
     pub pull_state_responses: Arc<StdMutex<Vec<StdResult<StateObject, String>>>>,
     pub pull_delta_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
     pub pull_deltas_after_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
+    pub pull_candidate_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
     pub submit_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
     pub pull_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
@@ -278,6 +282,8 @@ pub struct MockStorageBackend {
     pub delete_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub delete_delta_proposal_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub delete_delta_calls: Arc<StdMutex<Vec<(String, u64)>>>,
+    pub request_candidate_abandon_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::AbandonIntent, String>>>>,
     pub update_delta_status_calls:
         Arc<StdMutex<Vec<(String, u64, crate::delta_object::DeltaStatus)>>>,
     // Canonicalization lifecycle writes. When a scripted outcome is
@@ -289,7 +295,7 @@ pub struct MockStorageBackend {
     pub submit_candidate_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CandidateSubmission, String>>>>,
     pub promote_candidate_responses:
-        Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
+        Arc<StdMutex<Vec<StdResult<crate::storage::PromoteWrite, String>>>>,
     pub promote_candidate_fences: Arc<StdMutex<Vec<Option<crate::storage::LeaseFence>>>>,
     pub discard_candidate_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
@@ -354,6 +360,14 @@ impl MockStorageBackend {
 
     pub fn with_pull_deltas_after(self, response: StdResult<Vec<DeltaObject>, String>) -> Self {
         self.pull_deltas_after_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_pull_candidate_deltas(self, response: StdResult<Vec<DeltaObject>, String>) -> Self {
+        self.pull_candidate_deltas_responses
             .lock()
             .unwrap()
             .push(response);
@@ -431,6 +445,17 @@ impl MockStorageBackend {
         self.delete_delta_proposal_calls.lock().unwrap().clone()
     }
 
+    pub fn with_request_candidate_abandon(
+        self,
+        response: StdResult<crate::storage::AbandonIntent, String>,
+    ) -> Self {
+        self.request_candidate_abandon_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
     pub fn get_delete_delta_calls(&self) -> Vec<(String, u64)> {
         self.delete_delta_calls.lock().unwrap().clone()
     }
@@ -454,7 +479,7 @@ impl MockStorageBackend {
 
     pub fn with_promote_candidate(
         self,
-        response: StdResult<crate::storage::CanonicalWrite, String>,
+        response: StdResult<crate::storage::PromoteWrite, String>,
     ) -> Self {
         self.promote_candidate_responses
             .lock()
@@ -609,7 +634,7 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("No delta found".to_string()))
+            .unwrap_or_else(|| Err("Mock: delta not found".to_string()))
     }
 
     async fn pull_deltas_after(
@@ -622,6 +647,23 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .pop()
             .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    // An explicit response wins; otherwise mirror the trait default over
+    // the `pull_deltas_after` queue so existing tests keep driving the
+    // processor through `with_pull_deltas_after`.
+    async fn pull_candidate_deltas(&self, account_id: &str) -> StdResult<Vec<DeltaObject>, String> {
+        if let Some(response) = self.pull_candidate_deltas_responses.lock().unwrap().pop() {
+            return response;
+        }
+        let mut deltas: Vec<DeltaObject> = self
+            .pull_deltas_after(account_id, 0)
+            .await?
+            .into_iter()
+            .filter(|delta| delta.status.is_candidate())
+            .collect();
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
     }
 
     async fn submit_delta_proposal(
@@ -653,7 +695,7 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("Mock: No proposal found".to_string()))
+            .unwrap_or_else(|| Err("Mock: proposal not found".to_string()))
     }
 
     async fn pull_all_delta_proposals(
@@ -717,6 +759,19 @@ impl StorageBackend for MockStorageBackend {
         Ok(())
     }
 
+    async fn request_candidate_abandon(
+        &self,
+        _account_id: &str,
+        _nonce: u64,
+        _now: &str,
+    ) -> Result<crate::storage::AbandonIntent, String> {
+        self.request_candidate_abandon_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::AbandonIntent::Recorded))
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,
@@ -747,7 +802,7 @@ impl StorageBackend for MockStorageBackend {
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         promotion: crate::storage::CandidatePromotion,
-    ) -> Result<crate::storage::CanonicalWrite, String> {
+    ) -> Result<crate::storage::PromoteWrite, String> {
         self.promote_candidate_fences
             .lock()
             .unwrap()

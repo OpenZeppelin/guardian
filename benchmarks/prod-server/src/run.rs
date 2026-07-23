@@ -5,8 +5,10 @@ use crate::config::RunConfig;
 use crate::distributed::{
     ExecutionShard, WorkerArtifact, load_worker_artifacts, merge_worker_operations,
 };
+use crate::model::CanonicalizationSample;
 use crate::report::{
-    ArtifactReport, BenchmarkRunReport, CapacityEstimate, CleanupReport, SchemeDistributionReport,
+    ArtifactReport, BenchmarkRunReport, CanonicalizationReport, CapacityEstimate, CleanupReport,
+    SchemeDistributionReport,
 };
 use crate::runner::RunOutput;
 use crate::seed::seed_users;
@@ -28,6 +30,8 @@ struct RunReportInput<'a> {
     completed_at: DateTime<Utc>,
     measurement_seconds: f64,
     operations: Vec<crate::report::OperationReport>,
+    canonicalization: Option<CanonicalizationReport>,
+    canonicalization_samples_path: Option<String>,
     cleanup_manifest: &'a CleanupManifest,
     artifacts: &'a crate::artifacts::ArtifactPaths,
 }
@@ -54,9 +58,15 @@ pub async fn run_worker(
         measurement_seconds: execution.run_output.measurement_seconds,
         operations: execution.run_output.operations,
         cleanup_accounts: execution.run_output.cleanup_accounts,
+        canonicalization_samples: execution.run_output.canonicalization_samples,
     };
 
     println!("{}", worker_artifact.encoded_line()?);
+    println!(
+        "worker={} canonicalization_samples={}",
+        worker_artifact.worker_id,
+        worker_artifact.canonicalization_samples.len()
+    );
     for operation in &worker_artifact.operations {
         println!(
             "worker={} operation={} scope={} success={} throughput={:.2}",
@@ -99,6 +109,18 @@ pub async fn aggregate(
         .fold(0.0_f64, f64::max)
         .max(0.001);
     let operations = merge_worker_operations(worker_artifacts.as_slice(), measurement_seconds)?;
+    let canonicalization_samples: Vec<CanonicalizationSample> = worker_artifacts
+        .iter()
+        .flat_map(|artifact| artifact.canonicalization_samples.clone())
+        .collect();
+    let canonicalization = CanonicalizationReport::from_samples(
+        &canonicalization_samples,
+        config.canonicalization.timeout_seconds,
+    );
+    let canonicalization_samples_path = persist_canonicalization_samples(
+        &artifacts.canonicalization_samples,
+        &canonicalization_samples,
+    )?;
     let cleanup_target = build_cleanup_target(&config);
     let mut manifest = CleanupManifest::new(
         run_id.to_string(),
@@ -121,6 +143,8 @@ pub async fn aggregate(
         completed_at,
         measurement_seconds,
         operations,
+        canonicalization,
+        canonicalization_samples_path,
         cleanup_manifest: &cleanup_manifest,
         artifacts: &artifacts,
     });
@@ -172,6 +196,8 @@ fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
         completed_at,
         measurement_seconds,
         operations,
+        canonicalization,
+        canonicalization_samples_path,
         cleanup_manifest,
         artifacts,
     } = input;
@@ -197,6 +223,7 @@ fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
             ecdsa_percent: config.scheme_distribution.ecdsa_percent,
         },
         operations,
+        canonicalization,
         capacity_estimate: CapacityEstimate {
             target_push_tps: 500.0,
             sustained_push_tps: push_throughput,
@@ -210,9 +237,21 @@ fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
         artifacts: ArtifactReport {
             summary_markdown: artifacts.summary_markdown.display().to_string(),
             report_json: artifacts.report_json.display().to_string(),
-            canonicalization_samples: None,
+            canonicalization_samples: canonicalization_samples_path,
         },
     }
+}
+
+fn persist_canonicalization_samples(
+    path: &Path,
+    samples: &[CanonicalizationSample],
+) -> Result<Option<String>> {
+    if samples.is_empty() {
+        return Ok(None);
+    }
+    let json = serde_json::to_string_pretty(samples)?;
+    fs::write(path, json)?;
+    Ok(Some(path.display().to_string()))
 }
 
 fn persist_report(
@@ -243,6 +282,19 @@ fn print_report_summary(report: &BenchmarkRunReport, artifacts: &crate::artifact
     println!("summary={}", artifacts.summary_markdown.display());
     println!("manifest={}", artifacts.cleanup_manifest.display());
     println!("cleanup_status={:?}", report.cleanup.status);
+    if let Some(canonicalization) = &report.canonicalization {
+        println!(
+            "canonicalization sampled={} canonical={} discarded={} timed_out={} observation_failed={} timeout={}s wait_p50={:.1}s wait_p95={:.1}s",
+            canonicalization.sampled,
+            canonicalization.canonical,
+            canonicalization.discarded,
+            canonicalization.timed_out,
+            canonicalization.observation_failed,
+            canonicalization.timeout_seconds,
+            canonicalization.wait_ms.p50 / 1_000.0,
+            canonicalization.wait_ms.p95 / 1_000.0
+        );
+    }
     for operation in &report.operations {
         println!(
             "operation={} scope={} success={} throughput={:.2}",
@@ -299,6 +351,31 @@ fn render_summary(report: &BenchmarkRunReport) -> String {
         ));
     }
     output.push('\n');
+    if let Some(canonicalization) = &report.canonicalization {
+        output.push_str("## Canonicalization\n\n");
+        output.push_str(&format!(
+            "Sampled deltas: `{}` (canonical `{}`, discarded `{}`, timed out `{}`, observation failed `{}`)\n\n",
+            canonicalization.sampled,
+            canonicalization.canonical,
+            canonicalization.discarded,
+            canonicalization.timed_out,
+            canonicalization.observation_failed
+        ));
+        output.push_str(&format!(
+            "Observation timeout: `{}s`\n\n",
+            canonicalization.timeout_seconds
+        ));
+        output.push_str("| Accepted → canonical | p50 | p95 | p99 | max |\n");
+        output.push_str("|----------------------|-----|-----|-----|-----|\n");
+        output.push_str(&format!(
+            "| wait | {:.1}s | {:.1}s | {:.1}s | {:.1}s |\n",
+            canonicalization.wait_ms.p50 / 1_000.0,
+            canonicalization.wait_ms.p95 / 1_000.0,
+            canonicalization.wait_ms.p99 / 1_000.0,
+            canonicalization.wait_ms.max / 1_000.0
+        ));
+        output.push('\n');
+    }
     output.push_str(&format!(
         "Estimated instances for 500 TPS with {:.0}% headroom: `{}`\n",
         report.capacity_estimate.headroom_percent, report.capacity_estimate.required_instances

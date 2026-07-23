@@ -11,6 +11,7 @@ use miden_multisig_client::{
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
+use miden_protocol::note::NoteType;
 use rustyline::DefaultEditor;
 
 use crate::display::{
@@ -919,12 +920,13 @@ async fn action_create_custom_proposal(
     }
 
     print_info("Building a transfer transaction to use as the custom transaction request.");
-    let (recipient, faucet_id, amount) = match prompt_p2id(state, editor)? {
+    let (recipient, faucet_id, amount, note_type) = match prompt_p2id(state, editor)? {
         TransactionType::P2ID {
             recipient,
             faucet_id,
             amount,
-        } => (recipient, faucet_id, amount),
+            note_type,
+        } => (recipient, faucet_id, amount, note_type),
         _ => return Err("expected a P2ID transaction".to_string()),
     };
 
@@ -941,6 +943,7 @@ async fn action_create_custom_proposal(
         account.inner(),
         recipient,
         vec![asset.into()],
+        note_type,
         salt,
         std::iter::empty(),
     )
@@ -962,6 +965,7 @@ async fn action_create_custom_proposal(
             recipient,
             faucet_id,
             amount,
+            note_type,
             salt,
         },
     );
@@ -1004,6 +1008,7 @@ async fn action_execute_custom_proposal(
         account.inner(),
         recipe.recipient,
         vec![asset.into()],
+        recipe.note_type,
         recipe.salt,
         std::iter::empty(),
     )
@@ -1225,17 +1230,31 @@ fn prompt_p2id(
         return Err("Amount must be greater than 0".to_string());
     }
 
+    // Get note visibility (issue #322)
+    let note_type_input = prompt_input(
+        editor,
+        "  Note visibility [public/private] (default public): ",
+    )?;
+    let note_type = match note_type_input.trim().to_lowercase().as_str() {
+        "" | "public" => NoteType::Public,
+        "private" => NoteType::Private,
+        other => return Err(format!("Invalid note visibility '{}'", other)),
+    };
+
     println!("\nTransfer details:");
     println!("  Recipient: {}", shorten_hex(recipient_input.trim()));
     println!("  Faucet:    {}", shorten_hex(&faucet_id.to_hex()));
     println!("  Amount:    {} / {} available", amount, max_amount);
+    println!("  Note:      {}", note_type);
 
     let confirm = prompt_input(editor, "\nConfirm? [y/N]: ")?;
     if confirm.to_lowercase() != "y" {
         return Err("Cancelled".to_string());
     }
 
-    Ok(TransactionType::transfer(recipient, faucet_id, amount))
+    Ok(TransactionType::transfer_with_note_type(
+        recipient, faucet_id, amount, note_type,
+    ))
 }
 
 async fn prompt_consume_notes(

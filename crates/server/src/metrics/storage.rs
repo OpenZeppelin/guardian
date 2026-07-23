@@ -26,9 +26,10 @@ use super::names::{
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, CandidatePromotion, CandidateSubmission,
-    CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor, GlobalDeltaRow,
-    GlobalProposalCursor, LeaseFence, ProposalRecord, StorageBackend, StorageType,
+    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
+    CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageBackend,
+    StorageType,
 };
 
 /// Record one storage operation: duration histogram plus an
@@ -130,6 +131,14 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn pull_candidate_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        timed(
+            "pull_candidate_deltas",
+            self.inner.pull_candidate_deltas(account_id),
+        )
+        .await
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -204,6 +213,19 @@ impl StorageBackend for InstrumentedStorage {
         timed("delete_delta", self.inner.delete_delta(account_id, nonce)).await
     }
 
+    async fn request_candidate_abandon(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+    ) -> Result<AbandonIntent, String> {
+        timed(
+            "request_candidate_abandon",
+            self.inner.request_candidate_abandon(account_id, nonce, now),
+        )
+        .await
+    }
+
     async fn submit_candidate(
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
@@ -221,7 +243,7 @@ impl StorageBackend for InstrumentedStorage {
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         promotion: CandidatePromotion,
-    ) -> Result<CanonicalWrite, String> {
+    ) -> Result<PromoteWrite, String> {
         timed(
             "promote_candidate",
             self.inner.promote_candidate(metadata, promotion),

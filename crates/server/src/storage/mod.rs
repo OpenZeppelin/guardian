@@ -155,6 +155,39 @@ pub enum CanonicalWrite {
     NotCandidate,
 }
 
+/// Outcome of recording a client abandon request on a candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AbandonIntent {
+    /// The request timestamp was recorded; the delta remains a candidate.
+    Recorded,
+    /// The candidate already carries an abandon request; nothing written.
+    AlreadyRequested { requested_at: String },
+    /// The delta is absent or no longer a candidate; nothing written.
+    NotCandidate,
+}
+
+/// Outcome of a fenced candidate promotion. Promotion overwrites the
+/// account state, so it carries one gate the other canonicalization
+/// writes do not: the stored state must still sit at the candidate's
+/// base commitment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromoteWrite {
+    /// The promotion committed.
+    Applied,
+    /// The caller's lease is no longer current; nothing was written.
+    StaleLease,
+    /// The target delta is no longer in candidate status (another owner
+    /// already promoted or discarded it); nothing was written.
+    NotCandidate,
+    /// The stored state no longer sits at the candidate's base
+    /// commitment — a concurrent writer advanced or reconfigured the
+    /// account after this pass read it; nothing was written. The
+    /// candidate survives for the next pass, whose fresh verification
+    /// against the moved base takes the divergence path if the delta
+    /// is truly unsatisfiable.
+    StaleBase,
+}
+
 /// Outcome of a candidate submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateSubmission {
@@ -204,12 +237,19 @@ pub(crate) async fn submit_candidate_sequential(
 }
 
 /// Single-process fallback for [`StorageBackend::promote_candidate`]:
-/// sequential writes with no fence, mirroring the pre-lease worker.
+/// sequential writes with no fence, mirroring the pre-lease worker. The
+/// base-commitment gate is a plain read-then-write, acceptable only
+/// where no concurrent replica can interleave (filesystem backend,
+/// mocks).
 pub(crate) async fn promote_candidate_sequential(
     storage: &dyn StorageBackend,
     metadata: &dyn crate::metadata::MetadataStore,
     promotion: CandidatePromotion,
-) -> Result<CanonicalWrite, String> {
+) -> Result<PromoteWrite, String> {
+    let current_state = storage.pull_state(&promotion.state.account_id).await?;
+    if current_state.commitment != promotion.delta.prev_commitment {
+        return Ok(PromoteWrite::StaleBase);
+    }
     storage.submit_state(&promotion.state).await?;
     if let Some(new_auth) = promotion.new_auth {
         metadata
@@ -220,7 +260,7 @@ pub(crate) async fn promote_candidate_sequential(
     metadata
         .clear_pending_candidate_if_none(&promotion.state.account_id, &promotion.now)
         .await?;
-    Ok(CanonicalWrite::Applied)
+    Ok(PromoteWrite::Applied)
 }
 
 /// Single-process fallback for [`StorageBackend::discard_candidate`].
@@ -249,12 +289,27 @@ pub(crate) async fn discard_candidate_sequential(
 }
 
 /// Single-process fallback for [`StorageBackend::update_candidate_status`].
+/// Best-effort merge of a concurrently recorded abandon request: the read
+/// and the write are separate steps here, acceptable only where no
+/// concurrent replica can observe the gap. Its sole consumer is the
+/// cfg-gated mock backend — the filesystem backend overrides the method
+/// with a locked read-modify-write — hence the dead-code allowance for
+/// non-test builds.
+#[allow(dead_code)]
 pub(crate) async fn update_candidate_status_sequential(
     storage: &dyn StorageBackend,
     account_id: &str,
     nonce: u64,
     status: DeltaStatus,
 ) -> Result<CanonicalWrite, String> {
+    let status = match storage.pull_delta(account_id, nonce).await {
+        Ok(current) if current.status.is_candidate() => {
+            status.with_abandon_request_preserved_from(current.status.abandon_requested_at())
+        }
+        Ok(_) => return Ok(CanonicalWrite::NotCandidate),
+        // Mocks without a canned read keep the historical plain-write path.
+        Err(_) => status,
+    };
     storage
         .update_delta_status(account_id, nonce, status)
         .await?;
@@ -368,6 +423,21 @@ pub trait StorageBackend: Send + Sync {
             .filter(|delta| delta.status.is_canonical())
             .collect())
     }
+    /// Candidate deltas for one account, nonce-ascending. The default
+    /// filters the full history in memory; backends with a typed status
+    /// column override it so only candidate rows leave the store —
+    /// candidates are a handful per account while the full history
+    /// grows unboundedly.
+    async fn pull_candidate_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        let mut deltas: Vec<DeltaObject> = self
+            .pull_deltas_after(account_id, 0)
+            .await?
+            .into_iter()
+            .filter(|delta| delta.status.is_candidate())
+            .collect();
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
+    }
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -399,6 +469,19 @@ pub trait StorageBackend: Send + Sync {
     async fn delete_delta_proposal(&self, account_id: &str, commitment: &str)
     -> Result<(), String>;
     async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String>;
+    /// Atomically record a client's abandon request (issue #319) on the
+    /// candidate at `nonce`: sets `abandon_requested_at` while preserving
+    /// every worker-owned counter, only while the delta is still a
+    /// candidate. Unfenced by design — the write is a non-destructive
+    /// annotation; the lease-holding worker resolves the intent. An
+    /// existing request timestamp is kept so retries cannot restart the
+    /// abandon quarantine.
+    async fn request_candidate_abandon(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+    ) -> Result<AbandonIntent, String>;
     async fn update_delta_status(
         &self,
         account_id: &str,
@@ -436,13 +519,14 @@ pub trait StorageBackend: Send + Sync {
     /// Promote a verified candidate: advance the account state, sync
     /// cosigner auth when supplied, flip the delta to canonical, and
     /// release the pending-candidate flag — all or nothing, gated on
-    /// the promotion's lease fence and on the delta still being a
-    /// candidate.
+    /// the promotion's lease fence, on the delta still being a
+    /// candidate, and on the stored state still sitting at the
+    /// candidate's base commitment.
     async fn promote_candidate(
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         promotion: CandidatePromotion,
-    ) -> Result<CanonicalWrite, String>;
+    ) -> Result<PromoteWrite, String>;
 
     /// Discard an unsatisfiable candidate: delete the delta row only if
     /// it is still a candidate (a row another owner already promoted to

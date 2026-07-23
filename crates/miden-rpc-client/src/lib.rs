@@ -12,6 +12,12 @@ mod generated {
 pub use generated::{account, blockchain, note, primitives, rpc, transaction};
 pub use rpc::api_client::ApiClient;
 
+/// Per-request deadline applied to the channel. Without one, a hung
+/// node holds a caller (and everything awaiting it) indefinitely —
+/// concurrent callers share the multiplexed channel, so no request may
+/// be allowed to wait forever.
+const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Simple wrapper around the tonic-generated ApiClient
 pub struct MidenRpcClient {
     client: ApiClient<Channel>,
@@ -23,6 +29,7 @@ impl MidenRpcClient {
 
         let channel = Channel::from_shared(endpoint_str.clone())
             .map_err(|e| format!("Invalid endpoint: {e}"))?
+            .timeout(RPC_TIMEOUT)
             .tls_config(ClientTlsConfig::new().with_native_roots())
             .map_err(|e| format!("TLS config error: {e}"))?
             .connect()
@@ -149,11 +156,11 @@ impl MidenRpcClient {
         Ok(response.into_inner())
     }
 
-    /// Fetch account commitment from the Miden network
-    pub async fn get_account_commitment(
-        &mut self,
-        account_id: &AccountId,
-    ) -> Result<String, String> {
+    /// Fetch account commitment from the Miden network. Takes `&self`:
+    /// the tonic client is cloned per call (a cheap handle onto the
+    /// same multiplexed HTTP/2 channel), so concurrent callers never
+    /// serialize on this client.
+    pub async fn get_account_commitment(&self, account_id: &AccountId) -> Result<String, String> {
         let account_id_bytes = account_id.to_bytes();
 
         let request = Request::new(rpc::AccountRequest {
@@ -166,6 +173,7 @@ impl MidenRpcClient {
 
         let response = self
             .client
+            .clone()
             .get_account(request)
             .await
             .map_err(|e| format!("RPC call failed: {e}"))?;
