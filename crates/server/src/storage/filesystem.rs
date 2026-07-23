@@ -537,7 +537,11 @@ impl StorageBackend for FilesystemService {
         Ok(deltas)
     }
 
-    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_recoverable_deltas(
+        &self,
+        account_id: &str,
+        abandoned_since: DateTime<Utc>,
+    ) -> Result<Vec<DeltaObject>, String> {
         let deltas_filenames = self.list_delta_filenames(account_id).await?;
         let mut deltas = Vec::new();
 
@@ -546,7 +550,7 @@ impl StorageBackend for FilesystemService {
                 && let Ok(nonce) = nonce_str.parse::<u64>()
             {
                 let delta = self.pull_delta(account_id, nonce).await?;
-                if delta.status.is_retained() {
+                if crate::storage::is_recoverable(&delta.status, abandoned_since) {
                     deltas.push(delta);
                 }
             }
@@ -556,15 +560,22 @@ impl StorageBackend for FilesystemService {
         Ok(deltas)
     }
 
-    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String> {
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        abandoned_since: DateTime<Utc>,
+    ) -> Result<Vec<String>, String> {
         let account_ids = self.fanout_account_ids().await?;
-        let mut with_retained = Vec::new();
+        let mut with_recoverable = Vec::new();
         for account_id in account_ids {
-            if !self.pull_retained_deltas(&account_id).await?.is_empty() {
-                with_retained.push(account_id);
+            if !self
+                .pull_recoverable_deltas(&account_id, abandoned_since)
+                .await?
+                .is_empty()
+            {
+                with_recoverable.push(account_id);
             }
         }
-        Ok(with_retained)
+        Ok(with_recoverable)
     }
 
     // Delta proposal methods - stored separately from executed deltas
@@ -1190,7 +1201,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pull_retained_deltas_filters_and_orders() {
+    async fn test_pull_recoverable_deltas_filters_and_orders() {
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
@@ -1208,22 +1219,39 @@ mod tests {
             "2024-11-14T12:00:00Z".to_string(),
             crate::delta_object::RetainReason::Diverged,
         );
-        for delta in [&canonical, &retained_late, &retained_early] {
+        // A recent client-abandoned discard is in scope (the issue #319
+        // late-landing net); one past the cutoff is not.
+        let mut abandoned_recent = create_test_delta(account_id, 4);
+        abandoned_recent.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-14T11:30:00Z".to_string());
+        let mut abandoned_old = create_test_delta(account_id, 5);
+        abandoned_old.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-10T00:00:00Z".to_string());
+        for delta in [
+            &canonical,
+            &retained_late,
+            &retained_early,
+            &abandoned_recent,
+            &abandoned_old,
+        ] {
             storage.submit_delta(delta).await.expect("submit works");
         }
 
-        let retained = storage
-            .pull_retained_deltas(account_id)
+        let cutoff = chrono::DateTime::parse_from_rfc3339("2024-11-13T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let recoverable = storage
+            .pull_recoverable_deltas(account_id, cutoff)
             .await
-            .expect("retained read works");
+            .expect("recoverable read works");
         assert_eq!(
-            retained.iter().map(|d| d.nonce).collect::<Vec<_>>(),
-            vec![2, 3]
+            recoverable.iter().map(|d| d.nonce).collect::<Vec<_>>(),
+            vec![2, 3, 4],
+            "all retained rows plus only the recent abandoned discard"
         );
-        assert!(retained.iter().all(|d| d.status.is_retained()));
 
         let accounts = storage
-            .list_accounts_with_retained_deltas()
+            .list_accounts_with_recoverable_deltas(cutoff)
             .await
             .expect("account scan works");
         assert_eq!(accounts, vec![account_id.to_string()]);
@@ -1345,6 +1373,34 @@ mod tests {
             .await
             .expect("row survives");
         assert!(stored.status.is_candidate(), "the candidate replaced it");
+
+        // A client-abandoned discard at a nonce must be superseded too:
+        // it is precisely the resubmission the abandon endpoint (issue
+        // #319) exists to enable, and the nonce's unique constraint must
+        // not refuse it.
+        let mut abandoned = create_test_delta(account_id, 2);
+        abandoned.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-14T12:20:00Z".to_string());
+        storage
+            .submit_delta(&abandoned)
+            .await
+            .expect("submit works");
+
+        let mut rebuilt = create_test_delta(account_id, 2);
+        rebuilt.status = DeltaStatus::candidate("2024-11-14T12:30:00Z".to_string());
+        let submission = storage
+            .submit_candidate(&metadata_store, &rebuilt, "2024-11-14T12:30:00Z")
+            .await
+            .expect("submission resolves");
+        assert_eq!(submission, crate::storage::CandidateSubmission::Submitted);
+        let stored = storage
+            .pull_delta(account_id, 2)
+            .await
+            .expect("row survives");
+        assert!(
+            stored.status.is_candidate(),
+            "the rebuilt candidate replaced the abandoned discard"
+        );
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

@@ -55,6 +55,22 @@ impl DeltaStatusKind {
     }
 }
 
+/// Whether a delta is in scope for the background reconcile pass
+/// (issue #345): every `retained` row, plus client-abandoned discards
+/// recent enough (status timestamp at or after `abandoned_since`) to
+/// still be worth re-checking against the chain. An abandoned row with
+/// an unparseable timestamp is excluded — abandoned recovery is a
+/// best-effort net over rows that are kept as history either way.
+pub(crate) fn is_recoverable(status: &DeltaStatus, abandoned_since: DateTime<Utc>) -> bool {
+    if status.is_retained() {
+        return true;
+    }
+    status.is_client_abandoned()
+        && DateTime::parse_from_rfc3339(status.timestamp())
+            .map(|at| at.with_timezone(&Utc) >= abandoned_since)
+            .unwrap_or(false)
+}
+
 /// Cursor parameters for the per-account delta history read. Sort key
 /// is `nonce DESC` against the `(account_id, nonce)` UNIQUE constraint,
 /// so cursor stability is fully guaranteed under both concurrent
@@ -244,11 +260,15 @@ pub(crate) async fn submit_candidate_sequential(
     delta: &DeltaObject,
     now: &str,
 ) -> Result<CandidateSubmission, String> {
-    // A retained row (issue #345) is a best-effort recovery artifact,
-    // never settled history: a fresh candidate at its nonce supersedes
-    // it — the client just re-supplied its intent for that slot.
+    // A retained row (issue #345) or a client-abandoned discard
+    // (issue #319) is a best-effort recovery/history artifact, never
+    // settled canonical history: a fresh candidate at its nonce
+    // supersedes it — the client just re-supplied its intent for that
+    // slot. Without the abandoned-row supersede, the very resubmission
+    // the abandon endpoint exists to enable would be refused forever at
+    // the nonce's unique constraint.
     if let Ok(existing) = storage.pull_delta(&delta.account_id, delta.nonce).await
-        && existing.status.is_retained()
+        && (existing.status.is_retained() || existing.status.is_client_abandoned())
     {
         storage.delete_delta(&delta.account_id, delta.nonce).await?;
     }
@@ -471,26 +491,43 @@ pub trait StorageBackend: Send + Sync {
         deltas.sort_by_key(|delta| delta.nonce);
         Ok(deltas)
     }
-    /// Retained deltas (issue #345) for one account, nonce-ascending —
-    /// the background reconcile pass's read. The default filters the
-    /// full history in memory; backends with a typed status column
-    /// override it so only retained rows leave the store.
-    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    /// Recoverable deltas (issue #345) for one account, nonce-ascending
+    /// — the background reconcile pass's read. Recoverable means every
+    /// `retained` row, plus `discarded { client_abandoned }` rows whose
+    /// status timestamp is at or after `abandoned_since`: the abandon
+    /// quarantine (issue #319) cannot fully rule out a late-landing
+    /// transaction, and one that lands after the abandon finalizes
+    /// leaves the stored state behind the chain — the abandoned row
+    /// holds everything needed to recover. The cutoff keeps the
+    /// abandoned side bounded: old history rows are kept forever but
+    /// must not be rescanned forever. The default filters the full
+    /// history in memory; backends with a typed status column override
+    /// it so only recoverable rows leave the store.
+    async fn pull_recoverable_deltas(
+        &self,
+        account_id: &str,
+        abandoned_since: DateTime<Utc>,
+    ) -> Result<Vec<DeltaObject>, String> {
         let mut deltas: Vec<DeltaObject> = self
             .pull_deltas_after(account_id, 0)
             .await?
             .into_iter()
-            .filter(|delta| delta.status.is_retained())
+            .filter(|delta| is_recoverable(&delta.status, abandoned_since))
             .collect();
         deltas.sort_by_key(|delta| delta.nonce);
         Ok(deltas)
     }
 
-    /// Accounts that currently hold at least one retained delta (issue
-    /// #345). Retained rows do not set the `has_pending_candidate`
-    /// flag — by design, so they never re-lock the account — so the
-    /// reconcile pass needs its own scan to find them.
-    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String>;
+    /// Accounts that currently hold at least one recoverable delta
+    /// (issue #345): any `retained` row, or a client-abandoned discard
+    /// at or after `abandoned_since`. These rows do not set the
+    /// `has_pending_candidate` flag — by design, so they never re-lock
+    /// the account — so the reconcile pass needs its own scan to find
+    /// them.
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        abandoned_since: DateTime<Utc>,
+    ) -> Result<Vec<String>, String>;
 
     async fn submit_delta_proposal(
         &self,

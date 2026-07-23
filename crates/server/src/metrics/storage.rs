@@ -139,18 +139,27 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
-    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_recoverable_deltas(
+        &self,
+        account_id: &str,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<DeltaObject>, String> {
         timed(
-            "pull_retained_deltas",
-            self.inner.pull_retained_deltas(account_id),
+            "pull_recoverable_deltas",
+            self.inner
+                .pull_recoverable_deltas(account_id, abandoned_since),
         )
         .await
     }
 
-    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String> {
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<String>, String> {
         timed(
-            "list_accounts_with_retained_deltas",
-            self.inner.list_accounts_with_retained_deltas(),
+            "list_accounts_with_recoverable_deltas",
+            self.inner
+                .list_accounts_with_recoverable_deltas(abandoned_since),
         )
         .await
     }

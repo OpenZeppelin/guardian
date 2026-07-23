@@ -271,8 +271,8 @@ pub struct MockStorageBackend {
     pub pull_delta_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
     pub pull_deltas_after_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
     pub pull_candidate_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
-    pub pull_retained_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
-    pub list_accounts_with_retained_deltas_responses:
+    pub pull_recoverable_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
+    pub list_accounts_with_recoverable_deltas_responses:
         Arc<StdMutex<Vec<StdResult<Vec<String>, String>>>>,
     pub submit_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
@@ -378,19 +378,22 @@ impl MockStorageBackend {
         self
     }
 
-    pub fn with_pull_retained_deltas(self, response: StdResult<Vec<DeltaObject>, String>) -> Self {
-        self.pull_retained_deltas_responses
+    pub fn with_pull_recoverable_deltas(
+        self,
+        response: StdResult<Vec<DeltaObject>, String>,
+    ) -> Self {
+        self.pull_recoverable_deltas_responses
             .lock()
             .unwrap()
             .push(response);
         self
     }
 
-    pub fn with_list_accounts_with_retained_deltas(
+    pub fn with_list_accounts_with_recoverable_deltas(
         self,
         response: StdResult<Vec<String>, String>,
     ) -> Self {
-        self.list_accounts_with_retained_deltas_responses
+        self.list_accounts_with_recoverable_deltas_responses
             .lock()
             .unwrap()
             .push(response);
@@ -697,16 +700,23 @@ impl StorageBackend for MockStorageBackend {
 
     // An explicit response wins; otherwise no retained rows, so tests
     // that never touch issue #345 recovery see no behavior change.
-    async fn pull_retained_deltas(&self, _account_id: &str) -> StdResult<Vec<DeltaObject>, String> {
-        self.pull_retained_deltas_responses
+    async fn pull_recoverable_deltas(
+        &self,
+        _account_id: &str,
+        _abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> StdResult<Vec<DeltaObject>, String> {
+        self.pull_recoverable_deltas_responses
             .lock()
             .unwrap()
             .pop()
             .unwrap_or_else(|| Ok(vec![]))
     }
 
-    async fn list_accounts_with_retained_deltas(&self) -> StdResult<Vec<String>, String> {
-        self.list_accounts_with_retained_deltas_responses
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        _abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> StdResult<Vec<String>, String> {
+        self.list_accounts_with_recoverable_deltas_responses
             .lock()
             .unwrap()
             .pop()

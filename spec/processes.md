@@ -281,19 +281,28 @@ sequenceDiagram
       a lagging RPC node can produce one for a transaction that landed.
       With `retained_ttl_seconds = 0` the historical behavior applies:
       delete the delta and its matching proposal.
-- For each account holding `retained` deltas and no in-flight candidate
+- For each account holding recoverable deltas — `retained` rows, plus
+  `discarded { client_abandoned }` rows no older than
+  `retained_ttl_seconds` (the abandon quarantine cannot fully rule out a
+  late-landing transaction; one that lands after the abandon finalizes
+  leaves stored state behind chain, and the preserved row holds
+  everything needed to recover) — and no in-flight candidate
   (reconciliation never runs under a pending candidate — promoting would
   move the stored base out from under a signed proposal):
   - Drop any retained delta older than `retained_ttl_seconds` (with its
-    matching proposal).
+    matching proposal). Expired client-abandoned rows are merely dropped
+    from the scan — they are preserved history, never deleted.
   - Otherwise re-run the exact candidate verification: apply the delta to
     the stored base and compare the recomputed commitment on-chain. A
     match promotes the delta to `canonical` through the same fenced
     promotion (auto-recovering an account whose stored state fell behind
     the chain); anything else waits for the next tick — the TTL is the
-    only bound. Consecutive retained nonces can chain within one pass.
-  - A new candidate submission at a retained delta's nonce supersedes
-    (deletes) the retained row inside the submission transaction.
+    only bound. Consecutive recoverable nonces can chain within one pass.
+  - A new candidate submission at a retained or client-abandoned delta's
+    nonce supersedes (deletes) that row inside the submission
+    transaction — without the abandoned-row supersede, the resubmission
+    the abandon endpoint exists to enable would be refused forever at
+    the nonce's unique constraint.
 
 EVM proposals are not processed by Miden canonicalization. They are stored in the EVM proposal store and deleted lazily when expired or when the configured EntryPoint nonce indicates finality.
 
@@ -330,8 +339,9 @@ sequenceDiagram
 ### State Machine
 - candidate -> canonical | retained | discarded; retained -> canonical
   (reconciled) | superseded (deleted by a new submission at its nonce) |
-  dropped (TTL expiry). Discarded deltas MUST NOT be returned by default
-  APIs.
+  dropped (TTL expiry); discarded{client_abandoned} -> canonical
+  (late-landing reconcile, within the TTL) | superseded (new submission
+  at its nonce). Discarded deltas MUST NOT be returned by default APIs.
 
 ### Failure Handling
 - Transient failures SHOULD be retried with backoff. Malformed candidates SHOULD be quarantined with logs/metrics.

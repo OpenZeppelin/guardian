@@ -202,17 +202,26 @@ impl StorageBackend for EncryptedStorage {
             .collect()
     }
 
-    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_recoverable_deltas(
+        &self,
+        account_id: &str,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<DeltaObject>, String> {
         self.inner
-            .pull_retained_deltas(account_id)
+            .pull_recoverable_deltas(account_id, abandoned_since)
             .await?
             .into_iter()
             .map(|delta| self.decrypt_delta(delta))
             .collect()
     }
 
-    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String> {
-        self.inner.list_accounts_with_retained_deltas().await
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<String>, String> {
+        self.inner
+            .list_accounts_with_recoverable_deltas(abandoned_since)
+            .await
     }
 
     async fn submit_delta_proposal(

@@ -607,6 +607,15 @@ struct NewProposal<'a> {
 /// feeds and pollute `latest_activity` on every write to a legacy
 /// row). Spec: feature `005-operator-dashboard-metrics`, Decision 1
 /// (revised).
+/// SQL predicate matching the JSONB reason of a client-abandoned
+/// discard (issue #319). Paired with `status_kind = 'discarded'` at
+/// every call site; kept as one fragment so the reason string cannot
+/// drift between the recoverable reads, the submit-time supersede, and
+/// the promotion gate.
+fn client_abandoned_reason() -> diesel::expression::SqlLiteral<diesel::sql_types::Bool> {
+    diesel::dsl::sql::<diesel::sql_types::Bool>("status->>'reason' = 'client_abandoned'")
+}
+
 fn derive_status_columns(
     status: &DeltaStatus,
 ) -> Result<(&'static str, chrono::DateTime<chrono::Utc>), String> {
@@ -1118,7 +1127,11 @@ impl StorageBackend for PostgresService {
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
 
-    async fn pull_retained_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+    async fn pull_recoverable_deltas(
+        &self,
+        account_id: &str,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<DeltaObject>, String> {
         let mut conn = self
             .pool
             .get()
@@ -1127,17 +1140,25 @@ impl StorageBackend for PostgresService {
 
         let rows: Vec<DeltaRow> = deltas::table
             .filter(deltas::account_id.eq(account_id))
-            .filter(deltas::status_kind.eq("retained"))
+            .filter(
+                deltas::status_kind.eq("retained").or(deltas::status_kind
+                    .eq("discarded")
+                    .and(client_abandoned_reason())
+                    .and(deltas::status_timestamp.ge(abandoned_since))),
+            )
             .order(deltas::nonce.asc())
             .select(DeltaRow::as_select())
             .load(&mut conn)
             .await
-            .map_err(|e| format!("Failed to pull retained deltas: {e}"))?;
+            .map_err(|e| format!("Failed to pull recoverable deltas: {e}"))?;
 
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
 
-    async fn list_accounts_with_retained_deltas(&self) -> Result<Vec<String>, String> {
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
             .get()
@@ -1145,12 +1166,17 @@ impl StorageBackend for PostgresService {
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
         deltas::table
-            .filter(deltas::status_kind.eq("retained"))
+            .filter(
+                deltas::status_kind.eq("retained").or(deltas::status_kind
+                    .eq("discarded")
+                    .and(client_abandoned_reason())
+                    .and(deltas::status_timestamp.ge(abandoned_since))),
+            )
             .select(deltas::account_id)
             .distinct()
             .load::<String>(&mut conn)
             .await
-            .map_err(|e| format!("Failed to list accounts with retained deltas: {e}"))
+            .map_err(|e| format!("Failed to list accounts with recoverable deltas: {e}"))
     }
 
     async fn submit_delta_proposal(
@@ -1482,15 +1508,23 @@ impl StorageBackend for PostgresService {
                     return Ok(CandidateSubmission::Conflict);
                 }
 
-                // A retained row (issue #345) at this nonce is a
-                // best-effort recovery artifact, never settled history:
-                // the client re-supplying its intent for the slot
-                // supersedes it, so the reconcile pass can never
-                // resurrect a base out from under this new candidate.
+                // A retained row (issue #345) or client-abandoned
+                // discard (issue #319) at this nonce is a best-effort
+                // recovery/history artifact, never settled canonical
+                // history: the client re-supplying its intent for the
+                // slot supersedes it, so the reconcile pass can never
+                // resurrect a base out from under this new candidate —
+                // and the resubmission the abandon endpoint exists to
+                // enable is not refused at the nonce's unique
+                // constraint.
                 diesel::delete(deltas::table)
                     .filter(deltas::account_id.eq(&delta.account_id))
                     .filter(deltas::nonce.eq(delta.nonce as i64))
-                    .filter(deltas::status_kind.eq("retained"))
+                    .filter(
+                        deltas::status_kind.eq("retained").or(deltas::status_kind
+                            .eq("discarded")
+                            .and(client_abandoned_reason())),
+                    )
                     .execute(conn)
                     .await?;
 
@@ -1578,14 +1612,21 @@ impl StorageBackend for PostgresService {
                         return Ok(PromoteWrite::StaleLease);
                     }
 
-                    // Retained rows (issue #345) are promotable too: the
-                    // reconcile pass runs the same verification as the
-                    // candidate pass, and the base gate below protects the
-                    // state either way.
+                    // Retained rows (issue #345) and client-abandoned
+                    // discards (issue #319, the late-landing recovery
+                    // net) are promotable too: the reconcile pass runs
+                    // the same verification as the candidate pass, and
+                    // the base gate below protects the state either way.
                     let flipped = diesel::update(deltas::table)
                         .filter(deltas::account_id.eq(&delta.account_id))
                         .filter(deltas::nonce.eq(delta.nonce as i64))
-                        .filter(deltas::status_kind.eq_any(["candidate", "retained"]))
+                        .filter(
+                            deltas::status_kind.eq_any(["candidate", "retained"]).or(
+                                deltas::status_kind
+                                    .eq("discarded")
+                                    .and(client_abandoned_reason()),
+                            ),
+                        )
                         .set((
                             deltas::status.eq(&status_json),
                             deltas::status_kind.eq(status_kind),
