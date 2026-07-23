@@ -1680,6 +1680,7 @@ function parseDeltaProposalMetadata(
   if (typeof record.recipient_id === 'string') proposal.recipientId = record.recipient_id;
   if (typeof record.faucet_id === 'string') proposal.faucetId = record.faucet_id;
   if (typeof record.amount === 'string') proposal.amount = record.amount;
+  if (typeof record.note_type === 'string') proposal.noteType = record.note_type;
   if (record.note_ids !== undefined)
     proposal.noteIds = assertStringArray(
       requireArray(record, 'note_ids', context),

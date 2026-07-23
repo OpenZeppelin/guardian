@@ -4,7 +4,7 @@ use guardian_client::GuardianClient;
 use guardian_shared::ToJson;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::note::NoteId;
+use miden_protocol::note::{NoteId, NoteType};
 
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
@@ -77,6 +77,7 @@ impl ProposalBuilder {
                 recipient,
                 faucet_id,
                 amount,
+                note_type,
             } => {
                 self.build_p2id(
                     miden_client,
@@ -85,6 +86,7 @@ impl ProposalBuilder {
                     recipient,
                     faucet_id,
                     amount,
+                    note_type,
                     key_manager,
                 )
                 .await
@@ -198,6 +200,7 @@ impl ProposalBuilder {
             recipient_hex: None,
             faucet_id_hex: None,
             amount: None,
+            note_type: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -305,6 +308,7 @@ impl ProposalBuilder {
             recipient_hex: None,
             faucet_id_hex: None,
             amount: None,
+            note_type: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -357,6 +361,7 @@ impl ProposalBuilder {
         recipient: AccountId,
         faucet_id: AccountId,
         amount: u64,
+        note_type: NoteType,
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
@@ -373,6 +378,7 @@ impl ProposalBuilder {
             account.inner(),
             recipient,
             vec![asset.into()],
+            note_type,
             salt,
             std::iter::empty(),
         )?;
@@ -393,6 +399,7 @@ impl ProposalBuilder {
             recipient_hex: Some(recipient.to_string()),
             faucet_id_hex: Some(faucet_id.to_string()),
             amount: Some(amount),
+            note_type: (note_type != NoteType::Public).then(|| note_type.to_string()),
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -411,6 +418,7 @@ impl ProposalBuilder {
                 faucet_id.to_string(),
                 amount,
                 word_to_hex(&salt),
+                note_type,
             )
             .with_required_signatures(required_signatures);
 
@@ -431,6 +439,7 @@ impl ProposalBuilder {
                 recipient,
                 faucet_id,
                 amount,
+                note_type,
             },
             metadata,
         );
@@ -481,6 +490,7 @@ impl ProposalBuilder {
             recipient_hex: None,
             faucet_id_hex: None,
             amount: None,
+            note_type: None,
             note_ids_hex: note_ids_hex.clone(),
             consume_notes_metadata_version: Some(
                 crate::proposal::CONSUME_NOTES_METADATA_VERSION_V2,
@@ -584,6 +594,7 @@ impl ProposalBuilder {
             recipient_hex: None,
             faucet_id_hex: None,
             amount: None,
+            note_type: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -662,6 +673,7 @@ impl ProposalBuilder {
             recipient_hex: None,
             faucet_id_hex: None,
             amount: None,
+            note_type: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),

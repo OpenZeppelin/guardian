@@ -55,6 +55,9 @@ export {
   buildUpdateGuardianTransactionRequest,
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
+  parseP2idNoteType,
+  p2idNoteTypeToMetadata,
+  type P2idTransactionOptions,
 } from './transaction.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
@@ -98,6 +101,8 @@ export {
   MAX_CONSUME_NOTES_METADATA_BYTES,
   isConsumeNotesV1,
   isConsumeNotesV2,
+  isP2idNoteVisibility,
+  type P2idNoteVisibility,
 } from './types/proposal.js';
 
 export {

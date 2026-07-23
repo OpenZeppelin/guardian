@@ -701,6 +701,15 @@ await window.smoke.createProposal({
   increaseThreshold: false,
 });
 
+// P2ID transfer; noteType 'private' keeps the note off-chain (default 'public').
+await window.smoke.createProposal({
+  type: 'p2id',
+  recipientId: '0x...',
+  faucetId: '0x...',
+  amount: '100',
+  noteType: 'private',
+});
+
 // Custom proposal (producer API): create, sign on cosigner tabs, then execute.
 const { recipe } = await window.smoke.createCustomProposal({
   recipientId: '0x...',

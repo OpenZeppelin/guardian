@@ -16,11 +16,13 @@ use crate::error::{MultisigError, Result};
 
 /// Builds a P2ID transaction request.
 ///
-/// Creates a pay-to-id note and builds a transaction request to send it.
+/// Creates a pay-to-id note of the given `note_type` and builds a transaction
+/// request to send it.
 pub fn build_p2id_transaction_request<I>(
     sender_account: &Account,
     recipient: AccountId,
     assets: Vec<Asset>,
+    note_type: NoteType,
     salt: Word,
     signature_advice: I,
 ) -> Result<TransactionRequest>
@@ -33,7 +35,7 @@ where
         sender_account.id(),
         recipient,
         assets,
-        NoteType::Public,
+        note_type,
         Default::default(),
         &mut rng,
     )
@@ -114,6 +116,7 @@ mod tests {
             &account,
             recipient,
             vec![asset],
+            NoteType::Public,
             Word::from([1u32, 2, 3, 4]),
             std::iter::empty::<(Word, Vec<Felt>)>(),
         )
@@ -124,5 +127,63 @@ mod tests {
             Some(TransactionScriptTemplate::CustomScript(_))
         ));
         assert_eq!(request.expected_output_recipients().count(), 1);
+    }
+
+    #[test]
+    fn build_p2id_transaction_request_respects_note_type() {
+        let secret_key = SecretKey::new();
+        let signer_commitment = secret_key.public_key().to_commitment();
+        let account = MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
+            1,
+            vec![signer_commitment],
+            Word::from([9u32, 8, 7, 6]),
+        ))
+        .build()
+        .unwrap();
+        let faucet_definition = FungibleFaucet::builder()
+            .name(TokenName::new("test token").unwrap())
+            .symbol(TokenSymbol::try_from("TST").unwrap())
+            .decimals(8)
+            .max_supply(AssetAmount::from(1_000_000u32))
+            .build()
+            .unwrap();
+        let faucet = create_fungible_faucet(
+            [5u8; 32],
+            faucet_definition,
+            AccountType::Public,
+            AuthMethod::SingleSig {
+                approver: (
+                    secret_key.public_key().to_commitment().into(),
+                    AuthScheme::Falcon512Poseidon2,
+                ),
+            },
+            AccessControl::AuthControlled,
+            TokenPolicyManager::new(),
+        )
+        .unwrap();
+        let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
+        let salt = Word::from([1u32, 2, 3, 4]);
+        let build = |note_type: NoteType| {
+            let asset: Asset = miden_protocol::asset::FungibleAsset::new(faucet.id(), 100)
+                .unwrap()
+                .into();
+            build_p2id_transaction_request(
+                &account,
+                recipient,
+                vec![asset],
+                note_type,
+                salt,
+                std::iter::empty::<(Word, Vec<Felt>)>(),
+            )
+            .unwrap()
+        };
+
+        let private_request = build(NoteType::Private);
+        let public_request = build(NoteType::Public);
+
+        // The note type feeds the generated send script, so identically
+        // parameterized public and private requests must not be identical.
+        use miden_protocol::utils::serde::Serializable;
+        assert_ne!(private_request.to_bytes(), public_request.to_bytes());
     }
 }

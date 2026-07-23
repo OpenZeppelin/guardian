@@ -1,6 +1,7 @@
 //! Payload types for multisig transaction proposals.
 
 use guardian_shared::{DeltaSignature, ProposalSignature, ToJson};
+use miden_protocol::note::NoteType;
 use miden_protocol::transaction::TransactionSummary;
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,12 @@ pub struct ProposalMetadataPayload {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<String>,
+
+    /// P2ID note visibility, `"public"` or `"private"` (issue #322). Omitted
+    /// for public notes so the pre-#322 wire shape stays byte-identical;
+    /// absent => public.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_type: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_signatures: Option<u64>,
@@ -145,19 +152,23 @@ impl ProposalPayload {
         self
     }
 
-    /// Sets the metadata for P2ID payment transfers.
+    /// Sets the metadata for P2ID payment transfers. `note_type` is written to
+    /// the wire only when it is private, so public payloads keep the legacy
+    /// shape (issue #322).
     pub fn with_payment_metadata(
         mut self,
         recipient_id: String,
         faucet_id: String,
         amount: u64,
         salt: String,
+        note_type: NoteType,
     ) -> Self {
         self.metadata = Some(ProposalMetadataPayload {
             proposal_type: "p2id".to_string(),
             recipient_id: Some(recipient_id),
             faucet_id: Some(faucet_id),
             amount: Some(amount.to_string()),
+            note_type: (note_type != NoteType::Public).then(|| note_type.to_string()),
             salt: Some(salt),
             ..Default::default()
         });
@@ -337,6 +348,7 @@ mod tests {
             "0xfaucet".to_string(),
             1000,
             "0xsalt".to_string(),
+            NoteType::Public,
         );
 
         let meta = payload.metadata.unwrap();
@@ -345,6 +357,48 @@ mod tests {
         assert_eq!(meta.faucet_id, Some("0xfaucet".to_string()));
         assert_eq!(meta.amount, Some("1000".to_string()));
         assert_eq!(meta.salt, Some("0xsalt".to_string()));
+        assert_eq!(meta.note_type, None);
+    }
+
+    /// A public P2ID payload must keep the pre-#322 wire shape: no
+    /// `note_type` key at all.
+    #[test]
+    fn with_payment_metadata_public_omits_note_type_on_wire() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_payment_metadata(
+            "0xrecipient".to_string(),
+            "0xfaucet".to_string(),
+            1000,
+            "0xsalt".to_string(),
+            NoteType::Public,
+        );
+
+        let json = serde_json::to_value(payload.metadata.unwrap()).unwrap();
+        assert!(json.get("note_type").is_none());
+    }
+
+    #[test]
+    fn with_payment_metadata_private_round_trips_note_type() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_payment_metadata(
+            "0xrecipient".to_string(),
+            "0xfaucet".to_string(),
+            1000,
+            "0xsalt".to_string(),
+            NoteType::Private,
+        );
+
+        let json = serde_json::to_string(&payload.metadata.unwrap()).unwrap();
+        let parsed: ProposalMetadataPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.note_type, Some("private".to_string()));
     }
 
     #[test]

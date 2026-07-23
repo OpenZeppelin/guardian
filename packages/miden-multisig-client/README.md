@@ -233,6 +233,11 @@ transaction — the integration owns that recipe and submits it itself.
 import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client';
 
 // Producer: build a transaction and propose it under a custom label.
+// The options object accepts `noteType` (`NoteType.Public` (default) or
+// `NoteType.Private`, from `@miden-sdk/miden-sdk`); a private note publishes
+// only its hash on chain, so the recipient needs the note shared out-of-band.
+// The typed path is `createP2idProposal(recipient, faucet, amount, nonce?,
+// { noteType })`, which persists the choice in signed metadata.
 const { request, salt } = buildP2idTransactionRequest(senderId, recipientId, faucetId, amount);
 const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg');
 

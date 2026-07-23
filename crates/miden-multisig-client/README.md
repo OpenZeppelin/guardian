@@ -63,6 +63,12 @@ let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b")?;
 let faucet = AccountId::from_hex("0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c")?;
 let tx = TransactionType::transfer(recipient, faucet, 1_000);
 
+// P2ID notes are public by default. For a private note (only its hash is
+// published on chain; the recipient needs the note shared out-of-band) use
+// `transfer_with_note_type`. `NoteType` is re-exported from `miden_protocol::note`.
+use miden_protocol::note::NoteType;
+let tx = TransactionType::transfer_with_note_type(recipient, faucet, 1_000, NoteType::Private);
+
 // Proposer creates the delta on GUARDIAN
 let proposal = client.propose_transaction(tx).await?;
 
@@ -178,11 +184,12 @@ on-chain transaction — the integration owns that recipe and drives execution.
 ```rust
 use miden_client::Serializable;
 use miden_multisig_client::{build_p2id_transaction_request, generate_salt};
+use miden_protocol::note::NoteType;
 
 // Producer: build a transaction and propose it under a custom label.
 let salt = generate_salt();
 let mut request = build_p2id_transaction_request(
-    account.inner(), recipient, vec![asset], salt, std::iter::empty(),
+    account.inner(), recipient, vec![asset], NoteType::Public, salt, std::iter::empty(),
 )?;
 let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
 

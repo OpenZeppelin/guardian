@@ -4,6 +4,9 @@ export {
 export { executeForSummary } from './transaction/summary.js';
 export {
   buildP2idTransactionRequest,
+  parseP2idNoteType,
+  p2idNoteTypeToMetadata,
+  type P2idTransactionOptions,
 } from './transaction/p2id.js';
 export {
   buildUpdateGuardianTransactionRequest,

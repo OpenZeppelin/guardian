@@ -139,6 +139,11 @@ pub struct ProposalMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<String>,
 
+    /// P2ID note visibility, `"public"` or `"private"` (issue #322).
+    /// Absent => public (pre-#322 proposals).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_type: Option<String>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

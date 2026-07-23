@@ -98,6 +98,8 @@ export interface ProposalMetadata {
   recipientId?: string;
   faucetId?: string;
   amount?: string;
+  /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
+  noteType?: string;
 }
 
 export interface DeltaObject {
