@@ -782,15 +782,24 @@ impl DeltasProcessorBase {
         let now = now.to_rfc3339();
 
         if new_retry >= self.max_retries {
+            // An abandon-requested candidate resolves as
+            // `Discarded { client_abandoned }` — queryable history, same
+            // as the divergence path — instead of the historical delete
+            // (which left the client's status poll on `not found`).
+            // Finalizing without at-base confirmation is safe here
+            // because the reconcile net backstops it: a transaction
+            // that did land is promoted later — landed always wins.
+            if delta.status.abandon_requested_at().is_some() {
+                return self.finalize_abandoned_candidate(delta).await;
+            }
+
             // Retry exhaustion never proved the delta wrong — verification
             // just never observed its expected commitment (RPC outage,
             // worker downtime, slow proving). Keep it as `retained`
             // (issue #345) so the reconcile pass can promote it if the
             // chain ever shows it landed; deleting it here is what left
-            // stored state permanently behind the on-chain nonce. An
-            // abandon-requested candidate keeps the historical delete —
-            // the client explicitly wants it gone, not resurrected.
-            if self.retained_ttl_seconds > 0 && delta.status.abandon_requested_at().is_none() {
+            // stored state permanently behind the on-chain nonce.
+            if self.retained_ttl_seconds > 0 {
                 tracing::warn!(
                     account_id = %delta.account_id,
                     nonce = delta.nonce,
@@ -2683,9 +2692,11 @@ mod tests {
         let mut candidate = create_candidate_delta(account_id, 1);
         candidate.status = DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 9);
 
-        let mock_storage = MockStorageBackend::new()
-            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
-            .with_pull_state(Ok(create_test_state(account_id)));
+        let mock_storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
 
         let mock_network = MockNetworkClient::new()
             .with_apply_delta(Ok((
@@ -2701,17 +2712,22 @@ mod tests {
             .with_set(Ok(())); // For clearing has_pending_candidate
 
         let state = create_test_app_state_with_mocks(
-            Arc::new(mock_storage),
+            mock_storage.clone(),
             Arc::new(mock_network),
             Arc::new(mock_metadata),
         );
 
-        // max_retries = 10, so retry_count 9 + 1 = 10 >= 10, will discard
-        let config = CanonicalizationConfig::new(10, 18);
+        // max_retries = 10 (retry_count 9 + 1 = 10 >= 10) with retention
+        // disabled: the historical discard path deletes the delta.
+        let config = CanonicalizationConfig::new(10, 10).with_retained_ttl_seconds(0);
         let processor = DeltasProcessor::new(state, config);
 
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
+        assert_eq!(
+            mock_storage.get_delete_delta_calls(),
+            vec![(account_id.to_string(), 1)]
+        );
     }
 
     fn create_retained_delta(account_id: &str, nonce: u64, retained_at: &str) -> DeltaObject {
@@ -2789,6 +2805,65 @@ mod tests {
                 .iter()
                 .any(|m| !m.has_pending_candidate),
             "retention releases the account lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_max_retries_with_abandon_intent_finalizes_abandon() {
+        // Retry exhaustion with a recorded abandon intent resolves the
+        // abandon as Discarded{client_abandoned} — queryable history,
+        // symmetric with the divergence path — instead of the historical
+        // delete that left the client's status poll on `not found`. Only
+        // RPC-failure exhaustion reaches here (at-base reads route to
+        // the abandon-confirmation path), and the reconcile net still
+        // promotes the delta if its transaction actually landed.
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = DeltaStatus::Candidate {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            retry_count: 17,
+            divergence_count: 0,
+            abandon_requested_at: Some("2024-01-01T00:00:01Z".to_string()),
+            abandon_confirm_count: 0,
+        };
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Err("Verification failed".to_string()));
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        assert!(storage.get_delete_delta_calls().is_empty());
+        let status_writes = storage.get_update_delta_status_calls();
+        assert_eq!(status_writes.len(), 1);
+        assert!(
+            status_writes[0].2.is_client_abandoned(),
+            "the abandon resolves as history, not a delete; got {:?}",
+            status_writes[0].2
         );
     }
 
