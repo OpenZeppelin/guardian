@@ -94,7 +94,7 @@ pub(crate) fn decode_delta_status(
         DeltaStatus::Canonical { timestamp } => {
             Some((DashboardDeltaStatus::Canonical, None, timestamp.clone()))
         }
-        DeltaStatus::Discarded { timestamp } => {
+        DeltaStatus::Discarded { timestamp, .. } => {
             Some((DashboardDeltaStatus::Discarded, None, timestamp.clone()))
         }
     }
@@ -246,6 +246,8 @@ mod tests {
                 timestamp: format!("2026-05-08T12:0{nonce}:00Z"),
                 retry_count: retries,
                 divergence_count: 0,
+                abandon_requested_at: None,
+                abandon_confirm_count: 0,
             },
         )
     }
@@ -265,6 +267,7 @@ mod tests {
             nonce,
             DeltaStatus::Discarded {
                 timestamp: format!("2026-05-08T12:0{nonce}:00Z"),
+                reason: None,
             },
         )
     }

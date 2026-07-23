@@ -614,6 +614,8 @@ mod tests {
         )
         .await;
         state.canonicalization = Some(crate::canonicalization::CanonicalizationConfig {
+            abandon_quarantine_seconds: 15,
+            abandon_quarantine_checks: 2,
             check_interval_seconds: 7,
             max_retries: 13,
             submission_grace_period_seconds: 42,

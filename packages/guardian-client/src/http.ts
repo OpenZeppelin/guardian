@@ -3,6 +3,8 @@ import {
   normalizeGuardianErrorCode,
 } from './error-codes.js';
 import type {
+  AbandonCandidateResponse,
+  AbandonStatus,
   ConfigureRequest,
   ConfigureResponse,
   DeltaObject,
@@ -20,6 +22,8 @@ import type {
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
 import type {
+  ServerAbandonCandidateRequest,
+  ServerAbandonCandidateResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
   ServerLookupResponse,
@@ -284,6 +288,65 @@ export class GuardianHttpClient {
       commitment: server.commitment,
     };
   }
+
+  /**
+   * Request abandonment of a pending canonicalization candidate whose
+   * transaction will never land on-chain (issue #319).
+   *
+   * Records an abandon *intent* (`202 Accepted`): the delta stays a
+   * candidate — the account stays locked — until the guardian's worker
+   * confirms over the abandon quarantine that the transaction did not
+   * land, then discards the delta as `client_abandoned` and releases the
+   * account (typically well under a minute). Poll {@link abandonStatus}
+   * for the resolution. Refused with `GUARDIAN_CANDIDATE_LANDED` (409)
+   * when the transaction actually landed. Retries are idempotent and
+   * preserve the original request timestamp.
+   */
+  async abandonCandidate(accountId: string, nonce: number): Promise<AbandonCandidateResponse> {
+    const serverRequest: ServerAbandonCandidateRequest = { account_id: accountId, nonce };
+    const response = await this.fetchAuthenticated('/delta/candidate/abandon', {
+      method: 'POST',
+      body: JSON.stringify(serverRequest),
+    }, accountId, serverRequest);
+    const server = (await response.json()) as ServerAbandonCandidateResponse;
+    return {
+      accountId: server.account_id,
+      nonce: server.nonce,
+      state: server.state,
+      abandonRequestedAt: server.abandon_requested_at,
+    };
+  }
+
+  /**
+   * Poll the resolution of an abandon request made with
+   * {@link abandonCandidate}: `'waiting'` while the quarantine runs,
+   * `'landed'` if the transaction landed after all (the delta
+   * canonicalized), `'abandoned'` once the delta is discarded as
+   * client-abandoned and the account released, `'unexpected'` for any
+   * state no abandon flow produces (including a missing delta).
+   */
+  async abandonStatus(accountId: string, nonce: number): Promise<AbandonStatus> {
+    let delta: DeltaObject;
+    try {
+      delta = await this.getDelta(accountId, nonce);
+    } catch (e) {
+      if (e instanceof GuardianHttpError && e.code === 'delta_not_found') {
+        return 'unexpected';
+      }
+      throw e;
+    }
+    switch (delta.status.status) {
+      case 'candidate':
+        return 'waiting';
+      case 'canonical':
+        return 'landed';
+      case 'discarded':
+        return delta.status.reason === 'client_abandoned' ? 'abandoned' : 'unexpected';
+      default:
+        return 'unexpected';
+    }
+  }
+
 
   async signDeltaProposal(request: SignProposalRequest): Promise<DeltaObject> {
     const serverRequest = toServerSignProposalRequest(request);

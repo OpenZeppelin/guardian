@@ -9,9 +9,10 @@ use super::envelope::RecordAad;
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, CandidatePromotion, CandidateSubmission,
-    CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor, GlobalDeltaRow,
-    GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageBackend, StorageType,
+    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
+    CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageBackend,
+    StorageType,
 };
 use crate::utils::normalize_commitment_hex;
 
@@ -257,6 +258,17 @@ impl StorageBackend for EncryptedStorage {
 
     async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String> {
         self.inner.delete_delta(account_id, nonce).await
+    }
+
+    async fn request_candidate_abandon(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+    ) -> Result<AbandonIntent, String> {
+        self.inner
+            .request_candidate_abandon(account_id, nonce, now)
+            .await
     }
 
     async fn update_delta_status(

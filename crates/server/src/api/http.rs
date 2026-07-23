@@ -3,9 +3,9 @@ use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams, GetDeltaProposalsParams,
-    GetDeltaSinceParams, GetStateParams, LookupAccountParams, PushDeltaParams,
-    PushDeltaProposalParams, SignDeltaProposalParams,
+    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams,
+    GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams, LookupAccountParams,
+    PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -92,6 +92,28 @@ pub struct DeltaProposalRequest {
     /// Opaque, schema-free multisig proposal payload.
     #[schema(value_type = Object)]
     pub delta_payload: serde_json::Value,
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct AbandonCandidateRequest {
+    pub account_id: String,
+    /// Nonce of the candidate delta to abandon. Requiring the explicit
+    /// target prevents a stale request from releasing a newer candidate.
+    pub nonce: u64,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AbandonCandidateResponse {
+    pub account_id: String,
+    pub nonce: u64,
+    /// `"pending"` while the worker still has to resolve the intent
+    /// (the account stays locked until then); `"abandoned"` once the
+    /// delta is discarded as client-abandoned and the account released.
+    pub state: String,
+    /// RFC 3339 UTC timestamp of the recorded abandon request. Retries
+    /// return the original timestamp; absent once resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abandon_requested_at: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -456,6 +478,60 @@ pub async fn push_delta_proposal(
         delta: response.delta,
         commitment: response.commitment,
     }))
+}
+
+/// Request abandonment of a pending canonicalization candidate whose
+/// transaction will never land on-chain (issue #319).
+///
+/// The request records an abandon *intent* and returns `202 Accepted`;
+/// the delta stays a candidate — the account stays locked — until the
+/// canonicalization worker confirms over the abandon quarantine that the
+/// transaction did not land, then discards the delta as
+/// `client_abandoned` and releases the account (typically well under a
+/// minute, versus the full submission grace + retry window).
+///
+/// Refused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction
+/// already landed. Retries are idempotent and preserve the original
+/// request timestamp. Poll `GET /delta` for the resolution: still
+/// `candidate` → waiting; `canonical` → landed after all; `discarded`
+/// with reason `client_abandoned` → abandoned.
+#[utoipa::path(
+    post,
+    path = "/delta/candidate/abandon",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    request_body = AbandonCandidateRequest,
+    responses(
+        (status = 202, description = "Abandon intent accepted (or already resolved)", body = AbandonCandidateResponse),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "No candidate delta at this nonce", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Candidate already landed on-chain, or account paused/released", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn abandon_candidate(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Json(payload): Json<AbandonCandidateRequest>,
+) -> Result<(StatusCode, Json<AbandonCandidateResponse>), GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
+
+    let params = AbandonCandidateParams {
+        account_id: payload.account_id,
+        nonce: payload.nonce,
+        credentials: request_payload.apply_to(credentials),
+    };
+
+    let response = services::abandon_candidate(&state, params).await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(AbandonCandidateResponse {
+            account_id: response.account_id,
+            nonce: response.nonce,
+            state: response.state.as_str().to_string(),
+            abandon_requested_at: response.abandon_requested_at,
+        }),
+    ))
 }
 
 /// List all in-flight multisig proposals for an account.
@@ -842,6 +918,104 @@ mod tests {
 
         assert_eq!(response.delta.nonce, 1);
         assert!(!response.commitment.is_empty());
+    }
+
+    fn abandon_test_fixtures(
+        storage: &MockStorageBackend,
+        network: &MockNetworkClient,
+        metadata: &MockMetadataStore,
+        account_id: &str,
+        signer: &TestSigner,
+        landed: bool,
+    ) {
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let mut candidate = create_test_delta(account_id, 1);
+        candidate.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+
+        let _ = metadata.clone().with_get(Ok(Some(create_account_metadata(
+            account_id.to_string(),
+            vec![signer.commitment_hex.clone()],
+        ))));
+        let _ = storage
+            .clone()
+            .with_pull_delta(Ok(candidate))
+            .with_pull_state(Ok(create_state_object(
+                account_id.to_string(),
+                "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392".to_string(),
+                account_json,
+            )));
+        let verify = if landed {
+            Ok(crate::network::StateVerification::Match)
+        } else {
+            Ok(crate::network::StateVerification::Mismatch {
+                on_chain: "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392"
+                    .to_string(),
+            })
+        };
+        let _ = network
+            .clone()
+            .with_apply_delta(Ok((serde_json::json!({"new": true}), "0xnew".to_string())))
+            .with_verify_commitment(verify);
+    }
+
+    #[tokio::test]
+    async fn test_abandon_candidate_success() {
+        let (state, storage, network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        abandon_test_fixtures(&storage, &network, &metadata, &account_id, &signer, false);
+
+        let request = AbandonCandidateRequest {
+            account_id: account_id.clone(),
+            nonce: 1,
+        };
+        let credentials = signed_credentials(&signer, &account_id, &request);
+        let (status, Json(response)) =
+            abandon_candidate(State(state), AuthHeader(credentials), Json(request))
+                .await
+                .expect("abandon_candidate should succeed");
+
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(response.account_id, account_id);
+        assert_eq!(response.nonce, 1);
+        assert_eq!(response.state, "pending");
+        assert!(response.abandon_requested_at.is_some());
+        // Intent only: nothing is deleted at request time.
+        assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_abandon_candidate_landed_maps_to_409_envelope() {
+        use axum::body::to_bytes;
+        use axum::response::IntoResponse;
+
+        let (state, storage, network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        abandon_test_fixtures(&storage, &network, &metadata, &account_id, &signer, true);
+
+        let request = AbandonCandidateRequest {
+            account_id: account_id.clone(),
+            nonce: 1,
+        };
+        let credentials = signed_credentials(&signer, &account_id, &request);
+        let err = abandon_candidate(State(state), AuthHeader(credentials), Json(request))
+            .await
+            .expect_err("landed candidate must refuse the abandon");
+
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON envelope");
+        assert_eq!(parsed["code"], "GUARDIAN_CANDIDATE_LANDED");
+        assert!(
+            parsed["message"].as_str().is_some_and(|m| !m.is_empty()),
+            "user-safe message present"
+        );
+        assert_eq!(parsed["meta"]["retryable"], serde_json::Value::Bool(false));
+        assert!(storage.get_delete_delta_calls().is_empty());
     }
 
     #[tokio::test]

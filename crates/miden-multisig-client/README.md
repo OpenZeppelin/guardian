@@ -78,6 +78,32 @@ client.sign_proposal(&to_sign.id).await?;
 client.execute_proposal(&proposal.id).await?;
 ```
 
+### Recovering From a Dead Transaction (Abandon)
+
+If `execute_proposal` dies after guardian approval (RPC submit failure,
+prover timeout, crash), the approved candidate keeps the account locked on
+GUARDIAN. Record an abandon intent and poll for the resolution:
+
+```rust
+use miden_multisig_client::{AbandonRequestState, AbandonStatus};
+
+// The nonce the proposal was pushed with (committed account nonce + 1).
+let state = client.abandon_candidate(nonce).await?;
+assert_eq!(state, AbandonRequestState::Pending);
+
+// The guardian's worker confirms over a short quarantine (typically well
+// under a minute) that the transaction did not land, then releases the
+// account.
+loop {
+    match client.abandon_status(nonce).await? {
+        AbandonStatus::Waiting => tokio::time::sleep(Duration::from_secs(5)).await,
+        AbandonStatus::Abandoned => break,           // account released
+        AbandonStatus::Landed => break,              // tx landed after all
+        AbandonStatus::Unexpected => anyhow::bail!("unexpected candidate state"),
+    }
+}
+```
+
 ### Fallback to Offline (if GUARDIAN unavailable)
 
 If the GUARDIAN endpoint can’t be reached, the SDK can produce an offline proposal only for `SwitchGuardian` transactions:
