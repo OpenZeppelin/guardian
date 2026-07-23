@@ -2704,6 +2704,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_spuriously_diverged_retained_delta_heals_once_chain_shows_it() {
+        // End-to-end replay of the #312 incident class (issue #345): a
+        // candidate wrongly condemned as diverged — e.g. the pre-#326
+        // empty-digest misread of a new account's first transaction, or a
+        // lagging RPC node — is parked as retained(diverged). Once the
+        // chain shows the delta's commitment, the reconcile pass promotes
+        // it and the account recovers without any client involvement.
+        let account_id = "0xtest_account";
+        let mut retained = create_retained_delta(account_id, 1, "2024-01-01T00:00:00Z");
+        retained.status = DeltaStatus::retained(
+            "2024-01-01T00:00:00Z".to_string(),
+            crate::delta_object::RetainReason::Diverged,
+        );
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_retained_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_retained_deltas(Ok(vec![retained]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
+
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                // The transaction has landed by now: the chain shows the
+                // recomputed commitment the diverged verdict said could
+                // never appear.
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_should_update_auth(Ok(None)),
+        );
+
+        let mut account_metadata = create_test_metadata(account_id);
+        account_metadata.has_pending_candidate = false;
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![]))
+            .with_get(Ok(Some(account_metadata)))
+            .with_set(Ok(()));
+
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 10, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network.clone(),
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok());
+
+        let states = storage.get_submit_state_calls();
+        assert_eq!(states.len(), 1, "the stuck base catches up to the chain");
+        assert_eq!(states[0].commitment, "new_commitment");
+        assert!(
+            storage
+                .get_submit_delta_calls()
+                .iter()
+                .any(|d| d.status.is_canonical()),
+            "the wrongly-condemned delta ends canonical, not deleted"
+        );
+        assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_reconcile_promotes_matching_retained_delta() {
         // The core issue #345 recovery: a retained delta whose recomputed
         // commitment now matches the chain is promoted to canonical, and
