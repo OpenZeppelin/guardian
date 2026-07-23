@@ -601,7 +601,8 @@ export interface DashboardInfoResponse {
   deltaStatusCounts: {
     candidate: number;
     canonical: number;
-    /** Retry-exhausted candidates kept for background reconciliation
+    /** Candidates the worker gave up verifying — retry exhaustion or
+     * confirmed divergence — kept for background reconciliation
      * (issue #345). */
     retained: number;
     discarded: number;

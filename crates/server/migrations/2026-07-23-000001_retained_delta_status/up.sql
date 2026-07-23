@@ -7,6 +7,15 @@
 -- on-chain commitment, promoting the row to `canonical` if they ever
 -- match (or dropping it once its TTL expires).
 --
+-- The replacement constraint is added NOT VALID so this migration is a
+-- metadata-only switch: a plain ADD CHECK would scan the entire deltas
+-- table — dominated by ever-growing canonical history — while holding
+-- ACCESS EXCLUSIVE. Existing rows are provably valid anyway (the old
+-- constraint enforced a strict subset of the new value set up to this
+-- instant); the follow-up migration VALIDATEs in its own transaction,
+-- where the scan only takes SHARE UPDATE EXCLUSIVE and never blocks
+-- concurrent reads or writes.
+--
 -- `delta_proposals` keeps its existing constraint: a proposal is moved
 -- out of the queue before its delta can ever become retained.
 ALTER TABLE deltas
@@ -14,4 +23,4 @@ ALTER TABLE deltas
 ALTER TABLE deltas
     ADD CONSTRAINT deltas_status_kind_valid CHECK (
         status_kind IN ('candidate', 'canonical', 'retained', 'discarded')
-    );
+    ) NOT VALID;

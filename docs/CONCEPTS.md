@@ -92,7 +92,7 @@ sequenceDiagram
   U->>M: 4. Submit proven account update
   M-->>U: account commitment accepted
   G->>M: poll for canonical commitment
-  G->>G: 5. If commitments match, mark canonical — otherwise discarded
+  G->>G: 5. If commitments match, mark canonical — otherwise park as<br/>retained and keep reconciling until it matches or the TTL expires
 ```
 
 The status transitions for a delta:

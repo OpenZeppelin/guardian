@@ -182,6 +182,7 @@ mod tests {
 
         assert_eq!(snapshot.delta_counts.candidate, 2);
         assert_eq!(snapshot.delta_counts.canonical, 40);
+        assert_eq!(snapshot.delta_counts.retained, 3);
         assert_eq!(snapshot.delta_counts.discarded, 1);
         assert_eq!(snapshot.in_flight_proposals, 7);
         assert_eq!(snapshot.accounts_total, 3);
@@ -280,6 +281,7 @@ mod tests {
         let rendered = handle.render();
         assert!(rendered.contains("guardian_deltas{status=\"candidate\"} 5"));
         assert!(rendered.contains("guardian_deltas{status=\"canonical\"} 100"));
+        assert!(rendered.contains("guardian_deltas{status=\"retained\"} 3"));
         assert!(rendered.contains("guardian_deltas{status=\"discarded\"} 2"));
         assert!(rendered.contains("guardian_proposals_in_flight 4"));
         assert!(rendered.contains("guardian_accounts 12"));

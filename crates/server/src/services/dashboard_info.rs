@@ -512,6 +512,7 @@ mod tests {
         assert_eq!(info.total_account_count, 2);
         assert_eq!(info.delta_status_counts.candidate, 1);
         assert_eq!(info.delta_status_counts.canonical, 1);
+        assert_eq!(info.delta_status_counts.retained, 1);
         assert_eq!(info.delta_status_counts.discarded, 1);
         assert_eq!(info.in_flight_proposal_count, 2);
         assert_eq!(
