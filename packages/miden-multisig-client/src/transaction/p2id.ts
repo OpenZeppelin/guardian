@@ -33,8 +33,8 @@ export function deriveP2idSerialNumber(salt: Word): Word {
  *
  * In Miden 0.15 the callback flag is part of the vault key, so rebuilding the asset from
  * `faucet`/`amount` with the default flag would not match the held asset and the transfer
- * would abort. When the faucet is absent the default flag is used, surfacing the
- * missing-asset error during execution.
+ * would abort. When the faucet is absent the transfer cannot succeed, so an error is
+ * thrown up front instead of letting execution fail later.
  */
 function resolveFungibleAssetFromVault(
   account: Account,
@@ -48,7 +48,7 @@ function resolveFungibleAssetFromVault(
     .find(asset => asset.faucetId().toString() === faucetHex);
 
   if (!assetFromVault) {
-    return new FungibleAsset(faucet, amount);
+    throw new Error('Asset not found in vault, cannot do P2ID transaction');
   }
 
   return FungibleAsset.fromVaultKey(assetFromVault.vaultKey(), amount);
