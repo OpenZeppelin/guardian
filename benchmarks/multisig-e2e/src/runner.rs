@@ -132,7 +132,7 @@ pub async fn preflight(config: &RunConfig) -> Result<()> {
         );
     }
 
-    let required = config.amount.saturating_mul(config.operations.div_ceil(2));
+    let required = required_balance(config);
     println!(
         "worst-case starting vault balance per account for this profile: {}",
         required
@@ -643,12 +643,16 @@ async fn await_canonical(
     }
 }
 
+fn required_balance(config: &RunConfig) -> u64 {
+    config.amount.saturating_mul(config.operations.div_ceil(2))
+}
+
 fn ensure_starting_balances(
     clients: &[BenchClient],
     faucet_id: AccountId,
     config: &RunConfig,
 ) -> Result<()> {
-    let required = config.amount.saturating_mul(config.operations.div_ceil(2));
+    let required = required_balance(config);
     for client in clients {
         let balance = client.balance(faucet_id);
         if balance < required {

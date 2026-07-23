@@ -131,8 +131,11 @@ fn restrict_permissions(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) -> Result<()> {
-    Ok(())
+fn restrict_permissions(path: &Path) -> Result<()> {
+    bail!(
+        "cannot restrict permissions on {} on this platform; refusing to persist secret keys unprotected",
+        path.display()
+    )
 }
 
 #[cfg(test)]
