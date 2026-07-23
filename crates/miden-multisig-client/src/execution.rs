@@ -89,19 +89,13 @@ pub fn collect_signature_advice(
 ///
 /// In Miden 0.15 the callback flag is part of the vault key, so rebuilding the asset from
 /// `faucet_id`/`amount` with the default flag would not match the held asset and the transfer would
-/// abort. When the faucet is absent the transfer cannot succeed, so an error is returned up front
-/// instead of letting execution fail later.
+/// abort. When the faucet is absent the default flag is used, surfacing the missing-asset error.
 pub fn build_transfer_asset(
     account: &Account,
     faucet_id: AccountId,
     amount: u64,
 ) -> Result<FungibleAsset> {
-    let callbacks = held_callback_flag(account.vault().assets(), faucet_id).ok_or_else(|| {
-        MultisigError::InvalidConfig(format!(
-            "asset issued by faucet {} not found in vault, cannot do P2ID transaction",
-            faucet_id
-        ))
-    })?;
+    let callbacks = held_callback_flag(account.vault().assets(), faucet_id);
 
     FungibleAsset::new(faucet_id, amount)
         .map(|asset| asset.with_callbacks(callbacks))
@@ -109,17 +103,20 @@ pub fn build_transfer_asset(
 }
 
 /// Returns the callback flag of the held fungible asset issued by `faucet_id`,
-/// or `None` when the faucet's asset is not present in the vault.
+/// defaulting to `Disabled` when the faucet's asset is not present in the vault.
 fn held_callback_flag(
     held_assets: impl IntoIterator<Item = Asset>,
     faucet_id: AccountId,
-) -> Option<AssetCallbackFlag> {
-    held_assets.into_iter().find_map(|asset| match asset {
-        Asset::Fungible(fungible) if fungible.faucet_id() == faucet_id => {
-            Some(fungible.callbacks())
-        }
-        _ => None,
-    })
+) -> AssetCallbackFlag {
+    held_assets
+        .into_iter()
+        .find_map(|asset| match asset {
+            Asset::Fungible(fungible) if fungible.faucet_id() == faucet_id => {
+                Some(fungible.callbacks())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// Builds the final transaction request based on transaction type.
@@ -355,11 +352,11 @@ mod tests {
             .with_callbacks(AssetCallbackFlag::Enabled);
 
         let flag = held_callback_flag([Asset::Fungible(held)], faucet_id);
-        assert_eq!(flag, Some(AssetCallbackFlag::Enabled));
+        assert_eq!(flag, AssetCallbackFlag::Enabled);
     }
 
     #[test]
-    fn held_callback_flag_is_none_when_faucet_absent() {
+    fn held_callback_flag_defaults_to_disabled_when_faucet_absent() {
         use miden_client::testing::account_id::{
             ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1, ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
         };
@@ -372,14 +369,14 @@ mod tests {
             [Asset::Fungible(held)],
             faucet(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2),
         );
-        assert_eq!(flag, None);
+        assert_eq!(flag, AssetCallbackFlag::Disabled);
     }
 
     #[test]
-    fn held_callback_flag_is_none_on_empty_vault() {
+    fn held_callback_flag_defaults_to_disabled_on_empty_vault() {
         use miden_client::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1;
 
         let flag = held_callback_flag([], faucet(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1));
-        assert_eq!(flag, None);
+        assert_eq!(flag, AssetCallbackFlag::Disabled);
     }
 }
