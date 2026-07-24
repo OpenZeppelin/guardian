@@ -22,6 +22,10 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   AccountId: {
     fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
   },
+  NoteType: {
+    Private: 0,
+    Public: 1,
+  },
   TransactionSummary: {
     deserialize: vi.fn().mockReturnValue({
       toCommitment: () => ({
@@ -87,6 +91,14 @@ vi.mock('./transaction.js', () => ({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
   }),
+  // Mirrors the real implementations against the mocked NoteType values
+  // (Private = 0, Public = 1).
+  parseP2idNoteType: vi.fn((value?: string) => {
+    if (value === undefined || value === 'public') return 1;
+    if (value === 'private') return 0;
+    throw new Error(`unsupported metadata.noteType '${value}': expected 'public' or 'private'`);
+  }),
+  p2idNoteTypeToMetadata: vi.fn((noteType?: number) => (noteType === 0 ? 'private' : undefined)),
 }));
 
 vi.mock('./utils/signature.js', async () => {
@@ -541,7 +553,7 @@ describe('Multisig', () => {
       expect(mockWebClient.newAccount).not.toHaveBeenCalled();
     });
 
-    it('should throw when incoming state nonce is lower than local nonce', async () => {
+    it('keeps local state and refreshes config from it when GUARDIAN nonce is behind local', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -558,7 +570,8 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 3));
+      const localAccount = mockedAccount('0x' + 'a'.repeat(64), 3);
+      mockWebClient.getAccount.mockResolvedValueOnce(localAccount);
       mockAccountDeserialize.mockReturnValueOnce(mockedAccount('0x' + 'b'.repeat(64), 2));
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -570,11 +583,24 @@ describe('Multisig', () => {
           updated_at: '2024-01-02T00:00:00Z',
         }),
       });
+      mockDetectConfig.mockReturnValueOnce({
+        threshold: 2,
+        numSigners: 2,
+        signerCommitments: ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)],
+        guardianEnabled: true,
+        guardianCommitment: '0x' + 'd'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
 
-      await expect(multisig.syncState()).rejects.toThrow(
-        'incoming nonce 2 is not greater than local nonce 3'
-      );
+      // GUARDIAN behind local (nonce 2 < 3): no throw, local kept, no overwrite,
+      // and the decision needs no on-chain round-trip.
+      await expect(multisig.syncState()).resolves.toBeDefined();
       expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+      expect(mockRpcGetAccountDetails).not.toHaveBeenCalled();
+      // Config refreshed from the authoritative local account (UI unfreezes).
+      expect(multisig.account).toBe(localAccount);
+      expect(multisig.threshold).toBe(2);
     });
 
     it('should throw when incoming state nonce equals local nonce but commitment differs', async () => {
@@ -608,9 +634,48 @@ describe('Multisig', () => {
       });
 
       await expect(multisig.syncState()).rejects.toThrow(
-        'incoming nonce 2 is not greater than local nonce 2'
+        'incoming nonce 2 equals local nonce 2 but commitments differ'
       );
       expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+    });
+
+    it('unfreezes Multisig.account after execute when GUARDIAN still lags by one nonce (regression, #343)', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        guardian,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      // Post-execute: local advanced to nonce 1, GUARDIAN still reports nonce 0
+      // (candidate not canonicalized yet). Before the fix this threw and left
+      // Multisig.account frozen at the pre-execute snapshot.
+      const localAccount = mockedAccount('0x' + 'a'.repeat(64), 1);
+      mockWebClient.getAccount.mockResolvedValueOnce(localAccount);
+      mockAccountDeserialize.mockReturnValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await expect(multisig.syncState()).resolves.toBeDefined();
+      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+      expect(multisig.account).toBe(localAccount);
     });
   });
 
@@ -1254,6 +1319,82 @@ describe('Multisig', () => {
       const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1);
 
       expect(proposal.metadata.description).toBe('Send 100 of asset 0xfaucet... to 0xrecipien...');
+    });
+
+    it('threads a private noteType into the request and wire metadata (issue #322)', async () => {
+      const { executeForSummary, buildP2idTransactionRequest } = await import('./transaction.js');
+      const { NoteType } = await import('@miden-sdk/miden-sdk');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'p2id',
+            recipient_id: '0xrecipient',
+            faucet_id: '0xfaucet',
+            amount: '100',
+            note_type: 'private',
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1, {
+        noteType: NoteType.Private,
+      });
+
+      // Propose path builds the private note...
+      expect(vi.mocked(buildP2idTransactionRequest)).toHaveBeenCalledWith(
+        expect.any(String),
+        '0xrecipient',
+        '0xfaucet',
+        100n,
+        expect.anything(),
+        { noteType: NoteType.Private },
+      );
+      // ...and the rebuild-from-metadata path parses note_type back to Private.
+      const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
+      expect(lastCall[5]).toMatchObject({ noteType: NoteType.Private });
+
+      // The pushed wire metadata carries note_type so cosigners rebuild the
+      // same private note at verification/execution.
+      const pushBody = JSON.parse(mockFetch.mock.calls.at(-1)![1].body as string);
+      expect(pushBody.delta_payload.metadata.note_type).toBe('private');
+
+      expect(proposal.metadata.proposalType).toBe('p2id');
+      expect((proposal.metadata as { noteType?: string }).noteType).toBe('private');
     });
   });
 
@@ -1965,7 +2106,14 @@ describe('Multisig', () => {
         ok: false,
         status: 404,
         statusText: 'Not Found',
-        text: async () => 'Proposal not found',
+        // Feature 009: only a conforming { code, message, meta } envelope is
+        // folded into the error message; raw text bodies are dropped.
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_NOT_FOUND',
+            message: 'Proposal not found',
+            meta: { retryable: false },
+          }),
       });
 
       await expect(

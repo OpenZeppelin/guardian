@@ -23,6 +23,7 @@ import type {
   DeltaAssetKind,
   DeltaCounterpartyDirection,
   DashboardErrorCode,
+  DashboardErrorCodeOrRaw,
   DashboardGlobalDeltaEntry,
   DashboardGlobalProposalEntry,
   DashboardInfoResponse,
@@ -109,7 +110,7 @@ const WIRE_ACCOUNT_RELEASED = 'GUARDIAN_ACCOUNT_RELEASED';
  * the permission-denial code; every other code matches by string
  * equality.
  */
-function mapDashboardErrorCode(raw: string | null): string | null {
+function mapDashboardErrorCode(raw: string | null): DashboardErrorCodeOrRaw | null {
   if (raw === WIRE_INSUFFICIENT_OPERATOR_PERMISSION) {
     return 'insufficient_operator_permission';
   }
@@ -129,7 +130,7 @@ function mapDashboardErrorCode(raw: string | null): string | null {
  * (or `null` if the body was missing/malformed).
  */
 export interface ParsedErrorBody {
-  code: DashboardErrorCode | string | null;
+  code: DashboardErrorCodeOrRaw | null;
   message: string | null;
   retryAfterSecs?: number;
   /**
@@ -210,7 +211,7 @@ export async function parseErrorBody(
   const record = raw as Record<string, unknown>;
 
   const codeRaw = record['code'];
-  const code: DashboardErrorCode | string | null = mapDashboardErrorCode(
+  const code: DashboardErrorCodeOrRaw | null = mapDashboardErrorCode(
     typeof codeRaw === 'string' ? codeRaw : null,
   );
 
@@ -1679,6 +1680,7 @@ function parseDeltaProposalMetadata(
   if (typeof record.recipient_id === 'string') proposal.recipientId = record.recipient_id;
   if (typeof record.faucet_id === 'string') proposal.faucetId = record.faucet_id;
   if (typeof record.amount === 'string') proposal.amount = record.amount;
+  if (typeof record.note_type === 'string') proposal.noteType = record.note_type;
   if (record.note_ids !== undefined)
     proposal.noteIds = assertStringArray(
       requireArray(record, 'note_ids', context),

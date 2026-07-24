@@ -826,6 +826,8 @@ mod tests {
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
                 retry_count: 0,
                 divergence_count: 0,
+                abandon_requested_at: None,
+                abandon_confirm_count: 0,
             },
             metadata: None,
         };

@@ -164,6 +164,17 @@ pub enum CanonicalWrite {
     NotCandidate,
 }
 
+/// Outcome of recording a client abandon request on a candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AbandonIntent {
+    /// The request timestamp was recorded; the delta remains a candidate.
+    Recorded,
+    /// The candidate already carries an abandon request; nothing written.
+    AlreadyRequested { requested_at: String },
+    /// The delta is absent or no longer a candidate; nothing written.
+    NotCandidate,
+}
+
 /// Outcome of a fenced candidate promotion. Promotion overwrites the
 /// account state, so it carries one gate the other canonicalization
 /// writes do not: the stored state must still sit at the candidate's
@@ -287,12 +298,27 @@ pub(crate) async fn discard_candidate_sequential(
 }
 
 /// Single-process fallback for [`StorageBackend::update_candidate_status`].
+/// Best-effort merge of a concurrently recorded abandon request: the read
+/// and the write are separate steps here, acceptable only where no
+/// concurrent replica can observe the gap. Its sole consumer is the
+/// cfg-gated mock backend — the filesystem backend overrides the method
+/// with a locked read-modify-write — hence the dead-code allowance for
+/// non-test builds.
+#[allow(dead_code)]
 pub(crate) async fn update_candidate_status_sequential(
     storage: &dyn StorageBackend,
     account_id: &str,
     nonce: u64,
     status: DeltaStatus,
 ) -> Result<CanonicalWrite, String> {
+    let status = match storage.pull_delta(account_id, nonce).await {
+        Ok(current) if current.status.is_candidate() => {
+            status.with_abandon_request_preserved_from(current.status.abandon_requested_at())
+        }
+        Ok(_) => return Ok(CanonicalWrite::NotCandidate),
+        // Mocks without a canned read keep the historical plain-write path.
+        Err(_) => status,
+    };
     storage
         .update_delta_status(account_id, nonce, status)
         .await?;
@@ -460,6 +486,19 @@ pub trait StorageBackend: Send + Sync {
     async fn delete_delta_proposal(&self, account_id: &str, commitment: &str)
     -> Result<(), String>;
     async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String>;
+    /// Atomically record a client's abandon request (issue #319) on the
+    /// candidate at `nonce`: sets `abandon_requested_at` while preserving
+    /// every worker-owned counter, only while the delta is still a
+    /// candidate. Unfenced by design — the write is a non-destructive
+    /// annotation; the lease-holding worker resolves the intent. An
+    /// existing request timestamp is kept so retries cannot restart the
+    /// abandon quarantine.
+    async fn request_candidate_abandon(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+    ) -> Result<AbandonIntent, String>;
     async fn update_delta_status(
         &self,
         account_id: &str,

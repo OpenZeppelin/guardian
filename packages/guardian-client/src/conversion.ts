@@ -85,7 +85,7 @@ export function fromServerDeltaStatus(server: ServerDeltaStatus): DeltaStatus {
     case 'canonical':
       return { status: 'canonical', timestamp: server.timestamp };
     case 'discarded':
-      return { status: 'discarded', timestamp: server.timestamp };
+      return { status: 'discarded', timestamp: server.timestamp, reason: server.reason };
   }
 }
 
@@ -106,6 +106,7 @@ export function fromServerProposalMetadata(server: ServerProposalMetadata): Prop
     recipientId: server.recipient_id,
     faucetId: server.faucet_id,
     amount: server.amount,
+    noteType: server.note_type,
   };
 }
 
@@ -194,7 +195,7 @@ export function toServerDeltaStatus(status: DeltaStatus): ServerDeltaStatus {
     case 'canonical':
       return { status: 'canonical', timestamp: status.timestamp };
     case 'discarded':
-      return { status: 'discarded', timestamp: status.timestamp };
+      return { status: 'discarded', timestamp: status.timestamp, reason: status.reason };
   }
 }
 
@@ -215,6 +216,7 @@ export function toServerProposalMetadata(meta: ProposalMetadata): ServerProposal
     recipient_id: meta.recipientId,
     faucet_id: meta.faucetId,
     amount: meta.amount,
+    note_type: meta.noteType,
   };
 }
 

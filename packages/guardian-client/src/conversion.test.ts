@@ -416,5 +416,21 @@ describe('conversion', () => {
       expect(result.amount).toBe(original.amount);
       expect(result.salt).toBe(original.salt);
     });
+
+    it('p2id noteType survives roundtrip as note_type on the wire (issue #322)', () => {
+      const original: ProposalMetadata = {
+        proposalType: 'p2id',
+        recipientId: '0xrecipient',
+        faucetId: '0xfaucet',
+        amount: '1000',
+        noteType: 'private',
+      };
+
+      const server = toServerProposalMetadata(original);
+      expect(server.note_type).toBe('private');
+
+      const result = fromServerProposalMetadata(server);
+      expect(result.noteType).toBe('private');
+    });
   });
 });

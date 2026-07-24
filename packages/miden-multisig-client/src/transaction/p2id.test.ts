@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Word } from '@miden-sdk/miden-sdk';
 
 const {
+  mockFromVaultKey,
+  mockFungibleAssetConstructor,
   mockHashElements,
   mockNormalizeHexWord,
   mockRandomWord,
   mockWordFromHex,
+  noteMetadataCalls,
   saltFelts,
 } = vi.hoisted(() => {
   const saltFelts = [
@@ -16,6 +19,13 @@ const {
   ];
 
   return {
+    mockFromVaultKey: vi.fn((vaultKey: unknown, amount: bigint) => ({
+      kind: 'asset-from-vault-key',
+      vaultKey,
+      amount,
+    })),
+    mockFungibleAssetConstructor: vi.fn(),
+    noteMetadataCalls: [] as unknown[][],
     mockHashElements: vi.fn().mockReturnValue({ toString: () => 'serial' }),
     mockNormalizeHexWord: vi.fn((hex: string) => hex),
     mockRandomWord: vi.fn().mockReturnValue({
@@ -66,10 +76,12 @@ vi.mock('@miden-sdk/miden-sdk', () => {
 
   class NoteMetadata {
     constructor(
-      _sender: unknown,
-      _noteType: unknown,
-      _noteTag: unknown,
-    ) {}
+      sender: unknown,
+      noteType: unknown,
+      noteTag: unknown,
+    ) {
+      noteMetadataCalls.push([sender, noteType, noteTag]);
+    }
   }
 
   class NoteRecipient {
@@ -89,7 +101,11 @@ vi.mock('@miden-sdk/miden-sdk', () => {
   }
 
   class FungibleAsset {
-    constructor(_faucet: unknown, _amount: bigint) {}
+    constructor(faucet: unknown, amount: bigint) {
+      mockFungibleAssetConstructor(faucet, amount);
+    }
+
+    static fromVaultKey = mockFromVaultKey;
   }
 
   class NoteArray {
@@ -120,6 +136,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
         hex,
         prefix: () => 1,
         suffix: () => 2,
+        toString: () => hex,
       })),
     },
     Felt,
@@ -140,7 +157,8 @@ vi.mock('@miden-sdk/miden-sdk', () => {
       withAccountTarget: vi.fn(() => ({ kind: 'tag' })),
     },
     NoteType: {
-      Public: 'public',
+      Private: 0,
+      Public: 1,
     },
     OutputNote: {
       full: vi.fn((note: unknown) => ({ note })),
@@ -163,14 +181,32 @@ vi.mock('../utils/random.js', () => ({
   randomWord: mockRandomWord,
 }));
 
-import { buildP2idTransactionRequest } from './p2id.js';
+import { buildP2idTransactionRequest, parseP2idNoteType, p2idNoteTypeToMetadata } from './p2id.js';
+import type { Account } from '@miden-sdk/miden-sdk';
+
+const FAUCET_ID = '0x7bfb0f38b0fafa103f86a805594171';
+
+const mockAccount = {
+  vault: () => ({
+    fungibleAssets: () => [
+      {
+        faucetId: () => ({ toString: () => FAUCET_ID }),
+        vaultKey: () => ({ kind: 'vault-key' }),
+      },
+    ],
+  }),
+} as unknown as Account;
+import { NoteType } from '@miden-sdk/miden-sdk';
 
 describe('buildP2idTransactionRequest', () => {
   beforeEach(() => {
+    mockFromVaultKey.mockClear();
+    mockFungibleAssetConstructor.mockClear();
     mockHashElements.mockClear();
     mockNormalizeHexWord.mockClear();
     mockRandomWord.mockClear();
     mockWordFromHex.mockClear();
+    noteMetadataCalls.length = 0;
   });
 
   it('derives serial number from salt felts plus four zero felts', () => {
@@ -179,8 +215,9 @@ describe('buildP2idTransactionRequest', () => {
     buildP2idTransactionRequest(
       '0x7bfb0f38b0fafa103f86a805594170',
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
-      '0x7bfb0f38b0fafa103f86a805594171',
+      FAUCET_ID,
       10n,
+      mockAccount,
       { salt },
     );
 
@@ -196,5 +233,58 @@ describe('buildP2idTransactionRequest', () => {
     for (const felt of values.slice(4)) {
       expect((felt as { value: bigint }).value).toBe(0n);
     }
+  });
+
+  it('creates a public note by default (issue #322)', () => {
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      '0x7bfb0f38b0fafa103f86a805594171',
+      10n,
+      mockAccount,
+    );
+
+    expect(noteMetadataCalls).toHaveLength(1);
+    expect(noteMetadataCalls[0][1]).toBe(NoteType.Public);
+  });
+
+  it('threads the requested noteType into the note metadata (issue #322)', () => {
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      '0x7bfb0f38b0fafa103f86a805594171',
+      10n,
+      mockAccount,
+      { noteType: NoteType.Private },
+    );
+
+    expect(noteMetadataCalls).toHaveLength(1);
+    expect(noteMetadataCalls[0][1]).toBe(NoteType.Private);
+  });
+});
+
+describe('parseP2idNoteType', () => {
+  it('maps absent to Public (pre-#322 proposals)', () => {
+    expect(parseP2idNoteType(undefined)).toBe(NoteType.Public);
+  });
+
+  it('maps wire values to note types', () => {
+    expect(parseP2idNoteType('public')).toBe(NoteType.Public);
+    expect(parseP2idNoteType('private')).toBe(NoteType.Private);
+  });
+
+  it('rejects unknown values instead of silently rebuilding a public note', () => {
+    expect(() => parseP2idNoteType('encrypted')).toThrow(/unsupported metadata.noteType/);
+  });
+});
+
+describe('p2idNoteTypeToMetadata', () => {
+  it('omits the default so public payloads keep the legacy wire shape', () => {
+    expect(p2idNoteTypeToMetadata(undefined)).toBeUndefined();
+    expect(p2idNoteTypeToMetadata(NoteType.Public)).toBeUndefined();
+  });
+
+  it('serializes private', () => {
+    expect(p2idNoteTypeToMetadata(NoteType.Private)).toBe('private');
   });
 });

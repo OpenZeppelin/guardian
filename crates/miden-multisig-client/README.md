@@ -63,6 +63,12 @@ let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b")?;
 let faucet = AccountId::from_hex("0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c")?;
 let tx = TransactionType::transfer(recipient, faucet, 1_000);
 
+// P2ID notes are public by default. For a private note (only its hash is
+// published on chain; the recipient needs the note shared out-of-band) use
+// `transfer_with_note_type`. `NoteType` is re-exported from `miden_protocol::note`.
+use miden_protocol::note::NoteType;
+let tx = TransactionType::transfer_with_note_type(recipient, faucet, 1_000, NoteType::Private);
+
 // Proposer creates the delta on GUARDIAN
 let proposal = client.propose_transaction(tx).await?;
 
@@ -76,6 +82,32 @@ client.sign_proposal(&to_sign.id).await?;
 
 // Once threshold is met, any cosigner can execute
 client.execute_proposal(&proposal.id).await?;
+```
+
+### Recovering From a Dead Transaction (Abandon)
+
+If `execute_proposal` dies after guardian approval (RPC submit failure,
+prover timeout, crash), the approved candidate keeps the account locked on
+GUARDIAN. Record an abandon intent and poll for the resolution:
+
+```rust
+use miden_multisig_client::{AbandonRequestState, AbandonStatus};
+
+// The nonce the proposal was pushed with (committed account nonce + 1).
+let state = client.abandon_candidate(nonce).await?;
+assert_eq!(state, AbandonRequestState::Pending);
+
+// The guardian's worker confirms over a short quarantine (typically well
+// under a minute) that the transaction did not land, then releases the
+// account.
+loop {
+    match client.abandon_status(nonce).await? {
+        AbandonStatus::Waiting => tokio::time::sleep(Duration::from_secs(5)).await,
+        AbandonStatus::Abandoned => break,           // account released
+        AbandonStatus::Landed => break,              // tx landed after all
+        AbandonStatus::Unexpected => anyhow::bail!("unexpected candidate state"),
+    }
+}
 ```
 
 ### Fallback to Offline (if GUARDIAN unavailable)
@@ -152,11 +184,12 @@ on-chain transaction — the integration owns that recipe and drives execution.
 ```rust
 use miden_client::Serializable;
 use miden_multisig_client::{build_p2id_transaction_request, generate_salt};
+use miden_protocol::note::NoteType;
 
 // Producer: build a transaction and propose it under a custom label.
 let salt = generate_salt();
 let mut request = build_p2id_transaction_request(
-    account.inner(), recipient, vec![asset], salt, std::iter::empty(),
+    account.inner(), recipient, vec![asset], NoteType::Public, salt, std::iter::empty(),
 )?;
 let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import { useModal } from '@getpara/react-sdk-lite';
 import { MidenWalletAdapter } from '@demox-labs/miden-wallet-adapter-miden';
+import { NoteType } from '@miden-sdk/miden-sdk';
 import type { MidenClient } from '@miden-sdk/miden-sdk';
 import {
   AccountInspector,
@@ -101,7 +102,7 @@ export type CreateProposalInput =
   | { type: 'change_threshold'; newThreshold: number }
   | { type: 'update_procedure_threshold'; procedure: ProcedureName; threshold: number }
   | { type: 'consume_notes'; noteIds: string[] }
-  | { type: 'p2id'; recipientId: string; faucetId: string; amount: string | number }
+  | { type: 'p2id'; recipientId: string; faucetId: string; amount: string | number; noteType?: 'public' | 'private' }
   | { type: 'switch_guardian'; newGuardianEndpoint: string; newGuardianPubkey: string };
 
 export interface CreateCustomProposalInput {
@@ -1073,6 +1074,7 @@ export function useSmokeHarness(): {
               input.recipientId.trim(),
               input.faucetId.trim(),
               BigInt(input.amount),
+              input.noteType === 'private' ? NoteType.Private : undefined,
             );
             break;
           case 'switch_guardian':

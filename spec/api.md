@@ -147,6 +147,8 @@ Miden delta proposals use:
 
 `metadata.proposal_type` is required and must be a non-empty string, but its value is **not** restricted to a fixed set: the server accepts any label (issue #266). The first-party multisig operations use `add_signer`, `remove_signer`, `change_threshold`, `update_procedure_threshold`, `switch_guardian`, `consume_notes`, and `p2id`; any other label is accepted and surfaced verbatim. Clients that do not model a given label bucket it as `custom` while preserving the original string for display. The server makes no security decision based on `proposal_type` — integrity comes from the tx_summary/state-commitment check, the cosigner threshold, and the GUARDIAN ack. Restricting which types an account may submit is a policy-layer concern, not a core-server one.
 
+`p2id` metadata carries `recipient_id`, `faucet_id`, `amount`, and an optional `note_type` (`"public"` or `"private"`, issue #322). Clients emit `note_type` only when the note is private; an absent field means public, which keeps proposals created before the field existed valid. The value is part of the signed metadata: verifiers rebuild the transaction from it, so a tampered `note_type` fails the tx_summary commitment check.
+
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
 
 EVM proposal creation request:
@@ -270,6 +272,7 @@ component schemas.
 | client | `GET /delta/proposal` | signed headers | List pending proposals |
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
+| client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
 | dashboard | `GET /auth/challenge` | public | Operator login challenge |
 | dashboard | `POST /auth/verify` | public | Verify challenge, establish session |
 | dashboard | `POST /auth/logout` | session | Invalidate the operator session |

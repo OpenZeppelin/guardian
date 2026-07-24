@@ -55,10 +55,21 @@ export {
   buildUpdateGuardianTransactionRequest,
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
+  parseP2idNoteType,
+  p2idNoteTypeToMetadata,
+  type P2idTransactionOptions,
 } from './transaction.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
 export type { GuardianErrorMeta } from '@openzeppelin/guardian-client';
+// Typed error-code vocabulary (issue #318): branch on GuardianErrorCode,
+// never on message text; unknown wire codes surface via rawCode.
+export {
+  GUARDIAN_ERROR_CODES,
+  isGuardianErrorCode,
+  normalizeGuardianErrorCode,
+} from '@openzeppelin/guardian-client';
+export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
 
 // Codeless transport-failure classification (feature 009, User Story 3).
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
@@ -90,6 +101,8 @@ export {
   MAX_CONSUME_NOTES_METADATA_BYTES,
   isConsumeNotesV1,
   isConsumeNotesV2,
+  isP2idNoteVisibility,
+  type P2idNoteVisibility,
 } from './types/proposal.js';
 
 export {

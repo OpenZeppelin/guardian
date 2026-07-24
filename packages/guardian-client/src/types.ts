@@ -65,7 +65,7 @@ export type DeltaStatus =
   | { status: 'pending'; timestamp: string; proposerId: string; cosignerSigs: CosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
-  | { status: 'discarded'; timestamp: string };
+  | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ProposalType =
   | 'add_signer'
@@ -98,6 +98,8 @@ export interface ProposalMetadata {
   recipientId?: string;
   faucetId?: string;
   amount?: string;
+  /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
+  noteType?: string;
 }
 
 export interface DeltaObject {
@@ -186,6 +188,26 @@ export interface SignProposalRequest {
   commitment: string;
   signature: ProposalSignature;
 }
+
+export interface AbandonCandidateResponse {
+  accountId: string;
+  nonce: number;
+  /**
+   * `'pending'` while the guardian's worker still has to resolve the
+   * abandon intent (the account stays locked until then); `'abandoned'`
+   * once the delta is discarded as client-abandoned and the account
+   * released.
+   */
+  state: 'pending' | 'abandoned';
+  /**
+   * RFC 3339 UTC timestamp of the recorded abandon request. Retries
+   * return the original timestamp; absent once resolved.
+   */
+  abandonRequestedAt?: string;
+}
+
+/** Resolution of an abandon request, as observed via the delta feed. */
+export type AbandonStatus = 'waiting' | 'landed' | 'abandoned' | 'unexpected';
 
 export interface PushDeltaResponse {
   accountId: string;

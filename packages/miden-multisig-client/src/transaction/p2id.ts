@@ -1,4 +1,4 @@
-import type { TransactionRequest, Word } from '@miden-sdk/miden-sdk';
+import type { Account, TransactionRequest, Word } from '@miden-sdk/miden-sdk';
 import {
   AccountId,
   FeltArray,
@@ -19,6 +19,38 @@ import {
 import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
+import type { P2idNoteVisibility } from '../types/proposal.js';
+
+export interface P2idTransactionOptions extends SignatureOptions {
+  /** Visibility of the created note. Defaults to `NoteType.Public`. */
+  noteType?: NoteType;
+}
+
+/**
+ * Parses the metadata wire value for a P2ID note visibility (issue #322).
+ * Absent => public, the only behavior before the field existed. An unknown
+ * value is rejected rather than silently rebuilt as a public note that could
+ * never match the signed tx_summary commitment.
+ */
+export function parseP2idNoteType(value: string | undefined): NoteType {
+  switch (value) {
+    case undefined:
+    case 'public':
+      return NoteType.Public;
+    case 'private':
+      return NoteType.Private;
+    default:
+      throw new Error(`unsupported metadata.noteType '${value}': expected 'public' or 'private'`);
+  }
+}
+
+/**
+ * Maps a note type to its metadata wire value, omitting the default so
+ * public-note payloads keep the pre-#322 wire shape.
+ */
+export function p2idNoteTypeToMetadata(noteType: NoteType | undefined): P2idNoteVisibility | undefined {
+  return noteType === NoteType.Private ? 'private' : undefined;
+}
 
 export function deriveP2idSerialNumber(salt: Word): Word {
   const zeroWord = WordType.fromHex(`0x${'00'.repeat(32)}`);
@@ -26,6 +58,32 @@ export function deriveP2idSerialNumber(salt: Word): Word {
     ...salt.toFelts(),
     ...zeroWord.toFelts(),
   ]));
+}
+
+/**
+ * Builds the fungible asset to transfer, sourcing the callback flag from the held asset.
+ *
+ * In Miden 0.15 the callback flag is part of the vault key, so rebuilding the asset from
+ * `faucet`/`amount` with the default flag would not match the held asset and the transfer
+ * would abort. When the faucet is absent the default flag is used, surfacing the
+ * missing-asset error during execution.
+ */
+function resolveFungibleAssetFromVault(
+  account: Account,
+  faucet: AccountId,
+  amount: bigint,
+): FungibleAsset {
+  const faucetHex = faucet.toString();
+  const assetFromVault = account
+    .vault()
+    .fungibleAssets()
+    .find(asset => asset.faucetId().toString() === faucetHex);
+
+  if (!assetFromVault) {
+    return new FungibleAsset(faucet, amount);
+  }
+
+  return FungibleAsset.fromVaultKey(assetFromVault.vaultKey(), amount);
 }
 
 function buildP2idNote(
@@ -61,7 +119,8 @@ export function buildP2idTransactionRequest(
   recipientId: string,
   faucetId: string,
   amount: bigint,
-  options: SignatureOptions = {},
+  account: Account,
+  options: P2idTransactionOptions = {},
 ): { request: TransactionRequest; salt: Word } {
   const sender = AccountId.fromHex(senderId);
   const recipient = AccountId.fromHex(recipientId);
@@ -69,14 +128,15 @@ export function buildP2idTransactionRequest(
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
-  const asset = new FungibleAsset(faucet, amount);
+  const asset = resolveFungibleAssetFromVault(account, faucet, amount);
+
   const noteAssets = new NoteAssets([asset]);
 
   const note = buildP2idNote(
     sender,
     recipient,
     noteAssets,
-    NoteType.Public,
+    options.noteType ?? NoteType.Public,
     authSaltHex,
   );
 

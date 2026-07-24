@@ -379,7 +379,23 @@ const proposal = await multisig.createP2idProposal(
   faucetAccountId,       // Faucet (token) ID
   1000n                  // Amount to send
 );
+
+// Private note: only the note's hash is published on chain. Pass `noteType`
+// in the options object (`NoteType` comes from `@miden-sdk/miden-sdk`).
+import { NoteType } from '@miden-sdk/miden-sdk';
+
+const privateProposal = await multisig.createP2idProposal(
+  recipientAccountId,
+  faucetAccountId,
+  1000n,
+  undefined,                       // nonce (defaults to Date.now())
+  { noteType: NoteType.Private },  // note visibility; defaults to NoteType.Public
+);
 ```
+
+> **Warning:** a `private` P2ID note publishes only its hash on chain. The
+> recipient cannot discover the note by syncing; the full note details must
+> be shared with them out-of-band before they can consume it.
 
 #### Consume Notes (Claim Received Funds)
 
@@ -489,8 +505,10 @@ await multisig.executeProposal(signedProposal.id);
 | `fetchState()` | Fetch latest state from GUARDIAN |
 | `registerOnGuardian()` | Register new account with GUARDIAN |
 | `syncProposals()` | Sync proposals from GUARDIAN |
+| `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
+| `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
 | `listProposals()` | Get cached proposals |
-| `createP2idProposal(recipient, faucet, amount, nonce?)` | Create transfer proposal |
+| `createP2idProposal(recipient, faucet, amount, nonce?, { noteType }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`) |
 | `createConsumeNotesProposal(noteIds, nonce?)` | Create note consumption proposal |
 | `createAddSignerProposal(commitment, nonce?, threshold?)` | Create add signer proposal |
 | `createRemoveSignerProposal(commitment, nonce?, threshold?)` | Create remove signer proposal |
@@ -620,8 +638,15 @@ responses, and per-account `get_state` failures are returned as errors.
 ### Transaction Types
 
 ```rust
-// P2ID Transfer
+// P2ID Transfer (public note)
 let tx = TransactionType::transfer(recipient_id, faucet_id, 1000);
+
+// P2ID Transfer with a private note (only the note hash is published on
+// chain; the recipient needs the note shared out-of-band). `NoteType` is
+// re-exported from `miden_protocol::note`.
+let tx = TransactionType::transfer_with_note_type(
+    recipient_id, faucet_id, 1000, NoteType::Private,
+);
 
 // Consume Notes
 let tx = TransactionType::consume_notes(vec![note_id1, note_id2]);
@@ -749,6 +774,8 @@ for note in notes {
 | `list_proposals()` | List pending proposals |
 | `sign_proposal(id)` | Sign a proposal |
 | `execute_proposal(id)` | Execute ready proposal |
+| `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
+| `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
 | `create_proposal_offline(tx)` | Create offline proposal |
 | `sign_imported_proposal(exported)` | Sign offline proposal |
 | `execute_imported_proposal(exported)` | Execute offline proposal |
@@ -776,7 +803,7 @@ for note in notes {
 
 | Variant | Description |
 |---------|-------------|
-| `P2ID { recipient, faucet_id, amount }` | Transfer funds |
+| `P2ID { recipient, faucet_id, amount, note_type }` | Transfer funds (`note_type` selects note visibility; defaults to `NoteType::Public` via `transfer()`) |
 | `ConsumeNotes { note_ids }` | Consume notes |
 | `AddCosigner { new_commitment }` | Add signer |
 | `RemoveCosigner { commitment }` | Remove signer |

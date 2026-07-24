@@ -273,6 +273,18 @@ sequenceDiagram
       landed yet), or the comparison itself failed (RPC error): defer within
       `submission_grace_period_seconds`, then consume retry budget on each
       full-pass tick and discard after `max_retries`.
+    - Matches the candidate's `prev_commitment` AND the candidate carries a
+      client abandon intent (`abandon_requested_at`, recorded by
+      `POST /delta/candidate/abandon`): count the observation toward the
+      abandon quarantine instead — this takes precedence over the grace
+      deferral. After `abandon_quarantine_checks` consecutive at-base
+      observations (default 2) AND `abandon_quarantine_seconds` since the
+      request (default 15, so a late-landing transaction can surface),
+      delete the matching proposal, transition the delta to
+      `discarded` with reason `client_abandoned` (preserved as history),
+      and clear the pending-candidate flag. A divergent observation resets
+      the abandon-confirmation streak; a landed transaction always wins
+      and canonicalizes normally.
     - Matches neither — the account advanced past the candidate's base
       state, so the candidate can never verify: after
       `divergence_confirmations` consecutive such observations (default 2,

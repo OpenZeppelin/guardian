@@ -2,6 +2,7 @@ import {
   MidenClient,
   Word,
   type AdviceMap,
+  type NoteType,
   type TransactionRequest,
 } from '@miden-sdk/miden-sdk';
 import {
@@ -317,6 +318,7 @@ export async function createP2idProposal(
   recipientId: string,
   faucetId: string,
   amount: bigint,
+  noteType?: NoteType,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createP2idProposal(
@@ -324,6 +326,7 @@ export async function createP2idProposal(
       faucetId,
       amount,
       proposalNonce(multisig),
+      { noteType },
     ));
 }
 
@@ -394,15 +397,17 @@ export interface CustomProposalRecipe {
   saltHex: string;
 }
 
-function buildRequestFromRecipe(
+async function buildRequestFromRecipe(
+  multisig: Multisig,
   recipe: CustomProposalRecipe,
   signatureAdviceMap?: AdviceMap,
-): TransactionRequest {
+): Promise<TransactionRequest> {
   return buildP2idTransactionRequest(
     recipe.senderId,
     recipe.recipientId,
     recipe.faucetId,
     BigInt(recipe.amount),
+    await multisig.getStoreAccount(),
     { salt: Word.fromHex(recipe.saltHex), signatureAdviceMap },
   ).request;
 }
@@ -420,6 +425,7 @@ export async function createCustomP2idProposal(
     recipientId,
     faucetId,
     amount,
+    await multisig.getStoreAccount(),
   );
 
   const created = await createProposalResult(multisig, () =>
@@ -442,10 +448,10 @@ export async function prepareAndSubmitCustomProposal(
   multisig: Multisig,
   recipe: CustomProposalRecipe,
 ): Promise<void> {
-  const bindingRequestBytes = buildRequestFromRecipe(recipe).serialize();
+  const bindingRequestBytes = (await buildRequestFromRecipe(multisig, recipe)).serialize();
   const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequestBytes);
 
-  const finalRequest = buildRequestFromRecipe(recipe, advice);
+  const finalRequest = await buildRequestFromRecipe(multisig, recipe, advice);
 
   try {
     await multisig.submitTransaction(finalRequest);
