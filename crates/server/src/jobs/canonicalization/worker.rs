@@ -54,6 +54,9 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
         if mode == ProcessingMode::Full {
             next_full_deadline = next_tick_after(scheduled_at, check_interval, Instant::now());
         }
+        // First of two reset points: a full tick must defer the fast timer
+        // even when the `continue` paths below (not leader, acquire error)
+        // never reach the post-pass reset.
         if config.fast_promotion_enabled && mode == ProcessingMode::Full {
             fast_timer.reset();
         }
@@ -132,6 +135,8 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
 
         cancel.cancel();
         let _ = renewal.await;
+        // Second reset point: measured from *after* the pass, so a fast
+        // tick never fires immediately behind a long full pass.
         if config.fast_promotion_enabled && mode == ProcessingMode::Full {
             fast_timer.reset();
         }

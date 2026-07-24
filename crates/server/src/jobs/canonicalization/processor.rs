@@ -259,7 +259,7 @@ impl DeltasProcessorBase {
             let Some(last_candidate) = candidates.last() else {
                 break;
             };
-            let next_cursor = Self::recent_candidate_cursor(last_candidate)?;
+            let next_cursor = Self::recent_candidate_cursor(last_candidate);
             let (page_accounts, page_failed_accounts) = self.process_recent_page(candidates).await;
             accounts += page_accounts;
             failed_accounts += page_failed_accounts;
@@ -269,6 +269,10 @@ impl DeltasProcessorBase {
                 break;
             }
 
+            let Some(next_cursor) = next_cursor else {
+                self.fast_promotion_state.set_cursor(None);
+                break;
+            };
             cursor = Some(next_cursor);
             self.fast_promotion_state.set_cursor(cursor.clone());
 
@@ -293,6 +297,13 @@ impl DeltasProcessorBase {
         Ok(self.pass_summary(accounts, failed_accounts))
     }
 
+    /// Pages are keyed by status timestamp, so a retried candidate (whose
+    /// timestamp was refreshed) can arrive on a later page than its
+    /// account's earlier nonces. The per-account nonce sort below only
+    /// orders within a page; an out-of-order candidate fails the
+    /// reconstruction-equality check and defers to the full pass — fast
+    /// promotion intentionally degrades for retried candidates instead of
+    /// re-sorting across pages.
     async fn process_recent_page(&self, candidates: Vec<DeltaObject>) -> (usize, usize) {
         let mut candidates_by_account = BTreeMap::<String, Vec<DeltaObject>>::new();
         for candidate in candidates
@@ -327,15 +338,26 @@ impl DeltasProcessorBase {
         (accounts, failed_accounts)
     }
 
-    fn recent_candidate_cursor(delta: &DeltaObject) -> Result<RecentCandidateCursor> {
-        let timestamp = DateTime::parse_from_rfc3339(delta.status.timestamp())
-            .map_err(|error| {
-                GuardianError::StorageError(format!(
-                    "Recent candidate has invalid status timestamp: {error}"
-                ))
-            })?
-            .with_timezone(&Utc);
-        Ok(RecentCandidateCursor {
+    /// Build the keyset cursor for the next page from the current page's
+    /// last candidate. Both shipped backends guarantee the timestamp
+    /// parses (Postgres refuses to write a malformed one; the filesystem
+    /// backend skips unparseable rows), so a failure here means a new or
+    /// drifted backend — end pagination for this pass rather than erroring
+    /// a pass that reruns every few seconds; the full pass owns the row.
+    fn recent_candidate_cursor(delta: &DeltaObject) -> Option<RecentCandidateCursor> {
+        let timestamp = match DateTime::parse_from_rfc3339(delta.status.timestamp()) {
+            Ok(timestamp) => timestamp.with_timezone(&Utc),
+            Err(error) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    error = %error,
+                    "Recent candidate has an invalid status timestamp; ending fast-pass pagination"
+                );
+                return None;
+            }
+        };
+        Some(RecentCandidateCursor {
             last_status_timestamp: timestamp,
             last_account_id: delta.account_id.clone(),
             last_nonce: delta.nonce,
@@ -1393,7 +1415,7 @@ impl TestDeltasProcessor {
                 divergence_confirmations: u32::MAX, // ...nor on divergence
                 abandon_quarantine_seconds: 0,      // ...and resolves abandons immediately
                 abandon_quarantine_checks: 1,
-                max_concurrent_accounts: 1,         // ...and stays deterministic
+                max_concurrent_accounts: 1, // ...and stays deterministic
                 fast_promotion_state: Arc::new(FastPromotionState::default()),
                 fast_promotion_deadline: None,
             },
@@ -1723,6 +1745,55 @@ mod tests {
                 last_nonce: u64::from(FAST_PROMOTION_PAGE_SIZE),
             })
         );
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_ends_pagination_on_malformed_cursor_timestamp() {
+        let account_id = "0xtest_account";
+        let page = (1..=FAST_PROMOTION_PAGE_SIZE)
+            .map(|nonce| {
+                let mut candidate = create_candidate_delta(account_id, u64::from(nonce));
+                candidate.new_commitment = None;
+                candidate
+            })
+            .map(|mut candidate| {
+                if candidate.nonce == u64::from(FAST_PROMOTION_PAGE_SIZE) {
+                    candidate.status = DeltaStatus::Candidate {
+                        timestamp: "not-a-timestamp".to_string(),
+                        retry_count: 0,
+                        divergence_count: 0,
+                        abandon_requested_at: None,
+                        abandon_confirm_count: 0,
+                    };
+                }
+                candidate
+            })
+            .collect::<Vec<_>>();
+        let storage =
+            Arc::new(MockStorageBackend::new().with_pull_recent_candidate_deltas(Ok(page)));
+        let metadata =
+            Arc::new(MockMetadataStore::new().with_get(Ok(Some(create_test_metadata(account_id)))));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(MockNetworkClient::new()),
+            metadata,
+            clock,
+        );
+        let processor = DeltasProcessor::new_with_mode(
+            state,
+            CanonicalizationConfig::default(),
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        assert_eq!(storage.get_pull_recent_candidate_deltas_calls().len(), 1);
     }
 
     #[tokio::test]

@@ -537,6 +537,11 @@ impl StorageBackend for FilesystemService {
         Ok(deltas)
     }
 
+    /// Every page pull fans out over every account and decodes every
+    /// candidate delta before `limit` is applied — the filesystem layout
+    /// has no status index. Acceptable for the single-process dev
+    /// backend this store is; deployments large enough to care about
+    /// fast-promotion cost belong on Postgres.
     async fn pull_recent_candidate_deltas(
         &self,
         since: DateTime<Utc>,
