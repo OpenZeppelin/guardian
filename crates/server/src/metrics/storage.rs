@@ -139,6 +139,20 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn pull_recent_candidate_deltas(
+        &self,
+        since: DateTime<Utc>,
+        cursor: Option<&crate::storage::RecentCandidateCursor>,
+        limit: u32,
+    ) -> Result<Vec<DeltaObject>, String> {
+        timed(
+            "pull_recent_candidate_deltas",
+            self.inner
+                .pull_recent_candidate_deltas(since, cursor, limit),
+        )
+        .await
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,

@@ -115,6 +115,9 @@ impl StartupInfo {
         match &self.canonicalization {
             Some(config) => tracing::info!(
                 check_interval_seconds = config.check_interval_seconds,
+                fast_promotion_enabled = config.fast_promotion_enabled,
+                fast_promotion_interval_seconds = config.fast_promotion_interval_seconds,
+                fast_promotion_window_seconds = config.fast_promotion_window_seconds,
                 max_retries = config.max_retries,
                 submission_grace_period_seconds = config.submission_grace_period_seconds,
                 "canonicalization"
@@ -177,6 +180,9 @@ mod tests {
             "0xecdsa".to_string(),
             Some(CanonicalizationConfig {
                 check_interval_seconds: 10,
+                fast_promotion_enabled: true,
+                fast_promotion_interval_seconds: 3,
+                fast_promotion_window_seconds: 30,
                 max_retries: 48,
                 submission_grace_period_seconds: 600,
                 divergence_confirmations: 2,

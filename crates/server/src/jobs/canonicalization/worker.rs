@@ -1,14 +1,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::time::interval;
+use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
 use crate::coordination::{LeaderElector, Lease};
 use crate::error::Result;
 use crate::state::AppState;
 
-use super::processor::{DeltasProcessor, PassSummary, Processor, TestDeltasProcessor};
+use super::processor::{
+    DeltasProcessor, FastPassControl, FastPromotionState, PassSummary, ProcessingMode, Processor,
+    TestDeltasProcessor,
+};
 
 pub fn start_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
     tokio::spawn(async move {
@@ -33,10 +36,30 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
     // crash happens within one TTL.
     let lease_ttl = check_interval * 3;
     let renew_interval = check_interval;
-    let mut interval_timer = interval(check_interval);
+    let mut full_timer = interval(check_interval);
+    let mut fast_timer = interval(config.fast_promotion_interval());
+    full_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    fast_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let fast_promotion_state = Arc::new(FastPromotionState::default());
+    let mut next_full_deadline = Instant::now();
 
     loop {
-        interval_timer.tick().await;
+        let (mode, scheduled_at) = next_processing_mode(
+            &mut full_timer,
+            &mut fast_timer,
+            config.fast_promotion_enabled,
+            config.fast_promotion_window_seconds,
+        )
+        .await;
+        if mode == ProcessingMode::Full {
+            next_full_deadline = next_tick_after(scheduled_at, check_interval, Instant::now());
+        }
+        // First of two reset points: a full tick must defer the fast timer
+        // even when the `continue` paths below (not leader, acquire error)
+        // never reach the post-pass reset.
+        if config.fast_promotion_enabled && mode == ProcessingMode::Full {
+            fast_timer.reset();
+        }
 
         let lease = match leader.try_acquire(lease_ttl).await {
             Ok(Some(lease)) => lease,
@@ -56,18 +79,28 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
             cancel.clone(),
         );
 
-        let processor = DeltasProcessor::with_lease(
+        let fast_promotion_deadline = match mode {
+            ProcessingMode::Full => None,
+            ProcessingMode::PromoteRecent { .. } => Some(std::cmp::min(
+                Instant::now() + config.fast_promotion_interval(),
+                next_full_deadline,
+            )),
+        };
+        let processor = DeltasProcessor::with_fast_pass(
             state.clone(),
             config.clone(),
             leader.clone(),
             lease,
             cancel.clone(),
+            mode,
+            FastPassControl {
+                state: fast_promotion_state.clone(),
+                deadline: fast_promotion_deadline,
+            },
         );
 
         let started = std::time::Instant::now();
         let result = processor.process_all_accounts().await;
-        metrics::histogram!(crate::metrics::names::CANONICALIZATION_RUN_DURATION_SECONDS)
-            .record(started.elapsed().as_secs_f64());
         let outcome = match &result {
             Ok(summary) if summary.cancelled => crate::metrics::labels::RunOutcome::Cancelled,
             Ok(summary) if summary.failed_accounts > 0 => {
@@ -76,14 +109,37 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
             Ok(_) => crate::metrics::labels::RunOutcome::Completed,
             Err(_) => crate::metrics::labels::RunOutcome::Error,
         };
-        metrics::counter!(
-            crate::metrics::names::CANONICALIZATION_RUNS_TOTAL,
-            crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
-        )
-        .increment(1);
+        let elapsed = started.elapsed().as_secs_f64();
+        match mode {
+            ProcessingMode::Full => {
+                metrics::histogram!(crate::metrics::names::CANONICALIZATION_RUN_DURATION_SECONDS)
+                    .record(elapsed);
+                metrics::counter!(
+                    crate::metrics::names::CANONICALIZATION_RUNS_TOTAL,
+                    crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
+                )
+                .increment(1);
+            }
+            ProcessingMode::PromoteRecent { .. } => {
+                metrics::histogram!(
+                    crate::metrics::names::CANONICALIZATION_FAST_RUN_DURATION_SECONDS
+                )
+                .record(elapsed);
+                metrics::counter!(
+                    crate::metrics::names::CANONICALIZATION_FAST_RUNS_TOTAL,
+                    crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
+                )
+                .increment(1);
+            }
+        }
 
         cancel.cancel();
         let _ = renewal.await;
+        // Second reset point: measured from *after* the pass, so a fast
+        // tick never fires immediately behind a long full pass.
+        if config.fast_promotion_enabled && mode == ProcessingMode::Full {
+            fast_timer.reset();
+        }
 
         match result {
             Ok(summary) if summary.cancelled || summary.failed_accounts > 0 => {
@@ -91,13 +147,42 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
                     accounts = summary.accounts,
                     failed_accounts = summary.failed_accounts,
                     cancelled = summary.cancelled,
+                    ?mode,
                     "Canonicalization pass degraded"
                 );
             }
             Ok(_) => {}
             Err(e) => {
-                tracing::error!(error = %e, "Canonicalization worker error");
+                tracing::error!(error = %e, ?mode, "Canonicalization worker error");
             }
+        }
+    }
+}
+
+async fn next_processing_mode(
+    full_timer: &mut Interval,
+    fast_timer: &mut Interval,
+    fast_promotion_enabled: bool,
+    fast_window_seconds: u64,
+) -> (ProcessingMode, Instant) {
+    if !fast_promotion_enabled {
+        return (ProcessingMode::Full, full_timer.tick().await);
+    }
+
+    tokio::select! {
+        biased;
+        scheduled_at = full_timer.tick() => (ProcessingMode::Full, scheduled_at),
+        scheduled_at = fast_timer.tick() => (ProcessingMode::PromoteRecent {
+            max_age_seconds: fast_window_seconds,
+        }, scheduled_at),
+    }
+}
+
+fn next_tick_after(mut scheduled_at: Instant, interval: Duration, now: Instant) -> Instant {
+    loop {
+        scheduled_at += interval;
+        if scheduled_at > now {
+            return scheduled_at;
         }
     }
 }
@@ -221,6 +306,54 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(11)).await;
             tokio::task::yield_now().await;
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn full_pass_wins_shared_tick() {
+        let mut full_timer = interval(Duration::from_secs(10));
+        let mut fast_timer = interval(Duration::from_secs(3));
+        full_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        fast_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        let initial = next_processing_mode(&mut full_timer, &mut fast_timer, true, 30).await;
+        assert_eq!(initial.0, ProcessingMode::Full);
+        fast_timer.reset();
+
+        tokio::time::advance(Duration::from_secs(3)).await;
+        let fast = next_processing_mode(&mut full_timer, &mut fast_timer, true, 30).await;
+        assert_eq!(
+            fast.0,
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30
+            }
+        );
+
+        tokio::time::advance(Duration::from_secs(7)).await;
+        let shared_tick = next_processing_mode(&mut full_timer, &mut fast_timer, true, 30).await;
+        assert_eq!(shared_tick.0, ProcessingMode::Full);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disabled_fast_promotion_only_uses_full_timer() {
+        let mut full_timer = interval(Duration::from_secs(10));
+        let mut fast_timer = interval(Duration::from_secs(3));
+
+        let initial = next_processing_mode(&mut full_timer, &mut fast_timer, false, 30).await;
+        assert_eq!(initial.0, ProcessingMode::Full);
+
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let next = next_processing_mode(&mut full_timer, &mut fast_timer, false, 30).await;
+        assert_eq!(next.0, ProcessingMode::Full);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn next_full_deadline_skips_elapsed_intervals() {
+        let scheduled_at = Instant::now();
+        tokio::time::advance(Duration::from_secs(25)).await;
+
+        let deadline = next_tick_after(scheduled_at, Duration::from_secs(10), Instant::now());
+
+        assert_eq!(deadline, scheduled_at + Duration::from_secs(30));
     }
 
     #[tokio::test(start_paused = true)]

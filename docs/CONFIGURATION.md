@@ -30,8 +30,27 @@ the runtime env vars in this document.
 | `GUARDIAN_KEYSTORE_PATH` | `/var/guardian/keystore` | any | Local Falcon/ECDSA key files (ACK signers and per-account creds). |
 | `GUARDIAN_DB_POOL_MAX_SIZE` | `16` (code default); `32` set by the prod Terraform profile | `postgres` | Storage backend pool size. |
 | `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | matches storage | `postgres` | Metadata backend pool size; usually leave equal. |
+| `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED` | `true` | any | Enables the additional promotion-only pass for recent candidates. Set to `false` to use only the full canonicalization interval; AWS deployments can set Terraform variable `guardian_canonicalization_fast_promotion_enabled = false`. |
 | `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` | `10` (code default); `50` set by the prod Terraform profile | any | Accounts one canonicalization pass processes in parallel; `1` = fully sequential. Each account holds a DB connection only during its short fenced transactions — the dominant cost is a connectionless chain RPC — so this may exceed `GUARDIAN_DB_POOL_MAX_SIZE`; simultaneous write bursts just queue briefly at the pool. |
 | `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in. Not read at runtime — controls how the image is built. |
+
+Canonicalization settings apply as follows:
+
+| Setting | Full pass | Fast promotion |
+|---|---|---|
+| `check_interval_seconds` | Sets the full-pass cadence. | Stops new fast work when the next full pass is due. |
+| `fast_promotion_enabled` | No effect. | Enables or disables the pass. |
+| `fast_promotion_interval_seconds` | No effect. | Sets its cadence and admission window. Work already in flight may finish after the deadline. |
+| `fast_promotion_window_seconds` | No effect. | Limits eligibility to recently created candidates. |
+| `max_retries` | Controls when repeated verification failures discard a candidate. | Not read or modified. |
+| `submission_grace_period_seconds` | Defers retry consumption for young candidates. | Not read or modified. |
+| `divergence_confirmations` | Controls confirmed-divergence discard decisions. | Not read or modified. |
+| `max_concurrent_accounts` | Bounds concurrent accounts. | Bounds concurrent accounts. Candidates remain sequential within each account. |
+
+Fast promotion is promotion-only: a miss, absent account, RPC failure, invalid
+claim, or reconstruction mismatch does not change candidate status, retry count,
+or divergence count. The full pass remains responsible for every retry, defer,
+divergence, and discard decision.
 
 ### Database TLS
 
@@ -327,10 +346,13 @@ this saves you from grepping:
   [Storage modes](./architecture/services.md#storage-modes).
 - **EVM support.** Cargo feature `evm`. If the binary wasn't built with
   it, no env var will turn it on.
-- **Canonicalization knobs** (`check_interval_seconds`, `max_retries`,
-  `submission_grace_period_seconds`). Currently hard-coded in the
-  canonicalization worker; require a code change to alter. The exception
-  is `max_concurrent_accounts`, configurable via
+- **Canonicalization knobs** (`check_interval_seconds`,
+  `fast_promotion_interval_seconds`, `fast_promotion_window_seconds`,
+  `max_retries`, `submission_grace_period_seconds`,
+  `divergence_confirmations`). Currently hard-coded in the canonicalization
+  worker; require a code change to alter. The exceptions are
+  `fast_promotion_enabled` and `max_concurrent_accounts`, configurable via
+  `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED` and
   `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` (see the
   environment table above).
 - **Auth timestamp window.** `MAX_TIMESTAMP_SKEW_MS = 300_000` (5 min) is

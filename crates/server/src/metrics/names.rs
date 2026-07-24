@@ -47,6 +47,9 @@ pub const MIDEN_RPC_DURATION_SECONDS: &str = "guardian_miden_rpc_duration_second
 pub const CANONICALIZATION_RUNS_TOTAL: &str = "guardian_canonicalization_runs_total";
 pub const CANONICALIZATION_RUN_DURATION_SECONDS: &str =
     "guardian_canonicalization_run_duration_seconds";
+pub const CANONICALIZATION_FAST_RUNS_TOTAL: &str = "guardian_canonicalization_fast_runs_total";
+pub const CANONICALIZATION_FAST_RUN_DURATION_SECONDS: &str =
+    "guardian_canonicalization_fast_run_duration_seconds";
 pub const CANONICALIZATION_CANDIDATES_TOTAL: &str = "guardian_canonicalization_candidates_total";
 pub const CANONICALIZATION_RETRIES_TOTAL: &str = "guardian_canonicalization_retries_total";
 pub const CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL: &str =
@@ -248,6 +251,18 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Duration of one canonicalization pass over all accounts, in seconds.",
     },
     MetricDef {
+        name: CANONICALIZATION_FAST_RUNS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Recent-candidate promotion-only passes, by outcome (completed, partial, cancelled, error).",
+    },
+    MetricDef {
+        name: CANONICALIZATION_FAST_RUN_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Duration of one recent-candidate promotion-only pass, in seconds.",
+    },
+    MetricDef {
         name: CANONICALIZATION_CANDIDATES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
@@ -265,9 +280,8 @@ pub const REGISTRY: &[MetricDef] = &[
         name: CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[],
-        help: "Verified candidates whose client-claimed new commitment was missing or \
-               differed from the recomputed commitment proven on-chain; promotion \
-               proceeds with the verified value, so nonzero indicates a client defect.",
+        help: "Candidates whose client-claimed new commitment was missing or differed \
+               from the locally recomputed commitment; nonzero indicates a client defect.",
     },
     MetricDef {
         name: CANONICALIZATION_PASS_ACCOUNTS,
