@@ -2,9 +2,9 @@ import { expect, test } from '@playwright/test';
 
 // Cross-SDK parity gate. The Rust upstream builder pins these values in
 // `crates/contracts/src/multisig_guardian.rs::test_browser_deterministic_account_matches_rust_builder`.
-const EXPECTED_ID = '0x8fc3d82cee89e3614b5e3e215db370';
+const EXPECTED_ID = '0xe3c3a6ae3a996ec149a75ee89b2e7c';
 const EXPECTED_COMMITMENT =
-  '0x9fa18826a999fa5ac79c615a00905b3e09e5e0a703a65f167d1c836e51e8e08e';
+  '0x63f135e5f0777e66f18e079888c5fcea40428e59427596aed53de0a84b1c1bf4';
 // Storage commitment of the Rust account (7 slots, no schema-commitment slot). TS reproduces
 // this exactly once it uses buildWithoutSchemaCommitment() — proving the storage layout matches.
 const EXPECTED_STORAGE_COMMITMENT =
@@ -50,6 +50,16 @@ test('TS account reproduces the Rust storage layout and override-target procedur
   const hasProcedure = result?.hasProcedure as Record<string, boolean> | undefined;
   for (const name of OVERRIDE_TARGET_PROCEDURES) {
     expect(hasProcedure?.[name], `missing override-target procedure: ${name}`).toBe(true);
+  }
+
+  // The config transaction scripts (`@transaction_script pub proc main`, mirroring the Rust
+  // builders) compile against the SDK's 0.16 assembler; a syntax or module-path drift between
+  // the SDKs fails here instead of at a cosigner's first config proposal.
+  const configScriptsCompiled = result?.configScriptsCompiled as
+    | Record<string, boolean>
+    | undefined;
+  for (const name of ['updateSigners', 'updateProcedureThreshold', 'updateGuardian']) {
+    expect(configScriptsCompiled?.[name], `config script failed to compile: ${name}`).toBe(true);
   }
 });
 

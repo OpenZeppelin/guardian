@@ -64,7 +64,8 @@ async function buildUpdateSignersScript(
   const scriptSource = `
 use miden::standards::auth::multisig
 
-begin
+@transaction_script
+pub proc main
     call.multisig::update_signers_and_threshold
 end
   `;

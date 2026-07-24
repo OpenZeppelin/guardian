@@ -49,7 +49,8 @@ async function buildUpdateProcedureThresholdScript(
   const scriptSource = `
 use miden::standards::auth::multisig
 
-begin
+@transaction_script
+pub proc main
     push.${procedureRoot}
     push.${threshold}
     call.multisig::set_procedure_threshold

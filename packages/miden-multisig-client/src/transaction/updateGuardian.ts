@@ -24,10 +24,16 @@ async function buildUpdateGuardianScript(
   const keyLiteral = keyFelts.map((felt) => felt.asInt().toString()).join('.');
   const schemeId = authSchemeId(signatureScheme);
 
+  // The Rust builder calls the guarded-multisig component's re-export
+  // (`::miden::standards::components::auth::guarded_multisig::update_guardian_public_key`);
+  // the web SDK assembler links only the `miden::standards` library, so this calls the
+  // origin procedure directly — a re-export shares its MAST root, so the compiled call
+  // is identical.
   const scriptSource = `
 use miden::standards::auth::guardian
 
-begin
+@transaction_script
+pub proc main
     push.${keyLiteral}
     push.${schemeId}
     call.guardian::update_guardian_public_key

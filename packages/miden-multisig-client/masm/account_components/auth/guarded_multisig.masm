@@ -5,15 +5,15 @@
 use miden::standards::auth::multisig
 use miden::standards::auth::guardian
 
-pub use multisig::update_signers_and_threshold
-pub use multisig::get_threshold_and_num_approvers
-pub use multisig::set_procedure_threshold
-pub use multisig::get_signer_at
-pub use multisig::is_signer
+pub use {update_signers_and_threshold} from miden::standards::auth::multisig
+pub use {get_threshold_and_num_approvers} from miden::standards::auth::multisig
+pub use {set_procedure_threshold} from miden::standards::auth::multisig
+pub use {get_signer_at} from miden::standards::auth::multisig
+pub use {is_signer} from miden::standards::auth::multisig
 
-pub use guardian::update_guardian_public_key
+pub use {update_guardian_public_key} from miden::standards::auth::guardian
 
-#! Authenticate a transaction with multi-signature support and guardian verification.
+#! Authenticate a transaction with multi-signature support and optional guardian verification.
 #!
 #! Inputs:
 #!   Operand stack: [SALT]
@@ -32,6 +32,6 @@ pub proc auth_tx_guarded_multisig(salt: word)
     exec.guardian::verify_signature
     # => [TX_SUMMARY_COMMITMENT]
 
-    exec.multisig::assert_new_tx
+    exec.multisig::record_and_assert_new_tx
     # => []
 end
