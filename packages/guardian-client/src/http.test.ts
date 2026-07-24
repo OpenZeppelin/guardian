@@ -512,7 +512,8 @@ describe('GuardianHttpClient', () => {
         .catch((e) => e);
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(409);
-      expect(error.code).toBe('GUARDIAN_CANDIDATE_LANDED');
+      expect(error.code).toBe('candidate_landed');
+      expect(error.rawCode).toBe('GUARDIAN_CANDIDATE_LANDED');
     });
 
     it('surfaces 404 delta_not_found when no candidate exists at the nonce', async () => {
