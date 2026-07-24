@@ -1328,11 +1328,12 @@ describe('Multisig', () => {
         '0xrecipient',
         '0xfaucet',
         100n,
+        expect.anything(),
         { noteType: NoteType.Private },
       );
       // ...and the rebuild-from-metadata path parses note_type back to Private.
       const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
-      expect(lastCall[4]).toMatchObject({ noteType: NoteType.Private });
+      expect(lastCall[5]).toMatchObject({ noteType: NoteType.Private });
 
       // The pushed wire metadata carries note_type so cosigners rebuild the
       // same private note at verification/execution.
@@ -2052,7 +2053,14 @@ describe('Multisig', () => {
         ok: false,
         status: 404,
         statusText: 'Not Found',
-        text: async () => 'Proposal not found',
+        // Feature 009: only a conforming { code, message, meta } envelope is
+        // folded into the error message; raw text bodies are dropped.
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_NOT_FOUND',
+            message: 'Proposal not found',
+            meta: { retryable: false },
+          }),
       });
 
       await expect(

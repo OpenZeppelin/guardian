@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Word } from '@miden-sdk/miden-sdk';
 
 const {
+  mockFromVaultKey,
+  mockFungibleAssetConstructor,
   mockHashElements,
   mockNormalizeHexWord,
   mockRandomWord,
@@ -17,6 +19,12 @@ const {
   ];
 
   return {
+    mockFromVaultKey: vi.fn((vaultKey: unknown, amount: bigint) => ({
+      kind: 'asset-from-vault-key',
+      vaultKey,
+      amount,
+    })),
+    mockFungibleAssetConstructor: vi.fn(),
     noteMetadataCalls: [] as unknown[][],
     mockHashElements: vi.fn().mockReturnValue({ toString: () => 'serial' }),
     mockNormalizeHexWord: vi.fn((hex: string) => hex),
@@ -93,7 +101,11 @@ vi.mock('@miden-sdk/miden-sdk', () => {
   }
 
   class FungibleAsset {
-    constructor(_faucet: unknown, _amount: bigint) {}
+    constructor(faucet: unknown, amount: bigint) {
+      mockFungibleAssetConstructor(faucet, amount);
+    }
+
+    static fromVaultKey = mockFromVaultKey;
   }
 
   class NoteArray {
@@ -124,6 +136,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
         hex,
         prefix: () => 1,
         suffix: () => 2,
+        toString: () => hex,
       })),
     },
     Felt,
@@ -168,11 +181,27 @@ vi.mock('../utils/random.js', () => ({
   randomWord: mockRandomWord,
 }));
 
-import { NoteType } from '@miden-sdk/miden-sdk';
 import { buildP2idTransactionRequest, parseP2idNoteType, p2idNoteTypeToMetadata } from './p2id.js';
+import type { Account } from '@miden-sdk/miden-sdk';
+
+const FAUCET_ID = '0x7bfb0f38b0fafa103f86a805594171';
+
+const mockAccount = {
+  vault: () => ({
+    fungibleAssets: () => [
+      {
+        faucetId: () => ({ toString: () => FAUCET_ID }),
+        vaultKey: () => ({ kind: 'vault-key' }),
+      },
+    ],
+  }),
+} as unknown as Account;
+import { NoteType } from '@miden-sdk/miden-sdk';
 
 describe('buildP2idTransactionRequest', () => {
   beforeEach(() => {
+    mockFromVaultKey.mockClear();
+    mockFungibleAssetConstructor.mockClear();
     mockHashElements.mockClear();
     mockNormalizeHexWord.mockClear();
     mockRandomWord.mockClear();
@@ -186,8 +215,9 @@ describe('buildP2idTransactionRequest', () => {
     buildP2idTransactionRequest(
       '0x7bfb0f38b0fafa103f86a805594170',
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
-      '0x7bfb0f38b0fafa103f86a805594171',
+      FAUCET_ID,
       10n,
+      mockAccount,
       { salt },
     );
 
@@ -211,6 +241,7 @@ describe('buildP2idTransactionRequest', () => {
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
       '0x7bfb0f38b0fafa103f86a805594171',
       10n,
+      mockAccount,
     );
 
     expect(noteMetadataCalls).toHaveLength(1);
@@ -223,6 +254,7 @@ describe('buildP2idTransactionRequest', () => {
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
       '0x7bfb0f38b0fafa103f86a805594171',
       10n,
+      mockAccount,
       { noteType: NoteType.Private },
     );
 

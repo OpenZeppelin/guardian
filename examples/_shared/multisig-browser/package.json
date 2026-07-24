@@ -9,7 +9,7 @@
     "@getpara/react-sdk-lite": "2.17.0",
     "@getpara/solana-wallet-connectors": "2.17.0",
     "@miden-sdk/miden-para": "0.15.1",
-    "@miden-sdk/miden-sdk": "0.15.7",
+    "@miden-sdk/miden-sdk": "0.15.8",
     "@miden-sdk/react": "0.15.7",
     "@miden-sdk/use-miden-para-react": "0.15.1",
     "@openzeppelin/guardian-client": "file:../../../packages/guardian-client",
