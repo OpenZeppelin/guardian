@@ -2,10 +2,10 @@
  * Typed vocabulary of Guardian's stable, machine-readable error codes
  * (issue #318). Mirrors `GuardianError::code()` in
  * `crates/server/src/error.rs` — a drift-guard test asserts the two stay in
- * sync. The three codes the server emits in SCREAMING_SNAKE wire form
+ * sync. The four codes the server emits in SCREAMING_SNAKE wire form
  * (`GUARDIAN_ACCOUNT_PAUSED`, `GUARDIAN_ACCOUNT_RELEASED`,
- * `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`) are normalized to snake_case
- * here so the union has one consistent shape; use
+ * `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`, `GUARDIAN_CANDIDATE_LANDED`)
+ * are normalized to snake_case here so the union has one consistent shape; use
  * {@link normalizeGuardianErrorCode} at the wire boundary.
  */
 export const GUARDIAN_ERROR_CODES = [
@@ -16,6 +16,7 @@ export const GUARDIAN_ERROR_CODES = [
   'account_released',
   'authentication_failed',
   'authorization_failed',
+  'candidate_landed',
   'commitment_mismatch',
   'configuration_error',
   'conflict_pending_delta',
@@ -67,6 +68,7 @@ const WIRE_ALIASES: Readonly<Record<string, GuardianErrorCode>> = {
   GUARDIAN_ACCOUNT_PAUSED: 'account_paused',
   GUARDIAN_ACCOUNT_RELEASED: 'account_released',
   GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION: 'insufficient_operator_permission',
+  GUARDIAN_CANDIDATE_LANDED: 'candidate_landed',
 };
 
 /** Type guard narrowing an arbitrary string to {@link GuardianErrorCode}. */
