@@ -264,16 +264,14 @@ impl DeltasProcessorBase {
             accounts += page_accounts;
             failed_accounts += page_failed_accounts;
 
-            if self.admission_closed() {
-                self.fast_promotion_state.set_cursor(None);
-                break;
-            }
-
             let Some(next_cursor) = next_cursor else {
                 self.fast_promotion_state.set_cursor(None);
                 break;
             };
             cursor = Some(next_cursor);
+            // Stored before the loop re-checks admission: a pass cut short
+            // by its deadline resumes after this page on the next tick
+            // instead of restarting at the window's oldest rows.
             self.fast_promotion_state.set_cursor(cursor.clone());
 
             if page_len < FAST_PROMOTION_PAGE_SIZE as usize {
@@ -1794,6 +1792,146 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(storage.get_pull_recent_candidate_deltas_calls().len(), 1);
+    }
+
+    /// Trips the pass's cancellation token from inside page processing —
+    /// the deterministic stand-in for a deadline that expires while a
+    /// page is being worked, which a wall-clock deadline cannot do
+    /// reliably in a test.
+    struct CancelOnVerifyNetwork {
+        cancel: CancellationToken,
+    }
+
+    #[async_trait]
+    impl crate::network::NetworkClient for CancelOnVerifyNetwork {
+        fn get_state_commitment(
+            &self,
+            _account_id: &str,
+            _state_json: &serde_json::Value,
+        ) -> std::result::Result<String, String> {
+            unreachable!()
+        }
+
+        async fn verify_commitment(
+            &self,
+            _account_id: &str,
+            _expected_commitment: &str,
+        ) -> std::result::Result<StateVerification, String> {
+            self.cancel.cancel();
+            Ok(StateVerification::Mismatch {
+                on_chain: "0xother".to_string(),
+            })
+        }
+
+        fn verify_delta(
+            &self,
+            _prev_proof: &str,
+            _prev_state_json: &serde_json::Value,
+            _delta_payload: &serde_json::Value,
+        ) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+
+        fn apply_delta(
+            &self,
+            _prev_state_json: &serde_json::Value,
+            _delta_payload: &serde_json::Value,
+        ) -> std::result::Result<(serde_json::Value, String), String> {
+            unreachable!()
+        }
+
+        fn merge_deltas(
+            &self,
+            _delta_payloads: Vec<serde_json::Value>,
+        ) -> std::result::Result<serde_json::Value, String> {
+            unreachable!()
+        }
+
+        fn delta_proposal_id(
+            &self,
+            _account_id: &str,
+            _nonce: u64,
+            _delta_payload: &serde_json::Value,
+        ) -> std::result::Result<String, String> {
+            unreachable!()
+        }
+
+        fn validate_account_id(&self, _account_id: &str) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+
+        fn validate_credential(
+            &self,
+            _state_json: &serde_json::Value,
+            _credential: &crate::metadata::auth::Credentials,
+            _auth: &Auth,
+        ) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+
+        fn validate_guardian_commitment(
+            &self,
+            _state_json: &serde_json::Value,
+            _expected_guardian_commitment: &str,
+        ) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+
+        async fn should_update_auth(
+            &self,
+            _state_json: &serde_json::Value,
+            _current_auth: &Auth,
+        ) -> std::result::Result<Option<Auth>, String> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_retains_cursor_when_pass_is_cut_short_after_page() {
+        let account_id = "0xtest_account";
+        let page = (1..=FAST_PROMOTION_PAGE_SIZE)
+            .map(|nonce| create_candidate_delta(account_id, u64::from(nonce)))
+            .collect::<Vec<_>>();
+        let storage =
+            Arc::new(MockStorageBackend::new().with_pull_recent_candidate_deltas(Ok(page)));
+        let metadata =
+            Arc::new(MockMetadataStore::new().with_get(Ok(Some(create_test_metadata(account_id)))));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let pass = PassLease::single_process();
+        let network = Arc::new(CancelOnVerifyNetwork {
+            cancel: pass.cancel.clone(),
+        });
+        let state = create_test_app_state_with_clock(storage.clone(), network, metadata, clock);
+        let fast_state = Arc::new(FastPromotionState::default());
+        let processor = DeltasProcessor::with_fast_pass(
+            state,
+            CanonicalizationConfig::default(),
+            pass.leader,
+            pass.lease,
+            pass.cancel,
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+            FastPassControl {
+                state: fast_state.clone(),
+                deadline: None,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        assert_eq!(storage.get_pull_recent_candidate_deltas_calls().len(), 1);
+        assert_eq!(
+            fast_state.cursor(),
+            Some(RecentCandidateCursor {
+                last_status_timestamp: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+                last_account_id: account_id.to_string(),
+                last_nonce: u64::from(FAST_PROMOTION_PAGE_SIZE),
+            })
+        );
     }
 
     #[tokio::test]
