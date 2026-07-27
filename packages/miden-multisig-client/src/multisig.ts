@@ -218,6 +218,19 @@ export class Multisig {
   }
 
   /**
+   * Resolve the account from the web client's store, falling back to the
+   * `account` snapshot when the store has no record.
+   *
+   * Transaction execution reads the store, and other flows (e.g. consume-notes
+   * finalize) update it without refreshing the snapshot, so vault lookups must
+   * source from the store to see the same state execution will.
+   */
+  async getStoreAccount(): Promise<Account> {
+    const webClient = await this.getRawClient();
+    return (await webClient.getAccount(AccountId.fromHex(this._accountId))) ?? this.account;
+  }
+
+  /**
    * Maps a proposal type to the procedure that determines its threshold.
    */
   private getProposalProcedure(proposalType: ProposalType): ProcedureName | null {
@@ -290,7 +303,13 @@ export class Multisig {
    * Sync account state from GUARDIAN into the local Miden client store.
    *
    * If the GUARDIAN commitment differs from the local commitment (or the account
-   * is missing locally), the local store is overwritten with the GUARDIAN state.
+   * is missing locally) and the GUARDIAN state is safe to import, the local store
+   * is overwritten with the GUARDIAN state. When the GUARDIAN is merely *behind*
+   * local — e.g. the pushed execution delta has not been canonicalized yet
+   * (see OpenZeppelin/guardian#316) — the local state is already ahead and
+   * on-chain-verifiable, so it is kept as authoritative. Either way, config is
+   * refreshed from the resulting account so callers reading `Multisig.account`
+   * (e.g. the UI) observe the current state instead of a stale snapshot.
    */
   async syncState(): Promise<AccountState> {
     const state = await this.fetchState();
@@ -307,9 +326,10 @@ export class Multisig {
     if (!localAccount || localCommitment !== guardianCommitment) {
       const accountBytes = base64ToUint8Array(state.stateDataBase64);
       const incomingAccount = Account.deserialize(accountBytes);
-      await this.ensureSafeToOverwriteLocalState(incomingAccount, localAccount);
-      await webClient.newAccount(incomingAccount, true);
-      accountForConfigRefresh = incomingAccount;
+      if (await this.isSafeToOverwriteLocalState(incomingAccount, localAccount)) {
+        await webClient.newAccount(incomingAccount, true);
+        accountForConfigRefresh = incomingAccount;
+      }
     }
 
     this.refreshConfigFromAccount(accountForConfigRefresh);
@@ -348,17 +368,37 @@ export class Multisig {
     };
   }
 
-  private async ensureSafeToOverwriteLocalState(
+  /**
+   * Decide whether GUARDIAN-provided state may overwrite the local store.
+   *
+   * Returns `false` — rather than throwing — when the GUARDIAN state is simply
+   * *behind* local (lower nonce). That happens whenever the execution delta the
+   * client pushed has not been canonicalized by the GUARDIAN's background worker
+   * yet (see OpenZeppelin/guardian#316), or permanently if that candidate was
+   * discarded (#312 / #319). In that case the local account is already ahead and
+   * is independently verifiable against chain (`verifyStateCommitment`), so it is
+   * authoritative and must be kept, not clobbered; the caller keeps local and
+   * refreshes config from it.
+   *
+   * Still throws for genuine divergence: an incoming state at the *same* nonce as
+   * local but a different commitment, or an incoming state whose commitment does
+   * not match the on-chain commitment.
+   */
+  private async isSafeToOverwriteLocalState(
     incomingAccount: Account,
     localAccount?: Account,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (localAccount) {
       const localNonce = localAccount.nonce().asInt();
       const incomingNonce = incomingAccount.nonce().asInt();
 
-      if (incomingNonce <= localNonce) {
+      if (incomingNonce < localNonce) {
+        return false;
+      }
+
+      if (incomingNonce === localNonce) {
         throw new Error(
-          `Refusing to overwrite local state: incoming nonce ${incomingNonce.toString()} is not greater than local nonce ${localNonce.toString()} for account ${this._accountId}`
+          `Refusing to overwrite local state: incoming nonce ${incomingNonce.toString()} equals local nonce ${localNonce.toString()} but commitments differ for account ${this._accountId}`
         );
       }
     }
@@ -366,7 +406,7 @@ export class Multisig {
     const accountId = AccountId.fromHex(this._accountId);
     const onChainCommitment = await this.getOnChainCommitment(accountId);
     if (!onChainCommitment) {
-      return;
+      return true;
     }
 
     const incomingCommitment = normalizeHexWord(incomingAccount.to_commitment().toHex());
@@ -375,6 +415,8 @@ export class Multisig {
         `Refusing to overwrite local state: incoming commitment does not match on-chain commitment for account ${this._accountId}`
       );
     }
+
+    return true;
   }
 
   private async getOnChainCommitment(accountId: AccountId): Promise<string | null> {
@@ -826,11 +868,14 @@ export class Multisig {
       throw new Error('Amount must be greater than 0');
     }
 
+    const account = await this.getStoreAccount();
+
     const { request, salt } = buildP2idTransactionRequest(
       this._accountId,
       recipientId,
       faucetId,
       amount,
+      account,
       { noteType: options.noteType },
     );
 
@@ -1720,11 +1765,13 @@ export class Multisig {
         throw new UnsupportedMetadataVersionError(version);
       }
       case 'p2id': {
+        const account = await this.getStoreAccount();
         const { request } = buildP2idTransactionRequest(
           this._accountId,
           metadata.recipientId,
           metadata.faucetId,
           BigInt(metadata.amount),
+          account,
           { salt, signatureAdviceMap, noteType: parseP2idNoteType(metadata.noteType) }
         );
         return request;

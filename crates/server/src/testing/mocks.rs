@@ -271,6 +271,16 @@ pub struct MockStorageBackend {
     pub pull_delta_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
     pub pull_deltas_after_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
     pub pull_candidate_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
+    pub pull_recent_candidate_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
+    pub pull_recent_candidate_deltas_calls: Arc<
+        StdMutex<
+            Vec<(
+                chrono::DateTime<chrono::Utc>,
+                Option<crate::storage::RecentCandidateCursor>,
+                u32,
+            )>,
+        >,
+    >,
     pub pull_recoverable_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
     pub list_accounts_with_recoverable_deltas_responses:
         Arc<StdMutex<Vec<StdResult<Vec<String>, String>>>>,
@@ -378,6 +388,17 @@ impl MockStorageBackend {
         self
     }
 
+    pub fn with_pull_recent_candidate_deltas(
+        self,
+        response: StdResult<Vec<DeltaObject>, String>,
+    ) -> Self {
+        self.pull_recent_candidate_deltas_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
     pub fn with_pull_recoverable_deltas(
         self,
         response: StdResult<Vec<DeltaObject>, String>,
@@ -398,6 +419,19 @@ impl MockStorageBackend {
             .unwrap()
             .push(response);
         self
+    }
+
+    pub fn get_pull_recent_candidate_deltas_calls(
+        &self,
+    ) -> Vec<(
+        chrono::DateTime<chrono::Utc>,
+        Option<crate::storage::RecentCandidateCursor>,
+        u32,
+    )> {
+        self.pull_recent_candidate_deltas_calls
+            .lock()
+            .unwrap()
+            .clone()
     }
 
     pub fn get_discard_candidate_calls(
@@ -696,6 +730,23 @@ impl StorageBackend for MockStorageBackend {
             .collect();
         deltas.sort_by_key(|delta| delta.nonce);
         Ok(deltas)
+    }
+
+    async fn pull_recent_candidate_deltas(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+        cursor: Option<&crate::storage::RecentCandidateCursor>,
+        limit: u32,
+    ) -> StdResult<Vec<DeltaObject>, String> {
+        self.pull_recent_candidate_deltas_calls
+            .lock()
+            .unwrap()
+            .push((since, cursor.cloned(), limit));
+        self.pull_recent_candidate_deltas_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(Vec::new()))
     }
 
     // An explicit response wins; otherwise no retained rows, so tests

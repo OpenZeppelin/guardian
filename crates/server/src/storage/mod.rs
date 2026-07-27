@@ -103,6 +103,15 @@ pub struct GlobalDeltaCursor {
     pub last_nonce: i64,
 }
 
+/// Cursor for oldest-first recent-candidate scans used by fast promotion.
+/// The composite key is deterministic because `(account_id, nonce)` is unique.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentCandidateCursor {
+    pub last_status_timestamp: DateTime<Utc>,
+    pub last_account_id: String,
+    pub last_nonce: u64,
+}
+
 /// Cursor parameters for the global proposal feed. Sort key is
 /// `(status_timestamp DESC, account_id ASC, nonce ASC, commitment ASC)`.
 /// Originating timestamp is immutable while a proposal remains in the
@@ -559,6 +568,15 @@ pub trait StorageBackend: Send + Sync {
         deltas.sort_by_key(|delta| delta.nonce);
         Ok(deltas)
     }
+    /// One oldest-first page of candidate deltas newer than `since` and after
+    /// `cursor`. Backends apply both predicates before returning payloads.
+    async fn pull_recent_candidate_deltas(
+        &self,
+        since: DateTime<Utc>,
+        cursor: Option<&RecentCandidateCursor>,
+        limit: u32,
+    ) -> Result<Vec<DeltaObject>, String>;
+
     /// Recoverable deltas (issue #345) for one account, nonce-ascending
     /// — the background reconcile pass's read. Recoverable means every
     /// `retained` row, plus `discarded { client_abandoned }` rows whose

@@ -1,6 +1,6 @@
 # Guardian SDK Release Surface
 
-Current coordinated SDK release line: `0.15.x`
+Current coordinated SDK release line: `0.16.x`
 
 ## Publishable Rust Crates
 
@@ -30,6 +30,10 @@ Current coordinated SDK release line: `0.15.x`
    - manifest: `packages/miden-multisig-client/package.json`
    - lockfile: `packages/miden-multisig-client/package-lock.json`
    - internal release dependency: `@openzeppelin/guardian-client`
+4. `@openzeppelin/guardian-operator-client`
+   - manifest: `packages/guardian-operator-client/package.json`
+   - lockfile: `packages/guardian-operator-client/package-lock.json`
+   - no internal release dependencies
 
 ## Files Usually Touched In A Coordinated Release
 

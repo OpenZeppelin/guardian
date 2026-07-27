@@ -40,6 +40,8 @@ async fn main() {
         .with_canonicalization(Some(
             CanonicalizationConfig::new(10, 48)
                 .with_submission_grace_period_seconds(600)
+                .with_fast_promotion_enabled_from_env()
+                .expect("Invalid fast promotion configuration")
                 .with_max_concurrent_accounts_from_env()
                 .expect("Invalid canonicalization concurrency configuration"),
         ))
