@@ -1,7 +1,9 @@
 use std::time::Duration;
 
+/// Environment override for [`CanonicalizationConfig::fast_promotion_enabled`].
+pub const ENV_FAST_PROMOTION_ENABLED: &str = "GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED";
+
 /// Environment override for [`CanonicalizationConfig::max_concurrent_accounts`].
-/// The other canonicalization knobs remain code-configured.
 pub const ENV_MAX_CONCURRENT_ACCOUNTS: &str = "GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS";
 
 /// Configuration for delta canonicalization behavior
@@ -11,6 +13,15 @@ pub const ENV_MAX_CONCURRENT_ACCOUNTS: &str = "GUARDIAN_CANONICALIZATION_MAX_CON
 pub struct CanonicalizationConfig {
     /// How often the worker checks for deltas to canonicalize (in seconds)
     pub check_interval_seconds: u64,
+
+    /// Whether recent candidates receive additional promotion-only checks.
+    pub fast_promotion_enabled: bool,
+
+    /// How often recent candidates receive an additional promotion-only check.
+    pub fast_promotion_interval_seconds: u64,
+
+    /// How long a candidate remains eligible for promotion-only checks.
+    pub fast_promotion_window_seconds: u64,
 
     /// Maximum number of verification attempts before discarding the delta
     pub max_retries: u32,
@@ -52,7 +63,10 @@ pub struct CanonicalizationConfig {
 impl Default for CanonicalizationConfig {
     fn default() -> Self {
         Self {
-            check_interval_seconds: 10,           // Try every 10 seconds
+            check_interval_seconds: 10, // Try every 10 seconds
+            fast_promotion_enabled: true,
+            fast_promotion_interval_seconds: 3, // Follow Miden's block cadence
+            fast_promotion_window_seconds: 30,
             max_retries: 18,                      // 18 attempts (total: ~3 minutes)
             submission_grace_period_seconds: 600, // Allow proving/submission to settle first
             divergence_confirmations: 2,          // Two ticks to rule out a stale read
@@ -76,6 +90,50 @@ impl CanonicalizationConfig {
     /// Get check interval as Duration
     pub fn check_interval(&self) -> Duration {
         Duration::from_secs(self.check_interval_seconds)
+    }
+
+    /// Get the recent-candidate promotion interval as a duration.
+    pub fn fast_promotion_interval(&self) -> Duration {
+        Duration::from_secs(self.fast_promotion_interval_seconds)
+    }
+
+    /// Override the cadence and eligibility window for promotion-only checks.
+    pub fn with_fast_promotion(mut self, interval_seconds: u64, window_seconds: u64) -> Self {
+        assert!(
+            interval_seconds > 0,
+            "fast promotion interval must be at least one second"
+        );
+        assert!(
+            window_seconds > 0,
+            "fast promotion window must be at least one second"
+        );
+        self.fast_promotion_interval_seconds = interval_seconds;
+        self.fast_promotion_window_seconds = window_seconds;
+        self
+    }
+
+    /// Enable or disable additional promotion-only checks for recent candidates.
+    pub fn with_fast_promotion_enabled(mut self, enabled: bool) -> Self {
+        self.fast_promotion_enabled = enabled;
+        self
+    }
+
+    /// Apply the [`ENV_FAST_PROMOTION_ENABLED`] override when set.
+    pub fn with_fast_promotion_enabled_from_env(self) -> Result<Self, String> {
+        self.fast_promotion_enabled_from_var(ENV_FAST_PROMOTION_ENABLED)
+    }
+
+    fn fast_promotion_enabled_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => value
+                .parse::<bool>()
+                .map(|enabled| self.with_fast_promotion_enabled(enabled))
+                .map_err(|_| format!("{var_name} must be 'true' or 'false', got '{value}'")),
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains invalid UTF-8"))
+            }
+        }
     }
 
     /// Override the submission grace period.
@@ -151,6 +209,44 @@ impl CanonicalizationConfig {
 mod tests {
     use super::*;
     use crate::testing::env_lock::ENV_LOCK;
+
+    #[test]
+    fn default_fast_promotion_is_bounded() {
+        let config = CanonicalizationConfig::default();
+
+        assert!(config.fast_promotion_enabled);
+        assert_eq!(config.fast_promotion_interval_seconds, 3);
+        assert_eq!(config.fast_promotion_window_seconds, 30);
+    }
+
+    #[test]
+    fn fast_promotion_builder_overrides_cadence_and_window() {
+        let config = CanonicalizationConfig::default().with_fast_promotion(3, 45);
+
+        assert_eq!(config.fast_promotion_interval_seconds, 3);
+        assert_eq!(config.fast_promotion_window_seconds, 45);
+    }
+
+    #[test]
+    fn fast_promotion_enabled_env_override_is_strict() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_FAST_PROMOTION_TEST";
+
+        unsafe { std::env::set_var(var_name, "false") };
+        let config = CanonicalizationConfig::default()
+            .fast_promotion_enabled_from_var(var_name)
+            .expect("valid boolean applies");
+        assert!(!config.fast_promotion_enabled);
+
+        unsafe { std::env::set_var(var_name, "0") };
+        assert!(
+            CanonicalizationConfig::default()
+                .fast_promotion_enabled_from_var(var_name)
+                .is_err()
+        );
+
+        unsafe { std::env::remove_var(var_name) };
+    }
 
     #[test]
     fn env_override_missing_keeps_default() {

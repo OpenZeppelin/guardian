@@ -202,6 +202,20 @@ impl StorageBackend for EncryptedStorage {
             .collect()
     }
 
+    async fn pull_recent_candidate_deltas(
+        &self,
+        since: DateTime<Utc>,
+        cursor: Option<&crate::storage::RecentCandidateCursor>,
+        limit: u32,
+    ) -> Result<Vec<DeltaObject>, String> {
+        self.inner
+            .pull_recent_candidate_deltas(since, cursor, limit)
+            .await?
+            .into_iter()
+            .map(|delta| self.decrypt_delta(delta))
+            .collect()
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -413,6 +427,7 @@ mod tests {
     use crate::storage::filesystem::FilesystemService;
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64;
+    use chrono::TimeZone;
     use serde_json::json;
 
     fn provider_with(byte: u8, kid: &str) -> Arc<dyn StorageKeyProvider> {
@@ -507,6 +522,17 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].nonce, 2);
         assert_eq!(candidates[0].delta_payload, json!({ "move": 2 }));
+
+        let recent = enc
+            .pull_recent_candidate_deltas(
+                Utc.with_ymd_and_hms(2023, 12, 31, 23, 59, 59).unwrap(),
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].delta_payload, json!({ "move": 2 }));
     }
 
     #[tokio::test]

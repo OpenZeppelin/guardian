@@ -3,9 +3,10 @@
 #   docker build --platform linux/amd64 ...
 FROM rust:1.96.1-bookworm as base-builder
 
-# Install protobuf compiler (pinned to specific version)
+# Install protobuf compiler (pinned to upstream 3.21.12; the Debian
+# packaging revision floats so point-release rebuilds don't break the build)
 RUN apt-get update && apt-get install -y \
-    protobuf-compiler=3.21.12-3 \
+    "protobuf-compiler=3.21.12-*" \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Word } from '@miden-sdk/miden-sdk';
 
 const {
+  mockFungibleAssetConstructor,
   mockHashElements,
   mockNormalizeHexWord,
   mockRandomWord,
@@ -17,6 +18,7 @@ const {
   ];
 
   return {
+    mockFungibleAssetConstructor: vi.fn(),
     noteMetadataCalls: [] as unknown[][],
     mockHashElements: vi.fn().mockReturnValue({ toString: () => 'serial' }),
     mockNormalizeHexWord: vi.fn((hex: string) => hex),
@@ -93,7 +95,9 @@ vi.mock('@miden-sdk/miden-sdk', () => {
   }
 
   class FungibleAsset {
-    constructor(_faucet: unknown, _amount: bigint) {}
+    constructor(faucet: unknown, amount: bigint) {
+      mockFungibleAssetConstructor(faucet, amount);
+    }
   }
 
   class NoteArray {
@@ -124,6 +128,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
         hex,
         prefix: () => 1,
         suffix: () => 2,
+        toString: () => hex,
       })),
     },
     Felt,
@@ -168,11 +173,14 @@ vi.mock('../utils/random.js', () => ({
   randomWord: mockRandomWord,
 }));
 
-import { NoteType } from '@miden-sdk/miden-sdk';
 import { buildP2idTransactionRequest, parseP2idNoteType, p2idNoteTypeToMetadata } from './p2id.js';
+import { NoteType } from '@miden-sdk/miden-sdk';
+
+const FAUCET_ID = '0x7bfb0f38b0fafa103f86a805594171';
 
 describe('buildP2idTransactionRequest', () => {
   beforeEach(() => {
+    mockFungibleAssetConstructor.mockClear();
     mockHashElements.mockClear();
     mockNormalizeHexWord.mockClear();
     mockRandomWord.mockClear();
@@ -186,7 +194,7 @@ describe('buildP2idTransactionRequest', () => {
     buildP2idTransactionRequest(
       '0x7bfb0f38b0fafa103f86a805594170',
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
-      '0x7bfb0f38b0fafa103f86a805594171',
+      FAUCET_ID,
       10n,
       { salt },
     );
@@ -209,12 +217,26 @@ describe('buildP2idTransactionRequest', () => {
     buildP2idTransactionRequest(
       '0x7bfb0f38b0fafa103f86a805594170',
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
-      '0x7bfb0f38b0fafa103f86a805594171',
+      FAUCET_ID,
       10n,
     );
 
     expect(noteMetadataCalls).toHaveLength(1);
     expect(noteMetadataCalls[0][1]).toBe(NoteType.Public);
+  });
+
+  it('builds the asset from the faucet id, whose callback flag it carries since Miden 0.16', () => {
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      FAUCET_ID,
+      10n,
+    );
+
+    expect(mockFungibleAssetConstructor).toHaveBeenCalledTimes(1);
+    const [faucet, amount] = mockFungibleAssetConstructor.mock.calls[0] as [{ hex: string }, bigint];
+    expect(faucet.hex).toBe(FAUCET_ID);
+    expect(amount).toBe(10n);
   });
 
   it('threads the requested noteType into the note metadata (issue #322)', () => {

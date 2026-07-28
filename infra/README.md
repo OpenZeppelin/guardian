@@ -98,6 +98,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_rate_per_min = 5000
 # guardian_db_pool_max_size = 32
 # guardian_metadata_db_pool_max_size = 32
+# guardian_canonicalization_fast_promotion_enabled = false
 
 # Optional: dashboard operator Falcon public keys managed by Terraform
 # guardian_operator_public_keys = [
@@ -240,6 +241,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_deployment_maximum_percent` | `200` | ECS rolling-deploy task ceiling (percent of desired count). The temporary fleet-wide rate allowance can scale by the same factor during a rollout. Must be an integer in `(100, 200]` and allow at least one surge task at the minimum positive desired capacity, including autoscaling minimum |
 | `guardian_db_pool_max_size` | `16` in dev, `32` in prod | Guardian storage DB pool size |
 | `guardian_metadata_db_pool_max_size` | matches storage by default | Guardian metadata DB pool size |
+| `guardian_canonicalization_fast_promotion_enabled` | `true` | Enables the recent-candidate promotion-only pass in the ECS task definition |
 | `log_retention_days` | `7` | CloudWatch log retention in days |
 
 ## Outputs

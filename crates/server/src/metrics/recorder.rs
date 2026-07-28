@@ -56,6 +56,11 @@ pub fn build_recorder() -> PrometheusRecorder {
         )
         .expect("static canonicalization buckets are non-empty")
         .set_buckets_for_metric(
+            Matcher::Full(names::CANONICALIZATION_FAST_RUN_DURATION_SECONDS.to_string()),
+            CANONICALIZATION_RUN_BUCKETS,
+        )
+        .expect("static fast canonicalization buckets are non-empty")
+        .set_buckets_for_metric(
             Matcher::Full(names::CANONICALIZATION_CANDIDATE_AGE_SECONDS.to_string()),
             CANDIDATE_AGE_BUCKETS,
         )
@@ -110,12 +115,13 @@ mod tests {
     }
 
     #[test]
-    fn canonicalization_run_histogram_uses_extended_buckets() {
+    fn canonicalization_run_histograms_use_extended_buckets() {
         let recorder = build_recorder();
         let handle = recorder.handle();
 
         metrics::with_local_recorder(&recorder, || {
             metrics::histogram!(names::CANONICALIZATION_RUN_DURATION_SECONDS).record(45.0);
+            metrics::histogram!(names::CANONICALIZATION_FAST_RUN_DURATION_SECONDS).record(45.0);
         });
 
         let rendered = handle.render();
@@ -127,6 +133,11 @@ mod tests {
         assert!(
             rendered.contains("guardian_canonicalization_run_duration_seconds_bucket{le=\"60\"} 1"),
             "45s sample must fall in the le=60 bucket:\n{rendered}"
+        );
+        assert!(
+            rendered
+                .contains("guardian_canonicalization_fast_run_duration_seconds_bucket{le=\"300\"}"),
+            "expected extended fast-run buckets in:\n{rendered}"
         );
     }
 

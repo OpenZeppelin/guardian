@@ -179,10 +179,18 @@ Operator checks:
 - `guardian_canonicalization_candidate_age_seconds` growing without
   bound means candidates are not converging — check Miden RPC health
   and the discard outcomes above.
+- `guardian_canonicalization_fast_runs_total{outcome=...}` and
+  `guardian_canonicalization_fast_run_duration_seconds` expose failures and
+  latency of the promotion-only pass without changing the full-pass gauges,
+  age histogram, or fetched-row counter.
+- `RUST_LOG=server::jobs::canonicalization=debug` emits one
+  `Fast-promotion pass completed` summary per fast tick, including empty passes,
+  with page, candidate, account-batch, deadline, and cursor-progress fields.
 - `guardian_canonicalization_commitment_mismatches_total` counting up
   means a client omitted `new_commitment` or claimed one that differs
-  from the verified recomputed value; promotion still proceeds with the
-  verified value, but the client should be investigated.
+  from the recomputed value. The full pass can promote using the value it
+  independently verifies; the fast pass defers the candidate to that full
+  path. In either case, investigate the client.
 
 ### `commitment_mismatch` on `PushDelta`
 
@@ -373,7 +381,7 @@ network network=MidenTestnet rpc_endpoint="https://rpc.testnet.miden.io"
 storage backend storage=Postgres
 ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecdsa_commitment=0x…
 dashboard operators=0 cursor_secret="ephemeral"
-canonicalization check_interval_seconds=10 max_retries=48 submission_grace_period_seconds=600
+canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600
 listeners http=3000 grpc=50051
 compiled features features=["postgres"]
 =========================================

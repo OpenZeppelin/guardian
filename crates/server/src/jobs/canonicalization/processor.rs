@@ -1,17 +1,50 @@
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use crate::canonicalization::CanonicalizationConfig;
 use crate::coordination::{AlwaysLeader, CANONICALIZATION_LEASE, LeaderElector, Lease};
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
+use crate::metadata::AccountMetadata;
 use crate::network::StateVerification;
 use crate::state::AppState;
 use crate::state_object::StateObject;
-use crate::storage::{CandidatePromotion, CanonicalWrite, LeaseFence, PromoteWrite};
+use crate::storage::{
+    CandidatePromotion, CanonicalWrite, LeaseFence, PromoteWrite, RecentCandidateCursor,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+
+const FAST_PROMOTION_PAGE_SIZE: u32 = 100;
+
+#[derive(Default)]
+pub(super) struct FastPromotionState {
+    cursor: Mutex<Option<RecentCandidateCursor>>,
+}
+
+pub(super) struct FastPassControl {
+    pub state: Arc<FastPromotionState>,
+    pub deadline: Option<Instant>,
+}
+
+impl FastPromotionState {
+    fn cursor(&self) -> Option<RecentCandidateCursor> {
+        self.cursor
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+
+    fn set_cursor(&self, cursor: Option<RecentCandidateCursor>) {
+        *self
+            .cursor
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = cursor;
+    }
+}
 
 /// A leader handle for a single canonicalization pass: who we are, the fence we
 /// hold, and a cancellation signal tripped when the lease is lost mid-pass.
@@ -49,6 +82,12 @@ pub struct PassSummary {
     pub cancelled: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProcessingMode {
+    Full,
+    PromoteRecent { max_age_seconds: u64 },
+}
+
 #[async_trait]
 pub trait Processor: Send + Sync {
     async fn process_all_accounts(&self) -> Result<PassSummary>;
@@ -69,12 +108,15 @@ fn record_candidate_outcome(outcome: crate::metrics::labels::CandidateOutcome) {
 struct DeltasProcessorBase {
     state: AppState,
     pass: PassLease,
+    mode: ProcessingMode,
     max_retries: u32,
     submission_grace_period_seconds: u64,
     divergence_confirmations: u32,
     abandon_quarantine_seconds: u64,
     abandon_quarantine_checks: u32,
     max_concurrent_accounts: usize,
+    fast_promotion_state: Arc<FastPromotionState>,
+    fast_promotion_deadline: Option<Instant>,
 }
 
 impl DeltasProcessorBase {
@@ -130,7 +172,25 @@ impl DeltasProcessorBase {
         Some(age.num_seconds().max(0) as u64)
     }
 
+    fn should_process_candidate(&self, delta: &DeltaObject) -> bool {
+        match self.mode {
+            ProcessingMode::Full => true,
+            ProcessingMode::PromoteRecent { max_age_seconds } => self
+                .candidate_age_seconds(delta, self.state.clock.now())
+                .is_some_and(|age| age < max_age_seconds),
+        }
+    }
+
     async fn process_all_accounts(&self) -> Result<PassSummary> {
+        match self.mode {
+            ProcessingMode::Full => self.process_full_pass().await,
+            ProcessingMode::PromoteRecent { max_age_seconds } => {
+                self.process_recent_pass(max_age_seconds).await
+            }
+        }
+    }
+
+    async fn process_full_pass(&self) -> Result<PassSummary> {
         let account_ids = self
             .state
             .metadata
@@ -158,17 +218,171 @@ impl DeltasProcessorBase {
             })
             .await;
 
+        Ok(self.pass_summary(accounts, failed_accounts))
+    }
+
+    async fn process_recent_pass(&self, max_age_seconds: u64) -> Result<PassSummary> {
+        let started = Instant::now();
+        let now = self.state.clock.now();
+        let cutoff = i64::try_from(max_age_seconds)
+            .ok()
+            .and_then(chrono::TimeDelta::try_seconds)
+            .and_then(|window| now.checked_sub_signed(window))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
+        let mut cursor = self.fast_promotion_state.cursor();
+        let resumed_from_cursor = cursor.is_some();
+        let mut pages = 0;
+        let mut candidates_seen = 0;
+        let mut accounts = 0;
+        let mut failed_accounts = 0;
+
+        while !self.admission_closed() {
+            let candidates = self
+                .state
+                .storage
+                .pull_recent_candidate_deltas(cutoff, cursor.as_ref(), FAST_PROMOTION_PAGE_SIZE)
+                .await
+                .map_err(|e| {
+                    GuardianError::StorageError(format!("Failed to pull recent candidates: {e}"))
+                })?;
+            if candidates.is_empty() {
+                self.fast_promotion_state.set_cursor(None);
+                break;
+            }
+            if self.admission_closed() {
+                break;
+            }
+
+            let page_len = candidates.len();
+            pages += 1;
+            candidates_seen += page_len;
+            let Some(last_candidate) = candidates.last() else {
+                break;
+            };
+            let next_cursor = Self::recent_candidate_cursor(last_candidate);
+            let (page_accounts, page_failed_accounts) = self.process_recent_page(candidates).await;
+            accounts += page_accounts;
+            failed_accounts += page_failed_accounts;
+
+            let Some(next_cursor) = next_cursor else {
+                self.fast_promotion_state.set_cursor(None);
+                break;
+            };
+            cursor = Some(next_cursor);
+            // Stored before the loop re-checks admission: a pass cut short
+            // by its deadline resumes after this page on the next tick
+            // instead of restarting at the window's oldest rows.
+            self.fast_promotion_state.set_cursor(cursor.clone());
+
+            if page_len < FAST_PROMOTION_PAGE_SIZE as usize {
+                self.fast_promotion_state.set_cursor(None);
+                break;
+            }
+        }
+
+        tracing::debug!(
+            pages,
+            candidates = candidates_seen,
+            account_batches = accounts,
+            failed_accounts,
+            resumed_from_cursor,
+            cursor_retained = self.fast_promotion_state.cursor().is_some(),
+            deadline_reached = self.fast_deadline_reached(),
+            duration_seconds = started.elapsed().as_secs_f64(),
+            "Fast-promotion pass completed"
+        );
+
+        Ok(self.pass_summary(accounts, failed_accounts))
+    }
+
+    /// Pages are keyed by status timestamp, so a retried candidate (whose
+    /// timestamp was refreshed) can arrive on a later page than its
+    /// account's earlier nonces. The per-account nonce sort below only
+    /// orders within a page; an out-of-order candidate fails the
+    /// reconstruction-equality check and defers to the full pass — fast
+    /// promotion intentionally degrades for retried candidates instead of
+    /// re-sorting across pages.
+    async fn process_recent_page(&self, candidates: Vec<DeltaObject>) -> (usize, usize) {
+        let mut candidates_by_account = BTreeMap::<String, Vec<DeltaObject>>::new();
+        for candidate in candidates
+            .into_iter()
+            .filter(|candidate| self.should_process_candidate(candidate))
+        {
+            candidates_by_account
+                .entry(candidate.account_id.clone())
+                .or_default()
+                .push(candidate);
+        }
+        for candidates in candidates_by_account.values_mut() {
+            candidates.sort_by_key(|candidate| candidate.nonce);
+        }
+
+        let accounts = candidates_by_account.len();
+        tracing::debug!(
+            accounts_with_recent_candidates = accounts,
+            "Running recent-candidate promotion pass"
+        );
+        let failed_accounts = futures::stream::iter(candidates_by_account)
+            .map(|(account_id, candidates)| async move {
+                self.process_candidates_absorbing(&account_id, candidates)
+                    .await
+            })
+            .buffer_unordered(self.max_concurrent_accounts.max(1))
+            .fold(0, |failed, account_failed| async move {
+                failed + usize::from(account_failed)
+            })
+            .await;
+
+        (accounts, failed_accounts)
+    }
+
+    /// Build the keyset cursor for the next page from the current page's
+    /// last candidate. Both shipped backends guarantee the timestamp
+    /// parses (Postgres refuses to write a malformed one; the filesystem
+    /// backend skips unparseable rows), so a failure here means a new or
+    /// drifted backend — end pagination for this pass rather than erroring
+    /// a pass that reruns every few seconds; the full pass owns the row.
+    fn recent_candidate_cursor(delta: &DeltaObject) -> Option<RecentCandidateCursor> {
+        let timestamp = match DateTime::parse_from_rfc3339(delta.status.timestamp()) {
+            Ok(timestamp) => timestamp.with_timezone(&Utc),
+            Err(error) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    error = %error,
+                    "Recent candidate has an invalid status timestamp; ending fast-pass pagination"
+                );
+                return None;
+            }
+        };
+        Some(RecentCandidateCursor {
+            last_status_timestamp: timestamp,
+            last_account_id: delta.account_id.clone(),
+            last_nonce: delta.nonce,
+        })
+    }
+
+    fn admission_closed(&self) -> bool {
+        self.pass.cancel.is_cancelled() || self.fast_deadline_reached()
+    }
+
+    fn fast_deadline_reached(&self) -> bool {
+        self.fast_promotion_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    fn pass_summary(&self, accounts: usize, failed_accounts: usize) -> PassSummary {
         if self.pass.cancel.is_cancelled() {
             tracing::warn!(
                 "Canonicalization pass cancelled (lease lost); remaining accounts skipped"
             );
         }
 
-        Ok(PassSummary {
+        PassSummary {
             accounts,
             failed_accounts,
             cancelled: self.pass.cancel.is_cancelled(),
-        })
+        }
     }
 
     /// One account inside a concurrent pass: cancellation-checked at
@@ -191,18 +405,33 @@ impl DeltasProcessorBase {
         }
     }
 
+    async fn process_candidates_absorbing(
+        &self,
+        account_id: &str,
+        candidates: Vec<DeltaObject>,
+    ) -> bool {
+        if self.admission_closed() {
+            return false;
+        }
+        match self.process_candidates(account_id, candidates).await {
+            Ok(()) => false,
+            Err(e) => {
+                tracing::error!(
+                    account_id = %account_id,
+                    error = %e,
+                    "Failed to process recent canonicalizations for account"
+                );
+                true
+            }
+        }
+    }
+
     async fn process_account(&self, account_id: &str) -> Result<()> {
-        let account_metadata = self
+        let account_metadata = self.fetch_account_metadata(account_id).await?;
+
+        let candidates = self
             .state
-            .metadata
-            .get(account_id)
-            .await
-            .map_err(|e| GuardianError::StorageError(format!("Failed to get metadata: {e}")))?
-            .ok_or_else(|| GuardianError::InvalidInput("Account metadata not found".to_string()))?;
-
-        let storage_backend = self.state.storage.clone();
-
-        let candidates = storage_backend
+            .storage
             .pull_candidate_deltas(account_id)
             .await
             .map_err(|e| GuardianError::StorageError(format!("Failed to pull deltas: {e}")))?;
@@ -235,21 +464,66 @@ impl DeltasProcessorBase {
             return Ok(());
         }
 
-        tracing::info!(
-            account_id = %account_id,
-            candidates = candidates.len(),
-            "Processing delta candidates"
-        );
         metrics::counter!(crate::metrics::names::CANONICALIZATION_DELTAS_FETCHED_TOTAL)
             .increment(candidates.len() as u64);
 
+        self.process_candidate_list(account_id, candidates).await
+    }
+
+    async fn process_candidates(
+        &self,
+        account_id: &str,
+        candidates: Vec<DeltaObject>,
+    ) -> Result<()> {
+        self.fetch_account_metadata(account_id).await?;
+        self.process_candidate_list(account_id, candidates).await
+    }
+
+    async fn fetch_account_metadata(&self, account_id: &str) -> Result<AccountMetadata> {
+        self.state
+            .metadata
+            .get(account_id)
+            .await
+            .map_err(|e| GuardianError::StorageError(format!("Failed to get metadata: {e}")))?
+            .ok_or_else(|| GuardianError::InvalidInput("Account metadata not found".to_string()))
+    }
+
+    async fn process_candidate_list(
+        &self,
+        account_id: &str,
+        candidates: Vec<DeltaObject>,
+    ) -> Result<()> {
+        let candidates = candidates
+            .into_iter()
+            .filter(|delta| self.should_process_candidate(delta))
+            .collect::<Vec<_>>();
+
+        match self.mode {
+            ProcessingMode::Full => tracing::info!(
+                account_id = %account_id,
+                candidates = candidates.len(),
+                "Processing delta candidates"
+            ),
+            ProcessingMode::PromoteRecent { .. } => tracing::debug!(
+                account_id = %account_id,
+                candidates = candidates.len(),
+                "Processing recent delta candidates"
+            ),
+        }
         let mut first_error = None;
         for delta in candidates {
-            if self.pass.cancel.is_cancelled() {
-                tracing::warn!(
-                    account_id = %account_id,
-                    "Canonicalization pass cancelled (lease lost); stopping before next candidate"
-                );
+            if self.admission_closed() {
+                if self.pass.cancel.is_cancelled() {
+                    tracing::warn!(
+                        account_id = %account_id,
+                        "Canonicalization pass cancelled (lease lost); stopping before next candidate"
+                    );
+                } else {
+                    tracing::debug!(
+                        account_id = %account_id,
+                        "Fast-promotion deadline reached; stopping before next candidate"
+                    );
+                }
                 break;
             }
             let nonce = delta.nonce;
@@ -272,6 +546,13 @@ impl DeltasProcessorBase {
     }
 
     async fn process_candidate(&self, delta: DeltaObject) -> Result<()> {
+        match self.mode {
+            ProcessingMode::Full => self.process_full_candidate(delta).await,
+            ProcessingMode::PromoteRecent { .. } => self.process_recent_candidate(delta).await,
+        }
+    }
+
+    async fn process_full_candidate(&self, delta: DeltaObject) -> Result<()> {
         if let Some(age) = self.candidate_age_seconds(&delta, self.state.clock.now()) {
             metrics::histogram!(crate::metrics::names::CANONICALIZATION_CANDIDATE_AGE_SECONDS)
                 .record(age as f64);
@@ -375,6 +656,68 @@ impl DeltasProcessorBase {
             // untouched and the grace/retry behavior applies.
             Err(e) => self.handle_unverified_candidate(delta, &e).await,
         }
+    }
+
+    async fn process_recent_candidate(&self, delta: DeltaObject) -> Result<()> {
+        let Some(claimed_commitment) = delta.new_commitment.clone() else {
+            tracing::debug!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                "Recent candidate has no claimed commitment; leaving it to the full pass"
+            );
+            return Ok(());
+        };
+
+        match self
+            .state
+            .network_client
+            .verify_commitment(&delta.account_id, &claimed_commitment)
+            .await
+        {
+            Ok(StateVerification::Match) => {}
+            Ok(_) => {
+                tracing::debug!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    "Recent candidate is not canonical yet; leaving lifecycle decisions to the full pass"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(GuardianError::NetworkError(error)),
+        }
+
+        let current_state = self
+            .state
+            .storage
+            .pull_state(&delta.account_id)
+            .await
+            .map_err(|error| {
+                GuardianError::StorageError(format!("Failed to get current state: {error}"))
+            })?;
+        let (new_state_json, recomputed_commitment) = {
+            let client = self.state.network_client.clone();
+            let prev_state_json = current_state.state_json;
+            let delta_payload = Arc::new(delta.delta_payload.clone());
+            crate::network::reconstructor()
+                .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
+                .await?
+        };
+
+        if recomputed_commitment != claimed_commitment {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                claimed = %claimed_commitment,
+                recomputed = %recomputed_commitment,
+                "Client-claimed commitment differs from the reconstructed commitment; leaving it to the full pass"
+            );
+            metrics::counter!(crate::metrics::names::CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL)
+                .increment(1);
+            return Ok(());
+        }
+
+        self.canonicalize_verified_delta(delta, new_state_json, recomputed_commitment)
+            .await
     }
 
     /// Count one at-base observation toward resolving a client abandon
@@ -978,18 +1321,48 @@ impl DeltasProcessor {
     /// fenced out. Behavior is identical to the pre-lease worker.
     #[allow(dead_code)]
     pub fn new(state: AppState, config: CanonicalizationConfig) -> Self {
-        let pass = PassLease::single_process();
-        Self::with_lease(state, config, pass.leader, pass.lease, pass.cancel)
+        Self::new_with_mode(state, config, ProcessingMode::Full)
     }
 
-    /// Lease-bound processor used by the multi-replica worker: writes are fenced
-    /// by `leader`/`lease` and the pass aborts when `cancel` is tripped.
-    pub fn with_lease(
+    fn new_with_mode(
+        state: AppState,
+        config: CanonicalizationConfig,
+        mode: ProcessingMode,
+    ) -> Self {
+        let pass = PassLease::single_process();
+        Self::with_lease_and_mode(state, config, pass.leader, pass.lease, pass.cancel, mode)
+    }
+
+    pub(super) fn with_lease_and_mode(
         state: AppState,
         config: CanonicalizationConfig,
         leader: Arc<dyn LeaderElector>,
         lease: Lease,
         cancel: CancellationToken,
+        mode: ProcessingMode,
+    ) -> Self {
+        Self::with_fast_pass(
+            state,
+            config,
+            leader,
+            lease,
+            cancel,
+            mode,
+            FastPassControl {
+                state: Arc::new(FastPromotionState::default()),
+                deadline: None,
+            },
+        )
+    }
+
+    pub(super) fn with_fast_pass(
+        state: AppState,
+        config: CanonicalizationConfig,
+        leader: Arc<dyn LeaderElector>,
+        lease: Lease,
+        cancel: CancellationToken,
+        mode: ProcessingMode,
+        fast_pass: FastPassControl,
     ) -> Self {
         Self {
             base: DeltasProcessorBase {
@@ -999,12 +1372,15 @@ impl DeltasProcessor {
                     lease,
                     cancel,
                 },
+                mode,
                 max_retries: config.max_retries,
                 submission_grace_period_seconds: config.submission_grace_period_seconds,
                 divergence_confirmations: config.divergence_confirmations,
                 abandon_quarantine_seconds: config.abandon_quarantine_seconds,
                 abandon_quarantine_checks: config.abandon_quarantine_checks,
                 max_concurrent_accounts: config.max_concurrent_accounts,
+                fast_promotion_state: fast_pass.state,
+                fast_promotion_deadline: fast_pass.deadline,
             },
         }
     }
@@ -1031,12 +1407,15 @@ impl TestDeltasProcessor {
             base: DeltasProcessorBase {
                 state,
                 pass: PassLease::single_process(),
+                mode: ProcessingMode::Full,
                 max_retries: u32::MAX, // Test processor doesn't discard on retries
                 submission_grace_period_seconds: 0,
                 divergence_confirmations: u32::MAX, // ...nor on divergence
                 abandon_quarantine_seconds: 0,      // ...and resolves abandons immediately
                 abandon_quarantine_checks: 1,
                 max_concurrent_accounts: 1, // ...and stays deterministic
+                fast_promotion_state: Arc::new(FastPromotionState::default()),
+                fast_promotion_deadline: None,
             },
         }
     }
@@ -1170,6 +1549,446 @@ mod tests {
             mock_network.get_verify_commitment_calls(),
             vec![(account_id.to_string(), "new_commitment".to_string())],
         );
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_promotes_recent_verified_candidate() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_recent_candidate_deltas(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_promote_candidate(Ok(PromoteWrite::Applied)),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_should_update_auth(Ok(None)),
+        );
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_get(Ok(Some(create_test_metadata(account_id)))),
+        );
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state =
+            create_test_app_state_with_clock(storage.clone(), network.clone(), metadata, clock);
+        let processor = DeltasProcessor::new_with_mode(
+            state,
+            CanonicalizationConfig::default(),
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        assert_eq!(storage.get_promote_candidate_fences(), vec![None]);
+        assert_eq!(
+            storage.get_pull_recent_candidate_deltas_calls(),
+            vec![(
+                Utc.with_ymd_and_hms(2023, 12, 31, 23, 59, 35).unwrap(),
+                None,
+                FAST_PROMOTION_PAGE_SIZE,
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_does_not_advance_divergence_or_discard() {
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = DeltaStatus::Candidate {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            retry_count: 17,
+            divergence_count: 1,
+            abandon_requested_at: None,
+            abandon_confirm_count: 0,
+        };
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_recent_candidate_deltas(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "0xdiverged".to_string(),
+                })),
+        );
+        let metadata =
+            Arc::new(MockMetadataStore::new().with_get(Ok(Some(create_test_metadata(account_id)))));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state =
+            create_test_app_state_with_clock(storage.clone(), network.clone(), metadata, clock);
+        let processor = DeltasProcessor::new_with_mode(
+            state,
+            CanonicalizationConfig::default(),
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        assert!(storage.get_update_delta_status_calls().is_empty());
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert_eq!(network.apply_delta_responses.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_requires_reconstructed_commitment_to_match_claim() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_recent_candidate_deltas(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "different_commitment".to_string(),
+                ))),
+        );
+        let metadata =
+            Arc::new(MockMetadataStore::new().with_get(Ok(Some(create_test_metadata(account_id)))));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(storage.clone(), network, metadata, clock);
+        let processor = DeltasProcessor::new_with_mode(
+            state,
+            CanonicalizationConfig::default(),
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        assert!(storage.get_promote_candidate_fences().is_empty());
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_pages_through_recent_candidates() {
+        let account_id = "0xtest_account";
+        let first_page = (1..=FAST_PROMOTION_PAGE_SIZE)
+            .map(|nonce| {
+                let mut candidate = create_candidate_delta(account_id, u64::from(nonce));
+                candidate.new_commitment = None;
+                candidate
+            })
+            .collect::<Vec<_>>();
+        let mut final_candidate =
+            create_candidate_delta(account_id, u64::from(FAST_PROMOTION_PAGE_SIZE) + 1);
+        final_candidate.new_commitment = None;
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_recent_candidate_deltas(Ok(vec![final_candidate]))
+                .with_pull_recent_candidate_deltas(Ok(first_page)),
+        );
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_get(Ok(Some(create_test_metadata(account_id)))),
+        );
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(MockNetworkClient::new()),
+            metadata,
+            clock,
+        );
+        let processor = DeltasProcessor::new_with_mode(
+            state,
+            CanonicalizationConfig::default(),
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        let calls = storage.get_pull_recent_candidate_deltas_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, None);
+        assert_eq!(
+            calls[1].1,
+            Some(RecentCandidateCursor {
+                last_status_timestamp: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+                last_account_id: account_id.to_string(),
+                last_nonce: u64::from(FAST_PROMOTION_PAGE_SIZE),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_ends_pagination_on_malformed_cursor_timestamp() {
+        let account_id = "0xtest_account";
+        let page = (1..=FAST_PROMOTION_PAGE_SIZE)
+            .map(|nonce| {
+                let mut candidate = create_candidate_delta(account_id, u64::from(nonce));
+                candidate.new_commitment = None;
+                candidate
+            })
+            .map(|mut candidate| {
+                if candidate.nonce == u64::from(FAST_PROMOTION_PAGE_SIZE) {
+                    candidate.status = DeltaStatus::Candidate {
+                        timestamp: "not-a-timestamp".to_string(),
+                        retry_count: 0,
+                        divergence_count: 0,
+                        abandon_requested_at: None,
+                        abandon_confirm_count: 0,
+                    };
+                }
+                candidate
+            })
+            .collect::<Vec<_>>();
+        let storage =
+            Arc::new(MockStorageBackend::new().with_pull_recent_candidate_deltas(Ok(page)));
+        let metadata =
+            Arc::new(MockMetadataStore::new().with_get(Ok(Some(create_test_metadata(account_id)))));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(MockNetworkClient::new()),
+            metadata,
+            clock,
+        );
+        let processor = DeltasProcessor::new_with_mode(
+            state,
+            CanonicalizationConfig::default(),
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        assert_eq!(storage.get_pull_recent_candidate_deltas_calls().len(), 1);
+    }
+
+    /// Trips the pass's cancellation token from inside page processing —
+    /// the deterministic stand-in for a deadline that expires while a
+    /// page is being worked, which a wall-clock deadline cannot do
+    /// reliably in a test.
+    struct CancelOnVerifyNetwork {
+        cancel: CancellationToken,
+    }
+
+    #[async_trait]
+    impl crate::network::NetworkClient for CancelOnVerifyNetwork {
+        fn get_state_commitment(
+            &self,
+            _account_id: &str,
+            _state_json: &serde_json::Value,
+        ) -> std::result::Result<String, String> {
+            unreachable!()
+        }
+
+        async fn verify_commitment(
+            &self,
+            _account_id: &str,
+            _expected_commitment: &str,
+        ) -> std::result::Result<StateVerification, String> {
+            self.cancel.cancel();
+            Ok(StateVerification::Mismatch {
+                on_chain: "0xother".to_string(),
+            })
+        }
+
+        fn verify_delta(
+            &self,
+            _prev_proof: &str,
+            _prev_state_json: &serde_json::Value,
+            _delta_payload: &serde_json::Value,
+        ) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+
+        fn apply_delta(
+            &self,
+            _prev_state_json: &serde_json::Value,
+            _delta_payload: &serde_json::Value,
+        ) -> std::result::Result<(serde_json::Value, String), String> {
+            unreachable!()
+        }
+
+        fn merge_deltas(
+            &self,
+            _delta_payloads: Vec<serde_json::Value>,
+        ) -> std::result::Result<serde_json::Value, String> {
+            unreachable!()
+        }
+
+        fn delta_proposal_id(
+            &self,
+            _account_id: &str,
+            _nonce: u64,
+            _delta_payload: &serde_json::Value,
+        ) -> std::result::Result<String, String> {
+            unreachable!()
+        }
+
+        fn validate_account_id(&self, _account_id: &str) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+
+        fn validate_credential(
+            &self,
+            _state_json: &serde_json::Value,
+            _credential: &crate::metadata::auth::Credentials,
+            _auth: &Auth,
+        ) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+
+        fn validate_guardian_commitment(
+            &self,
+            _state_json: &serde_json::Value,
+            _expected_guardian_commitment: &str,
+        ) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+
+        async fn should_update_auth(
+            &self,
+            _state_json: &serde_json::Value,
+            _current_auth: &Auth,
+        ) -> std::result::Result<Option<Auth>, String> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_retains_cursor_when_pass_is_cut_short_after_page() {
+        let account_id = "0xtest_account";
+        let page = (1..=FAST_PROMOTION_PAGE_SIZE)
+            .map(|nonce| create_candidate_delta(account_id, u64::from(nonce)))
+            .collect::<Vec<_>>();
+        let storage =
+            Arc::new(MockStorageBackend::new().with_pull_recent_candidate_deltas(Ok(page)));
+        let metadata =
+            Arc::new(MockMetadataStore::new().with_get(Ok(Some(create_test_metadata(account_id)))));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let pass = PassLease::single_process();
+        let network = Arc::new(CancelOnVerifyNetwork {
+            cancel: pass.cancel.clone(),
+        });
+        let state = create_test_app_state_with_clock(storage.clone(), network, metadata, clock);
+        let fast_state = Arc::new(FastPromotionState::default());
+        let processor = DeltasProcessor::with_fast_pass(
+            state,
+            CanonicalizationConfig::default(),
+            pass.leader,
+            pass.lease,
+            pass.cancel,
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+            FastPassControl {
+                state: fast_state.clone(),
+                deadline: None,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        assert_eq!(storage.get_pull_recent_candidate_deltas_calls().len(), 1);
+        assert_eq!(
+            fast_state.cursor(),
+            Some(RecentCandidateCursor {
+                last_status_timestamp: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+                last_account_id: account_id.to_string(),
+                last_nonce: u64::from(FAST_PROMOTION_PAGE_SIZE),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_stops_admitting_work_at_deadline() {
+        let storage = Arc::new(MockStorageBackend::new());
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(MockNetworkClient::new()),
+            Arc::new(MockMetadataStore::new()),
+        );
+        let pass = PassLease::single_process();
+        let processor = DeltasProcessor::with_fast_pass(
+            state,
+            CanonicalizationConfig::default(),
+            pass.leader,
+            pass.lease,
+            pass.cancel,
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+            FastPassControl {
+                state: Arc::new(FastPromotionState::default()),
+                deadline: Some(Instant::now()),
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        assert!(storage.get_pull_recent_candidate_deltas_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_skips_candidate_outside_fast_window() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+        let storage = Arc::new(
+            MockStorageBackend::new().with_pull_recent_candidate_deltas(Ok(vec![candidate])),
+        );
+        let network = Arc::new(MockNetworkClient::new());
+        let metadata = Arc::new(MockMetadataStore::new());
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 30).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(storage, network.clone(), metadata, clock);
+        let processor = DeltasProcessor::new_with_mode(
+            state,
+            CanonicalizationConfig::default(),
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+
+        assert!(result.is_ok());
+        assert!(network.get_verify_commitment_calls().is_empty());
     }
 
     #[tokio::test]
@@ -2578,7 +3397,7 @@ mod tests {
     }
 
     fn fenced_processor(state: AppState, config: CanonicalizationConfig) -> DeltasProcessor {
-        DeltasProcessor::with_lease(
+        DeltasProcessor::with_lease_and_mode(
             state,
             config,
             Arc::new(FencingElector),
@@ -2589,6 +3408,7 @@ mod tests {
                 expires_at: chrono::DateTime::<Utc>::MAX_UTC,
             },
             tokio_util::sync::CancellationToken::new(),
+            ProcessingMode::Full,
         )
     }
 
@@ -2670,12 +3490,13 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
         let pass = PassLease::single_process();
-        let processor = DeltasProcessor::with_lease(
+        let processor = DeltasProcessor::with_lease_and_mode(
             state,
             CanonicalizationConfig::default(),
             pass.leader,
             pass.lease,
             cancel,
+            ProcessingMode::Full,
         );
 
         let summary = processor
