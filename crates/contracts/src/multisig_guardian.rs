@@ -199,6 +199,17 @@ impl MultisigGuardianBuilder {
         if self.config.signer_commitments.is_empty() {
             return Err(anyhow!("at least one signer commitment is required"));
         }
+
+        let mut seen_signers = std::collections::HashSet::new();
+        for commitment in &self.config.signer_commitments {
+            if !seen_signers.insert(*commitment) {
+                return Err(anyhow!(
+                    "duplicate signer commitment: {}",
+                    guardian_shared::hex::IntoHex::into_hex(*commitment)
+                ));
+            }
+        }
+
         if self.config.threshold > self.config.signer_commitments.len() as u32 {
             return Err(anyhow!(
                 "threshold ({}) cannot exceed number of signers ({})",
@@ -206,6 +217,30 @@ impl MultisigGuardianBuilder {
                 self.config.signer_commitments.len()
             ));
         }
+
+        if seen_signers.contains(&self.config.guardian_commitment) {
+            return Err(anyhow!(
+                "GUARDIAN commitment must be different from all signer commitments"
+            ));
+        }
+
+        let mut seen_procs = std::collections::HashSet::new();
+        for (root, threshold) in &self.config.proc_threshold_overrides {
+            if *threshold < 1 {
+                return Err(anyhow!("procedure threshold must be at least 1"));
+            }
+            if *threshold > self.config.signer_commitments.len() as u32 {
+                return Err(anyhow!(
+                    "procedure threshold ({}) cannot exceed number of signers ({})",
+                    threshold,
+                    self.config.signer_commitments.len()
+                ));
+            }
+            if !seen_procs.insert(*root) {
+                return Err(anyhow!("duplicate procedure threshold override"));
+            }
+        }
+
         Ok(())
     }
 }
@@ -273,6 +308,50 @@ mod tests {
         let result = MultisigGuardianBuilder::new(config).build();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot exceed"));
+    }
+
+    #[test]
+    fn test_validation_duplicate_signers() {
+        let config = MultisigGuardianConfig::new(
+            1,
+            vec![mock_commitment(1), mock_commitment(1)],
+            mock_commitment(10),
+        );
+        let result = MultisigGuardianBuilder::new(config).build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate signer commitment")
+        );
+    }
+
+    #[test]
+    fn test_validation_guardian_collision() {
+        let config = MultisigGuardianConfig::new(1, vec![mock_commitment(1)], mock_commitment(1));
+        let result = MultisigGuardianBuilder::new(config).build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("GUARDIAN commitment must be different")
+        );
+    }
+
+    #[test]
+    fn test_validation_invalid_proc_override() {
+        let config = MultisigGuardianConfig::new(1, vec![mock_commitment(1)], mock_commitment(10))
+            .with_proc_threshold_overrides(vec![(mock_commitment(20), 0)]);
+        let result = MultisigGuardianBuilder::new(config).build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be at least 1")
+        );
     }
 
     #[test]
