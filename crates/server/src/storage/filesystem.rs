@@ -818,11 +818,39 @@ impl StorageBackend for FilesystemService {
         now: &str,
     ) -> Result<crate::storage::CandidateSubmission, String> {
         let _guard = self.delta_write_lock.lock().await;
-        if let Ok(existing) = self.pull_delta(&delta.account_id, delta.nonce).await
-            && (existing.status.is_retained() || existing.status.is_client_abandoned())
-        {
-            self.delete_delta(&delta.account_id, delta.nonce).await?;
+
+        // Race-proof twin of the service-layer admission gate, mirroring
+        // the Postgres transaction: two submissions that both passed the
+        // pre-commit validation serialize on this lock, and the loser is
+        // rejected here rather than overwriting the winner.
+        let current_state = self.pull_state(&delta.account_id).await?;
+        if current_state.commitment != delta.prev_commitment {
+            return Ok(crate::storage::CandidateSubmission::CommitmentMismatch {
+                expected: current_state.commitment,
+            });
         }
+        if self.has_pending_candidate(&delta.account_id).await? {
+            return Ok(crate::storage::CandidateSubmission::Conflict);
+        }
+
+        match self.pull_delta(&delta.account_id, delta.nonce).await {
+            // A retained row (issue #345) or client-abandoned discard
+            // (issue #319) at this nonce is a recovery/history artifact,
+            // never settled canonical history: the client re-supplying
+            // its intent for the slot supersedes it.
+            Ok(existing)
+                if existing.status.is_retained() || existing.status.is_client_abandoned() =>
+            {
+                self.delete_delta(&delta.account_id, delta.nonce).await?;
+            }
+            // Any other row at this nonce is settled history and must
+            // never be overwritten by a delayed submission (the
+            // filesystem twin of Postgres's ON CONFLICT DO NOTHING).
+            Ok(_) => return Ok(crate::storage::CandidateSubmission::Conflict),
+            Err(e) if crate::storage::is_storage_not_found(&e) => {}
+            Err(e) => return Err(e),
+        }
+
         self.write_delta_holding_lock(delta).await?;
         metadata
             .set_has_pending_candidate(&delta.account_id, true, now)
@@ -1316,6 +1344,39 @@ mod tests {
         }
     }
 
+    /// Seeds the account metadata and a state whose commitment matches
+    /// `create_test_delta`'s `prev_commitment`, so candidate submissions
+    /// pass the in-lock admission gate.
+    async fn seed_account(
+        storage: &FilesystemService,
+        metadata_store: &crate::metadata::filesystem::FilesystemMetadataStore,
+        account_id: &str,
+    ) {
+        crate::metadata::MetadataStore::set(
+            metadata_store,
+            crate::metadata::AccountMetadata {
+                account_id: account_id.to_string(),
+                auth: crate::metadata::auth::Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                created_at: "2024-11-14T12:00:00Z".to_string(),
+                updated_at: "2024-11-14T12:00:00Z".to_string(),
+                has_pending_candidate: false,
+                last_auth_timestamp: None,
+                paused_at: None,
+                paused_reason: None,
+                released_at: None,
+            },
+        )
+        .await
+        .expect("metadata seed");
+
+        let mut state = create_test_state(account_id);
+        state.commitment = "0x123".to_string();
+        storage.submit_state(&state).await.expect("state seed");
+    }
+
     #[tokio::test]
     async fn test_pull_recoverable_deltas_filters_and_orders() {
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
@@ -1449,25 +1510,7 @@ mod tests {
                 .expect("metadata store");
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
-        crate::metadata::MetadataStore::set(
-            &metadata_store,
-            crate::metadata::AccountMetadata {
-                account_id: account_id.to_string(),
-                auth: crate::metadata::auth::Auth::MidenFalconRpo {
-                    cosigner_commitments: vec![],
-                },
-                network_config: crate::metadata::NetworkConfig::miden_default(),
-                created_at: "2024-11-14T12:00:00Z".to_string(),
-                updated_at: "2024-11-14T12:00:00Z".to_string(),
-                has_pending_candidate: false,
-                last_auth_timestamp: None,
-                paused_at: None,
-                paused_reason: None,
-                released_at: None,
-            },
-        )
-        .await
-        .expect("metadata seed");
+        seed_account(&storage, &metadata_store, account_id).await;
 
         let mut retained = create_test_delta(account_id, 1);
         retained.status = DeltaStatus::retained(
@@ -1489,6 +1532,20 @@ mod tests {
             .await
             .expect("row survives");
         assert!(stored.status.is_candidate(), "the candidate replaced it");
+
+        // Clear the slot before part two: the in-lock pending-candidate
+        // gate (correctly) refuses a second candidate while one exists.
+        storage
+            .discard_candidate(
+                &metadata_store,
+                account_id,
+                1,
+                DeltaStatusKind::Candidate,
+                "2024-11-14T12:15:00Z",
+                None,
+            )
+            .await
+            .expect("discard resolves");
 
         // A client-abandoned discard at a nonce must be superseded too:
         // it is precisely the resubmission the abandon endpoint (issue
@@ -1516,6 +1573,158 @@ mod tests {
         assert!(
             stored.status.is_candidate(),
             "the rebuilt candidate replaced the abandoned discard"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_same_nonce_submissions_admit_exactly_one() {
+        // Two submissions that both passed the service-layer validation
+        // race into the store; the in-lock recheck must admit exactly one
+        // and refuse the other instead of silently overwriting it.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        seed_account(&storage, &metadata_store, account_id).await;
+
+        let mut first = create_test_delta(account_id, 1);
+        first.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        first.new_commitment = Some("0xaaa".to_string());
+        let mut second = create_test_delta(account_id, 1);
+        second.status = DeltaStatus::candidate("2024-11-14T12:10:01Z".to_string());
+        second.new_commitment = Some("0xbbb".to_string());
+
+        let (left, right) = tokio::join!(
+            storage.submit_candidate(&metadata_store, &first, "2024-11-14T12:10:00Z"),
+            storage.submit_candidate(&metadata_store, &second, "2024-11-14T12:10:01Z"),
+        );
+        let outcomes = [left.expect("resolves"), right.expect("resolves")];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == crate::storage::CandidateSubmission::Submitted)
+                .count(),
+            1,
+            "exactly one submission wins: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == crate::storage::CandidateSubmission::Conflict)
+                .count(),
+            1,
+            "the loser is refused, not overwritten: {outcomes:?}"
+        );
+
+        // The stored row is the winner's, untouched by the loser.
+        let stored = storage.pull_delta(account_id, 1).await.expect("row exists");
+        let winner_was_first = outcomes[0] == crate::storage::CandidateSubmission::Submitted;
+        let expected = if winner_was_first { "0xaaa" } else { "0xbbb" };
+        assert_eq!(stored.new_commitment.as_deref(), Some(expected));
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_different_nonce_submissions_admit_exactly_one() {
+        // The one-candidate-per-account invariant must hold across
+        // nonces too: the loser hits the in-lock pending-candidate
+        // recheck even though its nonce slot is free.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        seed_account(&storage, &metadata_store, account_id).await;
+
+        let mut first = create_test_delta(account_id, 1);
+        first.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        let mut second = create_test_delta(account_id, 2);
+        second.status = DeltaStatus::candidate("2024-11-14T12:10:01Z".to_string());
+
+        let (left, right) = tokio::join!(
+            storage.submit_candidate(&metadata_store, &first, "2024-11-14T12:10:00Z"),
+            storage.submit_candidate(&metadata_store, &second, "2024-11-14T12:10:01Z"),
+        );
+        let outcomes = [left.expect("resolves"), right.expect("resolves")];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == crate::storage::CandidateSubmission::Submitted)
+                .count(),
+            1,
+            "exactly one candidate is admitted: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == crate::storage::CandidateSubmission::Conflict)
+                .count(),
+            1,
+            "the second candidate conflicts on the account: {outcomes:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_submit_candidate_rechecks_commitment_and_settled_rows() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        seed_account(&storage, &metadata_store, account_id).await;
+
+        // The account state advanced after service-layer validation:
+        // the in-lock recheck reports the current commitment.
+        let mut stale = create_test_delta(account_id, 1);
+        stale.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        stale.prev_commitment = "0xstale".to_string();
+        let submission = storage
+            .submit_candidate(&metadata_store, &stale, "2024-11-14T12:10:00Z")
+            .await
+            .expect("submission resolves");
+        assert_eq!(
+            submission,
+            crate::storage::CandidateSubmission::CommitmentMismatch {
+                expected: "0x123".to_string()
+            }
+        );
+
+        // A settled (canonical) row at the nonce is history: never
+        // overwritten by a delayed submission.
+        let canonical = create_test_delta(account_id, 1);
+        storage
+            .submit_delta(&canonical)
+            .await
+            .expect("submit works");
+        let mut late = create_test_delta(account_id, 1);
+        late.status = DeltaStatus::candidate("2024-11-14T12:20:00Z".to_string());
+        let submission = storage
+            .submit_candidate(&metadata_store, &late, "2024-11-14T12:20:00Z")
+            .await
+            .expect("submission resolves");
+        assert_eq!(submission, crate::storage::CandidateSubmission::Conflict);
+        let stored = storage.pull_delta(account_id, 1).await.expect("row exists");
+        assert!(
+            stored.status.is_canonical(),
+            "the settled row survives the delayed submission"
         );
 
         let _ = std::fs::remove_dir_all(temp_dir);
