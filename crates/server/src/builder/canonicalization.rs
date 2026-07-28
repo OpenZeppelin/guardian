@@ -6,6 +6,15 @@ pub const ENV_FAST_PROMOTION_ENABLED: &str = "GUARDIAN_CANONICALIZATION_FAST_PRO
 /// Environment override for [`CanonicalizationConfig::max_concurrent_accounts`].
 pub const ENV_MAX_CONCURRENT_ACCOUNTS: &str = "GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS";
 
+/// Environment override for [`CanonicalizationConfig::retained_ttl_seconds`].
+/// `0` is the runtime kill switch: retention is disabled and the historical
+/// delete-on-exhaustion behavior is restored without a recompile.
+pub const ENV_RETAINED_TTL_SECONDS: &str = "GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS";
+
+/// Environment override for [`CanonicalizationConfig::reconcile_interval_seconds`].
+pub const ENV_RECONCILE_INTERVAL_SECONDS: &str =
+    "GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS";
+
 /// Configuration for delta canonicalization behavior
 /// When Some: deltas are saved as candidates and later verified/canonicalized
 /// When None: deltas are immediately saved as canonical (optimistic mode)
@@ -52,13 +61,29 @@ pub struct CanonicalizationConfig {
 
     /// How long a retry-exhausted candidate is kept as `retained`
     /// (issue #345) for background reconciliation before being dropped
-    /// for good. While retained, every worker tick re-checks
-    /// `stored base + delta` against the on-chain commitment and
-    /// promotes the delta if they ever match — recovering an account
-    /// whose stored state fell permanently behind after an RPC outage
-    /// or worker downtime. `0` disables retention and restores the
-    /// historical delete-on-exhaustion behavior.
+    /// for good. A dedicated reconcile pass (see
+    /// `reconcile_interval_seconds`) probes the chain for each account
+    /// with recoverable rows and promotes a retained delta if the chain
+    /// ever shows it landed — recovering an account whose stored state
+    /// fell permanently behind after an RPC outage or worker downtime.
+    /// `0` disables retention and restores the historical
+    /// delete-on-exhaustion behavior.
     pub retained_ttl_seconds: u64,
+
+    /// How often the dedicated reconcile pass over recoverable deltas
+    /// runs (issue #345). Deliberately slower than
+    /// `check_interval_seconds`: reconciliation is a background recovery
+    /// sweep whose per-account cost starts with a chain RPC, and it must
+    /// never crowd out ordinary candidate processing. Individual
+    /// accounts are additionally backed off as their recoverable rows
+    /// age (see the reconciliation module).
+    pub reconcile_interval_seconds: u64,
+
+    /// How many accounts one reconcile pass visits at most. Accounts
+    /// beyond the page wait for the next pass; a rotation cursor keeps
+    /// the selection fair, so a large backlog (e.g. after a correlated
+    /// node outage) drains across passes instead of monopolizing one.
+    pub reconcile_page_size: u32,
     /// How many accounts one canonicalization pass processes concurrently.
     /// Candidates within an account are always sequential (nonce order);
     /// this only overlaps the per-account work — dominated by the Miden
@@ -83,6 +108,8 @@ impl Default for CanonicalizationConfig {
             abandon_quarantine_seconds: 15,       // Let a late-landing tx surface first
             abandon_quarantine_checks: 2,         // Two ticks to rule out a stale read
             retained_ttl_seconds: 86_400,         // Reconcile a stuck base for up to a day (#345)
+            reconcile_interval_seconds: 60,       // Recovery sweep; slower than the full pass
+            reconcile_page_size: 100,             // Accounts per reconcile pass; cursor rotates
             max_concurrent_accounts: 10, // Overlaps per-account chain RPCs; prod Terraform sets 50
         }
     }
@@ -183,6 +210,74 @@ impl CanonicalizationConfig {
     /// delete-on-exhaustion behavior).
     pub fn with_retained_ttl_seconds(mut self, seconds: u64) -> Self {
         self.retained_ttl_seconds = seconds;
+        self
+    }
+
+    /// Apply the [`ENV_RETAINED_TTL_SECONDS`] override when set. `0` is
+    /// the runtime kill switch for retention — no recompile needed to
+    /// fall back to delete-on-exhaustion.
+    pub fn with_retained_ttl_seconds_from_env(self) -> Result<Self, String> {
+        self.retained_ttl_seconds_from_var(ENV_RETAINED_TTL_SECONDS)
+    }
+
+    fn retained_ttl_seconds_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => value
+                .parse::<u64>()
+                .map(|seconds| self.with_retained_ttl_seconds(seconds))
+                .map_err(|_| format!("{var_name} must be a non-negative integer, got '{value}'")),
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains invalid UTF-8"))
+            }
+        }
+    }
+
+    /// Get the reconcile pass interval as a duration.
+    pub fn reconcile_interval(&self) -> Duration {
+        Duration::from_secs(self.reconcile_interval_seconds)
+    }
+
+    /// Override how often the reconcile pass over recoverable deltas runs.
+    pub fn with_reconcile_interval_seconds(mut self, seconds: u64) -> Self {
+        assert!(
+            seconds > 0,
+            "reconcile interval must be at least one second"
+        );
+        self.reconcile_interval_seconds = seconds;
+        self
+    }
+
+    /// Apply the [`ENV_RECONCILE_INTERVAL_SECONDS`] override when set.
+    pub fn with_reconcile_interval_seconds_from_env(self) -> Result<Self, String> {
+        self.reconcile_interval_seconds_from_var(ENV_RECONCILE_INTERVAL_SECONDS)
+    }
+
+    fn reconcile_interval_seconds_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let seconds = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("{var_name} must be a positive integer, got '{value}'"))?;
+                if seconds == 0 {
+                    return Err(format!("{var_name} must be greater than zero"));
+                }
+                Ok(self.with_reconcile_interval_seconds(seconds))
+            }
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains invalid UTF-8"))
+            }
+        }
+    }
+
+    /// Override how many accounts one reconcile pass visits at most.
+    pub fn with_reconcile_page_size(mut self, accounts: u32) -> Self {
+        assert!(
+            accounts > 0,
+            "reconcile page size must be at least one account"
+        );
+        self.reconcile_page_size = accounts;
         self
     }
 
@@ -292,6 +387,59 @@ mod tests {
 
         assert_eq!(config.max_concurrent_accounts, 24);
         unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[test]
+    fn retained_ttl_env_override_accepts_zero_kill_switch() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_RETAINED_TTL_TEST";
+
+        unsafe { std::env::set_var(var_name, "0") };
+        let config = CanonicalizationConfig::default()
+            .retained_ttl_seconds_from_var(var_name)
+            .expect("zero is the documented kill switch");
+        assert_eq!(config.retained_ttl_seconds, 0);
+
+        unsafe { std::env::set_var(var_name, "3600") };
+        let config = CanonicalizationConfig::default()
+            .retained_ttl_seconds_from_var(var_name)
+            .expect("valid value applies");
+        assert_eq!(config.retained_ttl_seconds, 3600);
+
+        unsafe { std::env::set_var(var_name, "not-a-number") };
+        assert!(
+            CanonicalizationConfig::default()
+                .retained_ttl_seconds_from_var(var_name)
+                .is_err()
+        );
+
+        unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[test]
+    fn reconcile_interval_env_override_rejects_zero() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_RECONCILE_INTERVAL_TEST";
+
+        unsafe { std::env::set_var(var_name, "120") };
+        let config = CanonicalizationConfig::default()
+            .reconcile_interval_seconds_from_var(var_name)
+            .expect("valid value applies");
+        assert_eq!(config.reconcile_interval_seconds, 120);
+
+        unsafe { std::env::set_var(var_name, "0") };
+        assert!(
+            CanonicalizationConfig::default()
+                .reconcile_interval_seconds_from_var(var_name)
+                .is_err(),
+            "a zero interval would spin the reconcile timer"
+        );
+
+        unsafe { std::env::remove_var(var_name) };
+        let config = CanonicalizationConfig::default()
+            .reconcile_interval_seconds_from_var(var_name)
+            .expect("missing variable is not an error");
+        assert_eq!(config.reconcile_interval_seconds, 60);
     }
 
     #[test]

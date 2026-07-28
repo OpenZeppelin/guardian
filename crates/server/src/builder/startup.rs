@@ -190,6 +190,8 @@ mod tests {
                 abandon_quarantine_checks: 2,
                 max_concurrent_accounts: 4,
                 retained_ttl_seconds: 86_400,
+                reconcile_interval_seconds: 60,
+                reconcile_page_size: 100,
             }),
             3,
             true,

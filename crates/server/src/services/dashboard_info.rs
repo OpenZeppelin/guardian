@@ -629,6 +629,8 @@ mod tests {
             divergence_confirmations: 2,
             max_concurrent_accounts: 4,
             retained_ttl_seconds: 86_400,
+            reconcile_interval_seconds: 60,
+            reconcile_page_size: 100,
         });
         let info = get_dashboard_info(&state).await.unwrap();
         let cfg = info.backend.canonicalization.expect("config present");
