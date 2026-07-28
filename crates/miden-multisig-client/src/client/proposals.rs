@@ -28,7 +28,8 @@ pub enum AbandonStatus {
     /// The transaction landed after all; the delta canonicalized.
     Landed,
     /// The abandon completed; the delta is discarded as client-abandoned
-    /// and the account is released.
+    /// (or retained for late-landing reconciliation) and the account is
+    /// released.
     Abandoned,
     /// The delta is missing or in a state no abandon flow produces.
     Unexpected,
@@ -647,15 +648,24 @@ impl MultisigClient {
             return Ok(AbandonStatus::Unexpected);
         };
 
-        use guardian_client::delta_status::Status as ProtoStatus;
-        Ok(match status.status {
-            Some(ProtoStatus::CandidateAt(_)) => AbandonStatus::Waiting,
-            Some(ProtoStatus::CanonicalAt(_)) => AbandonStatus::Landed,
-            Some(ProtoStatus::DiscardedAt(_)) if status.discard_reason == "client_abandoned" => {
-                AbandonStatus::Abandoned
-            }
-            _ => AbandonStatus::Unexpected,
-        })
+        Ok(classify_abandon_status(&status))
+    }
+}
+
+/// Maps a delta's wire status onto the abandon lifecycle.
+fn classify_abandon_status(status: &guardian_client::DeltaStatus) -> AbandonStatus {
+    use guardian_client::delta_status::Status as ProtoStatus;
+    match status.status {
+        Some(ProtoStatus::CandidateAt(_)) => AbandonStatus::Waiting,
+        Some(ProtoStatus::CanonicalAt(_)) => AbandonStatus::Landed,
+        Some(ProtoStatus::DiscardedAt(_)) if status.discard_reason == "client_abandoned" => {
+            AbandonStatus::Abandoned
+        }
+        // A retained delta no longer holds the account's candidate slot:
+        // the abandon endpoint reports it as already abandoned, and a
+        // late landing is healed by the server's reconciliation pass.
+        Some(ProtoStatus::RetainedAt(_)) => AbandonStatus::Abandoned,
+        _ => AbandonStatus::Unexpected,
     }
 }
 
@@ -668,6 +678,7 @@ mod tests {
     use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word, ZERO};
 
+    use super::{AbandonStatus, classify_abandon_status};
     use crate::error::{MultisigError, Result};
     use crate::proposal::Proposal;
 
@@ -774,5 +785,48 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn abandon_status_classifies_every_wire_status() {
+        use guardian_client::DeltaStatus;
+        use guardian_client::delta_status::Status as ProtoStatus;
+
+        let status = |status: Option<ProtoStatus>, discard_reason: &str| DeltaStatus {
+            status,
+            discard_reason: discard_reason.to_string(),
+            retain_reason: String::new(),
+        };
+
+        let ts = "2026-07-28T00:00:00Z".to_string();
+        assert_eq!(
+            classify_abandon_status(&status(Some(ProtoStatus::CandidateAt(ts.clone())), "")),
+            AbandonStatus::Waiting
+        );
+        assert_eq!(
+            classify_abandon_status(&status(Some(ProtoStatus::CanonicalAt(ts.clone())), "")),
+            AbandonStatus::Landed
+        );
+        assert_eq!(
+            classify_abandon_status(&status(
+                Some(ProtoStatus::DiscardedAt(ts.clone())),
+                "client_abandoned"
+            )),
+            AbandonStatus::Abandoned
+        );
+        // A retained delta has released the account: same client-visible
+        // outcome as a completed abandon.
+        assert_eq!(
+            classify_abandon_status(&status(Some(ProtoStatus::RetainedAt(ts.clone())), "")),
+            AbandonStatus::Abandoned
+        );
+        assert_eq!(
+            classify_abandon_status(&status(Some(ProtoStatus::DiscardedAt(ts)), "")),
+            AbandonStatus::Unexpected
+        );
+        assert_eq!(
+            classify_abandon_status(&status(None, "")),
+            AbandonStatus::Unexpected
+        );
     }
 }
