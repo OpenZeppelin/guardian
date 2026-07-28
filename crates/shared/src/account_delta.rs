@@ -162,13 +162,14 @@ fn vault_patch_from_delta(
 mod tests {
     use miden_protocol::account::{
         Account, AccountCode, AccountDelta, AccountId, AccountIdVersion, AccountStorage,
-        AccountStoragePatch, AccountType, AccountVaultDelta, AssetCallbackFlag, StorageSlotName,
+        AccountStoragePatch, AccountType, AccountVaultDelta, AssetCallbackFlag, StorageMapKey,
+        StorageMapPatch, StorageMapPatchEntries, StorageSlotName, StorageSlotPatch,
     };
     use miden_protocol::asset::{AssetVault, FungibleAsset};
-    use miden_protocol::testing::storage::{MOCK_VALUE_SLOT0, MOCK_VALUE_SLOT1};
+    use miden_protocol::testing::storage::{MOCK_MAP_SLOT, MOCK_VALUE_SLOT0, MOCK_VALUE_SLOT1};
     use miden_protocol::{Felt, Word};
 
-    use super::apply_account_delta;
+    use super::{apply_account_delta, apply_account_delta_with_storage_patch};
 
     #[test]
     fn applies_create_update_and_remove_storage_operations() {
@@ -247,6 +248,92 @@ mod tests {
 
         apply_account_delta(&mut account, &delta).unwrap();
 
+        assert_eq!(account.vault().get(asset_id), Some(FungibleAsset::mock(60)));
+    }
+
+    /// A new wallet's first transaction: the account is still at nonce 0, so the delta cannot be
+    /// applied as a patch against existing state and the account is rebuilt from a full-state
+    /// patch instead. Slots the delta never mentions must survive that rebuild, and the
+    /// additional storage patch (the server's replay-protection entry) must merge on top.
+    #[test]
+    fn rebuilds_new_account_from_first_delta_preserving_untouched_state() {
+        let account_id = AccountId::dummy(
+            [9_u8; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            AssetCallbackFlag::Disabled,
+        );
+        let initial_asset = FungibleAsset::mock(100);
+        let asset_id = initial_asset.id();
+        let mut account = Account::new_unchecked(
+            account_id,
+            AssetVault::new(&[initial_asset]).unwrap(),
+            AccountStorage::mock(),
+            AccountCode::mock(),
+            Felt::ZERO,
+            None,
+        );
+        assert_eq!(account.nonce(), Felt::ZERO);
+
+        let untouched_value = account.storage().get(&MOCK_VALUE_SLOT0).unwrap().value();
+        let untouched_map_root = account.storage().get(&MOCK_MAP_SLOT).unwrap().value();
+
+        let created_slot = StorageSlotName::new("guardian::test::first_tx").unwrap();
+        let created_value = Word::from([31_u32, 32, 33, 34]);
+        let updated_value = Word::from([41_u32, 42, 43, 44]);
+        let mut vault_delta = AccountVaultDelta::default();
+        vault_delta.remove_asset(FungibleAsset::mock(40)).unwrap();
+        let delta = AccountDelta::new(
+            account_id,
+            AccountStoragePatch::builder()
+                .update_value(MOCK_VALUE_SLOT1.clone(), updated_value)
+                .create_value(created_slot.clone(), created_value)
+                .build(),
+            vault_delta,
+            None,
+            Felt::ONE,
+        )
+        .unwrap();
+
+        let replay_key = StorageMapKey::new(Word::from([7_u32, 0, 0, 0]));
+        let replay_flag = Word::from([1_u32, 0, 0, 0]);
+        let additional_storage = AccountStoragePatch::from_entries([(
+            MOCK_MAP_SLOT.clone(),
+            StorageSlotPatch::Map(StorageMapPatch::Update {
+                entries: StorageMapPatchEntries::from_iter([(replay_key, replay_flag)]),
+            }),
+        )])
+        .unwrap();
+
+        apply_account_delta_with_storage_patch(&mut account, &delta, additional_storage).unwrap();
+
+        assert_eq!(account.nonce(), Felt::ONE);
+        assert_eq!(
+            account.storage().get(&MOCK_VALUE_SLOT0).unwrap().value(),
+            untouched_value,
+            "a slot the delta never mentions must survive the nonce-0 rebuild"
+        );
+        assert_eq!(
+            account.storage().get(&MOCK_VALUE_SLOT1).unwrap().value(),
+            updated_value
+        );
+        assert_eq!(
+            account.storage().get(&created_slot).unwrap().value(),
+            created_value
+        );
+        assert_eq!(
+            account
+                .storage()
+                .get_map_item(&MOCK_MAP_SLOT, replay_key)
+                .unwrap(),
+            replay_flag,
+            "the additional storage patch must merge into the rebuilt account"
+        );
+        assert_ne!(
+            account.storage().get(&MOCK_MAP_SLOT).unwrap().value(),
+            untouched_map_root,
+            "the replay entry must change the map root it was merged into"
+        );
         assert_eq!(account.vault().get(asset_id), Some(FungibleAsset::mock(60)));
     }
 }

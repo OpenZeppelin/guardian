@@ -427,6 +427,22 @@ const proposal = await multisig.createAddSignerProposal(
 > To keep the intended security level, raise the affected overrides via an
 > update-procedure-threshold proposal alongside the growth.
 
+> **Overrides apply to guardian rotation too**: `update_guardian` is a valid
+> override target in both SDKs. Guardian rotation is a note-less operation, so
+> the upstream contract skips the guardian signature check when
+> `update_guardian_public_key` is the only non-auth procedure called — the
+> multisig quorum alone authorizes it. That quorum is the override on
+> `update_guardian`'s root when one is set, so an override of 1 lets a single
+> signer replace the guardian with no guardian consent. Nothing in the builder
+> or the contract restricts overrides on this root; treat an override on
+> `update_guardian` as a deliberate reduction of the account's recovery
+> threshold. Installing such an override is gated — at creation the account's
+> author chooses it, and at runtime `set_procedure_threshold` requires the
+> default quorum plus a guardian signature — but the gate applies only to
+> installing it. Once stored, the reduced quorum governs every future rotation
+> on its own, with no further guardian involvement, until another
+> update-procedure-threshold proposal raises it back.
+
 #### Remove Signer
 
 ```typescript
@@ -1030,7 +1046,7 @@ supported contract version.
 
 | SDK release | miden-standards (contract) | Operates accounts created with |
 |---|---|---|
-| next (0.16.x, unreleased) | 0.15.3 | miden-standards 0.15.3 contracts only |
+| next (0.16.x, unreleased) | 0.16.0-alpha.4 | miden-standards 0.16.0-alpha.4 contracts only |
 | ≤ 0.15.x | — (local Guardian MASM) | pre-upstream accounts (wiped by the 0.15 cutover) |
 
 Both SDKs **enforce** this at runtime rather than trusting the table: before any
