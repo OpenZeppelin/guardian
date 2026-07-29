@@ -6,10 +6,13 @@
 use miden_client::note::NoteConsumptionStatus;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
+use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteId;
+use miden_standards::note::P2idNote;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
+use crate::proposal::{Proposal, TransactionType};
 
 /// A wrapper type for a consumable note with simplified information.
 #[derive(Debug, Clone)]
@@ -234,6 +237,48 @@ impl MultisigClient {
             .collect();
 
         Ok(filtered)
+    }
+
+    /// Computes the ID of the note a P2ID proposal will create when executed.
+    ///
+    /// The P2ID note is rebuilt deterministically from the proposal salt, so
+    /// the ID is known ahead of execution. For a private P2ID this is the ID
+    /// to pass to `export_note` after executing, so the note file can be
+    /// delivered to the recipient out-of-band (issue #356).
+    ///
+    /// Call this before executing the proposal: the asset is derived from the
+    /// current vault state, which execution itself changes.
+    pub fn p2id_note_id(&self, proposal: &Proposal) -> Result<NoteId> {
+        let account = self.require_account()?;
+        let TransactionType::P2ID {
+            recipient,
+            faucet_id,
+            amount,
+            note_type,
+        } = &proposal.transaction_type
+        else {
+            return Err(MultisigError::UnsupportedTransactionType(
+                "p2id_note_id requires a P2ID proposal".to_string(),
+            ));
+        };
+
+        let salt = proposal.metadata.salt()?;
+        let asset = crate::execution::build_transfer_asset(account.inner(), *faucet_id, *amount)?;
+
+        let mut rng = RandomCoin::new(salt);
+        let note = P2idNote::create(
+            account.id(),
+            *recipient,
+            vec![asset.into()],
+            *note_type,
+            Default::default(),
+            &mut rng,
+        )
+        .map_err(|e| {
+            MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
+        })?;
+
+        Ok(note.id())
     }
 }
 

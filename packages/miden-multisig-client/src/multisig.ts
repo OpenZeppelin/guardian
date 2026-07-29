@@ -29,6 +29,8 @@ import {
   Endpoint,
   FeltArray,
   Note,
+  NoteExportFormat,
+  NoteFile,
   NoteType,
   RpcClient,
   Signature,
@@ -42,6 +44,7 @@ import {
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
   buildConsumeNotesTransactionRequest,
+  buildP2idNoteFromMetadata,
   buildP2idTransactionRequest,
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
@@ -947,6 +950,105 @@ export class Multisig {
     }
 
     return notes;
+  }
+
+  /**
+   * Export a note created by this multisig account as serialized note-file
+   * bytes for out-of-band delivery (issue #356).
+   *
+   * A private note publishes only its commitment on chain, so the recipient
+   * can never learn its contents via sync; the sender must hand them the
+   * bytes produced here, which they load with {@link importNote}.
+   *
+   * The note must be an output note of this client (created by a transaction
+   * this client executed). When the note's on-chain inclusion proof is
+   * already known (after a post-commit sync) the full note with proof is
+   * exported; otherwise the note details are exported and the importer's
+   * client tracks the note until it commits on chain.
+   *
+   * @param noteId - ID of the note to export (hex string)
+   * @returns Serialized note file bytes
+   */
+  async exportNote(noteId: string): Promise<Uint8Array> {
+    const webClient = await this.getRawClient();
+
+    let record;
+    try {
+      record = await webClient.getOutputNote(noteId);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Output note ${noteId} not found in the local store; only notes created by this client can be exported: ${detail}`,
+      );
+    }
+
+    const format = record?.inclusionProof()
+      ? NoteExportFormat.Full
+      : NoteExportFormat.Details;
+    const noteFile = await webClient.exportNoteFile(noteId, format);
+    return noteFile.serialize();
+  }
+
+  /**
+   * Import a note file received out-of-band (issue #356) so the note can be
+   * consumed by this multisig account.
+   *
+   * Sync the Miden client with the network afterwards so the note's on-chain
+   * commitment is tracked and the note shows up in {@link getConsumableNotes};
+   * it can then be consumed via {@link createConsumeNotesProposal}.
+   *
+   * @param noteBytes - Serialized note file bytes produced by {@link exportNote}
+   * @returns The note ID when the file carries one, or the note's details
+   *   commitment for a details-only file
+   */
+  async importNote(noteBytes: Uint8Array): Promise<string> {
+    const webClient = await this.getRawClient();
+
+    let noteFile: NoteFile;
+    try {
+      noteFile = NoteFile.deserialize(noteBytes);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`failed to decode note file: ${detail}`);
+    }
+
+    return webClient.importNoteFile(noteFile);
+  }
+
+  /**
+   * Compute the ID of the note a P2ID proposal will create when executed.
+   *
+   * The P2ID note is rebuilt deterministically from the proposal salt, so the
+   * ID is known ahead of execution. For a private P2ID this is the ID to pass
+   * to {@link exportNote} after executing, so the note file can be delivered
+   * to the recipient out-of-band (issue #356).
+   *
+   * Call this before executing the proposal: the asset is derived from the
+   * current vault state, which execution itself changes.
+   */
+  async getP2idNoteId(proposal: Proposal): Promise<string> {
+    const metadata = proposal.metadata;
+    if (
+      metadata.proposalType !== 'p2id' ||
+      !metadata.recipientId ||
+      !metadata.faucetId ||
+      !metadata.amount ||
+      !metadata.saltHex
+    ) {
+      throw new Error('getP2idNoteId requires a P2ID proposal with recipient, faucet, amount, and salt metadata');
+    }
+
+    const account = await this.getStoreAccount();
+    const note = buildP2idNoteFromMetadata(
+      this._accountId,
+      metadata.recipientId,
+      metadata.faucetId,
+      BigInt(metadata.amount),
+      account,
+      parseP2idNoteType(metadata.noteType),
+      metadata.saltHex,
+    );
+    return note.id().toString();
   }
 
   /**

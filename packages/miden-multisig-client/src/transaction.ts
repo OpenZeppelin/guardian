@@ -3,6 +3,7 @@ export {
 } from './transaction/consumeNotes.js';
 export { executeForSummary } from './transaction/summary.js';
 export {
+  buildP2idNoteFromMetadata,
   buildP2idTransactionRequest,
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
