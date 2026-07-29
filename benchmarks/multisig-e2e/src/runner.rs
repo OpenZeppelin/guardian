@@ -566,27 +566,18 @@ fn is_retryable_proposal_error(error: &MultisigError) -> bool {
 }
 
 fn is_retryable_execution_error(error: &MultisigError) -> bool {
-    matches!(error, MultisigError::GuardianConnection(_))
-        || is_miden_sync_tip_ahead(error)
-        || is_transient_proving_failure(error)
-}
-
-/// Proving is delegated to a remote prover on the public networks, so a proof
-/// request can be cancelled or time out under load. That is transient
-/// infrastructure behaviour, not a rejected transaction, and without retrying it
-/// a single blip aborts a whole provisioning or benchmark sweep.
-fn is_transient_proving_failure(error: &MultisigError) -> bool {
-    let MultisigError::TransactionExecution(message) = error else {
-        return false;
-    };
-    let message = message.to_ascii_lowercase();
-    let proving = message.contains("failed to prove transaction")
-        || message.contains("transactionprovingerror");
-    let transient = message.contains("timeout expired")
-        || message.contains("code: cancelled")
-        || message.contains("deadline")
-        || message.contains("unavailable");
-    proving && transient
+    // Deliberately NOT retrying transient proving failures.
+    //
+    // `execute` is not idempotent: `get_guardian_ack_signature` pushes the delta
+    // to Guardian to obtain the ack signature *before* the transaction is proved
+    // and submitted, so Guardian already holds a candidate by the time proving
+    // runs. Retrying re-pushes and is rejected with `conflict_pending_delta`,
+    // and the stuck candidate then blocks every later attempt for that account.
+    //
+    // Measured: retrying proving failures here turned 1 failed account into 25
+    // and left 22 stuck candidates. Recovery is to abandon the candidate
+    // (`MultisigClient::abandon_candidate`), not to re-execute.
+    matches!(error, MultisigError::GuardianConnection(_)) || is_miden_sync_tip_ahead(error)
 }
 
 fn client_pair(
@@ -923,35 +914,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_prover_timeouts_are_retried() {
-        // Observed from a real bootstrap against testnet: proving is delegated
-        // to a shared remote prover, which cancels under load.
+    fn proving_failures_are_not_retried_because_execute_is_not_idempotent() {
+        // The delta is pushed to Guardian for the ack signature before proving,
+        // so a retry collides with the candidate the first attempt created.
         let error = MultisigError::TransactionExecution(
-            "transaction execution failed: TransactionProvingError(Other { error_msg: \"failed to \
-             prove transaction\", source: Some(Status { code: Cancelled, message: \"Timeout \
-             expired\" }) })"
+            "transaction execution failed: TransactionProvingError(Other { error_msg: \"failed to prove transaction\", source: Some(Status { code: Cancelled }) })"
                 .to_string(),
         );
-        assert!(is_retryable_execution_error(&error));
-    }
-
-    #[test]
-    fn a_rejected_transaction_is_not_retried() {
-        // Only transient proving failures qualify; a genuine rejection must
-        // surface rather than being retried until the deadline.
-        let error = MultisigError::TransactionExecution(
-            "transaction execution failed: insufficient balance".to_string(),
-        );
         assert!(!is_retryable_execution_error(&error));
     }
 
-    #[test]
-    fn a_non_proving_timeout_is_not_treated_as_a_proving_failure() {
-        let error = MultisigError::TransactionExecution(
-            "transaction execution failed: Timeout expired waiting for note".to_string(),
-        );
-        assert!(!is_retryable_execution_error(&error));
-    }
     use miden_protocol::address::NetworkId;
 
     #[test]

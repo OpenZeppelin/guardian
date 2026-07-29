@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use guardian_client::GuardianClient;
-use miden_multisig_client::{AccountId, TransactionType};
+use miden_multisig_client::{AbandonRequestState, AccountId, TransactionType};
 use serde::Serialize;
 
 use crate::config::ScaleConfig;
@@ -55,6 +55,13 @@ pub enum FailureKind {
     Execution,
     Discarded,
     CanonicalizationTimeout,
+    /// Execution failed leaving an accepted delta stranded; it was released so
+    /// the writer could continue. Counts against canonicalization as unsettled.
+    CandidateAbandoned,
+    /// GUARDIAN rejected the push because the account already holds a
+    /// non-canonical delta. Nothing of ours was accepted, so this must not enter
+    /// the canonicalization population.
+    PendingConflict,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,11 +71,20 @@ pub struct WriteRecord {
     pub operation: u64,
     pub started_at: DateTime<Utc>,
     pub nonce: Option<u64>,
+    /// Whether GUARDIAN accepted the delta, which is not the same as the client
+    /// believing execution succeeded: the delta is pushed to obtain the ack
+    /// signature before proving, so a proving failure leaves an accepted delta
+    /// behind. Counting only client-side successes would drop those from the
+    /// canonicalization population and inflate the percentile.
+    pub accepted: bool,
     pub proposal_ms: Option<u64>,
     pub execution_ms: Option<u64>,
     /// Accepted -> canonical wait. The issue #317 criterion (p95 <= 30s).
     pub canonicalization_ms: Option<u64>,
     pub total_ms: u64,
+    /// A stranded candidate whose transaction had landed after all, so the
+    /// delta canonicalized despite the client-side failure.
+    pub recovered_landed: bool,
     pub failure: Option<FailureKind>,
     pub error: Option<String>,
 }
@@ -87,6 +103,11 @@ pub struct ScaleSummary {
     pub canonicalization: Option<LatencyStats>,
     pub proposal: Option<LatencyStats>,
     pub execution: Option<LatencyStats>,
+    /// Candidates stranded by a failed execution and then released, so the
+    /// writer could continue. Each one is an accepted delta that never settled.
+    pub candidates_abandoned: usize,
+    /// Stranded candidates whose transaction turned out to have landed.
+    pub candidates_landed: usize,
     pub verdicts: Vec<CriterionVerdict>,
 }
 
@@ -300,22 +321,43 @@ async fn drive_writer(
         return Ok(Vec::new());
     };
 
+    // Start from a clean account: a candidate left by an earlier run would make
+    // the first proposal conflict, and the retry would chase it for its whole
+    // timeout before the writer produced anything.
+    if let Err(error) = clear_pending_candidate(&mut sender, &mut observer, &run_config).await {
+        eprintln!(
+            "{}: could not clear a pending candidate before starting: {error:#}",
+            sender_fixture.label
+        );
+    }
+
     let mut records = Vec::new();
     let mut operation = 0u64;
     while Instant::now() < deadline {
         operation += 1;
-        records.push(
-            execute_write(
-                &mut sender,
-                &mut observer,
-                receiver_id,
-                &receiver_fixture.label,
-                faucet_id,
-                &run_config,
-                operation,
-            )
-            .await,
-        );
+        let record = execute_write(
+            &mut sender,
+            &mut observer,
+            receiver_id,
+            &receiver_fixture.label,
+            faucet_id,
+            &run_config,
+            operation,
+        )
+        .await;
+        // A failure can leave the account blocked in ways recovery did not
+        // resolve, so clear before the next attempt rather than letting the next
+        // proposal conflict.
+        if record.failure.is_some()
+            && let Err(error) =
+                clear_pending_candidate(&mut sender, &mut observer, &run_config).await
+        {
+            eprintln!(
+                "{}: could not clear after a failure: {error:#}",
+                sender.label
+            );
+        }
+        records.push(record);
     }
     Ok(records)
 }
@@ -342,10 +384,12 @@ async fn execute_write(
         operation,
         started_at,
         nonce: None,
+        accepted: false,
         proposal_ms: None,
         execution_ms: None,
         canonicalization_ms: None,
         total_ms: 0,
+        recovered_landed: false,
         failure: None,
         error: None,
     };
@@ -378,13 +422,33 @@ async fn execute_write(
 
     let execution_started = Instant::now();
     if let Err(error) = execute_with_retry(sender, &proposal.id, run_config).await {
-        return fail(
+        // Two very different failures arrive here and must not be conflated.
+        //
+        // A conflict means GUARDIAN *rejected* our push because the account
+        // already holds a non-canonical delta: nothing of ours was accepted, and
+        // any delta sitting at this nonce belongs to an earlier attempt. Probing
+        // by nonce and believing what is found there would credit us with
+        // someone else's delta -- which reported 40 "accepted, discarded" deltas
+        // for operations GUARDIAN never accepted.
+        //
+        // Any other execution failure happens after the push that obtains the ack
+        // signature, so our delta really is accepted and may be stranded.
+        if is_pending_conflict(&error) {
+            return fail(record, started, FailureKind::PendingConflict, error);
+        }
+        return recover_stranded(
             record,
+            sender,
+            observer,
+            proposal.nonce,
+            run_config,
             started,
             classify(&error, FailureKind::Execution),
             error,
-        );
+        )
+        .await;
     }
+    record.accepted = true;
     record.execution_ms = Some(elapsed_ms(execution_started));
 
     // The delta is accepted from here; this wait is the #317 criterion.
@@ -470,6 +534,167 @@ fn classify(error: &anyhow::Error, stage: FailureKind) -> FailureKind {
         return FailureKind::AuthWindow;
     }
     stage
+}
+
+/// GUARDIAN rejects a push while the account holds a non-canonical delta.
+///
+/// Matched on the server's wording because the client surfaces it as a generic
+/// server error; the distinction decides whether our delta was accepted at all.
+fn is_pending_conflict(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    message.contains("conflict_pending_delta")
+        || message.contains("already a pending change for this account")
+}
+
+/// After a failed execution, find out whether GUARDIAN holds a delta at this
+/// nonce and release it if so.
+///
+/// Three outcomes matter and are distinguished, because collapsing them would
+/// either lose an accepted delta from the population or mislabel a success:
+///   * no delta        -> nothing was accepted; the original failure stands
+///   * canonical       -> the transaction landed despite the client-side error
+///   * stranded        -> accepted but unsettled; abandon so the writer continues
+#[allow(clippy::too_many_arguments)]
+async fn recover_stranded(
+    mut record: WriteRecord,
+    sender: &mut BenchClient,
+    observer: &mut GuardianClient,
+    nonce: u64,
+    run_config: &crate::config::RunConfig,
+    started: Instant,
+    kind: FailureKind,
+    error: anyhow::Error,
+) -> WriteRecord {
+    match observer.get_delta(&sender.account_id, nonce).await {
+        Ok(response) => match response.delta {
+            None => return fail(record, started, kind, error),
+            Some(delta) if delta.canonical_at.is_some() => {
+                record.accepted = true;
+                record.recovered_landed = true;
+                // Wait is not measurable here: the settle time was not observed,
+                // only its outcome. Left absent so it is censored rather than
+                // guessed at.
+                record.total_ms = elapsed_ms(started);
+                record.failure = None;
+                record.error = Some(format!(
+                    "execution reported failure but the delta canonicalized: {error:#}"
+                ));
+                return record;
+            }
+            Some(delta) if delta.discarded_at.is_some() => {
+                record.accepted = true;
+                return fail(record, started, FailureKind::Discarded, error);
+            }
+            Some(_) => {}
+        },
+        // Cannot tell whether a delta exists, so do not guess: report the
+        // original failure and leave the account for the next pre-flight.
+        Err(probe_error) => {
+            return fail(
+                record,
+                started,
+                kind,
+                error.context(format!("could not probe delta state: {probe_error}")),
+            );
+        }
+    }
+
+    record.accepted = true;
+    match abandon_candidate(sender, observer, nonce, run_config).await {
+        Ok(true) => {
+            record.recovered_landed = true;
+            record.total_ms = elapsed_ms(started);
+            record.failure = None;
+            record.error = Some(format!(
+                "execution failed but the transaction had landed: {error:#}"
+            ));
+            record
+        }
+        Ok(false) => fail(record, started, FailureKind::CandidateAbandoned, error),
+        Err(abandon_error) => fail(
+            record,
+            started,
+            kind,
+            error.context(format!(
+                "failed to release stranded candidate: {abandon_error:#}"
+            )),
+        ),
+    }
+}
+
+/// Release a stranded candidate, returning whether it turned out to have landed.
+///
+/// GUARDIAN quarantines an abandon request before resolving it, so this polls to
+/// a conclusion instead of assuming the first response is final.
+async fn abandon_candidate(
+    sender: &mut BenchClient,
+    observer: &mut GuardianClient,
+    nonce: u64,
+    run_config: &crate::config::RunConfig,
+) -> Result<bool> {
+    match sender.client.abandon_candidate(nonce).await {
+        Ok(AbandonRequestState::Abandoned) => return Ok(false),
+        Ok(AbandonRequestState::Pending) => {}
+        Err(error) => {
+            // The server refuses to abandon a candidate whose transaction
+            // landed; that is a success for our purposes, not an error.
+            let message = error.to_string();
+            if message.to_ascii_lowercase().contains("candidate_landed") {
+                return Ok(true);
+            }
+            return Err(anyhow::anyhow!(message));
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(run_config.timeout_seconds);
+    loop {
+        match observer.get_delta(&sender.account_id, nonce).await {
+            Ok(response) => match response.delta {
+                Some(delta) if delta.canonical_at.is_some() => return Ok(true),
+                Some(delta) if delta.discarded_at.is_some() => return Ok(false),
+                _ => {}
+            },
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    return Err(anyhow::anyhow!("{error}"));
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!("candidate at nonce {nonce} was not released within the timeout");
+        }
+        tokio::time::sleep(Duration::from_millis(run_config.poll_interval_ms)).await;
+    }
+}
+
+/// Clear any candidate left pending on this account before the next operation.
+///
+/// Without this a stranded candidate makes the next proposal fail with
+/// `conflict_pending_delta`, which the proposal retry then chases for its full
+/// timeout even though the conflict can never resolve on its own. Measured: two
+/// writers each burned 180s per operation this way, managing 2 useful operations
+/// in a 240s window.
+async fn clear_pending_candidate(
+    sender: &mut BenchClient,
+    observer: &mut GuardianClient,
+    run_config: &crate::config::RunConfig,
+) -> Result<()> {
+    let Some(account) = sender.client.account() else {
+        return Ok(());
+    };
+    let next_nonce = account.nonce() + 1;
+    match observer.get_delta(&sender.account_id, next_nonce).await {
+        Ok(response) => match response.delta {
+            Some(delta) if delta.canonical_at.is_none() && delta.discarded_at.is_none() => {
+                abandon_candidate(sender, observer, next_nonce, run_config)
+                    .await
+                    .map(|_| ())
+            }
+            _ => Ok(()),
+        },
+        // A missing delta is the normal case: nothing is pending.
+        Err(_) => Ok(()),
+    }
 }
 
 fn fail(
@@ -558,10 +783,7 @@ pub(crate) fn summarize(
     // once more than 5% are censored, p95 lands on the bound and fails on its
     // own, with no special case needed.
     let censor_bound_ms = config.timeout_seconds.saturating_mul(1_000);
-    let accepted: Vec<&WriteRecord> = records
-        .iter()
-        .filter(|record| record.execution_ms.is_some())
-        .collect();
+    let accepted: Vec<&WriteRecord> = records.iter().filter(|record| record.accepted).collect();
     let canonical_samples = accepted
         .iter()
         .filter(|record| record.canonicalization_ms.is_some())
@@ -594,6 +816,14 @@ pub(crate) fn summarize(
         canonicalization,
         proposal,
         execution,
+        candidates_abandoned: records
+            .iter()
+            .filter(|record| record.failure == Some(FailureKind::CandidateAbandoned))
+            .count(),
+        candidates_landed: records
+            .iter()
+            .filter(|record| record.recovered_landed)
+            .count(),
         verdicts,
     }
 }
@@ -688,6 +918,12 @@ fn print_summary(summary: &ScaleSummary, records_path: &Path, summary_path: &Pat
         summary.operations_succeeded,
         summary.operations_failed
     );
+    if summary.candidates_abandoned > 0 || summary.candidates_landed > 0 {
+        println!(
+            "stranded candidates: {} abandoned, {} landed after all",
+            summary.candidates_abandoned, summary.candidates_landed
+        );
+    }
     if let Some(stats) = &summary.canonicalization {
         println!(
             "canonicalization ms: p50 {} p95 {} max {} ({} samples)",
@@ -723,6 +959,8 @@ mod tests {
         }
     }
 
+    /// A record for an accepted delta, which is the population the
+    /// canonicalization criterion is measured over.
     fn record(canonicalization_ms: Option<u64>, failure: Option<FailureKind>) -> WriteRecord {
         WriteRecord {
             writer: "alice".to_string(),
@@ -730,12 +968,23 @@ mod tests {
             operation: 1,
             started_at: Utc::now(),
             nonce: Some(1),
+            accepted: true,
             proposal_ms: Some(10),
             execution_ms: Some(20),
             canonicalization_ms,
             total_ms: 30,
+            recovered_landed: false,
             failure,
             error: None,
+        }
+    }
+
+    /// A record for an operation GUARDIAN never accepted.
+    fn unaccepted(failure: FailureKind) -> WriteRecord {
+        WriteRecord {
+            accepted: false,
+            execution_ms: None,
+            ..record(None, Some(failure))
         }
     }
 
@@ -761,12 +1010,7 @@ mod tests {
     fn canonicalization_is_not_measured_when_no_delta_was_ever_accepted() {
         // Proposal failures never reach acceptance, so there is nothing to
         // measure -- as opposed to accepted deltas that fail to settle.
-        let mut records: Vec<_> = (0..5)
-            .map(|_| record(None, Some(FailureKind::Proposal)))
-            .collect();
-        for record in &mut records {
-            record.execution_ms = None;
-        }
+        let records: Vec<_> = (0..5).map(|_| unaccepted(FailureKind::Proposal)).collect();
         let summary = summarize(&config(2), 2, 2, &records);
 
         assert_eq!(summary.verdicts[0].verdict, "not_measured");
@@ -794,6 +1038,73 @@ mod tests {
         let summary = summarize(&config(2), 2, 2, &records);
 
         assert_eq!(summary.verdicts[0].verdict, "fail");
+    }
+
+    #[test]
+    fn a_rejected_push_is_not_credited_as_an_accepted_delta() {
+        // Regression: a conflict was probed by nonce, found an earlier attempt's
+        // discarded delta, and reported it as this operation's accepted-then-
+        // discarded delta -- 40 phantom accepted deltas in one run.
+        let records: Vec<_> = (0..10)
+            .map(|_| unaccepted(FailureKind::PendingConflict))
+            .collect();
+        let summary = summarize(&config(2), 2, 2, &records);
+
+        assert_eq!(summary.verdicts[0].verdict, "not_measured");
+        assert_eq!(summary.operations_failed, 10);
+    }
+
+    #[test]
+    fn pending_conflicts_are_recognised_from_the_server_wording() {
+        let conflict = anyhow::anyhow!(
+            "GUARDIAN server error: failed to push delta: There's already a pending change for \
+             this account. Finish or cancel it first."
+        );
+        assert!(is_pending_conflict(&conflict));
+
+        let proving = anyhow::anyhow!(
+            "{}",
+            "transaction execution failed: TransactionProvingError: failed to prove transaction"
+        );
+        assert!(!is_pending_conflict(&proving));
+    }
+
+    #[test]
+    fn an_abandoned_candidate_counts_as_an_accepted_delta_that_never_settled() {
+        // A proving failure strands a delta GUARDIAN already accepted. Excluding
+        // it -- as filtering on client-side execution success did -- would drop a
+        // never-settled delta out of the percentile.
+        let mut records: Vec<_> = (0..1).map(|_| record(Some(1_000), None)).collect();
+        records.extend((0..9).map(|_| record(None, Some(FailureKind::CandidateAbandoned))));
+        let summary = summarize(&config(2), 2, 2, &records);
+
+        assert_eq!(summary.candidates_abandoned, 9);
+        assert_eq!(summary.verdicts[0].verdict, "fail");
+        assert!(summary.verdicts[0].note.contains("9 unsettled"));
+    }
+
+    #[test]
+    fn a_landed_recovery_is_not_counted_as_a_failure() {
+        // Execution reported an error but the transaction landed: the delta is
+        // accepted and canonical, so it must not be recorded as a failure.
+        let mut landed = record(Some(2_000), None);
+        landed.recovered_landed = true;
+        let summary = summarize(&config(2), 2, 2, &[landed]);
+
+        assert_eq!(summary.operations_failed, 0);
+        assert_eq!(summary.candidates_landed, 1);
+    }
+
+    #[test]
+    fn unaccepted_operations_stay_out_of_the_canonicalization_population() {
+        // A proposal that never reached GUARDIAN is a failure, but it is not an
+        // accepted delta and must not censor the percentile.
+        let mut records: Vec<_> = (0..10).map(|_| record(Some(1_000), None)).collect();
+        records.extend((0..10).map(|_| unaccepted(FailureKind::Proposal)));
+        let summary = summarize(&config(2), 2, 2, &records);
+
+        assert_eq!(summary.verdicts[0].verdict, "pass");
+        assert!(summary.verdicts[0].note.contains("10 accepted deltas"));
     }
 
     #[test]
