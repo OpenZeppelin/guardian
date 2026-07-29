@@ -994,8 +994,11 @@ Steps for publishing a new version of the SDK (Rust crates + TypeScript packages
 
 ```bash
 # Rust
-cargo test -p guardian-shared
-cargo test -p guardian-server --lib
+cargo test --locked \
+  -p guardian-shared \
+  -p guardian-client \
+  -p miden-confidential-contracts \
+  -p miden-multisig-client
 
 # TypeScript
 cd packages/guardian-client && npm test
@@ -1012,6 +1015,16 @@ cd packages/miden-multisig-client && npm run build
 ```
 
 3. Version numbers are updated in all files (see below).
+
+4. The coordinated Rust publication archive passes:
+
+```bash
+cargo publish --dry-run --locked \
+  -p guardian-shared \
+  -p guardian-client \
+  -p miden-confidential-contracts \
+  -p miden-multisig-client
+```
 
 ### Version Bump
 
@@ -1031,21 +1044,46 @@ The `server`, `miden-rpc-client`, `miden-keystore`, and example crates have thei
 
 ### Publishing Rust Crates
 
-Publish in dependency order (leaves first). Each crate must be available on crates.io before its dependents can be published.
+Rust crates are published by the
+[`Publish Rust Crates`](../.github/workflows/publish-crates.yml) workflow.
+Publishing a GitHub Release automatically selects all four crates, validates
+that the tag is `v` followed by their coordinated version, requests one
+`release` environment approval, and uses crates.io trusted publishing. Cargo
+receives all selected packages in one command and handles dependency-safe
+publication.
 
-```bash
-# 1. No internal deps
-cargo publish -p guardian-shared
+Configure a crates.io trusted publisher for each crate before the first
+automated publication:
 
-# 2. Depends on shared
-cargo publish -p guardian-client
-cargo publish -p miden-confidential-contracts
-
-# 3. Depends on shared + client + contracts
-cargo publish -p miden-multisig-client
+```text
+GitHub owner: OpenZeppelin
+Repository: guardian
+Workflow: publish-crates.yml
+Environment: release
 ```
 
-Wait for each step to finish before proceeding to the next (crates.io index needs to update).
+Use a manual dry run to validate one or more selected crates without requesting
+approval or credentials:
+
+```bash
+gh workflow run publish-crates.yml \
+  --ref main \
+  -f dry-run=true \
+  -f guardian-shared=true \
+  -f guardian-client=true \
+  -f miden-confidential-contracts=true \
+  -f miden-multisig-client=true
+```
+
+A manual run with `dry-run=false` publishes only the selected crates after one
+approval. If an unselected internal prerequisite is not already visible at the
+exact coordinated version, validation fails before publication.
+
+Publication is rerunnable. Exact versions already on crates.io are reported as
+already published and omitted from the Cargo command. If a publication is
+interrupted, rerun it; the preflight skips versions that reached crates.io and
+Cargo processes the remainder. Trusted-publishing failure fails closed; the
+workflow has no registry-token fallback.
 
 ### Publishing TypeScript Packages
 
@@ -1067,14 +1105,22 @@ cd packages/miden-multisig-client && npm publish --access public
 
 ### Post-Release
 
-1. Tag the release:
+1. Create a draft GitHub Release for review:
 
 ```bash
-git tag v0.15.1
-git push origin v0.15.1
+gh release create v0.16.1 --generate-notes --draft
 ```
 
-2. Create a GitHub release from the tag with release notes.
+2. Publish the draft when the coordinated Rust, TypeScript, and server-image
+   release workflows should start:
+
+```bash
+gh release edit v0.16.1 --draft=false
+```
+
+3. Approve the `release` environment jobs that should publish. The Rust
+   workflow summary records the source SHA, coordinated version,
+   authentication mode, and ordered per-crate outcomes without credentials.
 
 ---
 
