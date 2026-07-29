@@ -569,10 +569,11 @@ describe('GuardianHttpClient', () => {
       expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('landed');
     });
 
-    it('classifies a retained delta as abandoned (issue #345)', async () => {
-      // The Guardian gave up verifying and released the account: same
-      // client-visible outcome as a completed abandon, mirroring the
-      // server's abandon endpoint.
+    it('classifies a retained delta as retained, not abandoned (issue #345)', async () => {
+      // The Guardian gave up verifying and released the account, but the
+      // on-chain outcome is still uncertain: 'retained' means "unlocked
+      // but unresolved" — reporting it as 'abandoned' would wrongly
+      // imply the transaction definitively did not land.
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -583,7 +584,7 @@ describe('GuardianHttpClient', () => {
             reason: 'retry_exhausted',
           }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('abandoned');
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('retained');
     });
 
     it('classifies a client-abandoned discard as abandoned', async () => {

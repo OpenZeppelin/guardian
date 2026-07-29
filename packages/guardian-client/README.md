@@ -82,8 +82,23 @@ console.log(accepted.state); // 'pending'
 // The guardian's worker confirms over a short quarantine that the tx did
 // not land, then releases the account.
 const status = await client.abandonStatus(accountId, nonce);
-// 'waiting' | 'landed' | 'abandoned' | 'unexpected'
+// 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected'
 ```
+
+`'retained'` means the guardian stopped actively verifying the candidate
+and released the account slot, but the on-chain outcome is still
+**uncertain**: background reconciliation may promote the delta to
+`canonical` until its retention TTL expires. It is "unlocked but
+unresolved" — never read it as "the transaction did not land". Sync and
+check the chain before replacing the slot, since a resubmission
+supersedes the retained delta and forfeits automatic recovery.
+
+| Status | Account locked? | Outcome known? | Client action |
+|---|---|---|---|
+| `candidate` | Yes | No | Wait, or request abandonment |
+| `retained` | No | No | Sync/check chain before replacing |
+| `discarded: client_abandoned` | No | Probably not landed; late reconciliation remains possible | Continue cautiously |
+| `canonical` | No | Yes — landed | Sync account state |
 
 ### Look Up An Account By Key Commitment
 

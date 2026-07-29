@@ -322,8 +322,12 @@ export class GuardianHttpClient {
    * {@link abandonCandidate}: `'waiting'` while the quarantine runs,
    * `'landed'` if the transaction landed after all (the delta
    * canonicalized), `'abandoned'` once the delta is discarded as
-   * client-abandoned and the account released, `'unexpected'` for any
-   * state no abandon flow produces (including a missing delta).
+   * client-abandoned and the account released, `'retained'` when the
+   * guardian stopped verifying and released the account but the
+   * on-chain outcome is still uncertain (reconciliation may promote the
+   * delta until its retention TTL expires — sync and check chain before
+   * replacing it), `'unexpected'` for any state no abandon flow
+   * produces (including a missing delta).
    */
   async abandonStatus(accountId: string, nonce: number): Promise<AbandonStatus> {
     let delta: DeltaObject;
@@ -341,11 +345,11 @@ export class GuardianHttpClient {
       case 'canonical':
         return 'landed';
       // The Guardian gave up verifying and released the account (issue
-      // #345): nothing is locked anymore, which is what the abandon was
-      // for — mirrors the server reporting `abandoned` for an abandon
-      // request against a retained candidate.
+      // #345): unlocked, but unresolved — deliberately distinct from
+      // 'abandoned', which would wrongly imply the transaction did not
+      // land.
       case 'retained':
-        return 'abandoned';
+        return 'retained';
       case 'discarded':
         return delta.status.reason === 'client_abandoned' ? 'abandoned' : 'unexpected';
       default:

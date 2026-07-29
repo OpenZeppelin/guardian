@@ -327,7 +327,11 @@ message AbandonDeltaCandidateResponse {
   uint64 nonce = 4;
   // "pending" while the worker still has to resolve the intent (the
   // account stays locked until then); "abandoned" once the delta is
-  // discarded as client-abandoned and the account released.
+  // discarded as client-abandoned and the account released; "retained"
+  // when the worker had already stopped verifying and released the
+  // account — unlocked, but the on-chain outcome is still uncertain and
+  // background reconciliation may promote the delta until its retention
+  // TTL expires.
   string state = 5;
   // RFC 3339 UTC timestamp of the recorded abandon request. Retries
   // return the original timestamp; empty once resolved.

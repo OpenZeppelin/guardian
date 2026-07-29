@@ -258,7 +258,7 @@
           "client"
         ],
         "summary": "Request abandonment of a pending canonicalization candidate whose\ntransaction will never land on-chain (issue #319).",
-        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned.",
+        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned; `retained` → the worker\nalready released the account, but the outcome is still uncertain\n(reconciliation may promote it until the retention TTL expires).",
         "operationId": "abandon_candidate",
         "requestBody": {
           "content": {
@@ -1069,7 +1069,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released."
+            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released;\n`\"retained\"` when the worker had already stopped verifying the\ncandidate and released the account — unlocked, but the on-chain\noutcome is still uncertain and background reconciliation may yet\npromote the delta until its retention TTL expires."
           }
         }
       },

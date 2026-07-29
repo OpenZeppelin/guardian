@@ -201,9 +201,12 @@ export interface AbandonCandidateResponse {
    * `'pending'` while the guardian's worker still has to resolve the
    * abandon intent (the account stays locked until then); `'abandoned'`
    * once the delta is discarded as client-abandoned and the account
-   * released.
+   * released; `'retained'` when the worker had already stopped
+   * verifying the candidate and released the account — unlocked, but
+   * the on-chain outcome is still uncertain: background reconciliation
+   * may promote the delta until its retention TTL expires.
    */
-  state: 'pending' | 'abandoned';
+  state: 'pending' | 'abandoned' | 'retained';
   /**
    * RFC 3339 UTC timestamp of the recorded abandon request. Retries
    * return the original timestamp; absent once resolved.
@@ -211,8 +214,13 @@ export interface AbandonCandidateResponse {
   abandonRequestedAt?: string;
 }
 
-/** Resolution of an abandon request, as observed via the delta feed. */
-export type AbandonStatus = 'waiting' | 'landed' | 'abandoned' | 'unexpected';
+/**
+ * Resolution of an abandon request, as observed via the delta feed.
+ * `'retained'` means the account slot is released but the on-chain
+ * outcome is still uncertain — "unlocked but unresolved", never to be
+ * read as "the transaction did not land".
+ */
+export type AbandonStatus = 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected';
 
 export interface PushDeltaResponse {
   accountId: string;

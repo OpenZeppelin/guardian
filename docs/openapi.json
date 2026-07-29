@@ -1618,7 +1618,7 @@
           "client"
         ],
         "summary": "Request abandonment of a pending canonicalization candidate whose\ntransaction will never land on-chain (issue #319).",
-        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned.",
+        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned; `retained` → the worker\nalready released the account, but the outcome is still uncertain\n(reconciliation may promote it until the retention TTL expires).",
         "operationId": "abandon_candidate",
         "requestBody": {
           "content": {
@@ -3237,7 +3237,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released."
+            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released;\n`\"retained\"` when the worker had already stopped verifying the\ncandidate and released the account — unlocked, but the on-chain\noutcome is still uncertain and background reconciliation may yet\npromote the delta until its retention TTL expires."
           }
         }
       },
@@ -3960,6 +3960,13 @@
           "account_id": {
             "type": "string"
           },
+          "base_matches_stored_state": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the `retained` row still chains from the stored account\nstate — `false` means the row is structurally obsolete (the base\nmoved out from under it) and can only age out. Present only on\n`retained` rows, and absent when the state read fails."
+          },
           "category": {
             "oneOf": [
               {
@@ -4020,6 +4027,13 @@
             ],
             "description": "Base64-encoded raw `TransactionSummary` blob. Present only\nwhen the caller requested `?include=raw` (debug-only)."
           },
+          "retained_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When background reconciliation gives up on a `retained` row for\ngood (`status_timestamp` + the server's retention TTL), RFC 3339.\nPresent only on `retained` rows; absent when the TTL cannot be\nestablished (e.g. optimistic mode)."
+          },
           "retry_count": {
             "type": [
               "integer",
@@ -4036,7 +4050,7 @@
               "string",
               "null"
             ],
-            "description": "See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`]."
+            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -4275,7 +4289,7 @@
               "string",
               "null"
             ],
-            "description": "See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`]."
+            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -5512,7 +5526,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`]."
+                  "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
                 },
                 "status_timestamp": {
                   "type": "string"

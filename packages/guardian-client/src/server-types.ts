@@ -148,7 +148,7 @@ export interface ServerAbandonCandidateRequest {
 export interface ServerAbandonCandidateResponse {
   account_id: string;
   nonce: number;
-  state: 'pending' | 'abandoned';
+  state: 'pending' | 'abandoned' | 'retained';
   abandon_requested_at?: string;
 }
 

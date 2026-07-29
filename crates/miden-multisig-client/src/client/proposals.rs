@@ -18,6 +18,12 @@ pub enum AbandonRequestState {
     Pending,
     /// The abandon was already resolved; the account is released.
     Abandoned,
+    /// GUARDIAN had already stopped verifying the candidate and released
+    /// the account slot. Unlocked, but the on-chain outcome is still
+    /// uncertain: background reconciliation may promote the delta to
+    /// canonical until its retention TTL expires. Sync and check the
+    /// chain before replacing it.
+    Retained,
 }
 
 /// Resolution of an abandon request, as observed via the delta feed.
@@ -28,9 +34,15 @@ pub enum AbandonStatus {
     /// The transaction landed after all; the delta canonicalized.
     Landed,
     /// The abandon completed; the delta is discarded as client-abandoned
-    /// (or retained for late-landing reconciliation) and the account is
-    /// released.
+    /// and the account is released.
     Abandoned,
+    /// GUARDIAN stopped verifying and released the account slot, but the
+    /// on-chain outcome is still uncertain — "unlocked but unresolved",
+    /// never to be read as "the transaction did not land". Background
+    /// reconciliation may promote the delta to canonical until its
+    /// retention TTL expires; sync and check the chain before replacing
+    /// it.
+    Retained,
     /// The delta is missing or in a state no abandon flow produces.
     Unexpected,
 }
@@ -616,6 +628,7 @@ impl MultisigClient {
 
         Ok(match response.state.as_str() {
             "abandoned" => AbandonRequestState::Abandoned,
+            "retained" => AbandonRequestState::Retained,
             _ => AbandonRequestState::Pending,
         })
     }
@@ -661,10 +674,11 @@ fn classify_abandon_status(status: &guardian_client::DeltaStatus) -> AbandonStat
         Some(ProtoStatus::DiscardedAt(_)) if status.discard_reason == "client_abandoned" => {
             AbandonStatus::Abandoned
         }
-        // A retained delta no longer holds the account's candidate slot:
-        // the abandon endpoint reports it as already abandoned, and a
-        // late landing is healed by the server's reconciliation pass.
-        Some(ProtoStatus::RetainedAt(_)) => AbandonStatus::Abandoned,
+        // A retained delta no longer holds the account's candidate slot,
+        // but its on-chain outcome is still uncertain: distinct from
+        // `Abandoned`, which would wrongly imply the transaction
+        // definitively did not land.
+        Some(ProtoStatus::RetainedAt(_)) => AbandonStatus::Retained,
         _ => AbandonStatus::Unexpected,
     }
 }
@@ -814,11 +828,11 @@ mod tests {
             )),
             AbandonStatus::Abandoned
         );
-        // A retained delta has released the account: same client-visible
-        // outcome as a completed abandon.
+        // A retained delta has released the account but its outcome is
+        // still uncertain: "unlocked but unresolved", never `Abandoned`.
         assert_eq!(
             classify_abandon_status(&status(Some(ProtoStatus::RetainedAt(ts.clone())), "")),
-            AbandonStatus::Abandoned
+            AbandonStatus::Retained
         );
         assert_eq!(
             classify_abandon_status(&status(Some(ProtoStatus::DiscardedAt(ts)), "")),
