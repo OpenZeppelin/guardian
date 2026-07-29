@@ -77,6 +77,7 @@ async fn sync_with_retry(client: &mut MultisigClient, config: &RunConfig) -> Res
     let deadline = std::time::Instant::now()
         + std::time::Duration::from_secs(config.proposal_retry_timeout_seconds);
     let retry_interval = std::time::Duration::from_millis(config.proposal_retry_interval_ms);
+    let mut rate_limited_attempts = 0u32;
     loop {
         match client.sync().await {
             Ok(()) => return Ok(()),
@@ -86,6 +87,19 @@ async fn sync_with_retry(client: &mut MultisigClient, config: &RunConfig) -> Res
                     return Err(error.into());
                 }
                 tokio::time::sleep(retry_interval.min(deadline - now)).await;
+            }
+            // Loading N writers means N concurrent syncs, which trips the public
+            // node's rate limit well before the workload starts: a 64-writer run
+            // aborted here because initialisation, not load, exceeded the limit.
+            // The sync is idempotent, so backing off is the correct response.
+            Err(error) if crate::runner::is_rate_limited(&error) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Err(error.into());
+                }
+                let wait = crate::runner::rate_limit_backoff(retry_interval, rate_limited_attempts);
+                rate_limited_attempts += 1;
+                tokio::time::sleep(wait.min(deadline - now)).await;
             }
             Err(error) => return Err(error.into()),
         }

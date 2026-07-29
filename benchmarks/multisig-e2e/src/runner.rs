@@ -651,6 +651,7 @@ async fn sync_network_until(
     deadline: Instant,
     retry_interval: Duration,
 ) -> Result<()> {
+    let mut rate_limited_attempts = 0u32;
     loop {
         match client.client.sync_network_only().await {
             Ok(()) => return Ok(()),
@@ -661,9 +662,42 @@ async fn sync_network_until(
                 }
                 tokio::time::sleep(retry_interval.min(deadline - now)).await;
             }
+            // The public node rate-limits reads, and a sync is idempotent, so
+            // waiting is the correct response rather than failing the operation.
+            // Measured at 32 writers: 437 operations lost to "Too Many
+            // Requests!" against an advertised limit of 128. Backoff here
+            // smooths bursts; it cannot raise the node's ceiling, so a run
+            // structurally above the limit still queues rather than speeds up.
+            Err(error) if is_rate_limited(&error) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(error.into());
+                }
+                let wait = rate_limit_backoff(retry_interval, rate_limited_attempts);
+                rate_limited_attempts += 1;
+                tokio::time::sleep(wait.min(deadline - now)).await;
+            }
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+/// Whether the node refused the request for exceeding its rate limit.
+pub(crate) fn is_rate_limited(error: &MultisigError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("too many requests") || message.contains("429")
+}
+
+/// Exponential backoff with jitter, capped.
+///
+/// Jitter matters more here than for a single client: writers that trip the
+/// limit together would otherwise retry in lockstep and trip it again.
+pub(crate) fn rate_limit_backoff(base: Duration, attempt: u32) -> Duration {
+    const MAX_WAIT_MS: u64 = 8_000;
+    let doubled = base.as_millis().saturating_mul(1u128 << attempt.min(16)) as f64;
+    let jitter = 0.75 + rand::random::<f64>() * 0.5;
+    // Cap after jitter: a ceiling that jitter can exceed is not a ceiling.
+    Duration::from_millis(((doubled * jitter) as u64).min(MAX_WAIT_MS))
 }
 
 async fn await_canonical(
@@ -912,6 +946,36 @@ fn active_proposal_ms(total_ms: u64, retry_wait_ms: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limited_responses_are_recognised() {
+        // Observed at 32 writers against the public testnet node.
+        let limited = MultisigError::MidenClient(
+            "failed to sync state: RpcError(\"Too Many Requests! Wait for 0s\")".to_string(),
+        );
+        assert!(is_rate_limited(&limited));
+        assert!(is_rate_limited(&MultisigError::MidenClient(
+            "HTTP 429".to_string()
+        )));
+        assert!(!is_rate_limited(&MultisigError::MidenClient(
+            "connection refused".to_string()
+        )));
+    }
+
+    #[test]
+    fn rate_limit_backoff_grows_and_stays_capped() {
+        let base = Duration::from_millis(1_000);
+
+        // +/-25% jitter, so assert the band.
+        let first = rate_limit_backoff(base, 0).as_millis() as u64;
+        assert!((750..=1_250).contains(&first), "first wait was {first}ms");
+
+        let third = rate_limit_backoff(base, 2).as_millis() as u64;
+        assert!((3_000..=5_000).contains(&third), "third wait was {third}ms");
+
+        let far = rate_limit_backoff(base, 12).as_millis() as u64;
+        assert!(far <= 8_000, "wait must stay capped, got {far}ms");
+    }
 
     #[test]
     fn proving_failures_are_not_retried_because_execute_is_not_idempotent() {

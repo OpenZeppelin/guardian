@@ -4789,6 +4789,7 @@ name = "miden-multisig-client"
 version = "0.16.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "futures",
  "guardian-client",

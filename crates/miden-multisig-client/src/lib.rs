@@ -47,6 +47,7 @@ mod keystore;
 mod payload;
 mod procedures;
 mod proposal;
+mod prover;
 mod transaction;
 mod utils;
 
@@ -62,6 +63,9 @@ pub use client::{
 
 // Procedures
 pub use procedures::{ProcedureName, ProcedureThreshold};
+
+// Proving
+pub use prover::RetryingTransactionProver;
 
 // Account types
 pub use account::MultisigAccount;

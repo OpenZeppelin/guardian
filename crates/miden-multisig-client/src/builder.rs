@@ -3,8 +3,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::prover::RetryingTransactionProver;
 use miden_client::DebugMode;
-use miden_client::builder::ClientBuilder;
+use miden_client::RemoteTransactionProver;
+use miden_client::builder::{ClientBuilder, DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::Endpoint;
 use miden_client_sqlite_store::SqliteStore;
@@ -19,14 +21,39 @@ use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
 
 fn configured_client_builder(endpoint: &Endpoint) -> ClientBuilder<FilesystemKeyStore> {
     if endpoint == &Endpoint::devnet() {
-        ClientBuilder::<FilesystemKeyStore>::for_devnet()
+        with_prover_retries(
+            ClientBuilder::<FilesystemKeyStore>::for_devnet(),
+            DEVNET_PROVER_ENDPOINT,
+        )
     } else if endpoint == &Endpoint::testnet() {
-        ClientBuilder::<FilesystemKeyStore>::for_testnet()
+        with_prover_retries(
+            ClientBuilder::<FilesystemKeyStore>::for_testnet(),
+            TESTNET_PROVER_ENDPOINT,
+        )
     } else if endpoint == &Endpoint::localhost() {
         ClientBuilder::<FilesystemKeyStore>::for_localhost()
     } else {
         ClientBuilder::<FilesystemKeyStore>::new().grpc_client(endpoint, Some(20_000))
     }
+}
+
+/// Wrap the preset's prover so transient failures are retried.
+///
+/// The devnet and testnet presets delegate proving to a shared remote prover
+/// that cancels requests under load; localhost proves locally and has nothing to
+/// retry. Retrying is safe at this layer because the delta reaches GUARDIAN
+/// before proving starts, so another proof attempt changes no server state --
+/// unlike retrying the surrounding execution, which re-pushes the delta and is
+/// refused as a pending-delta conflict.
+fn with_prover_retries(
+    builder: ClientBuilder<FilesystemKeyStore>,
+    prover_endpoint: &str,
+) -> ClientBuilder<FilesystemKeyStore> {
+    // The builder exposes no getter for the preset's prover, so the same remote
+    // prover is reconstructed from the endpoint the preset uses and wrapped.
+    builder.prover(Arc::new(RetryingTransactionProver::new(Arc::new(
+        RemoteTransactionProver::new(prover_endpoint.to_string()),
+    ))))
 }
 
 /// Builder for constructing MultisigClient instances.
