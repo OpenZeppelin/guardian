@@ -1024,10 +1024,20 @@ impl StorageBackend for PostgresService {
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
+        // A nonce can carry several rows: abandoned attempts are kept as
+        // history and no longer consume it. `first` alone would then return an
+        // arbitrary one, so a caller asking "what is the delta at this nonce"
+        // could get a superseded attempt instead of the live delta -- which
+        // would misreport canonicalization and abandon polling. Order live
+        // rows ahead of discarded ones, newest first within each group.
         let row: DeltaRow = deltas::table
             .filter(deltas::account_id.eq(account_id))
             .filter(deltas::nonce.eq(nonce as i64))
             .select(DeltaRow::as_select())
+            .order((
+                diesel::dsl::sql::<diesel::sql_types::Bool>("status_kind = 'discarded'").asc(),
+                deltas::id.desc(),
+            ))
             .first(&mut conn)
             .await
             .map_err(|e| format!("Failed to pull delta: {e}"))?;
@@ -2772,6 +2782,19 @@ mod tests {
             .await
             .expect("count rows at the nonce");
         assert_eq!(rows, 2, "the abandoned attempt is preserved as history");
+
+        // With two rows at the nonce, a reader must get the live one: the
+        // benchmark and the abandon poller both ask "what is the delta at this
+        // nonce" and would otherwise see a superseded attempt.
+        let live = service
+            .pull_delta(&account_id, 4)
+            .await
+            .expect("pull the delta at the reused nonce");
+        assert_eq!(
+            live.new_commitment.as_deref(),
+            Some("another"),
+            "pull_delta returns the live delta, not the abandoned attempt"
+        );
     }
 
     #[tokio::test]
