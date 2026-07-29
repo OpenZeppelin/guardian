@@ -88,4 +88,5 @@ OIDC trusted publishing is the only publication authentication path.
 cd packages/guardian-client && npm publish --access public
 cd packages/guardian-evm-client && npm publish --access public
 cd packages/miden-multisig-client && npm publish --access public
+cd packages/guardian-operator-client && npm publish --access public
 ```

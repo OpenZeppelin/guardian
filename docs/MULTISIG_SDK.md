@@ -1004,6 +1004,7 @@ cargo test --locked \
 cd packages/guardian-client && npm test
 cd packages/guardian-evm-client && npm test
 cd packages/miden-multisig-client && npm test
+cd packages/guardian-operator-client && npm test
 ```
 
 2. TypeScript packages build cleanly:
@@ -1012,6 +1013,7 @@ cd packages/miden-multisig-client && npm test
 cd packages/guardian-client && npm run build
 cd packages/guardian-evm-client && npm run build
 cd packages/miden-multisig-client && npm run build
+cd packages/guardian-operator-client && npm run build
 ```
 
 3. Version numbers are updated in all files (see below).
@@ -1039,6 +1041,7 @@ Update the version in these files:
 | `packages/guardian-client/package.json` | `version` | - |
 | `packages/guardian-evm-client/package.json` | `version` | - |
 | `packages/miden-multisig-client/package.json` | `version` + `@openzeppelin/guardian-client` dep version | - |
+| `packages/guardian-operator-client/package.json` | `version` | - |
 
 The `server`, `miden-rpc-client`, `miden-keystore`, and example crates have their own independent versions and are not published.
 
@@ -1094,6 +1097,7 @@ Publish in dependency order:
 cd packages/guardian-client && npm run build
 cd packages/guardian-evm-client && npm run build
 cd packages/miden-multisig-client && npm run build
+cd packages/guardian-operator-client && npm run build
 
 # 2. Publish base clients first (no internal deps)
 cd packages/guardian-client && npm publish --access public
@@ -1101,6 +1105,9 @@ cd packages/guardian-evm-client && npm publish --access public
 
 # 3. Publish miden-multisig-client (depends on guardian-client)
 cd packages/miden-multisig-client && npm publish --access public
+
+# 4. Publish operator-client (no internal dependencies)
+cd packages/guardian-operator-client && npm publish --access public
 ```
 
 ### Post-Release
@@ -1108,14 +1115,14 @@ cd packages/miden-multisig-client && npm publish --access public
 1. Create a draft GitHub Release for review:
 
 ```bash
-gh release create v0.16.1 --generate-notes --draft
+gh release create v<version> --generate-notes --draft
 ```
 
 2. Publish the draft when the coordinated Rust, TypeScript, and server-image
    release workflows should start:
 
 ```bash
-gh release edit v0.16.1 --draft=false
+gh release edit v<version> --draft=false
 ```
 
 3. Approve the `release` environment jobs that should publish. The Rust
