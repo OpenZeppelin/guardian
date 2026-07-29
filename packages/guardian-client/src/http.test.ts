@@ -569,6 +569,23 @@ describe('GuardianHttpClient', () => {
       expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('landed');
     });
 
+    it('classifies a retained delta as abandoned (issue #345)', async () => {
+      // The Guardian gave up verifying and released the account: same
+      // client-visible outcome as a completed abandon, mirroring the
+      // server's abandon endpoint.
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          serverDelta({
+            status: 'retained',
+            timestamp: '2026-07-14T12:00:00Z',
+            reason: 'retry_exhausted',
+          }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('abandoned');
+    });
+
     it('classifies a client-abandoned discard as abandoned', async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({

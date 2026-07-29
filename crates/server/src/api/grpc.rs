@@ -1175,4 +1175,55 @@ mod tests {
         assert!(details["message"].is_string());
         assert!(details["meta"]["retryable"].is_boolean());
     }
+
+    #[test]
+    fn delta_to_proto_encodes_retained_status_and_reason() {
+        // The wire contract for issue #345: retained rows ride the typed
+        // status oneof (`retained_at` + `retain_reason`) and deliberately
+        // populate none of the legacy timestamp columns, so pre-retained
+        // consumers see an in-progress delta rather than a wrong terminal
+        // state.
+        let delta = DeltaObject {
+            account_id: "0xtest_account".to_string(),
+            nonce: 7,
+            prev_commitment: "0xprev".to_string(),
+            new_commitment: Some("0xnew".to_string()),
+            delta_payload: serde_json::json!({"test": "payload"}),
+            ack_sig: "0xsig".to_string(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::retained(
+                "2026-07-23T00:00:00Z".to_string(),
+                crate::delta_object::RetainReason::Diverged,
+            ),
+            metadata: None,
+        };
+
+        let proto = delta_to_proto(&delta);
+
+        let status = proto.status.expect("typed status present");
+        assert_eq!(
+            status.status,
+            Some(guardian::delta_status::Status::RetainedAt(
+                "2026-07-23T00:00:00Z".to_string()
+            ))
+        );
+        assert_eq!(status.retain_reason, "diverged");
+        assert_eq!(status.discard_reason, "");
+        assert_eq!(proto.candidate_at, "");
+        assert_eq!(proto.canonical_at, None);
+        assert_eq!(proto.discarded_at, None);
+
+        // A reasonless retained row encodes an empty reason string.
+        let mut reasonless = delta;
+        reasonless.status = DeltaStatus::Retained {
+            timestamp: "2026-07-23T00:00:00Z".to_string(),
+            reason: None,
+        };
+        let proto = delta_to_proto(&reasonless);
+        assert_eq!(
+            proto.status.expect("typed status present").retain_reason,
+            ""
+        );
+    }
 }
