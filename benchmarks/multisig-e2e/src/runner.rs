@@ -145,48 +145,100 @@ pub async fn bootstrap(config: &RunConfig) -> Result<()> {
     let faucet_id = parse_faucet_id(config)?;
     let mut clients = load_clients(&fixture, config).await?;
 
-    for (client, fixture_account) in clients.iter_mut().zip(&fixture.accounts) {
-        let mut observer = load_observer(&fixture, fixture_account).await?;
-        sync_network_with_retry(client, config).await?;
-        let notes = client
-            .client
-            .list_consumable_notes_filtered(NoteFilter::by_faucet(faucet_id))
-            .await?;
-        if notes.is_empty() {
-            println!("{}: no consumable faucet notes", client.label);
-            continue;
-        }
-        for note in notes {
-            let amount = note.amount_for_faucet(faucet_id);
-            let proposal = propose_with_retry(
-                client,
-                TransactionType::consume_notes(vec![note.id]),
-                config,
-            )
-            .await
-            .with_context(|| format!("failed to create {} bootstrap proposal", client.label))?
-            .proposal;
-            ensure_ready(&proposal.status, &proposal.id)?;
-            execute_with_retry(client, &proposal.id, config)
-                .await
-                .with_context(|| {
-                    format!("failed to execute {} bootstrap proposal", client.label)
-                })?;
-            await_canonical(
-                &mut observer,
-                &client.label,
-                client.account_id,
-                proposal.nonce,
-                config,
-            )
-            .await?;
-            println!(
-                "{}: consumed note {} ({} units), nonce {}",
-                client.label, note.id, amount, proposal.nonce
-            );
+    // Bootstrapping a large fixture is a long sweep of real proved transactions
+    // against a shared remote prover, so isolated failures are expected. Record
+    // them and carry on rather than abandoning the accounts that would have
+    // succeeded; re-running is safe because a consumed note is no longer
+    // consumable, so completed accounts are skipped.
+    let mut failures: Vec<(String, String)> = Vec::new();
+    let total = clients.len();
+    for (index, (client, fixture_account)) in clients.iter_mut().zip(&fixture.accounts).enumerate()
+    {
+        match bootstrap_account(client, fixture_account, &fixture, faucet_id, config).await {
+            Ok(0) => {
+                println!(
+                    "[{}/{total}] {}: no consumable faucet notes",
+                    index + 1,
+                    client.label
+                );
+            }
+            Ok(consumed) => println!(
+                "[{}/{total}] {}: consumed {consumed} note(s)",
+                index + 1,
+                client.label
+            ),
+            Err(error) => {
+                eprintln!(
+                    "[{}/{total}] {}: FAILED: {error:#}",
+                    index + 1,
+                    client.label
+                );
+                failures.push((client.label.clone(), format!("{error:#}")));
+            }
         }
     }
+
+    if !failures.is_empty() {
+        eprintln!(
+            "\n{} of {total} account(s) failed to bootstrap:",
+            failures.len()
+        );
+        for (label, error) in &failures {
+            eprintln!("  {label}: {error}");
+        }
+        bail!(
+            "{} of {total} account(s) failed to bootstrap; re-run to retry only those",
+            failures.len()
+        );
+    }
     Ok(())
+}
+
+/// Consume every faucet note held by one account, returning how many were
+/// consumed.
+async fn bootstrap_account(
+    client: &mut BenchClient,
+    fixture_account: &crate::fixture::AccountFixture,
+    fixture: &Fixture,
+    faucet_id: AccountId,
+    config: &RunConfig,
+) -> Result<usize> {
+    let mut observer = load_observer(fixture, fixture_account).await?;
+    sync_network_with_retry(client, config).await?;
+    let notes = client
+        .client
+        .list_consumable_notes_filtered(NoteFilter::by_faucet(faucet_id))
+        .await?;
+    let mut consumed = 0usize;
+    for note in notes {
+        let amount = note.amount_for_faucet(faucet_id);
+        let proposal = propose_with_retry(
+            client,
+            TransactionType::consume_notes(vec![note.id]),
+            config,
+        )
+        .await
+        .with_context(|| format!("failed to create {} bootstrap proposal", client.label))?
+        .proposal;
+        ensure_ready(&proposal.status, &proposal.id)?;
+        execute_with_retry(client, &proposal.id, config)
+            .await
+            .with_context(|| format!("failed to execute {} bootstrap proposal", client.label))?;
+        await_canonical(
+            &mut observer,
+            &client.label,
+            client.account_id,
+            proposal.nonce,
+            config,
+        )
+        .await?;
+        println!(
+            "  {}: consumed note {} ({} units), nonce {}",
+            client.label, note.id, amount, proposal.nonce
+        );
+        consumed += 1;
+    }
+    Ok(consumed)
 }
 
 pub async fn run(config: &RunConfig) -> Result<PathBuf> {
@@ -514,7 +566,27 @@ fn is_retryable_proposal_error(error: &MultisigError) -> bool {
 }
 
 fn is_retryable_execution_error(error: &MultisigError) -> bool {
-    matches!(error, MultisigError::GuardianConnection(_)) || is_miden_sync_tip_ahead(error)
+    matches!(error, MultisigError::GuardianConnection(_))
+        || is_miden_sync_tip_ahead(error)
+        || is_transient_proving_failure(error)
+}
+
+/// Proving is delegated to a remote prover on the public networks, so a proof
+/// request can be cancelled or time out under load. That is transient
+/// infrastructure behaviour, not a rejected transaction, and without retrying it
+/// a single blip aborts a whole provisioning or benchmark sweep.
+fn is_transient_proving_failure(error: &MultisigError) -> bool {
+    let MultisigError::TransactionExecution(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    let proving = message.contains("failed to prove transaction")
+        || message.contains("transactionprovingerror");
+    let transient = message.contains("timeout expired")
+        || message.contains("code: cancelled")
+        || message.contains("deadline")
+        || message.contains("unavailable");
+    proving && transient
 }
 
 fn client_pair(
@@ -849,6 +921,37 @@ fn active_proposal_ms(total_ms: u64, retry_wait_ms: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_prover_timeouts_are_retried() {
+        // Observed from a real bootstrap against testnet: proving is delegated
+        // to a shared remote prover, which cancels under load.
+        let error = MultisigError::TransactionExecution(
+            "transaction execution failed: TransactionProvingError(Other { error_msg: \"failed to \
+             prove transaction\", source: Some(Status { code: Cancelled, message: \"Timeout \
+             expired\" }) })"
+                .to_string(),
+        );
+        assert!(is_retryable_execution_error(&error));
+    }
+
+    #[test]
+    fn a_rejected_transaction_is_not_retried() {
+        // Only transient proving failures qualify; a genuine rejection must
+        // surface rather than being retried until the deadline.
+        let error = MultisigError::TransactionExecution(
+            "transaction execution failed: insufficient balance".to_string(),
+        );
+        assert!(!is_retryable_execution_error(&error));
+    }
+
+    #[test]
+    fn a_non_proving_timeout_is_not_treated_as_a_proving_failure() {
+        let error = MultisigError::TransactionExecution(
+            "transaction execution failed: Timeout expired waiting for note".to_string(),
+        );
+        assert!(!is_retryable_execution_error(&error));
+    }
     use miden_protocol::address::NetworkId;
 
     #[test]

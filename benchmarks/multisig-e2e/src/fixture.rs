@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use tempfile::{NamedTempFile, TempDir};
 
 use crate::config::parse_miden_endpoint;
+use crate::runtime::load_observer;
+use miden_multisig_client::AccountId;
 
 const FIXTURE_VERSION: u32 = 1;
 
@@ -34,8 +36,9 @@ pub struct AccountFixture {
     pub label: String,
     pub account_id: String,
     pub secret_key_hex: String,
-    /// Defaults to `Registered` so fixtures written before this field existed
-    /// keep working; they were only ever persisted by a run that completed.
+    /// Absent in fixtures written before this field existed. The value is not
+    /// trusted on resume: `prepare` reconciles it against Guardian, which is
+    /// the authority on whether an account is registered.
     #[serde(default)]
     pub state: ProvisioningState,
 }
@@ -116,6 +119,26 @@ fn label_for(index: usize) -> String {
     }
 }
 
+/// A label not already used in `fixture`.
+///
+/// Position alone is not enough: discarding unregistered entries shortens the
+/// list, so the next index can name an account that already exists. Duplicate
+/// labels would then collide in anything that resolves an account by label.
+fn unique_label(fixture: &Fixture) -> String {
+    let mut index = fixture.accounts.len();
+    loop {
+        let candidate = label_for(index);
+        if !fixture
+            .accounts
+            .iter()
+            .any(|account| account.label == candidate)
+        {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
 /// Provision `count` accounts into `output`, resuming an interrupted run.
 ///
 /// Resume rather than refuse: at the sizes the scalability target needs, a
@@ -162,6 +185,39 @@ pub async fn prepare(
         }
     };
 
+    // Reconcile the persisted state against Guardian rather than trusting it.
+    //
+    // A fixture written before the state field existed defaults every entry to
+    // `Registered`, which is a claim, not a fact: entries persisted by an
+    // interrupted pre-change run were never registered, and a fixture can also
+    // have been built against a different Guardian. Trusting the file silently
+    // yields a fixture that reports N accounts while Guardian holds fewer --
+    // exactly the failure this reconciliation exists to catch.
+    if !fixture.accounts.is_empty() {
+        let mut reconciled = 0usize;
+        for index in 0..fixture.accounts.len() {
+            let account = fixture.accounts[index].clone();
+            let registered = is_registered(&fixture, &account)
+                .await
+                .with_context(|| format!("failed to verify {} against Guardian", account.label))?;
+            let observed = if registered {
+                ProvisioningState::Registered
+            } else {
+                ProvisioningState::Created
+            };
+            if fixture.accounts[index].state != observed {
+                reconciled += 1;
+            }
+            fixture.accounts[index].state = observed;
+        }
+        if reconciled > 0 {
+            persist_fixture(output, &fixture)?;
+            eprintln!(
+                "reconciled {reconciled} account(s) whose recorded state disagreed with Guardian"
+            );
+        }
+    }
+
     // An account interrupted between persistence and registration cannot be
     // registered later: `push_account` needs the local account store, which
     // lived in a temporary directory that is gone once the process exited, and
@@ -205,7 +261,7 @@ pub async fn prepare(
     }
 
     while fixture.accounts.len() < count {
-        let label = label_for(fixture.accounts.len());
+        let label = unique_label(&fixture);
         let label = label.as_str();
         let secret_key = SecretKey::new();
         let secret_key_hex = hex::encode(secret_key.to_bytes());
@@ -245,6 +301,35 @@ pub async fn prepare(
     }
 
     Ok(fixture)
+}
+
+/// Ask Guardian whether it holds this account.
+///
+/// Only a genuine not-found answer counts as unregistered. A transport or auth
+/// error is propagated instead of being read as absence: misreading a network
+/// blip would mark good accounts for discard, and `--discard-unregistered`
+/// would then delete their keys.
+async fn is_registered(fixture: &Fixture, account: &AccountFixture) -> Result<bool> {
+    let account_id = AccountId::from_hex(&account.account_id)
+        .with_context(|| format!("invalid account ID for {}", account.label))?;
+    let mut observer = load_observer(fixture, account).await?;
+    match observer.get_state(&account_id).await {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            let message = error.to_string();
+            if is_not_found(&message) {
+                Ok(false)
+            } else {
+                Err(anyhow::anyhow!(message))
+            }
+        }
+    }
+}
+
+/// Guardian reports an unknown account as gRPC `NOT_FOUND`.
+fn is_not_found(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("not found") || message.contains("not_found")
 }
 
 fn persist_fixture(output: &Path, fixture: &Fixture) -> Result<()> {
@@ -339,6 +424,26 @@ mod tests {
     }
 
     #[test]
+    fn unique_label_skips_names_already_in_the_fixture() {
+        // After discarding two entries the list shortens, so the positional
+        // label would collide with an account that already exists.
+        let mut fixture = fixture_with(100);
+        fixture
+            .accounts
+            .retain(|account| account.label != "alice" && account.label != "bob");
+        assert_eq!(fixture.accounts.len(), 98);
+
+        let label = unique_label(&fixture);
+        assert_eq!(label, "account-0100");
+        assert!(
+            !fixture
+                .accounts
+                .iter()
+                .any(|account| account.label == label)
+        );
+    }
+
+    #[test]
     fn labels_keep_original_names_for_the_first_two() {
         assert_eq!(label_for(0), "alice");
         assert_eq!(label_for(1), "bob");
@@ -375,7 +480,21 @@ mod tests {
         assert_eq!(partial.accounts[0].secret_key_hex, "secret-0");
     }
 
+    #[test]
+    fn not_found_is_recognised_from_the_guardian_grpc_message() {
+        assert!(is_not_found(
+            "failed to get state: gRPC status error: code: 'Some requested entity was not found', \
+             message: \"We couldn't find that.\""
+        ));
+        assert!(is_not_found("NOT_FOUND"));
+        // Anything else must not be read as absence: treating a transport error
+        // as unregistered would mark good accounts for discard.
+        assert!(!is_not_found("transport error: connection refused"));
+        assert!(!is_not_found("Authentication failed: invalid signature"));
+    }
+
     #[tokio::test]
+    #[ignore = "requires a reachable Guardian: prepare now reconciles against it"]
     async fn prepare_is_a_noop_when_the_fixture_already_has_enough_accounts() {
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("accounts.json");
@@ -400,6 +519,8 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_refuses_to_top_up_a_fixture_from_different_endpoints() {
+        // Endpoint mismatch is rejected before any Guardian call, so this stays
+        // an offline test.
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("accounts.json");
         persist_fixture(&path, &fixture_with(2)).unwrap();
@@ -451,6 +572,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a reachable Guardian: prepare now reconciles against it"]
     async fn prepare_refuses_to_silently_skip_an_unregistered_account() {
         // The original resume counted a created-but-unregistered entry as done,
         // so Guardian could hold fewer accounts than the fixture claimed.
@@ -475,6 +597,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires a reachable Guardian: prepare now reconciles against it"]
     async fn discard_unregistered_drops_only_the_incomplete_entries() {
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("accounts.json");
