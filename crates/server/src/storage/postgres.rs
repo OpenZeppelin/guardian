@@ -1583,7 +1583,7 @@ impl StorageBackend for PostgresService {
                 // and the resubmission the abandon endpoint exists to
                 // enable is not refused at the nonce's unique
                 // constraint.
-                diesel::delete(deltas::table)
+                let superseded = diesel::delete(deltas::table)
                     .filter(deltas::account_id.eq(&delta.account_id))
                     .filter(deltas::nonce.eq(delta.nonce as i64))
                     .filter(
@@ -1593,6 +1593,14 @@ impl StorageBackend for PostgresService {
                     )
                     .execute(conn)
                     .await?;
+                if superseded > 0 {
+                    tracing::info!(
+                        event = "reconcile_superseded",
+                        account_id = %delta.account_id,
+                        nonce = delta.nonce,
+                        "Recoverable row superseded by a new candidate at its nonce"
+                    );
+                }
 
                 // DO NOTHING (not upsert): a row already at this nonce is
                 // settled history and must never be overwritten by a

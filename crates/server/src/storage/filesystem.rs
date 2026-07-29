@@ -851,6 +851,12 @@ impl StorageBackend for FilesystemService {
                 if existing.status.is_retained() || existing.status.is_client_abandoned() =>
             {
                 self.delete_delta(&delta.account_id, delta.nonce).await?;
+                tracing::info!(
+                    event = "reconcile_superseded",
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    "Recoverable row superseded by a new candidate at its nonce"
+                );
             }
             // Any other row at this nonce is settled history and must
             // never be overwritten by a delayed submission (the

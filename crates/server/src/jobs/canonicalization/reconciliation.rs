@@ -49,6 +49,25 @@ pub(super) fn reconcile_backoff_seconds(age_seconds: u64) -> u64 {
         .min(RECONCILE_MAX_BACKOFF_SECONDS)
 }
 
+/// Stable log label for what parked a recoverable row (the
+/// `retention_reason` field of the reconciliation log events).
+fn decode_recoverable_reason(status: &DeltaStatus) -> &'static str {
+    use crate::delta_object::RetainReason;
+    match status {
+        DeltaStatus::Retained {
+            reason: Some(RetainReason::RetryExhausted),
+            ..
+        } => "retry_exhausted",
+        DeltaStatus::Retained {
+            reason: Some(RetainReason::Diverged),
+            ..
+        } => "diverged",
+        DeltaStatus::Retained { reason: None, .. } => "unrecorded",
+        status if status.is_client_abandoned() => "client_abandoned",
+        _ => "unrecorded",
+    }
+}
+
 /// Whether an account whose *youngest* recoverable row has this age is
 /// due on the current tick. Stateless by design: the schedule derives
 /// entirely from the row's age, so it survives restarts and lease
@@ -240,9 +259,11 @@ impl DeltasProcessorBase {
                     continue;
                 }
                 tracing::warn!(
+                    event = "reconcile_expired",
                     account_id = %delta.account_id,
                     nonce = delta.nonce,
-                    retained_age_seconds = age,
+                    age_seconds = age,
+                    retention_reason = decode_recoverable_reason(&delta.status),
                     retained_ttl_seconds = self.retained_ttl_seconds,
                     "Retained delta expired without ever verifying; dropping it"
                 );
@@ -311,26 +332,31 @@ impl DeltasProcessorBase {
             .network_client
             .verify_commitment(account_id, &current_state.commitment)
             .await;
+        // The two quiet outcomes below are deliberately NOT recorded as
+        // `reconcile_deferred`: a healthy steady state probes every due
+        // account and finds the chain unmoved, and counting that would
+        // dwarf every meaningful candidate outcome. The metric is
+        // reserved for "the chain moved but nothing could promote".
         let result = match verification {
             Ok(StateVerification::Match) | Ok(StateVerification::Absent) => {
                 tracing::debug!(
+                    event = "reconcile_deferred",
+                    reason = "chain_at_stored_base",
                     account_id = %account_id,
                     recoverable = live.len(),
+                    age_seconds = min_age,
                     "Chain still at the stored base; nothing to reconcile"
-                );
-                record_candidate_outcome(
-                    crate::metrics::labels::CandidateOutcome::ReconcileDeferred,
                 );
                 Ok(())
             }
             Err(e) => {
                 tracing::info!(
+                    event = "reconcile_deferred",
+                    reason = "chain_probe_unavailable",
                     account_id = %account_id,
+                    age_seconds = min_age,
                     error = %e,
                     "Chain probe unavailable; deferring reconciliation"
-                );
-                record_candidate_outcome(
-                    crate::metrics::labels::CandidateOutcome::ReconcileDeferred,
                 );
                 Ok(())
             }
@@ -361,9 +387,21 @@ impl DeltasProcessorBase {
         on_chain: &str,
         live: Vec<(u64, DeltaObject)>,
     ) -> Result<()> {
-        for (_, delta) in live {
-            // Only a row chaining from the stored base can apply to it.
+        for (age_seconds, delta) in live {
+            // A row that no longer chains from the stored base is
+            // structurally obsolete (e.g. the base moved out-of-band via
+            // configure): it can never promote and ages out through the
+            // TTL. No metric — this is a per-row structural condition,
+            // not a pending reconciliation.
             if delta.prev_commitment != current_state.commitment {
+                tracing::debug!(
+                    event = "reconcile_skipped",
+                    reason = "obsolete_base",
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    age_seconds,
+                    "Recoverable delta no longer chains from the stored base"
+                );
                 continue;
             }
             // A stored end-state that differs from the chain head means
@@ -372,6 +410,14 @@ impl DeltasProcessorBase {
             if let Some(hint) = &delta.new_commitment
                 && hint != on_chain
             {
+                tracing::debug!(
+                    event = "reconcile_deferred",
+                    reason = "end_state_not_on_chain",
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    age_seconds,
+                    "Recoverable delta's end state is not what the chain shows"
+                );
                 record_candidate_outcome(
                     crate::metrics::labels::CandidateOutcome::ReconcileDeferred,
                 );
@@ -393,8 +439,11 @@ impl DeltasProcessorBase {
                 Ok(applied) => applied,
                 Err(e) => {
                     tracing::info!(
+                        event = "reconcile_deferred",
+                        reason = "base_no_longer_applies",
                         account_id = %delta.account_id,
                         nonce = delta.nonce,
+                        age_seconds,
                         error = %GuardianError::from(e),
                         "Recoverable delta no longer applies to the stored base; \
                          deferring until it expires"
@@ -407,8 +456,11 @@ impl DeltasProcessorBase {
             };
             if recomputed_commitment != on_chain {
                 tracing::info!(
+                    event = "reconcile_deferred",
+                    reason = "recomputed_commitment_mismatch",
                     account_id = %delta.account_id,
                     nonce = delta.nonce,
+                    age_seconds,
                     "Recoverable delta reconstructs to a commitment the chain \
                      does not show; deferring"
                 );
@@ -419,8 +471,11 @@ impl DeltasProcessorBase {
             }
 
             tracing::info!(
+                event = "reconcile_promoted",
                 account_id = %delta.account_id,
                 nonce = delta.nonce,
+                age_seconds,
+                retention_reason = decode_recoverable_reason(&delta.status),
                 "Recoverable delta now verifies against the on-chain \
                  commitment; promoting the recovered state"
             );
@@ -438,6 +493,8 @@ impl DeltasProcessorBase {
         // reach (e.g. an externally-driven state move); the rows age
         // out through the TTL.
         tracing::info!(
+            event = "reconcile_deferred",
+            reason = "no_matching_recoverable_delta",
             account_id = %account_id,
             on_chain = %on_chain,
             "Chain advanced past the stored base but no recoverable delta \

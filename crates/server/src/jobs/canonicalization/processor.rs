@@ -584,7 +584,7 @@ impl DeltasProcessorBase {
             }
         }
         let mut first_error = None;
-        for delta in candidates {
+        for (index, delta) in candidates.into_iter().enumerate() {
             if self.admission_closed() {
                 if self.pass.cancel.is_cancelled() {
                     tracing::warn!(
@@ -597,6 +597,29 @@ impl DeltasProcessorBase {
                         "Fast-promotion deadline reached; stopping before next candidate"
                     );
                 }
+                break;
+            }
+            // A candidate can only verify from the stored base. When a
+            // predecessor fails to canonicalize (deferred, retried,
+            // retained), every later nonce still chains from a state the
+            // store has not reached — reconstructing it would fail or
+            // emit false commitment-mismatch signals and burn budget for
+            // nothing, so the account's pass stops at the break in the
+            // chain. The first candidate needs no check (admission
+            // guaranteed its base, and the fenced promotion still guards
+            // a concurrent move); a read failure does not stop the pass —
+            // the per-candidate path re-reads the state and surfaces the
+            // error with proper accounting.
+            if index > 0
+                && let Ok(current_state) = self.state.storage.pull_state(account_id).await
+                && delta.prev_commitment != current_state.commitment
+            {
+                tracing::info!(
+                    account_id = %account_id,
+                    nonce = delta.nonce,
+                    "Candidate does not chain from the stored state; \
+                     stopping this account's pass at the first unresolved nonce"
+                );
                 break;
             }
             let nonce = delta.nonce;
@@ -875,57 +898,13 @@ impl DeltasProcessorBase {
     /// cleanup failure leaves the candidate in place for the next worker
     /// run to retry.
     async fn finalize_abandoned_candidate(&self, delta: DeltaObject) -> Result<()> {
-        let storage_backend = self.state.storage.clone();
-
-        let proposal_id = self.state.network_client.delta_proposal_id(
-            &delta.account_id,
-            delta.nonce,
-            &delta.delta_payload,
-        );
-        match proposal_id {
-            Ok(id) => {
-                match storage_backend
-                    .pull_delta_proposal(&delta.account_id, &id)
-                    .await
-                {
-                    Ok(_existing) => {
-                        if let Err(e) = storage_backend
-                            .delete_delta_proposal(&delta.account_id, &id)
-                            .await
-                        {
-                            tracing::warn!(
-                                account_id = %delta.account_id,
-                                proposal_id = %id,
-                                error = %e,
-                                "Failed to delete proposal for abandoned candidate; \
-                                 retrying on the next worker run"
-                            );
-                            return Ok(());
-                        }
-                    }
-                    Err(e) if crate::storage::is_storage_not_found(&e) => {}
-                    Err(e) => {
-                        tracing::warn!(
-                            account_id = %delta.account_id,
-                            proposal_id = %id,
-                            error = %e,
-                            "Failed to check proposal for abandoned candidate; \
-                             retrying on the next worker run"
-                        );
-                        return Ok(());
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    account_id = %delta.account_id,
-                    nonce = delta.nonce,
-                    error = %e,
-                    "Could not derive proposal id for abandoned candidate; \
-                     retrying on the next worker run"
-                );
-                return Ok(());
-            }
+        // Shared cleanup helper: a failed delete (or an unverifiable
+        // proposal read) defers the finalize to the next worker run. An
+        // UNDERIVABLE proposal id proceeds instead — the condition is
+        // permanent, so deferring on it would wedge the abandon forever
+        // without ever fixing the proposal.
+        if !self.delete_matching_proposal(&delta).await {
+            return Ok(());
         }
 
         let now = self.state.clock.now_rfc3339();
@@ -1409,6 +1388,29 @@ impl DeltasProcessorBase {
         if outcome != CanonicalWrite::Applied {
             return Ok(outcome);
         }
+
+        let expires_at = DateTime::parse_from_rfc3339(now)
+            .ok()
+            .map(|at| at.with_timezone(&Utc))
+            .and_then(|at| {
+                i64::try_from(self.retained_ttl_seconds)
+                    .ok()
+                    .and_then(chrono::Duration::try_seconds)
+                    .and_then(|ttl| at.checked_add_signed(ttl))
+            })
+            .map(|at| at.to_rfc3339());
+        tracing::info!(
+            event = "candidate_retained",
+            reason = match reason {
+                RetainReason::RetryExhausted => "retry_exhausted",
+                RetainReason::Diverged => "diverged",
+            },
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            expires_at = expires_at.as_deref().unwrap_or("unbounded"),
+            "Candidate parked as retained; account released, background \
+             reconciliation takes over"
+        );
 
         if let Err(e) = self
             .state
@@ -4110,6 +4112,71 @@ mod tests {
             "no chain probe while a candidate is in flight"
         );
         assert!(storage.get_submit_state_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_candidate_pass_stops_at_first_unresolved_nonce() {
+        // When candidate N defers, candidate N+1 still chains from a
+        // state the store has not reached: processing it would fail
+        // reconstruction or emit false commitment-mismatch signals. The
+        // pass must stop at the break in the chain.
+        let account_id = "0xtest_account";
+        let first = create_candidate_delta(account_id, 1);
+        let mut second = create_candidate_delta(account_id, 2);
+        second.prev_commitment = "new_commitment".to_string();
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![first, second]))
+                // First candidate's verification read, then the loop's
+                // chain check before the second candidate.
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_apply_delta(Ok((
+                    serde_json::json!({"newer": "state"}),
+                    "newer_commitment".to_string(),
+                )))
+                // Chain still at the base: candidate 1 defers in grace.
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "prev_commitment".to_string(),
+                })),
+        );
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network.clone(),
+            Arc::new(mock_metadata),
+            clock,
+        );
+        let processor = DeltasProcessor::new(
+            state,
+            CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600),
+        );
+
+        processor.process_all_accounts().await.expect("pass runs");
+
+        assert_eq!(
+            mock_network.get_verify_commitment_calls().len(),
+            1,
+            "the successor nonce is never verified after its predecessor deferred"
+        );
+        assert_eq!(
+            mock_network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "the successor nonce is never reconstructed"
+        );
     }
 
     #[tokio::test]
