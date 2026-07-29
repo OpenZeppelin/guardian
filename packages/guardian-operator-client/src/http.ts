@@ -859,6 +859,29 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
         'dashboard info.backend.canonicalization',
       ),
     };
+    // Optional (issue #345): absent on servers predating the retained
+    // lifecycle, so their absence never fails info decoding.
+    if (c.retained_ttl_seconds !== undefined) {
+      canonicalization.retainedTtlSeconds = requireInteger(
+        c,
+        'retained_ttl_seconds',
+        'dashboard info.backend.canonicalization',
+      );
+    }
+    if (c.reconcile_interval_seconds !== undefined) {
+      canonicalization.reconcileIntervalSeconds = requireInteger(
+        c,
+        'reconcile_interval_seconds',
+        'dashboard info.backend.canonicalization',
+      );
+    }
+    if (c.reconcile_page_size !== undefined) {
+      canonicalization.reconcilePageSize = requireInteger(
+        c,
+        'reconcile_page_size',
+        'dashboard info.backend.canonicalization',
+      );
+    }
   }
   const backend: DashboardInfoResponse['backend'] = {
     storage: storageRaw,
@@ -1482,6 +1505,15 @@ function parseDeltaEntry(
     }
     entry.retryCount = retry;
   }
+  if (record.status_reason !== undefined) {
+    if (typeof record.status_reason !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        'status_reason must be a string when present',
+      );
+    }
+    entry.statusReason = record.status_reason;
+  }
   if (record.account_id !== undefined) {
     if (typeof record.account_id !== 'string') {
       throw new GuardianOperatorContractError(
@@ -1769,6 +1801,15 @@ function parseDeltaDetail(value: unknown): DashboardDeltaDetail {
       );
     }
     detail.retryCount = retry;
+  }
+  if (record.status_reason !== undefined) {
+    if (typeof record.status_reason !== 'string') {
+      throw new GuardianOperatorContractError(
+        ctx,
+        'status_reason must be a string when present',
+      );
+    }
+    detail.statusReason = record.status_reason;
   }
   if (record.category !== undefined && record.category !== null) {
     detail.category = parseDeltaCategory(

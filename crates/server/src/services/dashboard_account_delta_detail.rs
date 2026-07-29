@@ -34,6 +34,9 @@ pub struct DashboardDeltaDetail {
     pub new_commitment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
+    /// See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<&'static str>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<DashboardDeltaCategory>,
@@ -166,6 +169,9 @@ fn project_delta_to_detail(
         prev_commitment: delta.prev_commitment.clone(),
         new_commitment: delta.new_commitment.clone(),
         retry_count,
+        status_reason: crate::services::dashboard_account_deltas::decode_status_reason(
+            &delta.status,
+        ),
         category,
         proposal,
         input_notes,

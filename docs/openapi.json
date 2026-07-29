@@ -3889,7 +3889,10 @@
         "required": [
           "check_interval_seconds",
           "max_retries",
-          "submission_grace_period_seconds"
+          "submission_grace_period_seconds",
+          "retained_ttl_seconds",
+          "reconcile_interval_seconds",
+          "reconcile_page_size"
         ],
         "properties": {
           "check_interval_seconds": {
@@ -3900,6 +3903,24 @@
           "max_retries": {
             "type": "integer",
             "format": "int32",
+            "minimum": 0
+          },
+          "reconcile_interval_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cadence of the dedicated reconcile pass over recoverable deltas.\nIndividual accounts back off further as their rows age, so a\nretained row being reconsidered less often than this is expected.",
+            "minimum": 0
+          },
+          "reconcile_page_size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Accounts one reconcile pass visits at most (rotation cursor).",
+            "minimum": 0
+          },
+          "retained_ttl_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long retry-exhausted candidates are kept as `retained` for\nbackground reconciliation (issue #345). `0` = retention disabled.",
             "minimum": 0
           },
           "submission_grace_period_seconds": {
@@ -4010,6 +4031,13 @@
           "status": {
             "$ref": "#/components/schemas/DashboardDeltaStatus"
           },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`]."
+          },
           "status_timestamp": {
             "type": "string"
           },
@@ -4107,6 +4135,13 @@
           },
           "status": {
             "$ref": "#/components/schemas/DashboardDeltaStatus"
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a row left the active candidate path: `retained` rows carry\nthe worker verdict that parked them (`retry_exhausted` /\n`diverged` — a `diverged` row that later reconciles is direct\nevidence the verdict was spurious), `discarded` rows carry the\ndiscard reason when recorded (`client_abandoned`). `None` and\nskipped elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -4234,6 +4269,13 @@
           },
           "status": {
             "$ref": "#/components/schemas/DashboardDeltaStatus"
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`]."
           },
           "status_timestamp": {
             "type": "string"
@@ -5354,6 +5396,13 @@
                 "status": {
                   "$ref": "#/components/schemas/DashboardDeltaStatus"
                 },
+                "status_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why a row left the active candidate path: `retained` rows carry\nthe worker verdict that parked them (`retry_exhausted` /\n`diverged` — a `diverged` row that later reconciles is direct\nevidence the verdict was spurious), `discarded` rows carry the\ndiscard reason when recorded (`client_abandoned`). `None` and\nskipped elsewhere."
+                },
                 "status_timestamp": {
                   "type": "string"
                 }
@@ -5457,6 +5506,13 @@
                 },
                 "status": {
                   "$ref": "#/components/schemas/DashboardDeltaStatus"
+                },
+                "status_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`]."
                 },
                 "status_timestamp": {
                   "type": "string"

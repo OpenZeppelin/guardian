@@ -228,12 +228,16 @@ sequenceDiagram
   fast_promotion_window_seconds = 30, max_retries = 48,
   divergence_confirmations = 2, max_concurrent_accounts = 10,
   retained_ttl_seconds = 86400 (24h; 0 disables retention and restores
-  the historical delete-on-give-up behavior).
+  the historical delete-on-give-up behavior),
+  reconcile_interval_seconds = 60, reconcile_page_size = 100.
 - These values are configured in code, not through server env vars. The
   exceptions are `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED=false`,
-  which disables the promotion-only pass, and
+  which disables the promotion-only pass,
   `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS`, which overrides account
-  concurrency at startup.
+  concurrency at startup, `GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS`,
+  which overrides the retained TTL (`0` is the runtime kill switch for
+  retention), and `GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS`,
+  which overrides the reconcile pass cadence.
 
 ### Worker Behavior
 - A full pass runs every `check_interval_seconds` and owns all retry,
@@ -303,28 +307,56 @@ sequenceDiagram
       a lagging RPC node can produce one for a transaction that landed.
       With `retained_ttl_seconds = 0` the historical behavior applies:
       delete the delta and its matching proposal.
-- For each account holding recoverable deltas — `retained` rows, plus
+- Recoverable deltas — `retained` rows, plus
   `discarded { client_abandoned }` rows no older than
   `retained_ttl_seconds` (the abandon quarantine cannot fully rule out a
   late-landing transaction; one that lands after the abandon finalizes
   leaves stored state behind chain, and the preserved row holds
-  everything needed to recover) — and no in-flight candidate
-  (reconciliation never runs under a pending candidate — promoting would
-  move the stored base out from under a signed proposal):
-  - Drop any retained delta older than `retained_ttl_seconds` (with its
-    matching proposal). Expired client-abandoned rows are merely dropped
+  everything needed to recover) — are swept by a dedicated reconcile
+  pass, never by the full pass. It runs every
+  `reconcile_interval_seconds` (default 60), visits at most
+  `reconcile_page_size` accounts per pass under a rotation cursor
+  (a backlog larger than one page drains breadth-first across passes),
+  and stops admitting work at the next full-pass tick, so
+  reconciliation can never delay ordinary candidate processing. Per
+  visited account, in order:
+  - Skip the account entirely while it has an in-flight candidate
+    (reconciliation never runs under a pending candidate — promoting
+    would move the stored base out from under a signed proposal).
+  - Drop any retained delta older than `retained_ttl_seconds` before
+    any network work. Expired client-abandoned rows are merely dropped
     from the scan — they are preserved history, never deleted.
-  - Otherwise re-run the exact candidate verification: apply the delta to
-    the stored base and compare the recomputed commitment on-chain. A
-    match promotes the delta to `canonical` through the same fenced
-    promotion (auto-recovering an account whose stored state fell behind
-    the chain); anything else waits for the next tick — the TTL is the
-    only bound. Consecutive recoverable nonces can chain within one pass.
+  - Back off aged rows: for its first 15 minutes a recoverable row is
+    reconsidered on every reconcile tick; after that the spacing doubles
+    per 15 minutes of age, capped at 10 minutes. The schedule is derived
+    purely from the row's age (no persisted cursor), so it survives
+    restarts and lease failover and every replica computes the same
+    answer.
+  - Retry proposal cleanup for retained rows whose matching proposal
+    could not be deleted at retain time.
+  - Probe the chain once against the stored state commitment. A match
+    (or an absent on-chain account) means nothing recoverable can have
+    landed — the pass stops there, with no state reconstruction at all.
+  - Only when the chain moved past the stored base: select the
+    recoverable row whose submission-computed `new_commitment` equals
+    the observed on-chain commitment (rows without a stored hint fall
+    back to reconstruct-and-compare), reconstruct that path from the
+    stored base — reconstruction remains mandatory, the hint alone never
+    promotes — and require the recomputed commitment to equal the
+    observed one before the same fenced promotion the candidate pass
+    uses (auto-recovering an account whose stored state fell behind the
+    chain). Anything else waits for a later tick — the TTL is the only
+    bound.
   - A new candidate submission at a retained or client-abandoned delta's
     nonce supersedes (deletes) that row inside the submission
     transaction — without the abandoned-row supersede, the resubmission
     the abandon endpoint exists to enable would be refused forever at
-    the nonce's unique constraint.
+    the nonce's unique constraint. Deltas are unique per
+    `(account_id, nonce)` and admission requires chaining from the
+    current canonical head, so same-nonce supersede is the only
+    replacement path; a retained row orphaned by an out-of-band base
+    move (e.g. `configure`) can never promote — the base gate rules it
+    out — and ages out through the TTL.
 
 EVM proposals are not processed by Miden canonicalization. They are stored in the EVM proposal store and deleted lazily when expired or when the configured EntryPoint nonce indicates finality.
 

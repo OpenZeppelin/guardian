@@ -573,6 +573,10 @@ impl StorageBackend for FilesystemService {
         Ok(deltas.into_iter().map(|(_, delta)| delta).collect())
     }
 
+    /// Opens and decodes every delta file for the account — the
+    /// filesystem layout has no status index. Acceptable for the
+    /// single-process dev backend this store is; the indexed scan
+    /// belongs to Postgres.
     async fn pull_recoverable_deltas(
         &self,
         account_id: &str,
@@ -596,6 +600,11 @@ impl StorageBackend for FilesystemService {
         Ok(deltas)
     }
 
+    /// Every reconcile tick fans out over every account and reads every
+    /// delta file before filtering — the filesystem layout has no status
+    /// index (the same caveat as `pull_recent_candidate_deltas`).
+    /// Acceptable for the single-process dev backend; deployments large
+    /// enough to care belong on Postgres.
     async fn list_accounts_with_recoverable_deltas(
         &self,
         abandoned_since: DateTime<Utc>,

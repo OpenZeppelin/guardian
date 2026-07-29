@@ -82,6 +82,15 @@ pub struct DashboardCanonicalizationConfig {
     pub check_interval_seconds: u64,
     pub max_retries: u32,
     pub submission_grace_period_seconds: u64,
+    /// How long retry-exhausted candidates are kept as `retained` for
+    /// background reconciliation (issue #345). `0` = retention disabled.
+    pub retained_ttl_seconds: u64,
+    /// Cadence of the dedicated reconcile pass over recoverable deltas.
+    /// Individual accounts back off further as their rows age, so a
+    /// retained row being reconsidered less often than this is expected.
+    pub reconcile_interval_seconds: u64,
+    /// Accounts one reconcile pass visits at most (rotation cursor).
+    pub reconcile_page_size: u32,
 }
 
 /// Backend configuration snapshot. Stable for the lifetime of the
@@ -154,6 +163,9 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
                 check_interval_seconds: c.check_interval_seconds,
                 max_retries: c.max_retries,
                 submission_grace_period_seconds: c.submission_grace_period_seconds,
+                retained_ttl_seconds: c.retained_ttl_seconds,
+                reconcile_interval_seconds: c.reconcile_interval_seconds,
+                reconcile_page_size: c.reconcile_page_size,
             }
         }),
     };

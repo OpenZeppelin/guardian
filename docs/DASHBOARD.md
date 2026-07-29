@@ -114,11 +114,22 @@ The global-delta feed
 also accepts a `status` filter
 ([`services/dashboard_global_deltas.rs`](../crates/server/src/services/dashboard_global_deltas.rs)):
 
-- Allowed values: `candidate`, `canonical`, `discarded` (comma-separated
-  to combine, e.g. `?status=candidate,canonical`).
+- Allowed values: `candidate`, `canonical`, `retained`, `discarded`
+  (comma-separated to combine, e.g. `?status=candidate,canonical`).
 - Omitted or empty → all statuses.
 - Duplicates within the filter are silently coalesced.
 - Any other token returns HTTP 400 `invalid_status_filter`.
+
+Feed and detail entries carry an optional `status_reason` explaining why
+a row left the active candidate path: `retry_exhausted` / `diverged` on
+`retained` rows (a `diverged` row that later reconciles is direct
+evidence the divergence verdict was spurious), `client_abandoned` on
+`discarded` rows. `GET /dashboard/info` exposes the reconciliation
+settings (`retained_ttl_seconds`, `reconcile_interval_seconds`,
+`reconcile_page_size`) so operators can tell why retained rows are or
+are not being reconsidered — note that individual accounts back off as
+their recoverable rows age, so a retained row being probed less often
+than the configured interval is expected.
 
 ## Permission vocabulary
 

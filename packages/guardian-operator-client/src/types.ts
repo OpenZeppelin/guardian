@@ -412,6 +412,11 @@ export interface DashboardDeltaDetail {
   prevCommitment: string;
   newCommitment: string | null;
   retryCount?: number;
+  /** Why the row left the active candidate path. Documented values:
+   * `retry_exhausted` / `diverged` on `retained` rows,
+   * `client_abandoned` on `discarded` rows. Kept as an open string so
+   * new server-side labels never fail feed decoding. */
+  statusReason?: string;
   /** Server-curated classification from push-time metadata. */
   category?: DashboardDeltaCategory;
   /** Operator-stated proposal intent for multisig commits. */
@@ -436,6 +441,8 @@ export interface DashboardDeltaEntry {
   prevCommitment: string;
   newCommitment: string | null;
   retryCount?: number;
+  /** See `DashboardDeltaDetail.statusReason`. */
+  statusReason?: string;
 
   /** Push-time enrichment spread to L1 on listing endpoints. */
   category?: DashboardDeltaCategory;
@@ -572,6 +579,16 @@ export interface DashboardCanonicalizationConfig {
   checkIntervalSeconds: number;
   maxRetries: number;
   submissionGracePeriodSeconds: number;
+  /** How long retry-exhausted candidates are kept as `retained` for
+   * background reconciliation (issue #345). `0` = retention disabled.
+   * Absent on servers predating the retained lifecycle. */
+  retainedTtlSeconds?: number;
+  /** Cadence of the dedicated reconcile pass over recoverable deltas.
+   * Individual accounts back off further as their rows age, so a
+   * retained row being reconsidered less often than this is expected. */
+  reconcileIntervalSeconds?: number;
+  /** Accounts one reconcile pass visits at most (rotation cursor). */
+  reconcilePageSize?: number;
 }
 
 /** Backend configuration snapshot. */

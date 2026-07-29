@@ -4325,6 +4325,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_reconcile_never_promotes_obsolete_retained_row() {
+        // A retained row whose base is no longer the stored canonical
+        // commitment (e.g. the head moved via configure after the row
+        // was retained) is structurally obsolete: it can never promote —
+        // the base gate rules it out before reconstruction, and the TTL
+        // terminalizes it. UNIQUE(account_id, nonce) plus the atomic
+        // prev-commitment admission gate mean this is the only way an
+        // out-of-date recoverable row can exist at all.
+        let account_id = "0xtest_account";
+        let mut obsolete = create_retained_delta(account_id, 1, "2024-01-01T00:00:00Z");
+        obsolete.prev_commitment = "stale_base_commitment".to_string();
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_recoverable_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_recoverable_deltas(Ok(vec![obsolete]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "new_commitment".to_string(),
+                })),
+        );
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network.clone(),
+            Arc::new(MockMetadataStore::new()),
+            Arc::new(MockClock::new(
+                Utc.with_ymd_and_hms(2024, 1, 1, 0, 10, 0).unwrap(),
+            )),
+        );
+        let processor = reconcile_processor(state, CanonicalizationConfig::new(10, 18));
+
+        processor.process_all_accounts().await.expect("pass runs");
+
+        assert!(
+            storage.get_submit_state_calls().is_empty(),
+            "an obsolete row must never advance the state"
+        );
+        assert_eq!(
+            mock_network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "the base gate skipped reconstruction entirely"
+        );
+    }
+
+    #[tokio::test]
     async fn test_missing_claimed_commitment_promotes_with_recomputed() {
         // A verified candidate without a client-claimed commitment must not
         // stay a candidate forever: verification proved the recomputed

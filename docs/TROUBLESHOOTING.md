@@ -129,9 +129,11 @@ promotes it via `PushDelta`. If it sits too long:
   return `storage_error` on signing attempts. Check disk space (filesystem)
   or DB connectivity (Postgres).
 
-### Candidates are being discarded
+### Candidates are being retained or discarded
 
-Delta moves `candidate` → `discarded`. The cause is one of:
+Delta moves `candidate` → `retained` (default) or `candidate` →
+`discarded` (retention disabled, or a client abandon). The cause is one
+of:
 
 1. The corresponding Miden proof was never submitted.
 2. The proof was submitted but the on-chain commitment differs from the
@@ -142,8 +144,18 @@ Delta moves `candidate` → `discarded`. The cause is one of:
 4. The canonicalization grace period (default 10 minutes) elapsed before
    the proof landed.
 
-Recovery for the client: `GET /delta/since` → replay canonical chain →
-rebuild the transaction → resubmit.
+A `retained` delta is not final: the dedicated reconcile pass keeps
+probing the chain (backing off as the row ages) and promotes it
+automatically if the transaction ever shows up, for up to
+`retained_ttl_seconds` (default 24 h). The `status_reason` on the
+dashboard feed says which verdict parked it (`retry_exhausted` /
+`diverged`); a `diverged` row that later reconciles means the
+divergence verdict was spurious (e.g. a lagging RPC node).
+
+Recovery for the client: check the delta's status first — if it flipped
+to `canonical`, the transaction landed and there is nothing to redo.
+Otherwise `GET /delta/since` → replay canonical chain → rebuild the
+transaction → resubmit (this supersedes the retained row).
 
 Operator checks:
 - Canonicalization worker is running (look for `jobs::canonicalization`
@@ -152,9 +164,12 @@ Operator checks:
   isn't).
 - No `network_error` storms.
 - `guardian_canonicalization_candidates_total{outcome=...}` breaks down
-  what the worker decided per candidate (`diverged` and `discarded` are
-  the discard paths; `stale_base` means a promotion was rolled back
-  because the stored state moved mid-pass and will retry next tick).
+  what the worker decided per candidate (`retained` is the default
+  give-up path; `diverged` and `discarded` are the delete paths when
+  retention is disabled; `stale_base` means a promotion was rolled back
+  because the stored state moved mid-pass and will retry next tick;
+  `reconciled` / `reconcile_deferred` / `reconcile_expired` are the
+  reconcile pass resolving retained rows).
 - `guardian_canonicalization_candidate_age_seconds` growing without
   bound means candidates are not converging — check Miden RPC health
   and the discard outcomes above.
@@ -162,6 +177,9 @@ Operator checks:
   `guardian_canonicalization_fast_run_duration_seconds` expose failures and
   latency of the promotion-only pass without changing the full-pass gauges,
   age histogram, or fetched-row counter.
+- `guardian_canonicalization_reconcile_runs_total{outcome=...}` and
+  `guardian_canonicalization_reconcile_run_duration_seconds` do the same
+  for the recoverable-delta reconcile pass.
 - `RUST_LOG=server::jobs::canonicalization=debug` emits one
   `Fast-promotion pass completed` summary per fast tick, including empty passes,
   with page, candidate, account-batch, deadline, and cursor-progress fields.
@@ -307,7 +325,7 @@ come from
 | `invalid_network_config` | 400 | `Configure` payload's network config is malformed. |
 | `invalid_cursor` | 400 | Pagination cursor doesn't decode. |
 | `invalid_limit` | 400 | Pagination limit out of range. |
-| `invalid_status_filter` | 400 | Status filter string isn't in `{candidate, canonical, discarded}`. |
+| `invalid_status_filter` | 400 | Status filter string isn't in `{candidate, canonical, retained, discarded}`. |
 | `unsupported_for_network` | 400 | Endpoint not available for the account's network. |
 | `unsupported_evm_chain` | 400 | EVM chain ID not in the configured allowlist. |
 | `invalid_evm_proposal` | 400 | EVM proposal payload validation failed. |
@@ -399,6 +417,9 @@ ECS Exec requires the task role's `ssmmessages:*` actions
   indicates Miden submission isn't happening.
 - **`discarded` delta rate** — small numbers are normal (race conditions);
   spikes mean RPC trouble or wrong network targeting.
+- **`retained` delta count** — a persistently non-zero gauge means
+  give-ups are outpacing reconciliation; check Miden RPC health and the
+  `reconcile_*` outcomes above.
 - **`rpc_unavailable` / `rpc_validation_failed` rates** — Miden node
   health.
 - **`storage_error` rate** — DB or filesystem trouble.
