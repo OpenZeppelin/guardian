@@ -30,13 +30,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use guardian_client::GuardianClient;
-use miden_multisig_client::{AbandonRequestState, AccountId, TransactionType};
+use miden_multisig_client::{AbandonRequestState, AccountId, NoteFilter, TransactionType};
 use serde::Serialize;
 
 use crate::config::ScaleConfig;
 use crate::fixture::Fixture;
 use crate::runner::{
     LatencyStats, elapsed_ms, ensure_ready, execute_with_retry, latency_stats, propose_with_retry,
+    sync_network_with_retry,
 };
 use crate::runtime::{BenchClient, load_client, load_observer};
 
@@ -69,6 +70,9 @@ pub struct WriteRecord {
     pub writer: String,
     pub receiver: String,
     pub operation: u64,
+    /// `send` or `consume`. A writer that only sends drains its vault, so the
+    /// ring is only sustainable if received notes are consumed back into it.
+    pub kind: &'static str,
     pub started_at: DateTime<Utc>,
     pub nonce: Option<u64>,
     /// Whether GUARDIAN accepted the delta, which is not the same as the client
@@ -382,6 +386,7 @@ async fn execute_write(
         writer: sender.label.clone(),
         receiver: receiver_label.to_string(),
         operation,
+        kind: "send",
         started_at,
         nonce: None,
         accepted: false,
@@ -404,6 +409,33 @@ async fn execute_write(
     // permanently -- measured as exactly 20 dead proposals per account, all at
     // the same nonce. Executing the existing one is also the semantically
     // correct move: the intent was already recorded.
+    // Consume what the ring delivered before sending onward.
+    //
+    // A writer that only sends drains its vault: the transfer leaves, the
+    // matching note arrives at the next account, and nothing puts value back.
+    // Measured at 8 writers, every account ran dry and 1,003 of 1,126
+    // operations failed with "the amount of the asset in the vault is less than
+    // the amount to remove". Consuming first makes the ring self-sustaining, and
+    // it exercises the same propose -> execute -> canonicalize path, so the
+    // canonicalization criterion is measured over both operation kinds.
+    // Sync first: a note the ring delivered is only visible locally once the
+    // client has caught up with the chain, so without this the writer would
+    // never see what it was sent and would keep draining.
+    let incoming = match sync_network_with_retry(sender, run_config).await {
+        Ok(()) => sender
+            .client
+            .list_consumable_notes_filtered(NoteFilter::by_faucet(faucet_id))
+            .await
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let transaction = if incoming.is_empty() {
+        TransactionType::transfer(receiver_id, faucet_id, run_config.amount)
+    } else {
+        record.kind = "consume";
+        TransactionType::consume_notes(incoming.iter().map(|note| note.id).collect())
+    };
+
     let proposal_started = Instant::now();
     let reusable = match sender.client.list_proposals().await {
         Ok(pending) => pending.into_iter().next(),
@@ -412,13 +444,7 @@ async fn execute_write(
 
     let proposal = match reusable {
         Some(pending) => pending,
-        None => match propose_with_retry(
-            sender,
-            TransactionType::transfer(receiver_id, faucet_id, run_config.amount),
-            run_config,
-        )
-        .await
-        {
+        None => match propose_with_retry(sender, transaction, run_config).await {
             Ok(attempt) => attempt.proposal,
             Err(error) => {
                 return fail(
@@ -987,6 +1013,7 @@ mod tests {
             writer: "alice".to_string(),
             receiver: "bob".to_string(),
             operation: 1,
+            kind: "send",
             started_at: Utc::now(),
             nonce: Some(1),
             accepted: true,
