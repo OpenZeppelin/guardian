@@ -24,6 +24,7 @@
 //! accepted->canonical criterion measurable here and nowhere else.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -131,7 +132,8 @@ pub async fn run(config: &ScaleConfig) -> Result<PathBuf> {
     let faucet_id = crate::runner::parse_faucet_id(&run_config)?;
 
     let mut handles = Vec::with_capacity(writers);
-    let deadline = Instant::now() + Duration::from_secs(config.duration_seconds);
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+    let gate = Arc::new(StartGate::default());
 
     // One OS thread per writer, each with its own current-thread runtime,
     // rather than `tokio::spawn`. The multisig client builder holds a
@@ -143,6 +145,8 @@ pub async fn run(config: &ScaleConfig) -> Result<PathBuf> {
         let fixture = fixture.clone();
         let run_config = run_config.clone();
         let receiver_index = (index + 1) % writers;
+        let ready_tx = ready_tx.clone();
+        let gate = Arc::clone(&gate);
         handles.push(std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -154,45 +158,147 @@ pub async fn run(config: &ScaleConfig) -> Result<PathBuf> {
                 index,
                 receiver_index,
                 faucet_id,
-                deadline,
+                ready_tx,
+                gate,
             ))
         }));
     }
+    drop(ready_tx);
+
+    // Wait for every writer to finish connecting and syncing before starting the
+    // clock. Clients are loaded per writer and can be slow, so a clock started
+    // at spawn time gives late writers a shorter window -- or none at all --
+    // while attributing the results to full concurrency.
+    let mut initialisation_errors = Vec::new();
+    for _ in 0..writers {
+        match ready_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => initialisation_errors.push(format!("{error:#}")),
+            Err(_) => initialisation_errors
+                .push("writer thread ended before signalling readiness".to_string()),
+        }
+    }
+
+    if initialisation_errors.is_empty() {
+        gate.start(Instant::now() + Duration::from_secs(config.duration_seconds));
+    } else {
+        // Releasing the survivors would measure fewer writers than configured
+        // while labelling the result with the configured count.
+        gate.abort();
+    }
 
     let mut records = Vec::new();
-    let mut started = 0usize;
+    let mut participated = 0usize;
     for handle in handles {
         match handle.join() {
             Ok(Ok(writer_records)) => {
-                started += 1;
+                // Count writers that actually produced load, not writers that
+                // merely returned: a writer that contributed no operation did
+                // not take part in the measured concurrency.
+                if !writer_records.is_empty() {
+                    participated += 1;
+                }
                 records.extend(writer_records);
             }
-            // A writer that never started is not a failed operation; counting it
-            // as one would understate the concurrency actually achieved.
-            Ok(Err(error)) => eprintln!("writer failed to start: {error:#}"),
+            Ok(Err(error)) => eprintln!("writer failed: {error:#}"),
             Err(_) => eprintln!("writer thread panicked"),
         }
     }
 
-    write_artifacts(config, writers, started, records)
+    if !initialisation_errors.is_empty() {
+        bail!(
+            "{} of {} writers failed to initialise, so the run was not started: {}",
+            initialisation_errors.len(),
+            writers,
+            initialisation_errors.join("; ")
+        );
+    }
+
+    write_artifacts(config, writers, participated, records)
 }
 
+/// Holds writers at the start line until every one of them is connected.
+#[derive(Default)]
+pub(crate) struct StartGate {
+    state: Mutex<GateState>,
+    signal: Condvar,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum GateState {
+    #[default]
+    Waiting,
+    Start(Instant),
+    Abort,
+}
+
+impl StartGate {
+    fn start(&self, deadline: Instant) {
+        *self.state.lock().expect("start gate poisoned") = GateState::Start(deadline);
+        self.signal.notify_all();
+    }
+
+    fn abort(&self) {
+        *self.state.lock().expect("start gate poisoned") = GateState::Abort;
+        self.signal.notify_all();
+    }
+
+    /// Block until the run starts, returning the shared deadline, or `None` if
+    /// the run was abandoned during initialisation.
+    fn wait(&self) -> Option<Instant> {
+        let mut state = self.state.lock().expect("start gate poisoned");
+        while *state == GateState::Waiting {
+            state = self.signal.wait(state).expect("start gate poisoned");
+        }
+        match *state {
+            GateState::Start(deadline) => Some(deadline),
+            _ => None,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn drive_writer(
     fixture: Fixture,
     run_config: crate::config::RunConfig,
     index: usize,
     receiver_index: usize,
     faucet_id: AccountId,
-    deadline: Instant,
+    ready: std::sync::mpsc::Sender<Result<()>>,
+    gate: Arc<StartGate>,
 ) -> Result<Vec<WriteRecord>> {
     let sender_fixture = fixture.accounts[index].clone();
     let receiver_fixture = fixture.accounts[receiver_index].clone();
-    let mut sender = load_client(&fixture, &sender_fixture, &run_config)
-        .await
-        .with_context(|| format!("failed to load client for {}", sender_fixture.label))?;
-    let receiver_id = AccountId::from_hex(&receiver_fixture.account_id)
-        .with_context(|| format!("invalid account ID for {}", receiver_fixture.label))?;
-    let mut observer = load_observer(&fixture, &sender_fixture).await?;
+
+    // Everything that can be slow or can fail happens before readiness is
+    // signalled, so the measured window covers load generation only.
+    let initialised = async {
+        let sender = load_client(&fixture, &sender_fixture, &run_config)
+            .await
+            .with_context(|| format!("failed to load client for {}", sender_fixture.label))?;
+        let receiver_id = AccountId::from_hex(&receiver_fixture.account_id)
+            .with_context(|| format!("invalid account ID for {}", receiver_fixture.label))?;
+        let observer = load_observer(&fixture, &sender_fixture).await?;
+        Ok::<_, anyhow::Error>((sender, receiver_id, observer))
+    }
+    .await;
+
+    let (mut sender, receiver_id, mut observer) = match initialised {
+        Ok(parts) => {
+            let _ = ready.send(Ok(()));
+            parts
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            let _ = ready.send(Err(anyhow::anyhow!(message)));
+            return Err(error);
+        }
+    };
+
+    let Some(deadline) = gate.wait() else {
+        // Another writer failed to initialise; the run was abandoned.
+        return Ok(Vec::new());
+    };
 
     let mut records = Vec::new();
     let mut operation = 0u64;
@@ -441,12 +547,37 @@ pub(crate) fn summarize(
     }
     failures_by_kind.sort_by(|left, right| right.1.cmp(&left.1));
 
-    let canonicalization = latency_stats(records.iter().filter_map(|r| r.canonicalization_ms)).ok();
+    // Every ACCEPTED delta belongs in the canonicalization population, not just
+    // the ones that reached canonical. Percentiles over successes alone let a
+    // run pass while an arbitrary share of accepted deltas never settled: 100
+    // deltas where 60 canonicalize in 1s and 40 time out would report p95 = 1s.
+    //
+    // Unsettled deltas are right-censored at the poll bound: their true wait is
+    // at least that, so substituting the bound yields a LOWER bound on the real
+    // p95. That can understate the delay but can never manufacture a pass --
+    // once more than 5% are censored, p95 lands on the bound and fails on its
+    // own, with no special case needed.
+    let censor_bound_ms = config.timeout_seconds.saturating_mul(1_000);
+    let accepted: Vec<&WriteRecord> = records
+        .iter()
+        .filter(|record| record.execution_ms.is_some())
+        .collect();
+    let canonical_samples = accepted
+        .iter()
+        .filter(|record| record.canonicalization_ms.is_some())
+        .count();
+    let censored = accepted.len() - canonical_samples;
+    let canonicalization = latency_stats(
+        accepted
+            .iter()
+            .map(|record| record.canonicalization_ms.unwrap_or(censor_bound_ms)),
+    )
+    .ok();
     let proposal = latency_stats(records.iter().filter_map(|r| r.proposal_ms)).ok();
     let execution = latency_stats(records.iter().filter_map(|r| r.execution_ms)).ok();
 
     let verdicts = vec![
-        canonicalization_verdict(canonicalization.as_ref()),
+        canonicalization_verdict(canonicalization.as_ref(), canonical_samples, censored),
         auth_window_verdict(auth_window_failures, records.len()),
         concurrency_verdict(writers_configured, writers_started),
     ];
@@ -467,25 +598,44 @@ pub(crate) fn summarize(
     }
 }
 
-fn canonicalization_verdict(stats: Option<&LatencyStats>) -> CriterionVerdict {
+fn canonicalization_verdict(
+    stats: Option<&LatencyStats>,
+    canonical: usize,
+    censored: usize,
+) -> CriterionVerdict {
     match stats {
-        Some(stats) => CriterionVerdict {
-            criterion: "canonicalization_p95_ms".to_string(),
-            measured: Some(stats.p95_ms as f64),
-            target: CANONICALIZATION_P95_TARGET_MS,
-            verdict: if (stats.p95_ms as f64) <= CANONICALIZATION_P95_TARGET_MS {
-                "pass".to_string()
+        Some(stats) => {
+            let note = if censored == 0 {
+                format!("{canonical} accepted deltas, all reached canonical")
             } else {
-                "fail".to_string()
-            },
-            note: format!("{} samples", stats.samples),
-        },
+                // Say so explicitly: the reported p95 is a lower bound, so a
+                // reader must not treat it as the settled figure.
+                format!(
+                    "{} accepted deltas: {canonical} canonical, {censored} unsettled and censored                      at {}ms; p95 is a lower bound",
+                    canonical + censored,
+                    stats.max_ms
+                )
+            };
+            CriterionVerdict {
+                criterion: "canonicalization_p95_ms".to_string(),
+                measured: Some(stats.p95_ms as f64),
+                target: CANONICALIZATION_P95_TARGET_MS,
+                verdict: if (stats.p95_ms as f64) <= CANONICALIZATION_P95_TARGET_MS {
+                    "pass".to_string()
+                } else {
+                    "fail".to_string()
+                },
+                note,
+            }
+        }
+        // No accepted deltas at all: nothing was observed either way. Distinct
+        // from accepted deltas that failed to settle, which is a real failure.
         None => CriterionVerdict {
             criterion: "canonicalization_p95_ms".to_string(),
             measured: None,
             target: CANONICALIZATION_P95_TARGET_MS,
             verdict: "not_measured".to_string(),
-            note: "no operation reached a canonical state".to_string(),
+            note: "no delta was accepted, so canonicalization was never exercised".to_string(),
         },
     }
 }
@@ -608,14 +758,54 @@ mod tests {
     }
 
     #[test]
-    fn canonicalization_is_not_measured_rather_than_passing_when_nothing_canonicalized() {
-        let records: Vec<_> = (0..5)
-            .map(|_| record(None, Some(FailureKind::CanonicalizationTimeout)))
+    fn canonicalization_is_not_measured_when_no_delta_was_ever_accepted() {
+        // Proposal failures never reach acceptance, so there is nothing to
+        // measure -- as opposed to accepted deltas that fail to settle.
+        let mut records: Vec<_> = (0..5)
+            .map(|_| record(None, Some(FailureKind::Proposal)))
             .collect();
+        for record in &mut records {
+            record.execution_ms = None;
+        }
         let summary = summarize(&config(2), 2, 2, &records);
 
         assert_eq!(summary.verdicts[0].verdict, "not_measured");
         assert!(summary.verdicts[0].measured.is_none());
+    }
+
+    #[test]
+    fn accepted_deltas_that_never_settle_fail_rather_than_leaving_the_percentile() {
+        // 60 fast, 40 timed out. Filtering to successes would report p95 = 1s
+        // and pass; censoring the unsettled ones at the bound must fail.
+        let mut records: Vec<_> = (0..60).map(|_| record(Some(1_000), None)).collect();
+        records.extend((0..40).map(|_| record(None, Some(FailureKind::CanonicalizationTimeout))));
+        let summary = summarize(&config(2), 2, 2, &records);
+
+        let verdict = &summary.verdicts[0];
+        assert_eq!(verdict.verdict, "fail");
+        assert_eq!(verdict.measured, Some(180_000.0));
+        assert!(verdict.note.contains("40 unsettled"));
+    }
+
+    #[test]
+    fn discarded_deltas_also_count_against_the_criterion() {
+        let mut records: Vec<_> = (0..50).map(|_| record(Some(1_000), None)).collect();
+        records.extend((0..50).map(|_| record(None, Some(FailureKind::Discarded))));
+        let summary = summarize(&config(2), 2, 2, &records);
+
+        assert_eq!(summary.verdicts[0].verdict, "fail");
+    }
+
+    #[test]
+    fn a_small_share_of_unsettled_deltas_still_allows_a_pass() {
+        // 99 fast, 1 unsettled: p95 stays below the target, and the note must
+        // flag that the figure is a lower bound.
+        let mut records: Vec<_> = (0..99).map(|_| record(Some(1_000), None)).collect();
+        records.push(record(None, Some(FailureKind::CanonicalizationTimeout)));
+        let summary = summarize(&config(2), 2, 2, &records);
+
+        assert_eq!(summary.verdicts[0].verdict, "pass");
+        assert!(summary.verdicts[0].note.contains("lower bound"));
     }
 
     #[test]
@@ -636,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrency_fails_when_writers_did_not_all_start() {
+    fn concurrency_fails_when_writers_did_not_all_participate() {
         let records = vec![record(Some(1_000), None)];
         let summary = summarize(&config(8), 8, 6, &records);
 
@@ -644,6 +834,49 @@ mod tests {
         assert_eq!(verdict.criterion, "concurrent_writers");
         assert_eq!(verdict.verdict, "fail");
         assert_eq!(verdict.measured, Some(6.0));
+    }
+
+    #[test]
+    fn start_gate_releases_every_writer_with_one_shared_deadline() {
+        let gate = Arc::new(StartGate::default());
+        let deadline = Instant::now() + Duration::from_secs(30);
+
+        let waiters: Vec<_> = (0..4)
+            .map(|_| {
+                let gate = Arc::clone(&gate);
+                std::thread::spawn(move || gate.wait())
+            })
+            .collect();
+
+        gate.start(deadline);
+
+        for waiter in waiters {
+            assert_eq!(waiter.join().unwrap(), Some(deadline));
+        }
+    }
+
+    #[test]
+    fn start_gate_abort_releases_waiters_without_a_deadline() {
+        // A writer that failed to initialise must not leave the others parked
+        // on the gate forever.
+        let gate = Arc::new(StartGate::default());
+        let waiter = {
+            let gate = Arc::clone(&gate);
+            std::thread::spawn(move || gate.wait())
+        };
+
+        gate.abort();
+
+        assert_eq!(waiter.join().unwrap(), None);
+    }
+
+    #[test]
+    fn start_gate_does_not_block_a_writer_that_arrives_after_the_start() {
+        let gate = StartGate::default();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        gate.start(deadline);
+
+        assert_eq!(gate.wait(), Some(deadline));
     }
 
     #[test]

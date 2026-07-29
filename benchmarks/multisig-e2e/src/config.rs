@@ -92,6 +92,11 @@ impl ScaleConfig {
         if self.timeout_seconds == 0 {
             bail!("timeout_seconds must be greater than zero");
         }
+        // Matches RunConfig: a zero interval spins a hot retry loop, and a zero
+        // timeout silently disables retries rather than configuring them.
+        if self.proposal_retry_interval_ms == 0 || self.proposal_retry_timeout_seconds == 0 {
+            bail!("proposal retry interval and timeout must be greater than zero");
+        }
         Ok(())
     }
 

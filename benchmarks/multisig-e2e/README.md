@@ -29,7 +29,15 @@ cargo run -p guardian-multisig-e2e-benchmark -- prepare \
 
 Re-running `prepare` **resumes** rather than restarts: existing entries are never regenerated or
 reordered, only missing ones are appended, so an interrupted run cannot strand an account that was
-already created, registered, or funded. Topping up against different endpoints is refused, since
+already created, registered, or funded.
+
+Each entry records whether it reached `registered`. An account interrupted between key persistence
+and Guardian registration is left `created`, and cannot be registered afterwards -- `push_account`
+needs the local account store, which lived in a temporary directory that is gone once the process
+exited. `prepare` refuses to continue rather than counting such an entry as done, which would leave
+Guardian holding fewer accounts than the fixture claims. Pass `--discard-unregistered` to replace
+them; that discards their persisted keys, so it is opt-in. Such an account is unusable and cannot
+have been funded, because funding uses the IDs `prepare` prints only on success. Topping up against different endpoints is refused, since
 that would mix accounts from two networks into one fixture. The first two accounts keep the labels
 `alice` and `bob`; the rest are numbered. The file is mode `0600` on Unix and is ignored by
 git. It is not overwritten automatically because the account and secret-key binding must remain

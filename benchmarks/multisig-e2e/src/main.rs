@@ -34,6 +34,11 @@ enum Command {
         /// up to this count without regenerating accounts already in it.
         #[arg(long, default_value_t = 2)]
         accounts: usize,
+        /// Replace accounts left created-but-unregistered by an interrupted
+        /// run. They cannot be registered after the fact and are unusable;
+        /// this discards their persisted keys, so it is opt-in.
+        #[arg(long, default_value_t = false)]
+        discard_unregistered: bool,
     },
     Preflight {
         #[arg(long)]
@@ -66,10 +71,16 @@ async fn main() -> Result<()> {
             miden_endpoint,
             accounts_file,
             accounts,
+            discard_unregistered,
         } => {
-            let fixture =
-                fixture::prepare(guardian_endpoint, miden_endpoint, &accounts_file, accounts)
-                    .await?;
+            let fixture = fixture::prepare(
+                guardian_endpoint,
+                miden_endpoint,
+                &accounts_file,
+                accounts,
+                discard_unregistered,
+            )
+            .await?;
             println!("wrote {}", accounts_file.display());
             let network_id = if fixture.miden_endpoint.contains("testnet") {
                 NetworkId::Testnet

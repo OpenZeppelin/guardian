@@ -27,6 +27,85 @@ mkdir -p "${OUT}"
 HTTP_A="http://127.0.0.1:3000"
 PROM="http://127.0.0.1:9090"
 
+# Server-side evidence. This is the half production cannot give us, and the half
+# a bottleneck claim has to cite (FR-017c). Three of these answer questions the
+# authoritative tier structurally cannot:
+#   guardian_db_pool_pending_acquires        -> is the connection pool the constraint?
+#   guardian_grpc_request_duration_seconds   -> server service time, vs the harness's
+#                                               client round trip (FR-004)
+#   guardian_miden_rpc_duration_seconds      -> chain time, separable from Guardian
+#                                               time in the write path (FR-005)
+#
+# Captured BEFORE and AFTER, because these are counters and histograms
+# cumulative over the server process lifetime -- not per-leg. A snapshot taken
+# only at the end reports every earlier leg too: the first write leg's snapshot
+# showed ~171k GetState calls for a leg that issued 64. Deltas are computed in
+# summarise_metrics below; the raw endpoints are kept so a reader can recheck.
+METRIC_QUERIES=(
+  'guardian_db_pool_pending_acquires'
+  'guardian_db_pool_connections'
+  'guardian_db_pool_connections_available'
+  'guardian_db_pool_connections_max'
+  'guardian_grpc_request_duration_seconds_count'
+  'guardian_grpc_request_duration_seconds_sum'
+  'guardian_grpc_requests_in_flight'
+  'guardian_grpc_requests_total'
+  'guardian_storage_operation_duration_seconds_count'
+  'guardian_storage_operation_duration_seconds_sum'
+  'guardian_storage_operations_total'
+  'guardian_miden_rpc_duration_seconds_count'
+  'guardian_miden_rpc_duration_seconds_sum'
+  'guardian_miden_rpc_requests_total'
+  'guardian_canonicalization_runs_total'
+  'guardian_canonicalization_run_duration_seconds_count'
+  'guardian_canonicalization_fast_runs_total'
+  'guardian_canonicalization_candidates_total'
+  'guardian_canonicalization_candidate_age_seconds'
+  'guardian_canonicalization_retries_total'
+  'guardian_canonicalization_commitment_mismatches_total'
+  'guardian_deltas_submitted_total'
+  'guardian_rate_limit_rejections_total'
+  'process_cpu_seconds_total'
+  'process_resident_memory_bytes'
+)
+
+capture_metrics() {
+  local phase="$1"
+  mkdir -p "${OUT}/metrics-${phase}"
+  for q in "${METRIC_QUERIES[@]}"; do
+    curl -sf --get "${PROM}/api/v1/query" --data-urlencode "query=${q}" \
+      > "${OUT}/metrics-${phase}/${q}.json" 2>/dev/null || true
+  done
+}
+
+# Per-leg deltas. Gauges (in-flight, pool sizes, memory) are levels rather than
+# counters, so their "after" value is reported as-is instead of subtracted.
+summarise_metrics() {
+  local gauges='guardian_db_pool_pending_acquires guardian_db_pool_connections guardian_db_pool_connections_available guardian_db_pool_connections_max guardian_grpc_requests_in_flight process_resident_memory_bytes'
+  : > "${OUT}/metrics-delta.jsonl"
+  for q in "${METRIC_QUERIES[@]}"; do
+    local before="${OUT}/metrics-before/${q}.json"
+    local after="${OUT}/metrics-after/${q}.json"
+    [ -f "${after}" ] || continue
+    if [[ " ${gauges} " == *" ${q} "* ]]; then
+      jq -c --arg metric "${q}" \
+        '{metric: $metric, kind: "gauge", series: [.data.result[] | {labels: (.metric|del(.__name__,.job,.instance)), value: (.value[1]|tonumber)}]}' \
+        "${after}" >> "${OUT}/metrics-delta.jsonl" 2>/dev/null || true
+    else
+      jq -c -n --arg metric "${q}" \
+        --slurpfile before "${before}" --slurpfile after "${after}" \
+        '{metric: $metric, kind: "counter", series: [
+           ($after[0].data.result // [])[] as $a
+           | ($a.metric|del(.__name__,.job,.instance)) as $labels
+           | (($before[0].data.result // []) | map(select((.metric|del(.__name__,.job,.instance)) == $labels)) | .[0].value[1] // "0" | tonumber) as $b
+           | {labels: $labels, delta: (($a.value[1]|tonumber) - $b)}
+           | select(.delta != 0)
+         ]}' >> "${OUT}/metrics-delta.jsonl" 2>/dev/null || true
+    fi
+  done
+}
+
+
 echo "==> leg '${LABEL}' -> ${OUT}"
 
 # Build identity BEFORE. Production exposes /status unauthenticated, and so does
@@ -52,6 +131,8 @@ docker stats --no-stream --format json > "${OUT}/docker-stats-before.json" 2>/de
 docker compose exec -T postgres psql -U guardian -d guardian \
   -c 'SELECT pg_stat_statements_reset();' > /dev/null 2>&1 \
   || echo "    warn: pg_stat_statements_reset failed; query attribution unavailable" >&2
+
+capture_metrics before
 
 echo "==> running harness"
 
@@ -99,40 +180,9 @@ fi
 
 docker stats --no-stream --format json > "${OUT}/docker-stats-after.json" 2>/dev/null || true
 
-# Server-side evidence. This is the half production cannot give us, and the half
-# a bottleneck claim has to cite (FR-017c). Three of these answer questions the
-# authoritative tier structurally cannot:
-#   guardian_db_pool_pending_acquires        -> is the connection pool the constraint?
-#   guardian_grpc_request_duration_seconds   -> server service time, vs the harness's
-#                                               client round trip (FR-004)
-#   guardian_miden_rpc_duration_seconds      -> chain time, separable from Guardian
-#                                               time in the write path (FR-005)
 echo "==> capturing server-side metrics"
-for q in \
-  'guardian_db_pool_pending_acquires' \
-  'guardian_db_pool_connections' \
-  'guardian_db_pool_connections_available' \
-  'guardian_db_pool_connections_max' \
-  'guardian_grpc_request_duration_seconds' \
-  'guardian_grpc_requests_in_flight' \
-  'guardian_grpc_requests_total' \
-  'guardian_storage_operation_duration_seconds' \
-  'guardian_storage_operations_total' \
-  'guardian_miden_rpc_duration_seconds' \
-  'guardian_miden_rpc_requests_total' \
-  'guardian_canonicalization_run_duration_seconds' \
-  'guardian_canonicalization_fast_runs_total' \
-  'guardian_canonicalization_candidate_age_seconds' \
-  'guardian_canonicalization_retries_total' \
-  'guardian_canonicalization_commitment_mismatches_total' \
-  'guardian_deltas_submitted_total' \
-  'guardian_rate_limit_rejections_total' \
-  'process_cpu_seconds_total' \
-  'process_resident_memory_bytes'
-do
-  curl -sf --get "${PROM}/api/v1/query" --data-urlencode "query=${q}" \
-    > "${OUT}/prom-${q}.json" 2>/dev/null || true
-done
+capture_metrics after
+summarise_metrics
 curl -sf "${PROM}/api/v1/targets" > "${OUT}/prom-targets.json" 2>/dev/null || true
 
 docker compose exec -T postgres psql -U guardian -d guardian -A -F',' -c \

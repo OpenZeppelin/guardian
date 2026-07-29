@@ -12,11 +12,32 @@ use crate::config::parse_miden_endpoint;
 
 const FIXTURE_VERSION: u32 = 1;
 
+/// How far an account got through provisioning.
+///
+/// The key is persisted before Guardian registration so an interrupted run
+/// never loses it, which means a persisted entry does not imply a registered
+/// account. Without recording that distinction, a resume would count the entry
+/// as done and leave Guardian holding fewer accounts than the fixture claims --
+/// invisible at two accounts, material at the sizes the target needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvisioningState {
+    /// Key generated and account created on the Miden side; not yet registered.
+    Created,
+    /// Registered with Guardian and ready to use.
+    #[default]
+    Registered,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountFixture {
     pub label: String,
     pub account_id: String,
     pub secret_key_hex: String,
+    /// Defaults to `Registered` so fixtures written before this field existed
+    /// keep working; they were only ever persisted by a run that completed.
+    #[serde(default)]
+    pub state: ProvisioningState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +65,20 @@ impl Fixture {
             bail!(
                 "account fixture must contain at least two accounts, found {}",
                 fixture.accounts.len()
+            );
+        }
+        let unregistered: Vec<&str> = fixture
+            .accounts
+            .iter()
+            .filter(|account| account.state != ProvisioningState::Registered)
+            .map(|account| account.label.as_str())
+            .collect();
+        if !unregistered.is_empty() {
+            bail!(
+                "fixture has {} account(s) not registered with Guardian ({}); re-run `prepare` to \
+                 finish provisioning",
+                unregistered.len(),
+                unregistered.join(", ")
             );
         }
         Ok(fixture)
@@ -94,6 +129,7 @@ pub async fn prepare(
     miden_endpoint: String,
     output: &Path,
     count: usize,
+    discard_unregistered: bool,
 ) -> Result<Fixture> {
     if count < 2 {
         bail!("account count must be at least 2, got {count}");
@@ -116,9 +152,6 @@ pub async fn prepare(
                 miden_endpoint
             );
         }
-        if existing.accounts.len() >= count {
-            return Ok(existing);
-        }
         existing
     } else {
         Fixture {
@@ -128,6 +161,48 @@ pub async fn prepare(
             accounts: Vec::with_capacity(count),
         }
     };
+
+    // An account interrupted between persistence and registration cannot be
+    // registered later: `push_account` needs the local account store, which
+    // lived in a temporary directory that is gone once the process exited, and
+    // the client offers no way to rebuild it from the persisted key
+    // (`recover_by_key` only finds accounts Guardian already knows).
+    //
+    // Such an account is therefore unusable, and it cannot have been funded --
+    // funding uses the IDs `prepare` prints only on success. Replacing it is
+    // safe, but it does discard persisted key material, so it stays opt-in.
+    let unregistered: Vec<String> = fixture
+        .accounts
+        .iter()
+        .filter(|account| account.state != ProvisioningState::Registered)
+        .map(|account| account.label.clone())
+        .collect();
+    if !unregistered.is_empty() {
+        if !discard_unregistered {
+            bail!(
+                "fixture {} has {} account(s) created but never registered with Guardian ({}). \
+                 They cannot be registered now because the local account store is gone, and they \
+                 are unusable. Re-run with --discard-unregistered to replace them, or move the \
+                 fixture aside to start over.",
+                output.display(),
+                unregistered.len(),
+                unregistered.join(", ")
+            );
+        }
+        fixture
+            .accounts
+            .retain(|account| account.state == ProvisioningState::Registered);
+        persist_fixture(output, &fixture)?;
+        eprintln!(
+            "discarded {} unregistered account(s): {}",
+            unregistered.len(),
+            unregistered.join(", ")
+        );
+    }
+
+    if fixture.accounts.len() >= count {
+        return Ok(fixture);
+    }
 
     while fixture.accounts.len() < count {
         let label = label_for(fixture.accounts.len());
@@ -154,12 +229,19 @@ pub async fn prepare(
             label: label.to_string(),
             account_id: account_id.to_string(),
             secret_key_hex,
+            state: ProvisioningState::Created,
         });
+        // Persist before registering: the key must survive an interruption at
+        // any point. The `Created` state records that registration is still
+        // outstanding so a resume retries it.
         persist_fixture(output, &fixture)?;
         client
             .push_account()
             .await
             .with_context(|| format!("failed to register {label} account with Guardian"))?;
+        let last = fixture.accounts.len() - 1;
+        fixture.accounts[last].state = ProvisioningState::Registered;
+        persist_fixture(output, &fixture)?;
     }
 
     Ok(fixture)
@@ -219,6 +301,7 @@ mod tests {
                 label: "alice".to_string(),
                 account_id: "0xalice".to_string(),
                 secret_key_hex: "secret".to_string(),
+                state: ProvisioningState::Registered,
             }],
         };
 
@@ -231,6 +314,7 @@ mod tests {
             label: "bob".to_string(),
             account_id: "0xbob".to_string(),
             secret_key_hex: "another-secret".to_string(),
+            state: ProvisioningState::Registered,
         });
         persist_fixture(&path, &fixture).unwrap();
 
@@ -248,6 +332,7 @@ mod tests {
                     label: label_for(index),
                     account_id: format!("0x{index:04}"),
                     secret_key_hex: format!("secret-{index}"),
+                    state: ProvisioningState::Registered,
                 })
                 .collect(),
         }
@@ -304,6 +389,7 @@ mod tests {
             existing.miden_endpoint.clone(),
             &path,
             4,
+            false,
         )
         .await
         .unwrap();
@@ -325,11 +411,97 @@ mod tests {
             "https://rpc.devnet.miden.io".to_string(),
             &path,
             4,
+            false,
         )
         .await
         .unwrap_err();
 
         assert!(error.to_string().contains("move the fixture aside"));
+    }
+
+    #[test]
+    fn load_rejects_a_fixture_holding_an_unregistered_account() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+        let mut fixture = fixture_with(3);
+        fixture.accounts[2].state = ProvisioningState::Created;
+        persist_fixture(&path, &fixture).unwrap();
+
+        let error = Fixture::load(&path).unwrap_err();
+        assert!(error.to_string().contains("not registered"));
+    }
+
+    #[test]
+    fn fixtures_written_before_the_state_field_load_as_registered() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+        let legacy = r#"{
+            "version": 1,
+            "guardian_endpoint": "http://localhost:50051",
+            "miden_endpoint": "https://rpc.testnet.miden.io",
+            "accounts": [
+                {"label": "alice", "account_id": "0x01", "secret_key_hex": "a"},
+                {"label": "bob", "account_id": "0x02", "secret_key_hex": "b"}
+            ]
+        }"#;
+        fs::write(&path, legacy).unwrap();
+
+        let fixture = Fixture::load(&path).unwrap();
+        assert_eq!(fixture.accounts[0].state, ProvisioningState::Registered);
+    }
+
+    #[tokio::test]
+    async fn prepare_refuses_to_silently_skip_an_unregistered_account() {
+        // The original resume counted a created-but-unregistered entry as done,
+        // so Guardian could hold fewer accounts than the fixture claimed.
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+        let mut fixture = fixture_with(2);
+        fixture.accounts[1].state = ProvisioningState::Created;
+        persist_fixture(&path, &fixture).unwrap();
+
+        let error = prepare(
+            fixture.guardian_endpoint.clone(),
+            fixture.miden_endpoint.clone(),
+            &path,
+            2,
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("never registered"));
+        assert!(error.to_string().contains("--discard-unregistered"));
+    }
+
+    #[tokio::test]
+    async fn discard_unregistered_drops_only_the_incomplete_entries() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+        let mut fixture = fixture_with(3);
+        fixture.accounts[2].state = ProvisioningState::Created;
+        persist_fixture(&path, &fixture).unwrap();
+
+        // Requesting 2 leaves nothing to create, so this exercises the discard
+        // path alone without needing a network.
+        let resumed = prepare(
+            fixture.guardian_endpoint.clone(),
+            fixture.miden_endpoint.clone(),
+            &path,
+            2,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resumed.accounts.len(), 2);
+        assert!(
+            resumed
+                .accounts
+                .iter()
+                .all(|account| account.state == ProvisioningState::Registered)
+        );
+        assert_eq!(resumed.accounts[0].secret_key_hex, "secret-0");
     }
 
     #[tokio::test]
@@ -343,6 +515,7 @@ mod tests {
                 "https://rpc.testnet.miden.io".to_string(),
                 &path,
                 1,
+                false,
             )
             .await
             .is_err()
