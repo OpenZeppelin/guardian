@@ -40,33 +40,98 @@ impl Fixture {
                 FIXTURE_VERSION
             );
         }
-        if fixture.accounts.len() != 2 {
-            bail!("account fixture must contain exactly two accounts");
+        if fixture.accounts.len() < 2 {
+            bail!(
+                "account fixture must contain at least two accounts, found {}",
+                fixture.accounts.len()
+            );
+        }
+        Ok(fixture)
+    }
+
+    /// Load without the minimum-account check, for resuming provisioning.
+    ///
+    /// A fixture interrupted after its first account is valid input for a
+    /// top-up even though it is not yet usable by a run.
+    fn load_partial(path: &Path) -> Result<Self> {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read account fixture {}", path.display()))?;
+        let fixture: Self = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse account fixture {}", path.display()))?;
+        if fixture.version != FIXTURE_VERSION {
+            bail!(
+                "unsupported account fixture version {}; expected {}",
+                fixture.version,
+                FIXTURE_VERSION
+            );
         }
         Ok(fixture)
     }
 }
 
+/// Label for the account at `index`.
+///
+/// The first two keep their original names so existing fixtures, the runner's
+/// sender/receiver pair, and the README stay valid; the rest are numbered.
+fn label_for(index: usize) -> String {
+    match index {
+        0 => "alice".to_string(),
+        1 => "bob".to_string(),
+        other => format!("account-{other:04}"),
+    }
+}
+
+/// Provision `count` accounts into `output`, resuming an interrupted run.
+///
+/// Resume rather than refuse: at the sizes the scalability target needs, a
+/// provisioning run can be interrupted after some accounts are already created,
+/// registered, and funded. Existing entries are never regenerated or reordered —
+/// only missing ones are appended — so a funded account can never be stranded by
+/// re-running this command. Reprovisioning from scratch still requires moving the
+/// file away explicitly.
 pub async fn prepare(
     guardian_endpoint: String,
     miden_endpoint: String,
     output: &Path,
+    count: usize,
 ) -> Result<Fixture> {
-    if output.exists() {
-        bail!(
-            "refusing to overwrite existing account fixture {}; move it explicitly to reprovision",
-            output.display()
-        );
+    if count < 2 {
+        bail!("account count must be at least 2, got {count}");
     }
     let endpoint = parse_miden_endpoint(&miden_endpoint)?;
-    let mut fixture = Fixture {
-        version: FIXTURE_VERSION,
-        guardian_endpoint,
-        miden_endpoint,
-        accounts: Vec::with_capacity(2),
+    let mut fixture = if output.exists() {
+        let existing = Fixture::load_partial(output)?;
+        // Topping up against different endpoints would mix accounts from two
+        // networks into one fixture, and the extras would be unusable.
+        if existing.guardian_endpoint != guardian_endpoint
+            || existing.miden_endpoint != miden_endpoint
+        {
+            bail!(
+                "existing fixture {} targets guardian={} miden={}, but this run targets guardian={} miden={}; \
+                 move the fixture aside to provision against different endpoints",
+                output.display(),
+                existing.guardian_endpoint,
+                existing.miden_endpoint,
+                guardian_endpoint,
+                miden_endpoint
+            );
+        }
+        if existing.accounts.len() >= count {
+            return Ok(existing);
+        }
+        existing
+    } else {
+        Fixture {
+            version: FIXTURE_VERSION,
+            guardian_endpoint,
+            miden_endpoint,
+            accounts: Vec::with_capacity(count),
+        }
     };
 
-    for label in ["alice", "bob"] {
+    while fixture.accounts.len() < count {
+        let label = label_for(fixture.accounts.len());
+        let label = label.as_str();
         let secret_key = SecretKey::new();
         let secret_key_hex = hex::encode(secret_key.to_bytes());
         let data_dir =
@@ -171,5 +236,116 @@ mod tests {
 
         let persisted: Fixture = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(persisted.accounts.len(), 2);
+    }
+
+    fn fixture_with(count: usize) -> Fixture {
+        Fixture {
+            version: FIXTURE_VERSION,
+            guardian_endpoint: "http://localhost:50051".to_string(),
+            miden_endpoint: "https://rpc.testnet.miden.io".to_string(),
+            accounts: (0..count)
+                .map(|index| AccountFixture {
+                    label: label_for(index),
+                    account_id: format!("0x{index:04}"),
+                    secret_key_hex: format!("secret-{index}"),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn labels_keep_original_names_for_the_first_two() {
+        assert_eq!(label_for(0), "alice");
+        assert_eq!(label_for(1), "bob");
+        assert_eq!(label_for(2), "account-0002");
+        assert_eq!(label_for(117), "account-0117");
+    }
+
+    #[test]
+    fn load_accepts_more_than_two_accounts() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+        persist_fixture(&path, &fixture_with(100)).unwrap();
+
+        assert_eq!(Fixture::load(&path).unwrap().accounts.len(), 100);
+    }
+
+    #[test]
+    fn load_rejects_a_fixture_with_fewer_than_two_accounts() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+        persist_fixture(&path, &fixture_with(1)).unwrap();
+
+        assert!(Fixture::load(&path).is_err());
+    }
+
+    #[test]
+    fn load_partial_accepts_an_interrupted_fixture_so_it_can_be_resumed() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+        persist_fixture(&path, &fixture_with(1)).unwrap();
+
+        let partial = Fixture::load_partial(&path).unwrap();
+        assert_eq!(partial.accounts.len(), 1);
+        assert_eq!(partial.accounts[0].secret_key_hex, "secret-0");
+    }
+
+    #[tokio::test]
+    async fn prepare_is_a_noop_when_the_fixture_already_has_enough_accounts() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+        let existing = fixture_with(4);
+        persist_fixture(&path, &existing).unwrap();
+
+        // No network access: the requested count is already satisfied, so this
+        // must return the existing fixture without creating anything.
+        let resumed = prepare(
+            existing.guardian_endpoint.clone(),
+            existing.miden_endpoint.clone(),
+            &path,
+            4,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resumed.accounts.len(), 4);
+        assert_eq!(resumed.accounts[0].secret_key_hex, "secret-0");
+    }
+
+    #[tokio::test]
+    async fn prepare_refuses_to_top_up_a_fixture_from_different_endpoints() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+        persist_fixture(&path, &fixture_with(2)).unwrap();
+
+        // Topping up against another network would mix unusable accounts into a
+        // fixture whose existing entries are funded on the original one.
+        let error = prepare(
+            "http://localhost:50051".to_string(),
+            "https://rpc.devnet.miden.io".to_string(),
+            &path,
+            4,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("move the fixture aside"));
+    }
+
+    #[tokio::test]
+    async fn prepare_rejects_a_count_below_the_runner_minimum() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("accounts.json");
+
+        assert!(
+            prepare(
+                "http://localhost:50051".to_string(),
+                "https://rpc.testnet.miden.io".to_string(),
+                &path,
+                1,
+            )
+            .await
+            .is_err()
+        );
     }
 }

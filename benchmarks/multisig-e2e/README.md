@@ -18,8 +18,20 @@ cargo run -p guardian-multisig-e2e-benchmark -- prepare \
   --miden-endpoint https://rpc.testnet.miden.io
 ```
 
-`prepare` registers Alice and Bob with Guardian and writes their account IDs and Falcon secret keys
-to `.guardian/bench/multisig-e2e-accounts.json`. The file is mode `0600` on Unix and is ignored by
+`prepare` registers the accounts with Guardian and writes their account IDs and Falcon secret keys
+to `.guardian/bench/multisig-e2e-accounts.json`. It provisions two accounts by default; pass
+`--accounts N` for more, which the scalability work needs to drive more than one concurrent writer:
+
+```bash
+cargo run -p guardian-multisig-e2e-benchmark -- prepare \
+  --miden-endpoint https://rpc.testnet.miden.io --accounts 16
+```
+
+Re-running `prepare` **resumes** rather than restarts: existing entries are never regenerated or
+reordered, only missing ones are appended, so an interrupted run cannot strand an account that was
+already created, registered, or funded. Topping up against different endpoints is refused, since
+that would mix accounts from two networks into one fixture. The first two accounts keep the labels
+`alice` and `bob`; the rest are numbered. The file is mode `0600` on Unix and is ignored by
 git. It is not overwritten automatically because the account and secret-key binding must remain
 stable.
 

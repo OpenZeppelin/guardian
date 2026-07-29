@@ -29,6 +29,10 @@ enum Command {
         miden_endpoint: String,
         #[arg(long, default_value = ".guardian/bench/multisig-e2e-accounts.json")]
         accounts_file: PathBuf,
+        /// Number of accounts to provision. Re-running tops an existing fixture
+        /// up to this count without regenerating accounts already in it.
+        #[arg(long, default_value_t = 2)]
+        accounts: usize,
     },
     Preflight {
         #[arg(long)]
@@ -55,9 +59,11 @@ async fn main() -> Result<()> {
             guardian_endpoint,
             miden_endpoint,
             accounts_file,
+            accounts,
         } => {
             let fixture =
-                fixture::prepare(guardian_endpoint, miden_endpoint, &accounts_file).await?;
+                fixture::prepare(guardian_endpoint, miden_endpoint, &accounts_file, accounts)
+                    .await?;
             println!("wrote {}", accounts_file.display());
             let network_id = if fixture.miden_endpoint.contains("testnet") {
                 NetworkId::Testnet
