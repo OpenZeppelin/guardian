@@ -3,6 +3,7 @@ mod config;
 mod fixture;
 mod runner;
 mod runtime;
+mod scale;
 
 use std::path::PathBuf;
 
@@ -46,6 +47,11 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
+    /// N concurrent writers against the issue #317 write target.
+    ScaleRun {
+        #[arg(long)]
+        config: PathBuf,
+    },
     Summarize {
         #[arg(long)]
         report: PathBuf,
@@ -85,6 +91,10 @@ async fn main() -> Result<()> {
         Command::Run { config } => {
             let path = runner::run(&RunConfig::load(&config)?).await?;
             println!("wrote {}", path.display());
+        }
+        Command::ScaleRun { config } => {
+            let config = config::ScaleConfig::load(&config)?;
+            scale::run(&config).await?;
         }
         Command::Summarize { report } => {
             runner::summarize_report(&report)?;

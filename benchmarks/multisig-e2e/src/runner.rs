@@ -88,10 +88,10 @@ struct OperationSpec {
     consumed: bool,
 }
 
-struct ProposalAttempt {
-    proposal: Proposal,
-    retries: u64,
-    retry_wait_ms: u64,
+pub(crate) struct ProposalAttempt {
+    pub(crate) proposal: Proposal,
+    pub(crate) retries: u64,
+    pub(crate) retry_wait_ms: u64,
 }
 
 pub async fn preflight(config: &RunConfig) -> Result<()> {
@@ -437,7 +437,7 @@ async fn execute_operation(
     })
 }
 
-async fn propose_with_retry(
+pub(crate) async fn propose_with_retry(
     client: &mut BenchClient,
     transaction_type: TransactionType,
     config: &RunConfig,
@@ -479,7 +479,7 @@ async fn propose_with_retry(
     }
 }
 
-async fn execute_with_retry(
+pub(crate) async fn execute_with_retry(
     client: &mut BenchClient,
     proposal_id: &str,
     config: &RunConfig,
@@ -574,7 +574,10 @@ async fn await_new_note(
     }
 }
 
-async fn sync_network_with_retry(client: &mut BenchClient, config: &RunConfig) -> Result<()> {
+pub(crate) async fn sync_network_with_retry(
+    client: &mut BenchClient,
+    config: &RunConfig,
+) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(config.proposal_retry_timeout_seconds);
     let retry_interval = Duration::from_millis(config.proposal_retry_interval_ms);
     sync_network_until(client, deadline, retry_interval).await
@@ -667,20 +670,20 @@ fn ensure_starting_balances(
     Ok(())
 }
 
-fn ensure_ready(status: &miden_multisig_client::ProposalStatus, id: &str) -> Result<()> {
+pub(crate) fn ensure_ready(status: &miden_multisig_client::ProposalStatus, id: &str) -> Result<()> {
     if !status.is_ready() {
         bail!("1-of-1 proposal {id} was not ready after creation");
     }
     Ok(())
 }
 
-fn parse_faucet_id(config: &RunConfig) -> Result<AccountId> {
+pub(crate) fn parse_faucet_id(config: &RunConfig) -> Result<AccountId> {
     AccountId::parse(&config.faucet_id)
         .map(|(account_id, _network_id)| account_id)
         .context("faucet_id is not a valid Miden hex or bech32 account ID")
 }
 
-fn elapsed_ms(started: Instant) -> u64 {
+pub(crate) fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
@@ -691,13 +694,13 @@ fn duration_limit_reached(started: Instant, max_duration_seconds: Option<u64>) -
 }
 
 #[derive(Debug, Serialize)]
-struct LatencyStats {
-    samples: usize,
-    min_ms: u64,
-    p50_ms: u64,
-    p95_ms: u64,
-    max_ms: u64,
-    mean_ms: f64,
+pub(crate) struct LatencyStats {
+    pub(crate) samples: usize,
+    pub(crate) min_ms: u64,
+    pub(crate) p50_ms: u64,
+    pub(crate) p95_ms: u64,
+    pub(crate) max_ms: u64,
+    pub(crate) mean_ms: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -813,7 +816,7 @@ fn read_records(path: &Path) -> Result<Vec<OperationRecord>> {
         .collect()
 }
 
-fn latency_stats(values: impl IntoIterator<Item = u64>) -> Result<LatencyStats> {
+pub(crate) fn latency_stats(values: impl IntoIterator<Item = u64>) -> Result<LatencyStats> {
     let mut values: Vec<u64> = values.into_iter().collect();
     if values.is_empty() {
         bail!("cannot summarize an empty latency series");

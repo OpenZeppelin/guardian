@@ -1,0 +1,27 @@
+# N-writer scale run for the issue #317 write target.
+#
+# Every writer is one funded fixture account sending to the next in a ring, and
+# each loops propose -> execute -> await canonical. Provision the accounts first:
+#
+#   cargo run -p guardian-multisig-e2e-benchmark -- prepare \
+#     --miden-endpoint https://rpc.testnet.miden.io --accounts 16
+#
+# then fund them and run `bootstrap`. `writers` may not exceed the fixture's
+# account count -- the run fails rather than quietly driving fewer, since that
+# would overstate the concurrency the results are attributed to.
+
+accounts_file = ".guardian/bench/multisig-e2e-accounts.json"
+faucet_id = "mtst1aqj93e2yvy5wdv2skadca0vuuypfnp80"
+
+writers = 16
+duration_seconds = 300
+amount = 1
+
+poll_interval_ms = 1000
+# The #317 criterion is p95 <= 30s; this bound is deliberately far above it so a
+# breach is measured rather than truncated into a timeout.
+timeout_seconds = 300
+
+proposal_retry_interval_ms = 1000
+proposal_retry_timeout_seconds = 180
+artifacts_dir = "benchmarks/multisig-e2e/reports"

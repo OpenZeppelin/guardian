@@ -40,7 +40,7 @@ pub async fn load_clients(fixture: &Fixture, config: &RunConfig) -> Result<Vec<B
     Ok(clients)
 }
 
-async fn load_client(
+pub(crate) async fn load_client(
     fixture: &Fixture,
     account: &AccountFixture,
     config: &RunConfig,

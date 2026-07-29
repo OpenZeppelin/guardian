@@ -61,6 +61,48 @@ cargo run --release -p guardian-multisig-e2e-benchmark -- run \
   --config benchmarks/multisig-e2e/testnet.local.toml
 ```
 
+## Scale run (issue #317 write target)
+
+`run` measures one lifecycle in depth: two accounts alternate transfers sequentially, every stage
+timed. It is inherently a pair, so it cannot answer what happens with N writers at once.
+
+`scale-run` answers that. Every fixture account becomes an independent concurrent writer in a ring
+-- writer `i` sends to writer `i + 1` -- and each loops propose -> execute -> await canonical for a
+fixed window:
+
+```bash
+cargo run --release -p guardian-multisig-e2e-benchmark -- scale-run \
+  --config benchmarks/multisig-e2e/testnet.scale.toml
+```
+
+The loop waits for canonicalization rather than pipelining past it because an account may hold only
+one non-canonical delta at a time. Per-writer throughput is therefore an observed property bounded
+by canonicalization, not a rate the profile chooses -- which is what "concurrent users transacting"
+means for this system.
+
+Each writer runs on its own thread with its own runtime: the multisig client builder holds a
+non-`Send` value across an await, so writer futures cannot cross threads, and proving is CPU-bound
+so real parallelism is what makes the writers concurrent rather than interleaved.
+
+The summary evaluates three issue #317 criteria directly:
+
+| Criterion | Target | Source |
+|---|---|---|
+| `canonicalization_p95_ms` | <= 30000 | accepted -> canonical wait, per operation |
+| `auth_window_failures` | 0 | failures whose message matches the replay-protection window |
+| `concurrent_writers` | configured count | writers that actually produced records |
+
+Each is `pass`, `fail`, or `not_measured`. `not_measured` is never a silent pass: a run where
+nothing canonicalized has not shown the latency criterion holds, and a run with no operations has
+shown nothing about auth windows.
+
+Auth-window failures are counted separately from every other error because the server returns both
+expiry and genuine auth failures as the same error type, differing only in message. Folding them
+together would make the "zero auth-window failures" criterion unmeasurable.
+
+Artifacts are `scale-<stamp>-records.jsonl` (one line per operation, including failures) and
+`scale-<stamp>-summary.json`.
+
 ## Measurements and artifacts
 
 Each completed send is flushed as one JSONL record under `reports/`. A companion manifest captures

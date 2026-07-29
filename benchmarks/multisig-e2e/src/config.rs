@@ -31,6 +31,90 @@ pub struct RunConfig {
     pub artifacts_dir: PathBuf,
 }
 
+/// Configuration for the N-writer scale runner.
+///
+/// Shares the account fixture, faucet, and retry/poll settings with
+/// [`RunConfig`] so one TOML file drives both runners, and adds the two knobs
+/// the issue #317 write target needs: how many accounts to drive concurrently,
+/// and for how long. The lifecycle runner's `operations` / `consume_probability`
+/// / `seed` have no meaning here — a scale run is bounded by time, not by a
+/// fixed operation count, because per-writer throughput is an observed property
+/// bounded by canonicalization rather than something the profile chooses.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScaleConfig {
+    pub accounts_file: PathBuf,
+    pub faucet_id: String,
+    /// Concurrent writers. Must not exceed the fixture's account count.
+    pub writers: usize,
+    #[serde(default = "default_scale_duration_seconds")]
+    pub duration_seconds: u64,
+    #[serde(default = "default_amount")]
+    pub amount: u64,
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_proposal_retry_interval_ms")]
+    pub proposal_retry_interval_ms: u64,
+    #[serde(default = "default_proposal_retry_timeout_seconds")]
+    pub proposal_retry_timeout_seconds: u64,
+    #[serde(default = "default_artifacts_dir")]
+    pub artifacts_dir: PathBuf,
+}
+
+fn default_scale_duration_seconds() -> u64 {
+    300
+}
+
+impl ScaleConfig {
+    pub fn load(path: &Path) -> Result<Self> {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read scale config {}", path.display()))?;
+        let config: Self = toml::from_str(&contents)
+            .with_context(|| format!("failed to parse scale config {}", path.display()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.writers < 2 {
+            bail!("writers must be at least 2 to form a transfer ring");
+        }
+        if self.duration_seconds == 0 {
+            bail!("duration_seconds must be greater than zero");
+        }
+        if self.amount == 0 {
+            bail!("amount must be greater than zero");
+        }
+        if self.poll_interval_ms == 0 {
+            bail!("poll_interval_ms must be greater than zero");
+        }
+        if self.timeout_seconds == 0 {
+            bail!("timeout_seconds must be greater than zero");
+        }
+        Ok(())
+    }
+
+    /// Project onto a [`RunConfig`] so the proposal/execution helpers are shared
+    /// rather than duplicated. Fields with no scale meaning take placeholders.
+    pub fn to_run_config(&self) -> RunConfig {
+        RunConfig {
+            accounts_file: self.accounts_file.clone(),
+            faucet_id: self.faucet_id.clone(),
+            operations: 1,
+            amount: self.amount,
+            consume_probability: 0.0,
+            seed: 0,
+            poll_interval_ms: self.poll_interval_ms,
+            timeout_seconds: self.timeout_seconds,
+            proposal_retry_interval_ms: self.proposal_retry_interval_ms,
+            proposal_retry_timeout_seconds: self.proposal_retry_timeout_seconds,
+            max_duration_seconds: None,
+            artifacts_dir: self.artifacts_dir.clone(),
+        }
+    }
+}
+
 impl RunConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
