@@ -6,6 +6,14 @@ pub const ENV_FAST_PROMOTION_ENABLED: &str = "GUARDIAN_CANONICALIZATION_FAST_PRO
 /// Environment override for [`CanonicalizationConfig::max_concurrent_accounts`].
 pub const ENV_MAX_CONCURRENT_ACCOUNTS: &str = "GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS";
 
+/// Environment override for [`CanonicalizationConfig::abandon_quarantine_seconds`].
+pub const ENV_ABANDON_QUARANTINE_SECONDS: &str =
+    "GUARDIAN_CANONICALIZATION_ABANDON_QUARANTINE_SECONDS";
+
+/// Environment override for [`CanonicalizationConfig::abandon_quarantine_checks`].
+pub const ENV_ABANDON_QUARANTINE_CHECKS: &str =
+    "GUARDIAN_CANONICALIZATION_ABANDON_QUARANTINE_CHECKS";
+
 /// Configuration for delta canonicalization behavior
 /// When Some: deltas are saved as candidates and later verified/canonicalized
 /// When None: deltas are immediately saved as canonical (optimistic mode)
@@ -167,6 +175,57 @@ impl CanonicalizationConfig {
         self
     }
 
+    /// Apply the [`ENV_ABANDON_QUARANTINE_SECONDS`] override when set.
+    ///
+    /// The quarantine exists so a transaction that lands late still
+    /// canonicalizes instead of being discarded. Shortening it trades that
+    /// safety margin for a shorter block on the account, which is why the
+    /// default is unchanged and this is opt-in per deployment.
+    pub fn with_abandon_quarantine_seconds_from_env(self) -> Result<Self, String> {
+        self.abandon_quarantine_seconds_from_var(ENV_ABANDON_QUARANTINE_SECONDS)
+    }
+
+    fn abandon_quarantine_seconds_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let seconds = value.parse::<u64>().map_err(|_| {
+                    format!("{var_name} must be a non-negative integer, got '{value}'")
+                })?;
+                Ok(self.with_abandon_quarantine_seconds(seconds))
+            }
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains non-Unicode data"))
+            }
+        }
+    }
+
+    /// Apply the [`ENV_ABANDON_QUARANTINE_CHECKS`] override when set.
+    ///
+    /// Zero is rejected: a candidate would then be discarded on the first
+    /// observation, with no defence against a stale read.
+    pub fn with_abandon_quarantine_checks_from_env(self) -> Result<Self, String> {
+        self.abandon_quarantine_checks_from_var(ENV_ABANDON_QUARANTINE_CHECKS)
+    }
+
+    fn abandon_quarantine_checks_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let checks = value
+                    .parse::<u32>()
+                    .map_err(|_| format!("{var_name} must be a positive integer, got '{value}'"))?;
+                if checks == 0 {
+                    return Err(format!("{var_name} must be greater than zero"));
+                }
+                Ok(self.with_abandon_quarantine_checks(checks))
+            }
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains non-Unicode data"))
+            }
+        }
+    }
+
     /// Override how many accounts one pass processes concurrently.
     /// `1` reproduces the fully sequential pass.
     pub fn with_max_concurrent_accounts(mut self, accounts: usize) -> Self {
@@ -272,6 +331,95 @@ mod tests {
             .expect("valid value applies");
 
         assert_eq!(config.max_concurrent_accounts, 24);
+        unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[test]
+    fn abandon_quarantine_env_overrides_apply() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let seconds_var = "GUARDIAN_CANON_ABANDON_SECONDS_TEST_PRESENT";
+        let checks_var = "GUARDIAN_CANON_ABANDON_CHECKS_TEST_PRESENT";
+        unsafe { std::env::set_var(seconds_var, "2") };
+        unsafe { std::env::set_var(checks_var, "1") };
+
+        let config = CanonicalizationConfig::default()
+            .abandon_quarantine_seconds_from_var(seconds_var)
+            .expect("valid duration applies")
+            .abandon_quarantine_checks_from_var(checks_var)
+            .expect("valid check count applies");
+
+        assert_eq!(config.abandon_quarantine_seconds, 2);
+        assert_eq!(config.abandon_quarantine_checks, 1);
+        unsafe { std::env::remove_var(seconds_var) };
+        unsafe { std::env::remove_var(checks_var) };
+    }
+
+    #[test]
+    fn abandon_quarantine_env_overrides_keep_defaults_when_unset() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let defaults = CanonicalizationConfig::default();
+
+        let config = CanonicalizationConfig::default()
+            .abandon_quarantine_seconds_from_var("GUARDIAN_CANON_ABANDON_SECONDS_TEST_ABSENT")
+            .expect("absent variable keeps the default")
+            .abandon_quarantine_checks_from_var("GUARDIAN_CANON_ABANDON_CHECKS_TEST_ABSENT")
+            .expect("absent variable keeps the default");
+
+        assert_eq!(
+            config.abandon_quarantine_seconds,
+            defaults.abandon_quarantine_seconds
+        );
+        assert_eq!(
+            config.abandon_quarantine_checks,
+            defaults.abandon_quarantine_checks
+        );
+    }
+
+    #[test]
+    fn abandon_quarantine_checks_rejects_zero_and_garbage() {
+        // Zero checks would discard a candidate on a single observation, with
+        // no defence against a stale read.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_ABANDON_CHECKS_TEST_INVALID";
+
+        unsafe { std::env::set_var(var_name, "0") };
+        assert!(
+            CanonicalizationConfig::default()
+                .abandon_quarantine_checks_from_var(var_name)
+                .is_err()
+        );
+
+        unsafe { std::env::set_var(var_name, "soon") };
+        assert!(
+            CanonicalizationConfig::default()
+                .abandon_quarantine_checks_from_var(var_name)
+                .is_err()
+        );
+        unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[test]
+    fn abandon_quarantine_seconds_allows_zero_but_rejects_garbage() {
+        // Zero seconds is meaningful: it leaves the consecutive-check
+        // requirement as the only gate, which a local benchmark may want.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_ABANDON_SECONDS_TEST_INVALID";
+
+        unsafe { std::env::set_var(var_name, "0") };
+        assert_eq!(
+            CanonicalizationConfig::default()
+                .abandon_quarantine_seconds_from_var(var_name)
+                .expect("zero is allowed")
+                .abandon_quarantine_seconds,
+            0
+        );
+
+        unsafe { std::env::set_var(var_name, "later") };
+        assert!(
+            CanonicalizationConfig::default()
+                .abandon_quarantine_seconds_from_var(var_name)
+                .is_err()
+        );
         unsafe { std::env::remove_var(var_name) };
     }
 

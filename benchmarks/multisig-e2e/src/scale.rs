@@ -394,27 +394,43 @@ async fn execute_write(
         error: None,
     };
 
+    // Reuse a proposal this writer already left behind rather than creating
+    // another one.
+    //
+    // A proposal whose execution failed stays pending and, while the account's
+    // commitment has not moved, still counts as viable against the server's
+    // per-account cap (20 by default). Proposing afresh after every failure
+    // therefore walks the account into PendingProposalsLimit and locks it out
+    // permanently -- measured as exactly 20 dead proposals per account, all at
+    // the same nonce. Executing the existing one is also the semantically
+    // correct move: the intent was already recorded.
     let proposal_started = Instant::now();
-    let attempt = match propose_with_retry(
-        sender,
-        TransactionType::transfer(receiver_id, faucet_id, run_config.amount),
-        run_config,
-    )
-    .await
-    {
-        Ok(attempt) => attempt,
-        Err(error) => {
-            return fail(
-                record,
-                started,
-                classify(&error, FailureKind::Proposal),
-                error,
-            );
-        }
+    let reusable = match sender.client.list_proposals().await {
+        Ok(pending) => pending.into_iter().next(),
+        Err(_) => None,
+    };
+
+    let proposal = match reusable {
+        Some(pending) => pending,
+        None => match propose_with_retry(
+            sender,
+            TransactionType::transfer(receiver_id, faucet_id, run_config.amount),
+            run_config,
+        )
+        .await
+        {
+            Ok(attempt) => attempt.proposal,
+            Err(error) => {
+                return fail(
+                    record,
+                    started,
+                    classify(&error, FailureKind::Proposal),
+                    error,
+                );
+            }
+        },
     };
     record.proposal_ms = Some(elapsed_ms(proposal_started));
-
-    let proposal = attempt.proposal;
     if let Err(error) = ensure_ready(&proposal.status, &proposal.id) {
         return fail(record, started, FailureKind::Proposal, error);
     }
@@ -632,9 +648,14 @@ async fn abandon_candidate(
     nonce: u64,
     run_config: &crate::config::RunConfig,
 ) -> Result<bool> {
+    // `Abandoned` reports that the request is resolved, but the delta only
+    // leaves `candidate` once the worker finalizes it. Returning here without
+    // confirming let the writer retry immediately, and GUARDIAN refuses every
+    // push while any candidate remains -- measured as ~20 conflicts per writer
+    // inside one quarantine window. Both answers therefore fall through to the
+    // poll below, which waits for the delta itself to reach a terminal state.
     match sender.client.abandon_candidate(nonce).await {
-        Ok(AbandonRequestState::Abandoned) => return Ok(false),
-        Ok(AbandonRequestState::Pending) => {}
+        Ok(AbandonRequestState::Abandoned | AbandonRequestState::Pending) => {}
         Err(error) => {
             // The server refuses to abandon a candidate whose transaction
             // landed; that is a success for our purposes, not an error.

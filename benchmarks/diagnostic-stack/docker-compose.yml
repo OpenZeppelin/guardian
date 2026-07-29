@@ -55,6 +55,13 @@ x-guardian-server: &guardian-server
     GUARDIAN_METADATA_DB_POOL_MAX_SIZE: ${GUARDIAN_METADATA_DB_POOL_MAX_SIZE:-16}
     GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS: ${GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS:-10}
     GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED: ${GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED:-true}
+    # Shortened for benchmarking. The quarantine exists so a transaction that
+    # lands late still canonicalizes; while it runs the account accepts no new
+    # deltas, so at the default 15s a single prover failure idles a writer for
+    # that whole window. Local benchmark runs trade that safety margin for
+    # throughput -- do NOT copy these values to a real deployment.
+    GUARDIAN_CANONICALIZATION_ABANDON_QUARANTINE_SECONDS: ${GUARDIAN_CANONICALIZATION_ABANDON_QUARANTINE_SECONDS:-2}
+    GUARDIAN_CANONICALIZATION_ABANDON_QUARANTINE_CHECKS: ${GUARDIAN_CANONICALIZATION_ABANDON_QUARANTINE_CHECKS:-1}
     # --- Server-side instrumentation. The whole reason this tier exists.
     # Not published to the host; only Prometheus reaches it on the internal network.
     GUARDIAN_METRICS_ENABLED: "true"
