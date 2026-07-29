@@ -417,6 +417,13 @@ export interface DashboardDeltaDetail {
    * `client_abandoned` on `discarded` rows. Kept as an open string so
    * new server-side labels never fail feed decoding. */
   statusReason?: string;
+  /** When background reconciliation gives up on a `retained` row for
+   * good (RFC 3339). Present only on `retained` rows. */
+  retainedExpiresAt?: string;
+  /** Whether the `retained` row still chains from the stored account
+   * state; `false` means it is structurally obsolete and can only age
+   * out. Present only on `retained` rows. */
+  baseMatchesStoredState?: boolean;
   /** Server-curated classification from push-time metadata. */
   category?: DashboardDeltaCategory;
   /** Operator-stated proposal intent for multisig commits. */

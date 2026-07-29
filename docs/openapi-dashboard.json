@@ -1832,6 +1832,13 @@
           "account_id": {
             "type": "string"
           },
+          "base_matches_stored_state": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the `retained` row still chains from the stored account\nstate — `false` means the row is structurally obsolete (the base\nmoved out from under it) and can only age out. Present only on\n`retained` rows, and absent when the state read fails."
+          },
           "category": {
             "oneOf": [
               {
@@ -1892,6 +1899,13 @@
             ],
             "description": "Base64-encoded raw `TransactionSummary` blob. Present only\nwhen the caller requested `?include=raw` (debug-only)."
           },
+          "retained_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When background reconciliation gives up on a `retained` row for\ngood (`status_timestamp` + the server's retention TTL), RFC 3339.\nPresent only on `retained` rows; absent when the TTL cannot be\nestablished (e.g. optimistic mode)."
+          },
           "retry_count": {
             "type": [
               "integer",
@@ -1908,7 +1922,7 @@
               "string",
               "null"
             ],
-            "description": "See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`]."
+            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -2147,7 +2161,7 @@
               "string",
               "null"
             ],
-            "description": "See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`]."
+            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -2849,7 +2863,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`]."
+                  "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
                 },
                 "status_timestamp": {
                   "type": "string"

@@ -120,12 +120,26 @@ also accepts a `status` filter
 - Duplicates within the filter are silently coalesced.
 - Any other token returns HTTP 400 `invalid_status_filter`.
 
-Feed and detail entries carry an optional `status_reason` explaining why
-a row left the active candidate path: `retry_exhausted` / `diverged` on
-`retained` rows (a `diverged` row that later reconciles is direct
-evidence the divergence verdict was spurious), `client_abandoned` on
-`discarded` rows. `GET /dashboard/info` exposes the reconciliation
-settings (`retained_ttl_seconds`, `reconcile_interval_seconds`,
+Present `retained` rows as **"Unresolved / account unlocked"**, never as
+failed: the guardian stopped actively verifying and released the account
+slot, but the on-chain outcome is still uncertain and background
+reconciliation may promote the row to `canonical` until its retention
+TTL expires. The triage fields:
+
+- `status_reason` (feed + detail): why the row left the active candidate
+  path — `retry_exhausted` / `diverged` on `retained` rows (a `diverged`
+  row that later reconciles is direct evidence the divergence verdict
+  was spurious), `client_abandoned` on `discarded` rows.
+- `retained_expires_at` (detail): when the recovery net gives up for
+  good. Retained age is `now − status_timestamp`.
+- `base_matches_stored_state` (detail): whether the row still chains
+  from the stored account state; `false` means it is structurally
+  obsolete and can only age out.
+- The latest reconciliation activity is in the worker logs as stable
+  `event=reconcile_*` records (see TROUBLESHOOTING.md).
+
+`GET /dashboard/info` exposes the reconciliation settings
+(`retained_ttl_seconds`, `reconcile_interval_seconds`,
 `reconcile_page_size`) so operators can tell why retained rows are or
 are not being reconsidered — note that individual accounts back off as
 their recoverable rows age, so a retained row being probed less often

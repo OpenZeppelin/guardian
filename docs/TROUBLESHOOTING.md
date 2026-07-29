@@ -183,6 +183,20 @@ Operator checks:
 - `RUST_LOG=server::jobs::canonicalization=debug` emits one
   `Fast-promotion pass completed` summary per fast tick, including empty passes,
   with page, candidate, account-batch, deadline, and cursor-progress fields.
+- Retention and reconciliation emit stable `event` / `reason` fields for
+  log-based triage (with `account_id`, `nonce`, and `age_seconds` /
+  `retention_reason` / `expires_at` where applicable):
+  - `event=candidate_retained reason=retry_exhausted|diverged`
+  - `event=reconcile_deferred reason=chain_at_stored_base|chain_probe_unavailable|end_state_not_on_chain|base_no_longer_applies|recomputed_commitment_mismatch|no_matching_recoverable_delta`
+  - `event=reconcile_skipped reason=obsolete_base`
+  - `event=reconcile_promoted`
+  - `event=reconcile_expired`
+  - `event=reconcile_superseded`
+  The `chain_at_stored_base` / `chain_probe_unavailable` deferrals are
+  logged (debug/info) but deliberately not counted in
+  `guardian_canonicalization_candidates_total` — a healthy steady state
+  probes every due account and finds the chain unmoved, and counting
+  that would dwarf every other outcome.
 - `guardian_canonicalization_commitment_mismatches_total` counting up
   means a client omitted `new_commitment` or claimed one that differs
   from the recomputed value. The full pass can promote using the value it

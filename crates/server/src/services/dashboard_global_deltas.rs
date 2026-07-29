@@ -42,7 +42,9 @@ pub struct DashboardGlobalDeltaEntry {
     pub new_commitment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
-    /// See [`crate::services::dashboard_account_deltas::DashboardDeltaEntry::status_reason`].
+    /// Why the row left the active candidate path: `retry_exhausted` or
+    /// `diverged` on `retained` rows, `client_abandoned` on `discarded`
+    /// rows; absent elsewhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<&'static str>,
 

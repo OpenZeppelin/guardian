@@ -1811,6 +1811,12 @@ function parseDeltaDetail(value: unknown): DashboardDeltaDetail {
     }
     detail.statusReason = record.status_reason;
   }
+  if (typeof record.retained_expires_at === 'string') {
+    detail.retainedExpiresAt = record.retained_expires_at;
+  }
+  if (typeof record.base_matches_stored_state === 'boolean') {
+    detail.baseMatchesStoredState = record.base_matches_stored_state;
+  }
   if (record.category !== undefined && record.category !== null) {
     detail.category = parseDeltaCategory(
       requireString(record, 'category', ctx),

@@ -101,8 +101,20 @@ The status transitions for a delta:
 |---|---|
 | `candidate` | Guardian accepted and signed it, but the matching Miden update has not yet been observed. |
 | `canonical` | Guardian observed the matching commitment on Miden. The delta is now durable for other clients of the same account. |
-| `retained` | The worker gave up active verification (retry budget exhausted, or the on-chain commitment was observed past the candidate's base), but keeps the delta for background reconciliation: if the chain ever shows the delta's commitment, it is promoted to `canonical` and the account recovers automatically. The account is *not* locked while a delta is retained; a new submission at the same nonce supersedes it. Retained deltas that never verify are dropped after a server-side TTL (default 24 h). |
+| `retained` | Guardian stopped actively verifying the candidate and released the account slot. The on-chain outcome remains **uncertain**; background reconciliation may still promote it to `canonical` until its retention TTL expires (default 24 h). A new submission at the same nonce supersedes it. Never read `retained` as "the transaction did not land" — it means *unlocked but unresolved*. |
 | `discarded` | Canonicalization was abandoned by the client (`client_abandoned`), or retention is disabled and verification failed terminally. The client must rebuild from the latest canonical state. |
+
+This single definition of `retained` holds across every surface —
+canonicalization, account locking, the abandon APIs (which report a
+distinct `retained` result, never `abandoned`), the SDKs, and the
+operator dashboard. At a glance:
+
+| Status | Account locked? | Outcome known? | Client action |
+|---|---|---|---|
+| `candidate` | Yes | No | Wait, or request abandonment |
+| `retained` | No | No | Sync and check the chain before replacing (a resubmission supersedes the row and forfeits automatic recovery) |
+| `discarded` (`client_abandoned`) | No | Probably not landed, but late reconciliation remains possible within the TTL | Continue cautiously |
+| `canonical` | No | Yes — landed | Sync account state |
 
 This is the **canonicalization** process. The default `candidate` mode runs
 a background worker that polls Miden and promotes or discards each
