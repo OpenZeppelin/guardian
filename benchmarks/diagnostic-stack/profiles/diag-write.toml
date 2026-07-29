@@ -1,0 +1,57 @@
+# Diagnostic write leg — the path the landed optimisations actually touch.
+#
+# `a30ffa4` (canonicalization perf), `cbf0f44` (fast-track promotion) and
+# `5bc7e06` (abandon-candidate) are all write-path changes. The read leg cannot
+# show them. This profile measures accepted->canonical wait, which is the metric
+# those commits were meant to move — and which the April round structurally could
+# not report, since canonicalization sampling landed in a30ffa4, after April ran.
+#
+# Shape follows the April profiles deliberately, so the numbers stay comparable:
+#
+#   retire_after_first_successful_push = true
+#
+# An account may hold only one non-canonical delta at a time. Without retiring,
+# every second push on the same account fails as `state_conflict` and the leg
+# measures the pending-delta rule rather than write performance. Retiring after
+# the first successful push is what makes sustained write load measurable at all.
+#
+# sample_rate = 1.0: every successful push is followed to a terminal outcome.
+# Sampling currently blocks the sampling worker, but a retiring worker was going
+# to stop anyway, so here the cost is nil. Do NOT copy this rate to a
+# non-retiring profile — there it would silently throttle offered load.
+
+profile_name = "diag-write"
+guardian_endpoint = "http://127.0.0.1:50051"
+transport = "grpc"
+duration_seconds = 240
+warmup_seconds = 10
+users = 16
+accounts_per_user = 1
+deployment_shape = "local-diagnostic-2x-replica-postgres"
+artifacts_dir = "benchmarks/diagnostic-stack/results"
+
+[operation_mix]
+read_operation = "get_state"
+reads_per_push = 4                          # April's 1 push : 4 reads shape
+retire_after_first_successful_push = true
+
+[scheme_distribution]
+falcon_percent = 0
+ecdsa_percent = 100
+
+[canonicalization]
+sample_rate = 1.0
+poll_interval_ms = 1000
+# Generous: this stack targets live Miden testnet, so the wait includes chain
+# confirmation that varies independently of Guardian. Reported waits are
+# end-to-end and are NOT a Guardian-only figure — use
+# guardian_miden_rpc_duration_seconds from the same leg to separate the two.
+timeout_seconds = 300
+
+[cleanup]
+enabled = false
+
+[aws]
+region = "local"
+ecs_cluster = "local"
+ecs_service = "local"

@@ -1,0 +1,25 @@
+global:
+  # Faster than the observability guide's 15s: diagnostic runs are minutes long,
+  # and a 15s scrape leaves too few points to read a pool-saturation transient.
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: guardian
+    metrics_path: /metrics
+    static_configs:
+      # Both replicas, reached over the internal Compose network. Port 9464 is
+      # not published to the host. The `replica` label is what lets a dashboard
+      # tell "the fleet is saturated" from "one replica is saturated" — the
+      # distinction the round-robin proxy would otherwise hide.
+      - targets: ["server-a:9464"]
+        labels:
+          replica: a
+      - targets: ["server-b:9464"]
+        labels:
+          replica: b
+    # Matches GUARDIAN_METRICS_BEARER_TOKEN on the servers. `devtoken` is a
+    # throwaway for this local stack; never commit a real token.
+    authorization:
+      type: Bearer
+      credentials: devtoken

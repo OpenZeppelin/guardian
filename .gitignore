@@ -15,6 +15,8 @@ docs/guides/miden-dashboard/guardian-dashboard/
 docs/guides/horizontal-scaling/operators.json
 docs/guides/horizontal-scaling/ack-keys/
 docs/guides/horizontal-scaling/docker-compose.override.yml
+benchmarks/diagnostic-stack/ack-keys/
+benchmarks/diagnostic-stack/results/
 
 .cursor/
 .claude/

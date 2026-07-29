@@ -1,0 +1,47 @@
+# Diagnostic read profile — local stack, via the round-robin proxy.
+#
+# This tier never carries a target verdict (FR-017a). Its output is bottleneck
+# attribution: client-side numbers from the harness, correlated against
+# server-side Prometheus metrics that production does not expose.
+#
+# Load model is the existing closed-loop one: `users` here means requests
+# permanently in flight, NOT the paced definition FR-003 resolved. Paced load
+# lands in Phase 3; until then this profile measures saturation behaviour, which
+# is the right shape for finding a bottleneck anyway.
+
+profile_name = "diag-mixed"
+guardian_endpoint = "http://127.0.0.1:50051"
+transport = "grpc"
+duration_seconds = 120
+warmup_seconds = 20
+users = 64
+accounts_per_user = 1
+deployment_shape = "local-diagnostic-2x-replica-postgres"
+artifacts_dir = "benchmarks/diagnostic-stack/results"
+
+[operation_mix]
+read_operation = "get_state"
+reads_per_push = 4        # 4 get_state : 1 push_delta, matching the April shape
+retire_after_first_successful_push = false
+
+[scheme_distribution]
+falcon_percent = 0
+ecdsa_percent = 100
+
+[canonicalization]
+sample_rate = 0.25        # accepted->canonical wait; higher than prod since load is small
+poll_interval_ms = 1000
+timeout_seconds = 180
+
+[cleanup]
+# Local teardown is `docker compose down -v`, which drops the whole database.
+# The ECS-exec purge path this flag enables is neither available nor needed here.
+enabled = false
+
+[aws]
+# Placeholders. RunConfig::validate() requires these non-empty even for
+# worker-run, which makes no AWS calls at all. Harmless, but it is why a local
+# profile has to carry AWS fields it never uses.
+region = "local"
+ecs_cluster = "local"
+ecs_service = "local"

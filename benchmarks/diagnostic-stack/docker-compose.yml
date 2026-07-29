@@ -1,0 +1,212 @@
+# Diagnostic tier for the issue #317 scalability target (speckit feature
+# 317-scalability-target-measurement, FR-017a).
+#
+# This stack answers "why is the number what it is". It does NOT produce target
+# verdicts — only the deployed, testnet-backed deployment does that. What this
+# stack has and production does not is server-side instrumentation: production
+# runs with GUARDIAN_METRICS_ENABLED=false and infra/*.tf never sets it, so the
+# authoritative tier can report a p95 but never which component spent the time.
+#
+# Assembled from two committed guide stacks rather than authored fresh:
+#   docs/guides/horizontal-scaling/  — replicas, Caddy round-robin, shared Postgres
+#   docs/guides/observability/       — Prometheus + Grafana (dashboards reused below)
+#
+# Difference from both: the image is BUILT FROM THIS REPO with the Postgres
+# backend, so runs measure current code against the same backend production
+# uses. The horizontal-scaling guide pulls a published image (which would
+# measure whatever `latest` happens to be) and the observability guide builds
+# with the filesystem backend (which would measure a backend prod does not run).
+#
+# Run from this directory:
+#   cp .env.example .env                      # then fill in the values
+#   cargo run --quiet -p guardian-server --bin ack-keygen -- --out-dir ./ack-keys
+#   docker compose up -d --build
+#
+# CPU limits are deliberate. February's benchmark numbers were generator-bound
+# because generator, server, and Postgres shared one laptop's cores, and the
+# report attributed much of the observed latency to that. The defaults below
+# total ~6 CPUs so a host-side load generator keeps roughly 4 on a 10-core
+# machine. A diagnostic run that is generator-bound produces no bottleneck claim.
+
+# Both replicas run the SAME image, built once. Attaching `build:` to both would
+# make Compose build two separate images from one context — twice the build time,
+# and two artifacts that could in principle differ, which would quietly break the
+# "one variable at a time" premise of every comparison this stack exists to run.
+x-guardian-server: &guardian-server
+  image: guardian-diagnostic:local
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    RUST_LOG: ${GUARDIAN_LOG_LEVEL:-warn}
+    GUARDIAN_NETWORK_TYPE: ${GUARDIAN_NETWORK_TYPE:?set GUARDIAN_NETWORK_TYPE in .env}
+    DATABASE_URL: postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
+    GUARDIAN_KEYSTORE_PATH: /var/guardian/keystore
+    GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE: /etc/guardian/operators.json
+    # One fleet-wide ACK identity so a /pubkey commitment pinned at configure
+    # time validates on whichever replica answers through the proxy.
+    GUARDIAN_ACK_SECRET_PROVIDER: file
+    GUARDIAN_ACK_FALCON_SECRET_PATH: /etc/guardian/ack/ack-falcon-secret-key
+    GUARDIAN_ACK_ECDSA_SECRET_PATH: /etc/guardian/ack/ack-ecdsa-secret-key
+    GUARDIAN_DASHBOARD_CURSOR_SECRET: ${GUARDIAN_DASHBOARD_CURSOR_SECRET:?set GUARDIAN_DASHBOARD_CURSOR_SECRET in .env (openssl rand -hex 32)}
+    GUARDIAN_MAX_REPLICAS: ${GUARDIAN_MAX_REPLICAS:-2}
+    # --- The variables under test. Overridden one at a time by variants/*.env.
+    GUARDIAN_DB_POOL_MAX_SIZE: ${GUARDIAN_DB_POOL_MAX_SIZE:-16}
+    GUARDIAN_METADATA_DB_POOL_MAX_SIZE: ${GUARDIAN_METADATA_DB_POOL_MAX_SIZE:-16}
+    GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS: ${GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS:-10}
+    GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED: ${GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED:-true}
+    # --- Server-side instrumentation. The whole reason this tier exists.
+    # Not published to the host; only Prometheus reaches it on the internal network.
+    GUARDIAN_METRICS_ENABLED: "true"
+    GUARDIAN_METRICS_ADDR: 0.0.0.0:9464
+    GUARDIAN_METRICS_BEARER_TOKEN: ${GUARDIAN_METRICS_BEARER_TOKEN:-devtoken}
+    GUARDIAN_METRICS_REFRESH_INTERVAL_SECS: ${GUARDIAN_METRICS_REFRESH_INTERVAL_SECS:-15}
+    # Rate limiting stays ON and at prod-equivalent values. gRPC never traverses
+    # the rate-limit layer (it is applied to the axum router only), so disabling
+    # it would change nothing for a gRPC run while introducing an unexplained
+    # difference from production. Only an explicit HTTP leg needs these raised —
+    # and such a leg must be labelled non-prod-equivalent in its report.
+    GUARDIAN_RATE_BURST_PER_SEC: ${GUARDIAN_RATE_BURST_PER_SEC:-200}
+    GUARDIAN_RATE_PER_MIN: ${GUARDIAN_RATE_PER_MIN:-5000}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    cpus: ${POSTGRES_CPUS:-2.0}
+    mem_limit: ${POSTGRES_MEM:-2g}
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+      # Creates the pg_stat_statements extension on first init. Preloading the
+      # library via `command` is necessary but not sufficient — without the
+      # extension the views do not exist and query attribution is unavailable.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    environment:
+      POSTGRES_USER: guardian
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: guardian
+    # pg_stat_statements is what makes query-level attribution possible; without
+    # it the database half of a bottleneck claim is guesswork.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+    ports:
+      # Host port is configurable: 5432 is commonly already taken by another
+      # local Postgres (the repo's own docker-compose.postgres.yml binds it), and
+      # this stack should never require stopping someone else's container.
+      # Container-internal port is unchanged, so nothing inside the stack moves.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server-a:
+    <<: *guardian-server
+    # The single build. server-b inherits the resulting image by tag.
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        # Dockerfile default is already `postgres`; stated explicitly because the
+        # backend under test is part of what this stack measures.
+        GUARDIAN_SERVER_FEATURES: postgres
+        # Without this, /status reports git_commit="unknown" and the run cannot
+        # record which build it measured (FR-A08). Build with:
+        #   GUARDIAN_GIT_SHA=$(git rev-parse --short=12 HEAD) docker compose up -d --build
+        GUARDIAN_GIT_SHA: ${GUARDIAN_GIT_SHA:-unknown}
+    hostname: server-a
+    cpus: ${SERVER_CPUS:-1.5}
+    mem_limit: ${SERVER_MEM:-1500m}
+    volumes:
+      - guardian-keystore-a:/var/guardian/keystore
+      - ./operators.json:/etc/guardian/operators.json:ro
+      - ./ack-keys:/etc/guardian/ack:ro
+    ports:
+      - "127.0.0.1:3000:3000"    # replica A HTTP, direct (bypasses the proxy)
+      - "127.0.0.1:50052:50051"  # replica A gRPC, direct
+
+  server-b:
+    <<: *guardian-server
+    # No `build:` — reuses the image server-a built, so both replicas are
+    # provably the same binary.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      server-a:
+        condition: service_started
+    hostname: server-b
+    cpus: ${SERVER_CPUS:-1.5}
+    mem_limit: ${SERVER_MEM:-1500m}
+    volumes:
+      - guardian-keystore-b:/var/guardian/keystore
+      - ./operators.json:/etc/guardian/operators.json:ro
+      - ./ack-keys:/etc/guardian/ack:ro
+    ports:
+      - "127.0.0.1:3010:3000"    # replica B HTTP, direct
+      - "127.0.0.1:50053:50051"  # replica B gRPC, direct
+    # Scale to one replica for a single-instance comparison:
+    #   docker compose --env-file .env --env-file variants/replicas-1.env up -d --scale server-b=0
+    # replicas-1.env also sets GUARDIAN_MAX_REPLICAS=1 so rate-limit
+    # partitioning matches the fleet size that is actually running.
+
+  proxy:
+    image: caddy:2-alpine
+    cpus: ${PROXY_CPUS:-1.5}
+    mem_limit: 256m
+    depends_on:
+      - server-a
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:8080:8080"    # round-robin HTTP — what a client/LB would hit
+      - "127.0.0.1:50051:50051"  # round-robin gRPC (h2c) — harness default endpoint
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    cpus: ${PROMETHEUS_CPUS:-0.25}
+    mem_limit: 512m
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - server-a
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    cpus: ${GRAFANA_CPUS:-0.25}
+    mem_limit: 512m
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      # Dashboards reused from the observability guide rather than duplicated.
+      - ../../docs/guides/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../docs/guides/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # DEV ONLY — anonymous admin. Bound to loopback above; never expose this.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_USERS_DEFAULT_THEME=dark
+    depends_on:
+      - prometheus
+
+volumes:
+  guardian-postgres:
+  guardian-keystore-a:
+  guardian-keystore-b:
+  prometheus-data:
+  grafana-data:
