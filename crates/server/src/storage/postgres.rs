@@ -1502,9 +1502,28 @@ impl StorageBackend for PostgresService {
                     return Ok(CandidateSubmission::Conflict);
                 }
 
-                // DO NOTHING (not upsert): a row already at this nonce is
-                // settled history and must never be overwritten by a
-                // delayed submission.
+                // A canonical delta at this nonce means the nonce really was
+                // consumed on-chain, so a delayed submission must not land.
+                // A discarded one means the opposite: the transaction never
+                // landed, the account's nonce never advanced, and its next
+                // delta legitimately reuses this nonce. Rejecting that case
+                // left an abandoned account unable to submit anything ever
+                // again, because every later attempt targets the same nonce.
+                let settled: bool = diesel::select(diesel::dsl::exists(
+                    deltas::table
+                        .filter(deltas::account_id.eq(&delta.account_id))
+                        .filter(deltas::nonce.eq(delta.nonce as i64))
+                        .filter(deltas::status_kind.ne("discarded")),
+                ))
+                .get_result(conn)
+                .await?;
+                if settled {
+                    return Ok(CandidateSubmission::Conflict);
+                }
+
+                // DO NOTHING (not upsert): the partial unique index admits one
+                // live delta per nonce, and losing that race means another
+                // submission already claimed it.
                 let inserted = diesel::insert_into(deltas::table)
                     .values(&NewDelta {
                         account_id: &delta.account_id,
@@ -1518,8 +1537,7 @@ impl StorageBackend for PostgresService {
                         status_timestamp,
                         metadata: metadata_json.as_ref(),
                     })
-                    .on_conflict((deltas::account_id, deltas::nonce))
-                    .do_nothing()
+                    .on_conflict_do_nothing()
                     .execute(conn)
                     .await?;
                 if inserted == 0 {
@@ -2653,6 +2671,107 @@ mod tests {
     fn test_create_test_state() {
         let state = create_test_state("0x123");
         assert_eq!(state.account_id, "0x123");
+    }
+
+    /// A client-abandoned delta must not consume its nonce.
+    ///
+    /// The transaction never landed, so the account's on-chain nonce is
+    /// unchanged and its next delta reuses the same nonce. Before the partial
+    /// unique index this insert collided with the discarded row and was
+    /// reported as a pending-delta conflict, leaving the account permanently
+    /// unable to submit: every later attempt targets that same nonce.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn a_discarded_delta_does_not_consume_its_nonce() {
+        use crate::delta_object::{DeltaObject, DeltaStatus};
+        use diesel::sql_types::Text;
+
+        let url = std::env::var("DATABASE_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())
+            .expect("DATABASE_URL must be set for this #[ignore] test");
+        run_migrations(&url).await.expect("migrations apply");
+
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xreuse{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("seed metadata");
+        diesel::sql_query(
+            "INSERT INTO states (account_id, state_json, commitment, created_at, updated_at) \
+             VALUES ($1, '{}'::jsonb, 'base', now(), now())",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("seed state");
+        drop(conn);
+
+        // Seed the abandoned attempt directly: the invariant under test is that
+        // a discarded row at a nonce does not block a later submission, and
+        // going through discard_candidate would require the lease-fence
+        // machinery without changing what is being asserted.
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO deltas \
+             (account_id, nonce, prev_commitment, new_commitment, delta_payload, ack_sig, \
+              status, status_kind, status_timestamp) \
+             VALUES ($1, 4, 'base', 'next', '{}'::jsonb, 'sig', \
+              '{\"status\":\"discarded\"}'::jsonb, 'discarded', now())",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("seed the abandoned attempt");
+        drop(conn);
+
+        let retry = DeltaObject {
+            account_id: account_id.clone(),
+            nonce: 4,
+            prev_commitment: "base".to_string(),
+            new_commitment: Some("another".to_string()),
+            delta_payload: serde_json::json!({}),
+            ack_sig: "sig".to_string(),
+            ack_pubkey: "pubkey".to_string(),
+            ack_scheme: "falcon".to_string(),
+            status: DeltaStatus::candidate(now.clone()),
+            metadata: None,
+        };
+
+        let metadata = crate::metadata::postgres::PostgresMetadataStore::new(&url, 4)
+            .await
+            .expect("metadata");
+
+        assert!(
+            matches!(
+                service
+                    .submit_candidate(&metadata, &retry, &now)
+                    .await
+                    .expect("resubmission after the attempt was discarded"),
+                CandidateSubmission::Submitted
+            ),
+            "a discarded delta must leave its nonce free for the next attempt"
+        );
+
+        let mut conn = service.pool.get().await.expect("conn");
+        let rows: i64 = deltas::table
+            .filter(deltas::account_id.eq(&account_id))
+            .filter(deltas::nonce.eq(4_i64))
+            .count()
+            .get_result(&mut conn)
+            .await
+            .expect("count rows at the nonce");
+        assert_eq!(rows, 2, "the abandoned attempt is preserved as history");
     }
 
     #[tokio::test]
