@@ -412,6 +412,15 @@ const noteFileBytes = await multisig.exportNote(noteId);
 const importedNoteId = await multisig.importNote(noteFileBytes);
 ```
 
+> **Note:** every cosigner device that verifies or signs the consume-notes
+> proposal needs the note in its local store with the on-chain inclusion
+> proof — deliver the note file to each of them (import + sync), not just to
+> the proposer. A cosigner whose store lacks the authenticated note rebuilds
+> the transaction differently (the input-notes commitment distinguishes
+> authenticated from unauthenticated consumption) and rejects the proposal
+> with `metadata does not match tx_summary`. The sender's own device heals
+> itself: it already knows the full note, so a post-commit sync is enough.
+
 #### Consume Notes (Claim Received Funds)
 
 ```typescript
@@ -799,6 +808,15 @@ client.sync().await?;
 
 `export_note_to_bytes` / `import_note_from_bytes` are the in-memory variants
 for programmatic delivery.
+
+Every cosigner device that verifies or signs the consume-notes proposal needs
+the note in its local store with the on-chain inclusion proof — deliver the
+note file to each of them (import + sync), not just to the proposer. A
+cosigner whose store lacks the authenticated note rebuilds the transaction
+differently (the input-notes commitment distinguishes authenticated from
+unauthenticated consumption) and rejects the proposal with `metadata does not
+match tx_summary`. The sender's own device heals itself: it already knows the
+full note, so a post-commit sync is enough.
 
 ### API Reference
 

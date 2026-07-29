@@ -191,7 +191,7 @@ Steps:
 5. In tab B, sync, then open `[4] Proposal management -> [1] Create proposal -> [4] Consume notes` and confirm the private note is NOT listed (only its commitment is on chain).
 6. In the consume flow, enter `i` (or choose `[2] Import a note file` from the empty-notes menu) and give the exported file's path. The demo imports the note and syncs automatically.
 7. Select the imported note and create the consume-notes proposal in tab B.
-8. In tab A, sign the consume-notes proposal.
+8. In tab A, sync until the private note shows as consumable there too, then sign the consume-notes proposal. (The sender's store knows the full note and self-heals once a sync attaches the inclusion proof; a cosigner tab that never created nor imported the note must import the note file first.)
 9. Execute once signatures are sufficient, then sync both tabs.
 10. Verify the vault balance reflects the reconsumed asset.
 
@@ -209,6 +209,7 @@ Canary checks:
 - if the export offer never appears after executing a private P2ID, report that as a canary failure
 - if the private note IS visible in tab B before import, report it — the note leaked publicly and the private path is not being exercised
 - if import succeeds but the note never becomes consumable after sync, report the sync attempt count and elapsed wait
+- if signing fails with `metadata does not match tx_summary`, the signer's store does not yet hold the note with its inclusion proof — sync (or import the note file) until the note lists as consumable and retry; report it as a failure only if it persists after that
 - if consume execution fails with a note-binding or missing-note error, report it with the exact message
 - record elapsed time for P2ID execute, note export, note import, first consumability after import, and consume execute
 

@@ -254,8 +254,9 @@ Steps:
    const imported = await window.smoke.importNote({ noteFileBase64 });
    ```
    `importNote` syncs afterwards; the note should appear in `imported.status.consumableNotes`.
-7. In B, create a consume-notes proposal with the imported note ID; sign it in A; execute.
-8. Sync both browsers and verify the vault balance reflects the reconsumed asset.
+7. In B, create a consume-notes proposal with the imported note ID.
+8. In A, `sync()` until the note appears in `listConsumableNotes()` there too, then sign the proposal. (The sender's store knows the full note and self-heals once a sync attaches the inclusion proof; a cosigner browser that never created nor imported the note must `importNote` first.)
+9. Execute, sync both browsers, and verify the vault balance reflects the reconsumed asset.
 
 Expect:
 
@@ -270,6 +271,7 @@ Canary checks:
 - if the private note IS visible in B before import, report it — the note leaked publicly and the private path is not being exercised
 - if `exportNote` fails with a not-found error in A after execution, report it with the exact message
 - if import succeeds but the note never becomes consumable after sync, report the sync attempt count and elapsed wait
+- if signing fails with `metadata does not match tx_summary`, the signer's store does not yet hold the note with its inclusion proof — sync (or `importNote`) until the note lists as consumable and retry; report it as a failure only if it persists after that
 - if consume execution fails with a note-binding or missing-note error, report it with the exact message
 - record elapsed time for P2ID execute, export, import, first consumability after import, and consume execute
 
