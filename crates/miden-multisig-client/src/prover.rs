@@ -519,14 +519,12 @@ mod tests {
         );
         assert!(!is_transient_prover_error(&invalid));
 
-        let mixed_http = TransactionProverError::other(
-            "upstream http status 408 followed by http status 400",
-        );
+        let mixed_http =
+            TransactionProverError::other("upstream http status 408 followed by http status 400");
         assert!(!is_transient_prover_error(&mixed_http));
 
-        let flattened_not_found = TransactionProverError::other(
-            "failed to prove transaction: grpc code: NotFound",
-        );
+        let flattened_not_found =
+            TransactionProverError::other("failed to prove transaction: grpc code: NotFound");
         assert!(!is_transient_prover_error(&flattened_not_found));
     }
 
