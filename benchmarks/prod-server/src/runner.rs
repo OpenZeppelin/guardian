@@ -51,6 +51,28 @@ struct WorkerResult {
     metrics: BTreeMap<OperationKind, OperationAccumulator>,
     measurement_seconds: f64,
     canonicalization_samples: Vec<CanonicalizationSample>,
+    pacing: PacingCounters,
+}
+
+/// Whether the generator actually offered the rate the profile declared.
+///
+/// A slipped tick is one whose scheduled instant had already passed by the time
+/// the worker was free to send: the generator fell behind, so offered load was
+/// below the declared rate and the run understates what the server was asked
+/// for. Without this counter a generator-bound paced run is indistinguishable
+/// from a server that kept up, which is the failure mode that makes paced load
+/// tests quietly report a rate they never offered.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PacingCounters {
+    pub scheduled_ticks: u64,
+    pub slipped_ticks: u64,
+}
+
+impl PacingCounters {
+    fn merge(&mut self, other: Self) {
+        self.scheduled_ticks += other.scheduled_ticks;
+        self.slipped_ticks += other.slipped_ticks;
+    }
 }
 
 pub struct RunOutput {
@@ -58,6 +80,7 @@ pub struct RunOutput {
     pub cleanup_accounts: Vec<CleanupAccountRecord>,
     pub measurement_seconds: f64,
     pub canonicalization_samples: Vec<CanonicalizationSample>,
+    pub pacing: PacingCounters,
 }
 
 pub async fn execute(config: &RunConfig, users: Vec<SeededUser>) -> Result<RunOutput> {
@@ -84,12 +107,14 @@ pub async fn execute(config: &RunConfig, users: Vec<SeededUser>) -> Result<RunOu
     let mut cleanup_accounts = Vec::new();
     let mut actual_measurement_seconds = 0.0_f64;
     let mut canonicalization_samples = Vec::new();
+    let mut pacing = PacingCounters::default();
 
     while let Some(joined) = workers.join_next().await {
         let worker = joined.map_err(|error| anyhow!("worker task failed: {error}"))??;
         cleanup_accounts.push(worker.account);
         actual_measurement_seconds = actual_measurement_seconds.max(worker.measurement_seconds);
         canonicalization_samples.extend(worker.canonicalization_samples);
+        pacing.merge(worker.pacing);
         for (operation, accumulator) in worker.metrics {
             per_scheme
                 .entry((worker.scheme, operation))
@@ -125,6 +150,7 @@ pub async fn execute(config: &RunConfig, users: Vec<SeededUser>) -> Result<RunOu
         cleanup_accounts,
         measurement_seconds: actual_measurement_seconds.max(0.001),
         canonicalization_samples,
+        pacing,
     })
 }
 
@@ -138,8 +164,48 @@ async fn run_worker(
     let mut measured_op_index = 0_u64;
     let mut worker_measurement_seconds = 0.0_f64;
     let mut canonicalization_samples = Vec::new();
+    let mut pacing = PacingCounters::default();
+
+    // Spread the population across one interval. Without this every user shares
+    // a schedule, so a paced run offers `users`-wide spikes once per interval
+    // instead of a smooth rate -- measuring a thundering herd and calling it
+    // steady state.
+    let interval = config.load_model.interval();
+    let schedule_start = Instant::now() + phase_offset(interval, user.user_id, config.users);
+    let mut tick = 0_u64;
 
     while Instant::now() < end_deadline {
+        // Sleep to the next scheduled instant, not for `interval` after the last
+        // response. Sleeping after the response makes the effective rate decay
+        // as latency rises, so the run silently offers less load exactly when
+        // the server is struggling -- coordinated omission.
+        if let Some(interval) = interval {
+            let target =
+                schedule_start + interval.saturating_mul(u32::try_from(tick).unwrap_or(u32::MAX));
+            tick += 1;
+            if target >= end_deadline {
+                break;
+            }
+            let now = Instant::now();
+            match target.checked_duration_since(now) {
+                Some(wait) => tokio::time::sleep(wait).await,
+                // Late, but only a slip if late by more than a whole interval.
+                // Timer jitter puts most ticks a fraction of a millisecond past
+                // their target while the offered rate is exactly the declared
+                // one, so counting any lateness marks healthy runs invalid --
+                // and a validity flag that cries wolf is worse than none. A
+                // generator that genuinely cannot keep up falls behind a fixed
+                // schedule monotonically, so its lateness passes a full interval
+                // and keeps growing.
+                None => {
+                    if now.duration_since(target) > interval {
+                        pacing.slipped_ticks += 1;
+                    }
+                }
+            }
+            pacing.scheduled_ticks += 1;
+        }
+
         let measuring = Instant::now() >= warmup_deadline;
         let operation = if measuring {
             operation_for_index(&config.operation_mix, measured_op_index)
@@ -214,7 +280,19 @@ async fn run_worker(
         metrics,
         measurement_seconds: worker_measurement_seconds,
         canonicalization_samples,
+        pacing,
     })
+}
+
+fn phase_offset(interval: Option<Duration>, user_id: u32, users: u32) -> Duration {
+    match interval {
+        None => Duration::ZERO,
+        Some(interval) => {
+            let population = u64::from(users.max(1));
+            let slot = u64::from(user_id) % population;
+            Duration::from_nanos((interval.as_nanos() as u64 / population).saturating_mul(slot))
+        }
+    }
 }
 
 async fn observe_canonicalization(

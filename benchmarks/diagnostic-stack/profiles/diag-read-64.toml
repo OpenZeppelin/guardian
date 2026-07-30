@@ -1,0 +1,65 @@
+# Read half of the combined read + write leg.
+#
+# 64 rather than 128 because this generator shares the host with the
+# multisig-e2e write harness. At 128 the read generator alone wants ~5 of 10
+# cores, which leaves nothing for the writers and produces an OVERSUBSCRIBED
+# verdict — a leg that measures the laptop instead of GUARDIAN.
+#
+# Run this profile standalone first. Reads-alone at 64 is the baseline the
+# combined leg is compared against, and the existing 128-reader result cannot
+# serve as that baseline: a different reader count changes offered load, so it
+# would confound concurrency with contention.
+#
+# This tier never carries a target verdict (FR-017a).
+
+profile_name = "diag-read-64"
+guardian_endpoint = "http://127.0.0.1:50051"
+transport = "grpc"
+duration_seconds = 140
+warmup_seconds = 20
+users = 64
+accounts_per_user = 1
+deployment_shape = "local-diagnostic-2x-replica-postgres"
+artifacts_dir = "benchmarks/diagnostic-stack/results"
+
+[load_model]
+# Paced, because closed-loop cannot offer less load than the server's ceiling.
+# The unpaced 64-reader leg produced 2,318 reads/s -- the same 2,314/s as 128
+# readers, so the ceiling is server-side -- and cost the generator ~8 cores of
+# host load, putting the host at 12.55 with no writers running yet. Cutting
+# reader count would not have helped: past the knee, latency falls and the rate
+# holds, so generator cost tracks throughput rather than concurrency.
+#
+# 64 users at one read per 100ms offers 640 reads/s for roughly a third of that
+# CPU, which is what leaves room for the write harness on the same 10 cores.
+#
+# 640/s is well below the 2,000/s target rate, so a null result here does NOT
+# show that reads and writes coexist at target load -- only that they do at this
+# rate. Raising it needs a host that is not also running the stack and the
+# writers.
+model = "paced"
+read_interval_ms = 100
+
+[operation_mix]
+mode = "read_only"
+
+[scheme_distribution]
+falcon_percent = 0
+ecdsa_percent = 100
+
+[canonicalization]
+sample_rate = 0.0         # reads only; nothing to sample
+poll_interval_ms = 1000
+timeout_seconds = 180
+
+[cleanup]
+# Local teardown is `docker compose down -v`, which drops the whole database.
+# The ECS-exec purge path this flag enables is neither available nor needed here.
+enabled = false
+
+[aws]
+# Placeholders. RunConfig::validate() requires these non-empty even for
+# worker-run, which makes no AWS calls at all.
+region = "local"
+ecs_cluster = "local"
+ecs_service = "local"

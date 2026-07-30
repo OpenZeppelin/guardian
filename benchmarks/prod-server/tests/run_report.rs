@@ -30,6 +30,7 @@ fn report_should_include_all_and_scheme_scopes() {
             sample_operation("push_delta", "all"),
         ],
         canonicalization: None,
+        pacing: None,
         capacity_estimate: Some(CapacityEstimate {
             target_push_tps: 500.0,
             sustained_push_tps: 42.0,

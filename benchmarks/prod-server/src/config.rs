@@ -3,6 +3,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,12 +21,51 @@ pub struct RunConfig {
     pub users: u32,
     pub accounts_per_user: u32,
     pub deployment_shape: Option<String>,
+    pub load_model: LoadModel,
     pub operation_mix: OperationMix,
     pub scheme_distribution: SchemeDistribution,
     pub canonicalization: CanonicalizationConfig,
     pub cleanup: CleanupConfig,
     pub aws: AwsConfig,
     pub artifacts_dir: PathBuf,
+}
+
+/// How offered load relates to the user count.
+///
+/// The two are not interchangeable and the difference is more than an order of
+/// magnitude at the same `users`, so a profile states which one it means rather
+/// than leaving it to whoever reads the result (spec FR-003, FR-003b).
+///
+/// `closed_loop` is the in-flight-saturation model: a user issues its next
+/// operation the instant the previous one returns, so `users` is requests in
+/// flight. It finds ceilings, and FR-003c requires its results be reported as
+/// ceilings rather than as target verdicts.
+///
+/// `paced` is the target's model: a user issues one operation every
+/// `read_interval_ms` regardless of how fast the last one returned, so `users`
+/// is a client population and offered load is `users / interval`. This is the
+/// only model that can express "20,000 readers at one read per 10s".
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "model", rename_all = "snake_case")]
+pub enum LoadModel {
+    ClosedLoop,
+    Paced { read_interval_ms: u64 },
+}
+
+impl LoadModel {
+    pub fn interval(&self) -> Option<Duration> {
+        match self {
+            Self::ClosedLoop => None,
+            Self::Paced { read_interval_ms } => Some(Duration::from_millis(*read_interval_ms)),
+        }
+    }
+
+    pub fn read_interval_ms(&self) -> Option<u64> {
+        match self {
+            Self::ClosedLoop => None,
+            Self::Paced { read_interval_ms } => Some(*read_interval_ms),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,6 +161,14 @@ impl RunConfig {
             != 100
         {
             bail!("scheme_distribution percentages must sum to 100");
+        }
+        if let LoadModel::Paced {
+            read_interval_ms: 0,
+        } = self.load_model
+        {
+            bail!(
+                "load_model.read_interval_ms must be greater than 0; use model = \"closed_loop\" for an unpaced saturation run"
+            );
         }
         if let OperationMix::Mixed {
             reads_per_push: 0, ..

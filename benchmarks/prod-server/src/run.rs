@@ -8,7 +8,7 @@ use crate::distributed::{
 use crate::model::CanonicalizationSample;
 use crate::report::{
     ArtifactReport, BenchmarkRunReport, CanonicalizationReport, CapacityEstimate, CleanupReport,
-    SchemeDistributionReport,
+    PacingReport, SchemeDistributionReport,
 };
 use crate::runner::RunOutput;
 use crate::seed::seed_users;
@@ -32,6 +32,7 @@ struct RunReportInput<'a> {
     operations: Vec<crate::report::OperationReport>,
     canonicalization: Option<CanonicalizationReport>,
     canonicalization_samples_path: Option<String>,
+    pacing: Option<PacingReport>,
     cleanup_manifest: &'a CleanupManifest,
     artifacts: &'a crate::artifacts::ArtifactPaths,
 }
@@ -59,6 +60,8 @@ pub async fn run_worker(
         operations: execution.run_output.operations,
         cleanup_accounts: execution.run_output.cleanup_accounts,
         canonicalization_samples: execution.run_output.canonicalization_samples,
+        scheduled_ticks: execution.run_output.pacing.scheduled_ticks,
+        slipped_ticks: execution.run_output.pacing.slipped_ticks,
     };
 
     println!("{}", worker_artifact.encoded_line()?);
@@ -121,6 +124,24 @@ pub async fn aggregate(
         &artifacts.canonicalization_samples,
         &canonicalization_samples,
     )?;
+    let pacing = config
+        .load_model
+        .read_interval_ms()
+        .map(|read_interval_ms| {
+            PacingReport::new(
+                read_interval_ms,
+                config.users,
+                worker_artifacts
+                    .iter()
+                    .map(|artifact| artifact.scheduled_ticks)
+                    .sum(),
+                worker_artifacts
+                    .iter()
+                    .map(|artifact| artifact.slipped_ticks)
+                    .sum(),
+                measurement_seconds,
+            )
+        });
     let cleanup_target = build_cleanup_target(&config);
     let mut manifest = CleanupManifest::new(
         run_id.to_string(),
@@ -145,6 +166,7 @@ pub async fn aggregate(
         operations,
         canonicalization,
         canonicalization_samples_path,
+        pacing,
         cleanup_manifest: &cleanup_manifest,
         artifacts: &artifacts,
     });
@@ -198,6 +220,7 @@ fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
         operations,
         canonicalization,
         canonicalization_samples_path,
+        pacing,
         cleanup_manifest,
         artifacts,
     } = input;
@@ -234,6 +257,7 @@ fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
         },
         operations,
         canonicalization,
+        pacing,
         capacity_estimate,
         cleanup: CleanupReport {
             manifest_path: artifacts.cleanup_manifest.display().to_string(),
@@ -400,6 +424,26 @@ fn render_summary(report: &BenchmarkRunReport) -> String {
             canonicalization.wait_ms.max / 1_000.0
         ));
         output.push('\n');
+    }
+    if let Some(pacing) = &report.pacing {
+        output.push_str(&format!(
+            "Load model: `paced`, {} users at one operation per {}ms — declared `{:.0}/s`, offered `{:.0}/s`\n",
+            pacing.users,
+            pacing.read_interval_ms,
+            pacing.declared_rate_per_sec,
+            pacing.offered_rate_per_sec
+        ));
+        if pacing.held_declared_rate {
+            output.push_str(&format!(
+                "Pacing: held, `{}` of `{}` ticks slipped ({:.2}%)\n",
+                pacing.slipped_ticks, pacing.scheduled_ticks, pacing.slipped_percent
+            ));
+        } else {
+            output.push_str(&format!(
+                "Pacing: **NOT HELD** — `{}` of `{}` ticks slipped ({:.2}%). The generator fell behind, so the server was never offered the declared rate and this leg carries no verdict.\n",
+                pacing.slipped_ticks, pacing.scheduled_ticks, pacing.slipped_percent
+            ));
+        }
     }
     if let Some(capacity_estimate) = &report.capacity_estimate {
         output.push_str(&format!(

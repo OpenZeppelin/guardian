@@ -19,17 +19,11 @@ accounts_per_user = 1
 deployment_shape = "local-diagnostic-2x-replica-postgres"
 artifacts_dir = "benchmarks/diagnostic-stack/results"
 
+[load_model]
+model = "closed_loop"
+
 [operation_mix]
-read_operation = "get_state"
-# The harness cannot express a read-only workload. `operation_for_index` emits a
-# push every (reads_per_push + 1) operations, and reads_per_push = 0 means
-# push-ONLY, not read-only. A very large value is the only way to get an
-# effectively read-only run today; over a 120s leg no worker reaches the first
-# push. The target's read dimension (20k readers issuing get_state) is genuinely
-# read-only, so a first-class read-only mode is required before the authoritative
-# read run — tracked in the plan, not worked around here.
-reads_per_push = 1000000
-retire_after_first_successful_push = false
+mode = "read_only"
 
 [scheme_distribution]
 falcon_percent = 0

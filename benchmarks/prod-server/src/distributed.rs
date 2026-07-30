@@ -50,6 +50,11 @@ pub struct WorkerArtifact {
     pub operations: Vec<OperationReport>,
     pub cleanup_accounts: Vec<CleanupAccountRecord>,
     pub canonicalization_samples: Vec<CanonicalizationSample>,
+    /// Zero on a closed-loop run, which schedules nothing.
+    #[serde(default)]
+    pub scheduled_ticks: u64,
+    #[serde(default)]
+    pub slipped_ticks: u64,
 }
 
 impl WorkerArtifact {

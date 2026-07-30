@@ -36,6 +36,12 @@ direction and wrong in detail. The specific findings:
    **43.5% of database time is authentication**. Removing the per-read auth
    write measured **+71% throughput**, and it is what stops `get_state` from
    being served by a read replica (§7).
+6. **Reads and writes were measured together for the first time**, and did not
+   disturb each other — at 640 reads/s against 4 writers, which is a third of
+   the target read rate and a twenty-fifth of the writer count. Getting there
+   required a paced load model, without which the generator alone saturated the
+   host. These are also the **only four legs in this report that passed the
+   saturation check** (§8).
 
 ---
 
@@ -389,7 +395,162 @@ Two caveats on how far this generalises:
 
 ---
 
-## 8. Defects found (beyond the four classifiers)
+## 8. Read and write together — no interference at these rates
+
+Every measurement above isolates one path. The #317 target is both at once
+against one deployment, and reads and writes share a single Postgres, so
+isolation is exactly the assumption that needed testing.
+
+### 8.1 Pacing, and why it was required first
+
+The first attempt failed validity before it began. A closed-loop 64-reader leg
+produced 2,318/s — the same 2,314/s as 128 readers in §7.2, confirming the
+ceiling is server-side — at **peak host load 16.65 on 10 cores**, with no
+writers running. Containers accounted for only ~4.4 of that; the generator was
+the rest.
+
+Reducing reader count would not have helped. Past the knee, latency falls and
+the rate holds, so generator cost tracks **throughput**, not concurrency. The
+harness had no way to ask for less load than the server's ceiling: `run_worker`
+looped with no think time, so `users` was the only knob and past saturation it
+stopped being one.
+
+`LoadModel` now makes the load model explicit in every profile — `closed_loop`
+(the §7 in-flight-saturation model, FR-003c) or `paced` (the target's model,
+FR-003/FR-003a). Three details decide whether a paced generator is honest:
+
+- **Sleep to the next scheduled instant**, not for `interval` after the response.
+  Sleeping after the response decays the offered rate as latency rises, so a run
+  silently offers least load exactly when the server is struggling —
+  coordinated omission.
+- **Phase-stagger each user** across one interval, or the population shares a
+  schedule and offers `users`-wide spikes once per interval instead of a rate.
+- **Count slipped ticks**, so a generator-bound run declares itself rather than
+  passing as a server that kept up.
+
+The same 64 readers, paced at one read per 100ms, offered **640/s at peak host
+load 5.68** — a third of the CPU for a third of the load, which is what left
+room for the write harness on the same machine.
+
+*(First cut of the slip counter flagged any lateness, including sub-millisecond
+timer jitter, and reported 1.22% on a leg whose offered rate exactly matched its
+declared rate. A validity flag that fails healthy runs trains you to ignore it.
+A slip is now a tick late by more than a whole interval — real overload falls
+behind a fixed schedule monotonically.)*
+
+### 8.2 What it ran against
+
+Same `read-budgeted` stack as §7 — 5.0 of 10 cores, two replicas, Postgres at
+1.5 — build `0.16.0 / 79efe93237d9`.
+
+Two deliberate choices:
+
+- **Remote prover, not self-hosted.** Two prover replicas plus the proxy is
+  5.0 CPU, which with the stack leaves nothing for two generators. Dropping them
+  bought back the write concurrency. The trade is that shared prover capacity
+  drifts, which §8.4 tests rather than assumes.
+- **4 writers, not 8.** Eight failed 39 of 62 on proof timeouts standalone
+  (§3.2), so a leg built on it would measure proof-timeout variance rather than
+  read contention. Four is the count already shown to run clean (68/68 against a
+  self-hosted prover, §2), and it held here on the remote one too — all three
+  write legs completed 100% of their operations, which is what makes any
+  degradation unambiguous.
+
+Four legs, A-B-A ordered so prover drift is detectable rather than absorbed:
+reads alone, writes alone, both, writes alone again.
+
+### 8.3 Results
+
+**Read side** — 76,800 operations per leg, zero failures in both:
+
+| | Reads alone | Reads + 4 writers |
+|---|---|---|
+| Offered rate | 640/s | **640/s** |
+| p50 / p95 / p99 / max | 1 / 3 / 33 / 506ms | **1 / 2 / 6 / 47ms** |
+| Slipped ticks | 0.68% | **0%** |
+
+Reads were not degraded. They were marginally *better*, almost certainly warm
+buffers from the preceding legs rather than an effect of the writers — but the
+direction rules out read-side harm.
+
+**Write side** — 4 writers, all legs 100% success (53/53, 51/51, 50/50), zero
+auth-window failures:
+
+| Stage | Leg 2 alone | Leg 3 + reads | Leg 4 alone | Spread |
+|---|---|---|---|---|
+| `proposal` p50 | 310ms | 280ms | 312ms | — |
+| **`execution` mean** | **18,923ms** | **18,905ms** | **18,917ms** | **0.1%** |
+| `canonicalization` mean | 4,603ms | 5,047ms | **5,346ms** | — |
+
+**`execution` is the control** — the stage the prover owns, which reads cannot
+touch. A 0.1% spread across three legs says the shared prover held steady, so
+nothing in the other stages is prover drift.
+
+**Server side**, peak container CPU:
+
+| | Reads alone | Writes alone | Combined |
+|---|---|---|---|
+| postgres (cap 150%) | 33.8% | 6.2% | **49.1%** |
+| peak host load | 5.68 | 4.74 | **4.60** |
+
+All four legs carry `saturation: ok`. Postgres load is close to additive with no
+contention penalty, and stays a third of its cap.
+
+### 8.4 The one number that moved, and why it is not read load
+
+Canonicalization p95 rose 7,066 → 8,099ms in the combined leg, +15%. Leg 4
+settles it, and against the initial reading:
+
+| Leg | Config | canon mean | share ≥ 6s |
+|---|---|---|---|
+| 2 (22:24) | writes alone | 4,603ms | 13.2% |
+| 3 (22:34) | writes + 640 reads/s | 5,047ms | 37.3% |
+| 4 (22:43) | **writes alone** | **5,346ms** | **36.0%** |
+
+**Leg 4 has no readers and is the slowest of the three.** Were reads the cause,
+the combined leg would exceed the write-only legs; instead the write-only leg
+run last is worse on both mean and tail share. Legs 3 and 4, adjacent in time,
+agree at 37.3% vs 36.0% while Leg 2 sits apart at 13.2%. The variation is
+chronological — consistent with testnet chain conditions — not with read load.
+
+Comparing percentiles was the wrong instrument here. Canonicalization is
+measured by polling every `poll_interval_ms = 1000`, so values are **quantized
+to 1s buckets**, and at n≈50 a percentile rests on two or three observations.
+The distributions are the honest view and show Legs 3 and 4 as one population.
+
+### 8.5 What this establishes, and what it does not
+
+**Establishes:** at 640 reads/s against 4 concurrent writers on a shared
+Postgres, neither workload measurably degrades the other. Reads unaffected on
+throughput and latency; writes unaffected on all three stages once chronological
+drift is accounted for; database load additive with the primary at a third of
+its cap.
+
+**Does not establish** that the combined dimension is met, for three reasons:
+
+1. **Rate.** 640 reads/s is under a third of the 2,000/s target (§7.4), and
+   4 writers is far below 100. Contention appears at saturation, and both sides
+   ran well below it.
+2. **Asymmetry.** The write path issued roughly 2.5 queries/s against the read
+   path's ~1,900/s — 250:1. Writes at this scale have too little database work
+   to contend with anything, so "writes do not degrade reads" was close to
+   structurally guaranteed. Only the read→write direction was genuinely tested.
+3. **Tier.** Diagnostic, as everything in this report. No target verdict.
+
+The measurement that would close it needs ~2,000 reads/s and ~100 writers
+simultaneously, which one 10-core host cannot generate while also hosting the
+stack. That is an off-box generator or the deployed environment — the same
+blocker as §7.6, now reached from the other direction.
+
+*(Incidental: `pg_stat_statements` shows `SELECT $1` running 273,000 times in
+the combined leg, ~3 per `get_state` — a pool liveness check on every checkout.
+It cost 188.9ms across the leg, so it is noise at this scale, but it is a fixed
+per-query tax that scales with read volume. Worth a look alongside #365, not
+before.)*
+
+---
+
+## 9. Defects found (beyond the four classifiers)
 
 - **Upstream `miden-client` panic**, `transaction/mod.rs:365`: an `expect` on
   note metadata in the already-consumed check fired and killed a writer thread
@@ -404,11 +565,12 @@ Two caveats on how far this generalises:
 
 ---
 
-## 9. What is still not measured
+## 10. What is still not measured
 
 | Target | Status | Blocked by |
 |---|---|---|
 | `get_state` p95 at 20k readers | **bounded, not verdicted** (§7) | no leg passed the saturation check; needs an off-box generator |
+| Reads and writes together, at target rates | **null result at 640 reads/s + 4 writers** (§8) | one host cannot generate 2,000 reads/s and 100 writers while hosting the stack |
 | 100 concurrent writers | not measured | ~50 prover replicas; authoritative tier |
 | 100,000 guarded accounts | 100 provisioned | fixture scale |
 | Authoritative replay | not run | AWS access |
@@ -419,9 +581,16 @@ remains missing is not a measurement but a *clean* one — every leg was flagged
 `OVERSUBSCRIBED`, because one laptop cannot both generate ~2,300 req/s and host
 the stack being measured. Only an off-box generator closes that.
 
+§8 narrows the combined gap without closing it. Reads and writes were measured
+together and did not disturb each other, but at a third of the target read rate
+and a twenty-fifth of the writer count — and with the write path issuing so
+little database work (2.5 queries/s against ~1,900/s) that one of the two
+directions could not have shown an effect. The same off-box generator closes
+this row and the one above it.
+
 ---
 
-## 10. Recommended next steps
+## 11. Recommended next steps
 
 1. **Reduce the per-read auth write.** 33.5% of read-path database time is the
    replay-protection CAS; removing it measured **+71% throughput** (§7.7).
@@ -429,9 +598,11 @@ the stack being measured. Only an off-box generator closes that.
    ~86% utilisation of the measured ceiling into roughly 50%, and it is what
    makes `get_state` ineligible for a read replica (§7.5) — which is the larger
    structural unlock on RDS.
-2. **Move the load generator off-box** so a read leg can pass validity. The
-   saturation check now refuses to certify a contended run (§7.6); the host is
-   the remaining blocker, not the tooling.
+2. **Move the load generator off-box** so a read leg can pass validity, and so
+   reads and writes can be driven together at target rates rather than at the
+   third-of-target the host allows (§8.5). The saturation check now refuses to
+   certify a contended run (§7.6) and the paced load model can now express the
+   target's own shape (§8.1); the host is the remaining blocker, not the tooling.
 3. **File the server nonce-consumption bug** as its own issue. Fixed in-tree via
    a partial unique index; it is a correctness defect independent of
    benchmarking and deserves separate review.
@@ -442,12 +613,15 @@ the stack being measured. Only an off-box generator closes that.
 
 ---
 
-## 11. Artifacts
+## 12. Artifacts
 
 Runs referenced here (`benchmarks/multisig-e2e/reports/`):
 
 | Stamp | Config | Result |
 |---|---|---|
+| `scale-20260730T224842Z` | **§8 leg 4** — 4 writers alone, repeat | 50/50, canon mean 5,346ms |
+| `scale-20260730T224009Z` | **§8 leg 3** — 4 writers + 640 reads/s | 51/51, canon mean 5,047ms |
+| `scale-20260730T222939Z` | **§8 leg 2** — 4 writers alone | 53/53, canon mean 4,603ms |
 | `scale-20260730T080127Z` | 8 writers, 4 x 1 CPU provers | 1/49 — per-proof latency dominates |
 | `scale-20260730T065445Z` | 4 writers, self-hosted prover | **68/68**, p95 8,084ms |
 | `scale-20260730T064825Z` | 8 writers, self-hosted, capacity 16 | 23/62, proof timeouts |
@@ -462,13 +636,20 @@ Read legs (`benchmarks/diagnostic-stack/results/`):
 
 | Leg | Readers | Result | Peak host load |
 |---|---|---|---|
+| `leg4-write-only-repeat-20260730T224321Z` | 0 | §8 drift check, observe-only | **3.99** |
+| `leg3-combined-20260730T223447Z` | 64 paced | **§8 combined leg** — 640/s, p95 2ms | **4.60** |
+| `leg2-write-only-20260730T222409Z` | 0 | §8 write baseline, observe-only | 4.74 |
+| `leg1-read-only-20260730T222031Z` | 64 paced | **§8 read baseline** — 640/s, p95 3ms | **5.68** |
 | `read-128-t4-20260730T083554Z` | 128 | **2,314/s, p95 101ms** — the tightest bound | 12.79 |
 | `nocas-128-t4-20260730T092323Z` | 128 | 3,957/s, p95 66ms — **CAS patched out, experiment only** | 13.25 |
 | `read-256-t4-20260730T083138Z` | 256 | 2,175/s, p95 214ms | 14.90 (recomputed) |
 | `read-256-20260730T082856Z` | 256 | 2,151/s, p95 221ms | 12.39 |
 | `read-budgeted-20260730T082554Z` | 768 | 2,090/s, p95 760ms | 17.39 |
 
-All exceeded the 10 physical cores. Three carry `saturation.json`; the
+The four `leg*` runs are the §8 combined-load legs and are the **only legs in
+this report that passed the saturation check** — all four `ok`, peak host load
+3.99-5.68 of 10 cores, which paced load bought (§8.1). The five read legs below
+them all exceeded the 10 physical cores. Three of those carry `saturation.json`; the
 `read-256-t4` leg is the one whose truncated sampler tail exposed the parsing
 defect in §7.6, so its verdict was recomputed by hand rather than written by the
 harness.

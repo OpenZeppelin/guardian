@@ -26,21 +26,31 @@ fn loads_and_validates_profile() {
 }
 
 // A profile that fails to parse is otherwise only discovered after the
-// benchmark image is built, pushed, and launched on Fargate.
+// benchmark image is built, pushed, and launched on Fargate. The diagnostic
+// stack drives this same binary, so its profiles are covered here too --
+// they live outside this crate and are otherwise unguarded.
 #[test]
 fn every_committed_profile_loads_and_validates() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("profiles");
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let directories = [
+        crate_dir.join("profiles"),
+        crate_dir.join("../diagnostic-stack/profiles"),
+    ];
     let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).expect("profiles directory should exist") {
-        let path = entry.expect("profile entry should be readable").path();
-        if path.extension().is_none_or(|ext| ext != "toml") {
-            continue;
+    for dir in directories {
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|error| panic!("{} should be readable: {error}", dir.display()))
+        {
+            let path = entry.expect("profile entry should be readable").path();
+            if path.extension().is_none_or(|ext| ext != "toml") {
+                continue;
+            }
+            RunConfig::load_from_path(path.as_path())
+                .unwrap_or_else(|error| panic!("profile {} should load: {error}", path.display()));
+            checked += 1;
         }
-        RunConfig::load_from_path(path.as_path())
-            .unwrap_or_else(|error| panic!("profile {} should load: {error}", path.display()));
-        checked += 1;
     }
-    assert!(checked > 0, "no profiles found in {}", dir.display());
+    assert!(checked > 0, "no profiles found");
 }
 
 #[test]
@@ -148,6 +158,7 @@ fn run_report_roundtrip() {
             failure_breakdown: Default::default(),
         }],
         canonicalization: None,
+        pacing: None,
         capacity_estimate: Some(CapacityEstimate {
             target_push_tps: 500.0,
             sustained_push_tps: 42.0,

@@ -8,6 +8,9 @@ accounts_per_user = 1
 deployment_shape = "prod-single-task-arm64-rds-proxy"
 artifacts_dir = "benchmarks/prod-server/reports"
 
+[load_model]
+model = "closed_loop"
+
 [operation_mix]
 mode = "mixed"
 reads_per_push = 4

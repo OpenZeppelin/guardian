@@ -2,6 +2,7 @@
 # Run one diagnostic leg and capture everything needed to attribute the result.
 #
 #   ./run-diag.sh <label> [profile]
+#   ./run-diag.sh <label> --observe-only <seconds>
 #
 # Example one-variable sweep (FR-017d — change exactly one thing per leg):
 #   docker compose --env-file .env --env-file variants/pool-16.env up -d
@@ -9,14 +10,36 @@
 #   docker compose --env-file .env --env-file variants/pool-64.env up -d
 #   ./run-diag.sh pool-64
 #
-# Captures per leg: build identity before and after (FR-A08), harness artifact,
-# Prometheus snapshot, and pg_stat_statements. A leg missing any of these cannot
-# support a bottleneck claim.
+# --observe-only instruments a window without launching a workload, for legs
+# whose load comes from somewhere this script cannot start: the multisig-e2e
+# write harness, a generator on another host, or both at once. Start the leg,
+# then start the generators; everything else about the capture is identical, so
+# an observed leg and a driven leg are directly comparable.
+#
+#   ./run-diag.sh write-only --observe-only 420 &
+#   cargo run --release -p guardian-multisig-e2e-benchmark -- scale-run \
+#     --config benchmarks/multisig-e2e/testnet.scale.toml
+#
+# Captures per leg: build identity before and after (FR-A08), harness artifact
+# (driven legs only), Prometheus snapshot, and pg_stat_statements. A leg missing
+# any of these cannot support a bottleneck claim.
 
 set -euo pipefail
 
-LABEL="${1:?usage: ./run-diag.sh <label> [profile]}"
-PROFILE="${2:-profiles/diag-read.toml}"
+LABEL="${1:?usage: ./run-diag.sh <label> [profile | --observe-only <seconds>]}"
+OBSERVE_SECONDS=""
+PROFILE="profiles/diag-read.toml"
+if [ "${2:-}" = "--observe-only" ]; then
+  OBSERVE_SECONDS="${3:?--observe-only requires a duration in seconds}"
+  case "${OBSERVE_SECONDS}" in
+    ''|*[!0-9]*)
+      echo "--observe-only duration must be a whole number of seconds" >&2
+      exit 1
+      ;;
+  esac
+elif [ -n "${2:-}" ]; then
+  PROFILE="$2"
+fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -134,7 +157,11 @@ docker compose exec -T postgres psql -U guardian -d guardian \
 
 capture_metrics before
 
-echo "==> running harness"
+if [ -n "${OBSERVE_SECONDS}" ]; then
+  echo "==> observing for ${OBSERVE_SECONDS}s — start the generators now"
+else
+  echo "==> running harness"
+fi
 
 # Sample container CPU DURING the measured window. A single sample taken after
 # the harness exits shows an idle stack and would let a generator-bound or
@@ -163,10 +190,14 @@ trap 'kill "${SAMPLER_PID}" 2>/dev/null || true' EXIT
 # read leg ends up measuring the harness instead of GUARDIAN. Build before the
 # measured window rather than inside it, so compilation never lands in the
 # sampled load.
-( cd "${ROOT_DIR}" && cargo run --release --quiet --manifest-path benchmarks/prod-server/Cargo.toml -- \
-    worker-run --profile "${STACK_DIR}/${PROFILE}" \
-               --run-id "${LABEL}-${STAMP}" --shard-index 0 --shard-count 1 ) \
-  > "${OUT}/worker-artifact.txt"
+if [ -n "${OBSERVE_SECONDS}" ]; then
+  command sleep "${OBSERVE_SECONDS}"
+else
+  ( cd "${ROOT_DIR}" && cargo run --release --quiet --manifest-path benchmarks/prod-server/Cargo.toml -- \
+      worker-run --profile "${STACK_DIR}/${PROFILE}" \
+                 --run-id "${LABEL}-${STAMP}" --shard-index 0 --shard-count 1 ) \
+    > "${OUT}/worker-artifact.txt"
+fi
 
 kill "${SAMPLER_PID}" 2>/dev/null || true
 trap - EXIT
@@ -223,10 +254,20 @@ if [ -s "${OUT}/saturation.json" ]; then
   esac
 fi
 
-# Decode the base64 artifact line into readable JSON.
-sed -n 's/^BENCH_WORKER_ARTIFACT_BASE64=//p' "${OUT}/worker-artifact.txt" \
-  | base64 -d | jq . > "${OUT}/worker-artifact.json" 2>/dev/null \
-  || echo "    warn: could not decode worker artifact" >&2
+# Decode the base64 artifact line into readable JSON. An observed leg has no
+# artifact of its own -- its generators write their own -- so record which
+# generators to look for instead of warning about a file that was never meant
+# to exist.
+if [ -n "${OBSERVE_SECONDS}" ]; then
+  jq -n --arg label "${LABEL}" --argjson seconds "${OBSERVE_SECONDS}" \
+    '{mode: "observe-only", label: $label, observed_seconds: $seconds,
+      note: "Load came from generators started outside this script; their artifacts are the client-side half of this leg."}' \
+    > "${OUT}/observed-leg.json"
+else
+  sed -n 's/^BENCH_WORKER_ARTIFACT_BASE64=//p' "${OUT}/worker-artifact.txt" \
+    | base64 -d | jq . > "${OUT}/worker-artifact.json" 2>/dev/null \
+    || echo "    warn: could not decode worker artifact" >&2
+fi
 
 # Build identity AFTER. A changed commit or started_at means the run spanned a
 # restart and its numbers cover more than one server instance (FR-A08).

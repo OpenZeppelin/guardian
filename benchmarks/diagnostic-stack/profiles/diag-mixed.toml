@@ -19,9 +19,12 @@ accounts_per_user = 1
 deployment_shape = "local-diagnostic-2x-replica-postgres"
 artifacts_dir = "benchmarks/diagnostic-stack/results"
 
+[load_model]
+model = "closed_loop"
+
 [operation_mix]
-read_operation = "get_state"
-reads_per_push = 4        # 4 get_state : 1 push_delta, matching the April shape
+mode = "mixed"
+reads_per_push = 4
 retire_after_first_successful_push = false
 
 [scheme_distribution]

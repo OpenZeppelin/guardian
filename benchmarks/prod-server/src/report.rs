@@ -18,6 +18,7 @@ pub struct BenchmarkRunReport {
     pub scheme_distribution: SchemeDistributionReport,
     pub operations: Vec<OperationReport>,
     pub canonicalization: Option<CanonicalizationReport>,
+    pub pacing: Option<PacingReport>,
     pub capacity_estimate: Option<CapacityEstimate>,
     pub cleanup: CleanupReport,
     pub artifacts: ArtifactReport,
@@ -59,6 +60,58 @@ impl CanonicalizationReport {
             timeout_seconds,
             wait_ms: LatencyReport::from_unsorted_ms(canonical_waits_ms),
         })
+    }
+}
+
+/// Evidence that a paced run offered the rate it declared.
+///
+/// `offered_rate_per_sec` is what the generator actually produced; compare it
+/// against `declared_rate_per_sec`. A gap means the generator fell behind, so
+/// the server was never asked for the target load and the leg understates it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PacingReport {
+    pub read_interval_ms: u64,
+    pub users: u32,
+    pub declared_rate_per_sec: f64,
+    pub offered_rate_per_sec: f64,
+    pub scheduled_ticks: u64,
+    pub slipped_ticks: u64,
+    pub slipped_percent: f64,
+    pub held_declared_rate: bool,
+}
+
+impl PacingReport {
+    /// A leg that slips more than this fraction of its ticks did not offer the
+    /// rate under test, so its numbers describe the generator.
+    const SLIP_TOLERANCE_PERCENT: f64 = 1.0;
+
+    pub fn new(
+        read_interval_ms: u64,
+        users: u32,
+        scheduled_ticks: u64,
+        slipped_ticks: u64,
+        measurement_seconds: f64,
+    ) -> Self {
+        let declared_rate_per_sec = if read_interval_ms == 0 {
+            0.0
+        } else {
+            f64::from(users) / (read_interval_ms as f64 / 1_000.0)
+        };
+        let slipped_percent = if scheduled_ticks == 0 {
+            0.0
+        } else {
+            (slipped_ticks as f64 / scheduled_ticks as f64) * 100.0
+        };
+        Self {
+            read_interval_ms,
+            users,
+            declared_rate_per_sec,
+            offered_rate_per_sec: scheduled_ticks as f64 / measurement_seconds.max(0.001),
+            scheduled_ticks,
+            slipped_ticks,
+            slipped_percent,
+            held_declared_rate: slipped_percent <= Self::SLIP_TOLERANCE_PERCENT,
+        }
     }
 }
 

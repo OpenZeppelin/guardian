@@ -1,0 +1,53 @@
+# Write half of the combined read + write leg (issue #317).
+#
+# The question is whether reads and writes degrade each other on a single
+# GUARDIAN deployment. They share no prover -- `get_state` never touches Miden
+# -- so the contention, if any, is on Postgres: the read path issues a durable
+# auth compare-and-set per read, and the write path issues push_delta plus
+# canonicalization, against one database.
+#
+# Four writers, not eight. Eight failed 39 of 62 operations on proof timeouts
+# standalone, so a leg built on it would measure proof-timeout variance rather
+# than read contention. Four ran 68 of 68 clean, which makes any degradation in
+# the combined leg unambiguous.
+#
+# `prover` is left at the default `remote`. A self-hosted prover would cost 2-5
+# CPU on a host that also has to run the stack and two generators, and the read
+# generator is the variable being changed. The trade is that shared prover
+# capacity drifts -- it moved by an order of magnitude across one day -- so the
+# leg order below exists to detect that drift rather than absorb it.
+#
+# Leg order (A-B-A, not A-B):
+#
+#   1. reads alone      ./run-diag.sh combined-read-only profiles/diag-read-64.toml
+#   2. writes alone     observe-only + scale-run with this config
+#   3. reads + writes   observe-only + both generators
+#   4. writes alone     repeat of 2
+#
+# If leg 4 does not reproduce leg 2, the prover moved underneath the experiment
+# and leg 3 carries no comparison.
+#
+# Reading the result: the harness reports proposal, execution and
+# canonicalization separately. Execution is client-side work plus the prover;
+# proposal and canonicalization are GUARDIAN and the chain. Read contention
+# should show in proposal and canonicalization while execution stays flat. If
+# execution moves too, suspect the prover before concluding anything about
+# reads.
+
+accounts_file = ".guardian/bench/multisig-e2e-accounts.json"
+faucet_id = "mtst1aqj93e2yvy5wdv2skadca0vuuypfnp80"
+
+writers = 4
+# Longer than the 140s read leg so the reads sit inside the writers' steady
+# state rather than overlapping their ramp-up or their tail.
+duration_seconds = 300
+amount = 1
+
+poll_interval_ms = 1000
+# The #317 criterion is p95 <= 30s; this bound is deliberately far above it so a
+# breach is measured rather than truncated into a timeout.
+timeout_seconds = 300
+
+proposal_retry_interval_ms = 1000
+proposal_retry_timeout_seconds = 180
+artifacts_dir = "benchmarks/multisig-e2e/reports"
