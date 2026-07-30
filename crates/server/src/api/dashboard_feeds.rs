@@ -63,8 +63,8 @@ pub struct GlobalDeltasQuery {
 
 /// `GET /dashboard/accounts/{account_id}/deltas`. Returns the
 /// per-account delta feed paginated newest-first by `nonce DESC`,
-/// surfacing only `candidate` / `canonical` / `discarded` statuses
-/// (pending lives on the proposal queue endpoint).
+/// surfacing only `candidate` / `canonical` / `retained` / `discarded`
+/// statuses (pending lives on the proposal queue endpoint).
 #[utoipa::path(
     get,
     path = "/dashboard/accounts/{account_id}/deltas",
@@ -212,7 +212,7 @@ pub async fn list_account_proposals_handler(
 /// `GET /dashboard/deltas`. Cross-account delta feed paginated
 /// newest-first by `status_timestamp DESC`. Optional comma-separated
 /// `status` filter restricts to a subset of `{candidate, canonical,
-/// discarded}`. Pending entries live on the proposal feed.
+/// retained, discarded}`. Pending entries live on the proposal feed.
 ///
 /// Spec reference: `005-operator-dashboard-metrics` US6, FR-031..FR-035.
 #[utoipa::path(

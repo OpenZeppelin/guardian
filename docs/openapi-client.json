@@ -258,7 +258,7 @@
           "client"
         ],
         "summary": "Request abandonment of a pending canonicalization candidate whose\ntransaction will never land on-chain (issue #319).",
-        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned.",
+        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned; `retained` → the worker\nalready released the account, but the outcome is still uncertain\n(reconciliation may promote it until the retention TTL expires).",
         "operationId": "abandon_candidate",
         "requestBody": {
           "content": {
@@ -1069,7 +1069,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released."
+            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released;\n`\"retained\"` when the worker had already stopped verifying the\ncandidate and released the account — unlocked, but the on-chain\noutcome is still uncertain and background reconciliation may yet\npromote the delta until its retention TTL expires."
           }
         }
       },
@@ -1606,6 +1606,35 @@
           },
           {
             "type": "object",
+            "description": "A candidate the worker gave up on, kept for background\nreconciliation (issue #345) instead of being deleted. A give-up\nverdict — retry exhaustion or confirmed divergence — is an\n*observation*, not proof the delta is wrong, so the worker keeps\nre-checking `stored base + delta` against the chain and promotes\nthe row if they ever match. Does NOT hold the pending-candidate\nlock: new submissions stay unblocked and supersede a retained\nrow at the same nonce. `timestamp` is when retention began and\nanchors the TTL after which the row is dropped for good.",
+            "required": [
+              "timestamp",
+              "status"
+            ],
+            "properties": {
+              "reason": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RetainReason"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "retained"
+                ]
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "timestamp",
               "status"
@@ -1931,6 +1960,14 @@
             ]
           }
         }
+      },
+      "RetainReason": {
+        "type": "string",
+        "description": "Why a candidate was moved to `Retained` instead of deleted\n(issue #345). The label is diagnostic — every retained delta is\nreconciled and TTL-expired identically — but it records which\nworker verdict parked the row, and a `diverged` row that later\nreconciles is direct evidence the divergence verdict was spurious\n(e.g. a lagging RPC node, or the pre-#326 empty-digest misread\nthat hit new accounts' first transactions).",
+        "enum": [
+          "retry_exhausted",
+          "diverged"
+        ]
       },
       "SignProposalRequest": {
         "type": "object",

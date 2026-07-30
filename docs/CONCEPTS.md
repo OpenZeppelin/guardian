@@ -92,7 +92,7 @@ sequenceDiagram
   U->>M: 4. Submit proven account update
   M-->>U: account commitment accepted
   G->>M: poll for canonical commitment
-  G->>G: 5. If commitments match, mark canonical — otherwise discarded
+  G->>G: 5. If commitments match, mark canonical — otherwise park as<br/>retained and keep reconciling until it matches or the TTL expires
 ```
 
 The status transitions for a delta:
@@ -101,7 +101,20 @@ The status transitions for a delta:
 |---|---|
 | `candidate` | Guardian accepted and signed it, but the matching Miden update has not yet been observed. |
 | `canonical` | Guardian observed the matching commitment on Miden. The delta is now durable for other clients of the same account. |
-| `discarded` | Canonicalization failed (timeout or commitment mismatch). The delta is removed from the chain; the client must rebuild from the latest canonical state. |
+| `retained` | Guardian stopped actively verifying the candidate and released the account slot. The on-chain outcome remains **uncertain**; background reconciliation may still promote it to `canonical` until its retention TTL expires (default 24 h). A new submission at the same nonce supersedes it. Never read `retained` as "the transaction did not land" — it means *unlocked but unresolved*. |
+| `discarded` | Canonicalization was abandoned by the client (`client_abandoned`), or retention is disabled and verification failed terminally. The client must rebuild from the latest canonical state. |
+
+This single definition of `retained` holds across every surface —
+canonicalization, account locking, the abandon APIs (which report a
+distinct `retained` result, never `abandoned`), the SDKs, and the
+operator dashboard. At a glance:
+
+| Status | Account locked? | Outcome known? | Client action |
+|---|---|---|---|
+| `candidate` | Yes | No | Wait, or request abandonment |
+| `retained` | No | No | Sync and check the chain before replacing (a resubmission supersedes the row and forfeits automatic recovery) |
+| `discarded` (`client_abandoned`) | No | Probably not landed, but late reconciliation remains possible within the TTL | Continue cautiously |
+| `canonical` | No | Yes — landed | Sync account state |
 
 This is the **canonicalization** process. The default `candidate` mode runs
 a background worker that polls Miden and promotes or discards each
@@ -193,7 +206,7 @@ flowchart TB
 |---|---|---|
 | Guardian unreachable | gRPC `Unavailable` / HTTP 5xx, no ACK | Continue locally, retry; rotate operator if persistent. |
 | Stale delta (`commitment_mismatch`) | `400` with `code: commitment_mismatch` | `GET /delta/since` → replay canonical chain → retry the local transaction. |
-| Candidate discarded | Delta status flips `candidate` → `discarded` | Refetch state, rebuild and resubmit. Usually means the Miden proof was never submitted or the on-chain commitment diverged. |
+| Candidate parked (`retained`) | Delta status flips `candidate` → `retained`; the account is released | Usually means the Miden proof was never submitted, the on-chain commitment diverged, or the guardian's RPC view lagged. No action is strictly required: if the transaction actually landed, the guardian reconciles and promotes it automatically. To move on immediately, refetch state, rebuild and resubmit — a new submission at the same nonce supersedes the retained delta. Because superseding forfeits that automatic recovery, check the delta's status once before resubmitting: if it already flipped to `canonical`, the original transaction landed and there is nothing to redo. |
 | Transaction died after approval (stranded candidate) | New proposals answered `409 conflict_pending_delta` while the candidate waits out the grace + retry window | Call `POST /delta/candidate/abandon` (SDKs: `abandonCandidate` / `abandon_candidate`). The worker confirms over a short quarantine that the transaction did not land, flips the delta to `discarded` with reason `client_abandoned`, and releases the account — typically well under a minute. Poll via `abandonStatus` / `abandon_status`. |
 | Operator censors / withholds | Other cosigners see stale state | Use the user's cold key to rotate Guardian; the new operator inherits canonical state from Miden. |
 | Account paused by operator | State-transition, proposal, and EVM mutation paths return `409 GUARDIAN_ACCOUNT_PAUSED` with `paused_reason` (reads and `ConfigureAccount` keep working) | Operator-driven safety lever, not a fault. An operator with `accounts:pause` clears it via `POST /dashboard/accounts/{id}/unpause`. See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |

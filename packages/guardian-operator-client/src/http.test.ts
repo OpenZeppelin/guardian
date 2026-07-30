@@ -236,6 +236,9 @@ describe('GuardianOperatorHttpClient', () => {
       deltaStatusCounts: {
         candidate: 7,
         canonical: 8902,
+        // Absent from the (pre-#345) server payload above: the decoder
+        // defaults it so old servers keep decoding.
+        retained: 0,
         discarded: 21,
       },
       inFlightProposalCount: 12,
@@ -640,6 +643,76 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       'https://guardian.example/dashboard/accounts/0xacc/deltas',
       expect.objectContaining({ method: 'GET' }),
     );
+  });
+
+  it('decodes a retained delta on the feed (issue #345)', async () => {
+    // A single retained row must not fail the whole page: the runtime
+    // parser has to accept every status the server can emit.
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        items: [
+          {
+            nonce: 5,
+            status: 'retained',
+            status_reason: 'diverged',
+            status_timestamp: '2026-07-23T10:00:00Z',
+            prev_commitment: '0x7e8f',
+            new_commitment: '0xa3b4',
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const page = await client.listAccountDeltas('0xacc');
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0].status).toBe('retained');
+    expect(page.items[0].statusReason).toBe('diverged');
+  });
+
+  it('decodes reconcile settings on dashboard info when present', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        service_status: 'healthy',
+        environment: 'devnet',
+        build: {
+          version: '0.16.0',
+          git_commit: 'abcdef123456',
+          profile: 'release',
+          started_at: '2026-07-28T10:00:00Z',
+        },
+        backend: {
+          storage: 'postgres',
+          supported_ack_schemes: ['ecdsa', 'falcon'],
+          canonicalization: {
+            check_interval_seconds: 10,
+            max_retries: 48,
+            submission_grace_period_seconds: 600,
+            retained_ttl_seconds: 86400,
+            reconcile_interval_seconds: 60,
+            reconcile_page_size: 100,
+          },
+        },
+        total_account_count: 1,
+        accounts_by_auth_method: {},
+        latest_activity: null,
+        delta_status_counts: {
+          candidate: 0,
+          canonical: 0,
+          retained: 0,
+          discarded: 0,
+        },
+        in_flight_proposal_count: 0,
+        degraded_aggregates: [],
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const info = await client.getDashboardInfo();
+    expect(info.backend.canonicalization).toMatchObject({
+      retainedTtlSeconds: 86400,
+      reconcileIntervalSeconds: 60,
+      reconcilePageSize: 100,
+    });
   });
 
   it('passes limit and cursor query params for delta listing', async () => {
