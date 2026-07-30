@@ -262,6 +262,11 @@ impl MultisigClient {
             ));
         };
 
+        if proposal.metadata.salt_hex.is_none() {
+            return Err(MultisigError::InvalidConfig(
+                "p2id_note_id requires proposal metadata with a salt".to_string(),
+            ));
+        }
         let salt = proposal.metadata.salt()?;
         let asset = crate::execution::build_transfer_asset(account.inner(), *faucet_id, *amount)?;
 

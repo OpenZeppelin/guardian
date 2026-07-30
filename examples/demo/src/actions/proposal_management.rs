@@ -1349,7 +1349,11 @@ async fn prompt_consume_notes(
                         .await
                         .map_err(|e| format!("Failed to sync: {}", e))?;
                 }
-                "2" => import_note_file(state, editor).await?,
+                "2" => {
+                    if let Err(e) = import_note_file(state, editor).await {
+                        print_error(&e);
+                    }
+                }
                 _ => return Err("No consumable notes available".to_string()),
             }
             continue;
@@ -1383,7 +1387,9 @@ async fn prompt_consume_notes(
         let selection = prompt_input(editor, "  Notes: ")?;
 
         if selection.trim().eq_ignore_ascii_case("i") {
-            import_note_file(state, editor).await?;
+            if let Err(e) = import_note_file(state, editor).await {
+                print_error(&e);
+            }
             continue;
         }
 

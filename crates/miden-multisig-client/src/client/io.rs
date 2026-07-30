@@ -237,8 +237,6 @@ impl MultisigClient {
             MultisigError::InvalidConfig(format!("failed to decode note file: {}", e))
         })?;
 
-        // A details-only file has no note ID yet; fall back to the details
-        // commitment `import_notes` reports (mirrors the web SDK behavior).
         let known_id = note_file_note_id(&note_file);
 
         let commitments = self
