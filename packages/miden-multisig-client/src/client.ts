@@ -13,6 +13,11 @@ import { createMultisigAccount } from './account/index.js';
 import { AccountInspector } from './inspector.js';
 import { getRawMidenClient, requireConfigValue, requireMidenRpcEndpoint } from './raw-client.js';
 import type { MultisigConfig, Signer } from './types.js';
+import {
+  resolveProverConfig,
+  type ProverConfig,
+  type ResolvedProverConfig,
+} from './prover/config.js';
 
 interface AccountKeyBindingSigner {
   bindAccountKey?(midenClient: MidenClient, accountId: string): Promise<void>;
@@ -41,6 +46,8 @@ export interface MultisigClientConfig {
    * the injected `MidenClient`; there is no default.
    */
   midenRpcEndpoint: string;
+  /** Multisig-owned remote prover override and proof retry policy. */
+  prover?: ProverConfig;
 }
 
 /**
@@ -70,6 +77,10 @@ export interface RecoveredAccount {
  * const client = new MultisigClient(midenClient, {
  *   guardianEndpoint: 'http://localhost:3000',
  *   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
+ *   prover: {
+ *     url: 'https://prover.example',
+ *     retry: { maxAttempts: 4 },
+ *   },
  * });
  *
  * // Get GUARDIAN pubkey for config
@@ -83,11 +94,13 @@ export interface RecoveredAccount {
 export class MultisigClient {
   private readonly midenClient: MidenClient;
   private readonly midenRpcEndpoint: string;
+  private readonly proverConfig: ResolvedProverConfig;
   private _guardianClient: GuardianHttpClient;
 
   constructor(midenClient: MidenClient, config: MultisigClientConfig) {
     this.midenClient = midenClient;
     this.midenRpcEndpoint = requireMidenRpcEndpoint(config?.midenRpcEndpoint);
+    this.proverConfig = resolveProverConfig(config?.prover, midenClient.defaultProver);
     this._guardianClient = new GuardianHttpClient(
       requireConfigValue('guardianEndpoint', config?.guardianEndpoint),
     );
@@ -161,7 +174,8 @@ export class MultisigClient {
       signer,
       this.midenClient,
       undefined,
-      this.midenRpcEndpoint
+      this.midenRpcEndpoint,
+      this.proverConfig,
     );
   }
 
@@ -213,7 +227,8 @@ export class MultisigClient {
       signer,
       this.midenClient,
       accountId,
-      this.midenRpcEndpoint
+      this.midenRpcEndpoint,
+      this.proverConfig,
     );
   }
 }
