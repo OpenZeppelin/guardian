@@ -28,4 +28,11 @@ describe('retryDelay', () => {
   it('remains capped after numeric overflow', () => {
     expect(retryDelay(Number.MAX_SAFE_INTEGER, 0.5)).toBe(8_000);
   });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    'uses neutral jitter for non-finite randomness',
+    (unitRandom) => {
+      expect(retryDelay(0, unitRandom)).toBe(500);
+    },
+  );
 });
