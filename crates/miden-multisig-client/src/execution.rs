@@ -1,6 +1,7 @@
 //! Shared execution logic for proposal finalization.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
@@ -13,6 +14,51 @@ use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::TransactionType;
+
+/// Bounded retry policy for idempotent Miden RPC stages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidenRpcRetryPolicy {
+    timeout: Duration,
+    initial_delay: Duration,
+    max_delay: Duration,
+}
+
+impl MidenRpcRetryPolicy {
+    /// Creates a retry policy with exponential backoff and full jitter.
+    pub fn new(timeout: Duration, initial_delay: Duration, max_delay: Duration) -> Self {
+        Self {
+            timeout,
+            initial_delay,
+            max_delay: max_delay.max(initial_delay),
+        }
+    }
+
+    /// Creates a policy which performs each operation once.
+    pub const fn disabled() -> Self {
+        Self {
+            timeout: Duration::ZERO,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::ZERO,
+        }
+    }
+
+    pub(crate) fn deadline(self) -> tokio::time::Instant {
+        tokio::time::Instant::now() + self.timeout
+    }
+
+    pub(crate) fn delay(self, attempt: u32) -> Duration {
+        if self.timeout.is_zero() {
+            return Duration::ZERO;
+        }
+
+        let exponential = self
+            .initial_delay
+            .as_millis()
+            .saturating_mul(1u128 << attempt.min(16));
+        let capped = exponential.min(self.max_delay.as_millis()) as u64;
+        Duration::from_millis(rand::Rng::random_range(&mut rand::rng(), 0..=capped))
+    }
+}
 
 /// Signature advice entry: (key, prepared_signature_values)
 pub type SignatureAdvice = (Word, Vec<Felt>);
@@ -355,6 +401,17 @@ mod tests {
 
         let flag = held_callback_flag([Asset::Fungible(held)], faucet_id);
         assert_eq!(flag, AssetCallbackFlag::Enabled);
+    }
+
+    #[test]
+    fn rpc_retry_delay_is_capped() {
+        let policy = MidenRpcRetryPolicy::new(
+            Duration::from_secs(30),
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        );
+
+        assert!(policy.delay(20) <= Duration::from_secs(2));
     }
 
     #[test]

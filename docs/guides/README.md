@@ -25,6 +25,7 @@ storage, or network), not after Compose.
 | [Miden Dashboard UI](./miden-dashboard/README.md) | Self-hosted Compose: Postgres + Guardian server + the Miden Dashboard operator UI |
 | [Observability](./observability/README.md) | Local Compose: server + Prometheus + pre-provisioned Grafana dashboard |
 | [Horizontal scaling](./horizontal-scaling/README.md) | Local Compose: two replicas + round-robin proxy + shared Postgres (sessions, lease failover, fail-closed auth) |
+| [Self-hosted Miden prover](./local-prover/README.md) | Local Compose: CPU-capped prover replicas + round-robin proxy, for load runs that outgrow the public prover |
 
 ## Adding a guide
 

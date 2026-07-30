@@ -8,7 +8,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use guardian_client::GuardianClient;
 use miden_multisig_client::{
-    AccountId, ConsumableNote, MultisigError, NoteFilter, Proposal, TransactionType,
+    AccountId, ConsumableNote, MidenRpcRetryPolicy, MultisigError, NoteFilter, Proposal,
+    TransactionType,
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -498,6 +499,7 @@ pub(crate) async fn propose_with_retry(
     let retry_interval = Duration::from_millis(config.proposal_retry_interval_ms);
     let mut retries = 0;
     let mut retry_wait_ms = 0;
+    let mut retry_attempt = 0;
 
     loop {
         match client
@@ -523,7 +525,9 @@ pub(crate) async fn propose_with_retry(
                 }
                 retries += 1;
                 let wait_started = Instant::now();
-                tokio::time::sleep(retry_interval.min(deadline - now)).await;
+                let wait = rate_limit_backoff(retry_interval, retry_attempt).min(deadline - now);
+                retry_attempt += 1;
+                tokio::time::sleep(wait).await;
                 retry_wait_ms += elapsed_ms(wait_started);
             }
             Err(error) => return Err(error.into()),
@@ -536,21 +540,16 @@ pub(crate) async fn execute_with_retry(
     proposal_id: &str,
     config: &RunConfig,
 ) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(config.proposal_retry_timeout_seconds);
-    let retry_interval = Duration::from_millis(config.proposal_retry_interval_ms);
-    loop {
-        match client.client.execute_proposal(proposal_id).await {
-            Ok(()) => return Ok(()),
-            Err(error) if is_retryable_execution_error(&error) => {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Err(error.into());
-                }
-                tokio::time::sleep(retry_interval.min(deadline - now)).await;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
+    let retry_policy = MidenRpcRetryPolicy::new(
+        Duration::from_secs(config.proposal_retry_timeout_seconds),
+        Duration::from_millis(config.proposal_retry_interval_ms),
+        Duration::from_secs(8),
+    );
+    client
+        .client
+        .execute_proposal_with_retry(proposal_id, retry_policy)
+        .await
+        .map_err(Into::into)
 }
 
 fn is_retryable_proposal_error(error: &MultisigError) -> bool {
@@ -560,24 +559,8 @@ fn is_retryable_proposal_error(error: &MultisigError) -> bool {
             message.contains("conflict_pending_delta")
                 || message.contains("There's already a pending change for this account")
         }
-        MultisigError::MidenClient(_) => is_miden_sync_tip_ahead(error),
-        _ => false,
+        _ => error.is_transient_miden_rpc() || is_miden_sync_tip_ahead(error),
     }
-}
-
-fn is_retryable_execution_error(error: &MultisigError) -> bool {
-    // Deliberately NOT retrying transient proving failures.
-    //
-    // `execute` is not idempotent: `get_guardian_ack_signature` pushes the delta
-    // to Guardian to obtain the ack signature *before* the transaction is proved
-    // and submitted, so Guardian already holds a candidate by the time proving
-    // runs. Retrying re-pushes and is rejected with `conflict_pending_delta`,
-    // and the stuck candidate then blocks every later attempt for that account.
-    //
-    // Measured: retrying proving failures here turned 1 failed account into 25
-    // and left 22 stuck candidates. Recovery is to abandon the candidate
-    // (`MultisigClient::abandon_candidate`), not to re-execute.
-    matches!(error, MultisigError::GuardianConnection(_)) || is_miden_sync_tip_ahead(error)
 }
 
 fn client_pair(
@@ -598,13 +581,38 @@ async fn consumable_note_ids(
     config: &RunConfig,
 ) -> Result<HashSet<String>> {
     sync_network_with_retry(client, config).await?;
-    Ok(client
-        .client
-        .list_consumable_notes_filtered(NoteFilter::by_faucet(faucet_id))
+    Ok(list_consumable_notes_with_retry(client, faucet_id, config)
         .await?
         .into_iter()
         .map(|note| note.id.to_string())
         .collect())
+}
+
+pub(crate) async fn list_consumable_notes_with_retry(
+    client: &mut BenchClient,
+    faucet_id: AccountId,
+    config: &RunConfig,
+) -> Result<Vec<ConsumableNote>> {
+    let deadline = Instant::now() + Duration::from_secs(config.proposal_retry_timeout_seconds);
+    let retry_interval = Duration::from_millis(config.proposal_retry_interval_ms);
+    let mut attempt = 0;
+
+    loop {
+        match client
+            .client
+            .list_consumable_notes_filtered(NoteFilter::by_faucet(faucet_id))
+            .await
+        {
+            Ok(notes) => return Ok(notes),
+            Err(error) if error.is_transient_miden_rpc() && Instant::now() < deadline => {
+                let now = Instant::now();
+                let wait = rate_limit_backoff(retry_interval, attempt).min(deadline - now);
+                attempt += 1;
+                tokio::time::sleep(wait).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 async fn await_new_note(
@@ -668,7 +676,7 @@ async fn sync_network_until(
             // Requests!" against an advertised limit of 128. Backoff here
             // smooths bursts; it cannot raise the node's ceiling, so a run
             // structurally above the limit still queues rather than speeds up.
-            Err(error) if is_rate_limited(&error) => {
+            Err(error) if error.is_transient_miden_rpc() || is_rate_limited(&error) => {
                 let now = Instant::now();
                 if now >= deadline {
                     return Err(error.into());
@@ -684,6 +692,9 @@ async fn sync_network_until(
 
 /// Whether the node refused the request for exceeding its rate limit.
 pub(crate) fn is_rate_limited(error: &MultisigError) -> bool {
+    if error.is_miden_rate_limited() {
+        return true;
+    }
     let message = error.to_string().to_ascii_lowercase();
     message.contains("too many requests") || message.contains("429")
 }
@@ -977,17 +988,6 @@ mod tests {
         assert!(far <= 8_000, "wait must stay capped, got {far}ms");
     }
 
-    #[test]
-    fn proving_failures_are_not_retried_because_execute_is_not_idempotent() {
-        // The delta is pushed to Guardian for the ack signature before proving,
-        // so a retry collides with the candidate the first attempt created.
-        let error = MultisigError::TransactionExecution(
-            "transaction execution failed: TransactionProvingError(Other { error_msg: \"failed to prove transaction\", source: Some(Status { code: Cancelled }) })"
-                .to_string(),
-        );
-        assert!(!is_retryable_execution_error(&error));
-    }
-
     use miden_protocol::address::NetworkId;
 
     #[test]
@@ -1012,6 +1012,7 @@ mod tests {
             proposal_retry_interval_ms: 1_000,
             proposal_retry_timeout_seconds: 180,
             max_duration_seconds: None,
+            prover: crate::config::ProverChoice::default(),
             artifacts_dir: PathBuf::new(),
         };
 
@@ -1030,11 +1031,10 @@ mod tests {
     }
 
     #[test]
-    fn retries_guardian_connection_errors_for_proposal_and_execution() {
+    fn retries_guardian_connection_errors_for_proposal() {
         let connection = MultisigError::GuardianConnection("temporarily unavailable".to_string());
 
         assert!(is_retryable_proposal_error(&connection));
-        assert!(is_retryable_execution_error(&connection));
     }
 
     #[test]

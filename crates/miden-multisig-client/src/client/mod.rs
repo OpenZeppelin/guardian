@@ -28,7 +28,7 @@ use miden_protocol::account::AccountId;
 
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
-use crate::builder::MultisigClientBuilder;
+use crate::builder::{MultisigClientBuilder, ProvingMode};
 use crate::error::{MultisigError, Result};
 use crate::export::ExportedProposal;
 use crate::keystore::KeyManager;
@@ -94,6 +94,9 @@ pub struct MultisigClient {
     pub(crate) account_dir: PathBuf,
     /// Miden node endpoint (for recovery).
     pub(crate) miden_endpoint: Endpoint,
+    /// Where proofs are generated, preserved so a client rebuilt by
+    /// [`Self::reset_miden_client`] proves the same way as the original.
+    pub(crate) proving_mode: ProvingMode,
 }
 
 impl MultisigClient {
@@ -109,6 +112,7 @@ impl MultisigClient {
         guardian_endpoint: String,
         account_dir: PathBuf,
         miden_endpoint: Endpoint,
+        proving_mode: ProvingMode,
     ) -> Self {
         Self {
             miden_client,
@@ -117,6 +121,7 @@ impl MultisigClient {
             account: None,
             account_dir,
             miden_endpoint,
+            proving_mode,
         }
     }
 

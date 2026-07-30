@@ -1,0 +1,29 @@
+# Round-robin across the prover replicas.
+#
+# A prover instance proves ONE transaction at a time, so a single URL serialises
+# every writer behind one proof no matter how much CPU that instance is given --
+# more cores make each proof faster, they do not make two proofs run at once.
+# Concurrency comes from replicas, and replicas are only reachable through a
+# balancer, because the client takes one prover URL.
+
+# The prover speaks plaintext gRPC, which Caddy only proxies when h2c is
+# enabled explicitly; without this the listener negotiates HTTP/1.1 and every
+# proof request fails before reaching a replica.
+{
+	servers :50051 {
+		protocols h1 h2c
+	}
+}
+
+:50051 {
+	reverse_proxy h2c://prover-a:50051 h2c://prover-b:50051 {
+		lb_policy round_robin
+
+		# No passive retry across replicas here, deliberately. A prover that
+		# answers ResourceExhausted is full, not broken: retrying it elsewhere
+		# would hide the capacity limit the run is meant to surface, and the
+		# client already retries proving with backoff.
+		fail_duration 10s
+		max_fails 1
+	}
+}

@@ -2,9 +2,58 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use miden_multisig_client::Endpoint;
+use miden_multisig_client::{Endpoint, ProvingMode};
 use serde::Deserialize;
 
+/// Where the generator proves transactions.
+///
+/// `remote` delegates to the network's shared prover, which is what a real
+/// client does. `local` proves in-process. A URL points at a prover you run
+/// yourself -- the option that makes proving CPU a budgeted quantity, since a
+/// container takes a limit and an in-process prover does not.
+///
+/// Above a handful of writers the shared prover measures itself rather than
+/// GUARDIAN: a prover instance proves one transaction at a time, so concurrency
+/// beyond its capacity queues and eventually times out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ProverChoice {
+    #[default]
+    Remote,
+    Local,
+    Service(String),
+}
+
+impl<'de> Deserialize<'de> for ProverChoice {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "remote" => Self::Remote,
+            "local" => Self::Local,
+            _ => Self::Service(value),
+        })
+    }
+}
+
+impl ProverChoice {
+    /// How the run should describe its proving setup in the summary.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Remote => "remote (network default)".to_string(),
+            Self::Local => "local (in-process)".to_string(),
+            Self::Service(url) => format!("service ({url})"),
+        }
+    }
+}
+
+impl From<ProverChoice> for ProvingMode {
+    fn from(choice: ProverChoice) -> Self {
+        match choice {
+            ProverChoice::Remote => ProvingMode::Remote,
+            ProverChoice::Local => ProvingMode::Local,
+            ProverChoice::Service(url) => ProvingMode::Service(url),
+        }
+    }
+}
 #[derive(Debug, Clone, Deserialize)]
 pub struct RunConfig {
     pub accounts_file: PathBuf,
@@ -27,6 +76,8 @@ pub struct RunConfig {
     pub proposal_retry_timeout_seconds: u64,
     #[serde(default)]
     pub max_duration_seconds: Option<u64>,
+    #[serde(default)]
+    pub prover: ProverChoice,
     #[serde(default = "default_artifacts_dir")]
     pub artifacts_dir: PathBuf,
 }
@@ -58,6 +109,8 @@ pub struct ScaleConfig {
     pub proposal_retry_interval_ms: u64,
     #[serde(default = "default_proposal_retry_timeout_seconds")]
     pub proposal_retry_timeout_seconds: u64,
+    #[serde(default)]
+    pub prover: ProverChoice,
     #[serde(default = "default_artifacts_dir")]
     pub artifacts_dir: PathBuf,
 }
@@ -115,6 +168,7 @@ impl ScaleConfig {
             proposal_retry_interval_ms: self.proposal_retry_interval_ms,
             proposal_retry_timeout_seconds: self.proposal_retry_timeout_seconds,
             max_duration_seconds: None,
+            prover: self.prover.clone(),
             artifacts_dir: self.artifacts_dir.clone(),
         }
     }

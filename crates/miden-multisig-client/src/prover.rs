@@ -79,6 +79,20 @@ impl RetryingTransactionProver {
 /// Only transport-level cancellation and exhaustion qualify. A proof the prover
 /// rejected on its merits fails the same way every time, so retrying it would
 /// burn the budget and delay the real error.
+///
+/// `TransactionProverError` carries no typed status -- its catch-all variant is
+/// `Other { error_msg, source }` -- so the signal can only be read out of the
+/// rendered chain. Two renderings appear in practice, and both must match:
+///
+///   * the queue giving up:  `code: 'The operation was cancelled', message:
+///     "Timeout expired"`, whose cause is a `tonic` transport error;
+///   * the connection never being serviced: `code: 'Unknown error', message:
+///     "connection error: desc = \"i/o timeout\""`.
+///
+/// The second was read as permanent and retried zero times, losing 424
+/// operations across the 64- and 16-writer #317 legs. Matching a gRPC code would
+/// not have caught it either: the node reports it as `Unknown`, so it is
+/// recognisable only as a transport failure.
 fn is_transient(error: &TransactionProverError) -> bool {
     // Walk the source chain, not just the top message. These errors carry the
     // cause via thiserror's `#[source]`, so `to_string()` yields only "failed to
@@ -94,13 +108,27 @@ fn is_transient(error: &TransactionProverError) -> bool {
         source = cause.source();
     }
 
-    message.contains("timeout expired")
-        || message.contains("code: cancelled")
-        || message.contains("cancelled")
-        || message.contains("deadline")
-        || message.contains("unavailable")
-        || message.contains("too many requests")
-        || message.contains("connection reset")
+    const QUEUE_SIGNALS: [&str; 5] = [
+        "timeout expired",
+        "cancelled",
+        "deadline",
+        "unavailable",
+        "too many requests",
+    ];
+    // A connection the prover accepted but never serviced. Rendered without any
+    // cancellation or exhaustion wording, so the queue signals never see it.
+    const TRANSPORT_SIGNALS: [&str; 5] = [
+        "i/o timeout",
+        "connection error",
+        "transport error",
+        "connection reset",
+        "broken pipe",
+    ];
+
+    QUEUE_SIGNALS
+        .iter()
+        .chain(TRANSPORT_SIGNALS.iter())
+        .any(|signal| message.contains(signal))
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -142,12 +170,55 @@ async fn tokio_sleep(_delay: Duration) {}
 mod tests {
     use super::*;
 
+    /// Verbatim from `scale-20260729T213814Z-records.jsonl`: the queue gave up.
+    const CANCELLED_RENDERING: &str = "transaction proving failed: failed to prove transaction: code: 'The operation was cancelled', message: \"Timeout expired\", source: tonic::transport::Error(Transport, TimeoutExpired(()))";
+
+    /// Verbatim from the same run: the connection was never serviced. Carries no
+    /// cancellation or exhaustion wording at all.
+    const TRANSPORT_RENDERING: &str = "transaction proving failed: failed to prove transaction: code: 'Unknown error', message: \"connection error: desc = \\\"i/o timeout\\\"\"";
+
+    /// The rendering older miden-client versions produced, kept so that dropping
+    /// the dead `code: cancelled` arm cannot silently narrow coverage.
+    const LEGACY_CANCELLED_RENDERING: &str =
+        "failed to prove transaction: Status { code: Cancelled, message: \"Timeout expired\" }";
+
     #[test]
-    fn transient_proving_failures_are_retried() {
-        let cancelled = TransactionProverError::other(
-            "failed to prove transaction: Status { code: Cancelled, message: \"Timeout expired\" }",
-        );
-        assert!(is_transient(&cancelled));
+    fn a_cancelled_proof_is_retried() {
+        assert!(is_transient(&TransactionProverError::other(
+            CANCELLED_RENDERING
+        )));
+        assert!(is_transient(&TransactionProverError::other(
+            LEGACY_CANCELLED_RENDERING
+        )));
+    }
+
+    #[test]
+    fn a_transport_failure_is_retried() {
+        // Regression: this rendering matched no signal, so 424 operations across
+        // the #317 64- and 16-writer legs were classified permanent and retried
+        // zero times. It is not recognisable by gRPC code either -- the node
+        // reports `Unknown` -- only as a transport failure.
+        assert!(is_transient(&TransactionProverError::other(
+            TRANSPORT_RENDERING
+        )));
+    }
+
+    #[test]
+    fn every_signal_is_matched_by_some_real_rendering() {
+        // A signal no rendering exercises is dead weight that reads as coverage:
+        // the arm this replaces matched `code: cancelled`, which this
+        // miden-client renders as `code: 'The operation was cancelled'`, so it
+        // could never fire. Retiring a signal here is deliberate, not incidental.
+        for signal in ["timeout expired", "cancelled", "i/o timeout"] {
+            assert!(
+                CANCELLED_RENDERING.to_ascii_lowercase().contains(signal)
+                    || TRANSPORT_RENDERING.to_ascii_lowercase().contains(signal)
+                    || LEGACY_CANCELLED_RENDERING
+                        .to_ascii_lowercase()
+                        .contains(signal),
+                "no observed rendering contains {signal:?}, so the arm is dead"
+            );
+        }
     }
 
     #[test]

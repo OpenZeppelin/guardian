@@ -1,0 +1,59 @@
+# Self-hosted Miden transaction provers with a declared CPU budget.
+#
+# Two properties of the prover drive this whole file:
+#
+#   1. An instance proves ONE transaction at a time. Extra CPU makes a single
+#      proof faster; it does not make two proofs run at once. Concurrency comes
+#      from replicas, reached through the proxy, because a client takes exactly
+#      one prover URL.
+#   2. `--capacity` bounds requests in flight *including* the one being proved.
+#      Beyond it the prover answers ResourceExhausted immediately rather than
+#      queueing without bound -- saturation surfaces as an error instead of an
+#      ever-growing latency tail. Measured: capacity 4 against 8 writers failed
+#      135 of 159 operations this way while the CPU limit was never the binding
+#      constraint.
+#
+# Budget PROVER_REPLICAS * PROVER_CPUS against physical cores, leaving room for
+# GUARDIAN and the load generator. On a 10-core host with the diagnostic stack
+# running (8 CPU allocated), two provers at 2 CPU each already oversubscribes.
+
+x-prover: &prover
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: miden-remote-prover:0.15.2
+  environment:
+    MIDEN_PROVER_KIND: transaction
+    MIDEN_PROVER_PORT: "50051"
+    # Keep this at or above the number of concurrent writers per replica, or
+    # the prover rejects work it has the CPU to do.
+    MIDEN_PROVER_CAPACITY: ${PROVER_CAPACITY:-16}
+    # A proof that outlives this is abandoned. Keep it above the slowest proof
+    # the host produces under load, or the prover manufactures its own failures.
+    MIDEN_PROVER_TIMEOUT: ${PROVER_TIMEOUT:-120s}
+  deploy:
+    resources:
+      limits:
+        cpus: ${PROVER_CPUS:-2}
+  restart: unless-stopped
+
+services:
+  prover-a:
+    <<: *prover
+
+  prover-b:
+    <<: *prover
+
+  # Point the client here, not at a replica: one URL, round-robin behind it.
+  proxy:
+    image: caddy:2-alpine
+    depends_on: [prover-a, prover-b]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:${PROVER_PORT:-50061}:50051"
+    deploy:
+      resources:
+        limits:
+          cpus: ${PROXY_CPUS:-1}
+    restart: unless-stopped

@@ -50,6 +50,7 @@ pub(crate) async fn load_client(
         .with_context(|| format!("invalid account ID for {}", account.label))?;
     let data_dir = TempDir::new().context("failed to create temporary Miden client directory")?;
     let mut client = MultisigClient::builder()
+        .proving_mode(config.prover.clone().into())
         .miden_endpoint(endpoint)
         .guardian_endpoint(fixture.guardian_endpoint.clone())
         .account_dir(data_dir.path())
@@ -92,7 +93,9 @@ async fn sync_with_retry(client: &mut MultisigClient, config: &RunConfig) -> Res
             // node's rate limit well before the workload starts: a 64-writer run
             // aborted here because initialisation, not load, exceeded the limit.
             // The sync is idempotent, so backing off is the correct response.
-            Err(error) if crate::runner::is_rate_limited(&error) => {
+            Err(error)
+                if error.is_transient_miden_rpc() || crate::runner::is_rate_limited(&error) =>
+            {
                 let now = std::time::Instant::now();
                 if now >= deadline {
                     return Err(error.into());
@@ -107,12 +110,14 @@ async fn sync_with_retry(client: &mut MultisigClient, config: &RunConfig) -> Res
 }
 
 pub(crate) fn is_miden_sync_tip_ahead(error: &MultisigError) -> bool {
+    let message = error.to_string();
     matches!(
         error,
-        MultisigError::MidenClient(message)
-            if message.contains("block_to (")
-                && message.contains("is greater than chain tip (")
-    )
+        MultisigError::MidenClient(_)
+            | MultisigError::MidenClientSource { .. }
+            | MultisigError::MidenRpc(_)
+    ) && message.contains("block_to (")
+        && message.contains("is greater than chain tip (")
 }
 
 pub async fn load_observer(fixture: &Fixture, account: &AccountFixture) -> Result<GuardianClient> {

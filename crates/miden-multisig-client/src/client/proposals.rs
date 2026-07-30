@@ -35,7 +35,8 @@ pub enum AbandonStatus {
 }
 use crate::error::{MultisigError, Result};
 use crate::execution::{
-    SignatureAdvice, SignatureInput, build_final_transaction_request, collect_signature_advice,
+    MidenRpcRetryPolicy, SignatureAdvice, SignatureInput, build_final_transaction_request,
+    collect_signature_advice,
 };
 use crate::keystore::proposal_public_key_hex;
 use crate::proposal::{Proposal, TransactionType, is_builtin_proposal_type};
@@ -173,8 +174,22 @@ impl MultisigClient {
     /// proposal. That push is best-effort: an unreachable GUARDIAN must not block
     /// the switch, so the ack and any error are discarded.
     pub async fn execute_proposal(&mut self, proposal_id: &str) -> Result<()> {
-        // Sync with the network before executing to ensure we have latest state
-        self.sync().await?;
+        self.execute_proposal_with_retry(proposal_id, MidenRpcRetryPolicy::disabled())
+            .await
+    }
+
+    /// Executes a proposal with bounded retries around idempotent Miden RPC stages.
+    ///
+    /// The GUARDIAN delta is pushed exactly once. After that acknowledgment,
+    /// transaction execution and submission resume without fetching another ack
+    /// or pushing another delta. Ambiguous submissions are reconciled by
+    /// transaction ID before the proven transaction is resubmitted.
+    pub async fn execute_proposal_with_retry(
+        &mut self,
+        proposal_id: &str,
+        retry_policy: MidenRpcRetryPolicy,
+    ) -> Result<()> {
+        self.sync_with_miden_rpc_retry(retry_policy).await?;
 
         let account = self.require_account()?.clone();
         let account_id = account.id();
@@ -289,8 +304,34 @@ impl MultisigClient {
         .await?;
 
         // Execute and finalize
-        self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
-            .await
+        self.finalize_transaction_with_retry(
+            account_id,
+            final_tx_request,
+            &proposal.transaction_type,
+            retry_policy,
+        )
+        .await
+    }
+
+    async fn sync_with_miden_rpc_retry(&mut self, retry_policy: MidenRpcRetryPolicy) -> Result<()> {
+        let deadline = retry_policy.deadline();
+        let mut attempt = 0;
+
+        loop {
+            match self.sync().await {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if error.is_transient_miden_rpc() && tokio::time::Instant::now() < deadline =>
+                {
+                    let delay = retry_policy
+                        .delay(attempt)
+                        .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Creates a proposal from a producer-built transaction the SDK does not

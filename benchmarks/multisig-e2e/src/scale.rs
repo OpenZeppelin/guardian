@@ -30,14 +30,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use guardian_client::GuardianClient;
-use miden_multisig_client::{AbandonRequestState, AccountId, NoteFilter, TransactionType};
+use miden_multisig_client::{AbandonRequestState, AccountId, TransactionType};
 use serde::Serialize;
 
 use crate::config::ScaleConfig;
 use crate::fixture::Fixture;
 use crate::runner::{
-    LatencyStats, elapsed_ms, ensure_ready, execute_with_retry, latency_stats, propose_with_retry,
-    sync_network_with_retry,
+    LatencyStats, elapsed_ms, ensure_ready, execute_with_retry, latency_stats,
+    list_consumable_notes_with_retry, propose_with_retry, sync_network_with_retry,
 };
 use crate::runtime::{BenchClient, load_client, load_observer};
 
@@ -421,13 +421,24 @@ async fn execute_write(
     // Sync first: a note the ring delivered is only visible locally once the
     // client has caught up with the chain, so without this the writer would
     // never see what it was sent and would keep draining.
-    let incoming = match sync_network_with_retry(sender, run_config).await {
-        Ok(()) => sender
-            .client
-            .list_consumable_notes_filtered(NoteFilter::by_faucet(faucet_id))
-            .await
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
+    if let Err(error) = sync_network_with_retry(sender, run_config).await {
+        return fail(
+            record,
+            started,
+            classify(&error, FailureKind::Proposal),
+            error,
+        );
+    }
+    let incoming = match list_consumable_notes_with_retry(sender, faucet_id, run_config).await {
+        Ok(incoming) => incoming,
+        Err(error) => {
+            return fail(
+                record,
+                started,
+                classify(&error, FailureKind::Proposal),
+                error,
+            );
+        }
     };
     let transaction = if incoming.is_empty() {
         TransactionType::transfer(receiver_id, faucet_id, run_config.amount)
@@ -560,12 +571,42 @@ async fn await_canonical_status(
     }
 }
 
-/// The server returns auth-window expiry as a generic authentication failure —
-/// both are `GuardianError::AuthenticationFailed`, differing only in message —
-/// so the distinguishing substring is the only signal available without a
-/// server-side contract change.
+/// Every authentication failure counts toward the auth-window criterion,
+/// because the server no longer lets a client tell the two apart.
+///
+/// Expiry is raised as `GuardianError::AuthenticationFailed` carrying the drift
+/// detail (`crates/server/src/services/mod.rs`), but that detail is log-only:
+/// `error.rs` maps every `AuthenticationFailed` to one fixed message, "Your
+/// session has expired. Please sign in again.", under one code,
+/// `authentication_failed`. Expiry and a genuine auth failure are byte-identical
+/// on the wire.
+///
+/// Matching the drift wording, as this did, therefore matched nothing a server
+/// actually sends: a 64-writer run took 70 authentication failures and still
+/// reported the criterion as a pass. Counting every authentication failure
+/// cannot under-report, which is the bias a target of zero needs — and in this
+/// harness it barely over-reports either, since every request is signed
+/// correctly by construction, so an authentication failure here *is* a
+/// window or replay problem.
+///
+/// The drift wording is still matched: older servers put it on the wire, and it
+/// remains what the server logs.
 fn is_auth_window(message: &str) -> bool {
-    message.contains("outside allowed window")
+    const AUTH_SIGNALS: [&str; 5] = [
+        // Current wire message, and the envelope code beside it.
+        "session has expired",
+        "authentication_failed",
+        // gRPC status text for the same condition.
+        "does not have valid authentication credentials",
+        // `GuardianError`'s own Display form.
+        "authentication failed",
+        // Pre-human-readable-errors servers, and today's server-side logs.
+        "outside allowed window",
+    ];
+    let message = message.to_ascii_lowercase();
+    AUTH_SIGNALS
+        .iter()
+        .any(|signal| message.contains(&signal.to_ascii_lowercase()))
 }
 
 /// Classify a failure, preferring the auth-window criterion over the stage it
@@ -1002,6 +1043,7 @@ mod tests {
             timeout_seconds: 180,
             proposal_retry_interval_ms: 1000,
             proposal_retry_timeout_seconds: 180,
+            prover: crate::config::ProverChoice::default(),
             artifacts_dir: PathBuf::from("reports"),
         }
     }
@@ -1240,10 +1282,36 @@ mod tests {
 
     #[test]
     fn auth_window_errors_are_recognised_from_the_server_message() {
+        // Verbatim from `scale-20260729T230836Z-records.jsonl`. Matching the
+        // drift wording alone missed all 70 of these and passed the criterion.
+        assert!(is_auth_window(
+            "GUARDIAN server error: failed to get state from GUARDIAN: gRPC status error: code: 'The request does not have valid authentication credentials', message: \"Your session has expired. Please sign in again.\""
+        ));
+        // Older servers put the drift detail on the wire; it is still logged.
         assert!(is_auth_window(
             "Authentication failed: Request timestamp outside allowed window: 301000ms drift (max 300000ms)"
         ));
-        assert!(!is_auth_window("Authentication failed: invalid signature"));
+        assert!(is_auth_window("authentication_failed"));
+    }
+
+    #[test]
+    fn any_authentication_failure_counts_toward_the_criterion() {
+        // Deliberate over-reach: expiry and a genuine auth failure are
+        // byte-identical on the wire, so a criterion targeting zero must count
+        // both rather than silently drop the ones it cannot name. Every request
+        // here is signed correctly by construction, so this barely over-counts.
+        assert!(is_auth_window("Authentication failed: invalid signature"));
+    }
+
+    #[test]
+    fn unrelated_server_errors_are_not_auth_failures() {
+        assert!(!is_auth_window(
+            "There's already a pending change for this account. Finish or cancel it first."
+        ));
+        assert!(!is_auth_window("conflict_pending_delta"));
+        assert!(!is_auth_window(
+            "You're not an authorized signer for this account."
+        ));
     }
 
     #[test]

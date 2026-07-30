@@ -4,6 +4,12 @@
 **Branch**: `317-scalability-target-measurement`
 **Tier**: Diagnostic (local, instrumented) — see [spec.md](./spec.md) FR-017a
 
+> **Partly superseded by [`test-report-2026-07-30.md`](./test-report-2026-07-30.md).**
+> The write-path ceiling described below as "prover saturation" was later shown
+> to be one-proof-at-a-time serialisation, and §2.2's writer numbers were taken
+> through classifiers that manufactured failures which were not real. The
+> read-path findings, the defect list, and the recommended next steps stand.
+
 > **This report carries no authoritative target verdicts.** Only the deployed,
 > production-shaped deployment measured by the distributed harness may do that.
 > Everything below was measured on a local stack against live Miden testnet, on a

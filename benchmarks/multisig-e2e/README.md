@@ -8,6 +8,55 @@ It is intentionally separate from `benchmarks/prod-server`: that harness measure
 capacity with synthetic deltas, while this one measures the full Rust SDK, Guardian, prover, and
 Miden network path.
 
+## Running a scale test end to end
+
+The individual commands are documented below; this is the order they go in, and the two decisions
+that determine whether the resulting numbers mean anything.
+
+```bash
+# 1. Guardian to measure. Either a local server, or the instrumented two-replica
+#    stack if you want server-side metrics and query attribution.
+(cd benchmarks/diagnostic-stack && docker compose up -d)
+
+# 2. Provision accounts. Resumable -- re-run it after funding to top up.
+cargo run -p guardian-multisig-e2e-benchmark -- prepare \
+  --miden-endpoint https://rpc.testnet.miden.io --accounts 8
+
+# 3. Fund every account printed above from the faucet, then give each one a
+#    consumable note to start the transfer ring.
+cargo run -p guardian-multisig-e2e-benchmark -- bootstrap \
+  --config benchmarks/multisig-e2e/testnet.scale.toml
+
+# 4. Optional but usually necessary above ~2 writers: your own prover.
+(cd docs/guides/local-prover && docker compose up -d --build)
+
+# 5. Run it.
+cargo run --release -p guardian-multisig-e2e-benchmark -- scale-run \
+  --config benchmarks/multisig-e2e/testnet.scale.toml
+```
+
+**Decision one: `writers` must not exceed proving capacity.** A prover instance proves one
+transaction at a time. Two self-hosted replicas at 2 CPU each sustained 4 writers (68 of 68
+operations) and failed 8 (23 of 62, proof timeouts). The public prover is far tighter still — 2
+writers completed 17 of 17, 16 writers completed 5 of 273. Over-driving it does not degrade
+gracefully: completed throughput *fell* from 13.6 to 4.6 operations/min when writers went 4 → 8,
+because work that times out consumed a proof slot on the way. Size writers to prover replicas, then
+read [Choosing a prover](#choosing-a-prover).
+
+**Decision two: the host must not be saturated.** Total container CPU plus the generator must stay
+under physical cores, or a starved generator measures a starved Guardian and the run still looks
+healthy from inside the containers. Sample host load *during* the run, not after:
+
+```bash
+while pgrep -f scale-run >/dev/null; do
+  echo "$(date -u +%H:%M:%S) load=$(sysctl -n vm.loadavg)"; sleep 15
+done
+```
+
+Load comfortably below core count means the numbers are attributable. On a 10-core machine, a clean
+4-writer run sat at 5–7; in-process proving with 8 writers hit 28, and those numbers are not
+trustworthy regardless of how good they look.
+
 ## Local Guardian workflow
 
 Start a local Guardian server configured for the same Miden network as the benchmark. Create the
@@ -92,6 +141,24 @@ Each writer runs on its own thread with its own runtime: the multisig client bui
 non-`Send` value across an await, so writer futures cannot cross threads, and proving is CPU-bound
 so real parallelism is what makes the writers concurrent rather than interleaved.
 
+### Choosing a prover
+
+`prover` decides where proofs are generated, and above a handful of writers it decides what the run
+actually measures:
+
+| Value | Proving | Use when |
+|---|---|---|
+| `"remote"` (default) | the network's shared prover | matching what a real client does, at low concurrency |
+| `"local"` | in-process | you need throughput and can accept uncapped CPU |
+| `"http://host:port"` | a prover you run | you need proving CPU capped so it cannot starve GUARDIAN |
+
+The shared prover serves one proof at a time per instance, so beyond roughly two concurrent writers
+a `remote` run measures the prover rather than GUARDIAN: measured against testnet, 2 writers
+completed 17 of 17 while 16 writers completed 5 of 273. `local` removes that ceiling but uses every
+core it wants — 8 writers drove host load to 28 on a 10-core machine, which starves the server being
+measured. A self-hosted prover is the option that keeps CPU accounting honest; see
+[the local-prover guide](../../docs/guides/local-prover/README.md) for the compose stack and sizing.
+
 The summary evaluates three issue #317 criteria directly:
 
 | Criterion | Target | Source |
@@ -136,10 +203,12 @@ falling back to the deferred wall clock. All observations share one `timeout_sec
 deadline, so final collection is bounded independently of observation count.
 
 If Guardian reports that a prior delta is still pending, the benchmark waits
-`proposal_retry_interval_ms`, then reruns the proposal workflow against the latest account state.
-Transient Guardian connection failures use the same retry deadline for proposal creation and
-execution. Miden's transient `block_to`-ahead-of-chain-tip sync race is also retried regardless of
-which sync endpoint reports it. Other errors fail immediately.
+with exponential backoff and jitter, then reruns the proposal workflow against the latest account
+state. Proposal-stage Miden RPC `ResourceExhausted`, `Unavailable`, `DeadlineExceeded`, `Internal`,
+and `Aborted` responses use the same retry deadline. Execution retries only idempotent Miden stages:
+the Guardian delta is pushed once, and ambiguous submissions are reconciled by transaction ID before
+the same proven transaction is resubmitted. Sync and consumable-note lookup errors fail the operation
+instead of silently falling back to a transfer.
 
 `max_duration_seconds` stops scheduling new operations at an operation boundary. The shared
 canonicalization drain runs afterward before the final summary is written.

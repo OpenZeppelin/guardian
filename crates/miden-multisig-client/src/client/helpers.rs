@@ -9,16 +9,21 @@ use guardian_shared::ToJson;
 use miden_client::account::Account;
 use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcClient, GrpcError, NodeRpcClient, RpcError};
-use miden_client::transaction::{TransactionRequest, TransactionSummary};
+use miden_client::store::TransactionFilter;
+use miden_client::transaction::{
+    TransactionRequest, TransactionResult, TransactionStatus, TransactionSummary,
+};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
+use miden_protocol::block::BlockNumber;
+use miden_protocol::transaction::TransactionId;
 use miden_protocol::utils::serde::Serializable;
 
 use super::MultisigClient;
 use crate::account::MultisigAccount;
 use crate::builder::create_miden_client;
 use crate::error::{MultisigError, Result, error_chain};
-use crate::execution::build_final_transaction_request;
+use crate::execution::{MidenRpcRetryPolicy, build_final_transaction_request};
 use crate::keystore::word_from_hex;
 use crate::proposal::{Proposal, TransactionType};
 use crate::transaction::word_to_hex;
@@ -35,6 +40,37 @@ fn rebuilds_local_state_from_delta(transaction_type: &TransactionType) -> bool {
         TransactionType::P2ID { .. }
         | TransactionType::ConsumeNotes { .. }
         | TransactionType::Custom => false,
+    }
+}
+
+enum SubmissionOutcome {
+    Accepted(BlockNumber),
+    Reconciled(BlockNumber),
+}
+
+impl SubmissionOutcome {
+    fn height(&self) -> BlockNumber {
+        match self {
+            Self::Accepted(height) | Self::Reconciled(height) => *height,
+        }
+    }
+}
+
+fn rebuild_account(mut base_account: Account, tx_result: &TransactionResult) -> Result<Account> {
+    let account_delta = tx_result.account_delta();
+    if account_delta.is_full_state() {
+        Account::try_from(account_delta).map_err(|error| {
+            MultisigError::MidenClient(format!(
+                "failed to build account from full state delta: {error}"
+            ))
+        })
+    } else {
+        base_account.apply_delta(account_delta).map_err(|error| {
+            MultisigError::MidenClient(format!(
+                "failed to apply transaction delta to account: {error}"
+            ))
+        })?;
+        Ok(base_account)
     }
 }
 
@@ -67,10 +103,7 @@ impl MultisigClient {
                 } => {
                     MultisigError::MidenClient(format!("account {} not found on chain", account_id))
                 }
-                other => MultisigError::MidenClient(format!(
-                    "failed to fetch on-chain commitment for account {}: {}",
-                    account_id, other
-                )),
+                other => MultisigError::from(other),
             })?;
 
         Ok(proof.account_witness().state_commitment())
@@ -97,10 +130,7 @@ impl MultisigClient {
                 error_kind: GrpcError::NotFound,
                 ..
             }) => Ok(None),
-            Err(e) => Err(MultisigError::MidenClient(format!(
-                "failed to fetch on-chain commitment for account {}: {}",
-                account_id, e
-            ))),
+            Err(error) => Err(MultisigError::from(error)),
         }
     }
 
@@ -310,6 +340,22 @@ impl MultisigClient {
         tx_request: TransactionRequest,
         transaction_type: &TransactionType,
     ) -> Result<()> {
+        self.finalize_transaction_with_retry(
+            account_id,
+            tx_request,
+            transaction_type,
+            MidenRpcRetryPolicy::disabled(),
+        )
+        .await
+    }
+
+    pub(crate) async fn finalize_transaction_with_retry(
+        &mut self,
+        account_id: AccountId,
+        tx_request: TransactionRequest,
+        transaction_type: &TransactionType,
+        retry_policy: MidenRpcRetryPolicy,
+    ) -> Result<()> {
         if let TransactionType::SwitchGuardian {
             new_endpoint,
             new_commitment,
@@ -325,100 +371,49 @@ impl MultisigClient {
                 None
             };
 
-        let updated_account: Account = if rebuilds_local_state_from_delta(transaction_type) {
-            let base_account: Account = self
-                .miden_client
-                .get_account(account_id)
-                .await
-                .map_err(|e| {
-                    MultisigError::MidenClient(format!(
-                        "failed to get account before execution: {}",
-                        e
-                    ))
-                })?
-                .ok_or_else(|| {
-                    MultisigError::MissingConfig("account not found before execution".to_string())
-                })?;
+        let base_account = self
+            .miden_client
+            .get_account(account_id)
+            .await
+            .map_err(MultisigError::from)?
+            .ok_or_else(|| {
+                MultisigError::MissingConfig("account not found before execution".to_string())
+            })?;
 
-            let tx_result = self
-                .miden_client
-                .execute_transaction(account_id, tx_request)
-                .await
-                .map_err(|e| {
-                    MultisigError::TransactionExecution(format!(
-                        "transaction execution failed: {:?}",
-                        e
-                    ))
-                })?;
+        let tx_result = self
+            .execute_transaction_with_retry(account_id, tx_request, retry_policy)
+            .await?;
+        let proven = self
+            .miden_client
+            .prove_transaction(&tx_result)
+            .await
+            .map_err(MultisigError::from)?;
+        let submission = self
+            .submit_with_reconciliation(proven, &tx_result, retry_policy)
+            .await?;
 
-            let proven = self
-                .miden_client
-                .prove_transaction(&tx_result)
-                .await
-                .map_err(|e| {
-                    MultisigError::TransactionExecution(format!(
-                        "transaction proving failed: {:?}",
-                        e
-                    ))
-                })?;
-
-            self.miden_client
-                .submit_proven_transaction(proven, &tx_result)
-                .await
-                .map_err(|e| {
-                    MultisigError::TransactionExecution(format!(
-                        "transaction submission failed: {:?}",
-                        e
-                    ))
-                })?;
-
-            let account_delta = tx_result.account_delta();
-            let rebuilt: Account = if account_delta.is_full_state() {
-                Account::try_from(account_delta).map_err(|e| {
-                    MultisigError::MidenClient(format!(
-                        "failed to build account from full state delta: {}",
-                        e
-                    ))
-                })?
-            } else {
-                let mut acc = base_account;
-                acc.apply_delta(account_delta).map_err(|e| {
-                    MultisigError::MidenClient(format!(
-                        "failed to apply transaction delta to account: {}",
-                        e
-                    ))
-                })?;
-                acc
-            };
-
+        let rebuilt = rebuild_account(base_account, &tx_result)?;
+        let updated_account = if rebuilds_local_state_from_delta(transaction_type)
+            || matches!(submission, SubmissionOutcome::Reconciled(_))
+        {
             self.add_or_update_account(&rebuilt, true).await?;
-
-            let _ = self.miden_client.sync_state().await;
-
             rebuilt
         } else {
+            let submission_height = submission.height();
             self.miden_client
-                .submit_new_transaction(account_id, tx_request)
+                .apply_transaction(&tx_result, submission_height)
                 .await
-                .map_err(|e| {
-                    MultisigError::TransactionExecution(format!(
-                        "transaction execution failed: {:?}",
-                        e
-                    ))
-                })?;
-
-            let _ = self.miden_client.sync_state().await;
-
+                .map_err(MultisigError::from)?;
             self.miden_client
                 .get_account(account_id)
                 .await
-                .map_err(|e| {
-                    MultisigError::MidenClient(format!("failed to get updated account: {}", e))
-                })?
+                .map_err(MultisigError::from)?
                 .ok_or_else(|| {
                     MultisigError::MissingConfig("account not found after execution".to_string())
                 })?
         };
+
+        let _ = self.miden_client.sync_state().await;
 
         if let Some(endpoint) = new_guardian_endpoint {
             let switching_endpoint = endpoint != self.guardian_endpoint;
@@ -441,9 +436,138 @@ impl MultisigClient {
         Ok(())
     }
 
+    async fn execute_transaction_with_retry(
+        &mut self,
+        account_id: AccountId,
+        tx_request: TransactionRequest,
+        retry_policy: MidenRpcRetryPolicy,
+    ) -> Result<TransactionResult> {
+        let deadline = retry_policy.deadline();
+        let mut attempt = 0;
+
+        loop {
+            match self
+                .miden_client
+                .execute_transaction(account_id, tx_request.clone())
+                .await
+                .map_err(MultisigError::from)
+            {
+                Ok(result) => return Ok(result),
+                Err(error)
+                    if error.is_transient_miden_rpc() && tokio::time::Instant::now() < deadline =>
+                {
+                    let delay = retry_policy
+                        .delay(attempt)
+                        .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn submit_with_reconciliation(
+        &mut self,
+        proven: miden_protocol::transaction::ProvenTransaction,
+        tx_result: &TransactionResult,
+        retry_policy: MidenRpcRetryPolicy,
+    ) -> Result<SubmissionOutcome> {
+        let transaction_id = tx_result.id();
+        let deadline = retry_policy.deadline();
+        let mut attempt = 0;
+
+        loop {
+            match self
+                .miden_client
+                .submit_proven_transaction(proven.clone(), tx_result)
+                .await
+                .map_err(MultisigError::from)
+            {
+                Ok(height) => return Ok(SubmissionOutcome::Accepted(height)),
+                Err(error)
+                    if error.is_transient_miden_rpc()
+                        || (attempt > 0 && error.is_miden_duplicate_submission()) =>
+                {
+                    if !error.is_miden_rate_limited() {
+                        match self.reconcile_submission(transaction_id).await {
+                            Ok(Some(height)) => {
+                                return Ok(SubmissionOutcome::Reconciled(height));
+                            }
+                            Ok(None) => {}
+                            Err(reconcile_error) if reconcile_error.is_transient_miden_rpc() => {}
+                            Err(reconcile_error) => return Err(reconcile_error),
+                        }
+                    }
+
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        return Err(error);
+                    }
+                    let delay = retry_policy
+                        .delay(attempt)
+                        .min(deadline.saturating_duration_since(now));
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn reconcile_submission(
+        &mut self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<BlockNumber>> {
+        if let Some(height) = self.stored_submission_height(transaction_id).await? {
+            return Ok(Some(height));
+        }
+
+        let sync_result = self
+            .miden_client
+            .sync_state()
+            .await
+            .map_err(MultisigError::from);
+        let reconciled = self.stored_submission_height(transaction_id).await?;
+        if reconciled.is_some() {
+            return Ok(reconciled);
+        }
+        sync_result?;
+        Ok(None)
+    }
+
+    async fn stored_submission_height(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<BlockNumber>> {
+        let transaction = self
+            .miden_client
+            .get_transactions(TransactionFilter::Ids(vec![transaction_id]))
+            .await
+            .map_err(MultisigError::from)?
+            .into_iter()
+            .next();
+
+        match transaction {
+            Some(record) => match record.status {
+                TransactionStatus::Pending => Ok(Some(record.details.submission_height)),
+                TransactionStatus::Committed { block_number, .. } => Ok(Some(block_number)),
+                TransactionStatus::Discarded(cause) => Err(MultisigError::TransactionExecution(
+                    format!("transaction {transaction_id} was discarded: {cause:?}"),
+                )),
+            },
+            None => Ok(None),
+        }
+    }
+
     /// Resets the miden-client by creating a new instance with a fresh database.
     pub async fn reset_miden_client(&mut self) -> Result<()> {
-        self.miden_client = create_miden_client(&self.account_dir, &self.miden_endpoint).await?;
+        self.miden_client = create_miden_client(
+            &self.account_dir,
+            &self.miden_endpoint,
+            self.proving_mode.clone(),
+        )
+        .await?;
         Ok(())
     }
 

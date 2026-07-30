@@ -571,6 +571,30 @@ let mut client = MultisigClient::builder()
     .await?;
 ```
 
+#### Choosing where proofs are generated
+
+`ProvingMode` selects the prover. The default delegates to the network's shared
+prover, which is right for ordinary clients — proving is CPU-bound and most
+callers are not sized for it.
+
+```rust
+use miden_multisig_client::ProvingMode;
+
+let mut client = MultisigClient::builder()
+    // ProvingMode::Remote  — the network's prover service (default)
+    // ProvingMode::Local   — prove in-process; CPU-bound, no cap
+    .proving_mode(ProvingMode::Service("http://127.0.0.1:50061".to_string()))
+    // ...
+    .build()
+    .await?;
+```
+
+A prover instance proves one transaction at a time, so a shared prover
+serialises concurrent callers behind a single proof. Applications issuing
+transactions concurrently should run their own prover; see
+[the local-prover guide](./guides/local-prover/README.md) for a compose stack
+and sizing guidance.
+
 ### Creating Accounts
 
 ```rust
@@ -711,6 +735,15 @@ client.sign_proposal(&proposal_id).await?;
 
 // Execute when ready
 client.execute_proposal(&proposal_id).await?;
+
+// For rate-limited or intermittently unavailable Miden RPC infrastructure,
+// retry only the idempotent stages without pushing the Guardian delta twice.
+let retry = MidenRpcRetryPolicy::new(
+    std::time::Duration::from_secs(180),
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(8),
+);
+client.execute_proposal_with_retry(&proposal_id, retry).await?;
 ```
 
 ### Offline Export/Import
@@ -774,6 +807,7 @@ for note in notes {
 | `list_proposals()` | List pending proposals |
 | `sign_proposal(id)` | Sign a proposal |
 | `execute_proposal(id)` | Execute ready proposal |
+| `execute_proposal_with_retry(id, policy)` | Execute with bounded Miden RPC retries and transaction-ID submission reconciliation |
 | `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
 | `create_proposal_offline(tx)` | Create offline proposal |

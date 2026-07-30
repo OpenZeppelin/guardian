@@ -47,7 +47,7 @@ pub async fn execute_for_summary(
         Err(ClientError::TransactionExecutorError(err)) => {
             Err(MultisigError::TransactionExecution(err.to_string()))
         }
-        Err(err) => Err(MultisigError::MidenClient(err.to_string())),
+        Err(err) => Err(MultisigError::from(err)),
     }
 }
 
