@@ -1,14 +1,21 @@
+use crate::config::OperationMix;
 use crate::operations::OperationKind;
 
-pub fn operation_for_index(reads_per_push: u32, op_index: u64) -> OperationKind {
-    if reads_per_push == 0 {
-        return OperationKind::PushDelta;
-    }
-    let cycle = u64::from(reads_per_push.saturating_add(1));
-    if cycle > 0 && op_index % cycle == u64::from(reads_per_push) {
-        OperationKind::PushDelta
-    } else {
-        OperationKind::GetState
+pub fn operation_for_index(mix: &OperationMix, op_index: u64) -> OperationKind {
+    match mix {
+        OperationMix::ReadOnly => OperationKind::GetState,
+        OperationMix::PushOnly { .. } => OperationKind::PushDelta,
+        OperationMix::Mixed {
+            reads_per_push: 0, ..
+        } => OperationKind::PushDelta,
+        OperationMix::Mixed { reads_per_push, .. } => {
+            let cycle = u64::from(reads_per_push.saturating_add(1));
+            if op_index % cycle == u64::from(*reads_per_push) {
+                OperationKind::PushDelta
+            } else {
+                OperationKind::GetState
+            }
+        }
     }
 }
 

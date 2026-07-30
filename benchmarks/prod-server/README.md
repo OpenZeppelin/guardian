@@ -5,10 +5,6 @@ deployment.
 
 Current scaffold status:
 - `preflight` is implemented
-- mixed `get_state` / `push_delta` workload execution is implemented
-- push-only `push_delta` workload execution is implemented via `reads_per_push = 0`
-- push-only burst runs retire an account after its first successful `push_delta`
-- mixed burst runs can also retire an account after its first successful `push_delta`
 - shardable `worker-run` execution is implemented
 - local `aggregate` for distributed worker artifacts is implemented
 - profile parsing, artifact layout, report models, and cleanup manifest models are implemented
@@ -25,6 +21,29 @@ Current scaffold status:
   as a `canonicalization` section (p50/p95/p99/max wait) in the run report
   and summary
 
+## Workload modes
+
+`[operation_mix]` selects one of three shapes:
+
+| `mode` | Operations issued | Extra keys |
+|---|---|---|
+| `read_only` | `get_state` only | none |
+| `push_only` | `push_delta` only | `retire_after_first_successful_push` |
+| `mixed` | `reads_per_push` reads then one push, repeating | `reads_per_push` (> 0), `retire_after_first_successful_push` |
+
+`retire_after_first_successful_push` stops a user after its first accepted
+push, which keeps a burst run on unique accounts instead of walking one
+account's nonce sequence. It is only meaningful where pushes happen.
+
+Read-only runs still create one account per user through the real `configure`
+path, so cleanup matters as much as it does for a write run.
+
+**A read-only run is closed-loop**: users issue the next `get_state` as soon as
+the previous returns, so `users` is the number of requests that may be in flight,
+not a paced reader population. That produces an in-flight-saturation ceiling
+(spec FR-003c), which must be reported as a ceiling and never as a target
+verdict.
+
 Profiles live in `profiles/`.
 Run artifacts live under `reports/<run-id>/`.
 
@@ -38,6 +57,10 @@ cargo run --manifest-path benchmarks/prod-server/Cargo.toml -- \
 Distributed ECS execution:
 
 ```bash
+./scripts/run-prod-benchmark-ecs.sh \
+  --profile benchmarks/prod-server/profiles/read-only-ramp.toml \
+  --workers 16
+
 ./scripts/run-prod-benchmark-ecs.sh \
   --profile benchmarks/prod-server/profiles/ecdsa-burst-scale.toml \
   --workers 16

@@ -207,8 +207,18 @@ fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
         .map(|operation| operation.throughput_ops_per_sec)
         .unwrap_or(0.0);
     let headroom_percent = 30.0;
-    let effective_per_instance = (push_throughput * (1.0 - headroom_percent / 100.0)).max(0.001);
-    let required_instances = (500.0 / effective_per_instance).ceil() as u32;
+    // A workload that never pushes cannot size write capacity; emitting an
+    // estimate derived from a zero denominator would publish a fabricated
+    // instance count.
+    let capacity_estimate = (config.operation_mix.pushes() && push_throughput > 0.0).then(|| {
+        let effective_per_instance = push_throughput * (1.0 - headroom_percent / 100.0);
+        CapacityEstimate {
+            target_push_tps: 500.0,
+            sustained_push_tps: push_throughput,
+            headroom_percent,
+            required_instances: ((500.0 / effective_per_instance).ceil() as u32).max(1),
+        }
+    });
 
     BenchmarkRunReport {
         run_id,
@@ -224,12 +234,7 @@ fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
         },
         operations,
         canonicalization,
-        capacity_estimate: CapacityEstimate {
-            target_push_tps: 500.0,
-            sustained_push_tps: push_throughput,
-            headroom_percent,
-            required_instances: required_instances.max(1),
-        },
+        capacity_estimate,
         cleanup: CleanupReport {
             manifest_path: artifacts.cleanup_manifest.display().to_string(),
             status: cleanup_manifest.purge_status.clone(),
@@ -337,18 +342,38 @@ fn render_summary(report: &BenchmarkRunReport) -> String {
         output.push_str(&format!("Deployment shape: `{shape}`\n"));
     }
     output.push('\n');
-    output.push_str("| Operation | Scope | Attempted | Succeeded | Failed | Throughput |\n");
-    output.push_str("|-----------|-------|-----------|-----------|--------|------------|\n");
+    output.push_str(
+        "| Operation | Scope | Attempted | Succeeded | Failed | Throughput | p50 | p95 | p99 |\n",
+    );
+    output.push_str(
+        "|-----------|-------|-----------|-----------|--------|------------|-----|-----|-----|\n",
+    );
     for operation in &report.operations {
         output.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {:.2} ops/s |\n",
+            "| {} | {} | {} | {} | {} | {:.2} ops/s | {:.0}ms | {:.0}ms | {:.0}ms |\n",
             operation.operation,
             operation.scope,
             operation.attempted,
             operation.succeeded,
             operation.failed,
-            operation.throughput_ops_per_sec
+            operation.throughput_ops_per_sec,
+            operation.latency_ms.p50,
+            operation.latency_ms.p95,
+            operation.latency_ms.p99
         ));
+    }
+    output.push('\n');
+    for operation in &report.operations {
+        if operation.scope == "all" && !operation.failure_breakdown.is_empty() {
+            output.push_str(&format!("Failures, `{}`: ", operation.operation));
+            let categories = operation
+                .failure_breakdown
+                .iter()
+                .map(|(category, count)| format!("`{category}` {count}"))
+                .collect::<Vec<_>>();
+            output.push_str(&categories.join(", "));
+            output.push('\n');
+        }
     }
     output.push('\n');
     if let Some(canonicalization) = &report.canonicalization {
@@ -376,10 +401,12 @@ fn render_summary(report: &BenchmarkRunReport) -> String {
         ));
         output.push('\n');
     }
-    output.push_str(&format!(
-        "Estimated instances for 500 TPS with {:.0}% headroom: `{}`\n",
-        report.capacity_estimate.headroom_percent, report.capacity_estimate.required_instances
-    ));
+    if let Some(capacity_estimate) = &report.capacity_estimate {
+        output.push_str(&format!(
+            "Estimated instances for 500 TPS with {:.0}% headroom: `{}`\n",
+            capacity_estimate.headroom_percent, capacity_estimate.required_instances
+        ));
+    }
     output.push_str(&format!("Cleanup status: `{:?}`\n", report.cleanup.status));
     output
 }

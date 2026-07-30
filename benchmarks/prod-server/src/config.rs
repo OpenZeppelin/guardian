@@ -29,17 +29,38 @@ pub struct RunConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OperationMix {
-    pub read_operation: ReadOperation,
-    pub reads_per_push: u32,
-    #[serde(default)]
-    pub retire_after_first_successful_push: bool,
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum OperationMix {
+    ReadOnly,
+    PushOnly {
+        retire_after_first_successful_push: bool,
+    },
+    Mixed {
+        reads_per_push: u32,
+        retire_after_first_successful_push: bool,
+    },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReadOperation {
-    GetState,
+impl OperationMix {
+    pub fn retires_after_first_successful_push(&self) -> bool {
+        match self {
+            Self::ReadOnly => false,
+            Self::PushOnly {
+                retire_after_first_successful_push,
+            }
+            | Self::Mixed {
+                retire_after_first_successful_push,
+                ..
+            } => *retire_after_first_successful_push,
+        }
+    }
+
+    pub fn pushes(&self) -> bool {
+        match self {
+            Self::ReadOnly => false,
+            Self::PushOnly { .. } | Self::Mixed { .. } => true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -101,8 +122,21 @@ impl RunConfig {
         {
             bail!("scheme_distribution percentages must sum to 100");
         }
+        if let OperationMix::Mixed {
+            reads_per_push: 0, ..
+        } = self.operation_mix
+        {
+            bail!(
+                "operation_mix.reads_per_push must be greater than 0 in mixed mode; use mode = \"push_only\" for a write-only workload"
+            );
+        }
         if !(0.0..=1.0).contains(&self.canonicalization.sample_rate) {
             bail!("canonicalization.sample_rate must be in [0, 1]");
+        }
+        if !self.operation_mix.pushes() && self.canonicalization.sample_rate > 0.0 {
+            bail!(
+                "canonicalization.sample_rate must be 0 when the workload issues no push_delta; canonicalization is only observed after a successful push"
+            );
         }
         if self.canonicalization.poll_interval_ms == 0 {
             bail!("canonicalization.poll_interval_ms must be greater than 0");

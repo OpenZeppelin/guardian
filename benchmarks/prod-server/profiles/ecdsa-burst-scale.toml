@@ -9,8 +9,8 @@ deployment_shape = "prod-single-task-arm64-rds-proxy"
 artifacts_dir = "benchmarks/prod-server/reports"
 
 [operation_mix]
-read_operation = "get_state"
-reads_per_push = 0
+mode = "push_only"
+retire_after_first_successful_push = false
 
 [scheme_distribution]
 falcon_percent = 0

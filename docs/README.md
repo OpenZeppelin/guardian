@@ -53,6 +53,8 @@ You are an operator / SRE / DevOps.
    operators, permission vocabulary, multi-task caveats.
 10. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
     recovery procedures.
+11. [Performance and capacity](./PERFORMANCE.md) — where the bottlenecks
+    are, how to size provers and the database, what to expect.
 
 ### I want to *develop on* Guardian (work in this repo)
 

@@ -139,8 +139,16 @@ echo "==> running harness"
 # Sample container CPU DURING the measured window. A single sample taken after
 # the harness exits shows an idle stack and would let a generator-bound or
 # CPU-pinned leg pass as a clean measurement (FR-013).
+#
+# Host load is sampled in the same tick, and it is the half that was missing:
+# `docker stats` reports only what is inside containers, so a leg where the
+# *generator* was the bottleneck looks healthy from in there -- every replica
+# shows headroom, because nothing was pushing them. That is how five read legs
+# were published as valid while the host ran at load 15.9 on 10 cores.
 ( while true; do
-    printf '{"t":"%s","stats":' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '{"t":"%s","load1":%s,"stats":' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' || uptime | sed 's/.*load average[s]*: *//' | cut -d, -f1)"
     docker stats --no-stream --format json 2>/dev/null | jq -sc . || echo 'null'
     printf '}\n'
     command sleep 5
@@ -149,7 +157,13 @@ SAMPLER_PID=$!
 disown "${SAMPLER_PID}" 2>/dev/null || true
 trap 'kill "${SAMPLER_PID}" 2>/dev/null || true' EXIT
 
-( cd "${ROOT_DIR}" && cargo run --quiet --manifest-path benchmarks/prod-server/Cargo.toml -- \
+# --release is not optional. The workspace sets no `[profile.dev]` overrides, so
+# without it the load generator is an unoptimized debug build: it burns several
+# times the CPU per request and becomes the bottleneck itself, which is how a
+# read leg ends up measuring the harness instead of GUARDIAN. Build before the
+# measured window rather than inside it, so compilation never lands in the
+# sampled load.
+( cd "${ROOT_DIR}" && cargo run --release --quiet --manifest-path benchmarks/prod-server/Cargo.toml -- \
     worker-run --profile "${STACK_DIR}/${PROFILE}" \
                --run-id "${LABEL}-${STAMP}" --shard-index 0 --shard-count 1 ) \
   > "${OUT}/worker-artifact.txt"
@@ -157,12 +171,57 @@ trap 'kill "${SAMPLER_PID}" 2>/dev/null || true' EXIT
 kill "${SAMPLER_PID}" 2>/dev/null || true
 trap - EXIT
 
+# Killing the sampler truncates whatever record it was mid-write on, and one
+# malformed record makes `jq -s` reject the whole file — silently costing the CPU
+# peaks and the saturation verdict, the two things this leg is judged on. Note
+# the records are NOT line-delimited: `docker stats` emits its own newline, so
+# each record spans two lines and only jq's whitespace-insensitive parser reads
+# them. Streaming with `jq -c .` re-emits every complete record one per line and
+# stops at the truncated tail, keeping everything before it.
+TIMELINE="${OUT}/docker-stats-timeline.valid.jsonl"
+jq -c . "${OUT}/docker-stats-timeline.jsonl" > "${TIMELINE}" 2>/dev/null || true
+
 # Peak CPU per container across the run — the figure the saturation call rests on.
 jq -rs '[.[] | .stats[]? | {name: .Name, cpu: (.CPUPerc | rtrimstr("%") | tonumber)}]
         | group_by(.name) | map({name: .[0].name, peak_cpu_percent: (map(.cpu) | max)})
         | sort_by(-.peak_cpu_percent)' \
-  "${OUT}/docker-stats-timeline.jsonl" > "${OUT}/cpu-peaks.json" 2>/dev/null \
+  "${TIMELINE}" > "${OUT}/cpu-peaks.json" 2>/dev/null \
   || echo "    warn: could not summarise CPU peaks" >&2
+
+# Saturation verdict. A leg run on an oversubscribed host measures the host, not
+# GUARDIAN: the generator and the server compete for the same cores, so latency
+# attributed to the server includes time the generator spent waiting to run. The
+# run has to say so itself, because from inside the containers it looks fine.
+CORES="$(sysctl -n hw.physicalcpu 2>/dev/null || nproc 2>/dev/null || echo 0)"
+jq -rs --argjson cores "${CORES}" '
+    [.[] | .load1] as $loads
+    | ($loads | max) as $peak
+    | {
+        physical_cores: $cores,
+        peak_load1: $peak,
+        load_per_core: (if $cores > 0 then ($peak / $cores) else null end),
+        verdict: (
+          if $cores == 0 then "unknown: core count unavailable"
+          elif $peak > ($cores | tonumber) then "OVERSUBSCRIBED: host load exceeded physical cores — this leg measures the host, not GUARDIAN"
+          elif $peak > (($cores | tonumber) * 0.8) then "MARGINAL: host load within 20% of physical cores — treat latency as an upper bound"
+          else "ok: host had spare cores throughout"
+          end
+        )
+      }' \
+  "${TIMELINE}" > "${OUT}/saturation.json" 2>/dev/null \
+  || echo "    warn: could not compute saturation verdict" >&2
+
+if [ -s "${OUT}/saturation.json" ]; then
+  SAT_VERDICT="$(jq -r '.verdict' "${OUT}/saturation.json" 2>/dev/null || echo unknown)"
+  case "${SAT_VERDICT}" in
+    OVERSUBSCRIBED*|MARGINAL*)
+      echo "    WARNING: ${SAT_VERDICT}" | tee "${OUT}/SATURATED"
+      ;;
+    *)
+      echo "    saturation: ${SAT_VERDICT}"
+      ;;
+  esac
+fi
 
 # Decode the base64 artifact line into readable JSON.
 sed -n 's/^BENCH_WORKER_ARTIFACT_BASE64=//p' "${OUT}/worker-artifact.txt" \

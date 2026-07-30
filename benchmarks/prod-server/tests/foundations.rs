@@ -1,7 +1,7 @@
 use guardian_prod_benchmarks::cleanup_manifest::{
     CleanupAccountRecord, CleanupAwsTarget, CleanupManifest, CleanupTarget,
 };
-use guardian_prod_benchmarks::config::RunConfig;
+use guardian_prod_benchmarks::config::{OperationMix, RunConfig};
 use guardian_prod_benchmarks::report::{
     ArtifactReport, BenchmarkRunReport, CapacityEstimate, CleanupReport, LatencyReport,
     OperationReport, SchemeDistributionReport,
@@ -23,6 +23,59 @@ fn loads_and_validates_profile() {
     assert_eq!(config.profile_name, "falcon-mixed-burst-scale");
     assert_eq!(config.users, 4096);
     assert_eq!(config.accounts_per_user, 1);
+}
+
+// A profile that fails to parse is otherwise only discovered after the
+// benchmark image is built, pushed, and launched on Fargate.
+#[test]
+fn every_committed_profile_loads_and_validates() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("profiles");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("profiles directory should exist") {
+        let path = entry.expect("profile entry should be readable").path();
+        if path.extension().is_none_or(|ext| ext != "toml") {
+            continue;
+        }
+        RunConfig::load_from_path(path.as_path())
+            .unwrap_or_else(|error| panic!("profile {} should load: {error}", path.display()));
+        checked += 1;
+    }
+    assert!(checked > 0, "no profiles found in {}", dir.display());
+}
+
+#[test]
+fn read_only_profile_declares_a_read_only_workload() {
+    let path = profile_path("read-only-ramp.toml");
+    let config = RunConfig::load_from_path(path.as_path()).expect("profile should load");
+
+    assert!(matches!(config.operation_mix, OperationMix::ReadOnly));
+    assert!(!config.operation_mix.pushes());
+    assert_eq!(config.users, 512);
+    assert_eq!(config.scheme_distribution.ecdsa_percent, 100);
+    assert!(config.cleanup.enabled);
+}
+
+#[test]
+fn mixed_mode_rejects_a_zero_read_ratio() {
+    let path = profile_path("read-only-ramp.toml");
+    let raw = std::fs::read_to_string(&path).expect("profile should be readable");
+    let dir = tempdir().expect("tempdir");
+    let degenerate = dir.path().join("degenerate.toml");
+    std::fs::write(
+        &degenerate,
+        raw.replace(
+            "[operation_mix]\nmode = \"read_only\"",
+            "[operation_mix]\nmode = \"mixed\"\nreads_per_push = 0\nretire_after_first_successful_push = false",
+        ),
+    )
+    .expect("degenerate profile should be writable");
+
+    let error = RunConfig::load_from_path(degenerate.as_path())
+        .expect_err("mixed mode with no reads should be rejected");
+    assert!(
+        error.to_string().contains("reads_per_push"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -95,12 +148,12 @@ fn run_report_roundtrip() {
             failure_breakdown: Default::default(),
         }],
         canonicalization: None,
-        capacity_estimate: CapacityEstimate {
+        capacity_estimate: Some(CapacityEstimate {
             target_push_tps: 500.0,
             sustained_push_tps: 42.0,
             headroom_percent: 30.0,
             required_instances: 16,
-        },
+        }),
         cleanup: CleanupReport {
             manifest_path: "cleanup-manifest.json".to_string(),
             status: guardian_prod_benchmarks::cleanup_manifest::CleanupStatus::Pending,

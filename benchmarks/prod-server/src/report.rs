@@ -18,7 +18,7 @@ pub struct BenchmarkRunReport {
     pub scheme_distribution: SchemeDistributionReport,
     pub operations: Vec<OperationReport>,
     pub canonicalization: Option<CanonicalizationReport>,
-    pub capacity_estimate: CapacityEstimate,
+    pub capacity_estimate: Option<CapacityEstimate>,
     pub cleanup: CleanupReport,
     pub artifacts: ArtifactReport,
 }

@@ -127,6 +127,7 @@ Full configuration and a dev walkthrough are in
 | Configure dashboard operators and permissions | [`DASHBOARD.md`](./DASHBOARD.md) |
 | Scrape Prometheus metrics and visualize them | [`guides/observability/`](./guides/observability/README.md) |
 | Diagnose deploy/runtime failures | [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) |
+| Size a deployment and know what throughput to expect | [`PERFORMANCE.md`](./PERFORMANCE.md) |
 
 ## Non-goals
 

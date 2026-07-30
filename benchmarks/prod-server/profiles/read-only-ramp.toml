@@ -1,0 +1,47 @@
+# Closed-loop read ceiling. Every simulated user issues get_state back to back
+# with no think time, so `users` is the number of requests that may be in flight
+# at once, not a paced reader population. The result is an in-flight-saturation
+# ceiling (spec FR-003c) and MUST NOT be reported as a target verdict.
+#
+# Ramp `users` across separate runs: 512 -> 1024 -> 2048 -> 4096. Each run seeds
+# its own accounts and purges them afterwards, so 4096 is the peak footprint at
+# any instant, not the sum. Accounts are pinned 1:1 to users and cannot be
+# shared: the replay-protection compare-and-set on account_metadata is strictly
+# increasing per account, so two readers of one account reject each other.
+#
+# ECDSA only, because Falcon key generation dominates provisioning time and the
+# scheme is a separate variable worth its own run.
+profile_name = "read-only-ramp"
+guardian_endpoint = "https://guardian.openzeppelin.com"
+transport = "grpc"
+duration_seconds = 330
+warmup_seconds = 30
+users = 512
+accounts_per_user = 1
+deployment_shape = "prod-single-task-arm64-rds-proxy"
+artifacts_dir = "benchmarks/prod-server/reports"
+
+[operation_mix]
+mode = "read_only"
+
+[scheme_distribution]
+falcon_percent = 0
+ecdsa_percent = 100
+
+# No pushes, so nothing to observe reaching canonical.
+[canonicalization]
+sample_rate = 0.0
+poll_interval_ms = 1000
+timeout_seconds = 180
+
+# Read-only still creates one account per user through the real configure path.
+# Leave this enabled: a run that skips cleanup leaves its accounts in the
+# production database.
+[cleanup]
+enabled = true
+
+[aws]
+profile = "dev"
+region = "us-east-1"
+ecs_cluster = "guardian-prod-cluster"
+ecs_service = "guardian-prod-server"

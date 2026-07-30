@@ -142,7 +142,7 @@ async fn run_worker(
     while Instant::now() < end_deadline {
         let measuring = Instant::now() >= warmup_deadline;
         let operation = if measuring {
-            operation_for_index(config.operation_mix.reads_per_push, measured_op_index)
+            operation_for_index(&config.operation_mix, measured_op_index)
         } else {
             warmup_operation()
         };
@@ -183,7 +183,7 @@ async fn run_worker(
         }
 
         let retire_after_push = operation == OperationKind::PushDelta
-            && config.operation_mix.retire_after_first_successful_push
+            && config.operation_mix.retires_after_first_successful_push()
             && result.is_ok();
         if retire_after_push {
             let measured_until = finished_at

@@ -30,6 +30,12 @@ direction and wrong in detail. The specific findings:
    not saturated.
 4. **96 auth failures in one run were a local artifact** — Docker Desktop VM
    clock drift, not Guardian.
+5. **The read path is no longer unmeasured.** `get_state` p95 is **≤ 101ms** at
+   2,314 reads/s — above the 2,000 reads/s the target actually asks for
+   (FR-003a) — but the margin is thin and the constraint is Postgres, where
+   **43.5% of database time is authentication**. Removing the per-read auth
+   write measured **+71% throughput**, and it is what stops `get_state` from
+   being served by a read replica (§7).
 
 ---
 
@@ -39,7 +45,7 @@ direction and wrong in detail. The specific findings:
 |---|---|---|---|
 | Canonicalization p95 | ≤ 30,000ms | **8,084ms** at 4 concurrent writers | **PASS** (diagnostic tier) |
 | Auth-window failures | 0 | **0** over 68 operations | **PASS** (diagnostic tier) |
-| `get_state` p95 at 20k readers | ≤ 1,000ms | not measured | **NOT MEASURED** |
+| `get_state` p95 at 20k readers (= 2,000 reads/s, FR-003a) | ≤ 1,000ms | **≤ 101ms** at 2,314 reads/s | **BOUNDED, NOT VERDICT** (§7) |
 
 ```
 writers 4/4 | operations 68 (68 ok, 0 failed)
@@ -211,7 +217,179 @@ what turns proving capacity into a quantity you declare. Guidance and sizing:
 
 ---
 
-## 7. Defects found (beyond the four classifiers)
+## 7. Read path — measured, bounded, and Postgres-bound
+
+Reads generate no proofs, so none of the write-path ceiling above applies here.
+This is the criterion that was completely unmeasured yesterday.
+
+### 7.1 What it ran against
+
+Load generator (native macOS process, release build) -> Caddy proxy (h2c
+round-robin) -> two GUARDIAN replicas -> shared Postgres, all on one 10-core
+laptop with the server side inside Docker Desktop's VM.
+
+| Component | CPU limit |
+|---|---|
+| server-a, server-b | 1.0 each |
+| postgres | 1.5 |
+| proxy | 1.0 |
+| prometheus, grafana | 0.25 each |
+| **total containers** | **5.0 of 10 cores** |
+
+Build `0.16.0 / 5d3999eadbf0`, Postgres backend, state and metadata pools 16
+each, `GUARDIAN_MAX_REPLICAS=2`. Workload: closed-loop `get_state`, 100% ECDSA,
+effectively read-only. This is **not** the production shape (Terraform's real
+default is 0.5 vCPU per task against RDS), so the absolute throughput describes
+this stack only; what transfers is where the limit sits.
+
+### 7.2 Results
+
+| Readers | Throughput | p50 | p95 | p99 |
+|---|---|---|---|---|
+| 768 | 2,090/s | 371ms | 760ms | 1,429ms |
+| 256 | 2,151/s | 109ms | 221ms | 344ms |
+| **128** | **2,314/s** | **52ms** | **101ms** | 165ms |
+
+Throughput is flat-to-falling as concurrency rises -- the definition of a
+saturated system. Past the knee, extra readers queue rather than get served:
+6x the readers buys 7.5x the p95 and no additional work. **The read ceiling of
+this shape is ~2,300/s.**
+
+Zero read failures across 655,000+ operations in the three legs.
+
+Because contention inflates latency rather than reducing it, the latency figures
+are valid **one-sided bounds**: `get_state` p95 at 128 concurrent readers is
+**<= 101ms**, an order of magnitude inside the 1,000ms target. A host with spare
+cores can only do better.
+
+### 7.3 The bottleneck is authentication, and a third of it is a write
+
+Postgres pegged at ~165% of its 150% cap in every leg while both servers idled at
+65-75% of theirs. **GUARDIAN was never the constraint.** From
+`pg_stat_statements` on the 128-reader leg:
+
+| Query | Calls | Total ms | Share of DB time |
+|---|---|---|---|
+| `SELECT states` (the actual read) | 280,100 | 59,687 | 56.5% |
+| **`UPDATE account_metadata SET last_auth_timestamp`** | 280,100 | 35,368 | **33.5%** |
+| `SELECT account_metadata` | 280,264 | 10,583 | 10.0% |
+
+**43.5% of database time on the read path is authentication, and 33.5% is a
+durable write issued on every single read.** The write is the replay-protection
+compare-and-set at `crates/server/src/services/mod.rs:163` -- a correctness
+feature, not an oversight: it is what makes a captured request unusable twice.
+But it turns a read-only workload into 280,100 UPDATEs and is why Postgres
+saturates while the servers idle.
+
+This confirms issue #317's bottleneck #2 with far stronger evidence than the
+~33% estimate in yesterday's report.
+
+### 7.4 Distance to the target: closer than it first appears
+
+**Correction.** An earlier draft of this section applied Little's law to 20,000
+*in-flight* requests and concluded the target needed ~20,000 req/s. That is the
+closed-loop reading FR-003b explicitly forbids: "peak in-flight request
+concurrency MUST be measured and reported as an observed output of every run,
+never used as the definition of the user count."
+
+The target's own arithmetic (FR-003a): one `get_state` per user per 10 seconds,
+so 20,000 concurrent readers is **2,000 reads/s sustained** -- an order of
+magnitude below what the closed-loop reading implies. At ~100ms latency that is
+roughly **200 requests in flight**, not 20,000.
+
+Against that number this shape is not short at all. It sustained **2,314/s with
+the auth write and 3,957/s without**, on 1.5 CPU of Postgres. For reference, the
+spec records April sustaining 1,409 reads/s at p95 926ms on a single task.
+
+The honest reading is therefore *thin margin*, not an order-of-magnitude gap:
+2,000/s against a measured ceiling of ~2,300/s is ~86% utilisation, on a
+read-only workload with nothing else competing. Production shares the same
+database with `push_delta`, the canonicalization workers, and dashboard queries.
+Reducing the per-read auth write moves that utilisation to roughly 50% (§7.7).
+
+### 7.5 The per-read write pins reads to the primary
+
+The consequence that outweighs the throughput number: because `get_state`
+performs a durable `UPDATE`, it **cannot be served by a read replica**. Adding
+read replicas -- the standard, cheap way to scale a read path on RDS -- does
+nothing for the read path as it stands.
+
+Removing or relocating that write makes `get_state` replica-eligible, which is a
+larger structural unlock than any single-instance tuning. On the production shape
+(`db.r6g.large`, 2 vCPU, behind RDS Proxy) this matters more than instance size:
+the proxy already handles the connection side comfortably, since 2,000 reads/s at
+~100ms is ~200 concurrent database-side requests, not 20,000.
+
+### 7.6 No leg passed validity
+
+Every leg was flagged `OVERSUBSCRIBED` (peak host load 12.4-17.4 on 10 cores),
+including one deliberately budgeted to 5 of 10 cores and one with the generator
+bounded to 4 tokio worker threads. On Docker Desktop the host load also counts
+the VM threads doing container work, so this machine cannot both drive ~2,300
+req/s and stay under its core count.
+
+So §7.2 and §7.3 are **bounds and attribution, never verdicts**. A clean read
+measurement needs the generator off-box, which is what the authoritative tier's
+distributed harness exists for. That is now a specific, evidenced requirement
+rather than a preference.
+
+### 7.7 Measured: removing the write buys 71%
+
+§7.3 argues from attribution that the auth write is the constraint. To
+demonstrate causation rather than correlation, the CAS was patched out locally,
+the server rebuilt (tagged `NOCAS-EXPERIMENT` in `/status` so the artifacts can
+never be mistaken for a real leg), and the identical 128-reader profile re-run.
+The patch was reverted immediately afterwards; it is a measurement device, not a
+candidate change -- it disables replay protection.
+
+| | With CAS | Without CAS | Change |
+|---|---|---|---|
+| Throughput | 2,314/s | **3,957/s** | **+71%** |
+| p50 | 52ms | 27ms | -48% |
+| p95 | 101ms | 66ms | -35% |
+| p99 | 165ms | 101ms | -39% |
+| Postgres peak CPU | 165.7% | 158.9% | ~unchanged |
+
+| | Total DB time | Reads served | DB time per read |
+|---|---|---|---|
+| With CAS | 107,951ms | 280,100 | **0.385ms** |
+| Without CAS | 102,538ms | 476,860 | **0.214ms** |
+
+Near-identical total database time doing **70% more work**: a 44% drop in DB cost
+per read. That exceeds the 33.5% the `UPDATE` consumed directly, because removing
+it also removes the MVCC churn it caused -- the state `SELECT` itself sped up
+from 0.213ms to 0.178ms mean on reduced bloat alone.
+
+Two caveats on how far this generalises:
+
+- This is the **upper bound** on the opportunity. The recommended fix keeps the
+  write and only makes it cheaper, so it recovers a fraction of this, not all of
+  it. Quoting +71% as the expected result of the migration would overclaim.
+- **Postgres stayed pegged** (158.9% of its 150% cap) with the write gone, which
+  refutes the prediction that it would drop below cap. Removing the write does
+  not relocate the bottleneck; it lets the same bottleneck serve 71% more reads.
+  The read path needs database capacity either way.
+
+### 7.8 Three harness defects fixed to get here
+
+- **The generator was a debug build.** `run-diag.sh` called `cargo run` with no
+  `--release`, and the workspace sets no `[profile.dev]` overrides. Every read
+  leg ever run drove load with an unoptimized binary -- plausibly the largest
+  single reason the generator kept being the bottleneck.
+- **The saturation check sampled containers only.** It now samples host load in
+  the same tick and writes `saturation.json` with an explicit verdict, printing
+  a `WARNING` and touching a `SATURATED` marker file. This is what made all five
+  earlier read legs look valid while the host ran at load 15.9.
+- **The verdict could silently vanish.** The sampler's records span two lines
+  (`docker stats` emits its own newline), so the file was never line-delimited
+  JSON, and killing the sampler truncates the final record -- which made `jq -s`
+  reject the entire file, costing both the CPU peaks and the verdict. Now parsed
+  with streaming `jq -c .`, keeping every complete record and stopping at the
+  tail.
+
+---
+
+## 8. Defects found (beyond the four classifiers)
 
 - **Upstream `miden-client` panic**, `transaction/mod.rs:365`: an `expect` on
   note metadata in the already-consumed check fired and killed a writer thread
@@ -226,39 +404,45 @@ what turns proving capacity into a quantity you declare. Guidance and sizing:
 
 ---
 
-## 8. What is still not measured
+## 9. What is still not measured
 
 | Target | Status | Blocked by |
 |---|---|---|
-| `get_state` p95 at 20k readers | not measured | generator-bound tooling — **not** the prover |
+| `get_state` p95 at 20k readers | **bounded, not verdicted** (§7) | no leg passed the saturation check; needs an off-box generator |
 | 100 concurrent writers | not measured | ~50 prover replicas; authoritative tier |
 | 100,000 guarded accounts | 100 provisioned | fixture scale |
 | Authoritative replay | not run | AWS access |
 
-**The read path needs no prover.** Reads generate no proofs, so nothing in this
-report's write-path ceiling applies to the one criterion that remains completely
-unmeasured. It is blocked only by the saturation check in `run-diag.sh`, which
-samples container CPU and never host load or the generator — which is why all
-five read legs were invalid. That remains the highest-value next fix.
+**The read path needed no prover**, and §7 now measures it: reads generate no
+proofs, so nothing in this report's write-path ceiling applies to it. What
+remains missing is not a measurement but a *clean* one — every leg was flagged
+`OVERSUBSCRIBED`, because one laptop cannot both generate ~2,300 req/s and host
+the stack being measured. Only an off-box generator closes that.
 
 ---
 
-## 9. Recommended next steps
+## 10. Recommended next steps
 
-1. **Fix the saturation check** (host load + generator process), then re-run the
-   read path. Unblocks the only entirely unmeasured criterion, on hardware that
-   already exists.
-2. **File the server nonce-consumption bug** as its own issue. Fixed in-tree via
+1. **Reduce the per-read auth write.** 33.5% of read-path database time is the
+   replay-protection CAS; removing it measured **+71% throughput** (§7.7).
+   Two independent reasons it is the highest-leverage change here: it converts
+   ~86% utilisation of the measured ceiling into roughly 50%, and it is what
+   makes `get_state` ineligible for a read replica (§7.5) — which is the larger
+   structural unlock on RDS.
+2. **Move the load generator off-box** so a read leg can pass validity. The
+   saturation check now refuses to certify a contended run (§7.6); the host is
+   the remaining blocker, not the tooling.
+3. **File the server nonce-consumption bug** as its own issue. Fixed in-tree via
    a partial unique index; it is a correctness defect independent of
    benchmarking and deserves separate review.
-3. **Add an `authentication_expired` code** so §4.1's criterion can stop
+4. **Add an `authentication_expired` code** so §4.1's criterion can stop
    over-reaching.
-4. **Report the `miden-client` panic** upstream.
-5. Authoritative replay once AWS access is available.
+5. **Report the `miden-client` panic** upstream.
+6. Authoritative replay once AWS access is available.
 
 ---
 
-## 10. Artifacts
+## 11. Artifacts
 
 Runs referenced here (`benchmarks/multisig-e2e/reports/`):
 
@@ -273,6 +457,21 @@ Runs referenced here (`benchmarks/multisig-e2e/reports/`):
 | `scale-20260730T052746Z` | 64 writers, all classifiers fixed | 0/353, 96% prover queue |
 | `scale-20260729T230836Z` | 64 writers, prover fix only | 1/645 |
 | `scale-20260729T213814Z` | 64 writers, before fixes | 0/446 |
+
+Read legs (`benchmarks/diagnostic-stack/results/`):
+
+| Leg | Readers | Result | Peak host load |
+|---|---|---|---|
+| `read-128-t4-20260730T083554Z` | 128 | **2,314/s, p95 101ms** — the tightest bound | 12.79 |
+| `nocas-128-t4-20260730T092323Z` | 128 | 3,957/s, p95 66ms — **CAS patched out, experiment only** | 13.25 |
+| `read-256-t4-20260730T083138Z` | 256 | 2,175/s, p95 214ms | 14.90 (recomputed) |
+| `read-256-20260730T082856Z` | 256 | 2,151/s, p95 221ms | 12.39 |
+| `read-budgeted-20260730T082554Z` | 768 | 2,090/s, p95 760ms | 17.39 |
+
+All exceeded the 10 physical cores. Three carry `saturation.json`; the
+`read-256-t4` leg is the one whose truncated sampler tail exposed the parsing
+defect in §7.6, so its verdict was recomputed by hand rather than written by the
+harness.
 
 Stack: [`docs/guides/local-prover/`](../../../docs/guides/local-prover/README.md).
 How to run: [`benchmarks/multisig-e2e/README.md`](../../../benchmarks/multisig-e2e/README.md).

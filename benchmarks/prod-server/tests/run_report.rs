@@ -30,12 +30,12 @@ fn report_should_include_all_and_scheme_scopes() {
             sample_operation("push_delta", "all"),
         ],
         canonicalization: None,
-        capacity_estimate: CapacityEstimate {
+        capacity_estimate: Some(CapacityEstimate {
             target_push_tps: 500.0,
             sustained_push_tps: 42.0,
             headroom_percent: 30.0,
             required_instances: 17,
-        },
+        }),
         cleanup: CleanupReport {
             manifest_path: "cleanup-manifest.json".to_string(),
             status: CleanupStatus::Pending,
