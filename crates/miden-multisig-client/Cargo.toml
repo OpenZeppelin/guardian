@@ -23,7 +23,7 @@ miden-tx = { workspace = true }
 miden-standards = { workspace = true }
 
 # Async
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread"] }
 futures = { workspace = true }
 
 # Serialization

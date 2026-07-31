@@ -243,7 +243,7 @@ impl MultisigClient {
     ///
     /// The P2ID note is rebuilt deterministically from the proposal salt, so
     /// the ID is known ahead of execution. For a private P2ID this is the ID
-    /// to pass to `export_note` after executing, so the note file can be
+    /// to pass to `export_note_to_file` after executing, so the note file can be
     /// delivered to the recipient out-of-band (issue #356).
     ///
     /// Call this before executing the proposal: the asset is derived from the

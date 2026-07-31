@@ -157,16 +157,18 @@ impl MultisigClient {
     ///
     /// A private note publishes only its commitment on chain, so the recipient
     /// can never learn its contents via sync; the sender must hand them the
-    /// note file produced here, which they load with [`Self::import_note`].
+    /// note file produced here, which they load with
+    /// [`Self::import_note_from_file`].
     ///
     /// # Example
     ///
     /// ```ignore
-    /// client.export_note(&note_id_hex, Path::new("note.mno")).await?;
+    /// client.export_note_to_file(&note_id_hex, Path::new("note.mno")).await?;
     /// ```
-    pub async fn export_note(&self, note_id: &str, path: &std::path::Path) -> Result<()> {
+    pub async fn export_note_to_file(&self, note_id: &str, path: &std::path::Path) -> Result<()> {
         let bytes = self.export_note_to_bytes(note_id).await?;
-        std::fs::write(path, bytes)
+        tokio::fs::write(path, bytes)
+            .await
             .map_err(|e| MultisigError::InvalidConfig(format!("failed to write file: {}", e)))?;
         Ok(())
     }
@@ -220,18 +222,20 @@ impl MultisigClient {
     /// # Example
     ///
     /// ```ignore
-    /// let note_id = client.import_note(Path::new("note.mno")).await?;
+    /// let note_id = client.import_note_from_file(Path::new("note.mno")).await?;
     /// client.sync().await?;
     /// ```
-    pub async fn import_note(&mut self, path: &std::path::Path) -> Result<String> {
-        let bytes = std::fs::read(path)
+    pub async fn import_note_from_file(&mut self, path: &std::path::Path) -> Result<String> {
+        let bytes = tokio::fs::read(path)
+            .await
             .map_err(|e| MultisigError::InvalidConfig(format!("failed to read file: {}", e)))?;
         self.import_note_from_bytes(&bytes).await
     }
 
     /// Imports a note from serialized `NoteFile` bytes (issue #356).
     ///
-    /// See [`Self::import_note`] for the returned identifier semantics.
+    /// See [`Self::import_note_from_file`] for the returned identifier
+    /// semantics.
     pub async fn import_note_from_bytes(&mut self, bytes: &[u8]) -> Result<String> {
         let note_file = NoteFile::read_from_bytes(bytes).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to decode note file: {}", e))

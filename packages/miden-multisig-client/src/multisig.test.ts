@@ -1410,7 +1410,7 @@ describe('Multisig', () => {
     });
   });
 
-  describe('exportNote / importNote (issue #356)', () => {
+  describe('exportNoteToBytes / importNoteFromBytes (issue #356)', () => {
     const config = {
       threshold: 1,
       signerCommitments: ['0x' + '1'.repeat(64)],
@@ -1425,7 +1425,7 @@ describe('Multisig', () => {
       mockWebClient.exportNoteFile = vi.fn().mockResolvedValue(noteFile);
 
       const multisig = createTestMultisig(config);
-      const bytes = await multisig.exportNote('0x' + 'ab'.repeat(32));
+      const bytes = await multisig.exportNoteToBytes('0x' + 'ab'.repeat(32));
 
       expect(bytes).toEqual(new Uint8Array([9, 9, 9]));
       // NoteExportFormat.Full = 1 in the SDK mock
@@ -1440,9 +1440,9 @@ describe('Multisig', () => {
       mockWebClient.exportNoteFile = vi.fn().mockResolvedValue(noteFile);
 
       const multisig = createTestMultisig(config);
-      await multisig.exportNote('0x' + 'ab'.repeat(32));
+      await multisig.exportNoteToBytes(' 0x' + 'ab'.repeat(32) + ' ');
 
-      // NoteExportFormat.Details = 2 in the SDK mock
+      // NoteExportFormat.Details = 2 in the SDK mock; the id is trimmed
       expect(mockWebClient.exportNoteFile).toHaveBeenCalledWith('0x' + 'ab'.repeat(32), 2);
     });
 
@@ -1451,7 +1451,18 @@ describe('Multisig', () => {
       mockWebClient.exportNoteFile = vi.fn();
 
       const multisig = createTestMultisig(config);
-      await expect(multisig.exportNote('0x' + 'ab'.repeat(32))).rejects.toThrow(
+      await expect(multisig.exportNoteToBytes('0x' + 'ab'.repeat(32))).rejects.toThrow(
+        /not found in the local store/,
+      );
+      expect(mockWebClient.exportNoteFile).not.toHaveBeenCalled();
+    });
+
+    it('rejects exporting when the store resolves no record', async () => {
+      mockWebClient.getOutputNote = vi.fn().mockResolvedValue(undefined);
+      mockWebClient.exportNoteFile = vi.fn();
+
+      const multisig = createTestMultisig(config);
+      await expect(multisig.exportNoteToBytes('0x' + 'ab'.repeat(32))).rejects.toThrow(
         /not found in the local store/,
       );
       expect(mockWebClient.exportNoteFile).not.toHaveBeenCalled();
@@ -1463,7 +1474,7 @@ describe('Multisig', () => {
       mockWebClient.importNoteFile = vi.fn().mockResolvedValue('0x' + 'cd'.repeat(32));
 
       const multisig = createTestMultisig(config);
-      const noteId = await multisig.importNote(new Uint8Array([1, 2, 3]));
+      const noteId = await multisig.importNoteFromBytes(new Uint8Array([1, 2, 3]));
 
       expect(mockNoteFileDeserialize).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
       expect(mockWebClient.importNoteFile).toHaveBeenCalledWith(decoded);
@@ -1477,10 +1488,37 @@ describe('Multisig', () => {
       mockWebClient.importNoteFile = vi.fn();
 
       const multisig = createTestMultisig(config);
-      await expect(multisig.importNote(new Uint8Array([0]))).rejects.toThrow(
+      await expect(multisig.importNoteFromBytes(new Uint8Array([0]))).rejects.toThrow(
         /failed to decode note file: bad bytes/,
       );
       expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('exportNoteToFile / importNoteFromFile (issue #356)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + '1'.repeat(64)],
+      guardianCommitment: '0x' + '3'.repeat(64),
+    };
+
+    it('rejects exportNoteToFile outside a browser environment', async () => {
+      const multisig = createTestMultisig(config);
+      await expect(multisig.exportNoteToFile('0x' + 'ab'.repeat(32))).rejects.toThrow(
+        /requires a browser environment/,
+      );
+    });
+
+    it('imports from a File/Blob by delegating to importNoteFromBytes', async () => {
+      const decoded = { marker: 'note-file' };
+      mockNoteFileDeserialize.mockReturnValue(decoded);
+      mockWebClient.importNoteFile = vi.fn().mockResolvedValue('0x' + 'cd'.repeat(32));
+
+      const multisig = createTestMultisig(config);
+      const noteId = await multisig.importNoteFromFile(new Blob([new Uint8Array([1, 2, 3])]));
+
+      expect(mockNoteFileDeserialize).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
+      expect(noteId).toBe('0x' + 'cd'.repeat(32));
     });
   });
 

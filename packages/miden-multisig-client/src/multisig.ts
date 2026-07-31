@@ -958,7 +958,7 @@ export class Multisig {
    *
    * A private note publishes only its commitment on chain, so the recipient
    * can never learn its contents via sync; the sender must hand them the
-   * bytes produced here, which they load with {@link importNote}.
+   * bytes produced here, which they load with {@link importNoteFromBytes}.
    *
    * The note must be an output note of this client (created by a transaction
    * this client executed). When the note's on-chain inclusion proof is
@@ -969,24 +969,59 @@ export class Multisig {
    * @param noteId - ID of the note to export (hex string)
    * @returns Serialized note file bytes
    */
-  async exportNote(noteId: string): Promise<Uint8Array> {
+  async exportNoteToBytes(noteId: string): Promise<Uint8Array> {
     const webClient = await this.getRawClient();
+    const trimmedNoteId = noteId.trim();
 
     let record;
     try {
-      record = await webClient.getOutputNote(noteId);
+      record = await webClient.getOutputNote(trimmedNoteId);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Output note ${noteId} not found in the local store; only notes created by this client can be exported: ${detail}`,
+        `Output note ${trimmedNoteId} not found in the local store; only notes created by this client can be exported: ${detail}`,
+      );
+    }
+    if (!record) {
+      throw new Error(
+        `Output note ${trimmedNoteId} not found in the local store; only notes created by this client can be exported`,
       );
     }
 
-    const format = record?.inclusionProof()
+    const format = record.inclusionProof()
       ? NoteExportFormat.Full
       : NoteExportFormat.Details;
-    const noteFile = await webClient.exportNoteFile(noteId, format);
+    const noteFile = await webClient.exportNoteFile(trimmedNoteId, format);
     return noteFile.serialize();
+  }
+
+  /**
+   * Export a note created by this multisig account as a note file downloaded
+   * by the browser (issue #356). Browser-only convenience over
+   * {@link exportNoteToBytes}; use that method directly in non-DOM
+   * environments.
+   *
+   * @param noteId - ID of the note to export (hex string)
+   * @param filename - Download filename; defaults to `note_<id>.mno`
+   */
+  async exportNoteToFile(noteId: string, filename?: string): Promise<void> {
+    if (typeof document === 'undefined') {
+      throw new Error('exportNoteToFile requires a browser environment; use exportNoteToBytes instead');
+    }
+
+    const trimmedNoteId = noteId.trim();
+    const noteBytes = await this.exportNoteToBytes(trimmedNoteId);
+
+    const blob = new Blob([noteBytes as BlobPart], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename ?? `note_${trimmedNoteId}.mno`;
+      anchor.click();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
 
   /**
@@ -997,11 +1032,12 @@ export class Multisig {
    * commitment is tracked and the note shows up in {@link getConsumableNotes};
    * it can then be consumed via {@link createConsumeNotesProposal}.
    *
-   * @param noteBytes - Serialized note file bytes produced by {@link exportNote}
+   * @param noteBytes - Serialized note file bytes produced by
+   *   {@link exportNoteToBytes}
    * @returns The note ID when the file carries one, or the note's details
    *   commitment for a details-only file
    */
-  async importNote(noteBytes: Uint8Array): Promise<string> {
+  async importNoteFromBytes(noteBytes: Uint8Array): Promise<string> {
     const webClient = await this.getRawClient();
 
     let noteFile: NoteFile;
@@ -1016,11 +1052,21 @@ export class Multisig {
   }
 
   /**
+   * Import a note file received out-of-band (issue #356) from a browser
+   * `File`/`Blob` (e.g. a file-input selection). See
+   * {@link importNoteFromBytes} for the returned identifier semantics.
+   */
+  async importNoteFromFile(file: Blob): Promise<string> {
+    const noteBytes = new Uint8Array(await file.arrayBuffer());
+    return this.importNoteFromBytes(noteBytes);
+  }
+
+  /**
    * Compute the ID of the note a P2ID proposal will create when executed.
    *
    * The P2ID note is rebuilt deterministically from the proposal salt, so the
    * ID is known ahead of execution. For a private P2ID this is the ID to pass
-   * to {@link exportNote} after executing, so the note file can be delivered
+   * to {@link exportNoteToBytes} after executing, so the note file can be delivered
    * to the recipient out-of-band (issue #356).
    *
    * Call this before executing the proposal: the asset is derived from the

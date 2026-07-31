@@ -396,20 +396,24 @@ const privateProposal = await multisig.createP2idProposal(
 > **Warning:** a `private` P2ID note publishes only its hash on chain. The
 > recipient cannot discover the note by syncing; the full note details must
 > be shared with them out-of-band before they can consume it. Use
-> `exportNote` / `importNote` for that transfer (issue #356):
+> `exportNoteToBytes` / `importNoteFromBytes` (or the browser file variants
+> `exportNoteToFile` / `importNoteFromFile`) for that transfer (issue #356):
 
 ```typescript
 // Sender: resolve the note ID BEFORE executing (it derives from the
 // pre-execution vault state), then export after execution.
 const noteId = await multisig.getP2idNoteId(privateProposal);
 // ...sign + execute the proposal...
-const noteFileBytes = await multisig.exportNote(noteId);
+const noteFileBytes = await multisig.exportNoteToBytes(noteId);
 // Deliver `noteFileBytes` to the recipient out-of-band (file, message, ...).
+// Or, in a browser, trigger a download of the note file directly:
+await multisig.exportNoteToFile(noteId);
 
-// Recipient: import the bytes, then sync so the note's on-chain commitment
-// is tracked; it then appears in getConsumableNotes() and can be consumed
-// with createConsumeNotesProposal as usual.
-const importedNoteId = await multisig.importNote(noteFileBytes);
+// Recipient: import the bytes (or a File from an <input type="file">), then
+// sync so the note's on-chain commitment is tracked; it then appears in
+// getConsumableNotes() and can be consumed with createConsumeNotesProposal
+// as usual.
+const importedNoteId = await multisig.importNoteFromBytes(noteFileBytes);
 ```
 
 > **Note:** every cosigner device that verifies or signs the consume-notes
@@ -433,8 +437,9 @@ const proposal = await multisig.createConsumeNotesProposal(noteIds);
 ```
 
 A private note received out-of-band must first be loaded with
-`importNote(noteFileBytes)` (see the P2ID section above); after a sync it
-shows up in `getConsumableNotes()` like any public note.
+`importNoteFromBytes(noteFileBytes)` or `importNoteFromFile(file)` (see the
+P2ID section above); after a sync it shows up in `getConsumableNotes()` like
+any public note.
 
 #### Add Signer
 
@@ -539,8 +544,10 @@ await multisig.executeProposal(signedProposal.id);
 | `createP2idProposal(recipient, faucet, amount, nonce?, { noteType }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`) |
 | `createConsumeNotesProposal(noteIds, nonce?)` | Create note consumption proposal |
 | `getP2idNoteId(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |
-| `exportNote(noteId)` | Export a created note as note-file bytes for out-of-band delivery |
-| `importNote(noteBytes)` | Import a note file received out-of-band |
+| `exportNoteToBytes(noteId)` | Export a created note as note-file bytes for out-of-band delivery |
+| `exportNoteToFile(noteId, filename?)` | Browser-only: download the note file |
+| `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
+| `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
 | `createAddSignerProposal(commitment, nonce?, threshold?)` | Create add signer proposal |
 | `createRemoveSignerProposal(commitment, nonce?, threshold?)` | Create remove signer proposal |
 | `createChangeThresholdProposal(threshold, nonce?)` | Create threshold change proposal |
@@ -796,13 +803,13 @@ note and deliver the file out-of-band (issue #356):
 // pre-execution vault state), then export after execution.
 let note_id = client.p2id_note_id(&proposal)?;
 client.execute_proposal(&proposal.id).await?;
-client.export_note(&note_id.to_hex(), Path::new("note.mno")).await?;
+client.export_note_to_file(&note_id.to_hex(), Path::new("note.mno")).await?;
 // Deliver note.mno to the recipient out-of-band (file, message, ...).
 
 // Recipient: import the file, then sync so the note's on-chain commitment
 // is tracked; it then appears in list_consumable_notes() and can be
 // consumed with a regular consume-notes proposal.
-let imported_note_id = client.import_note(Path::new("note.mno")).await?;
+let imported_note_id = client.import_note_from_file(Path::new("note.mno")).await?;
 client.sync().await?;
 ```
 
@@ -849,8 +856,10 @@ full note, so a post-commit sync is enough.
 | `list_consumable_notes()` | List available notes |
 | `list_consumable_notes_filtered(filter)` | Filter notes |
 | `p2id_note_id(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |
-| `export_note(note_id, path)` | Export a created note to a file for out-of-band delivery |
-| `import_note(path)` | Import a note file received out-of-band |
+| `export_note_to_file(note_id, path)` | Export a created note to a file for out-of-band delivery |
+| `export_note_to_bytes(note_id)` | Export a created note as note-file bytes |
+| `import_note_from_file(path)` | Import a note file received out-of-band |
+| `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
 
 #### MultisigAccount
 

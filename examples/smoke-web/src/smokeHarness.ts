@@ -249,11 +249,12 @@ async function waitForCondition(
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
+  const chunkSize = 0x8000;
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    chunks.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)));
   }
-  return btoa(binary);
+  return btoa(chunks.join(''));
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -1308,7 +1309,7 @@ export function useSmokeHarness(): {
         }
 
         const trimmedNoteId = noteId.trim();
-        const noteFileBytes = await currentMultisig.exportNote(trimmedNoteId);
+        const noteFileBytes = await currentMultisig.exportNoteToBytes(trimmedNoteId);
         return { noteId: trimmedNoteId, noteFileBase64: bytesToBase64(noteFileBytes) };
       }),
     [multisigRef, withCommand],
@@ -1327,7 +1328,7 @@ export function useSmokeHarness(): {
           throw new Error('No multisig account is loaded');
         }
 
-        const noteId = await currentMultisig.importNote(base64ToBytes(noteFileBase64.trim()));
+        const noteId = await currentMultisig.importNoteFromBytes(base64ToBytes(noteFileBase64.trim()));
         const refreshed = await refreshMultisigState(currentMultisig);
         return {
           noteId,

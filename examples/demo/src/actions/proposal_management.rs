@@ -589,7 +589,7 @@ async fn offer_private_note_export(
         }
     };
     if !confirm.is_empty() && confirm.to_lowercase() != "y" {
-        print_info("Skipped. The note can be exported later with the SDK's export_note.");
+        print_info("Skipped. The note can be exported later with the SDK's export_note_to_file.");
         return;
     }
 
@@ -604,7 +604,7 @@ async fn offer_private_note_export(
     };
 
     let export_result = match state.get_client() {
-        Ok(client) => client.export_note(note_id, Path::new(&path)).await,
+        Ok(client) => client.export_note_to_file(note_id, Path::new(&path)).await,
         Err(e) => {
             print_error(&e);
             return;
@@ -635,7 +635,7 @@ async fn import_note_file(
     print_waiting("Importing note file");
     let client = state.get_client_mut()?;
     let note_id = client
-        .import_note(Path::new(&path))
+        .import_note_from_file(Path::new(&path))
         .await
         .map_err(|e| format!("Failed to import note: {}", e))?;
 
@@ -1340,7 +1340,7 @@ async fn prompt_consume_notes(
             println!("  [b] Cancel");
 
             let choice = prompt_input(editor, "\nChoice: ")?;
-            match choice.as_str() {
+            match choice.to_lowercase().as_str() {
                 "1" => {
                     print_waiting("Syncing account state from network...");
                     state
@@ -1354,7 +1354,8 @@ async fn prompt_consume_notes(
                         print_error(&e);
                     }
                 }
-                _ => return Err("No consumable notes available".to_string()),
+                "b" => return Err("Cancelled".to_string()),
+                _ => print_error("Invalid choice"),
             }
             continue;
         }
