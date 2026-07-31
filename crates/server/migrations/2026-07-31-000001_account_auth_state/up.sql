@@ -4,6 +4,13 @@
 -- (FR-006). The lock is held until the migration transaction commits;
 -- queued legacy writes then fail on the missing column, which is the
 -- intended fail-closed behavior.
+--
+-- Bounded wait: migrations run at server startup, and an unbounded LOCK
+-- TABLE queued behind a long-running transaction would also block every
+-- new reader queued after it. Failing fast lets the orchestrator restart
+-- the replica and retry instead of stalling the fleet.
+SET LOCAL lock_timeout = '5s';
+
 LOCK TABLE account_metadata IN ACCESS EXCLUSIVE MODE;
 
 CREATE TABLE account_auth_state (

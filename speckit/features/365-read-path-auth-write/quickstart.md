@@ -15,6 +15,13 @@ Postgres-gated coverage (CAS upsert, migration backfill, cross-process concurren
 ```bash
 # per docs/LOCAL_DEV.md — requires a local Postgres
 cargo test -p guardian-server --features postgres,integration
+
+# The database-gated replay-state tests (CAS upsert, migration
+# backfill/round-trip, concurrency race) are #[ignore] and need both the
+# connection string and --include-ignored:
+DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian \
+  cargo test -p guardian-server --features postgres --lib metadata::postgres \
+  -- --ignored --test-threads=1
 ```
 
 Expected: all existing auth/replay tests pass **unchanged** (frozen contract), plus the new FR-009 tests listed in data-model.md §Validation rules.

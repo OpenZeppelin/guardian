@@ -297,8 +297,14 @@ impl MetadataStore for FilesystemMetadataStore {
             return Ok(false);
         }
 
-        auth_state.insert(account_id.to_string(), new_timestamp);
-        self.persist_auth_state(&auth_state).await?;
+        let previous = auth_state.insert(account_id.to_string(), new_timestamp);
+        if let Err(persist_error) = self.persist_auth_state(&auth_state).await {
+            match previous {
+                Some(prior) => auth_state.insert(account_id.to_string(), prior),
+                None => auth_state.remove(account_id),
+            };
+            return Err(persist_error);
+        }
         Ok(true)
     }
 
@@ -887,6 +893,42 @@ mod auth_state_tests {
                 .update_last_auth_timestamp_cas("acct", 4999)
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_failure_rolls_back_in_memory_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_account(&dir).await;
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", 50)
+                .await
+                .unwrap()
+        );
+
+        std::fs::remove_file(auth_state_path(&dir)).unwrap();
+        std::fs::create_dir(auth_state_path(&dir)).unwrap();
+        store
+            .update_last_auth_timestamp_cas("acct", 100)
+            .await
+            .expect_err("persisting over a directory must fail");
+
+        std::fs::remove_dir(auth_state_path(&dir)).unwrap();
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", 100)
+                .await
+                .unwrap(),
+            "a timestamp that was never durably recorded must not be treated as a replay"
+        );
+        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&100));
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", 50)
+                .await
+                .unwrap(),
+            "rollback must restore the prior value, not clear it"
         );
     }
 
