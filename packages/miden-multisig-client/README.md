@@ -46,12 +46,12 @@ const client = new MultisigClient(midenClient, {
 ```
 
 The nested `prover` configuration is optional. Without it, the injected Miden
-client's prover is preserved. Cloneable remote provers get two total attempts;
-endpoint-less injected provers, including local and callback provers, run once.
-A custom URL must be absolute HTTP(S), overrides the injected prover, and never
-falls back to a default endpoint. Retries apply only to transient proof
-failures; transaction execution, submission, local
-application, GUARDIAN calls, and Miden RPC requests are not retried.
+client's prover is preserved. By default, cloneable remote provers get two total
+attempts; endpoint-less injected provers, including local and callback provers,
+run once. A custom URL must be absolute HTTP(S), overrides the injected prover,
+and never falls back to a default endpoint. Retries apply only to transient
+proof failures; transaction execution, submission, local state application,
+GUARDIAN calls, and Miden RPC requests are not retried.
 
 ## Usage
 
