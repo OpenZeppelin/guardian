@@ -1,8 +1,4 @@
-import type {
-  ProvenTransaction,
-  TransactionResult,
-  WasmWebClient,
-} from '@miden-sdk/miden-sdk';
+import type { TransactionExecution, TransactionProof } from '@miden-sdk/miden-sdk';
 import type { ResolvedProverConfig } from './config.js';
 import { isTransientProverError } from './errors.js';
 
@@ -28,17 +24,16 @@ export function retryDelay(retryIndex: number, unitRandom: number): number {
 }
 
 export async function proveWithRetry(
-  client: WasmWebClient,
-  result: TransactionResult,
+  execution: TransactionExecution,
   config: ResolvedProverConfig,
   runtime: RetryRuntime = productionRetryRuntime,
-): Promise<ProvenTransaction> {
+): Promise<TransactionProof> {
   for (let attempt = 0; attempt < config.maxAttempts; attempt += 1) {
     try {
       const prover = config.createProver();
       return prover === undefined
-        ? await client.proveTransaction(result)
-        : await client.proveTransaction(result, prover);
+        ? await execution.prove()
+        : await execution.prove({ prover });
     } catch (error) {
       if (!isTransientProverError(error) || attempt + 1 >= config.maxAttempts) {
         throw error;

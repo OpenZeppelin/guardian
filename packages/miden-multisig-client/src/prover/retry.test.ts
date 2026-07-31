@@ -10,7 +10,7 @@ function fixtures(): Fixtures {
   return JSON.parse(
     readFileSync(
       new URL(
-        '../../../../speckit/features/001-prover-retry-policy/contracts/prover-policy-fixtures.json',
+        '../../../../fixtures/miden-multisig-client/prover-policy-fixtures.json',
         import.meta.url,
       ),
       'utf8',

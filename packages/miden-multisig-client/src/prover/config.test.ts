@@ -16,7 +16,7 @@ function fixtures(): Fixtures {
   return JSON.parse(
     readFileSync(
       new URL(
-        '../../../../speckit/features/001-prover-retry-policy/contracts/prover-policy-fixtures.json',
+        '../../../../fixtures/miden-multisig-client/prover-policy-fixtures.json',
         import.meta.url,
       ),
       'utf8',
@@ -59,9 +59,17 @@ describe('resolveProverConfig', () => {
     },
   );
 
-  it('keeps local proving at one attempt without a custom override', () => {
-    expect(resolveProverConfig({ retry: { maxAttempts: 5 } }, null)).toMatchObject({
-      kind: 'local',
+  it('keeps an endpoint-less injected prover at one attempt without serializing it', () => {
+    const serialize = () => {
+      throw new Error('callback provers cannot be serialized');
+    };
+    const callback = {
+      endpoint: () => undefined,
+      serialize,
+    } as unknown as TransactionProver;
+
+    expect(resolveProverConfig({ retry: { maxAttempts: 5 } }, callback)).toMatchObject({
+      kind: 'injected',
       maxAttempts: 1,
     });
   });

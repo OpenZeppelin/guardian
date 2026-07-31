@@ -76,7 +76,7 @@ function grpcEvidence(value: unknown): StructuredEvidence | undefined {
 }
 
 function httpEvidence(value: unknown): StructuredEvidence | undefined {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 100 || value > 599) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 400 || value > 599) {
     return undefined;
   }
   return TRANSIENT_HTTP.has(value) ? 'transient' : 'permanent';

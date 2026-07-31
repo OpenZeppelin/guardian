@@ -228,13 +228,38 @@ describe('Multisig', () => {
       submitNewTransaction: vi.fn(),
       submitNewTransactionWithProver: vi.fn(),
       transactions: {
-        submit: vi.fn(),
+        executeRequest: vi.fn(),
       },
       getConsumableNotes: vi.fn().mockResolvedValue([]),
       syncState: vi.fn(),
       getAccount: vi.fn().mockResolvedValue(null),
       newAccount: vi.fn(),
     };
+    mockWebClient.transactions.executeRequest.mockImplementation(
+      async (accountId: unknown, request: unknown) => {
+        const result = await mockWebClient.executeTransaction(accountId, request);
+        return {
+          result,
+          prove: async (options?: { prover?: unknown }) => {
+            const proof = options?.prover === undefined
+              ? await mockWebClient.proveTransaction(result)
+              : await mockWebClient.proveTransaction(result, options.prover);
+            return {
+              proof,
+              result,
+              submit: async () => {
+                const blockNumber = await mockWebClient.submitProvenTransaction(proof, result);
+                return {
+                  blockNumber,
+                  result,
+                  apply: () => mockWebClient.applyTransaction(result, blockNumber),
+                };
+              },
+            };
+          },
+        };
+      },
+    );
   });
 
   describe('constructor', () => {

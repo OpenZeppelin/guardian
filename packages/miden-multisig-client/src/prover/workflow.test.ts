@@ -1,10 +1,8 @@
 import type {
   AccountId,
-  ProvenTransaction,
+  MidenClient,
   TransactionProver,
   TransactionRequest,
-  TransactionResult,
-  WasmWebClient,
 } from '@miden-sdk/miden-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedProverConfig } from './config.js';
@@ -20,13 +18,13 @@ describe('ProverWorkflow', () => {
     const transient = Object.assign(new Error('temporarily unavailable'), {
       code: 'Unavailable',
     });
-    const result = asType<TransactionResult>({ marker: 'unchanged' });
-    const proof = asType<ProvenTransaction>({});
+    const apply = vi.fn().mockResolvedValue({});
+    const submit = vi.fn().mockResolvedValue({ apply });
+    const prove = vi.fn().mockRejectedValueOnce(transient).mockResolvedValueOnce({ submit });
+    const execution = { marker: 'unchanged', prove };
+    const executeRequest = vi.fn().mockResolvedValue(execution);
     const client = {
-      executeTransaction: vi.fn().mockResolvedValue(result),
-      proveTransaction: vi.fn().mockRejectedValueOnce(transient).mockResolvedValueOnce(proof),
-      submitProvenTransaction: vi.fn().mockResolvedValue(42),
-      applyTransaction: vi.fn().mockResolvedValue({}),
+      transactions: { executeRequest },
     };
     const provers: TransactionProver[] = [];
     const config: ResolvedProverConfig = {
@@ -44,7 +42,7 @@ describe('ProverWorkflow', () => {
       unitRandom: () => 0.5,
     };
     const workflow = new ProverWorkflow(
-      Promise.resolve(asType<WasmWebClient>(client)),
+      asType<MidenClient>(client),
       config,
       runtime,
     );
@@ -54,14 +52,12 @@ describe('ProverWorkflow', () => {
       asType<TransactionRequest>({}),
     );
 
-    expect(client.executeTransaction).toHaveBeenCalledTimes(1);
-    expect(client.proveTransaction).toHaveBeenCalledTimes(2);
-    expect(client.proveTransaction.mock.calls[0]?.[0]).toBe(result);
-    expect(client.proveTransaction.mock.calls[1]?.[0]).toBe(result);
+    expect(executeRequest).toHaveBeenCalledTimes(1);
+    expect(prove).toHaveBeenCalledTimes(2);
     expect(provers).toHaveLength(2);
     expect(provers[0]).not.toBe(provers[1]);
-    expect(client.submitProvenTransaction).toHaveBeenCalledTimes(1);
-    expect(client.applyTransaction).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(apply).toHaveBeenCalledTimes(1);
     expect(runtime.sleep).toHaveBeenCalledTimes(1);
   });
 
@@ -70,18 +66,14 @@ describe('ProverWorkflow', () => {
     const final = Object.assign(new Error('deadline exceeded'), {
       code: 'DeadlineExceeded',
     });
-    const client = {
-      executeTransaction: vi.fn().mockResolvedValue({}),
-      proveTransaction: vi.fn().mockRejectedValueOnce(first).mockRejectedValueOnce(final),
-      submitProvenTransaction: vi.fn(),
-      applyTransaction: vi.fn(),
-    };
+    const prove = vi.fn().mockRejectedValueOnce(first).mockRejectedValueOnce(final);
+    const client = { transactions: { executeRequest: vi.fn().mockResolvedValue({ prove }) } };
     const runtime: RetryRuntime = {
       sleep: vi.fn().mockResolvedValue(undefined),
       unitRandom: () => 0.5,
     };
     const workflow = new ProverWorkflow(
-      Promise.resolve(asType<WasmWebClient>(client)),
+      asType<MidenClient>(client),
       {
         kind: 'remote',
         maxAttempts: 2,
@@ -93,7 +85,25 @@ describe('ProverWorkflow', () => {
     await expect(
       workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({})),
     ).rejects.toBe(final);
+    expect(prove).toHaveBeenCalledTimes(2);
     expect(runtime.sleep).toHaveBeenCalledTimes(1);
-    expect(client.submitProvenTransaction).not.toHaveBeenCalled();
+  });
+
+  it('uses the injected prover directly when no cloneable remote override exists', async () => {
+    const apply = vi.fn().mockResolvedValue({});
+    const submit = vi.fn().mockResolvedValue({ apply });
+    const prove = vi.fn().mockResolvedValue({ submit });
+    const client = {
+      transactions: { executeRequest: vi.fn().mockResolvedValue({ prove }) },
+    };
+    const workflow = new ProverWorkflow(asType<MidenClient>(client), {
+      kind: 'injected',
+      maxAttempts: 1,
+      createProver: () => undefined,
+    });
+
+    await workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({}));
+
+    expect(prove).toHaveBeenCalledWith();
   });
 });

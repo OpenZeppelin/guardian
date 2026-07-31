@@ -10,7 +10,7 @@ export interface ProverConfig {
 }
 
 export interface ResolvedProverConfig {
-  readonly kind: 'local' | 'remote';
+  readonly kind: 'injected' | 'remote';
   readonly url?: string;
   readonly maxAttempts: number;
   createProver(): TransactionProver | undefined;
@@ -59,18 +59,19 @@ export function resolveProverConfig(
     };
   }
 
-  const descriptor = defaultProver?.serialize();
-  if (descriptor === undefined || descriptor === 'local') {
+  const endpoint = defaultProver?.endpoint();
+  if (defaultProver === null || endpoint === undefined) {
     return {
-      kind: 'local',
+      kind: 'injected',
       maxAttempts: 1,
       createProver: () => undefined,
     };
   }
 
+  const descriptor = defaultProver.serialize();
   return {
     kind: 'remote',
-    url: defaultProver?.endpoint(),
+    url: endpoint,
     maxAttempts,
     createProver: () => TransactionProver.deserialize(descriptor),
   };

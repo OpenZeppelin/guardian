@@ -94,8 +94,9 @@ console.log('Transfer executed!');
 ### Prover endpoint and retry policy
 
 Both multisig SDKs retry only remote transaction proving. The default is two
-total proof attempts. Local proving always runs once, and a custom remote URL
-overrides the Miden client's local or network-default prover.
+total proof attempts. In TypeScript, endpoint-less injected provers, including
+local and callback provers, run once. A custom remote URL overrides the Miden
+client's injected prover.
 
 ```typescript
 const client = new MultisigClient(midenClient, {

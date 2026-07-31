@@ -232,7 +232,10 @@ fn http_evidence(message: &str) -> Option<StructuredEvidence> {
             format!("status: {status}"),
             format!("status {status}"),
         ];
-        if structured.iter().any(|pattern| message.contains(pattern)) {
+        if structured
+            .iter()
+            .any(|pattern| contains_exact_status_pattern(message, pattern))
+        {
             if TRANSIENT.contains(&status) {
                 found_transient = true;
             } else {
@@ -248,6 +251,17 @@ fn http_evidence(message: &str) -> Option<StructuredEvidence> {
     } else {
         None
     }
+}
+
+fn contains_exact_status_pattern(message: &str, pattern: &str) -> bool {
+    message.match_indices(pattern).any(|(start, matched)| {
+        let before = start
+            .checked_sub(1)
+            .and_then(|index| message.as_bytes().get(index));
+        let after = message.as_bytes().get(start + matched.len());
+        before.is_none_or(|byte| !byte.is_ascii_alphanumeric())
+            && after.is_none_or(|byte| !byte.is_ascii_digit())
+    })
 }
 
 fn flattened_grpc_evidence(message: &str) -> Option<StructuredEvidence> {
@@ -450,7 +464,7 @@ mod tests {
 
     fn fixtures() -> Fixtures {
         serde_json::from_str(include_str!(
-            "../../../speckit/features/001-prover-retry-policy/contracts/prover-policy-fixtures.json"
+            "../../../fixtures/miden-multisig-client/prover-policy-fixtures.json"
         ))
         .expect("fixtures must parse")
     }

@@ -177,7 +177,7 @@ export class Multisig {
     this.midenRpcEndpoint = requireMidenRpcEndpoint(midenRpcEndpoint);
     this.rawClientPromise = getRawMidenClient(midenClient, this.midenRpcEndpoint);
     this.proverWorkflow = new ProverWorkflow(
-      this.rawClientPromise,
+      this.midenClient,
       proverConfig ?? resolveProverConfig(undefined, getTransactionProver(midenClient)),
     );
   }
