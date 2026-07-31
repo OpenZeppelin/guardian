@@ -36,40 +36,62 @@ impl FilesystemMetadataStore {
         let file_path = metadata_dir.join("accounts.json");
         let auth_state_path = metadata_dir.join("auth_state.json");
 
-        let (accounts, legacy_auth_state) = if file_path.exists() {
+        let (accounts, legacy) = if file_path.exists() {
             let content = fs::read_to_string(&file_path)
                 .await
                 .map_err(|e| format!("Failed to read metadata file: {e}"))?;
 
             let accounts: HashMap<String, AccountMetadata> = serde_json::from_str(&content)
                 .map_err(|e| format!("Failed to parse metadata file: {e}"))?;
-            let legacy = legacy_auth_timestamps(&content)?;
+            let legacy = legacy_auth_state(&content)?;
 
             (accounts, legacy)
         } else {
-            (HashMap::new(), HashMap::new())
+            (HashMap::new(), LegacyAuthState::default())
         };
+        let keys_present = legacy.keys_present;
 
-        let (auth_state, seeded_from_legacy) = if auth_state_path.exists() {
+        let auth_state = if auth_state_path.exists() {
             let content = fs::read_to_string(&auth_state_path)
                 .await
                 .map_err(|e| format!("Failed to read auth state file: {e}"))?;
-            let state: HashMap<String, i64> = serde_json::from_str(&content)
+            let mut state: HashMap<String, i64> = serde_json::from_str(&content)
                 .map_err(|e| format!("Failed to parse auth state file: {e}"))?;
-            (state, false)
-        } else {
+            if keys_present {
+                for (account_id, legacy_ts) in legacy.values {
+                    match state.get(&account_id) {
+                        Some(current) if *current >= legacy_ts => {}
+                        _ => {
+                            state.insert(account_id, legacy_ts);
+                        }
+                    }
+                }
+                let content = serde_json::to_string_pretty(&state)
+                    .map_err(|e| format!("Failed to serialize auth state: {e}"))?;
+                write_atomic(&auth_state_path, &content).await?;
+            }
+            state
+        } else if accounts.is_empty() || keys_present {
             if !accounts.is_empty() {
                 tracing::warn!(
                     accounts = accounts.len(),
-                    seeded = legacy_auth_state.len(),
+                    seeded = legacy.values.len(),
                     "auth state file missing; initializing replay state from legacy metadata values"
                 );
             }
-            let content = serde_json::to_string_pretty(&legacy_auth_state)
+            let content = serde_json::to_string_pretty(&legacy.values)
                 .map_err(|e| format!("Failed to serialize auth state: {e}"))?;
             write_atomic(&auth_state_path, &content).await?;
-            let seeded = !legacy_auth_state.is_empty();
-            (legacy_auth_state, seeded)
+            legacy.values
+        } else {
+            return Err(format!(
+                "Replay-protection state file {} is missing but the metadata store \
+                 already migrated off legacy timestamps; starting with empty replay \
+                 state would re-accept previously seen requests. Restore \
+                 auth_state.json from backup, or recreate it as an empty JSON \
+                 object ({{}}) to explicitly accept that risk.",
+                auth_state_path.display()
+            ));
         };
 
         let store = Self {
@@ -79,7 +101,7 @@ impl FilesystemMetadataStore {
             auth_state: Arc::new(RwLock::new(auth_state)),
         };
 
-        if seeded_from_legacy {
+        if keys_present {
             let cache = store.cache.read().await;
             store.persist(&cache).await?;
         }
@@ -102,26 +124,34 @@ impl FilesystemMetadataStore {
 }
 
 /// Replay timestamps recorded by pre-split servers inside the metadata file.
-/// Read from the raw JSON because `AccountMetadata` no longer carries the
-/// field; the caller strips it by rewriting the metadata file right after
-/// seeding, so a later loss of `auth_state.json` starts empty instead of
-/// silently resurrecting stale timestamps.
-fn legacy_auth_timestamps(metadata_file_content: &str) -> Result<HashMap<String, i64>, String> {
+/// Pre-split `AccountMetadata` always serialized the `last_auth_timestamp`
+/// key (as `null` when never authenticated), so `keys_present` distinguishes
+/// a pre-split store awaiting its first migration from a post-split store —
+/// the marker that lets startup fail closed when `auth_state.json` disappears
+/// after migration instead of silently accepting replays with empty state.
+#[derive(Default)]
+struct LegacyAuthState {
+    values: HashMap<String, i64>,
+    keys_present: bool,
+}
+
+fn legacy_auth_state(metadata_file_content: &str) -> Result<LegacyAuthState, String> {
     let raw: serde_json::Value = serde_json::from_str(metadata_file_content)
         .map_err(|e| format!("Failed to parse metadata file: {e}"))?;
     let entries = raw
         .as_object()
         .ok_or_else(|| "Metadata file is not a JSON object".to_string())?;
 
-    Ok(entries
-        .iter()
-        .filter_map(|(account_id, metadata)| {
-            metadata
-                .get("last_auth_timestamp")
-                .and_then(serde_json::Value::as_i64)
-                .map(|ts| (account_id.clone(), ts))
-        })
-        .collect())
+    let mut legacy = LegacyAuthState::default();
+    for (account_id, metadata) in entries {
+        if let Some(timestamp) = metadata.get("last_auth_timestamp") {
+            legacy.keys_present = true;
+            if let Some(ts) = timestamp.as_i64() {
+                legacy.values.insert(account_id.clone(), ts);
+            }
+        }
+    }
+    Ok(legacy)
 }
 
 async fn write_atomic(path: &PathBuf, content: &str) -> Result<(), String> {
@@ -740,7 +770,7 @@ mod auth_state_tests {
     }
 
     #[tokio::test]
-    async fn auth_state_file_loss_after_first_boot_starts_empty_not_stale() {
+    async fn auth_state_file_loss_after_migration_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         {
             let _store = store_with_account(&dir).await;
@@ -757,17 +787,127 @@ mod auth_state_tests {
         }
 
         std::fs::remove_file(auth_state_path(&dir)).unwrap();
+        let err = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .err()
+            .expect("losing replay state after migration must reject startup");
+        assert!(
+            err.contains("auth_state.json"),
+            "error must name the missing file: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_split_store_with_null_timestamps_migrates_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(accounts_path(&dir)).unwrap()).unwrap();
+        raw["acct"]["last_auth_timestamp"] = serde_json::Value::Null;
+        std::fs::write(accounts_path(&dir), serde_json::to_string(&raw).unwrap()).unwrap();
+        std::fs::remove_file(auth_state_path(&dir)).unwrap();
+
+        let _store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .expect("a never-authenticated pre-split store is a legitimate first migration");
+
+        assert!(persisted_auth_state(&dir).is_empty());
+        assert!(
+            !std::fs::read_to_string(accounts_path(&dir))
+                .unwrap()
+                .contains("last_auth_timestamp"),
+            "null legacy keys must be stripped so later file loss still fails closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_migration_residue_is_merged_and_stripped_on_next_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(accounts_path(&dir)).unwrap()).unwrap();
+        raw["acct"]["last_auth_timestamp"] = serde_json::json!(5000);
+        std::fs::write(accounts_path(&dir), serde_json::to_string(&raw).unwrap()).unwrap();
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([("acct".to_string(), 100_i64)])).unwrap(),
+        )
+        .unwrap();
+
         let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
             .await
             .unwrap();
 
-        assert!(persisted_auth_state(&dir).is_empty());
+        assert_eq!(
+            persisted_auth_state(&dir).get("acct"),
+            Some(&5000),
+            "the newer of legacy and auth-state values must win the merge"
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", 5000)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !std::fs::read_to_string(accounts_path(&dir))
+                .unwrap()
+                .contains("last_auth_timestamp"),
+            "legacy residue must be stripped whenever it is found"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_legacy_residue_never_regresses_auth_state() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(accounts_path(&dir)).unwrap()).unwrap();
+        raw["acct"]["last_auth_timestamp"] = serde_json::json!(100);
+        std::fs::write(accounts_path(&dir), serde_json::to_string(&raw).unwrap()).unwrap();
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([("acct".to_string(), 5000_i64)])).unwrap(),
+        )
+        .unwrap();
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&5000));
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", 4999)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_recreated_empty_auth_state_is_honored() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+
+        std::fs::remove_file(auth_state_path(&dir)).unwrap();
+        std::fs::write(auth_state_path(&dir), "{}").unwrap();
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .expect("an explicitly recreated auth-state file is an operator decision");
         assert!(
             store
-                .update_last_auth_timestamp_cas("acct", 4242)
+                .update_last_auth_timestamp_cas("acct", 1)
                 .await
-                .unwrap(),
-            "state after file loss must be empty, never re-seeded from the stripped metadata"
+                .unwrap()
         );
     }
 }

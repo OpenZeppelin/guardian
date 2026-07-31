@@ -1,3 +1,11 @@
+-- Block concurrent CAS writes from replicas still running the pre-split
+-- binary: timestamps committed between the backfill snapshot and the column
+-- drop would otherwise be silently discarded, regressing replay state
+-- (FR-006). The lock is held until the migration transaction commits;
+-- queued legacy writes then fail on the missing column, which is the
+-- intended fail-closed behavior.
+LOCK TABLE account_metadata IN ACCESS EXCLUSIVE MODE;
+
 CREATE TABLE account_auth_state (
     account_id VARCHAR(128) PRIMARY KEY
         REFERENCES account_metadata(account_id) ON DELETE CASCADE,

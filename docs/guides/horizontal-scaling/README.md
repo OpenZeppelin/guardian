@@ -98,12 +98,15 @@ No environment variable enables or disables it.
 
 **Upgrading across schema migrations**: migrations run automatically at
 startup, and the first replica to boot a new binary migrates the shared
-database for the whole fleet. A replica still running the previous binary can
-then fail closed — its queries name columns the migration removed, so it
-serves errors instead of authenticating against stale state — until it is
-replaced. Plan rolling deploys accordingly: old replicas may error (never
-misbehave) during the window between the first new-binary boot and the last
-replica replacement.
+database for the whole fleet. Migrations that move authentication state lock
+the affected table for their transaction, so replay timestamps accepted by
+old replicas are never lost mid-migration — old-binary writes either land
+before the migration's snapshot or fail on the schema change. A replica still
+running the previous binary therefore fails closed — its queries name columns
+the migration removed, so it serves errors instead of authenticating against
+stale state — until it is replaced. Plan rolling deploys accordingly: old
+replicas may error (never misbehave) during the window between the first
+new-binary boot and the last replica replacement.
 
 One shared thing lives **outside** Postgres: the ACK signing keys. Both
 replicas mount the same `./ack-keys` files and load them via
