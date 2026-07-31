@@ -31,7 +31,7 @@ sequenceDiagram
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_commitment(account_id, initial_state)
   S->>ST: submit_state(state_json, commitment)
-  S->>M: set(account_id, auth, network_config, timestamps, last_auth_timestamp)
+  S->>M: set(account_id, auth, network_config, timestamps)
   S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
 ```
 

@@ -577,7 +577,6 @@ mod tests {
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,
@@ -702,7 +701,7 @@ mod tests {
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
 
-        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        // The flow reads metadata more than once; stack one get response per read.
         let _metadata = metadata
             .with_get(Ok(Some(create_account_metadata(
                 account_id.clone(),
@@ -912,7 +911,7 @@ mod tests {
         let signer = TestSigner::new();
         let commitment = signer.commitment_hex.clone();
 
-        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        // The flow reads metadata more than once; stack one get response per read.
         let _metadata = metadata
             .with_get(Ok(Some(create_account_metadata(
                 account_id.clone(),
@@ -965,7 +964,7 @@ mod tests {
         let signer = TestSigner::new();
         let commitment = signer.commitment_hex.clone();
 
-        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        // The flow reads metadata more than once; stack one get response per read.
         let _metadata = metadata
             .with_get(Ok(Some(create_account_metadata(
                 account_id.clone(),

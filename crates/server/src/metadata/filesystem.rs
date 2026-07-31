@@ -14,11 +14,15 @@ use tokio::sync::RwLock;
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Filesystem-based metadata store
-/// Stores all account metadata in a single JSON file with in-memory cache
+/// Stores all account metadata in a single JSON file with in-memory cache;
+/// replay-protection timestamps live in their own `auth_state.json` so an
+/// authenticated read never rewrites the metadata file.
 pub struct FilesystemMetadataStore {
     file_path: PathBuf,
+    auth_state_path: PathBuf,
     /// In-memory cache of account metadata
     cache: Arc<RwLock<HashMap<String, AccountMetadata>>>,
+    auth_state: Arc<RwLock<HashMap<String, i64>>>,
 }
 
 impl FilesystemMetadataStore {
@@ -30,67 +34,129 @@ impl FilesystemMetadataStore {
             .map_err(|e| format!("Failed to create metadata directory: {e}"))?;
 
         let file_path = metadata_dir.join("accounts.json");
+        let auth_state_path = metadata_dir.join("auth_state.json");
 
-        let cache = if file_path.exists() {
+        let (accounts, legacy_auth_state) = if file_path.exists() {
             let content = fs::read_to_string(&file_path)
                 .await
                 .map_err(|e| format!("Failed to read metadata file: {e}"))?;
 
             let accounts: HashMap<String, AccountMetadata> = serde_json::from_str(&content)
                 .map_err(|e| format!("Failed to parse metadata file: {e}"))?;
+            let legacy = legacy_auth_timestamps(&content)?;
 
-            Arc::new(RwLock::new(accounts))
+            (accounts, legacy)
         } else {
-            Arc::new(RwLock::new(HashMap::new()))
+            (HashMap::new(), HashMap::new())
         };
 
-        Ok(Self { file_path, cache })
+        let (auth_state, seeded_from_legacy) = if auth_state_path.exists() {
+            let content = fs::read_to_string(&auth_state_path)
+                .await
+                .map_err(|e| format!("Failed to read auth state file: {e}"))?;
+            let state: HashMap<String, i64> = serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to parse auth state file: {e}"))?;
+            (state, false)
+        } else {
+            if !accounts.is_empty() {
+                tracing::warn!(
+                    accounts = accounts.len(),
+                    seeded = legacy_auth_state.len(),
+                    "auth state file missing; initializing replay state from legacy metadata values"
+                );
+            }
+            let content = serde_json::to_string_pretty(&legacy_auth_state)
+                .map_err(|e| format!("Failed to serialize auth state: {e}"))?;
+            write_atomic(&auth_state_path, &content).await?;
+            let seeded = !legacy_auth_state.is_empty();
+            (legacy_auth_state, seeded)
+        };
+
+        let store = Self {
+            file_path,
+            auth_state_path,
+            cache: Arc::new(RwLock::new(accounts)),
+            auth_state: Arc::new(RwLock::new(auth_state)),
+        };
+
+        if seeded_from_legacy {
+            let cache = store.cache.read().await;
+            store.persist(&cache).await?;
+        }
+
+        Ok(store)
     }
 
     /// Persist metadata cache to disk
     async fn persist(&self, cache: &HashMap<String, AccountMetadata>) -> Result<(), String> {
-        // Ensure metadata directory exists
-        if let Some(parent) = self.file_path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("Failed to create metadata directory: {e}"))?;
-        }
-
         let content = serde_json::to_string_pretty(cache)
             .map_err(|e| format!("Failed to serialize metadata: {e}"))?;
-
-        // Atomic write using temp file
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temp_path = self.file_path.with_extension(format!(
-            "tmp.{}.{}.{}",
-            std::process::id(),
-            nanos,
-            counter
-        ));
-        let mut file = fs::File::create(&temp_path)
-            .await
-            .map_err(|e| format!("Failed to create temp file: {e}"))?;
-
-        file.write_all(content.as_bytes())
-            .await
-            .map_err(|e| format!("Failed to write to temp file: {e}"))?;
-
-        file.sync_all()
-            .await
-            .map_err(|e| format!("Failed to sync temp file: {e}"))?;
-
-        drop(file);
-
-        fs::rename(&temp_path, &self.file_path)
-            .await
-            .map_err(|e| format!("Failed to rename temp file: {e}"))?;
-
-        Ok(())
+        write_atomic(&self.file_path, &content).await
     }
+
+    async fn persist_auth_state(&self, auth_state: &HashMap<String, i64>) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(auth_state)
+            .map_err(|e| format!("Failed to serialize auth state: {e}"))?;
+        write_atomic(&self.auth_state_path, &content).await
+    }
+}
+
+/// Replay timestamps recorded by pre-split servers inside the metadata file.
+/// Read from the raw JSON because `AccountMetadata` no longer carries the
+/// field; the caller strips it by rewriting the metadata file right after
+/// seeding, so a later loss of `auth_state.json` starts empty instead of
+/// silently resurrecting stale timestamps.
+fn legacy_auth_timestamps(metadata_file_content: &str) -> Result<HashMap<String, i64>, String> {
+    let raw: serde_json::Value = serde_json::from_str(metadata_file_content)
+        .map_err(|e| format!("Failed to parse metadata file: {e}"))?;
+    let entries = raw
+        .as_object()
+        .ok_or_else(|| "Metadata file is not a JSON object".to_string())?;
+
+    Ok(entries
+        .iter()
+        .filter_map(|(account_id, metadata)| {
+            metadata
+                .get("last_auth_timestamp")
+                .and_then(serde_json::Value::as_i64)
+                .map(|ts| (account_id.clone(), ts))
+        })
+        .collect())
+}
+
+async fn write_atomic(path: &PathBuf, content: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create metadata directory: {e}"))?;
+    }
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path =
+        path.with_extension(format!("tmp.{}.{}.{}", std::process::id(), nanos, counter));
+    let mut file = fs::File::create(&temp_path)
+        .await
+        .map_err(|e| format!("Failed to create temp file: {e}"))?;
+
+    file.write_all(content.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write to temp file: {e}"))?;
+
+    file.sync_all()
+        .await
+        .map_err(|e| format!("Failed to sync temp file: {e}"))?;
+
+    drop(file);
+
+    fs::rename(&temp_path, path)
+        .await
+        .map_err(|e| format!("Failed to rename temp file: {e}"))?;
+
+    Ok(())
 }
 
 #[async_trait]
@@ -185,24 +251,24 @@ impl MetadataStore for FilesystemMetadataStore {
         &self,
         account_id: &str,
         new_timestamp: i64,
-        now: &str,
     ) -> Result<bool, String> {
-        let mut cache = self.cache.write().await;
-
-        let metadata = cache
-            .get_mut(account_id)
-            .ok_or_else(|| format!("Account not found: {account_id}"))?;
-
-        if let Some(current) = metadata.last_auth_timestamp
-            && new_timestamp <= current
         {
-            return Ok(false); // Potential replay, don't update
+            let cache = self.cache.read().await;
+            if !cache.contains_key(account_id) {
+                return Err(format!("Account not found: {account_id}"));
+            }
         }
 
-        metadata.last_auth_timestamp = Some(new_timestamp);
-        metadata.updated_at = now.to_string();
+        let mut auth_state = self.auth_state.write().await;
 
-        self.persist(&cache).await?;
+        if let Some(&current) = auth_state.get(account_id)
+            && new_timestamp <= current
+        {
+            return Ok(false);
+        }
+
+        auth_state.insert(account_id.to_string(), new_timestamp);
+        self.persist_auth_state(&auth_state).await?;
         Ok(true)
     }
 
@@ -340,7 +406,6 @@ mod pause_tests {
                 created_at: "2026-05-19T10:00:00Z".into(),
                 updated_at: "2026-05-19T10:00:00Z".into(),
                 has_pending_candidate: false,
-                last_auth_timestamp: None,
                 paused_at: None,
                 paused_reason: None,
                 released_at: None,
@@ -457,6 +522,252 @@ mod pause_tests {
             post.released_at,
             Some(ts),
             "generic set must not clear released_at"
+        );
+    }
+}
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod auth_state_tests {
+    use super::*;
+    use crate::metadata::{Auth, NetworkConfig};
+
+    fn sample_metadata(account_id: &str) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.into(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![],
+            },
+            network_config: NetworkConfig::Miden {
+                network_type: crate::metadata::network::MidenNetworkType::Testnet,
+            },
+            created_at: "2026-05-19T10:00:00Z".into(),
+            updated_at: "2026-05-19T10:00:00Z".into(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        }
+    }
+
+    async fn store_with_account(dir: &tempfile::TempDir) -> FilesystemMetadataStore {
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        store.set(sample_metadata("acct")).await.unwrap();
+        store
+    }
+
+    fn auth_state_path(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join(".metadata").join("auth_state.json")
+    }
+
+    fn accounts_path(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join(".metadata").join("accounts.json")
+    }
+
+    fn persisted_auth_state(dir: &tempfile::TempDir) -> HashMap<String, i64> {
+        let content = std::fs::read_to_string(auth_state_path(dir)).unwrap();
+        serde_json::from_str(&content).unwrap()
+    }
+
+    #[tokio::test]
+    async fn cas_records_only_strictly_increasing_timestamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_account(&dir).await;
+
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", 100)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", 100)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", 99)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            persisted_auth_state(&dir).get("acct"),
+            Some(&100),
+            "rejected timestamps must not change the stored value"
+        );
+
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", 101)
+                .await
+                .unwrap()
+        );
+        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&101));
+    }
+
+    #[tokio::test]
+    async fn cas_for_unknown_account_is_a_storage_error_not_a_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_account(&dir).await;
+
+        let err = store
+            .update_last_auth_timestamp_cas("ghost", 100)
+            .await
+            .expect_err("unknown account must error");
+        assert!(err.contains("Account not found"));
+    }
+
+    #[tokio::test]
+    async fn cas_does_not_touch_account_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_account(&dir).await;
+        let before = store.get("acct").await.unwrap().unwrap();
+
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", 100)
+                .await
+                .unwrap()
+        );
+
+        let after = store.get("acct").await.unwrap().unwrap();
+        assert_eq!(after.updated_at, before.updated_at);
+        assert!(
+            !std::fs::read_to_string(accounts_path(&dir))
+                .unwrap()
+                .contains("last_auth_timestamp")
+        );
+    }
+
+    #[tokio::test]
+    async fn non_auth_mutations_still_advance_updated_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_account(&dir).await;
+        let before = store.get("acct").await.unwrap().unwrap();
+
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", 100)
+                .await
+                .unwrap()
+        );
+        store
+            .update_auth(
+                "acct",
+                Auth::MidenFalconRpo {
+                    cosigner_commitments: vec!["0xc0".into()],
+                },
+                "2026-07-31T12:00:00Z",
+            )
+            .await
+            .unwrap();
+
+        let after = store.get("acct").await.unwrap().unwrap();
+        assert_ne!(
+            after.updated_at, before.updated_at,
+            "configuration changes must advance updated_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_identical_timestamps_admit_exactly_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(store_with_account(&dir).await);
+
+        let attempts = (0..16).map(|_| {
+            let store = store.clone();
+            tokio::spawn(async move { store.update_last_auth_timestamp_cas("acct", 500).await })
+        });
+        let mut accepted = 0;
+        for attempt in attempts {
+            if attempt.await.unwrap().unwrap() {
+                accepted += 1;
+            }
+        }
+        assert_eq!(accepted, 1, "exactly one concurrent request may win");
+    }
+
+    #[tokio::test]
+    async fn fresh_store_creates_an_empty_auth_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let _store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert!(auth_state_path(&dir).exists());
+        assert!(persisted_auth_state(&dir).is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_timestamps_are_seeded_once_and_stripped_from_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(accounts_path(&dir)).unwrap()).unwrap();
+        raw["acct"]["last_auth_timestamp"] = serde_json::json!(4242);
+        std::fs::write(accounts_path(&dir), serde_json::to_string(&raw).unwrap()).unwrap();
+        std::fs::remove_file(auth_state_path(&dir)).unwrap();
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&4242));
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", 4242)
+                .await
+                .unwrap(),
+            "seeded timestamp must be enforced"
+        );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", 4243)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !std::fs::read_to_string(accounts_path(&dir))
+                .unwrap()
+                .contains("last_auth_timestamp"),
+            "legacy values must be stripped so a lost auth-state file cannot re-seed stale state"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_state_file_loss_after_first_boot_starts_empty_not_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(accounts_path(&dir)).unwrap()).unwrap();
+        raw["acct"]["last_auth_timestamp"] = serde_json::json!(4242);
+        std::fs::write(accounts_path(&dir), serde_json::to_string(&raw).unwrap()).unwrap();
+        std::fs::remove_file(auth_state_path(&dir)).unwrap();
+        {
+            let _seeded = FilesystemMetadataStore::new(dir.path().to_path_buf())
+                .await
+                .unwrap();
+        }
+
+        std::fs::remove_file(auth_state_path(&dir)).unwrap();
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert!(persisted_auth_state(&dir).is_empty());
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", 4242)
+                .await
+                .unwrap(),
+            "state after file loss must be empty, never re-seeded from the stripped metadata"
         );
     }
 }

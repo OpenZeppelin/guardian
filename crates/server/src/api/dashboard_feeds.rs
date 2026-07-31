@@ -450,7 +450,6 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,
