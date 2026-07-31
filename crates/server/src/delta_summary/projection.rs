@@ -3,8 +3,7 @@
 //! at read time by [`decode_full`] for the detail endpoint.
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::Asset;
-use miden_protocol::crypto::utils::Serializable;
+use miden_protocol::asset::{Asset, NonFungibleAsset};
 use miden_protocol::note::Note;
 use miden_protocol::note::PartialNote;
 use miden_protocol::transaction::{RawOutputNote, TransactionSummary};
@@ -148,6 +147,10 @@ fn classify_note_tag(note: &Note) -> NoteTag {
         Some(StandardNote::PSWAP) => NoteTag::Pswap,
         Some(StandardNote::MINT) => NoteTag::Mint,
         Some(StandardNote::BURN) => NoteTag::Burn,
+        Some(StandardNote::FAUCET_POLICY_ACTION)
+        | Some(StandardNote::PAUSE_ACTION)
+        | Some(StandardNote::OWNER_ACTION)
+        | Some(StandardNote::RBAC_ACTION) => NoteTag::Custom,
         None => NoteTag::Custom,
     }
 }
@@ -248,14 +251,14 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
     for asset in vault.added_assets() {
         if let Asset::NonFungible(a) = asset {
             let faucet = a.faucet_id().to_hex();
-            let id = format!("0x{}", hex::encode(a.vault_key().to_bytes()));
+            let id = canonical_non_fungible_asset_id_hex(a);
             nf_added.entry(faucet).or_default().push(id);
         }
     }
     for asset in vault.removed_assets() {
         if let Asset::NonFungible(a) = asset {
             let faucet = a.faucet_id().to_hex();
-            let id = format!("0x{}", hex::encode(a.vault_key().to_bytes()));
+            let id = canonical_non_fungible_asset_id_hex(a);
             nf_removed.entry(faucet).or_default().push(id);
         }
     }
@@ -273,26 +276,41 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
     out
 }
 
+fn canonical_non_fungible_asset_id_hex(asset: NonFungibleAsset) -> String {
+    format!("0x{}", hex::encode(asset.id().to_word().as_bytes()))
+}
+
 fn project_storage_changes(
     delta: &miden_protocol::account::delta::AccountDelta,
 ) -> Vec<StorageChange> {
     let storage = delta.storage();
     let mut out: Vec<StorageChange> = storage
         .values()
-        .map(|(slot_name, word)| StorageChange {
+        .map(|(slot_name, value_patch)| StorageChange {
             slot_name: slot_name.as_str().to_string(),
             key: None,
             before: None,
-            after: Some(format!("0x{}", hex::encode(word.as_bytes()))),
+            after: value_patch
+                .value()
+                .map(|word| format!("0x{}", hex::encode(word.as_bytes()))),
         })
         .collect();
-    for (slot_name, map_delta) in storage.maps() {
-        for (map_key, word) in map_delta.entries() {
+    for (slot_name, map_patch) in storage.maps() {
+        let Some(entries) = map_patch.entries() else {
+            out.push(StorageChange {
+                slot_name: slot_name.as_str().to_string(),
+                key: None,
+                before: None,
+                after: None,
+            });
+            continue;
+        };
+        for (map_key, word) in entries.as_map() {
             out.push(StorageChange {
                 slot_name: slot_name.as_str().to_string(),
                 key: Some(format!("0x{}", hex::encode(map_key.as_bytes()))),
                 before: None,
-                after: Some(format!("0x{}", hex::encode(word.as_bytes()))),
+                after: (!word.is_empty()).then(|| format!("0x{}", hex::encode(word.as_bytes()))),
             });
         }
     }
@@ -303,7 +321,7 @@ fn project_storage_changes(
 mod tests {
     use super::*;
     use miden_protocol::account::AccountId;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::NoteType;
@@ -320,24 +338,26 @@ mod tests {
         let sender = AccountId::from_hex(NOTE_SENDER).expect("sender");
         let consumer = AccountId::from_hex(CONSUMER).expect("consumer");
         let faucet = AccountId::from_hex(FAUCET).expect("faucet");
-        let asset = FungibleAsset::new(faucet, 100_000_000)
+        let asset: miden_protocol::asset::Asset = FungibleAsset::new(faucet, 100_000_000)
             .expect("fungible asset")
             .into();
         let mut rng = RandomCoin::new(Word::from([1u32, 2, 3, 4]));
-        let note = P2idNote::create(
-            sender,
-            consumer,
-            vec![asset],
-            NoteType::Public,
-            Default::default(),
-            &mut rng,
-        )
-        .expect("p2id note");
+        let note = miden_protocol::note::Note::from(
+            P2idNote::builder()
+                .sender(sender)
+                .target(consumer)
+                .assets(vec![asset])
+                .note_type(NoteType::Public)
+                .generate_serial_number(&mut rng)
+                .build()
+                .expect("p2id note"),
+        );
         let input = InputNote::unauthenticated(note);
         let delta = AccountDelta::new(
             consumer,
-            AccountStorageDelta::default(),
+            miden_protocol::account::AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("account delta");
@@ -380,7 +400,7 @@ mod tests {
     #[test]
     fn storage_change_json_omits_before_when_unpopulated() {
         let change = StorageChange {
-            slot_name: "openzeppelin::multisig::threshold_config".to_string(),
+            slot_name: "miden::standards::auth::multisig::threshold_config".to_string(),
             key: None,
             before: None,
             after: Some("0x0200".to_string()),
@@ -393,27 +413,28 @@ mod tests {
 
     #[test]
     fn project_storage_changes_emits_one_entry_per_map_key() {
-        use miden_protocol::account::delta::{
-            AccountStorageDelta, StorageMapDelta, StorageSlotDelta,
+        use miden_protocol::account::{
+            AccountStoragePatch, StorageMapKey, StorageMapPatch, StorageSlotName, StorageSlotPatch,
         };
-        use miden_protocol::account::{StorageMapKey, StorageSlotName};
 
         let proc_root =
             Word::parse("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
                 .expect("proc root");
         let threshold_word = Word::from([Felt::new_unchecked(1), ZERO, ZERO, ZERO]);
 
-        let mut map_delta = StorageMapDelta::default();
-        map_delta.insert(StorageMapKey::new(proc_root), threshold_word);
+        let map_patch =
+            StorageMapPatch::from_iters([], [(StorageMapKey::new(proc_root), threshold_word)]);
 
         let slot_name =
-            StorageSlotName::new("openzeppelin::multisig::proc_threshold_overrides").unwrap();
+            StorageSlotName::new("miden::standards::auth::multisig::procedure_thresholds").unwrap();
         let storage =
-            AccountStorageDelta::from_raw([(slot_name, StorageSlotDelta::Map(map_delta))].into());
+            AccountStoragePatch::from_raw([(slot_name, StorageSlotPatch::Map(map_patch))].into())
+                .expect("storage patch");
         let delta = AccountDelta::new(
             AccountId::from_hex(CONSUMER).expect("acct"),
             storage,
             AccountVaultDelta::default(),
+            None,
             Felt::new_unchecked(1),
         )
         .expect("delta");
@@ -423,12 +444,83 @@ mod tests {
         let c = &changes[0];
         assert_eq!(
             c.slot_name,
-            "openzeppelin::multisig::proc_threshold_overrides"
+            "miden::standards::auth::multisig::procedure_thresholds"
         );
         assert_eq!(
             c.key.as_deref(),
             Some("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
         );
         assert!(c.after.is_some());
+    }
+
+    #[test]
+    fn project_storage_changes_represents_cleared_map_entry_as_removal() {
+        use miden_protocol::account::{
+            AccountStoragePatch, StorageMapKey, StorageMapPatch, StorageSlotName, StorageSlotPatch,
+        };
+
+        let proc_root =
+            Word::parse("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
+                .expect("proc root");
+        let no_updates: [(StorageMapKey, Word); 0] = [];
+
+        let map_patch = StorageMapPatch::from_iters([StorageMapKey::new(proc_root)], no_updates);
+
+        let slot_name =
+            StorageSlotName::new("miden::standards::auth::multisig::procedure_thresholds").unwrap();
+        let storage =
+            AccountStoragePatch::from_raw([(slot_name, StorageSlotPatch::Map(map_patch))].into())
+                .expect("storage patch");
+        let delta = AccountDelta::new(
+            AccountId::from_hex(CONSUMER).expect("acct"),
+            storage,
+            AccountVaultDelta::default(),
+            None,
+            Felt::new_unchecked(1),
+        )
+        .expect("delta");
+
+        let changes = project_storage_changes(&delta);
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(
+            c.key.as_deref(),
+            Some("0x6d30df4312a2c44ec842db1bee227cc045396ca91e2c47d756dcb607f2bf5f89")
+        );
+        assert!(c.after.is_none());
+    }
+
+    #[test]
+    fn project_vault_changes_uses_canonical_non_fungible_asset_id() {
+        let account_id = AccountId::from_hex(CONSUMER).expect("acct");
+        let asset = NonFungibleAsset::mock(b"guardian-dashboard-canonical-id");
+        let faucet_id = match asset {
+            Asset::NonFungible(asset) => asset.faucet_id().to_hex(),
+            Asset::Fungible(_) => unreachable!("mock should create a non-fungible asset"),
+        };
+        let mut vault = AccountVaultDelta::default();
+        vault.add_asset(asset).expect("asset delta");
+        let delta = AccountDelta::new(
+            account_id,
+            miden_protocol::account::AccountStoragePatch::default(),
+            vault,
+            None,
+            Felt::ONE,
+        )
+        .expect("account delta");
+
+        let changes = project_vault_changes(&delta);
+
+        assert_eq!(
+            changes,
+            vec![VaultChange::NonFungible {
+                asset_id: faucet_id,
+                added: vec![
+                    "0xf1433e1e588f04cbcbee98fc5f0c2ab600ef000000dd000011ca0000000000bc"
+                        .to_string(),
+                ],
+                removed: Vec::new(),
+            }]
+        );
     }
 }

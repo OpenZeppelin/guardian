@@ -1,12 +1,21 @@
 use miden_protocol::Word;
 use miden_protocol::account::{Account, StorageSlotName};
 use miden_protocol::utils::serde::Serializable;
+use miden_standards::account::auth::AuthGuardedMultisig;
 
-// Storage slot names for OpenZeppelin multisig/guardian components
-const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_config";
-const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_keys";
-const OZ_GUARDIAN_SELECTOR: &str = "openzeppelin::guardian::selector";
-pub const OZ_GUARDIAN_PUBLIC_KEY: &str = "openzeppelin::guardian::public_key";
+// `AuthGuardedMultisig` storage slot names (miden::standards::auth::*),
+// sourced from the component's `*_slot()` accessors so they cannot drift.
+fn multisig_threshold_config_slot() -> &'static str {
+    AuthGuardedMultisig::threshold_config_slot().as_str()
+}
+fn multisig_approver_pubkeys_slot() -> &'static str {
+    AuthGuardedMultisig::approver_public_keys_slot().as_str()
+}
+
+/// Slot name of the GUARDIAN public key map (`miden::standards::auth::guardian::pub_key`).
+pub fn guardian_public_key_slot_name() -> &'static str {
+    AuthGuardedMultisig::guardian_public_key_slot().as_str()
+}
 
 pub struct MidenAccountInspector<'a> {
     account: &'a Account,
@@ -26,26 +35,17 @@ impl<'a> MidenAccountInspector<'a> {
     /// Try to get a map item from storage by slot name, returning None if not found or invalid
     fn get_map_item_by_name(&self, slot_name: &str, key: Word) -> Option<Word> {
         let name = StorageSlotName::new(slot_name).ok()?;
-        self.account.storage().get_map_item(&name, key).ok()
-    }
-
-    /// Extract public key from threshold config slot (single signer case)
-    /// Returns None if slot is empty or default
-    pub fn extract_single_pubkey(&self) -> Option<String> {
-        let value = self.get_item_by_name(OZ_MULTISIG_THRESHOLD_CONFIG)?;
-
-        if value != Word::default() {
-            let pubkey_hex = format!("0x{}", hex::encode(value.to_bytes()));
-            return Some(pubkey_hex);
-        }
-        None
+        self.account
+            .storage()
+            .get_map_item(&name, miden_protocol::account::StorageMapKey::new(key))
+            .ok()
     }
 
     /// Extract public keys from the multisig signer map.
     ///
     /// Returns an empty vector if the signer map is empty or missing.
     pub fn extract_pubkeys(&self) -> Vec<String> {
-        self.extract_map_pubkeys(OZ_MULTISIG_SIGNER_PUBKEYS)
+        self.extract_map_pubkeys(multisig_approver_pubkeys_slot())
     }
 
     /// Extract public keys from slot 1 of the multisig signer map.
@@ -72,46 +72,36 @@ impl<'a> MidenAccountInspector<'a> {
         pubkeys
     }
 
-    /// Check if a public key exists in account storage
-    /// Returns true if the pubkey is found in either threshold config or signer pubkeys map
+    /// Check if a public key exists in the multisig signer map.
     pub fn pubkey_exists(&self, target_pubkey: &str) -> bool {
-        if let Some(single_pubkey) = self.extract_single_pubkey()
-            && single_pubkey == target_pubkey
-        {
-            return true;
-        }
-
-        let signer_pubkeys = self.extract_pubkeys();
-        signer_pubkeys.iter().any(|pk| pk == target_pubkey)
+        self.extract_pubkeys().iter().any(|pk| pk == target_pubkey)
     }
 
-    /// Check if the account has GUARDIAN auth enabled by checking the GUARDIAN selector storage slot.
-    ///
-    /// GUARDIAN-enabled accounts have the GUARDIAN component which stores a selector.
-    /// GUARDIAN_ON = [1, 0, 0, 0].
+    /// Check if the account is an `AuthGuardedMultisig` by the presence of a GUARDIAN
+    /// public key. The component has no enable/disable selector — the guardian is always
+    /// present — so a non-default key in the guardian pub_key slot uniquely identifies a
+    /// guarded multisig.
+    #[cfg(test)]
     pub fn has_guardian_auth(&self) -> bool {
-        let Some(selector_value) = self.get_item_by_name(OZ_GUARDIAN_SELECTOR) else {
-            return false;
-        };
-
-        // GUARDIAN_ON value indicating GUARDIAN is enabled
-        let guardian_on = Word::from([1u32, 0, 0, 0]);
-        selector_value == guardian_on
+        self.extract_guardian_public_key().is_some()
     }
 
-    /// Whether the account is an OpenZeppelin multisig, detected by its threshold-config slot.
-    /// Unlike [`Self::has_guardian_auth`] this is independent of the GUARDIAN selector, so it
-    /// stays true after a `SwitchGuardian` and correctly gates the replay-protection adjustment.
+    /// Whether the account carries the multisig auth component, detected by the structural
+    /// presence of its `threshold_config` slot. Unlike the guardian-key presence check, this
+    /// is a property of the account's code/storage layout that cannot be cleared by any delta,
+    /// so it is the correct gate for the replay-protection adjustment: the `executed_transactions`
+    /// map belongs to the multisig component, and the adjustment must run for every multisig tx
+    /// regardless of the guardian key's value.
     pub fn has_multisig_auth(&self) -> bool {
-        self.get_item_by_name(OZ_MULTISIG_THRESHOLD_CONFIG)
+        self.get_item_by_name(multisig_threshold_config_slot())
             .is_some()
     }
 
-    /// Extract GUARDIAN public key commitment from the OpenZeppelin GUARDIAN public key map.
-    /// Requires the exact slot name `openzeppelin::guardian::public_key`.
+    /// Extract GUARDIAN public key commitment from the GUARDIAN public key map
+    /// (`miden::standards::auth::guardian::pub_key`).
     pub fn extract_guardian_public_key(&self) -> Option<String> {
         let key_zero = Word::from([0u32, 0, 0, 0]);
-        let value = self.get_map_item_by_name(OZ_GUARDIAN_PUBLIC_KEY, key_zero)?;
+        let value = self.get_map_item_by_name(guardian_public_key_slot_name(), key_zero)?;
 
         if value == Word::default() {
             return None;
@@ -149,16 +139,20 @@ mod tests {
         }
 
         let threshold_slot = StorageSlot::with_value(
-            StorageSlotName::new(OZ_MULTISIG_THRESHOLD_CONFIG).expect("valid slot name"),
+            StorageSlotName::new(multisig_threshold_config_slot()).expect("valid slot name"),
             Word::from([1u32, 1, 0, 0]),
         );
         let storage = AccountStorage::new(vec![
             threshold_slot,
-            signer_slot(OZ_MULTISIG_SIGNER_PUBKEYS, oz_pubkeys),
+            signer_slot(multisig_approver_pubkeys_slot(), oz_pubkeys),
         ])
         .expect("valid storage");
-        let account_id =
-            AccountId::dummy([3u8; 15], AccountIdVersion::Version1, AccountType::Private);
+        let account_id = AccountId::dummy(
+            [3u8; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            miden_protocol::account::AssetCallbackFlag::Disabled,
+        );
 
         Account::new_existing(
             account_id,
@@ -167,23 +161,6 @@ mod tests {
             AccountCode::mock(),
             miden_protocol::Felt::new_unchecked(1),
         )
-    }
-
-    #[test]
-    fn test_extract_single_pubkey() {
-        let fixture_json: serde_json::Value =
-            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
-                .expect("Failed to parse fixture");
-
-        let account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
-        let inspector = MidenAccountInspector::new(&account);
-
-        let pubkey = inspector.extract_single_pubkey();
-        assert!(pubkey.is_some(), "Expected pubkey in threshold config slot");
-        assert!(
-            pubkey.unwrap().starts_with("0x"),
-            "Pubkey should be hex format"
-        );
     }
 
     #[test]
@@ -196,12 +173,14 @@ mod tests {
         let inspector = MidenAccountInspector::new(&account);
 
         let pubkey = inspector
-            .extract_single_pubkey()
-            .expect("Expected pubkey in threshold config slot");
+            .extract_pubkeys()
+            .into_iter()
+            .next()
+            .expect("Expected at least one signer pubkey in the approver map");
 
         assert!(
             inspector.pubkey_exists(&pubkey),
-            "Pubkey should exist in storage"
+            "Signer pubkey should exist in storage"
         );
 
         assert!(
@@ -226,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_pubkeys_reads_openzeppelin_signer_map() {
+    fn test_extract_pubkeys_reads_approver_signer_map() {
         let account = build_account_with_signer_slots(vec![word(11), word(12)]);
         let inspector = MidenAccountInspector::new(&account);
 
@@ -251,7 +230,7 @@ mod tests {
         let guardian_pubkey = inspector.extract_guardian_public_key();
         assert!(
             guardian_pubkey.is_some(),
-            "Expected GUARDIAN public key from openzeppelin::guardian::public_key slot"
+            "Expected GUARDIAN public key from the guardian pub_key slot"
         );
         assert!(
             guardian_pubkey.unwrap().starts_with("0x"),
@@ -266,7 +245,7 @@ mod tests {
                 .expect("Failed to parse fixture");
 
         let mut account = Account::from_json(&fixture_json).expect("Failed to deserialize account");
-        let slot_name = StorageSlotName::new(OZ_GUARDIAN_PUBLIC_KEY)
+        let slot_name = StorageSlotName::new(guardian_public_key_slot_name())
             .expect("Failed to parse GUARDIAN public key slot");
         let key_zero = Word::from([0u32, 0, 0, 0]);
 

@@ -273,6 +273,43 @@ export class Multisig {
   }
 
   /**
+   * Per-procedure threshold overrides whose effective signing ratio is diluted
+   * by growing the signer set to `newNumSigners`.
+   *
+   * Overrides are absolute signature counts, not ratios, and the on-chain
+   * `update_signers_and_threshold` procedure does not re-scale them: growing
+   * the approver set silently lowers every override's effective signing ratio
+   * (a 2-of-2 override becomes 2-of-n). Callers creating a proposal that grows
+   * the signer set should surface these overrides and suggest raising them via
+   * an update-procedure-threshold proposal alongside the growth.
+   *
+   * @param newNumSigners - Signer-set size the proposal produces
+   * @returns The configured overrides, or an empty list when the set does not grow
+   */
+  overridesDilutedBySignerGrowth(
+    newNumSigners: number,
+  ): Array<{ procedure: ProcedureName; threshold: number }> {
+    if (newNumSigners <= this.signerCommitments.length) {
+      return [];
+    }
+    return Array.from(this.procedureThresholds.entries()).map(([procedure, threshold]) => ({
+      procedure,
+      threshold,
+    }));
+  }
+
+  private warnOnOverrideDilution(newNumSigners: number): void {
+    const current = this.signerCommitments.length;
+    for (const { procedure, threshold } of this.overridesDilutedBySignerGrowth(newNumSigners)) {
+      console.warn(
+        `growing the signer set dilutes the ${procedure} threshold override ` +
+          `(${threshold}-of-${current} becomes ${threshold}-of-${newNumSigners}); consider raising it ` +
+          `via an update-procedure-threshold proposal alongside the signer update`,
+      );
+    }
+  }
+
+  /**
    * Update the GUARDIAN client used by this Multisig instance.
    *
    * @param guardianClient - The new GUARDIAN HTTP client
@@ -578,6 +615,7 @@ export class Multisig {
     const webClient = await this.getRawClient();
     const targetThreshold = newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
+    this.warnOnOverrideDilution(targetSignerCommitments.length);
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
@@ -868,14 +906,11 @@ export class Multisig {
       throw new Error('Amount must be greater than 0');
     }
 
-    const account = await this.getStoreAccount();
-
     const { request, salt } = buildP2idTransactionRequest(
       this._accountId,
       recipientId,
       faucetId,
       amount,
-      account,
       { noteType: options.noteType },
     );
 
@@ -1765,13 +1800,11 @@ export class Multisig {
         throw new UnsupportedMetadataVersionError(version);
       }
       case 'p2id': {
-        const account = await this.getStoreAccount();
         const { request } = buildP2idTransactionRequest(
           this._accountId,
           metadata.recipientId,
           metadata.faucetId,
           BigInt(metadata.amount),
-          account,
           { salt, signatureAdviceMap, noteType: parseP2idNoteType(metadata.noteType) }
         );
         return request;

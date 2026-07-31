@@ -1,5 +1,6 @@
 use std::fmt;
 
+use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
 use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{
@@ -7,13 +8,14 @@ use miden_client::transaction::{
     TransactionRequestBuilder, TransactionRequestError, TransactionScript, TransactionSummary,
 };
 use miden_client::{Client, ClientError, Deserializable, Word};
-use miden_confidential_contracts::masm_builder::get_multisig_library;
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::account::auth::Signature;
 use miden_protocol::account::AccountId;
+use miden_protocol::assembly::Library;
 use miden_protocol::{Felt, Hasher};
+use miden_standards::StandardsLib;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -106,7 +108,7 @@ pub fn build_multisig_config_advice(
 ) -> (Word, Vec<Felt>) {
     let num_approvers = signer_commitments.len() as u64;
 
-    let mut payload = Vec::with_capacity(4 + signer_commitments.len() * 4);
+    let mut payload = Vec::with_capacity(4 + signer_commitments.len() * 8);
     payload.extend_from_slice(&[
         Felt::new_unchecked(threshold),
         Felt::new_unchecked(num_approvers),
@@ -114,8 +116,15 @@ pub fn build_multisig_config_advice(
         Felt::new_unchecked(0),
     ]);
 
+    // Upstream interleaves [PUB_KEY, SCHEME_ID] per approver, in reverse index order.
     for commitment in signer_commitments.iter().rev() {
         payload.extend_from_slice(commitment.as_elements());
+        payload.extend_from_slice(&[
+            Felt::new_unchecked(SignatureScheme::Falcon.auth_scheme_id()),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+        ]);
     }
 
     let config_hash: Word = Hasher::hash_elements(&payload);
@@ -124,11 +133,10 @@ pub fn build_multisig_config_advice(
 
 #[allow(dead_code)]
 pub fn build_update_signers_script() -> Result<TransactionScript, String> {
-    let multisig_library =
-        get_multisig_library().map_err(|err| format!("Failed to get multisig library: {err}"))?;
+    let multisig_library: Library = StandardsLib::default().into();
 
     let tx_script_code = "
-        use oz_multisig::multisig
+        use miden::standards::auth::multisig
         begin
             call.multisig::update_signers_and_threshold
         end

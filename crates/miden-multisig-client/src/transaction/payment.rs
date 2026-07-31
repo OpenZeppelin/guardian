@@ -2,15 +2,15 @@
 //!
 //! Functions for building P2ID (pay-to-id) and other payment transactions.
 
-use miden_client::account::{Account, AccountInterfaceExt};
-use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
-use miden_protocol::account::AccountId;
+use miden_client::account::Account;
+use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
+use miden_protocol::account::{AccountCodeInterface, AccountId};
 use miden_protocol::asset::Asset;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::interface::AccountInterface;
 use miden_standards::note::P2idNote;
+use miden_standards::tx_script::SendNotesTransactionScript;
 
 use crate::error::{MultisigError, Result};
 
@@ -31,23 +31,35 @@ where
 {
     let mut rng = RandomCoin::new(salt);
 
-    let note = P2idNote::create(
+    let note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient)
+        .assets(assets)
+        .note_type(note_type)
+        .generate_serial_number(&mut rng)
+        .build()
+        .map_err(|e| {
+            MultisigError::TransactionExecution(format!("failed to create P2ID note: {}", e))
+        })?;
+    let note = miden_protocol::note::Note::from(note);
+
+    let interface = AccountCodeInterface::new(
         sender_account.id(),
-        recipient,
-        assets,
-        note_type,
-        Default::default(),
-        &mut rng,
+        sender_account.code().procedures().iter().copied().collect(),
     )
     .map_err(|e| {
-        MultisigError::TransactionExecution(format!("failed to create P2ID note: {}", e))
+        MultisigError::TransactionExecution(format!("failed to build account interface: {}", e))
     })?;
 
-    let send_script = AccountInterface::from_account(sender_account)
-        .build_send_notes_script(&[note.clone().into()], None)
-        .map_err(|e| {
-            MultisigError::TransactionExecution(format!("failed to build P2ID send script: {}", e))
-        })?;
+    let send_script: TransactionScript =
+        SendNotesTransactionScript::new(&interface, &[note.clone().into()])
+            .map_err(|e| {
+                MultisigError::TransactionExecution(format!(
+                    "failed to build P2ID send script: {}",
+                    e
+                ))
+            })?
+            .into();
 
     let request = TransactionRequestBuilder::new()
         .custom_script(send_script)
@@ -70,10 +82,13 @@ mod tests {
     use miden_protocol::account::{AccountId, AccountType};
     use miden_protocol::asset::{AssetAmount, TokenSymbol};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_standards::AuthMethod;
-    use miden_standards::account::access::AccessControl;
-    use miden_standards::account::faucets::{FungibleFaucet, TokenName, create_fungible_faucet};
-    use miden_standards::account::policies::TokenPolicyManager;
+    use miden_standards::account::auth::{Approver, AuthSingleSigAcl, AuthSingleSigAclConfig};
+    use miden_standards::account::faucets::{
+        FungibleFaucet, TokenName, create_singlesig_user_fungible_faucet,
+    };
+    use miden_standards::account::policies::{
+        BurnPolicy, MintPolicy, TokenPolicyManager, TransferPolicy,
+    };
 
     #[test]
     fn build_p2id_transaction_request_uses_custom_send_script() {
@@ -93,18 +108,28 @@ mod tests {
             .max_supply(AssetAmount::from(1_000_000u32))
             .build()
             .unwrap();
-        let faucet = create_fungible_faucet(
+        let auth_component = AuthSingleSigAcl::new(
+            Approver::new(
+                secret_key.public_key().to_commitment().into(),
+                AuthScheme::Falcon512Poseidon2,
+            ),
+            AuthSingleSigAclConfig::new(std::collections::BTreeSet::from([
+                FungibleFaucet::receive_and_burn_root(),
+            ]))
+            .unwrap(),
+        );
+        let policy_manager = TokenPolicyManager::builder()
+            .active_mint_policy(MintPolicy::allow_all())
+            .active_burn_policy(BurnPolicy::allow_all())
+            .active_send_policy(TransferPolicy::allow_all())
+            .active_receive_policy(TransferPolicy::allow_all())
+            .build();
+        let faucet = create_singlesig_user_fungible_faucet(
             [5u8; 32],
             faucet_definition,
+            auth_component,
+            policy_manager,
             AccountType::Public,
-            AuthMethod::SingleSig {
-                approver: (
-                    secret_key.public_key().to_commitment().into(),
-                    AuthScheme::Falcon512Poseidon2,
-                ),
-            },
-            AccessControl::AuthControlled,
-            TokenPolicyManager::new(),
         )
         .unwrap();
         let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
@@ -147,18 +172,28 @@ mod tests {
             .max_supply(AssetAmount::from(1_000_000u32))
             .build()
             .unwrap();
-        let faucet = create_fungible_faucet(
+        let auth_component = AuthSingleSigAcl::new(
+            Approver::new(
+                secret_key.public_key().to_commitment().into(),
+                AuthScheme::Falcon512Poseidon2,
+            ),
+            AuthSingleSigAclConfig::new(std::collections::BTreeSet::from([
+                FungibleFaucet::receive_and_burn_root(),
+            ]))
+            .unwrap(),
+        );
+        let policy_manager = TokenPolicyManager::builder()
+            .active_mint_policy(MintPolicy::allow_all())
+            .active_burn_policy(BurnPolicy::allow_all())
+            .active_send_policy(TransferPolicy::allow_all())
+            .active_receive_policy(TransferPolicy::allow_all())
+            .build();
+        let faucet = create_singlesig_user_fungible_faucet(
             [5u8; 32],
             faucet_definition,
+            auth_component,
+            policy_manager,
             AccountType::Public,
-            AuthMethod::SingleSig {
-                approver: (
-                    secret_key.public_key().to_commitment().into(),
-                    AuthScheme::Falcon512Poseidon2,
-                ),
-            },
-            AccessControl::AuthControlled,
-            TokenPolicyManager::new(),
         )
         .unwrap();
         let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();

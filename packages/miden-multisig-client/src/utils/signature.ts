@@ -6,7 +6,7 @@ import type { ProposalSignatureEntry, SignatureScheme } from '../types.js';
 export const ECDSA_AUTH_SCHEME_ID = 1;
 export const FALCON_AUTH_SCHEME_ID = 2;
 
-function authSchemeId(scheme: SignatureScheme): number {
+export function authSchemeId(scheme: SignatureScheme): number {
   return scheme === 'ecdsa' ? ECDSA_AUTH_SCHEME_ID : FALCON_AUTH_SCHEME_ID;
 }
 

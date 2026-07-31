@@ -1,5 +1,6 @@
 use base64::Engine;
 use miden_protocol::account::Account;
+use miden_protocol::account::auth::AuthScheme;
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as FalconSignature;
@@ -8,6 +9,7 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Hasher, Word};
 use serde::{Deserialize, Serialize};
 
+pub mod account_delta;
 pub mod auth;
 pub mod auth_request_message;
 pub mod auth_request_payload;
@@ -39,6 +41,19 @@ impl SignatureScheme {
             Self::Falcon => "falcon",
             Self::Ecdsa => "ecdsa",
         }
+    }
+
+    /// Maps to the upstream `AuthScheme` used by the `AuthGuardedMultisig` component.
+    pub const fn auth_scheme(self) -> AuthScheme {
+        match self {
+            Self::Falcon => AuthScheme::Falcon512Poseidon2,
+            Self::Ecdsa => AuthScheme::EcdsaK256Keccak,
+        }
+    }
+
+    /// Numeric identifier the guarded-multisig MASM stores alongside each public key.
+    pub const fn auth_scheme_id(self) -> u64 {
+        self.auth_scheme() as u64
     }
 
     pub fn parse_signature_hex(self, signature_hex: &str) -> Result<AccountSignature, String> {
@@ -278,7 +293,10 @@ mod tests {
         crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey,
         crypto::dsa::falcon512_poseidon2::SecretKey,
     };
-    use miden_standards::account::{auth::AuthSingleSig, wallets::BasicWallet};
+    use miden_standards::account::{
+        auth::{Approver, AuthSingleSig},
+        wallets::BasicWallet,
+    };
 
     #[test]
     fn test_account_json_round_trip() {
@@ -287,10 +305,10 @@ mod tests {
         let public_key_commitment =
             PublicKeyCommitment::from(secret_key.public_key().to_commitment());
         let account = AccountBuilder::new([0xff; 32])
-            .with_auth_component(AuthSingleSig::new(
+            .with_auth_component(AuthSingleSig::new(Approver::new(
                 public_key_commitment,
                 AuthScheme::Falcon512Poseidon2,
-            ))
+            )))
             .with_component(BasicWallet)
             .build()
             .unwrap();

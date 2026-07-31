@@ -10,6 +10,8 @@ homepage.workspace = true
 description = "High-level SDK for interacting with multisig accounts on Miden via GUARDIAN"
 
 [dependencies]
+tracing = "0.1"
+
 # Internal crates
 guardian-client = { version = "=0.16.0", path = "../client" }
 guardian-shared = { version = "=0.16.0", path = "../shared" }
@@ -47,4 +49,5 @@ legacy-consume-notes = []
 
 [dev-dependencies]
 tempfile = { workspace = true }
+miden-confidential-contracts = { version = "=0.16.0", path = "../contracts", features = ["testing"] }
 miden-client = { workspace = true, features = ["tonic", "testing"] }

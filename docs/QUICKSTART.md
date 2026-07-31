@@ -56,8 +56,11 @@ This is enough to point an example SDK at:
 cd examples/demo && cargo run --release
 ```
 
-The demo also needs a Miden RPC endpoint (Devnet works out of the box).
-See [`docs/LOCAL_DEV.md`](./LOCAL_DEV.md#prerequisites) if your network
+The demo also needs a Miden RPC endpoint (Devnet works out of the box
+and runs the Miden 0.16 node this workspace targets). If you upgraded
+from an older checkout, wipe stale local state first (`store.sqlite3`,
+`~/.guardian`) — Miden 0.15 state does not load under 0.16. See
+[`docs/LOCAL_DEV.md`](./LOCAL_DEV.md#prerequisites) if your network
 choice differs.
 
 ## Where to next

@@ -1,4 +1,4 @@
-import type { Account, TransactionRequest, Word } from '@miden-sdk/miden-sdk';
+import type { TransactionRequest, Word } from '@miden-sdk/miden-sdk';
 import {
   AccountId,
   FeltArray,
@@ -60,32 +60,6 @@ export function deriveP2idSerialNumber(salt: Word): Word {
   ]));
 }
 
-/**
- * Builds the fungible asset to transfer, sourcing the callback flag from the held asset.
- *
- * In Miden 0.15 the callback flag is part of the vault key, so rebuilding the asset from
- * `faucet`/`amount` with the default flag would not match the held asset and the transfer
- * would abort. When the faucet is absent the default flag is used, surfacing the
- * missing-asset error during execution.
- */
-function resolveFungibleAssetFromVault(
-  account: Account,
-  faucet: AccountId,
-  amount: bigint,
-): FungibleAsset {
-  const faucetHex = faucet.toString();
-  const assetFromVault = account
-    .vault()
-    .fungibleAssets()
-    .find(asset => asset.faucetId().toString() === faucetHex);
-
-  if (!assetFromVault) {
-    return new FungibleAsset(faucet, amount);
-  }
-
-  return FungibleAsset.fromVaultKey(assetFromVault.vaultKey(), amount);
-}
-
 function buildP2idNote(
   sender: AccountId,
   recipient: AccountId,
@@ -119,7 +93,6 @@ export function buildP2idTransactionRequest(
   recipientId: string,
   faucetId: string,
   amount: bigint,
-  account: Account,
   options: P2idTransactionOptions = {},
 ): { request: TransactionRequest; salt: Word } {
   const sender = AccountId.fromHex(senderId);
@@ -128,8 +101,7 @@ export function buildP2idTransactionRequest(
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
-  const asset = resolveFungibleAssetFromVault(account, faucet, amount);
-
+  const asset = new FungibleAsset(faucet, amount);
   const noteAssets = new NoteAssets([asset]);
 
   const note = buildP2idNote(

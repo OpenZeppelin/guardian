@@ -10,7 +10,7 @@ use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
-use miden_client::{Client, ClientError, DebugMode, Deserializable, Felt, Serializable, Word};
+use miden_client::{Client, ClientError, Deserializable, Felt, Serializable, Word};
 use miden_client_sqlite_store::SqliteStore;
 
 use miden_protocol::account::auth::Signature as AccountSignature;
@@ -78,7 +78,6 @@ async fn create_miden_client(
     configured_client_builder(endpoint)
         .store(store)
         .rng(rng)
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(Some(20))
         .max_block_number_delta(256)
         .build()
@@ -481,10 +480,12 @@ async fn main() -> ClientResult<()> {
                     }
                 };
 
-                println!(
-                    "  ✓ Transaction executed (nonce: {})",
-                    tx_result.account_delta().nonce_delta().as_canonical_u64()
-                );
+                let final_nonce = tx_result
+                    .account_patch()
+                    .final_nonce()
+                    .map(|nonce| nonce.as_canonical_u64().to_string())
+                    .unwrap_or_else(|| "unavailable".to_owned());
+                println!("  ✓ Transaction executed (final nonce: {final_nonce})");
             }
             Ok(false) => {
                 println!("  ✗ Invalid GUARDIAN signature");

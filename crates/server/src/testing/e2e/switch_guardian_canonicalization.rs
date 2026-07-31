@@ -10,7 +10,7 @@
 //!    server's ack key — the same binding `/configure` enforces in
 //!    production.
 //! 2. Execute `update_guardian_public_key` on a mock chain twice, exactly
-//!    like `test_switch_guardian_server_reconstruction_matches_execution`
+//!    like `test_multisig_update_guardian_public_key`
 //!    (crates/contracts/tests/auth/multisig.rs): an abort run to obtain the
 //!    summary the wallet pushes, and a signed run for the authoritative
 //!    on-chain result.
@@ -30,7 +30,6 @@ use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
 use guardian_shared::{FromJson, SignatureScheme, ToJson};
-use miden_confidential_contracts::masm_builder::get_guardian_library;
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
@@ -38,8 +37,8 @@ use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::account::{Account, AccountType};
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
-use miden_protocol::vm::AdviceInputs;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::AuthGuardedMultisig;
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::MockChainBuilder;
 use miden_tx::TransactionExecutorError;
@@ -105,7 +104,6 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
 
     let config = MultisigGuardianConfig::new(2, signer_commitments, ack_commitment_word)
         .with_account_type(AccountType::Public)
-        .with_guardian_enabled(true)
         .with_signature_scheme(SignatureScheme::Falcon);
     let multisig_account = MultisigGuardianBuilder::new(config)
         .build_existing()
@@ -132,19 +130,17 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     let new_guardian_commitment_hex =
         format!("0x{}", hex::encode(new_guardian_commitment.to_bytes()));
 
-    let advice_inputs =
-        AdviceInputs::default().with_stack(new_guardian_commitment.as_elements().iter().copied());
-    let guardian_library = get_guardian_library().expect("guardian library compiles");
-    let tx_script_code = r#"
-    use oz_guardian::guardian
-    begin
-        call.guardian::update_guardian_public_key
-    end
-    "#;
+    // `update_guardian_public_key(scheme_id: felt, new_pub_key: word)` takes its inputs as
+    // stack args (no advice entry), and this note-less rotation requires only the multisig
+    // threshold signatures — mirroring the SDK's `build_update_guardian_script`.
+    let new_guardian_scheme_id = SignatureScheme::Falcon.auth_scheme_id();
+    let tx_script_code = format!(
+        "@transaction_script\npub proc main\n    push.{new_guardian_commitment}\n    push.{new_guardian_scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
+    );
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&guardian_library)
+        .with_dynamically_linked_library(AuthGuardedMultisig::code())
         .expect("library links")
-        .compile_tx_script(tx_script_code)
+        .compile_tx_script(&tx_script_code)
         .expect("tx script compiles");
     let salt = Word::from([Felt::new_unchecked(7); 4]);
 
@@ -155,7 +151,6 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         .expect("tx context builds")
         .authenticator(None)
         .tx_script(tx_script.clone())
-        .extend_advice_inputs(advice_inputs.clone())
         .auth_args(salt)
         .build()
         .expect("tx builds")
@@ -194,7 +189,6 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         .add_signature(cosigner_pubkeys[0].clone().into(), msg, sig_1)
         .add_signature(cosigner_pubkeys[1].clone().into(), msg, sig_2)
         .auth_args(salt)
-        .extend_advice_inputs(advice_inputs)
         .build()
         .expect("tx builds")
         .execute()
@@ -203,8 +197,8 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
 
     let mut executed_account = multisig_account.clone();
     executed_account
-        .apply_delta(executed_tx.account_delta())
-        .expect("executed delta applies");
+        .apply_patch(executed_tx.account_patch())
+        .expect("executed patch applies");
     let executed_commitment_hex = commitment_hex(&executed_account);
     let executed_nonce = executed_account.nonce().as_canonical_u64();
 

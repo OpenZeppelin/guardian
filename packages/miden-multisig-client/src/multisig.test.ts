@@ -190,7 +190,6 @@ describe('Multisig', () => {
       threshold: 1,
       numSigners: 1,
       signerCommitments: ['0x' + 'a'.repeat(64)],
-      guardianEnabled: true,
       guardianCommitment: '0x' + 'c'.repeat(64),
       vaultBalances: [],
       procedureThresholds: new Map(),
@@ -460,7 +459,6 @@ describe('Multisig', () => {
         threshold: 2,
         numSigners: 2,
         signerCommitments: ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)],
-        guardianEnabled: true,
         guardianCommitment: '0x' + 'd'.repeat(64),
         vaultBalances: [],
         procedureThresholds: new Map(),
@@ -1381,12 +1379,11 @@ describe('Multisig', () => {
         '0xrecipient',
         '0xfaucet',
         100n,
-        expect.anything(),
         { noteType: NoteType.Private },
       );
       // ...and the rebuild-from-metadata path parses note_type back to Private.
       const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
-      expect(lastCall[5]).toMatchObject({ noteType: NoteType.Private });
+      expect(lastCall[4]).toMatchObject({ noteType: NoteType.Private });
 
       // The pushed wire metadata carries note_type so cosigners rebuild the
       // same private note at verification/execution.
@@ -2110,8 +2107,8 @@ describe('Multisig', () => {
         // folded into the error message; raw text bodies are dropped.
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_PROPOSAL_NOT_FOUND',
-            message: 'Proposal not found',
+            code: 'proposal_not_found',
+            message: 'Proposal not found for the requested commitment',
             meta: { retryable: false },
           }),
       });
@@ -2891,7 +2888,7 @@ describe('Multisig', () => {
       ).rejects.toThrow('not ready for execution');
     });
 
-    it('should fail when GUARDIAN ack signature is missing (selector ON)', async () => {
+    it('should fail when GUARDIAN ack signature is missing', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
