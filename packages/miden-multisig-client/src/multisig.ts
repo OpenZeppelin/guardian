@@ -19,7 +19,6 @@ import type {
 import type { ProcedureName } from './procedures.js';
 import type {
   MidenClient,
-  TransactionProver,
   WasmWebClient,
 } from '@miden-sdk/miden-sdk';
 import {
@@ -84,6 +83,11 @@ import {
   getTransactionProver,
   requireMidenRpcEndpoint,
 } from './raw-client.js';
+import {
+  resolveProverConfig,
+  type ResolvedProverConfig,
+} from './prover/config.js';
+import { ProverWorkflow } from './prover/workflow.js';
 
 /**
  * Result of fetching account state from GUARDIAN.
@@ -146,7 +150,7 @@ export class Multisig {
   private readonly signer: Signer;
   private readonly midenClient: MidenClient;
   private readonly rawClientPromise: Promise<WasmWebClient>;
-  private readonly transactionProver: TransactionProver | null;
+  private readonly proverWorkflow: ProverWorkflow;
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
@@ -158,7 +162,8 @@ export class Multisig {
     signer: Signer,
     midenClient: MidenClient,
     accountId: string | undefined,
-    midenRpcEndpoint: string
+    midenRpcEndpoint: string,
+    proverConfig?: ResolvedProverConfig,
   ) {
     this.account = account;
     this.threshold = config.threshold;
@@ -173,8 +178,11 @@ export class Multisig {
     this.midenClient = midenClient;
     this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
     this.midenRpcEndpoint = requireMidenRpcEndpoint(midenRpcEndpoint);
-    this.transactionProver = getTransactionProver(midenClient);
     this.rawClientPromise = getRawMidenClient(midenClient, this.midenRpcEndpoint);
+    this.proverWorkflow = new ProverWorkflow(
+      this.midenClient,
+      proverConfig ?? resolveProverConfig(undefined, getTransactionProver(midenClient)),
+    );
   }
 
   private getMidenRpcEndpoint(): string {
@@ -1199,7 +1207,7 @@ export class Multisig {
     const { metadata, finalRequest, proposal } = await this.prepareProposalExecution(proposalId);
 
     const accountId = AccountId.fromHex(this._accountId);
-    await this.midenClient.transactions.submit(accountId, finalRequest);
+    await this.proverWorkflow.submit(accountId, finalRequest);
 
     if (metadata.proposalType === 'switch_guardian') {
       if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
@@ -1258,7 +1266,7 @@ export class Multisig {
    * after `prepareCustomExecution` rebuilds its request with the returned advice.
    */
   async submitTransaction(request: TransactionRequest): Promise<void> {
-    await this.midenClient.transactions.submit(AccountId.fromHex(this._accountId), request);
+    await this.proverWorkflow.submit(AccountId.fromHex(this._accountId), request);
   }
 
   /**

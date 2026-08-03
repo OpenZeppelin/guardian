@@ -168,7 +168,8 @@ describe('Multisig', () => {
   function createTestMultisig(
     config: ConstructorParameters<typeof Multisig>[1],
     signer: Signer = mockSigner,
-    accountId?: string
+    accountId?: string,
+    proverConfig?: ConstructorParameters<typeof Multisig>[7],
   ): Multisig {
     return new Multisig(
       mockAccount,
@@ -177,7 +178,8 @@ describe('Multisig', () => {
       signer,
       mockWebClient,
       accountId,
-      MIDEN_RPC_ENDPOINT
+      MIDEN_RPC_ENDPOINT,
+      proverConfig,
     );
   }
 
@@ -238,13 +240,38 @@ describe('Multisig', () => {
       submitNewTransaction: vi.fn(),
       submitNewTransactionWithProver: vi.fn(),
       transactions: {
-        submit: vi.fn(),
+        executeRequest: vi.fn(),
       },
       getConsumableNotes: vi.fn().mockResolvedValue([]),
       syncState: vi.fn(),
       getAccount: vi.fn().mockResolvedValue(null),
       newAccount: vi.fn(),
     };
+    mockWebClient.transactions.executeRequest.mockImplementation(
+      async (accountId: unknown, request: unknown) => {
+        const result = await mockWebClient.executeTransaction(accountId, request);
+        return {
+          result,
+          prove: async (options?: { prover?: unknown }) => {
+            const proof = options?.prover === undefined
+              ? await mockWebClient.proveTransaction(result)
+              : await mockWebClient.proveTransaction(result, options.prover);
+            return {
+              proof,
+              result,
+              submit: async () => {
+                const blockNumber = await mockWebClient.submitProvenTransaction(proof, result);
+                return {
+                  blockNumber,
+                  result,
+                  apply: () => mockWebClient.applyTransaction(result, blockNumber),
+                };
+              },
+            };
+          },
+        };
+      },
+    );
   });
 
   describe('constructor', () => {
@@ -3131,7 +3158,11 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
       };
 
-      const multisig = createTestMultisig(config, ecdsaSigner);
+      const multisig = createTestMultisig(config, ecdsaSigner, undefined, {
+        kind: 'remote',
+        maxAttempts: 2,
+        createProver: () => ({} as never),
+      });
       const proposalId = '0x' + 'c'.repeat(64);
       const cosignerPubkey = '0x' + '3'.repeat(66);
       const ackPubkey = '0x' + '4'.repeat(66);
@@ -3196,10 +3227,21 @@ describe('Multisig', () => {
           ack_scheme: 'ecdsa',
         }),
       });
-      mockWebClient.transactions.submit.mockResolvedValueOnce({});
-
-      await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
-      expect(mockWebClient.transactions.submit).toHaveBeenCalledTimes(1);
+      mockWebClient.proveTransaction
+        .mockRejectedValueOnce(Object.assign(new Error('unavailable'), { code: 'Unavailable' }))
+        .mockResolvedValueOnce({});
+      vi.useFakeTimers();
+      try {
+        const execution = multisig.executeProposal(proposalId);
+        await vi.runAllTimersAsync();
+        await expect(execution).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(2);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
 
       expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
         1,
@@ -3311,9 +3353,11 @@ describe('Multisig', () => {
           ack_scheme: 'ecdsa',
         }),
       });
-      mockWebClient.transactions.submit.mockResolvedValueOnce({});
-
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
 
       expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
         1,
@@ -3420,10 +3464,11 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
       });
-      mockWebClient.transactions.submit.mockResolvedValueOnce({});
-
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
-      expect(mockWebClient.transactions.submit).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
     });
 
     it('should still switch GUARDIAN when the pre-switch canonicalization push fails', async () => {
@@ -3471,10 +3516,11 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
       });
-      mockWebClient.transactions.submit.mockResolvedValueOnce({});
-
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
-      expect(mockWebClient.transactions.submit).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
     });
 
     it('should reject switch_guardian execution when endpoint commitment mismatches', async () => {
@@ -3610,6 +3656,45 @@ describe('Multisig', () => {
       await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
         'Duplicate advice-map key detected',
       );
+    });
+  });
+
+  describe('submitTransaction', () => {
+    it('uses the configured total proof-attempt budget without repeating other stages', async () => {
+      const multisig = createTestMultisig(
+        {
+          threshold: 1,
+          signerCommitments: ['0x' + 'a'.repeat(64)],
+          guardianCommitment: '0x' + 'c'.repeat(64),
+        },
+        mockSigner,
+        undefined,
+        {
+          kind: 'remote',
+          maxAttempts: 4,
+          createProver: () => ({} as never),
+        },
+      );
+      const transient = Object.assign(new Error('unavailable'), { code: 'Unavailable' });
+      mockWebClient.proveTransaction
+        .mockRejectedValueOnce(transient)
+        .mockRejectedValueOnce(transient)
+        .mockRejectedValueOnce(transient)
+        .mockResolvedValueOnce({});
+
+      vi.useFakeTimers();
+      try {
+        const submission = multisig.submitTransaction({} as never);
+        await vi.runAllTimersAsync();
+        await submission;
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(4);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
     });
   });
 

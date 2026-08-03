@@ -177,8 +177,13 @@ export async function initMultisigClient(
   midenClient: MidenClient,
   guardianEndpoint: string,
   midenRpcEndpoint: string,
+  prover?: import('@openzeppelin/miden-multisig-client').ProverConfig,
 ): Promise<{ client: MultisigClient; guardianPubkey: string }> {
-  const client = new MultisigClientClass(midenClient, { guardianEndpoint, midenRpcEndpoint });
+  const client = new MultisigClientClass(midenClient, {
+    guardianEndpoint,
+    midenRpcEndpoint,
+    prover,
+  });
   const response = await client.guardianClient.getPubkey();
   const guardianPubkey = typeof response === 'string' ? response : response.commitment;
   return { client, guardianPubkey };

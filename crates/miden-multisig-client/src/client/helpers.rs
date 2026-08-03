@@ -443,7 +443,9 @@ impl MultisigClient {
 
     /// Resets the miden-client by creating a new instance with a fresh database.
     pub async fn reset_miden_client(&mut self) -> Result<()> {
-        self.miden_client = create_miden_client(&self.account_dir, &self.miden_endpoint).await?;
+        self.miden_client =
+            create_miden_client(&self.account_dir, &self.miden_endpoint, &self.prover_config)
+                .await?;
         Ok(())
     }
 
