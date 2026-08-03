@@ -194,13 +194,25 @@ impl NetworkClient for MidenNetworkClient {
         let account_delta = tx_summary.account_delta();
 
         // Check if this is a full state delta (new account deployment) or partial delta (update)
-        let mut guardian_enabled_pre_tx = false;
+        let guardian_enabled_pre_tx;
         let mut account = if account_delta.is_full_state() {
             // For new accounts, convert the full state delta directly to an Account
             tracing::debug!(
                 account_id = %account_delta.id().to_hex(),
                 "Processing full state delta for new account deployment"
             );
+            // The pre-tx selector for a first transaction comes from the stored initial
+            // state (registered via `/configure`), not from the delta: a first-tx abort
+            // summary captures the selector mid-script exactly like the partial path
+            // (OFF during a `SwitchGuardian`), while the guardian-verified execution
+            // re-enables it on-chain. Without this, a first-tx SwitchGuardian
+            // reconstructs with the selector OFF, its commitment never matches the
+            // chain, and the candidate is condemned as diverged instead of
+            // canonicalizing — so release-on-switch (#305) never fires. An unparseable
+            // prev state falls back to `false`, preserving the delta's own selector.
+            guardian_enabled_pre_tx = Account::from_json(prev_state_json)
+                .map(|prev| MidenAccountInspector::new(&prev).has_guardian_auth())
+                .unwrap_or(false);
             Account::try_from(account_delta).map_err(|e| {
                 tracing::error!(
                     account_id = %account_delta.id().to_hex(),
@@ -240,11 +252,13 @@ impl NetworkClient for MidenNetworkClient {
             // during a SwitchGuardian; re-enable here to match the on-chain commitment. Gated on
             // the selector being ON *before* the tx: `enable_guardian` runs only when guardian auth
             // was required, so a guardian-disabled account never reaches it and must keep its OFF
-            // selector through reconstruction. The full-state (deployment) path carries the
-            // authoritative selector in the delta itself, so it is never forced here. Parity is
+            // selector through reconstruction. The full-state (deployment) path derives the
+            // pre-tx selector from the stored initial state, since its delta captures the
+            // mid-script selector just like a partial abort summary. Parity is
             // pinned by `test_switch_guardian_server_reconstruction_matches_execution`
-            // (crates/contracts/tests/auth/multisig.rs) for the enabled case and
-            // `test_apply_delta_guardian_disabled_keeps_selector_off` for the disabled case.
+            // (crates/contracts/tests/auth/multisig.rs) for the enabled case,
+            // `test_apply_delta_guardian_disabled_keeps_selector_off` for the disabled case,
+            // and `test_apply_delta_first_tx_switch_reenables_selector` for the first-tx case.
             const GUARDIAN_SELECTOR_SLOT_NAME: &str = "openzeppelin::guardian::selector";
             const GUARDIAN_ON: [u32; 4] = [1, 0, 0, 0];
 
@@ -801,6 +815,115 @@ mod tests {
         assert_eq!(
             selector, guardian_off,
             "guardian-disabled account must keep its OFF selector after reconstruction"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_delta_first_tx_switch_reenables_selector() {
+        use miden_protocol::Felt;
+        use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
+        use miden_protocol::account::{
+            AccountCode, AccountDelta, AccountId, AccountIdVersion, AccountStorage, AccountType,
+            StorageSlot, StorageSlotName,
+        };
+        use miden_protocol::asset::AssetVault;
+
+        const GUARDIAN_SELECTOR_SLOT_NAME: &str = "openzeppelin::guardian::selector";
+        let guardian_on = Word::from([1u32, 0, 0, 0]);
+        let guardian_off = Word::from([0u32, 0, 0, 0]);
+
+        let network = NetworkType::MidenTestnet;
+        let client = MidenNetworkClient::lazy_for_test(network);
+
+        let selector_name =
+            StorageSlotName::new(GUARDIAN_SELECTOR_SLOT_NAME).expect("valid slot name");
+        let account_id =
+            AccountId::dummy([8u8; 15], AccountIdVersion::Version1, AccountType::Private);
+
+        // The stored initial state (registered via `/configure`): guardian enabled.
+        let prev_storage = AccountStorage::new(vec![StorageSlot::with_value(
+            selector_name.clone(),
+            guardian_on,
+        )])
+        .expect("valid storage");
+        let prev_account = Account::new_existing(
+            account_id,
+            AssetVault::new(&[]).expect("empty vault"),
+            prev_storage,
+            AccountCode::mock(),
+            Felt::new_unchecked(1),
+        );
+        let prev_state_json = prev_account.to_json();
+
+        // A first-transaction SwitchGuardian abort summary: a FULL-STATE delta whose
+        // storage captured the selector OFF mid-script. On-chain the guardian-verified
+        // execution ends with `enable_guardian`, so reconstruction must end selector ON.
+        let mut storage_delta = AccountStorageDelta::new();
+        storage_delta
+            .set_item(selector_name.clone(), guardian_off)
+            .expect("set selector in delta");
+        let full_state_delta = AccountDelta::new(
+            account_id,
+            storage_delta,
+            AccountVaultDelta::default(),
+            Felt::new_unchecked(1),
+        )
+        .expect("valid delta")
+        .with_code(Some(AccountCode::mock()));
+        assert!(
+            full_state_delta.is_full_state(),
+            "delta must be full-state so the first-tx path is exercised"
+        );
+        let tx_summary = TransactionSummary::new(
+            full_state_delta,
+            InputNotes::new(Vec::new()).expect("empty input notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
+            Word::default(),
+        );
+        let delta_payload = tx_summary.to_json();
+
+        let (new_state_json, _new_commitment) = client
+            .apply_delta(&prev_state_json, &delta_payload)
+            .expect("apply_delta should succeed");
+
+        let reconstructed =
+            Account::from_json(&new_state_json).expect("valid reconstructed account");
+        let selector = reconstructed
+            .storage()
+            .get_item(&selector_name)
+            .expect("selector slot present");
+        assert_eq!(
+            selector, guardian_on,
+            "first-tx reconstruction must re-enable the selector when the stored \
+             initial state had guardian enabled (issue #305 first-tx switch)"
+        );
+
+        // Control: when the stored initial state has guardian DISABLED, the delta's
+        // own selector must be preserved — no forcing.
+        let off_storage = AccountStorage::new(vec![StorageSlot::with_value(
+            selector_name.clone(),
+            guardian_off,
+        )])
+        .expect("valid storage");
+        let off_prev = Account::new_existing(
+            account_id,
+            AssetVault::new(&[]).expect("empty vault"),
+            off_storage,
+            AccountCode::mock(),
+            Felt::new_unchecked(1),
+        );
+        let (off_state_json, _) = client
+            .apply_delta(&off_prev.to_json(), &delta_payload)
+            .expect("apply_delta should succeed");
+        let off_reconstructed =
+            Account::from_json(&off_state_json).expect("valid reconstructed account");
+        assert_eq!(
+            off_reconstructed
+                .storage()
+                .get_item(&selector_name)
+                .expect("selector slot present"),
+            guardian_off,
+            "guardian-disabled initial state must keep the delta's OFF selector"
         );
     }
 }
