@@ -1,4 +1,6 @@
 pub mod account_inspector;
+#[cfg(feature = "proving")]
+pub mod execution;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{MidenAccountInspector, OZ_GUARDIAN_PUBLIC_KEY};
