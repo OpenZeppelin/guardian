@@ -42,6 +42,10 @@ pub enum MultisigError {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 
+    /// Invalid custom transaction prover URL.
+    #[error("invalid prover URL: {0}")]
+    InvalidProverUrl(String),
+
     /// Signature error.
     #[error("signature error: {0}")]
     Signature(String),

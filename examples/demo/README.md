@@ -13,7 +13,11 @@ Interactive CLI that exercises the `miden-multisig-client` SDK end-to-end: gener
 cargo run -p guardian-demo
 ```
 
-At startup you can override the Miden/GUARDIAN endpoints if needed.
+At startup you can override the Miden/GUARDIAN endpoints, select an optional
+custom remote prover, and set the total proof-attempt budget. Leaving the prover
+selection and attempt prompt at their defaults preserves the network's prover
+selection and uses two total remote proof attempts. Local proving always runs
+once.
 
 ## Typical Flow
 

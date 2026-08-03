@@ -71,6 +71,8 @@ import {
   DEFAULT_GUARDIAN_ENDPOINT,
   DEFAULT_MIDEN_DB_NAME,
   DEFAULT_MIDEN_RPC_URL,
+  DEFAULT_PROVER_MAX_ATTEMPTS,
+  DEFAULT_PROVER_URL,
 } from './config';
 
 export interface SessionConfig {
@@ -677,6 +679,10 @@ export function useSmokeHarness(): {
                 nextClient,
                 nextConfig.guardianEndpoint,
                 nextConfig.midenRpcEndpoint,
+                {
+                  url: DEFAULT_PROVER_URL,
+                  retry: { maxAttempts: DEFAULT_PROVER_MAX_ATTEMPTS },
+                },
               );
               const nextSigners = applySignatureScheme(
                 await initializeLocalSigners(),

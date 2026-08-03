@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use miden_client::DebugMode;
 use miden_client::builder::ClientBuilder;
+use miden_client::grpc_support::{DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::Endpoint;
 use miden_client_sqlite_store::SqliteStore;
@@ -16,9 +17,13 @@ use crate::MidenSdkClient;
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
+use crate::prover::{ProverConfig, ProverSelection, RetryingTransactionProver};
 
-fn configured_client_builder(endpoint: &Endpoint) -> ClientBuilder<FilesystemKeyStore> {
-    if endpoint == &Endpoint::devnet() {
+fn configured_client_builder(
+    endpoint: &Endpoint,
+    prover_config: &ProverConfig,
+) -> ClientBuilder<FilesystemKeyStore> {
+    let builder = if endpoint == &Endpoint::devnet() {
         ClientBuilder::<FilesystemKeyStore>::for_devnet()
     } else if endpoint == &Endpoint::testnet() {
         ClientBuilder::<FilesystemKeyStore>::for_testnet()
@@ -26,6 +31,26 @@ fn configured_client_builder(endpoint: &Endpoint) -> ClientBuilder<FilesystemKey
         ClientBuilder::<FilesystemKeyStore>::for_localhost()
     } else {
         ClientBuilder::<FilesystemKeyStore>::new().grpc_client(endpoint, Some(20_000))
+    };
+
+    let default_remote = if endpoint == &Endpoint::devnet() {
+        Some(DEVNET_PROVER_ENDPOINT)
+    } else if endpoint == &Endpoint::testnet() {
+        Some(TESTNET_PROVER_ENDPOINT)
+    } else {
+        None
+    };
+
+    match prover_config.resolve(default_remote) {
+        ProverSelection::Local => builder,
+        ProverSelection::Remote {
+            endpoint,
+            custom: _,
+            retry_policy,
+        } => builder.prover(Arc::new(RetryingTransactionProver::remote(
+            endpoint,
+            retry_policy,
+        ))),
     }
 }
 
@@ -41,6 +66,11 @@ fn configured_client_builder(endpoint: &Endpoint) -> ClientBuilder<FilesystemKey
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
 ///     .guardian_endpoint("http://localhost:50051")
 ///     .account_dir("/tmp/multisig-client")
+///     .prover_config(
+///         miden_multisig_client::ProverConfig::new()
+///             .with_url("https://prover.example")?
+///             .with_retry_policy(miden_multisig_client::ProverRetryPolicy::new(4)),
+///     )
 ///     .generate_key()
 ///     .build()
 ///     .await?;
@@ -50,6 +80,7 @@ pub struct MultisigClientBuilder {
     guardian_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
     key_manager: Option<Arc<dyn KeyManager>>,
+    prover_config: ProverConfig,
 }
 
 impl Default for MultisigClientBuilder {
@@ -66,6 +97,7 @@ impl MultisigClientBuilder {
             guardian_endpoint: None,
             account_dir: None,
             key_manager: None,
+            prover_config: ProverConfig::new(),
         }
     }
 
@@ -78,6 +110,12 @@ impl MultisigClientBuilder {
     /// Sets the GUARDIAN server endpoint.
     pub fn guardian_endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.guardian_endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Configures the remote transaction prover and its retry policy.
+    pub fn prover_config(mut self, prover_config: ProverConfig) -> Self {
+        self.prover_config = prover_config;
         self
     }
 
@@ -140,7 +178,8 @@ impl MultisigClientBuilder {
             MultisigError::MidenClient(format!("failed to create account dir: {}", e))
         })?;
 
-        let miden_client = create_miden_client(&account_dir, &miden_endpoint).await?;
+        let miden_client =
+            create_miden_client(&account_dir, &miden_endpoint, &self.prover_config).await?;
 
         Ok(MultisigClient::new(
             miden_client,
@@ -148,6 +187,7 @@ impl MultisigClientBuilder {
             guardian_endpoint,
             account_dir,
             miden_endpoint,
+            self.prover_config,
         ))
     }
 }
@@ -159,6 +199,7 @@ impl MultisigClientBuilder {
 pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
+    prover_config: &ProverConfig,
 ) -> Result<MidenSdkClient> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -177,7 +218,7 @@ pub(crate) async fn create_miden_client(
     let rng_seed: [u32; 4] = rand::random();
     let rng = Box::new(RandomCoin::new(rng_seed.into()));
 
-    configured_client_builder(endpoint)
+    configured_client_builder(endpoint, prover_config)
         .store(store)
         .rng(rng)
         .in_debug_mode(DebugMode::Enabled)

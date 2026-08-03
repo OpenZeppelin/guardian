@@ -6,7 +6,7 @@
 //! # Quick Start
 //!
 //! ```ignore
-//! use miden_multisig_client::MultisigClient;
+//! use miden_multisig_client::{MultisigClient, ProverConfig, ProverRetryPolicy};
 //! use miden_client::rpc::Endpoint;
 //!
 //! #[tokio::main]
@@ -14,7 +14,13 @@
 //!     // Create a client with auto-generated keys
 //!     let mut client = MultisigClient::builder()
 //!         .miden_endpoint(Endpoint::new("http://localhost:57291"))
-//!         .data_dir("/tmp/multisig-client")
+//!         .guardian_endpoint("http://localhost:50051")
+//!         .account_dir("/tmp/multisig-client")
+//!         .prover_config(
+//!             ProverConfig::new()
+//!                 .with_url("https://prover.example")?
+//!                 .with_retry_policy(ProverRetryPolicy::new(4)),
+//!         )
 //!         .generate_key()
 //!         .build()
 //!         .await?;
@@ -47,6 +53,7 @@ mod keystore;
 mod payload;
 mod procedures;
 mod proposal;
+mod prover;
 mod transaction;
 mod utils;
 
@@ -88,6 +95,7 @@ pub use proposal::{
     CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, Proposal,
     ProposalMetadata, ProposalStatus, SerializedNote, TransactionType,
 };
+pub use prover::{ProverConfig, ProverRetryPolicy};
 pub use transaction::{
     ProposalBuilder, build_p2id_transaction_request, deserialize_transaction_request, generate_salt,
 };

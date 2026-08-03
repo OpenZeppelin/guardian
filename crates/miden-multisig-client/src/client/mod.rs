@@ -33,6 +33,7 @@ use crate::error::{MultisigError, Result};
 use crate::export::ExportedProposal;
 use crate::keystore::KeyManager;
 use crate::proposal::Proposal;
+use crate::prover::ProverConfig;
 
 pub use notes::{ConsumableNote, NoteFilter};
 
@@ -94,6 +95,8 @@ pub struct MultisigClient {
     pub(crate) account_dir: PathBuf,
     /// Miden node endpoint (for recovery).
     pub(crate) miden_endpoint: Endpoint,
+    /// Prover selection and retry configuration (for recovery).
+    pub(crate) prover_config: ProverConfig,
 }
 
 impl MultisigClient {
@@ -109,6 +112,7 @@ impl MultisigClient {
         guardian_endpoint: String,
         account_dir: PathBuf,
         miden_endpoint: Endpoint,
+        prover_config: ProverConfig,
     ) -> Self {
         Self {
             miden_client,
@@ -117,6 +121,7 @@ impl MultisigClient {
             account: None,
             account_dir,
             miden_endpoint,
+            prover_config,
         }
     }
 

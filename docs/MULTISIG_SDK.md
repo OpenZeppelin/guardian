@@ -91,6 +91,52 @@ await multisig.executeProposal(proposal.id);
 console.log('Transfer executed!');
 ```
 
+### Prover endpoint and retry policy
+
+Both multisig SDKs retry only remote transaction proving. The default is two
+total proof attempts. In TypeScript, endpoint-less injected provers, including
+local and callback provers, run once. A custom remote URL overrides the Miden
+client's injected prover.
+
+```typescript
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
+  prover: {
+    url: 'https://prover.example',
+    retry: { maxAttempts: 4 },
+  },
+});
+```
+
+```rust
+use miden_multisig_client::{ProverConfig, ProverRetryPolicy};
+
+let prover = ProverConfig::new()
+    .with_url("https://prover.example")?
+    .with_retry_policy(ProverRetryPolicy::new(4));
+
+let client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::devnet())
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig-client")
+    .prover_config(prover)
+    .generate_key()
+    .build()
+    .await?;
+```
+
+URLs are validated during construction and must be absolute HTTP(S) URLs. A
+custom prover never falls back to a default endpoint. Retries cover transient
+proving conditions such as cancellation, deadlines, temporary unavailability,
+capacity exhaustion, HTTP 408/429/502/503/504, I/O timeout, connection reset,
+and broken pipe. Permanent or unrecognized failures return immediately.
+
+Only proving is retried: transaction execution, GUARDIAN coordination, Miden
+submission, and local application each run once. A larger attempt budget can
+recover from brief failures but does not add prover capacity. This policy does
+not alter or retry Miden RPC requests.
+
 #### Rust
 
 ```rust
