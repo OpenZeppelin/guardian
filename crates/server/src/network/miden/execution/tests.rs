@@ -6,28 +6,27 @@
 //! reference block, partial blockchain, vault and storage-map witnesses, account MAST —
 //! was accepted by the VM.
 
+use miden_client::account::AccountInterfaceExt;
 use miden_confidential_contracts::masm_builder::get_multisig_library;
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
+use miden_protocol::Felt;
+use miden_protocol::Hasher;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
+use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-use miden_protocol::note::NoteType;
+use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::note::{NoteAttachments, NoteType};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
 };
-use miden_protocol::Hasher;
-use miden_protocol::account::auth::AuthSecretKey;
-use miden_protocol::crypto::rand::RandomCoin;
-use miden_protocol::note::{NoteAttachments, NoteType as ProtoNoteType};
-use miden_protocol::Felt;
-use miden_client::account::AccountInterfaceExt;
+use miden_protocol::transaction::{InputNotes, TransactionArgs};
 use miden_standards::account::interface::AccountInterface;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
-use miden_protocol::transaction::{InputNotes, TransactionArgs};
 use miden_testing::MockChainBuilder;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 use miden_tx::{LocalTransactionProver, TransactionExecutor, TransactionExecutorError};
@@ -110,7 +109,9 @@ async fn guardian_data_store_serves_note_consumption() {
 
     let faucet_id =
         AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).expect("faucet id is valid");
-    let asset: Asset = FungibleAsset::new(faucet_id, 100).expect("asset builds").into();
+    let asset: Asset = FungibleAsset::new(faucet_id, 100)
+        .expect("asset builds")
+        .into();
     let sender_id = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE)
         .expect("sender id is valid");
     let note = builder
@@ -121,7 +122,9 @@ async fn guardian_data_store_serves_note_consumption() {
 
     let ref_block = chain.latest_block_header();
     let blockchain = chain.latest_partial_blockchain();
-    let input_note = chain.get_public_note(&note.id()).expect("note is committed on chain");
+    let input_note = chain
+        .get_public_note(&note.id())
+        .expect("note is committed on chain");
 
     // The notes GUARDIAN holds are handed to the store; nothing is synced.
     let store = ExecutionDataStore::new(
@@ -135,7 +138,10 @@ async fn guardian_data_store_serves_note_consumption() {
     let executor: TransactionExecutor<'_, '_, _, miden_tx::auth::BasicAuthenticator> =
         TransactionExecutor::new(&store);
 
-    let note_block = input_note.location().expect("authenticated note").block_num();
+    let note_block = input_note
+        .location()
+        .expect("authenticated note")
+        .block_num();
     let input_notes = InputNotes::new(vec![input_note]).expect("input notes build");
     let note_query = authenticated_note_query(&input_notes);
     assert_eq!(note_query.len(), 1);
@@ -180,7 +186,10 @@ async fn chain_mmr_peaks_hash_to_the_reference_block_commitment() {
         let blockchain = chain.latest_partial_blockchain();
 
         verify_against_reference(blockchain.mmr(), &reference_block).unwrap_or_else(|e| {
-            panic!("invariant failed at block {}: {e}", reference_block.block_num())
+            panic!(
+                "invariant failed at block {}: {e}",
+                reference_block.block_num()
+            )
         });
 
         chain.prove_next_block().expect("chain advances");
@@ -230,7 +239,12 @@ async fn guardian_executes_signs_and_proves_end_to_end() {
     unsigned = unsigned.with_auth_args(salt);
 
     let summary = match executor
-        .execute_transaction(account.id(), ref_block.block_num(), InputNotes::default(), unsigned)
+        .execute_transaction(
+            account.id(),
+            ref_block.block_num(),
+            InputNotes::default(),
+            unsigned,
+        )
         .await
     {
         Err(TransactionExecutorError::Unauthorized(effects)) => effects,
@@ -247,22 +261,41 @@ async fn guardian_executes_signs_and_proves_end_to_end() {
         BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(guardian.clone())]);
 
     let cosigner_sig = cosigner_auth
-        .get_signature(cosigner.public_key().to_commitment().into(), &signing_inputs)
+        .get_signature(
+            cosigner.public_key().to_commitment().into(),
+            &signing_inputs,
+        )
         .await
         .expect("cosigner signs the summary");
     let guardian_sig = guardian_auth
-        .get_signature(guardian.public_key().to_commitment().into(), &signing_inputs)
+        .get_signature(
+            guardian.public_key().to_commitment().into(),
+            &signing_inputs,
+        )
         .await
         .expect("guardian signs the summary");
 
     // Phase 2 — re-execute with the cosigner signature and GUARDIAN's acknowledgment.
     let mut signed = TransactionArgs::default();
     signed = signed.with_auth_args(salt);
-    signed.add_signature(cosigner.public_key().to_commitment().into(), message, cosigner_sig);
-    signed.add_signature(guardian.public_key().to_commitment().into(), message, guardian_sig);
+    signed.add_signature(
+        cosigner.public_key().to_commitment().into(),
+        message,
+        cosigner_sig,
+    );
+    signed.add_signature(
+        guardian.public_key().to_commitment().into(),
+        message,
+        guardian_sig,
+    );
 
     let executed = executor
-        .execute_transaction(account.id(), ref_block.block_num(), InputNotes::default(), signed)
+        .execute_transaction(
+            account.id(),
+            ref_block.block_num(),
+            InputNotes::default(),
+            signed,
+        )
         .await
         .expect("signed execution authorizes and completes");
 
@@ -298,7 +331,11 @@ async fn guardian_executes_signs_and_proves_end_to_end() {
     );
 
     // The proven transaction must advance the same account the proposal was built against.
-    assert_eq!(proven.account_id(), account.id(), "proven tx targets the account");
+    assert_eq!(
+        proven.account_id(),
+        account.id(),
+        "proven tx targets the account"
+    );
 }
 
 /// Builds a keyed multisig account plus a chain containing it, returning the keys so the
@@ -370,20 +407,39 @@ async fn execute_two_phase(
     let guardian_auth =
         BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(guardian.clone())]);
     let cosigner_sig = cosigner_auth
-        .get_signature(cosigner.public_key().to_commitment().into(), &signing_inputs)
+        .get_signature(
+            cosigner.public_key().to_commitment().into(),
+            &signing_inputs,
+        )
         .await
         .expect("cosigner signs");
     let guardian_sig = guardian_auth
-        .get_signature(guardian.public_key().to_commitment().into(), &signing_inputs)
+        .get_signature(
+            guardian.public_key().to_commitment().into(),
+            &signing_inputs,
+        )
         .await
         .expect("guardian signs");
 
     let mut signed = build_args();
-    signed.add_signature(cosigner.public_key().to_commitment().into(), message, cosigner_sig);
-    signed.add_signature(guardian.public_key().to_commitment().into(), message, guardian_sig);
+    signed.add_signature(
+        cosigner.public_key().to_commitment().into(),
+        message,
+        cosigner_sig,
+    );
+    signed.add_signature(
+        guardian.public_key().to_commitment().into(),
+        message,
+        guardian_sig,
+    );
 
     executor
-        .execute_transaction(account.id(), ref_block.block_num(), InputNotes::default(), signed)
+        .execute_transaction(
+            account.id(),
+            ref_block.block_num(),
+            InputNotes::default(),
+            signed,
+        )
         .await
         .expect("signed execution authorizes and completes")
 }
@@ -409,12 +465,17 @@ async fn guardian_executes_the_p2id_send_family() {
 
     let faucet_id =
         AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).expect("faucet id is valid");
-    let asset: Asset = FungibleAsset::new(faucet_id, 100).expect("asset builds").into();
+    let asset: Asset = FungibleAsset::new(faucet_id, 100)
+        .expect("asset builds")
+        .into();
 
     // Fund the vault before the account enters the chain: sending an asset the account does not
     // hold aborts in the kernel on a vault-balance assertion, which is itself evidence that the
     // vault witnesses this store serves are genuinely being read.
-    account.vault_mut().add_asset(asset).expect("vault accepts the asset");
+    account
+        .vault_mut()
+        .add_asset(asset)
+        .expect("vault accepts the asset");
 
     let chain = MockChainBuilder::with_accounts([account.clone()])
         .expect("mock chain accepts funded account")
@@ -430,7 +491,7 @@ async fn guardian_executes_the_p2id_send_family() {
         account.id(),
         recipient,
         vec![asset],
-        ProtoNoteType::Public,
+        NoteType::Public,
         NoteAttachments::default(),
         &mut rng,
     )
@@ -457,6 +518,11 @@ async fn guardian_executes_the_p2id_send_family() {
         1,
         "the send script must emit exactly the one P2ID note"
     );
+    assert_eq!(
+        executed.output_notes().get_note(0).id(),
+        expected_note.id(),
+        "the send script must emit the expected P2ID note"
+    );
 }
 
 /// **Configuration family** driven with the real `update_signers_and_threshold` script from the
@@ -472,8 +538,10 @@ async fn guardian_executes_the_configuration_family() {
 
     // Rotate to a two-of-two: the existing cosigner plus a new one.
     let new_cosigner = SecretKey::new();
-    let signer_commitments =
-        [cosigner.public_key().to_commitment(), new_cosigner.public_key().to_commitment()];
+    let signer_commitments = [
+        cosigner.public_key().to_commitment(),
+        new_cosigner.public_key().to_commitment(),
+    ];
     let threshold = 2u64;
 
     // Mirrors the SDK's `build_multisig_config_advice`: threshold, signer count, two zero
@@ -543,8 +611,13 @@ async fn guardian_proves_a_transaction_with_a_finite_expiration() {
 
     let faucet_id =
         AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).expect("faucet id is valid");
-    let asset: Asset = FungibleAsset::new(faucet_id, 100).expect("asset builds").into();
-    account.vault_mut().add_asset(asset).expect("vault accepts the asset");
+    let asset: Asset = FungibleAsset::new(faucet_id, 100)
+        .expect("asset builds")
+        .into();
+    account
+        .vault_mut()
+        .add_asset(asset)
+        .expect("vault accepts the asset");
 
     let chain = MockChainBuilder::with_accounts([account.clone()])
         .expect("mock chain accepts funded account")
@@ -559,7 +632,7 @@ async fn guardian_proves_a_transaction_with_a_finite_expiration() {
         account.id(),
         recipient,
         vec![asset],
-        ProtoNoteType::Public,
+        NoteType::Public,
         NoteAttachments::default(),
         &mut rng,
     )

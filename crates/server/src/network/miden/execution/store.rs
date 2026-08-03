@@ -153,7 +153,9 @@ impl DataStore for ExecutionDataStore {
                 .slots()
                 .iter()
                 .find_map(|slot| match slot.content() {
-                    StorageSlotContent::Map(map) if map.root() == map_root => Some(map.open(&map_key)),
+                    StorageSlotContent::Map(map) if map.root() == map_root => {
+                        Some(map.open(&map_key))
+                    }
                     _ => None,
                 })
                 .ok_or_else(|| {

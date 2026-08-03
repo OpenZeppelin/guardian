@@ -68,6 +68,7 @@ utoipa = { version = "5", features = ["axum_extras"] }
 miden-protocol = "0.15.3"
 miden-standards = "0.15.3"
 miden-tx = "0.15.3"
+miden-remote-prover-client = { version = "0.15", default-features = false, features = ["std", "tx-prover"] }
 miden-node-proto ="0.15.0"
 miden-testing = "0.15.3"
 miden-client = "0.15.0"

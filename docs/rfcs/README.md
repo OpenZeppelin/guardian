@@ -7,7 +7,7 @@ protocol partners, integrators, and anyone reading the repository publicly.
 
 | # | Title | Status | Feature |
 |---|---|---|---|
-| [0001](./0001-server-side-transaction-execution.md) | Guardian executes, proves and submits transactions | Accepted for implementation — comments welcome | [#254](https://github.com/OpenZeppelin/guardian/issues/254) |
+| [0001](./0001-server-side-transaction-execution.md) | Guardian executes, proves and submits transactions | Accepted for implementation | [#254](https://github.com/OpenZeppelin/guardian/issues/254) |
 
 ## What belongs here
 

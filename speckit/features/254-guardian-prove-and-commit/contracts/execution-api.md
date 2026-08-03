@@ -113,7 +113,7 @@ where it changes what the caller does. Exhaustive; consumers MUST handle every v
 
 Permitted transitions, and only these:
 
-```
+```text
 pending    → proving | failed
 proving    → submitted | failed
 submitted  → landed | failed        (see ownership below)
@@ -189,7 +189,6 @@ record created:
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 | Existing |
 | `GUARDIAN_ACCOUNT_RELEASED` | 409 | Existing |
 | `GUARDIAN_PROPOSAL_NOT_FOUND` | 404 | Existing; the proposal itself is absent |
-| `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but has never been executed (status reads only, never `POST`) |
 | `GUARDIAN_AUTHENTICATION_FAILED` | 401 | Existing; includes non-cosigner callers |
 
 There is deliberately **no signature-invalid error**. Invalid, duplicate, and non-cosigner
@@ -197,6 +196,13 @@ signature entries are ignored rather than fatal (FR-006), so the only signature-
 outcome is an insufficient *valid* set — reported synchronously as
 `GUARDIAN_PROPOSAL_NOT_READY`. The ignored count is surfaced as `ignored_signatures` for
 diagnosis. Any error code implying a fatal invalid signature would be unreachable.
+
+**Status-read errors** — returned only by `GET /delta/proposal/execution` and the matching
+gRPC read; never by the execution `POST`:
+
+| Code | HTTP | Cause |
+|---|---|---|
+| `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but has never been executed |
 
 **Asynchronous failure causes**, surfaced in `error.code` with `state: "failed"`:
 

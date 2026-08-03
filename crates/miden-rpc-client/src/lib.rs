@@ -266,7 +266,10 @@ fn sync_notes_request(
     }
 
     Ok(rpc::SyncNotesRequest {
-        block_range: Some(rpc::BlockRange { block_from, block_to }),
+        block_range: Some(rpc::BlockRange {
+            block_from,
+            block_to,
+        }),
         note_tags,
     })
 }

@@ -57,13 +57,14 @@ Guardian proposal families can add the expiration while constructing their scrip
 custom-producer request cannot be generically retrofitted and must encode finite expiration in
 the producer-owned script. FR-051 and the SDK contract now record that distinction.
 
-## Current division of labor
+## Historical baseline before the Gate 0 spike
 
-Guardian's Miden surface is **read-only**. `crates/server/Cargo.toml:56-57` depends only
-on `miden-protocol` and `miden-standards`; `miden-client`, `miden-tx`, and
-`miden-testing` are `optional` and enabled solely by the `e2e` test feature
-(`crates/server/Cargo.toml:108`). All on-chain interaction goes through raw gRPC reads
-(`crates/miden-rpc-client/src/lib.rs`, `crates/server/src/network/miden/mod.rs`).
+Before this spike, Guardian's Miden surface was **read-only**. The completed spike added the
+optional `proving` feature, which enables `miden-tx` and
+`miden-remote-prover-client`; `e2e` additionally enables `miden-client`,
+`miden-testing`, and the contract test helpers. Default server builds still perform on-chain
+interaction only through raw gRPC reads (`crates/miden-rpc-client/src/lib.rs`,
+`crates/server/src/network/miden/mod.rs`).
 
 The client owns execute → prove → submit:
 `crates/miden-multisig-client/src/client/helpers.rs:343-373`.
@@ -221,8 +222,8 @@ lookup**. So an unknown submission cannot be resolved by asking the node about t
 transaction.
 
 An account still at its base commitment is *not* evidence of a drop; it may still land.
-The bound that makes termination guaranteed is the transaction's **expiration block**, but
-the authoritative source matters:
+The transaction's **expiration block** supplies the finite chain-height bound for resolution
+once trustworthy observation is available, but the authoritative source matters:
 
 - `TransactionRequest::expiration_delta` is **`Option<u16>`**, and the doc is explicit: "If
   `None`, the transaction will not expire" (`miden-client-0.15.0/src/transaction/request/mod.rs:112-114`).
@@ -301,7 +302,12 @@ consequences:
 - **Guardian must implement `miden_tx::DataStore` directly** — the route the original spike
   rejected as "a large amount of security-sensitive code written from scratch."
 
-### The direct route is smaller than feared
+### Superseded round-1 direct route
+
+> **Superseded by round 2 below.** This was the first direct-`DataStore` recipe, retained to
+> show how the spike converged. `AccountSmtForest` cannot produce required non-inclusion
+> witnesses; the implemented route uses `AssetVault::open` / `StorageMap::open`,
+> `TransactionMastStore`, and no direct `miden-client` or `miden-processor` dependency.
 
 `miden-tx-0.15.3/src/executor/data_store.rs` requires **five** methods, plus
 `MastForestStore::get` (one method, `miden-processor-0.25.7/src/host/mast_forest_store.rs:52`):
@@ -323,7 +329,7 @@ code is a thin wrapper over it (`miden-client-sqlite-store-0.15.0/src/account/ac
 so Guardian can do the same. Holding the *full* account state is what makes this easy — the
 sqlite store does extra work precisely because it does not.
 
-### What this changes in the design
+### Superseded round-1 design consequences
 
 - **No `Store`, so the sqlite-versus-in-memory question dissolves.** There is no temp
   directory, no sqlite dependency, and no seeding I/O. SC-011's seeding cost shrinks to
@@ -349,7 +355,7 @@ no MMR, and no account state, because `TransactionInputs` is self-contained and
 `Serializable`/`Deserializable`
 (`miden-protocol-0.15.3/src/transaction/inputs/mod.rs:54-64, 498, 511`):
 
-```
+```text
 PartialAccount, BlockHeader, PartialBlockchain, InputNotes,
 TransactionArgs, AdviceInputs, foreign_account_code, ...
 ```
@@ -486,7 +492,7 @@ scripts of each shape.
 GUARDIAN's `DataStore` — execute unsigned, sign as cosigner *and* as GUARDIAN, re-execute with
 both signatures, prove locally — and prints the proven transaction's expiration:
 
-```
+```text
 expiration_block_num = 4294967295   (u32::MAX)   reference_block = 0
 ```
 
@@ -534,8 +540,10 @@ One correction to the recipe: `current_client_block_height: 0` means *"I already
 0"*, matching the field's own documentation. So seed the `PartialMmr` with the **genesis block
 commitment** and then apply the delta — do **not** apply it to a completely empty MMR. Verify
 by checking `hash_peaks()` equals the returned reference header's `chain_commitment`.
-**[NEEDS LIVE CONFIRMATION]** — the node-side mapping from `current_client_block_height` to
-`get_delta`'s `from_forest` is read from the field contract, not tested against a running node.
+**Historical note — later confirmed live.** At this point the node-side mapping from
+`current_client_block_height` to `get_delta`'s `from_forest` had only been read from the field
+contract. The later `chain_mmr_peaks_hash_to_the_reference_block_commitment` live test confirmed
+the genesis-seeded recipe at three successive public-testnet heights.
 
 **The upstream ask is downgraded from blocker to nicety.** A direct peaks field or
 `GetChainMmrPeaks` would still save the genesis seeding step and one round trip, but nothing

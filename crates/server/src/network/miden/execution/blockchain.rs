@@ -138,12 +138,9 @@ async fn track_authenticated_note_blocks(
         return Ok(BTreeMap::new());
     }
 
-    let block_to = reference_block
-        .as_u32()
-        .checked_sub(1)
-        .ok_or_else(|| {
-            "cannot authenticate input notes against the genesis reference block".to_string()
-        })?;
+    let block_to = reference_block.as_u32().checked_sub(1).ok_or_else(|| {
+        "cannot authenticate input notes against the genesis reference block".to_string()
+    })?;
     if note_blocks_by_tag
         .values()
         .flatten()

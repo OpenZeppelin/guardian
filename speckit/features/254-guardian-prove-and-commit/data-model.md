@@ -288,7 +288,7 @@ SC-028 is its regression test.
 |---|---|---|
 | Atomicity | One transaction | One in-process mutex hold |
 | Serialization point | `lock_account_metadata` — per-account `SELECT … FOR UPDATE` (`postgres.rs:825`) | `delta_write_lock` (`filesystem.rs:25`) |
-| Fencing | `lease_fence_is_current`; unfenced call **refused** via `unfenced_write_error` (`postgres.rs:786`) | Ignored, as on every existing filesystem write (`filesystem.rs:783`, `:793`) |
+| Execution fencing | `lease_fence_is_current`; unfenced call **refused** via `unfenced_write_error` (`postgres.rs:786`) | Active reservation `holder_id` / `fence_token` compared under `delta_write_lock`; stale or unfenced execution writes refused |
 | Single-active enforcement | Partial unique index, at the schema level | Single file per account |
 
 **Filesystem must take `delta_write_lock` itself, not a new mutex.** Admission
@@ -297,15 +297,23 @@ serializes them (`submit_delta`, `request_candidate_abandon`,
 `update_delta_status`, `update_candidate_status`). A separate mutex would permit
 exactly the interleaving FR-037 forbids while appearing to be locked.
 
-The fencing difference is an **explicitly accepted backend-specific
-limitation**, permitted under the constitution's storage-parity invariant only
-when documented. Justification: filesystem storage cannot be shared across
-replicas, so there is nothing for a fence to fence against; `010-horizontal-scaling`
-already refuses the backend at prod-stage startup. Recorded in
-[plan.md](./plan.md) Complexity Tracking.
+Single-process deployment removes cross-replica contention, but it does **not** remove stale
+tasks: an execution lease can expire, a reconciliation task can claim the reservation, and the
+original task can later resume. Every **execution-owned** filesystem mutation therefore reads
+the active reservation and validates its holder and fence while holding `delta_write_lock`.
+Claiming ownership changes the holder and advances the fence under that same lock. This applies
+to renewal, admission plus evidence, fail/resolve, claim/release, and the pre-send validation;
+a stale task returns `StaleLease` and writes nothing.
 
-Consequence: **concurrent** scenarios are validated on Postgres only.
-Non-concurrent scenarios must produce identical observable outcomes on both.
+This does not retrofit execution ownership onto unrelated primitives. In particular,
+`request_candidate_abandon` remains an intentionally unfenced, non-destructive client
+annotation, and the single-process canonicalization elector remains `AlwaysLeader`. The new
+checks protect the execution reservation whose ownership really can transfer within one
+process.
+
+Consequence: stale-task and ownership-transfer scenarios are validated on **both** backends;
+true cross-replica races remain Postgres-only. All other scenarios must produce identical
+observable outcomes on both.
 
 ## Migration
 
@@ -441,9 +449,14 @@ racing promotion, which is the exact `remove_candidate` race FR-041 exists to pr
 superseded and "waiting for promotion" both reduce to "the account is not at base", which
 cannot be resolved.
 
-The expired path is what makes termination guaranteed rather than best-effort,
-and it is only finite because FR-046 refuses a non-finite expiration before the
-boundary. This is the single dependency chain that makes the whole no-retry
-design terminate: FR-051 (built-in SDK or custom producer constructs a finite
-transaction) → FR-046 (server refuses otherwise) → FR-039 (evidence records the
-proven block) → FR-040 (expiry resolves it).
+The expired path supplies a finite **chain-height** bound, and it is only finite because FR-046
+refuses a non-finite expiration before the boundary. It does not create a wall-clock bound when
+chain observation is unavailable. During an RPC outage the execution remains `submitted`, the
+reservation stays held, and reconciliation retries with capped backoff while surfacing outage
+health, metrics, and logs. Operator recovery restores or fails over the chain source; it never
+releases the reservation or authorizes retry without positive chain evidence. Once trustworthy
+observation reaches the recorded expiration height, FR-040 resolves the execution.
+
+The dependency chain is therefore: FR-051 (built-in SDK or custom producer constructs a finite
+transaction) → FR-046 (server refuses otherwise) → FR-039 (evidence records the proven block) →
+FR-040 (expiry resolves it after eventual trustworthy chain observation).

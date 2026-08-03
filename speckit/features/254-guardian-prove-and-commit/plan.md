@@ -88,24 +88,24 @@ lock that no candidate exists and the nonce is unoccupied
 (`storage/mod.rs:518-528`); admission adds one predicate to that existing
 recheck.
 
-**Filesystem** ignores fences (`_fence` is unused at `filesystem.rs:783` and
-`:793`) and
-serializes writes with a single in-process mutex, `delta_write_lock`, held by
+**Filesystem** serializes writes with a single in-process mutex, `delta_write_lock`, held by
 `submit_delta`, `request_candidate_abandon`, `update_delta_status`, and
-`update_candidate_status`. This is sound because the filesystem backend is
-**single-replica by construction**: feature `010-horizontal-scaling` refuses it
-at prod-stage startup (its SC-006), because filesystem storage cannot be shared
-across replicas.
+`update_candidate_status`. The backend is single-replica by construction, but execution leases
+can still transfer between tasks inside that process. A task that resumes after losing its lease
+must therefore be fenced out just as it is on Postgres.
 
 **Decision**: reservation admission on filesystem takes **`delta_write_lock`
 itself**, not a new mutex. A separate mutex would be a correctness bug —
 admission must be atomic *with respect to candidate writes*, and those are
-serialized by that specific lock. Fences remain ignored there, consistent with
-every other filesystem write.
+serialized by that specific lock. Under the same hold, every execution-owned mutation compares
+the supplied holder and fence with the persisted active reservation; ownership transfer updates
+the holder and advances the fence atomically. A stale or unfenced execution mutation writes
+nothing. Generic client abandon annotations and the `AlwaysLeader` canonicalization path keep
+their existing semantics because they are not execution-owner writes.
 
-This is a backend-specific limitation, which the constitution permits only when
-explicitly accepted and documented. It is recorded in Complexity Tracking below
-and in [data-model.md](./data-model.md).
+Filesystem tests cover a stale task losing ownership, waiting for the lock, and resuming after a
+new owner has claimed it. Cross-replica races remain Postgres-only. The storage-parity invariant
+and exact affected operations are recorded in [data-model.md](./data-model.md).
 
 ### Decision 2 — no trait defaults on the new methods
 
@@ -173,9 +173,8 @@ The internal path deliberately performs no commit and does **not** set
 | IV. Explicit auth and stable boundary errors | OK | Requester must be a cosigner; the Guardian ack gate is unchanged and still mandatory. Synchronous refusals are enumerated in FR-022 with stable codes; `failed` carries a stable code distinguishing verification / proving / submission / post-submission-discard causes (FR-024). Capability-unavailable and startup misconfiguration are explicit (FR-043). |
 | V. Evidence-driven delivery | OK | Five independently testable user stories; 33 success criteria; [validation-matrix.md](./validation-matrix.md) carries the offline and live coverage tables plus the fault-injection rows. Proving is already evidenced against public testnet. |
 
-**No unresolved violations.** One accepted backend-specific limitation
-(filesystem fencing) is recorded in Complexity Tracking, as Principle III's
-storage-parity invariant requires.
+**No unresolved violations.** Execution ownership fencing preserves the same stale-worker
+semantics on both backends; only true cross-replica concurrency is Postgres-specific.
 
 ## Project Structure
 
@@ -321,10 +320,13 @@ second write of the outcome. A reconcile loop that upserted `landed` on that obs
 race the party that owns it, reintroducing the `remove_candidate` hazard FR-041 exists to
 prevent.
 
-Termination is guaranteed by FR-046's finite expiration: measured work confirmed the default is
+FR-046 gives reconciliation a finite chain-height bound: measured work confirmed the default is
 `u32::MAX` (never expires), which is exactly why FR-046 refuses it. FR-051 makes both SDKs apply
 the shared finite default to built-in proposals; opaque custom requests remain producer-owned and
-must encode a finite expiration themselves.
+must encode a finite expiration themselves. Termination still depends on eventual trustworthy
+chain observation. When RPC is unavailable, reconciliation retains the reservation, retries with
+capped backoff, and exposes an operator-visible outage; restoring or failing over the chain source
+is recovery. Wall-clock time never authorizes release or retry.
 
 **Terminal resolution is not a separate write.** SC-025 requires promotion and discard to
 *each* atomically persist the outcome, so outcome persistence and reservation release are
@@ -402,7 +404,7 @@ candidate. Docs: `CONFIGURATION.md`, `TROUBLESHOOTING.md`, `spec/api.md`.
 | 1 | A + B — storage, migration, admission primitive | Concurrency tests pass on both backends before anything calls it |
 | 2 | C — internal ack extraction | `push_delta` behavior provably unchanged (existing tests, untouched) |
 | 3 | D — execution service, up to and including step 9 | Fault injection on both sides of the boundary |
-| 4 | E + F — reconciliation, recovery, reported state | Every FR-040 path terminates |
+| 4 | E + F — reconciliation, recovery, reported state | Every FR-040 path terminates after eventual trustworthy chain observation; outages remain safe and visible |
 | 5 | G — transports, config, startup validation | Parity tests on both transports |
 | 6 | H + I — clients, docs, full matrix | Matrix green |
 
@@ -458,5 +460,4 @@ accounts held until expiration with no resolution path.
 
 | Violation | Why needed | Simpler alternative rejected because |
 |---|---|---|
-| Filesystem reservations are unfenced and guarded only by an in-process mutex, while Postgres is fenced and transactional | The constitution requires backends to preserve the same externally observable semantics *unless a backend-specific limitation is explicitly accepted*. Filesystem storage cannot be shared across replicas, so no fence has anything to fence against; `010-horizontal-scaling` already refuses it at prod startup. Every existing filesystem write makes this same trade (`_fence` unused at `filesystem.rs:783`, `:793`). | Implementing real fencing on filesystem would mean inventing a second cross-process coordination mechanism for a backend that is single-process by definition and dev-only in practice. Refusing filesystem outright is also rejected: the constitution makes it the **default** for local development and tests. |
 | A reported execution state is persisted (FR-041) rather than derived, unlike every other status in the system | Canonicalization's `remove_candidate` deletes an unrecoverable candidate **and then its matching proposal**, destroying the record a derived state would read. Without persistence, a post-submission terminal outcome is unrecoverable. | Deriving on read was the original design and is simply incorrect — it was caught by review, not by tests. Keeping the candidate alive instead would change canonicalization's existing lifecycle, which FR-026 forbids. |

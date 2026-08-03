@@ -141,6 +141,12 @@ or the chain passed the recorded expiration block with the account still at base
 (`failed`, expired). The third is why FR-046's finite-expiration rule exists;
 without it this path could never fire.
 
+Expiration is a chain-height bound, not a wall-clock deadline. If the configured Miden node is
+unavailable, the execution remains `submitted`, its reservation stays held, and reconciliation
+retries with capped backoff while health and metrics report the outage. Restore or fail over the
+RPC source; do not release the reservation or retry the transaction manually. Resolution resumes
+once Guardian can obtain trustworthy chain observations.
+
 ## 6. Retry only when told
 
 `failed` does **not** imply retryable. Read `proposal_exists` (FR-042):

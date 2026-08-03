@@ -60,7 +60,8 @@ RPC client. Genesis-seeded `PartialMmr` → `SyncChainMmr(0)` → apply delta �
 `hash_peaks()` equals the reference header's `chain_commitment`; note blocks tracked against
 that single forest, deduplicated. The invariant that gate relies on is tested against a real
 chain at three successive heights (`chain_mmr_peaks_hash_to_the_reference_block_commitment`).
-**The RPC path itself is unexercised — it needs a live node.**
+The RPC path is exercised by that ignored live test against public testnet; ordinary CI keeps
+the deterministic mock-chain coverage and does not require external connectivity.
 
 **SUPERSEDED — round 2 has since closed.** The list below was written before the round-2 work
 ran. Retained for the record only; do **not** read it as open scope. What it demanded has been
@@ -127,7 +128,7 @@ that produced #353 (`candidate_landed` present server-side, missing from the TS 
 
 | Target | Covers |
 |---|---|
-| `cargo test -p guardian-server` | Synchronous refusals (FR-022, SC-003); effective per-procedure threshold incl. override ≠ default (FR-005, SC-004); valid-subset selection incl. duplicate, invalid, and revoked-cosigner entries ignored (FR-006, SC-020) with insufficient valid sets refused as not-ready (SC-003); envelope checksum and protocol-line refusal (FR-014/015, SC-010); size limits (FR-016); state-transition legality and the five-value wire vocabulary with no internal state leaking (FR-024/025/026, SC-016); conflict error names the blocker (FR-036, SC-017) |
+| `cargo test -p guardian-server` | Synchronous refusals (FR-022, SC-003); effective per-procedure threshold incl. override ≠ default (FR-005, SC-004); valid-subset selection incl. duplicate, invalid, and revoked-cosigner entries ignored (FR-006, SC-020) with insufficient valid sets refused as not-ready (SC-003); envelope checksum, format-version, protocol-line, and same-line serializer refusal before deserialization (FR-014/015, SC-010, SC-029); size limits (FR-016); state-transition legality and the five-value wire vocabulary with no internal state leaking (FR-024/025/026, SC-016); conflict error names the blocker (FR-036, SC-017) |
 | `cargo test -p guardian-client` | Request/response mapping, error-code mapping, blocking-proposal id preserved on conflict (SC-017) |
 | `cargo test -p miden-multisig-client` | Envelope construction; default (unconfigured) client produces a payload byte-shape unchanged from pre-feature (SC-009, FR-009); exhaustive state handling; no server-capability query and **no client-side size check** on the propose path (FR-009, H3) |
 | `cargo test --workspace` | Regression sweep |
@@ -237,9 +238,9 @@ happy-path tests:
 
 | Check | Covers |
 |---|---|
-| Cross-SDK envelope fixtures | Identical checksum/protocol line from both SDKs; identical refusal behavior (SC-013) |
+| Cross-SDK envelope fixtures | Identical `format_version`, `protocol_line`, full `serializer_id` (including prerelease), and checksum from both SDKs; same-line/unallowlisted-serializer and unsupported-format fixtures are refused before deserialization, with identical behavior (SC-013, SC-029) |
 | HTTP ↔ gRPC transport parity | Every refusal code, state value, and conflict/envelope field observably equivalent on both transports, per case (SC-023). Includes the 202-vs-200 distinction, which gRPC must carry as a response field |
-| Seeding overhead measurement | Per-execution store seeding cost measured and recorded as a committed baseline; **telemetry, not a pass/fail gate** (SC-011). Gate 0 uses it to choose sqlite-temp-dir vs in-memory `Store` |
+| Execution witness setup measurement | Per-execution direct `miden_tx::DataStore`, `TransactionMastStore`, and in-memory SMT witness setup cost measured and recorded as a committed baseline; **telemetry, not a pass/fail gate** (SC-011). Execution remains ephemeral and memory-only; there is no SQLite-versus-`Store` decision |
 
 ## Skills
 

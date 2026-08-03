@@ -357,7 +357,7 @@ reachable prover and confirm execution succeeds.
   contract is identical to a known submission (FR-030).
 - **Worker commits the boundary, goes stale, then wakes**: the pre-send fence re-check aborts
   it; it writes nothing and sends nothing, and reconciliation resolves the durable candidate
-  within the expiration horizon (FR-049).
+  after trustworthy observation reaches the expiration horizon (FR-049).
 - **`SwitchGuardian` canonicalizes between the final admissibility read and the send**: not
   observable, so not preventable. The proof is stale against the post-switch account, the node
   rejects it, and it settles as a definite submission rejection (FR-048).
@@ -786,7 +786,8 @@ refers to the same requirement across revisions.
   retained reservation, not by informing the caller.
 - **FR-039 — submission evidence, recorded before submitting**: Guardian MUST durably
   record, **before** it sends the proven transaction, at minimum: the transaction id, the
-  expected resulting account commitment, the reference block number, and the
+  base account commitment, the expected resulting account commitment, the reference block
+  number, and the
   **expiration block taken from the proven transaction itself**
   (`ProvenTransaction::expiration_block_num()`). Without this written first, a crash
   mid-submission leaves nothing to reconcile against.
@@ -799,9 +800,10 @@ refers to the same requirement across revisions.
   for a transaction
   whose expiration block falls outside a configured **reconciliation horizon** measured from
   the reference block, reporting a distinct error before that boundary. A transaction that
-  effectively never expires has no guaranteed path out of the unknown-submission state, so
+  effectively never expires has no finite chain-height path out of the unknown-submission state, so
   submitting one could hold the account's reservation indefinitely. Refusing before the
-  no-retry boundary is what keeps FR-040's termination guarantee real rather than best-effort.
+  no-retry boundary gives FR-040 a finite resolution height once trustworthy chain observation
+  is available.
   **This is load-bearing, not defensive.** A transaction built without an explicit
   `expiration_delta` is **non-expiring** — measured: the proven transaction reports the
   `u32::MAX` sentinel. Non-expiring is therefore the *default*, not an edge case, so without
@@ -843,9 +845,15 @@ refers to the same requirement across revisions.
   - **Expired** — the chain height is observed strictly past the expiration block recorded
     under FR-039 while the account is still at base; the transaction can never land; settle
     `failed`. FR-046 guarantees that bound is finite and within the horizon.
-  Guardian MUST NOT settle on elapsed wall-clock time alone. Expiration is the only bound
-  that makes termination guaranteed rather than best-effort, which is why FR-039 requires
-  recording it. If the Miden node exposes a transaction-status or inclusion lookup, Guardian
+  Guardian MUST NOT settle on elapsed wall-clock time alone. Expiration is the only finite
+  chain-height bound, which is why FR-039 requires recording it. If chain observation is
+  unavailable, Guardian MUST retain the reservation, keep reporting `submitted`, and retry
+  observation with capped backoff. It MUST surface the outage through health, metrics, and logs
+  so an operator can restore or fail over the chain source; operator recovery MUST NOT release
+  the reservation, settle the execution, or authorize a retry without positive chain evidence.
+  The termination guarantee is conditional on eventual trustworthy chain observation at or
+  beyond the recorded expiration height. If the Miden node exposes a transaction-status or
+  inclusion lookup, Guardian
   SHOULD use it as a faster path to the first two outcomes; the expiration bound MUST remain
   the backstop, since Guardian's current RPC client has no such lookup.
 - **FR-047 — the no-retry boundary**: "Submission authorized and prepared" MUST be one durable,
@@ -874,7 +882,7 @@ refers to the same requirement across revisions.
   Sending then would put a transaction on chain for an account whose candidate was discarded
   and whose reservation is gone. A stale worker MUST write nothing — it cannot know what the
   new owner has done — and MUST leave the durable candidate and evidence for reconciliation,
-  which terminates within the FR-046 horizon. This is the one abort that legitimately leaves a
+  which terminates once trustworthy observation passes the FR-046 horizon. This is the one abort that legitimately leaves a
   boundary-crossed execution without a send; FR-040's expiration path is what bounds it.
 - **FR-048 — re-check admissibility immediately before the boundary**: Fencing protects only
   Guardian's own lease; it says nothing about the chain moving underneath. Immediately before
@@ -1003,7 +1011,9 @@ refers to the same requirement across revisions.
   submission: it reports `submitted`, retains its reservation, and refuses retry. It reaches a
   terminal state via exactly one of the FR-040 evidence paths — landed, superseded, or
   expired — with an explicit test per path, including one where the account never leaves its
-  base commitment and only the expiration bound terminates it.
+  base commitment and only observation beyond the expiration bound terminates it. A separate
+  outage test holds the same reservation safely while observation is unavailable and resumes
+  resolution after the chain source recovers.
 - **SC-009**: A proposal created by a self-executed client has a stored payload
   byte-shape indistinguishable from one created before this feature — verified by an
   explicit test, so the feature 008 FR-015 property is preserved by default.
@@ -1070,15 +1080,17 @@ refers to the same requirement across revisions.
   public `push_delta` remain refused — verified by explicit tests, since the naive rule
   deadlocks (FR-037, FR-044).
 - **SC-029**: The envelope is byte-reproducible across languages: both SDKs produce identical
-  checksum and protocol-line values for identical inputs, using SHA-256 / `0x`-hex /
-  `MAJOR.MINOR` / exact-equality as fixed in FR-014 — verified against a committed fixture.
+  `format_version`, `protocol_line`, full `serializer_id` (including prerelease), and checksum
+  values for identical inputs. Committed fixtures also prove that an unsupported format or an
+  unallowlisted serializer on the same protocol line is rejected before deserialization, using
+  SHA-256 / `0x`-hex / `MAJOR.MINOR` / exact-equality as fixed in FR-014 and FR-015.
 - **SC-030**: The candidate always exists before the transaction is sent: a crash injected
   between the FR-045 step 9 commit and the network send leaves a durable candidate and durable
   evidence, reports `submitted`, and is resolved by reconciliation without re-sending — so no
   execution can ever report `landed` with nothing having reached `canonical` (FR-045, FR-047).
 - **SC-031**: A worker that goes stale after crossing the boundary never sends: the pre-send
   fence re-check aborts it, it writes nothing, and reconciliation resolves the durable candidate
-  within the expiration horizon — verified by a test that commits the boundary, transfers
+  after trustworthy observation reaches the expiration horizon — verified by a test that commits the boundary, transfers
   ownership, then resumes the original worker (FR-049).
 - **SC-032**: A proposal whose transaction requires foreign-account inputs is refused before any
   proving or submission, with an error naming foreign procedure invocation as the reason — never

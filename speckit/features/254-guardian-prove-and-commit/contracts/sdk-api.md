@@ -249,8 +249,13 @@ A committed fixture set MUST pin the envelope contract so the two SDKs cannot dr
 (mirroring `fixtures/miden-multisig-client/p2id-serial-vectors.json`):
 
 - A serialized `TransactionRequest` envelope produced by each SDK for the same
-  transaction inputs, asserting equal `checksum` and `protocol_line`.
+  transaction inputs, asserting equal `format_version`, `protocol_line`, full
+  `serializer_id` (including any prerelease identifier), and `checksum`.
 - An envelope captured from a **different** protocol line, asserting both SDKs and the
   server refuse it with `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` and never attempt
   deserialization (SC-010).
+- An envelope from the **same** protocol line but a different, unallowlisted
+  `serializer_id`, asserting both SDKs and the server refuse it with
+  `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` before deserialization.
+- An unsupported `format_version`, asserting refusal before deserialization.
 - A corrupted-checksum envelope, asserting `GUARDIAN_EXECUTION_REQUEST_CODEC`.

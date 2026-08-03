@@ -76,7 +76,7 @@ miden-client = { workspace = true, features = ["testing"], optional = true }
 miden-confidential-contracts = { path = "../contracts", optional = true }
 miden-testing = { workspace = true, optional = true }
 miden-tx = { workspace = true, optional = true }
-miden-remote-prover-client = { version = "0.15", default-features = false, features = ["std", "tx-prover"], optional = true }
+miden-remote-prover-client = { workspace = true, optional = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
