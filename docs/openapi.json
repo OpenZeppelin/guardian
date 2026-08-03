@@ -480,7 +480,7 @@
         "tags": [
           "dashboard"
         ],
-        "summary": "`GET /dashboard/accounts/{account_id}/deltas`. Returns the\nper-account delta feed paginated newest-first by `nonce DESC`,\nsurfacing only `candidate` / `canonical` / `discarded` statuses\n(pending lives on the proposal queue endpoint).",
+        "summary": "`GET /dashboard/accounts/{account_id}/deltas`. Returns the\nper-account delta feed paginated newest-first by `nonce DESC`,\nsurfacing only `candidate` / `canonical` / `retained` / `discarded`\nstatuses (pending lives on the proposal queue endpoint).",
         "operationId": "list_account_deltas_handler",
         "parameters": [
           {
@@ -1123,7 +1123,7 @@
         "tags": [
           "dashboard"
         ],
-        "summary": "`GET /dashboard/deltas`. Cross-account delta feed paginated\nnewest-first by `status_timestamp DESC`. Optional comma-separated\n`status` filter restricts to a subset of `{candidate, canonical,\ndiscarded}`. Pending entries live on the proposal feed.",
+        "summary": "`GET /dashboard/deltas`. Cross-account delta feed paginated\nnewest-first by `status_timestamp DESC`. Optional comma-separated\n`status` filter restricts to a subset of `{candidate, canonical,\nretained, discarded}`. Pending entries live on the proposal feed.",
         "description": "Spec reference: `005-operator-dashboard-metrics` US6, FR-031..FR-035.",
         "operationId": "list_global_deltas_handler",
         "parameters": [
@@ -1618,7 +1618,7 @@
           "client"
         ],
         "summary": "Request abandonment of a pending canonicalization candidate whose\ntransaction will never land on-chain (issue #319).",
-        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned.",
+        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned; `retained` → the worker\nalready released the account, but the outcome is still uncertain\n(reconciliation may promote it until the retention TTL expires).",
         "operationId": "abandon_candidate",
         "requestBody": {
           "content": {
@@ -3237,7 +3237,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released."
+            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released;\n`\"retained\"` when the worker had already stopped verifying the\ncandidate and released the account — unlocked, but the on-chain\noutcome is still uncertain and background reconciliation may yet\npromote the delta until its retention TTL expires."
           }
         }
       },
@@ -3889,7 +3889,10 @@
         "required": [
           "check_interval_seconds",
           "max_retries",
-          "submission_grace_period_seconds"
+          "submission_grace_period_seconds",
+          "retained_ttl_seconds",
+          "reconcile_interval_seconds",
+          "reconcile_page_size"
         ],
         "properties": {
           "check_interval_seconds": {
@@ -3900,6 +3903,24 @@
           "max_retries": {
             "type": "integer",
             "format": "int32",
+            "minimum": 0
+          },
+          "reconcile_interval_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cadence of the dedicated reconcile pass over recoverable deltas.\nIndividual accounts back off further as their rows age, so a\nretained row being reconsidered less often than this is expected.",
+            "minimum": 0
+          },
+          "reconcile_page_size": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Accounts one reconcile pass visits at most (rotation cursor).",
+            "minimum": 0
+          },
+          "retained_ttl_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long retry-exhausted candidates are kept as `retained` for\nbackground reconciliation (issue #345). `0` = retention disabled.",
             "minimum": 0
           },
           "submission_grace_period_seconds": {
@@ -3938,6 +3959,13 @@
         "properties": {
           "account_id": {
             "type": "string"
+          },
+          "base_matches_stored_state": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the `retained` row still chains from the stored account\nstate — `false` means the row is structurally obsolete (the base\nmoved out from under it) and can only age out. Present only on\n`retained` rows, and absent when the state read fails."
           },
           "category": {
             "oneOf": [
@@ -3999,6 +4027,13 @@
             ],
             "description": "Base64-encoded raw `TransactionSummary` blob. Present only\nwhen the caller requested `?include=raw` (debug-only)."
           },
+          "retained_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When background reconciliation gives up on a `retained` row for\ngood (`status_timestamp` + the server's retention TTL), RFC 3339.\nPresent only on `retained` rows; absent when the TTL cannot be\nestablished (e.g. optimistic mode)."
+          },
           "retry_count": {
             "type": [
               "integer",
@@ -4009,6 +4044,13 @@
           },
           "status": {
             "$ref": "#/components/schemas/DashboardDeltaStatus"
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -4102,11 +4144,18 @@
               "null"
             ],
             "format": "int32",
-            "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `discarded`.",
+            "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `retained` / `discarded`.",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/DashboardDeltaStatus"
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a row left the active candidate path: `retained` rows carry\nthe worker verdict that parked them (`retry_exhausted` /\n`diverged` — a `diverged` row that later reconciles is direct\nevidence the verdict was spurious), `discarded` rows carry the\ndiscard reason when recorded (`client_abandoned`). `None` and\nskipped elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -4119,6 +4168,7 @@
         "enum": [
           "candidate",
           "canonical",
+          "retained",
           "discarded"
         ]
       },
@@ -4127,6 +4177,7 @@
         "required": [
           "candidate",
           "canonical",
+          "retained",
           "discarded"
         ],
         "properties": {
@@ -4141,6 +4192,11 @@
             "minimum": 0
           },
           "discarded": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "retained": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
@@ -4227,6 +4283,13 @@
           },
           "status": {
             "$ref": "#/components/schemas/DashboardDeltaStatus"
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -4792,6 +4855,35 @@
           },
           {
             "type": "object",
+            "description": "A candidate the worker gave up on, kept for background\nreconciliation (issue #345) instead of being deleted. A give-up\nverdict — retry exhaustion or confirmed divergence — is an\n*observation*, not proof the delta is wrong, so the worker keeps\nre-checking `stored base + delta` against the chain and promotes\nthe row if they ever match. Does NOT hold the pending-candidate\nlock: new submissions stay unblocked and supersede a retained\nrow at the same nonce. `timestamp` is when retention began and\nanchors the TTL after which the row is dropped for good.",
+            "required": [
+              "timestamp",
+              "status"
+            ],
+            "properties": {
+              "reason": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RetainReason"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "retained"
+                ]
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "timestamp",
               "status"
@@ -5312,11 +5404,18 @@
                     "null"
                   ],
                   "format": "int32",
-                  "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `discarded`.",
+                  "description": "Always `Some(_)` on candidate entries (default `0` per FR-015);\n`None` and skipped on `canonical` / `retained` / `discarded`.",
                   "minimum": 0
                 },
                 "status": {
                   "$ref": "#/components/schemas/DashboardDeltaStatus"
+                },
+                "status_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why a row left the active candidate path: `retained` rows carry\nthe worker verdict that parked them (`retry_exhausted` /\n`diverged` — a `diverged` row that later reconciles is direct\nevidence the verdict was spurious), `discarded` rows carry the\ndiscard reason when recorded (`client_abandoned`). `None` and\nskipped elsewhere."
                 },
                 "status_timestamp": {
                   "type": "string"
@@ -5421,6 +5520,13 @@
                 },
                 "status": {
                   "$ref": "#/components/schemas/DashboardDeltaStatus"
+                },
+                "status_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
                 },
                 "status_timestamp": {
                   "type": "string"
@@ -5874,6 +5980,14 @@
             "minimum": 0
           }
         }
+      },
+      "RetainReason": {
+        "type": "string",
+        "description": "Why a candidate was moved to `Retained` instead of deleted\n(issue #345). The label is diagnostic — every retained delta is\nreconciled and TTL-expired identically — but it records which\nworker verdict parked the row, and a `diverged` row that later\nreconciles is direct evidence the divergence verdict was spurious\n(e.g. a lagging RPC node, or the pre-#326 empty-digest misread\nthat hit new accounts' first transactions).",
+        "enum": [
+          "retry_exhausted",
+          "diverged"
+        ]
       },
       "SessionInfoResponse": {
         "type": "object",

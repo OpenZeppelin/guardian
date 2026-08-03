@@ -4,7 +4,8 @@
 //!
 //! Returns the persisted delta feed for one account with newest-first
 //! ordering by `nonce DESC`. Surfaces only the lifecycle statuses that
-//! live in the `deltas` table (`candidate`, `canonical`, `discarded`).
+//! live in the `deltas` table (`candidate`, `canonical`, `retained`,
+//! `discarded`).
 //! `pending` entries live in `delta_proposals` and are exposed via
 //! [`crate::services::dashboard_account_proposals`] per FR-014.
 //!
@@ -32,6 +33,7 @@ use crate::storage::AccountDeltaCursor;
 pub enum DashboardDeltaStatus {
     Candidate,
     Canonical,
+    Retained,
     Discarded,
 }
 
@@ -50,9 +52,17 @@ pub struct DashboardDeltaEntry {
     /// discarded delta that did not produce a resulting commitment).
     pub new_commitment: Option<String>,
     /// Always `Some(_)` on candidate entries (default `0` per FR-015);
-    /// `None` and skipped on `canonical` / `discarded`.
+    /// `None` and skipped on `canonical` / `retained` / `discarded`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
+    /// Why a row left the active candidate path: `retained` rows carry
+    /// the worker verdict that parked them (`retry_exhausted` /
+    /// `diverged` — a `diverged` row that later reconciles is direct
+    /// evidence the verdict was spurious), `discarded` rows carry the
+    /// discard reason when recorded (`client_abandoned`). `None` and
+    /// skipped elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<&'static str>,
 
     /// Spread from the persisted `DeltaMetadata` column. `None` for
     /// rows that predate the push-time pipeline or carry an undecodable
@@ -94,9 +104,34 @@ pub(crate) fn decode_delta_status(
         DeltaStatus::Canonical { timestamp } => {
             Some((DashboardDeltaStatus::Canonical, None, timestamp.clone()))
         }
+        DeltaStatus::Retained { timestamp, .. } => {
+            Some((DashboardDeltaStatus::Retained, None, timestamp.clone()))
+        }
         DeltaStatus::Discarded { timestamp, .. } => {
             Some((DashboardDeltaStatus::Discarded, None, timestamp.clone()))
         }
+    }
+}
+
+/// The stable wire label for why a row left the active candidate path
+/// (see [`DashboardDeltaEntry::status_reason`]). Shared with the global
+/// delta feed.
+pub(crate) fn decode_status_reason(status: &DeltaStatus) -> Option<&'static str> {
+    use crate::delta_object::{DiscardReason, RetainReason};
+    match status {
+        DeltaStatus::Retained {
+            reason: Some(RetainReason::RetryExhausted),
+            ..
+        } => Some("retry_exhausted"),
+        DeltaStatus::Retained {
+            reason: Some(RetainReason::Diverged),
+            ..
+        } => Some("diverged"),
+        DeltaStatus::Discarded {
+            reason: Some(DiscardReason::ClientAbandoned),
+            ..
+        } => Some("client_abandoned"),
+        _ => None,
     }
 }
 
@@ -113,6 +148,7 @@ impl DashboardDeltaEntry {
             prev_commitment: delta.prev_commitment.clone(),
             new_commitment: delta.new_commitment.clone(),
             retry_count,
+            status_reason: decode_status_reason(&delta.status),
             category: None,
             proposal_type: None,
             assets: Vec::new(),

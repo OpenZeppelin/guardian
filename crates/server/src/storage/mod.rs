@@ -25,10 +25,23 @@ pub enum DeltaStatusKind {
     Pending,
     Candidate,
     Canonical,
+    Retained,
     Discarded,
 }
 
 impl DeltaStatusKind {
+    /// The typed kind of a full [`DeltaStatus`], the single mapping the
+    /// backends and the dashboard wire layer share.
+    pub fn of(status: &DeltaStatus) -> Self {
+        match status {
+            DeltaStatus::Pending { .. } => DeltaStatusKind::Pending,
+            DeltaStatus::Candidate { .. } => DeltaStatusKind::Candidate,
+            DeltaStatus::Canonical { .. } => DeltaStatusKind::Canonical,
+            DeltaStatus::Retained { .. } => DeltaStatusKind::Retained,
+            DeltaStatus::Discarded { .. } => DeltaStatusKind::Discarded,
+        }
+    }
+
     /// Stable lower-snake-case name for the Postgres `status_kind`
     /// column and the dashboard status-filter wire shape.
     pub fn as_str(&self) -> &'static str {
@@ -36,9 +49,26 @@ impl DeltaStatusKind {
             DeltaStatusKind::Pending => "pending",
             DeltaStatusKind::Candidate => "candidate",
             DeltaStatusKind::Canonical => "canonical",
+            DeltaStatusKind::Retained => "retained",
             DeltaStatusKind::Discarded => "discarded",
         }
     }
+}
+
+/// Whether a delta is in scope for the background reconcile pass
+/// (issue #345): every `retained` row, plus client-abandoned discards
+/// recent enough (status timestamp at or after `abandoned_since`) to
+/// still be worth re-checking against the chain. An abandoned row with
+/// an unparseable timestamp is excluded — abandoned recovery is a
+/// best-effort net over rows that are kept as history either way.
+pub(crate) fn is_recoverable(status: &DeltaStatus, abandoned_since: DateTime<Utc>) -> bool {
+    if status.is_retained() {
+        return true;
+    }
+    status.is_client_abandoned()
+        && DateTime::parse_from_rfc3339(status.timestamp())
+            .map(|at| at.with_timezone(&Utc) >= abandoned_since)
+            .unwrap_or(false)
 }
 
 /// Cursor parameters for the per-account delta history read. Sort key
@@ -101,6 +131,7 @@ pub struct GlobalProposalCursor {
 pub struct DeltaStatusCounts {
     pub candidate: u64,
     pub canonical: u64,
+    pub retained: u64,
     pub discarded: u64,
 }
 
@@ -212,12 +243,53 @@ pub enum CandidateSubmission {
     CommitmentMismatch { expected: String },
 }
 
+/// The exact lifecycle row a promotion is allowed to flip. The gate
+/// must match the row the pass verified — not the union of promotable
+/// kinds — because a client submission can supersede a retained or
+/// client-abandoned row at its nonce mid-pass: a union gate would let
+/// the promotion stamp the client's brand-new candidate canonical with
+/// the old delta's verified commitment. An exact gate makes the
+/// superseded promotion a no-op (`NotCandidate`) instead. Candidate
+/// rows cannot be superseded (only the lease-holding worker deletes
+/// them), so the candidate arm is as safe as it always was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotableKind {
+    Candidate,
+    Retained,
+    ClientAbandoned,
+}
+
+impl PromotableKind {
+    /// The promotable kind of the row a verification read, derived from
+    /// its pre-promotion status.
+    pub fn of(status: &DeltaStatus) -> Self {
+        if status.is_retained() {
+            PromotableKind::Retained
+        } else if status.is_client_abandoned() {
+            PromotableKind::ClientAbandoned
+        } else {
+            PromotableKind::Candidate
+        }
+    }
+
+    /// Whether a stored status still is the row this promotion targets.
+    pub fn matches(&self, status: &DeltaStatus) -> bool {
+        match self {
+            PromotableKind::Candidate => status.is_candidate(),
+            PromotableKind::Retained => status.is_retained(),
+            PromotableKind::ClientAbandoned => status.is_client_abandoned(),
+        }
+    }
+}
+
 /// Everything a candidate promotion commits as one unit: the advanced
 /// account state, the delta flipped to canonical, the optional cosigner
 /// auth sync, and the pending-candidate flag release. `now` stamps the
 /// metadata `updated_at`; `fence` is `None` only for single-process
 /// electors, whose leases have no shared-store row to validate — a
-/// fencing backend refuses an unfenced promotion outright.
+/// fencing backend refuses an unfenced promotion outright. `source` is
+/// the lifecycle kind of the row the pass verified; the write only
+/// flips a row still in that exact kind.
 #[derive(Debug, Clone)]
 pub struct CandidatePromotion {
     pub state: StateObject,
@@ -225,19 +297,36 @@ pub struct CandidatePromotion {
     pub new_auth: Option<crate::metadata::Auth>,
     pub now: String,
     pub fence: Option<LeaseFence>,
+    pub source: PromotableKind,
 }
 
 /// Single-process fallback for [`StorageBackend::submit_candidate`]:
 /// the delta write and the flag set are separate commits, and the
 /// pending-candidate recheck stays at the service-layer gate — both
-/// acceptable only where no concurrent replica can observe the gap
-/// (filesystem backend, mocks).
+/// acceptable only where no concurrent task can observe the gap. Its
+/// sole consumer is the cfg-gated mock backend — the filesystem backend
+/// overrides the method with a locked sequence (issue #345 exposed
+/// worker/API task interleavings) — hence the dead-code allowance for
+/// non-test builds.
+#[allow(dead_code)]
 pub(crate) async fn submit_candidate_sequential(
     storage: &dyn StorageBackend,
     metadata: &dyn crate::metadata::MetadataStore,
     delta: &DeltaObject,
     now: &str,
 ) -> Result<CandidateSubmission, String> {
+    // A retained row (issue #345) or a client-abandoned discard
+    // (issue #319) is a best-effort recovery/history artifact, never
+    // settled canonical history: a fresh candidate at its nonce
+    // supersedes it — the client just re-supplied its intent for that
+    // slot. Without the abandoned-row supersede, the very resubmission
+    // the abandon endpoint exists to enable would be refused forever at
+    // the nonce's unique constraint.
+    if let Ok(existing) = storage.pull_delta(&delta.account_id, delta.nonce).await
+        && (existing.status.is_retained() || existing.status.is_client_abandoned())
+    {
+        storage.delete_delta(&delta.account_id, delta.nonce).await?;
+    }
     storage.submit_delta(delta).await?;
     metadata
         .set_has_pending_candidate(&delta.account_id, true, now)
@@ -248,13 +337,29 @@ pub(crate) async fn submit_candidate_sequential(
 /// Single-process fallback for [`StorageBackend::promote_candidate`]:
 /// sequential writes with no fence, mirroring the pre-lease worker. The
 /// base-commitment gate is a plain read-then-write, acceptable only
-/// where no concurrent replica can interleave (filesystem backend,
-/// mocks).
+/// where no concurrent task can interleave. Its sole consumer is the
+/// cfg-gated mock backend — the filesystem backend overrides the method
+/// with a locked sequence (issue #345 exposed worker/API task
+/// interleavings) — hence the dead-code allowance for non-test builds.
+#[allow(dead_code)]
 pub(crate) async fn promote_candidate_sequential(
     storage: &dyn StorageBackend,
     metadata: &dyn crate::metadata::MetadataStore,
     promotion: CandidatePromotion,
 ) -> Result<PromoteWrite, String> {
+    // Source-kind gate: the row must still be the one the pass
+    // verified. A concurrent submission superseding a retained or
+    // client-abandoned row at this nonce makes the promotion a no-op.
+    // A read error keeps the historical plain-write path (mocks
+    // without a canned read).
+    if let Ok(existing) = storage
+        .pull_delta(&promotion.state.account_id, promotion.delta.nonce)
+        .await
+        && !promotion.source.matches(&existing.status)
+    {
+        return Ok(PromoteWrite::NotCandidate);
+    }
+
     let current_state = storage.pull_state(&promotion.state.account_id).await?;
     if current_state.commitment != promotion.delta.prev_commitment {
         return Ok(PromoteWrite::StaleBase);
@@ -281,8 +386,18 @@ pub(crate) async fn discard_candidate_sequential(
     metadata: &dyn crate::metadata::MetadataStore,
     account_id: &str,
     nonce: u64,
+    kind: DeltaStatusKind,
     now: &str,
 ) -> Result<CanonicalWrite, String> {
+    // Guard the delete on the expected lifecycle kind so a stale discard
+    // can never remove a row that was promoted meanwhile. A read error
+    // keeps the historical plain-delete path (mocks without a canned
+    // read; a missing row makes the delete itself the no-op/error).
+    if let Ok(existing) = storage.pull_delta(account_id, nonce).await
+        && DeltaStatusKind::of(&existing.status) != kind
+    {
+        return Ok(CanonicalWrite::NotCandidate);
+    }
     storage.delete_delta(account_id, nonce).await?;
     if let Err(e) = metadata
         .clear_pending_candidate_if_none(account_id, now)
@@ -312,6 +427,12 @@ pub(crate) async fn update_candidate_status_sequential(
     status: DeltaStatus,
 ) -> Result<CanonicalWrite, String> {
     let status = match storage.pull_delta(account_id, nonce).await {
+        // A concurrently recorded abandon intent must not be wiped into
+        // a retained status (no field to carry it): refuse the flip so
+        // the next worker tick resolves the abandon instead.
+        Ok(current) if status.is_retained() && current.status.abandon_requested_at().is_some() => {
+            return Ok(CanonicalWrite::NotCandidate);
+        }
         Ok(current) if current.status.is_candidate() => {
             status.with_abandon_request_preserved_from(current.status.abandon_requested_at())
         }
@@ -455,6 +576,45 @@ pub trait StorageBackend: Send + Sync {
         cursor: Option<&RecentCandidateCursor>,
         limit: u32,
     ) -> Result<Vec<DeltaObject>, String>;
+
+    /// Recoverable deltas (issue #345) for one account, nonce-ascending
+    /// — the background reconcile pass's read. Recoverable means every
+    /// `retained` row, plus `discarded { client_abandoned }` rows whose
+    /// status timestamp is at or after `abandoned_since`: the abandon
+    /// quarantine (issue #319) cannot fully rule out a late-landing
+    /// transaction, and one that lands after the abandon finalizes
+    /// leaves the stored state behind the chain — the abandoned row
+    /// holds everything needed to recover. The cutoff keeps the
+    /// abandoned side bounded: old history rows are kept forever but
+    /// must not be rescanned forever. The default filters the full
+    /// history in memory; backends with a typed status column override
+    /// it so only recoverable rows leave the store.
+    async fn pull_recoverable_deltas(
+        &self,
+        account_id: &str,
+        abandoned_since: DateTime<Utc>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let mut deltas: Vec<DeltaObject> = self
+            .pull_deltas_after(account_id, 0)
+            .await?
+            .into_iter()
+            .filter(|delta| is_recoverable(&delta.status, abandoned_since))
+            .collect();
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
+    }
+
+    /// Accounts that currently hold at least one recoverable delta
+    /// (issue #345): any `retained` row, or a client-abandoned discard
+    /// at or after `abandoned_since`. These rows do not set the
+    /// `has_pending_candidate` flag — by design, so they never re-lock
+    /// the account — so the reconcile pass needs its own scan to find
+    /// them.
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        abandoned_since: DateTime<Utc>,
+    ) -> Result<Vec<String>, String>;
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -545,15 +705,19 @@ pub trait StorageBackend: Send + Sync {
         promotion: CandidatePromotion,
     ) -> Result<PromoteWrite, String>;
 
-    /// Discard an unsatisfiable candidate: delete the delta row only if
-    /// it is still a candidate (a row another owner already promoted to
-    /// canonical must survive a stale discard) and release the
-    /// pending-candidate flag, gated on the lease fence.
+    /// Discard an unsatisfiable delta: delete the row only if it is
+    /// still in the expected lifecycle `kind` (a row another owner
+    /// already promoted to canonical must survive a stale discard) and
+    /// release the pending-candidate flag, gated on the lease fence.
+    /// `kind` is [`DeltaStatusKind::Candidate`] for the classic worker
+    /// discard and [`DeltaStatusKind::Retained`] for the TTL expiry of
+    /// a retained delta (issue #345).
     async fn discard_candidate(
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         account_id: &str,
         nonce: u64,
+        kind: DeltaStatusKind,
         now: &str,
         fence: Option<&LeaseFence>,
     ) -> Result<CanonicalWrite, String>;

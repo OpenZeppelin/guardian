@@ -108,7 +108,11 @@ pub struct AbandonCandidateResponse {
     pub nonce: u64,
     /// `"pending"` while the worker still has to resolve the intent
     /// (the account stays locked until then); `"abandoned"` once the
-    /// delta is discarded as client-abandoned and the account released.
+    /// delta is discarded as client-abandoned and the account released;
+    /// `"retained"` when the worker had already stopped verifying the
+    /// candidate and released the account — unlocked, but the on-chain
+    /// outcome is still uncertain and background reconciliation may yet
+    /// promote the delta until its retention TTL expires.
     pub state: String,
     /// RFC 3339 UTC timestamp of the recorded abandon request. Retries
     /// return the original timestamp; absent once resolved.
@@ -494,7 +498,9 @@ pub async fn push_delta_proposal(
 /// already landed. Retries are idempotent and preserve the original
 /// request timestamp. Poll `GET /delta` for the resolution: still
 /// `candidate` → waiting; `canonical` → landed after all; `discarded`
-/// with reason `client_abandoned` → abandoned.
+/// with reason `client_abandoned` → abandoned; `retained` → the worker
+/// already released the account, but the outcome is still uncertain
+/// (reconciliation may promote it until the retention TTL expires).
 #[utoipa::path(
     post,
     path = "/delta/candidate/abandon",
