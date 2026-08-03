@@ -263,14 +263,28 @@ impl MultisigClient {
                 .await?;
             signature_advice.push(guardian_advice);
         } else {
-            let _ = self
+            // SwitchGuardian: push the delta to the pre-switch GUARDIAN so it
+            // canonicalizes there and the account is released (issue #305).
+            // Best-effort — an unreachable GUARDIAN must not block the switch —
+            // but the outcome must be observable: a silently lost push leaves
+            // the old GUARDIAN serving a released account (split-brain) with
+            // nothing in any log to diagnose it by.
+            if let Err(error) = self
                 .get_guardian_ack_signature(
                     &account,
                     proposal.nonce,
                     &proposal.tx_summary,
                     tx_summary_commitment,
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    "best-effort SwitchGuardian delta push to the pre-switch \
+                     GUARDIAN failed; it will keep serving this account until \
+                     reconciliation"
+                );
+            }
         }
 
         // Build the final transaction request with all signatures
