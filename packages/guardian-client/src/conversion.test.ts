@@ -86,6 +86,27 @@ describe('conversion', () => {
       }
     });
 
+    it('converts retained DeltaStatus with and without a reason (issue #345)', () => {
+      const withReason = fromServerDeltaStatus({
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+        reason: 'diverged',
+      });
+      expect(withReason).toEqual({
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+        reason: 'diverged',
+      });
+
+      // Serde omits the field for rows without a recorded reason.
+      const withoutReason = fromServerDeltaStatus({
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+      });
+      expect(withoutReason.status).toBe('retained');
+      expect(withoutReason.reason).toBeUndefined();
+    });
+
     it('converts ProposalMetadata with all fields', () => {
       const server: ServerProposalMetadata = {
         proposal_type: 'update_procedure_threshold',
@@ -274,6 +295,22 @@ describe('conversion', () => {
           { signer_id: '0xsig1', signature: { scheme: 'falcon', signature: '0x1' }, timestamp: '2024-01-01T00:00:00Z' },
         ],
       });
+    });
+
+    it('round-trips retained DeltaStatus (issue #345)', () => {
+      const status: DeltaStatus = {
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+        reason: 'retry_exhausted',
+      };
+
+      const server = toServerDeltaStatus(status);
+      expect(server).toEqual({
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+        reason: 'retry_exhausted',
+      });
+      expect(fromServerDeltaStatus(server)).toEqual(status);
     });
 
     it('converts ProposalMetadata', () => {

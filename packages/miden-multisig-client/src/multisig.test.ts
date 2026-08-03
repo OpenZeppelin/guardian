@@ -8,10 +8,11 @@ import {
   executeForSummary,
 } from './transaction.js';
 
-const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig } = vi.hoisted(() => ({
+const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig, mockNoteFileDeserialize } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
   mockDetectConfig: vi.fn(),
+  mockNoteFileDeserialize: vi.fn(),
 }));
 
 // Mock the Miden SDK
@@ -25,6 +26,14 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   NoteType: {
     Private: 0,
     Public: 1,
+  },
+  NoteExportFormat: {
+    Id: 0,
+    Full: 1,
+    Details: 2,
+  },
+  NoteFile: {
+    deserialize: mockNoteFileDeserialize,
   },
   TransactionSummary: {
     deserialize: vi.fn().mockReturnValue({
@@ -90,6 +99,9 @@ vi.mock('./transaction.js', () => ({
   buildP2idTransactionRequest: vi.fn().mockReturnValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
+  }),
+  buildP2idNoteFromMetadata: vi.fn().mockReturnValue({
+    id: () => ({ toString: () => '0x' + 'ab'.repeat(32) }),
   }),
   // Mirrors the real implementations against the mocked NoteType values
   // (Private = 0, Public = 1).
@@ -1422,6 +1434,154 @@ describe('Multisig', () => {
 
       expect(proposal.metadata.proposalType).toBe('p2id');
       expect((proposal.metadata as { noteType?: string }).noteType).toBe('private');
+    });
+  });
+
+  describe('exportNoteToBytes / importNoteFromBytes (issue #356)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + '1'.repeat(64)],
+      guardianCommitment: '0x' + '3'.repeat(64),
+    };
+
+    it('exports the full note with proof when the inclusion proof is known', async () => {
+      const noteFile = { serialize: () => new Uint8Array([9, 9, 9]) };
+      mockWebClient.getOutputNote = vi.fn().mockResolvedValue({
+        inclusionProof: () => ({}),
+      });
+      mockWebClient.exportNoteFile = vi.fn().mockResolvedValue(noteFile);
+
+      const multisig = createTestMultisig(config);
+      const bytes = await multisig.exportNoteToBytes('0x' + 'ab'.repeat(32));
+
+      expect(bytes).toEqual(new Uint8Array([9, 9, 9]));
+      // NoteExportFormat.Full = 1 in the SDK mock
+      expect(mockWebClient.exportNoteFile).toHaveBeenCalledWith('0x' + 'ab'.repeat(32), 1);
+    });
+
+    it('falls back to a details-only export before the note commits on chain', async () => {
+      const noteFile = { serialize: () => new Uint8Array([7]) };
+      mockWebClient.getOutputNote = vi.fn().mockResolvedValue({
+        inclusionProof: () => undefined,
+      });
+      mockWebClient.exportNoteFile = vi.fn().mockResolvedValue(noteFile);
+
+      const multisig = createTestMultisig(config);
+      await multisig.exportNoteToBytes(' 0x' + 'ab'.repeat(32) + ' ');
+
+      // NoteExportFormat.Details = 2 in the SDK mock; the id is trimmed
+      expect(mockWebClient.exportNoteFile).toHaveBeenCalledWith('0x' + 'ab'.repeat(32), 2);
+    });
+
+    it('rejects exporting a note the local store does not know', async () => {
+      mockWebClient.getOutputNote = vi.fn().mockRejectedValue(new Error('no such note'));
+      mockWebClient.exportNoteFile = vi.fn();
+
+      const multisig = createTestMultisig(config);
+      await expect(multisig.exportNoteToBytes('0x' + 'ab'.repeat(32))).rejects.toThrow(
+        /not found in the local store/,
+      );
+      expect(mockWebClient.exportNoteFile).not.toHaveBeenCalled();
+    });
+
+    it('rejects exporting when the store resolves no record', async () => {
+      mockWebClient.getOutputNote = vi.fn().mockResolvedValue(undefined);
+      mockWebClient.exportNoteFile = vi.fn();
+
+      const multisig = createTestMultisig(config);
+      await expect(multisig.exportNoteToBytes('0x' + 'ab'.repeat(32))).rejects.toThrow(
+        /not found in the local store/,
+      );
+      expect(mockWebClient.exportNoteFile).not.toHaveBeenCalled();
+    });
+
+    it('imports note file bytes and returns the resolved identifier', async () => {
+      const decoded = { marker: 'note-file' };
+      mockNoteFileDeserialize.mockReturnValue(decoded);
+      mockWebClient.importNoteFile = vi.fn().mockResolvedValue('0x' + 'cd'.repeat(32));
+
+      const multisig = createTestMultisig(config);
+      const noteId = await multisig.importNoteFromBytes(new Uint8Array([1, 2, 3]));
+
+      expect(mockNoteFileDeserialize).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
+      expect(mockWebClient.importNoteFile).toHaveBeenCalledWith(decoded);
+      expect(noteId).toBe('0x' + 'cd'.repeat(32));
+    });
+
+    it('rejects bytes that do not decode as a note file', async () => {
+      mockNoteFileDeserialize.mockImplementation(() => {
+        throw new Error('bad bytes');
+      });
+      mockWebClient.importNoteFile = vi.fn();
+
+      const multisig = createTestMultisig(config);
+      await expect(multisig.importNoteFromBytes(new Uint8Array([0]))).rejects.toThrow(
+        /failed to decode note file: bad bytes/,
+      );
+      expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('exportNoteToFile / importNoteFromFile (issue #356)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + '1'.repeat(64)],
+      guardianCommitment: '0x' + '3'.repeat(64),
+    };
+
+    it('rejects exportNoteToFile outside a browser environment', async () => {
+      const multisig = createTestMultisig(config);
+      await expect(multisig.exportNoteToFile('0x' + 'ab'.repeat(32))).rejects.toThrow(
+        /requires a browser environment/,
+      );
+    });
+
+    it('imports from a File/Blob by delegating to importNoteFromBytes', async () => {
+      const decoded = { marker: 'note-file' };
+      mockNoteFileDeserialize.mockReturnValue(decoded);
+      mockWebClient.importNoteFile = vi.fn().mockResolvedValue('0x' + 'cd'.repeat(32));
+
+      const multisig = createTestMultisig(config);
+      const noteId = await multisig.importNoteFromFile(new Blob([new Uint8Array([1, 2, 3])]));
+
+      expect(mockNoteFileDeserialize).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
+      expect(noteId).toBe('0x' + 'cd'.repeat(32));
+    });
+  });
+
+  describe('getP2idNoteId (issue #356)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + '1'.repeat(64)],
+      guardianCommitment: '0x' + '3'.repeat(64),
+    };
+
+    it('computes the deterministic note ID from p2id proposal metadata', async () => {
+      const multisig = createTestMultisig(config);
+      const proposal = {
+        metadata: {
+          proposalType: 'p2id',
+          recipientId: '0x' + 'b'.repeat(30),
+          faucetId: '0x' + 'c'.repeat(30),
+          amount: '100',
+          saltHex: '0x' + 'd'.repeat(64),
+          noteType: 'private',
+        },
+      } as any;
+
+      const noteId = await multisig.getP2idNoteId(proposal);
+      expect(noteId).toBe('0x' + 'ab'.repeat(32));
+    });
+
+    it('rejects non-p2id proposals', async () => {
+      const multisig = createTestMultisig(config);
+      const proposal = {
+        metadata: { proposalType: 'consume_notes' },
+      } as any;
+
+      await expect(multisig.getP2idNoteId(proposal)).rejects.toThrow(
+        /requires a P2ID proposal/,
+      );
     });
   });
 

@@ -43,7 +43,11 @@ async fn main() {
                 .with_fast_promotion_enabled_from_env()
                 .expect("Invalid fast promotion configuration")
                 .with_max_concurrent_accounts_from_env()
-                .expect("Invalid canonicalization concurrency configuration"),
+                .expect("Invalid canonicalization concurrency configuration")
+                .with_retained_ttl_seconds_from_env()
+                .expect("Invalid retained TTL configuration")
+                .with_reconcile_interval_seconds_from_env()
+                .expect("Invalid reconcile interval configuration"),
         ))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())

@@ -50,6 +50,10 @@ pub const CANONICALIZATION_RUN_DURATION_SECONDS: &str =
 pub const CANONICALIZATION_FAST_RUNS_TOTAL: &str = "guardian_canonicalization_fast_runs_total";
 pub const CANONICALIZATION_FAST_RUN_DURATION_SECONDS: &str =
     "guardian_canonicalization_fast_run_duration_seconds";
+pub const CANONICALIZATION_RECONCILE_RUNS_TOTAL: &str =
+    "guardian_canonicalization_reconcile_runs_total";
+pub const CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS: &str =
+    "guardian_canonicalization_reconcile_run_duration_seconds";
 pub const CANONICALIZATION_CANDIDATES_TOTAL: &str = "guardian_canonicalization_candidates_total";
 pub const CANONICALIZATION_RETRIES_TOTAL: &str = "guardian_canonicalization_retries_total";
 pub const CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL: &str =
@@ -261,6 +265,18 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Histogram,
         labels: &[],
         help: "Duration of one recent-candidate promotion-only pass, in seconds.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_RECONCILE_RUNS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Recoverable-delta reconcile passes, by outcome (completed, partial, cancelled, error).",
+    },
+    MetricDef {
+        name: CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Duration of one recoverable-delta reconcile pass, in seconds.",
     },
     MetricDef {
         name: CANONICALIZATION_CANDIDATES_TOTAL,

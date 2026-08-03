@@ -34,6 +34,23 @@ pub struct DashboardDeltaDetail {
     pub new_commitment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
+    /// Why the row left the active candidate path: `retry_exhausted` or
+    /// `diverged` on `retained` rows, `client_abandoned` on `discarded`
+    /// rows; absent elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<&'static str>,
+    /// When background reconciliation gives up on a `retained` row for
+    /// good (`status_timestamp` + the server's retention TTL), RFC 3339.
+    /// Present only on `retained` rows; absent when the TTL cannot be
+    /// established (e.g. optimistic mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_expires_at: Option<String>,
+    /// Whether the `retained` row still chains from the stored account
+    /// state — `false` means the row is structurally obsolete (the base
+    /// moved out from under it) and can only age out. Present only on
+    /// `retained` rows, and absent when the state read fails.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_matches_stored_state: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<DashboardDeltaCategory>,
@@ -108,7 +125,37 @@ pub async fn get_account_delta_detail(
             }
         })?;
 
-    Ok(project_delta_to_detail(account_id, nonce, &delta, include))
+    // Triage context for retained rows (issue #345): when the row can
+    // still heal (its base chains from the stored state) and when the
+    // recovery net gives up. Best-effort — a failed state read only
+    // omits the flag.
+    let (retained_expires_at, base_matches_stored_state) = if delta.status.is_retained() {
+        let expires_at = state.canonicalization.as_ref().and_then(|config| {
+            chrono::DateTime::parse_from_rfc3339(delta.status.timestamp())
+                .ok()
+                .and_then(|at| {
+                    i64::try_from(config.retained_ttl_seconds)
+                        .ok()
+                        .and_then(chrono::Duration::try_seconds)
+                        .and_then(|ttl| at.checked_add_signed(ttl))
+                })
+                .map(|at| at.to_rfc3339())
+        });
+        let base_matches = state
+            .storage
+            .pull_state(account_id)
+            .await
+            .ok()
+            .map(|current| current.commitment == delta.prev_commitment);
+        (expires_at, base_matches)
+    } else {
+        (None, None)
+    };
+
+    let mut detail = project_delta_to_detail(account_id, nonce, &delta, include);
+    detail.retained_expires_at = retained_expires_at;
+    detail.base_matches_stored_state = base_matches_stored_state;
+    Ok(detail)
 }
 
 fn project_delta_to_detail(
@@ -166,6 +213,11 @@ fn project_delta_to_detail(
         prev_commitment: delta.prev_commitment.clone(),
         new_commitment: delta.new_commitment.clone(),
         retry_count,
+        status_reason: crate::services::dashboard_account_deltas::decode_status_reason(
+            &delta.status,
+        ),
+        retained_expires_at: None,
+        base_matches_stored_state: None,
         category,
         proposal,
         input_notes,
@@ -264,6 +316,72 @@ mod tests {
             #[cfg(feature = "evm")]
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         }
+    }
+
+    #[tokio::test]
+    async fn retained_detail_carries_triage_fields() {
+        // A retained row's detail answers the operator's triage
+        // questions directly: when the recovery net gives up, and
+        // whether the row still chains from the stored state.
+        let mut retained =
+            canonical_delta_with_payload(3, create_test_delta_payload(TEST_ACCOUNT_ID));
+        retained.status = DeltaStatus::retained(
+            "2026-05-25T08:03:00Z".to_string(),
+            crate::delta_object::RetainReason::Diverged,
+        );
+        let prev_commitment = retained.prev_commitment.clone();
+        let mut state = build_state(Ok(Some(falcon_metadata())), Ok(retained)).await;
+        state.canonicalization = Some(crate::canonicalization::CanonicalizationConfig::default());
+        // The stored state still sits at the row's base.
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(crate::state_object::StateObject {
+                account_id: TEST_ACCOUNT_ID.to_string(),
+                commitment: prev_commitment,
+                state_json: serde_json::json!({}),
+                created_at: "2026-05-25T08:00:00Z".into(),
+                updated_at: "2026-05-25T08:00:00Z".into(),
+                auth_scheme: String::new(),
+            }))
+            .with_pull_delta(Ok({
+                let mut retained =
+                    canonical_delta_with_payload(3, create_test_delta_payload(TEST_ACCOUNT_ID));
+                retained.status = DeltaStatus::retained(
+                    "2026-05-25T08:03:00Z".to_string(),
+                    crate::delta_object::RetainReason::Diverged,
+                );
+                retained
+            }));
+        state.storage = Arc::new(storage);
+
+        let detail =
+            get_account_delta_detail(&state, TEST_ACCOUNT_ID, 3, DetailIncludeFlags::default())
+                .await
+                .expect("detail resolves");
+
+        assert_eq!(detail.status, DashboardDeltaStatus::Retained);
+        assert_eq!(detail.status_reason, Some("diverged"));
+        assert_eq!(
+            detail.retained_expires_at.as_deref(),
+            Some("2026-05-26T08:03:00+00:00"),
+            "status_timestamp + the default 24h TTL"
+        );
+        assert_eq!(detail.base_matches_stored_state, Some(true));
+
+        // A canonical row carries neither triage field.
+        let state = build_state(
+            Ok(Some(falcon_metadata())),
+            Ok(canonical_delta_with_payload(
+                2,
+                create_test_delta_payload(TEST_ACCOUNT_ID),
+            )),
+        )
+        .await;
+        let detail =
+            get_account_delta_detail(&state, TEST_ACCOUNT_ID, 2, DetailIncludeFlags::default())
+                .await
+                .expect("detail resolves");
+        assert!(detail.retained_expires_at.is_none());
+        assert!(detail.base_matches_stored_state.is_none());
     }
 
     #[tokio::test]

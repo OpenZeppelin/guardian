@@ -24,7 +24,7 @@ miden-standards = { workspace = true }
 
 # Async
 async-trait = "0.1"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "time"] }
 futures = { workspace = true }
 
 # Serialization
