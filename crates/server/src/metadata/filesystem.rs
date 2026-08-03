@@ -291,13 +291,21 @@ impl MetadataStore for FilesystemMetadataStore {
 
         let mut auth_state = self.auth_state.write().await;
 
-        if let Some(&current) = auth_state.get(account_id)
-            && new_timestamp <= current
-        {
-            return Ok(false);
-        }
+        // One probe covers the replay check, the swap, and the prior value the
+        // rollback below needs; only a first-ever record allocates a key.
+        let previous = match auth_state.get_mut(account_id) {
+            Some(current) => {
+                if new_timestamp <= *current {
+                    return Ok(false);
+                }
+                Some(std::mem::replace(current, new_timestamp))
+            }
+            None => {
+                auth_state.insert(account_id.to_string(), new_timestamp);
+                None
+            }
+        };
 
-        let previous = auth_state.insert(account_id.to_string(), new_timestamp);
         if let Err(persist_error) = self.persist_auth_state(&auth_state).await {
             match previous {
                 Some(prior) => auth_state.insert(account_id.to_string(), prior),
