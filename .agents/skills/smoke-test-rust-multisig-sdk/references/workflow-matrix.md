@@ -170,6 +170,49 @@ Canary checks:
 - if the self-P2ID executes but no received note appears after final sync, report that as a failure
 - record elapsed time for faucet PoW, faucet mint response, first note visibility, consume execute, P2ID execute, and final note visibility
 
+## `private-note-roundtrip-canary`
+
+Use when:
+
+- private P2ID note behavior or note export/import changed (issues #322, #356)
+- the demo's post-execution note-export offer or consume-flow note import changed
+- the prompt asks to validate out-of-band note transfer or private note consumption
+
+Setup:
+
+1. Run the `payment-roundtrip-canary` setup through vault funding: two demo tabs A and B on one 2-of-2 multisig, faucet receipt consumed so the vault holds an asset.
+
+Steps:
+
+1. In tab A, create a `Transfer assets (P2ID)` proposal to the same multisig `Account ID`, choosing `private` at the `Note visibility` prompt.
+2. In tab B, sign the proposal.
+3. In tab A, execute the proposal. After execution the demo announces the created PRIVATE note and prompts `Export the note file now? [Y/n]`.
+4. Accept the export and record the printed note ID and file path (default `note_<id>.mno` in the demo's working directory).
+5. In tab B, sync, then open `[4] Proposal management -> [1] Create proposal -> [4] Consume notes` and confirm the private note is NOT listed (only its commitment is on chain).
+6. In the consume flow, enter `i` (or choose `[2] Import a note file` from the empty-notes menu) and give the exported file's path. The demo imports the note and syncs automatically.
+7. Select the imported note and create the consume-notes proposal in tab B.
+8. In tab A, sync until the private note shows as consumable there too, then sign the consume-notes proposal. (The sender's store knows the full note and self-heals once a sync attaches the inclusion proof; a cosigner tab that never created nor imported the note must import the note file first.)
+9. Execute once signatures are sufficient, then sync both tabs.
+10. Verify the vault balance reflects the reconsumed asset.
+
+Expect:
+
+- the P2ID proposal reports `Note: private` before confirmation
+- execution succeeds and the demo offers the note-file export with the note ID
+- the exported file is created at the chosen path
+- before import, tab B's consume flow cannot see the private note
+- after import + sync, the note is listed as consumable in tab B
+- the consume-notes proposal over the imported note signs and executes normally
+
+Canary checks:
+
+- if the export offer never appears after executing a private P2ID, report that as a canary failure
+- if the private note IS visible in tab B before import, report it — the note leaked publicly and the private path is not being exercised
+- if import succeeds but the note never becomes consumable after sync, report the sync attempt count and elapsed wait
+- if signing fails with `metadata does not match tx_summary`, the signer's store does not yet hold the note with its inclusion proof — sync (or import the note file) until the note lists as consumable and retry; report it as a failure only if it persists after that
+- if consume execution fails with a note-binding or missing-note error, report it with the exact message
+- record elapsed time for P2ID execute, note export, note import, first consumability after import, and consume execute
+
 ## `switch-guardian-offline-canary`
 
 Use when:
@@ -329,6 +372,8 @@ Prefer `Switch GUARDIAN provider`, `Add cosigner`, or threshold updates when the
 Use `add-cosigner-canary` as the first online workflow unless the prompt explicitly asks for another proposal type.
 
 Use `payment-roundtrip-canary` when the prompt specifically asks for public note receipt, consume-notes, or P2ID payment validation.
+
+Use `private-note-roundtrip-canary` when the prompt specifically asks for private notes, note export/import, or out-of-band note transfer validation.
 
 Use `switch-guardian-offline-canary` when the prompt specifically asks for provider migration, offline `Switch GUARDIAN`, or verifying failover from a dead GUARDIAN instance.
 

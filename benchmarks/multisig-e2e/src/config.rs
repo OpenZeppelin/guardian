@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use miden_multisig_client::{Endpoint, ProvingMode};
+use miden_multisig_client::{Endpoint, ProverConfig};
 use serde::Deserialize;
 
 /// Where the generator proves transactions.
@@ -45,12 +45,17 @@ impl ProverChoice {
     }
 }
 
-impl From<ProverChoice> for ProvingMode {
-    fn from(choice: ProverChoice) -> Self {
-        match choice {
-            ProverChoice::Remote => ProvingMode::Remote,
-            ProverChoice::Local => ProvingMode::Local,
-            ProverChoice::Service(url) => ProvingMode::Service(url),
+impl ProverChoice {
+    /// The SDK prover configuration this choice stands for. Fails only for a
+    /// `Service` URL the SDK refuses, which a run should surface before it
+    /// provisions anything.
+    pub fn to_prover_config(&self) -> Result<ProverConfig> {
+        match self {
+            Self::Remote => Ok(ProverConfig::new()),
+            Self::Local => Ok(ProverConfig::new().with_local()),
+            Self::Service(url) => ProverConfig::new()
+                .with_url(url)
+                .with_context(|| format!("invalid prover service url '{url}'")),
         }
     }
 }

@@ -47,7 +47,11 @@ async fn main() {
                 .with_abandon_quarantine_seconds_from_env()
                 .expect("Invalid abandon quarantine duration")
                 .with_abandon_quarantine_checks_from_env()
-                .expect("Invalid abandon quarantine check count"),
+                .expect("Invalid abandon quarantine check count")
+                .with_retained_ttl_seconds_from_env()
+                .expect("Invalid retained TTL configuration")
+                .with_reconcile_interval_seconds_from_env()
+                .expect("Invalid reconcile interval configuration"),
         ))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())

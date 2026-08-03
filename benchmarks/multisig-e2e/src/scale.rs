@@ -723,6 +723,12 @@ async fn abandon_candidate(
     // poll below, which waits for the delta itself to reach a terminal state.
     match sender.client.abandon_candidate(nonce).await {
         Ok(AbandonRequestState::Abandoned | AbandonRequestState::Pending) => {}
+        // Retained releases the account slot but leaves the delta parked for
+        // background reconciliation, so it never reaches the canonical or
+        // discarded state the poll below waits for. The operation is recorded
+        // as not landed; if reconciliation later promotes the delta, the
+        // writer's next sync picks the account state up from the chain.
+        Ok(AbandonRequestState::Retained) => return Ok(false),
         Err(error) => {
             // The server refuses to abandon a candidate whose transaction
             // landed; that is a success for our purposes, not an error.

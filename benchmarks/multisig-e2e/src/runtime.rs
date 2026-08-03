@@ -50,7 +50,7 @@ pub(crate) async fn load_client(
         .with_context(|| format!("invalid account ID for {}", account.label))?;
     let data_dir = TempDir::new().context("failed to create temporary Miden client directory")?;
     let mut client = MultisigClient::builder()
-        .proving_mode(config.prover.clone().into())
+        .prover_config(config.prover.to_prover_config()?)
         .miden_endpoint(endpoint)
         .guardian_endpoint(fixture.guardian_endpoint.clone())
         .account_dir(data_dir.path())

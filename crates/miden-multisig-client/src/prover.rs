@@ -1,302 +1,709 @@
-//! Retrying wrapper around a transaction prover.
-//!
-//! On the public networks proving is delegated to a shared remote prover, which
-//! cancels requests under load. Measured against testnet, 45% of operations at
-//! both 8 and 16 concurrent writers failed with
-//! `TransactionProvingError(... Status { code: Cancelled, message: "Timeout
-//! expired" })` -- an identical proportion at double the offered load, which is
-//! the signature of a saturated queue rather than a rejected transaction.
-//!
-//! Retrying *here* is safe in a way that retrying the surrounding execution is
-//! not. By the time proving runs, the delta has already been pushed to GUARDIAN
-//! to obtain the acknowledgment signature, so a second proof attempt leaves
-//! GUARDIAN's state untouched. Retrying the whole execution instead re-pushes
-//! that delta and is refused as a pending-delta conflict -- measured as one
-//! failed account becoming twenty-five.
-
+use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
+use miden_client::RemoteTransactionProver;
 use miden_client::transaction::TransactionProver;
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
 use miden_tx::TransactionProverError;
+use tonic::Code;
+use url::Url;
 
-/// Default number of proof attempts, including the first.
-const DEFAULT_ATTEMPTS: u32 = 4;
+use crate::error::{MultisigError, Result};
 
-/// Base delay before the first retry; doubles per attempt.
-const DEFAULT_BASE_DELAY_MS: u64 = 500;
-
-/// Ceiling for a single backoff wait.
+const DEFAULT_MAX_ATTEMPTS: u32 = 2;
+const BASE_DELAY_MS: u64 = 500;
 const MAX_DELAY_MS: u64 = 8_000;
 
-/// Wraps a prover and retries transient proving failures with bounded
-/// exponential backoff and jitter.
-pub struct RetryingTransactionProver {
-    inner: Arc<dyn TransactionProver + Send + Sync>,
-    attempts: u32,
-    base_delay: Duration,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProverRetryPolicy {
+    max_attempts: u32,
 }
 
-impl RetryingTransactionProver {
-    pub fn new(inner: Arc<dyn TransactionProver + Send + Sync>) -> Self {
+impl Default for ProverRetryPolicy {
+    fn default() -> Self {
         Self {
-            inner,
-            attempts: DEFAULT_ATTEMPTS,
-            base_delay: Duration::from_millis(DEFAULT_BASE_DELAY_MS),
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
+        }
+    }
+}
+
+impl ProverRetryPolicy {
+    #[must_use]
+    pub fn new(max_attempts: u32) -> Self {
+        Self {
+            max_attempts: max_attempts.max(1),
         }
     }
 
-    /// Override the attempt budget. One attempt disables retrying.
     #[must_use]
-    pub fn with_attempts(mut self, attempts: u32) -> Self {
-        self.attempts = attempts.max(1);
+    pub fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ConfiguredProver {
+    Local,
+    Url(Url),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProverConfig {
+    prover: Option<ConfiguredProver>,
+    retry_policy: ProverRetryPolicy,
+}
+
+impl ProverConfig {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_url(mut self, url: impl AsRef<str>) -> Result<Self> {
+        self.prover = Some(ConfiguredProver::Url(parse_prover_url(url.as_ref())?));
+        Ok(self)
+    }
+
+    /// Prove in-process, even on networks whose preset delegates to a shared
+    /// remote prover.
+    ///
+    /// Proving is CPU-bound, so this trades the shared prover's queue for the
+    /// caller's own cores — the right trade for a load generator or an
+    /// operator sized for proving, and the wrong one for most clients.
+    #[must_use]
+    pub fn with_local(mut self) -> Self {
+        self.prover = Some(ConfiguredProver::Local);
         self
     }
 
     #[must_use]
-    pub fn with_base_delay(mut self, base_delay: Duration) -> Self {
-        self.base_delay = base_delay;
+    pub fn with_retry_policy(mut self, retry_policy: ProverRetryPolicy) -> Self {
+        self.retry_policy = retry_policy;
         self
     }
 
-    /// Backoff for `attempt` (0-based), doubling and capped, with +/-25%
-    /// jitter so concurrent writers that failed together do not retry in
-    /// lockstep and re-saturate the prover.
-    fn backoff(&self, attempt: u32) -> Duration {
-        let doubled = self
-            .base_delay
-            .as_millis()
-            .saturating_mul(1u128 << attempt.min(16)) as f64;
-        let jitter = 0.75 + rand::random::<f64>() * 0.5;
-        // Cap after jitter: a ceiling that jitter can exceed is not a ceiling.
-        Duration::from_millis(((doubled * jitter) as u64).min(MAX_DELAY_MS))
+    #[must_use]
+    pub fn url(&self) -> Option<&str> {
+        match &self.prover {
+            Some(ConfiguredProver::Url(url)) => Some(url.as_str()),
+            Some(ConfiguredProver::Local) | None => None,
+        }
+    }
+
+    #[must_use]
+    pub fn retry_policy(&self) -> &ProverRetryPolicy {
+        &self.retry_policy
     }
 }
 
-/// Whether a proving failure is worth another attempt.
-///
-/// Only transport-level cancellation and exhaustion qualify. A proof the prover
-/// rejected on its merits fails the same way every time, so retrying it would
-/// burn the budget and delay the real error.
-///
-/// `TransactionProverError` carries no typed status -- its catch-all variant is
-/// `Other { error_msg, source }` -- so the signal can only be read out of the
-/// rendered chain. Two renderings appear in practice, and both must match:
-///
-///   * the queue giving up:  `code: 'The operation was cancelled', message:
-///     "Timeout expired"`, whose cause is a `tonic` transport error;
-///   * the connection never being serviced: `code: 'Unknown error', message:
-///     "connection error: desc = \"i/o timeout\""`.
-///
-/// The second was read as permanent and retried zero times, losing 424
-/// operations across the 64- and 16-writer #317 legs. Matching a gRPC code would
-/// not have caught it either: the node reports it as `Unknown`, so it is
-/// recognisable only as a transport failure.
-fn is_transient(error: &TransactionProverError) -> bool {
-    // Walk the source chain, not just the top message. These errors carry the
-    // cause via thiserror's `#[source]`, so `to_string()` yields only "failed to
-    // prove transaction" and the transport status -- "Timeout expired", the very
-    // signal being matched -- sits one or more levels down. Reading only the top
-    // message classified every proving failure as permanent, so the retry never
-    // fired and failure durations were unchanged.
-    let mut message = error.to_string().to_ascii_lowercase();
-    let mut source: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(error);
-    while let Some(cause) = source {
-        message.push(' ');
-        message.push_str(&cause.to_string().to_ascii_lowercase());
-        source = cause.source();
-    }
-
-    const QUEUE_SIGNALS: [&str; 5] = [
-        "timeout expired",
-        "cancelled",
-        "deadline",
-        "unavailable",
-        "too many requests",
-    ];
-    // A connection the prover accepted but never serviced. Rendered without any
-    // cancellation or exhaustion wording, so the queue signals never see it.
-    const TRANSPORT_SIGNALS: [&str; 5] = [
-        "i/o timeout",
-        "connection error",
-        "transport error",
-        "connection reset",
-        "broken pipe",
-    ];
-
-    QUEUE_SIGNALS
-        .iter()
-        .chain(TRANSPORT_SIGNALS.iter())
-        .any(|signal| message.contains(signal))
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProverSelection {
+    Local {
+        explicit: bool,
+    },
+    Remote {
+        endpoint: String,
+        custom: bool,
+        retry_policy: ProverRetryPolicy,
+    },
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl ProverConfig {
+    pub(crate) fn resolve(&self, default_remote_endpoint: Option<&str>) -> ProverSelection {
+        match &self.prover {
+            Some(ConfiguredProver::Local) => return ProverSelection::Local { explicit: true },
+            Some(ConfiguredProver::Url(url)) => {
+                return ProverSelection::Remote {
+                    endpoint: url.as_str().to_owned(),
+                    custom: true,
+                    retry_policy: self.retry_policy.clone(),
+                };
+            }
+            None => {}
+        }
+
+        match default_remote_endpoint {
+            Some(endpoint) => ProverSelection::Remote {
+                endpoint: endpoint.to_owned(),
+                custom: false,
+                retry_policy: self.retry_policy.clone(),
+            },
+            None => ProverSelection::Local { explicit: false },
+        }
+    }
+}
+
+fn parse_prover_url(value: &str) -> Result<Url> {
+    let trimmed = value.trim();
+    let url =
+        Url::parse(trimmed).map_err(|error| MultisigError::InvalidProverUrl(error.to_string()))?;
+
+    if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+        return Err(MultisigError::InvalidProverUrl(
+            "must be an absolute HTTP(S) URL with a host".to_string(),
+        ));
+    }
+
+    Ok(url)
+}
+
+#[async_trait::async_trait]
+trait RetryRuntime: Send + Sync {
+    async fn sleep(&self, duration: Duration);
+    fn unit_random(&self) -> f64;
+}
+
+struct ProductionRetryRuntime;
+
+#[async_trait::async_trait]
+impl RetryRuntime for ProductionRetryRuntime {
+    async fn sleep(&self, duration: Duration) {
+        tokio::time::sleep(duration).await;
+    }
+
+    fn unit_random(&self) -> f64 {
+        rand::random()
+    }
+}
+
+pub(crate) struct RetryingTransactionProver {
+    inner: Arc<dyn TransactionProver + Send + Sync>,
+    policy: ProverRetryPolicy,
+    runtime: Arc<dyn RetryRuntime>,
+}
+
+impl RetryingTransactionProver {
+    pub(crate) fn remote(endpoint: impl Into<String>, policy: ProverRetryPolicy) -> Self {
+        Self {
+            inner: Arc::new(RemoteTransactionProver::new(endpoint)),
+            policy,
+            runtime: Arc::new(ProductionRetryRuntime),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_runtime(
+        inner: Arc<dyn TransactionProver + Send + Sync>,
+        policy: ProverRetryPolicy,
+        runtime: Arc<dyn RetryRuntime>,
+    ) -> Self {
+        Self {
+            inner,
+            policy,
+            runtime,
+        }
+    }
+}
+
+#[async_trait::async_trait]
 impl TransactionProver for RetryingTransactionProver {
     async fn prove(
         &self,
         tx_inputs: TransactionInputs,
-    ) -> Result<ProvenTransaction, TransactionProverError> {
-        let mut last_error = None;
-        for attempt in 0..self.attempts {
-            // TransactionInputs is not Clone-free to reuse across attempts, so
-            // each attempt proves the same inputs value passed by clone.
+    ) -> std::result::Result<ProvenTransaction, TransactionProverError> {
+        for attempt in 0..self.policy.max_attempts {
             match self.inner.prove(tx_inputs.clone()).await {
                 Ok(proven) => return Ok(proven),
-                Err(error) if is_transient(&error) => {
-                    last_error = Some(error);
-                    if attempt + 1 < self.attempts {
-                        let delay = self.backoff(attempt);
-                        tokio_sleep(delay).await;
-                    }
+                Err(error)
+                    if is_transient_prover_error(&error)
+                        && attempt + 1 < self.policy.max_attempts =>
+                {
+                    let delay = retry_delay(attempt, self.runtime.unit_random());
+                    self.runtime.sleep(delay).await;
                 }
                 Err(error) => return Err(error),
             }
         }
-        Err(last_error.expect("at least one attempt runs, so a failure is recorded"))
+
+        unreachable!("a normalized retry policy always performs at least one attempt")
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn tokio_sleep(delay: Duration) {
-    tokio::time::sleep(delay).await;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StructuredEvidence {
+    Transient,
+    Permanent,
+    Indeterminate,
 }
 
-#[cfg(target_arch = "wasm32")]
-async fn tokio_sleep(_delay: Duration) {}
+fn grpc_evidence(code: Code) -> StructuredEvidence {
+    match code {
+        Code::Cancelled | Code::DeadlineExceeded | Code::Unavailable | Code::ResourceExhausted => {
+            StructuredEvidence::Transient
+        }
+        Code::InvalidArgument
+        | Code::FailedPrecondition
+        | Code::PermissionDenied
+        | Code::Unauthenticated
+        | Code::NotFound
+        | Code::AlreadyExists
+        | Code::OutOfRange
+        | Code::Unimplemented
+        | Code::Aborted
+        | Code::Internal
+        | Code::DataLoss => StructuredEvidence::Permanent,
+        Code::Unknown | Code::Ok => StructuredEvidence::Indeterminate,
+    }
+}
+
+fn http_evidence(message: &str) -> Option<StructuredEvidence> {
+    const TRANSIENT: [u16; 5] = [408, 429, 502, 503, 504];
+    let mut found_transient = false;
+    let mut found_permanent = false;
+
+    for status in 400..=599 {
+        let structured = [
+            format!("http {status}"),
+            format!("http status {status}"),
+            format!("status: {status}"),
+            format!("status {status}"),
+        ];
+        if structured
+            .iter()
+            .any(|pattern| contains_exact_status_pattern(message, pattern))
+        {
+            if TRANSIENT.contains(&status) {
+                found_transient = true;
+            } else {
+                found_permanent = true;
+            }
+        }
+    }
+
+    if found_permanent {
+        Some(StructuredEvidence::Permanent)
+    } else if found_transient {
+        Some(StructuredEvidence::Transient)
+    } else {
+        None
+    }
+}
+
+fn contains_exact_status_pattern(message: &str, pattern: &str) -> bool {
+    message.match_indices(pattern).any(|(start, matched)| {
+        let before = start
+            .checked_sub(1)
+            .and_then(|index| message.as_bytes().get(index));
+        let after = message.as_bytes().get(start + matched.len());
+        before.is_none_or(|byte| !byte.is_ascii_alphanumeric())
+            && after.is_none_or(|byte| !byte.is_ascii_digit())
+    })
+}
+
+fn flattened_grpc_evidence(message: &str) -> Option<StructuredEvidence> {
+    let normalized = message
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>();
+    let patterns = [
+        ("grpccodecancelled", Code::Cancelled),
+        ("grpccodecanceled", Code::Cancelled),
+        ("grpccodedeadlineexceeded", Code::DeadlineExceeded),
+        ("grpccodeunavailable", Code::Unavailable),
+        ("grpccoderesourceexhausted", Code::ResourceExhausted),
+        ("grpccodeinvalidargument", Code::InvalidArgument),
+        ("grpccodefailedprecondition", Code::FailedPrecondition),
+        ("grpccodepermissiondenied", Code::PermissionDenied),
+        ("grpccodeunauthenticated", Code::Unauthenticated),
+        ("grpccodenotfound", Code::NotFound),
+        ("grpccodealreadyexists", Code::AlreadyExists),
+        ("grpccodeoutofrange", Code::OutOfRange),
+        ("grpccodeunimplemented", Code::Unimplemented),
+        ("grpccodeaborted", Code::Aborted),
+        ("grpccodeinternal", Code::Internal),
+        ("grpccodedataloss", Code::DataLoss),
+        ("grpccodeunknown", Code::Unknown),
+    ];
+
+    let mut found_transient = false;
+    let mut found_permanent = false;
+
+    for (pattern, code) in patterns {
+        if normalized.contains(pattern) {
+            match grpc_evidence(code) {
+                StructuredEvidence::Transient => found_transient = true,
+                StructuredEvidence::Permanent => found_permanent = true,
+                StructuredEvidence::Indeterminate => {}
+            }
+        }
+    }
+
+    if found_permanent {
+        Some(StructuredEvidence::Permanent)
+    } else if found_transient {
+        Some(StructuredEvidence::Transient)
+    } else {
+        None
+    }
+}
+
+fn flattened_transient(message: &str) -> bool {
+    [
+        "cancelled",
+        "canceled",
+        "deadline exceeded",
+        "timeout",
+        "unavailable",
+        "resource exhausted",
+        "request timeout",
+        "too many requests",
+        "rate limited",
+        "rate limit",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+        "i/o timeout",
+        "io timeout",
+        "connection reset",
+        "broken pipe",
+    ]
+    .iter()
+    .any(|signal| message.contains(signal))
+}
+
+pub(crate) fn is_transient_prover_error(error: &TransactionProverError) -> bool {
+    let mut messages = Vec::new();
+    let mut has_transient = false;
+    let mut has_permanent = false;
+    let mut current: Option<&(dyn Error + 'static)> = Some(error);
+
+    while let Some(cause) = current {
+        let message = cause.to_string().to_ascii_lowercase();
+        if let Some(status) = cause.downcast_ref::<tonic::Status>() {
+            match grpc_evidence(status.code()) {
+                StructuredEvidence::Transient => has_transient = true,
+                StructuredEvidence::Permanent => has_permanent = true,
+                StructuredEvidence::Indeterminate => {}
+            }
+        }
+        if let Some(evidence) = http_evidence(&message) {
+            match evidence {
+                StructuredEvidence::Transient => has_transient = true,
+                StructuredEvidence::Permanent => has_permanent = true,
+                StructuredEvidence::Indeterminate => {}
+            }
+        }
+        if let Some(evidence) = flattened_grpc_evidence(&message) {
+            match evidence {
+                StructuredEvidence::Transient => has_transient = true,
+                StructuredEvidence::Permanent => has_permanent = true,
+                StructuredEvidence::Indeterminate => {}
+            }
+        }
+        messages.push(message);
+        current = cause.source();
+    }
+
+    if has_permanent {
+        return false;
+    }
+    if has_transient {
+        return true;
+    }
+
+    messages.iter().any(|message| flattened_transient(message))
+}
+
+fn retry_delay(retry_index: u32, unit_random: f64) -> Duration {
+    let exponent = retry_index.min(127);
+    let raw = u128::from(BASE_DELAY_MS).saturating_mul(1_u128 << exponent);
+    let bounded_random = unit_random.clamp(0.0, 1.0 - f64::EPSILON);
+    let factor = 0.75 + bounded_random * 0.5;
+    let jittered = (raw as f64 * factor).floor();
+    Duration::from_millis((jittered as u64).min(MAX_DELAY_MS))
+}
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::fmt;
+    use std::sync::Mutex;
+
+    use miden_client::testing::{Auth, MockChain};
+    use miden_protocol::account::AccountBuilder;
+    use miden_standards::account::wallets::BasicWallet;
+    use serde::Deserialize;
+
     use super::*;
 
-    /// Verbatim from `scale-20260729T213814Z-records.jsonl`: the queue gave up.
-    const CANCELLED_RENDERING: &str = "transaction proving failed: failed to prove transaction: code: 'The operation was cancelled', message: \"Timeout expired\", source: tonic::transport::Error(Transport, TimeoutExpired(()))";
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Fixtures {
+        attempt_budgets: Vec<AttemptBudget>,
+        endpoints: Vec<EndpointFixture>,
+        classifications: Vec<ClassificationFixture>,
+        delays: Vec<DelayFixture>,
+    }
 
-    /// Verbatim from the same run: the connection was never serviced. Carries no
-    /// cancellation or exhaustion wording at all.
-    const TRANSPORT_RENDERING: &str = "transaction proving failed: failed to prove transaction: code: 'Unknown error', message: \"connection error: desc = \\\"i/o timeout\\\"\"";
+    #[derive(Deserialize)]
+    struct AttemptBudget {
+        input: Option<u32>,
+        normalized: u32,
+    }
 
-    /// The rendering older miden-client versions produced, kept so that dropping
-    /// the dead `code: cancelled` arm cannot silently narrow coverage.
-    const LEGACY_CANCELLED_RENDERING: &str =
-        "failed to prove transaction: Status { code: Cancelled, message: \"Timeout expired\" }";
+    #[derive(Deserialize)]
+    struct EndpointFixture {
+        input: String,
+        valid: bool,
+        canonical: Option<String>,
+    }
 
-    #[test]
-    fn a_cancelled_proof_is_retried() {
-        assert!(is_transient(&TransactionProverError::other(
-            CANCELLED_RENDERING
-        )));
-        assert!(is_transient(&TransactionProverError::other(
-            LEGACY_CANCELLED_RENDERING
-        )));
+    #[derive(Deserialize)]
+    struct ClassificationFixture {
+        name: String,
+        chain: Vec<ErrorFixture>,
+        transient: bool,
+    }
+
+    #[derive(Deserialize)]
+    struct ErrorFixture {
+        code: Option<String>,
+        status: Option<u16>,
+        message: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DelayFixture {
+        retry_index: u32,
+        unit_random: f64,
+        delay_ms: u64,
+    }
+
+    #[derive(Debug)]
+    struct FixtureError {
+        message: String,
+        source: Option<Box<FixtureError>>,
+    }
+
+    impl fmt::Display for FixtureError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl Error for FixtureError {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.source.as_deref().map(|source| source as _)
+        }
+    }
+
+    fn fixtures() -> Fixtures {
+        serde_json::from_str(include_str!(
+            "../../../fixtures/miden-multisig-client/prover-policy-fixtures.json"
+        ))
+        .expect("fixtures must parse")
+    }
+
+    fn fixture_error(chain: &[ErrorFixture]) -> TransactionProverError {
+        let nested = chain.iter().rev().fold(None, |source, item| {
+            let message = match (&item.code, item.status) {
+                (Some(code), _) => format!("grpc code: {code}; {}", item.message),
+                (_, Some(status)) => format!("http status {status}; {}", item.message),
+                _ => item.message.clone(),
+            };
+            Some(Box::new(FixtureError { message, source }))
+        });
+        TransactionProverError::other_with_source(
+            "fixture proving failure",
+            *nested.expect("classification chains are non-empty"),
+        )
     }
 
     #[test]
-    fn a_transport_failure_is_retried() {
-        // Regression: this rendering matched no signal, so 424 operations across
-        // the #317 64- and 16-writer legs were classified permanent and retried
-        // zero times. It is not recognisable by gRPC code either -- the node
-        // reports `Unknown` -- only as a transport failure.
-        assert!(is_transient(&TransactionProverError::other(
-            TRANSPORT_RENDERING
-        )));
+    fn attempt_budget_vectors_match_contract() {
+        for fixture in fixtures().attempt_budgets {
+            let policy = fixture
+                .input
+                .map(ProverRetryPolicy::new)
+                .unwrap_or_default();
+            assert_eq!(policy.max_attempts(), fixture.normalized);
+        }
     }
 
     #[test]
-    fn every_signal_is_matched_by_some_real_rendering() {
-        // A signal no rendering exercises is dead weight that reads as coverage:
-        // the arm this replaces matched `code: cancelled`, which this
-        // miden-client renders as `code: 'The operation was cancelled'`, so it
-        // could never fire. Retiring a signal here is deliberate, not incidental.
-        for signal in ["timeout expired", "cancelled", "i/o timeout"] {
-            assert!(
-                CANCELLED_RENDERING.to_ascii_lowercase().contains(signal)
-                    || TRANSPORT_RENDERING.to_ascii_lowercase().contains(signal)
-                    || LEGACY_CANCELLED_RENDERING
-                        .to_ascii_lowercase()
-                        .contains(signal),
-                "no observed rendering contains {signal:?}, so the arm is dead"
+    fn endpoint_vectors_match_contract() {
+        for fixture in fixtures().endpoints {
+            let result = ProverConfig::new().with_url(&fixture.input);
+            assert_eq!(result.is_ok(), fixture.valid, "input: {:?}", fixture.input);
+            if let Some(canonical) = fixture.canonical {
+                assert_eq!(result.unwrap().url(), Some(canonical.as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn classification_vectors_match_contract() {
+        for fixture in fixtures().classifications {
+            let error = fixture_error(&fixture.chain);
+            assert_eq!(
+                is_transient_prover_error(&error),
+                fixture.transient,
+                "fixture: {}",
+                fixture.name
             );
         }
     }
 
     #[test]
-    fn the_transient_signal_is_found_in_the_source_chain() {
-        // Regression: these errors carry the cause via `#[source]`, so the top
-        // message is only "failed to prove transaction". Reading it alone
-        // classified every failure as permanent and the retry never fired.
-        #[derive(Debug)]
-        struct Transport;
-        impl std::fmt::Display for Transport {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(
-                    f,
-                    "Status {{ code: Cancelled, message: \"Timeout expired\" }}"
-                )
-            }
+    fn typed_tonic_statuses_follow_whole_chain_precedence() {
+        let unavailable = TransactionProverError::other_with_source(
+            "failed to prove transaction",
+            tonic::Status::unavailable("temporarily unavailable"),
+        );
+        assert!(is_transient_prover_error(&unavailable));
+
+        let invalid = TransactionProverError::other_with_source(
+            "timeout while proving",
+            tonic::Status::invalid_argument("invalid proof"),
+        );
+        assert!(!is_transient_prover_error(&invalid));
+
+        let mixed_http =
+            TransactionProverError::other("upstream http status 408 followed by http status 400");
+        assert!(!is_transient_prover_error(&mixed_http));
+
+        let flattened_not_found =
+            TransactionProverError::other("failed to prove transaction: grpc code: NotFound");
+        assert!(!is_transient_prover_error(&flattened_not_found));
+    }
+
+    #[test]
+    fn delay_vectors_match_contract() {
+        for fixture in fixtures().delays {
+            assert_eq!(
+                retry_delay(fixture.retry_index, fixture.unit_random).as_millis(),
+                u128::from(fixture.delay_ms)
+            );
         }
-        impl std::error::Error for Transport {}
+    }
 
-        let wrapped =
-            TransactionProverError::other_with_source("failed to prove transaction", Transport);
-        assert!(
-            !wrapped
-                .to_string()
-                .to_ascii_lowercase()
-                .contains("cancelled"),
-            "the top message must not carry the signal, or this proves nothing"
+    #[test]
+    fn custom_selection_overrides_local_and_default_remote() {
+        let custom = ProverConfig::new()
+            .with_url("https://prover.example")
+            .unwrap();
+        for default in [None, Some("https://tx-prover.testnet.miden.io")] {
+            assert!(matches!(
+                custom.resolve(default),
+                ProverSelection::Remote { custom: true, .. }
+            ));
+        }
+        assert_eq!(
+            ProverConfig::new().resolve(None),
+            ProverSelection::Local { explicit: false }
         );
-        assert!(is_transient(&wrapped));
     }
 
     #[test]
-    fn a_rejected_proof_is_not_retried() {
-        // Retrying a proof the prover rejected on its merits would burn the
-        // budget and delay surfacing the real error.
-        let rejected =
-            TransactionProverError::other("transaction kernel program failed: assertion failed");
-        assert!(!is_transient(&rejected));
+    fn local_selection_overrides_default_remote() {
+        let local = ProverConfig::new().with_local();
+        for default in [None, Some("https://tx-prover.testnet.miden.io")] {
+            assert_eq!(
+                local.resolve(default),
+                ProverSelection::Local { explicit: true }
+            );
+        }
+        assert_eq!(local.url(), None);
     }
 
-    #[test]
-    fn backoff_doubles_and_stays_capped() {
-        let prover = RetryingTransactionProver {
-            inner: Arc::new(NoopProver),
-            attempts: 8,
-            base_delay: Duration::from_millis(500),
-        };
-
-        // Jitter is +/-25%, so assert the band rather than an exact value.
-        let first = prover.backoff(0).as_millis() as u64;
-        assert!((375..=625).contains(&first), "first backoff was {first}ms");
-
-        let third = prover.backoff(2).as_millis() as u64;
-        assert!(
-            (1_500..=2_500).contains(&third),
-            "third backoff was {third}ms"
-        );
-
-        let far = prover.backoff(12).as_millis() as u64;
-        assert!(far <= MAX_DELAY_MS, "backoff must stay capped, got {far}ms");
+    #[derive(Default)]
+    struct RecordingRuntime {
+        sleeps: Mutex<Vec<Duration>>,
     }
 
-    #[test]
-    fn attempts_cannot_be_zero() {
-        let prover = RetryingTransactionProver::new(Arc::new(NoopProver)).with_attempts(0);
-        assert_eq!(prover.attempts, 1, "one attempt still runs the prover once");
+    #[async_trait::async_trait]
+    impl RetryRuntime for RecordingRuntime {
+        async fn sleep(&self, duration: Duration) {
+            self.sleeps.lock().unwrap().push(duration);
+        }
+
+        fn unit_random(&self) -> f64 {
+            0.5
+        }
     }
 
-    struct NoopProver;
+    struct FailingProver {
+        errors: Mutex<VecDeque<TransactionProverError>>,
+        inputs: Mutex<Vec<TransactionInputs>>,
+    }
 
-    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-    impl TransactionProver for NoopProver {
+    #[async_trait::async_trait]
+    impl TransactionProver for FailingProver {
         async fn prove(
             &self,
-            _tx_inputs: TransactionInputs,
-        ) -> Result<ProvenTransaction, TransactionProverError> {
-            Err(TransactionProverError::other("not used"))
+            inputs: TransactionInputs,
+        ) -> std::result::Result<ProvenTransaction, TransactionProverError> {
+            self.inputs.lock().unwrap().push(inputs);
+            Err(self
+                .errors
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("one fixture error per expected attempt"))
         }
+    }
+
+    fn transaction_inputs() -> TransactionInputs {
+        let mut chain = MockChain::new();
+        chain.prove_next_block().unwrap();
+        let account = AccountBuilder::new([0; 32])
+            .with_auth_component(Auth::IncrNonce)
+            .with_component(BasicWallet)
+            .build()
+            .unwrap();
+        chain.get_transaction_inputs(&account, &[], &[]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn retries_the_same_inputs_and_returns_the_final_upstream_error() {
+        let inner = Arc::new(FailingProver {
+            errors: Mutex::new(VecDeque::from([
+                TransactionProverError::other("service unavailable"),
+                TransactionProverError::other("deadline exceeded: final"),
+            ])),
+            inputs: Mutex::new(Vec::new()),
+        });
+        let runtime = Arc::new(RecordingRuntime::default());
+        let prover = RetryingTransactionProver::with_runtime(
+            inner.clone(),
+            ProverRetryPolicy::new(2),
+            runtime.clone(),
+        );
+        let inputs = transaction_inputs();
+
+        let error = prover.prove(inputs.clone()).await.unwrap_err();
+
+        assert_eq!(error.to_string(), "deadline exceeded: final");
+        let recorded_inputs = inner.inputs.lock().unwrap();
+        assert_eq!(recorded_inputs.len(), 2);
+        assert_eq!(recorded_inputs[0], inputs);
+        assert_eq!(recorded_inputs[1], inputs);
+        assert_eq!(
+            runtime.sleeps.lock().unwrap().as_slice(),
+            [Duration::from_millis(500)]
+        );
+    }
+
+    #[tokio::test]
+    async fn permanent_failure_does_not_retry_or_sleep() {
+        let inner = Arc::new(FailingProver {
+            errors: Mutex::new(VecDeque::from([TransactionProverError::other(
+                "transaction kernel assertion failed",
+            )])),
+            inputs: Mutex::new(Vec::new()),
+        });
+        let runtime = Arc::new(RecordingRuntime::default());
+        let prover = RetryingTransactionProver::with_runtime(
+            inner.clone(),
+            ProverRetryPolicy::new(5),
+            runtime.clone(),
+        );
+
+        prover.prove(transaction_inputs()).await.unwrap_err();
+
+        assert_eq!(inner.inputs.lock().unwrap().len(), 1);
+        assert!(runtime.sleeps.lock().unwrap().is_empty());
     }
 }

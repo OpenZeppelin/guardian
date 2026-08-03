@@ -7,7 +7,8 @@ use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
-    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageType,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromotableKind, PromoteWrite, ProposalRecord,
+    StorageType,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Timelike, Utc};
@@ -621,6 +622,7 @@ fn derive_status_columns(
         DeltaStatus::Pending { .. } => "pending",
         DeltaStatus::Candidate { .. } => "candidate",
         DeltaStatus::Canonical { .. } => "canonical",
+        DeltaStatus::Retained { .. } => "retained",
         DeltaStatus::Discarded { .. } => "discarded",
     };
     let raw = status.timestamp();
@@ -633,6 +635,24 @@ fn derive_status_columns(
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .map_err(|e| format!("DeltaStatus::{kind} timestamp '{raw}' is not RFC-3339: {e}"))?;
     Ok((kind, timestamp))
+}
+
+/// SQL predicate matching the JSONB reason of a client-abandoned
+/// discard (issue #319). Paired with `status_kind = 'discarded'` at
+/// every call site; kept as one fragment so the reason string cannot
+/// drift between the recoverable reads, the submit-time supersede, and
+/// the promotion gate.
+///
+/// Index note: the per-tick recoverable scans stay off the heap-scan
+/// path via `idx_deltas_status_kind_status_timestamp` (`status_kind,
+/// status_timestamp DESC, account_id, nonce`) — the retained arm is a
+/// leading-column equality, and the abandoned arm is an equality plus
+/// `status_timestamp >= cutoff` range on the same index (a BitmapOr of
+/// the two), so this JSONB extraction only ever filters the handful of
+/// recently-discarded rows those ranges return, never the canonical
+/// history that dominates the table.
+fn client_abandoned_reason() -> diesel::expression::SqlLiteral<diesel::sql_types::Bool> {
+    diesel::dsl::sql::<diesel::sql_types::Bool>("status->>'reason' = 'client_abandoned'")
 }
 
 impl From<StateRow> for StateObject {
@@ -1173,6 +1193,58 @@ impl StorageBackend for PostgresService {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    async fn pull_recoverable_deltas(
+        &self,
+        account_id: &str,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let rows: Vec<DeltaRow> = deltas::table
+            .filter(deltas::account_id.eq(account_id))
+            .filter(
+                deltas::status_kind.eq("retained").or(deltas::status_kind
+                    .eq("discarded")
+                    .and(client_abandoned_reason())
+                    .and(deltas::status_timestamp.ge(abandoned_since))),
+            )
+            .order(deltas::nonce.asc())
+            .select(DeltaRow::as_select())
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to pull recoverable deltas: {e}"))?;
+
+        Ok(rows.into_iter().map(|r| r.into()).collect())
+    }
+
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<String>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        deltas::table
+            .filter(
+                deltas::status_kind.eq("retained").or(deltas::status_kind
+                    .eq("discarded")
+                    .and(client_abandoned_reason())
+                    .and(deltas::status_timestamp.ge(abandoned_since))),
+            )
+            .select(deltas::account_id)
+            .distinct()
+            .load::<String>(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to list accounts with recoverable deltas: {e}"))
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -1502,6 +1574,34 @@ impl StorageBackend for PostgresService {
                     return Ok(CandidateSubmission::Conflict);
                 }
 
+                // A retained row (issue #345) or client-abandoned
+                // discard (issue #319) at this nonce is a best-effort
+                // recovery/history artifact, never settled canonical
+                // history: the client re-supplying its intent for the
+                // slot supersedes it, so the reconcile pass can never
+                // resurrect a base out from under this new candidate —
+                // and the resubmission the abandon endpoint exists to
+                // enable is not refused at the nonce's unique
+                // constraint.
+                let superseded = diesel::delete(deltas::table)
+                    .filter(deltas::account_id.eq(&delta.account_id))
+                    .filter(deltas::nonce.eq(delta.nonce as i64))
+                    .filter(
+                        deltas::status_kind.eq("retained").or(deltas::status_kind
+                            .eq("discarded")
+                            .and(client_abandoned_reason())),
+                    )
+                    .execute(conn)
+                    .await?;
+                if superseded > 0 {
+                    tracing::info!(
+                        event = "reconcile_superseded",
+                        account_id = %delta.account_id,
+                        nonce = delta.nonce,
+                        "Recoverable row superseded by a new candidate at its nonce"
+                    );
+                }
+
                 // DO NOTHING (not upsert): a row already at this nonce is
                 // settled history and must never be overwritten by a
                 // delayed submission.
@@ -1560,6 +1660,7 @@ impl StorageBackend for PostgresService {
             new_auth,
             now,
             fence,
+            source,
         } = promotion;
 
         let state_updated_at: chrono::DateTime<chrono::Utc> = state
@@ -1586,10 +1687,35 @@ impl StorageBackend for PostgresService {
                         return Ok(PromoteWrite::StaleLease);
                     }
 
+                    // Retained rows (issue #345) and client-abandoned
+                    // discards (issue #319, the late-landing recovery
+                    // net) are promotable too — but the gate is the
+                    // EXACT kind the pass verified, never the union: a
+                    // client submission can supersede a retained or
+                    // abandoned row at this nonce between the reconcile
+                    // read and this write, and a union gate would stamp
+                    // the client's fresh candidate canonical with the
+                    // old delta's commitment. The exact gate turns a
+                    // superseded promotion into a no-op instead.
+                    let source_gate: Box<
+                        dyn diesel::BoxableExpression<
+                                deltas::table,
+                                diesel::pg::Pg,
+                                SqlType = diesel::sql_types::Bool,
+                            >,
+                    > = match source {
+                        PromotableKind::Candidate => Box::new(deltas::status_kind.eq("candidate")),
+                        PromotableKind::Retained => Box::new(deltas::status_kind.eq("retained")),
+                        PromotableKind::ClientAbandoned => Box::new(
+                            deltas::status_kind
+                                .eq("discarded")
+                                .and(client_abandoned_reason()),
+                        ),
+                    };
                     let flipped = diesel::update(deltas::table)
                         .filter(deltas::account_id.eq(&delta.account_id))
                         .filter(deltas::nonce.eq(delta.nonce as i64))
-                        .filter(deltas::status_kind.eq("candidate"))
+                        .filter(source_gate)
                         .set((
                             deltas::status.eq(&status_json),
                             deltas::status_kind.eq(status_kind),
@@ -1654,6 +1780,7 @@ impl StorageBackend for PostgresService {
         _metadata: &dyn MetadataStore,
         account_id: &str,
         nonce: u64,
+        kind: DeltaStatusKind,
         now: &str,
         fence: Option<&LeaseFence>,
     ) -> Result<CanonicalWrite, String> {
@@ -1681,7 +1808,7 @@ impl StorageBackend for PostgresService {
                 let deleted = diesel::delete(deltas::table)
                     .filter(deltas::account_id.eq(&account_id))
                     .filter(deltas::nonce.eq(nonce as i64))
-                    .filter(deltas::status_kind.eq("candidate"))
+                    .filter(deltas::status_kind.eq(kind.as_str()))
                     .execute(conn)
                     .await?;
                 if deleted == 0 {
@@ -1746,6 +1873,15 @@ impl StorageBackend for PostgresService {
                 let Some(stored_requested_at) = stored_requested_at else {
                     return Ok(CanonicalWrite::NotCandidate);
                 };
+
+                // A concurrently recorded abandon intent must not be
+                // wiped into a retained status, which has no field to
+                // carry it: refuse the flip — the next worker tick sees
+                // the intent in its snapshot and resolves the abandon
+                // instead of retaining.
+                if status_kind == "retained" && stored_requested_at.is_some() {
+                    return Ok(CanonicalWrite::NotCandidate);
+                }
 
                 let mut status_json = status_json;
                 if status_kind == "candidate"
@@ -2018,6 +2154,7 @@ impl StorageBackend for PostgresService {
             match kind.as_str() {
                 "candidate" => counts.candidate = n,
                 "canonical" => counts.canonical = n,
+                "retained" => counts.retained = n,
                 "discarded" => counts.discarded = n,
                 // `pending` is exposed via count_in_flight_proposals,
                 // not the delta status counts.
@@ -2882,6 +3019,303 @@ mod tests {
         );
     }
 
+    /// DB-side proof of the issue #345 SQL paths: the recoverable reads
+    /// (retained rows plus cutoff-bounded client-abandoned discards),
+    /// the exact-kind promotion gate, the kind-guarded discard, the
+    /// submit-time supersede, and the retained-over-intent refusal in
+    /// `update_candidate_status`. These behaviors live in Postgres
+    /// predicates the filesystem tests cannot exercise.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn retain_and_reconcile_writes_are_kind_exact() {
+        use crate::coordination::LeaderElector;
+        use crate::coordination::postgres::PgLeaseElector;
+        use crate::delta_object::{DeltaStatus, RetainReason};
+        use crate::storage::{AbandonIntent, CandidatePromotion};
+        use diesel::sql_types::Text;
+        use std::time::Duration;
+
+        let url = std::env::var("DATABASE_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())
+            .expect("DATABASE_URL must be set for this #[ignore] test");
+        run_migrations(&url).await.expect("migrations apply");
+
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+            .await
+            .expect("metadata store");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xretain{stamp}");
+        let lease_name = format!("retain-fence-{stamp}");
+        let now_dt = chrono::Utc::now();
+        let now = now_dt.to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        let initial_state = create_test_state(&account_id);
+        let initial_commitment = initial_state.commitment.clone();
+        service
+            .submit_state(&initial_state)
+            .await
+            .expect("insert initial state");
+
+        // Seed one row per lifecycle in scope: canonical history (1),
+        // a retained row (10), a recent client-abandoned discard (11),
+        // and an abandoned discard past the cutoff (12).
+        let canonical = create_test_delta(&account_id, 1);
+        service.submit_delta(&canonical).await.expect("canonical");
+        let mut retained = create_test_delta(&account_id, 10);
+        retained.prev_commitment = initial_commitment.clone();
+        retained.status = DeltaStatus::retained(now.clone(), RetainReason::RetryExhausted);
+        service.submit_delta(&retained).await.expect("retained");
+        let mut abandoned_recent = create_test_delta(&account_id, 11);
+        abandoned_recent.status = DeltaStatus::discarded_client_abandoned(now.clone());
+        service
+            .submit_delta(&abandoned_recent)
+            .await
+            .expect("abandoned recent");
+        let mut abandoned_old = create_test_delta(&account_id, 12);
+        abandoned_old.status = DeltaStatus::discarded_client_abandoned(
+            (now_dt - chrono::Duration::days(2)).to_rfc3339(),
+        );
+        service
+            .submit_delta(&abandoned_old)
+            .await
+            .expect("abandoned old");
+
+        // Recoverable reads: every retained row, abandoned rows only at
+        // or after the cutoff, canonical history never.
+        let cutoff = now_dt - chrono::Duration::days(1);
+        let recoverable = service
+            .pull_recoverable_deltas(&account_id, cutoff)
+            .await
+            .expect("recoverable read");
+        assert_eq!(
+            recoverable.iter().map(|d| d.nonce).collect::<Vec<_>>(),
+            vec![10, 11],
+            "retained plus recent-abandoned, nonce-ascending",
+        );
+        assert!(
+            service
+                .list_accounts_with_recoverable_deltas(cutoff)
+                .await
+                .expect("account scan")
+                .contains(&account_id)
+        );
+        let strict = service
+            .pull_recoverable_deltas(&account_id, now_dt + chrono::Duration::minutes(1))
+            .await
+            .expect("strict-cutoff read");
+        assert_eq!(
+            strict.iter().map(|d| d.nonce).collect::<Vec<_>>(),
+            vec![10],
+            "a future cutoff drops the abandoned arm but never retained rows",
+        );
+
+        let elector = PgLeaseElector::new(
+            build_postgres_pool_lazy(&url, 2).unwrap(),
+            &lease_name,
+            "holder",
+        );
+        let lease = elector
+            .try_acquire(Duration::from_secs(60))
+            .await
+            .expect("acquire")
+            .expect("holder owns the lease");
+        let fence = LeaseFence {
+            lease_name: lease.name.clone(),
+            holder_id: lease.holder_id.clone(),
+            fence_token: lease.fence_token,
+        };
+
+        // Exact-kind promotion gate: a candidate-sourced promotion must
+        // refuse the retained row (the wrong-row supersede race), and
+        // the retained-sourced promotion commits atomically.
+        let mut promoted_state = create_test_state(&account_id);
+        promoted_state.commitment = "0xreconciled".to_string();
+        let mut canonical_retained = retained.clone();
+        canonical_retained.status = DeltaStatus::canonical(now.clone());
+        canonical_retained.new_commitment = Some("0xreconciled".to_string());
+        let wrong_source = service
+            .promote_candidate(
+                &metadata_store,
+                CandidatePromotion {
+                    state: promoted_state.clone(),
+                    delta: canonical_retained.clone(),
+                    new_auth: None,
+                    now: now.clone(),
+                    fence: Some(fence.clone()),
+                    source: PromotableKind::Candidate,
+                },
+            )
+            .await
+            .expect("wrong-source promotion resolves");
+        assert_eq!(wrong_source, PromoteWrite::NotCandidate);
+        assert!(
+            service
+                .pull_delta(&account_id, 10)
+                .await
+                .expect("row survives")
+                .status
+                .is_retained(),
+            "a refused promotion mutates nothing",
+        );
+        let promoted = service
+            .promote_candidate(
+                &metadata_store,
+                CandidatePromotion {
+                    state: promoted_state,
+                    delta: canonical_retained,
+                    new_auth: None,
+                    now: now.clone(),
+                    fence: Some(fence.clone()),
+                    source: PromotableKind::Retained,
+                },
+            )
+            .await
+            .expect("retained-source promotion resolves");
+        assert_eq!(promoted, PromoteWrite::Applied);
+        assert!(
+            service
+                .pull_delta(&account_id, 10)
+                .await
+                .expect("row readable")
+                .status
+                .is_canonical()
+        );
+        assert_eq!(
+            service
+                .pull_state(&account_id)
+                .await
+                .expect("state readable")
+                .commitment,
+            "0xreconciled",
+            "the reconcile promotion advances the stored base",
+        );
+
+        // Kind-guarded discard: a candidate-kind discard spares the
+        // retained row; the retained-kind discard removes it.
+        let mut retained_expiring = create_test_delta(&account_id, 13);
+        retained_expiring.status = DeltaStatus::retained(now.clone(), RetainReason::Diverged);
+        service
+            .submit_delta(&retained_expiring)
+            .await
+            .expect("retained expiring");
+        let wrong_kind = service
+            .discard_candidate(
+                &metadata_store,
+                &account_id,
+                13,
+                DeltaStatusKind::Candidate,
+                &now,
+                Some(&fence),
+            )
+            .await
+            .expect("wrong-kind discard resolves");
+        assert_eq!(wrong_kind, CanonicalWrite::NotCandidate);
+        assert!(service.pull_delta(&account_id, 13).await.is_ok());
+        let right_kind = service
+            .discard_candidate(
+                &metadata_store,
+                &account_id,
+                13,
+                DeltaStatusKind::Retained,
+                &now,
+                Some(&fence),
+            )
+            .await
+            .expect("retained-kind discard resolves");
+        assert_eq!(right_kind, CanonicalWrite::Applied);
+        assert!(service.pull_delta(&account_id, 13).await.is_err());
+
+        // Submit-time supersede: a fresh candidate replaces the abandoned
+        // row at its nonce inside the submission transaction, while the
+        // canonical row stays untouched.
+        let mut resubmission = create_test_delta(&account_id, 11);
+        resubmission.prev_commitment = "0xreconciled".to_string();
+        resubmission.status = DeltaStatus::candidate(now.clone());
+        let superseded = service
+            .submit_candidate(&metadata_store, &resubmission, &now)
+            .await
+            .expect("resubmission resolves");
+        assert_eq!(superseded, CandidateSubmission::Submitted);
+        assert!(
+            service
+                .pull_delta(&account_id, 11)
+                .await
+                .expect("row readable")
+                .status
+                .is_candidate(),
+            "the resubmission replaced the abandoned discard",
+        );
+        assert!(
+            service
+                .pull_delta(&account_id, 1)
+                .await
+                .expect("canonical readable")
+                .status
+                .is_canonical(),
+            "settled history is never superseded",
+        );
+
+        // Retained-over-intent refusal: once an abandon intent is
+        // recorded, the retained flip must refuse rather than wipe it.
+        let intent = service
+            .request_candidate_abandon(&account_id, 11, &now)
+            .await
+            .expect("intent resolves");
+        assert_eq!(intent, AbandonIntent::Recorded);
+        let refused = service
+            .update_candidate_status(
+                &account_id,
+                11,
+                DeltaStatus::retained(now.clone(), RetainReason::RetryExhausted),
+                Some(&fence),
+            )
+            .await
+            .expect("retained flip resolves");
+        assert_eq!(refused, CanonicalWrite::NotCandidate);
+        let row = service
+            .pull_delta(&account_id, 11)
+            .await
+            .expect("row readable");
+        assert!(row.status.is_candidate());
+        assert!(
+            row.status.abandon_requested_at().is_some(),
+            "the intent survives the refused flip",
+        );
+
+        // Best-effort cleanup.
+        let mut conn = service.pool.get().await.expect("conn");
+        let _ = diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await;
+        let _ = diesel::sql_query("DELETE FROM states WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await;
+        let _ = diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await;
+        let _ = diesel::sql_query("DELETE FROM worker_leases WHERE lease_name = $1")
+            .bind::<Text, _>(&lease_name)
+            .execute(&mut conn)
+            .await;
+    }
+
     /// End-to-end proof of the transactional fence: a superseded lease
     /// holder's retry, discard, and promotion are all refused with no row
     /// mutated; the current holder promotes atomically; and once canonical,
@@ -3015,7 +3449,14 @@ mod tests {
         );
 
         let stale_discard = service
-            .discard_candidate(&metadata_store, &account_id, 1, &now, Some(&stale_fence))
+            .discard_candidate(
+                &metadata_store,
+                &account_id,
+                1,
+                DeltaStatusKind::Candidate,
+                &now,
+                Some(&stale_fence),
+            )
             .await
             .expect("stale discard resolves");
         assert_eq!(stale_discard, CanonicalWrite::StaleLease);
@@ -3034,6 +3475,7 @@ mod tests {
             new_auth: None,
             now: now.clone(),
             fence: Some(current_fence.clone()),
+            source: PromotableKind::Candidate,
         };
 
         let stale_promotion = service
@@ -3144,7 +3586,14 @@ mod tests {
         );
 
         let discard_canonical = service
-            .discard_candidate(&metadata_store, &account_id, 1, &now, Some(&current_fence))
+            .discard_candidate(
+                &metadata_store,
+                &account_id,
+                1,
+                DeltaStatusKind::Candidate,
+                &now,
+                Some(&current_fence),
+            )
             .await
             .expect("discard of canonical resolves");
         assert_eq!(
@@ -3321,6 +3770,7 @@ mod tests {
             new_auth: None,
             now: now.clone(),
             fence: Some(current_fence),
+            source: PromotableKind::Candidate,
         };
         let newowner_service = PostgresService::new(&url, 2)
             .await

@@ -53,7 +53,12 @@ import {
   signProposalOffline,
   importProposal,
 } from '@/lib/multisigApi';
-import { MIDEN_RPC_URL, GUARDIAN_ENDPOINT } from '@/config';
+import {
+  MIDEN_RPC_URL,
+  GUARDIAN_ENDPOINT,
+  PROVER_MAX_ATTEMPTS,
+  PROVER_URL,
+} from '@/config';
 import { useParaSession } from '@/hooks/useParaSession';
 import { useMidenWallet } from '@/hooks/useMidenWallet';
 import type { SignerInfo } from '@/types';
@@ -331,7 +336,11 @@ export default function App() {
         const { client: msClient, guardianPubkey: pubkey } = await initMultisigClient(
           wc,
           url,
-          MIDEN_RPC_URL
+          MIDEN_RPC_URL,
+          {
+            url: PROVER_URL,
+            retry: { maxAttempts: PROVER_MAX_ATTEMPTS },
+          },
         );
         setGuardianPubkey(pubkey);
         setMultisigClient(msClient);

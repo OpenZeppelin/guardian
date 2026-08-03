@@ -3,10 +3,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::prover::RetryingTransactionProver;
 use miden_client::DebugMode;
-use miden_client::RemoteTransactionProver;
-use miden_client::builder::{ClientBuilder, DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
+use miden_client::builder::ClientBuilder;
+use miden_client::grpc_support::{DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::Endpoint;
 use miden_client::transaction::LocalTransactionProver;
@@ -19,93 +18,44 @@ use crate::MidenSdkClient;
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
-
-/// Where transaction proofs are generated.
-///
-/// The public networks delegate proving to a shared remote prover, which is the
-/// right default: proving is CPU-bound and most callers are not sized for it.
-/// `Local` trades that for the caller's own CPU, which is what a load generator
-/// wants -- the shared prover cancels requests well below the concurrency such a
-/// run offers, so the remote one measures the prover rather than the system
-/// under test.
-/// `Service` points at a prover you run yourself. A prover instance proves one
-/// transaction at a time and queues the rest up to its capacity, so serving
-/// concurrent writers means running several instances -- which is also what
-/// makes proving CPU a budgeted quantity rather than whatever is left over.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum ProvingMode {
-    /// Delegate to the network's prover service.
-    #[default]
-    Remote,
-    /// Prove in-process. CPU-bound: budget cores before raising concurrency.
-    Local,
-    /// Delegate to a prover reachable at this URL.
-    Service(String),
-}
+use crate::prover::{ProverConfig, ProverSelection, RetryingTransactionProver};
 
 fn configured_client_builder(
     endpoint: &Endpoint,
-    proving_mode: ProvingMode,
+    prover_config: &ProverConfig,
 ) -> ClientBuilder<FilesystemKeyStore> {
-    if endpoint == &Endpoint::devnet() {
-        with_prover(
-            ClientBuilder::<FilesystemKeyStore>::for_devnet(),
-            DEVNET_PROVER_ENDPOINT,
-            proving_mode,
-        )
+    let builder = if endpoint == &Endpoint::devnet() {
+        ClientBuilder::<FilesystemKeyStore>::for_devnet()
     } else if endpoint == &Endpoint::testnet() {
-        with_prover(
-            ClientBuilder::<FilesystemKeyStore>::for_testnet(),
-            TESTNET_PROVER_ENDPOINT,
-            proving_mode,
-        )
+        ClientBuilder::<FilesystemKeyStore>::for_testnet()
     } else if endpoint == &Endpoint::localhost() {
-        // The localhost preset already proves in-process.
         ClientBuilder::<FilesystemKeyStore>::for_localhost()
     } else {
-        let builder =
-            ClientBuilder::<FilesystemKeyStore>::new().grpc_client(endpoint, Some(20_000));
-        match proving_mode {
-            ProvingMode::Local => builder.prover(Arc::new(LocalTransactionProver::default())),
-            ProvingMode::Service(url) => with_remote_prover(builder, &url),
-            ProvingMode::Remote => builder,
+        ClientBuilder::<FilesystemKeyStore>::new().grpc_client(endpoint, Some(20_000))
+    };
+
+    let default_remote = if endpoint == &Endpoint::devnet() {
+        Some(DEVNET_PROVER_ENDPOINT)
+    } else if endpoint == &Endpoint::testnet() {
+        Some(TESTNET_PROVER_ENDPOINT)
+    } else {
+        None
+    };
+
+    match prover_config.resolve(default_remote) {
+        ProverSelection::Local { explicit: false } => builder,
+        ProverSelection::Local { explicit: true } => {
+            builder.prover(Arc::new(LocalTransactionProver::default()))
         }
+        ProverSelection::Remote {
+            endpoint,
+            custom: _,
+            retry_policy,
+        } => builder.prover(Arc::new(RetryingTransactionProver::remote(
+            endpoint,
+            retry_policy,
+        ))),
     }
-}
-
-/// Wrap the preset's prover so transient failures are retried.
-///
-/// The devnet and testnet presets delegate proving to a shared remote prover
-/// that cancels requests under load; localhost proves locally and has nothing to
-/// retry. Retrying is safe at this layer because the delta reaches GUARDIAN
-/// before proving starts, so another proof attempt changes no server state --
-/// unlike retrying the surrounding execution, which re-pushes the delta and is
-/// refused as a pending-delta conflict.
-fn with_prover(
-    builder: ClientBuilder<FilesystemKeyStore>,
-    prover_endpoint: &str,
-    proving_mode: ProvingMode,
-) -> ClientBuilder<FilesystemKeyStore> {
-    match proving_mode {
-        // Nothing to retry: a local proof either succeeds or fails the same way
-        // every time, so a failure here is a real one.
-        ProvingMode::Local => builder.prover(Arc::new(LocalTransactionProver::default())),
-        // A self-hosted prover queues and times out under load just as the
-        // shared one does, so it gets the same retry treatment.
-        ProvingMode::Service(url) => with_remote_prover(builder, &url),
-        // The builder exposes no getter for the preset's prover, so the same
-        // remote prover is reconstructed from the endpoint the preset uses.
-        ProvingMode::Remote => with_remote_prover(builder, prover_endpoint),
-    }
-}
-
-fn with_remote_prover(
-    builder: ClientBuilder<FilesystemKeyStore>,
-    prover_endpoint: &str,
-) -> ClientBuilder<FilesystemKeyStore> {
-    builder.prover(Arc::new(RetryingTransactionProver::new(Arc::new(
-        RemoteTransactionProver::new(prover_endpoint.to_string()),
-    ))))
 }
 
 /// Builder for constructing MultisigClient instances.
@@ -120,6 +70,11 @@ fn with_remote_prover(
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
 ///     .guardian_endpoint("http://localhost:50051")
 ///     .account_dir("/tmp/multisig-client")
+///     .prover_config(
+///         miden_multisig_client::ProverConfig::new()
+///             .with_url("https://prover.example")?
+///             .with_retry_policy(miden_multisig_client::ProverRetryPolicy::new(4)),
+///     )
 ///     .generate_key()
 ///     .build()
 ///     .await?;
@@ -129,7 +84,7 @@ pub struct MultisigClientBuilder {
     guardian_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
     key_manager: Option<Arc<dyn KeyManager>>,
-    proving_mode: ProvingMode,
+    prover_config: ProverConfig,
 }
 
 impl Default for MultisigClientBuilder {
@@ -146,15 +101,8 @@ impl MultisigClientBuilder {
             guardian_endpoint: None,
             account_dir: None,
             key_manager: None,
-            proving_mode: ProvingMode::default(),
+            prover_config: ProverConfig::new(),
         }
-    }
-
-    /// Selects where transaction proofs are generated. Defaults to
-    /// [`ProvingMode::Remote`].
-    pub fn proving_mode(mut self, proving_mode: ProvingMode) -> Self {
-        self.proving_mode = proving_mode;
-        self
     }
 
     /// Sets the Miden node RPC endpoint.
@@ -166,6 +114,12 @@ impl MultisigClientBuilder {
     /// Sets the GUARDIAN server endpoint.
     pub fn guardian_endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.guardian_endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Configures the remote transaction prover and its retry policy.
+    pub fn prover_config(mut self, prover_config: ProverConfig) -> Self {
+        self.prover_config = prover_config;
         self
     }
 
@@ -229,7 +183,7 @@ impl MultisigClientBuilder {
         })?;
 
         let miden_client =
-            create_miden_client(&account_dir, &miden_endpoint, self.proving_mode.clone()).await?;
+            create_miden_client(&account_dir, &miden_endpoint, &self.prover_config).await?;
 
         Ok(MultisigClient::new(
             miden_client,
@@ -237,7 +191,7 @@ impl MultisigClientBuilder {
             guardian_endpoint,
             account_dir,
             miden_endpoint,
-            self.proving_mode,
+            self.prover_config,
         ))
     }
 }
@@ -249,7 +203,7 @@ impl MultisigClientBuilder {
 pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
-    proving_mode: ProvingMode,
+    prover_config: &ProverConfig,
 ) -> Result<MidenSdkClient> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -268,7 +222,7 @@ pub(crate) async fn create_miden_client(
     let rng_seed: [u32; 4] = rand::random();
     let rng = Box::new(RandomCoin::new(rng_seed.into()));
 
-    configured_client_builder(endpoint, proving_mode)
+    configured_client_builder(endpoint, prover_config)
         .store(store)
         .rng(rng)
         .in_debug_mode(DebugMode::Enabled)

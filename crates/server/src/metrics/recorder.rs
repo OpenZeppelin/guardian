@@ -61,6 +61,11 @@ pub fn build_recorder() -> PrometheusRecorder {
         )
         .expect("static fast canonicalization buckets are non-empty")
         .set_buckets_for_metric(
+            Matcher::Full(names::CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS.to_string()),
+            CANONICALIZATION_RUN_BUCKETS,
+        )
+        .expect("static reconcile canonicalization buckets are non-empty")
+        .set_buckets_for_metric(
             Matcher::Full(names::CANONICALIZATION_CANDIDATE_AGE_SECONDS.to_string()),
             CANDIDATE_AGE_BUCKETS,
         )
@@ -122,6 +127,8 @@ mod tests {
         metrics::with_local_recorder(&recorder, || {
             metrics::histogram!(names::CANONICALIZATION_RUN_DURATION_SECONDS).record(45.0);
             metrics::histogram!(names::CANONICALIZATION_FAST_RUN_DURATION_SECONDS).record(45.0);
+            metrics::histogram!(names::CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS)
+                .record(45.0);
         });
 
         let rendered = handle.render();
@@ -138,6 +145,12 @@ mod tests {
             rendered
                 .contains("guardian_canonicalization_fast_run_duration_seconds_bucket{le=\"300\"}"),
             "expected extended fast-run buckets in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "guardian_canonicalization_reconcile_run_duration_seconds_bucket{le=\"300\"}"
+            ),
+            "expected extended reconcile-run buckets in:\n{rendered}"
         );
     }
 

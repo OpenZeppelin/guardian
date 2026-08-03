@@ -9,8 +9,8 @@ use crate::error::Result;
 use crate::state::AppState;
 
 use super::processor::{
-    DeltasProcessor, FastPassControl, FastPromotionState, PassSummary, ProcessingMode, Processor,
-    TestDeltasProcessor,
+    DeltasProcessor, FastPromotionState, PassControls, PassSummary, ProcessingMode, Processor,
+    ReconcileState, TestDeltasProcessor,
 };
 
 pub fn start_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
@@ -38,17 +38,26 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
     let renew_interval = check_interval;
     let mut full_timer = interval(check_interval);
     let mut fast_timer = interval(config.fast_promotion_interval());
+    let mut reconcile_timer = interval(config.reconcile_interval());
     full_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
     fast_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    reconcile_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let fast_promotion_state = Arc::new(FastPromotionState::default());
+    let reconcile_state = Arc::new(ReconcileState::default());
+    // Retention disabled (`retained_ttl_seconds = 0`) leaves nothing for
+    // the reconcile pass to sweep: recoverable rows are neither written
+    // nor in scope, so the timer never fires.
+    let reconcile_enabled = config.retained_ttl_seconds > 0;
     let mut next_full_deadline = Instant::now();
 
     loop {
         let (mode, scheduled_at) = next_processing_mode(
             &mut full_timer,
             &mut fast_timer,
+            &mut reconcile_timer,
             config.fast_promotion_enabled,
             config.fast_promotion_window_seconds,
+            reconcile_enabled,
         )
         .await;
         if mode == ProcessingMode::Full {
@@ -79,23 +88,29 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
             cancel.clone(),
         );
 
-        let fast_promotion_deadline = match mode {
+        // Bounded passes stop at the next full-pass tick so they can
+        // never delay ordinary candidate processing; the reconcile
+        // pass's rotation cursor resumes where a cut-short pass ended.
+        let pass_deadline = match mode {
             ProcessingMode::Full => None,
             ProcessingMode::PromoteRecent { .. } => Some(std::cmp::min(
                 Instant::now() + config.fast_promotion_interval(),
                 next_full_deadline,
             )),
+            ProcessingMode::ReconcileRecoverable => Some(next_full_deadline),
         };
-        let processor = DeltasProcessor::with_fast_pass(
+        let processor = DeltasProcessor::with_controls(
             state.clone(),
             config.clone(),
             leader.clone(),
             lease,
             cancel.clone(),
             mode,
-            FastPassControl {
-                state: fast_promotion_state.clone(),
-                deadline: fast_promotion_deadline,
+            PassControls {
+                fast_state: fast_promotion_state.clone(),
+                reconcile_state: reconcile_state.clone(),
+                deadline: pass_deadline,
+                reconcile_backoff: true,
             },
         );
 
@@ -131,6 +146,17 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
                 )
                 .increment(1);
             }
+            ProcessingMode::ReconcileRecoverable => {
+                metrics::histogram!(
+                    crate::metrics::names::CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS
+                )
+                .record(elapsed);
+                metrics::counter!(
+                    crate::metrics::names::CANONICALIZATION_RECONCILE_RUNS_TOTAL,
+                    crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
+                )
+                .increment(1);
+            }
         }
 
         cancel.cancel();
@@ -159,22 +185,25 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
     }
 }
 
+/// Await the next due pass. Biased priority on a shared tick: the full
+/// pass wins over both bounded passes, and fast promotion (a 3-second
+/// latency feature) wins over reconciliation (a background sweep whose
+/// pending tick just runs on the next loop iteration).
 async fn next_processing_mode(
     full_timer: &mut Interval,
     fast_timer: &mut Interval,
+    reconcile_timer: &mut Interval,
     fast_promotion_enabled: bool,
     fast_window_seconds: u64,
+    reconcile_enabled: bool,
 ) -> (ProcessingMode, Instant) {
-    if !fast_promotion_enabled {
-        return (ProcessingMode::Full, full_timer.tick().await);
-    }
-
     tokio::select! {
         biased;
         scheduled_at = full_timer.tick() => (ProcessingMode::Full, scheduled_at),
-        scheduled_at = fast_timer.tick() => (ProcessingMode::PromoteRecent {
+        scheduled_at = fast_timer.tick(), if fast_promotion_enabled => (ProcessingMode::PromoteRecent {
             max_age_seconds: fast_window_seconds,
         }, scheduled_at),
+        scheduled_at = reconcile_timer.tick(), if reconcile_enabled => (ProcessingMode::ReconcileRecoverable, scheduled_at),
     }
 }
 
@@ -308,42 +337,99 @@ mod tests {
         }
     }
 
+    struct TestTimers {
+        full: Interval,
+        fast: Interval,
+        reconcile: Interval,
+    }
+
+    fn test_timers() -> TestTimers {
+        let mut full = interval(Duration::from_secs(10));
+        let mut fast = interval(Duration::from_secs(3));
+        let mut reconcile = interval(Duration::from_secs(60));
+        full.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        fast.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        reconcile.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        TestTimers {
+            full,
+            fast,
+            reconcile,
+        }
+    }
+
+    async fn next_mode(
+        timers: &mut TestTimers,
+        fast_enabled: bool,
+        reconcile_enabled: bool,
+    ) -> ProcessingMode {
+        next_processing_mode(
+            &mut timers.full,
+            &mut timers.fast,
+            &mut timers.reconcile,
+            fast_enabled,
+            30,
+            reconcile_enabled,
+        )
+        .await
+        .0
+    }
+
     #[tokio::test(start_paused = true)]
     async fn full_pass_wins_shared_tick() {
-        let mut full_timer = interval(Duration::from_secs(10));
-        let mut fast_timer = interval(Duration::from_secs(3));
-        full_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        fast_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut timers = test_timers();
 
-        let initial = next_processing_mode(&mut full_timer, &mut fast_timer, true, 30).await;
-        assert_eq!(initial.0, ProcessingMode::Full);
-        fast_timer.reset();
+        let initial = next_mode(&mut timers, true, true).await;
+        assert_eq!(initial, ProcessingMode::Full);
+        timers.fast.reset();
 
         tokio::time::advance(Duration::from_secs(3)).await;
-        let fast = next_processing_mode(&mut full_timer, &mut fast_timer, true, 30).await;
+        let fast = next_mode(&mut timers, true, true).await;
         assert_eq!(
-            fast.0,
+            fast,
             ProcessingMode::PromoteRecent {
                 max_age_seconds: 30
             }
         );
 
         tokio::time::advance(Duration::from_secs(7)).await;
-        let shared_tick = next_processing_mode(&mut full_timer, &mut fast_timer, true, 30).await;
-        assert_eq!(shared_tick.0, ProcessingMode::Full);
+        let shared_tick = next_mode(&mut timers, true, true).await;
+        assert_eq!(shared_tick, ProcessingMode::Full);
     }
 
     #[tokio::test(start_paused = true)]
     async fn disabled_fast_promotion_only_uses_full_timer() {
-        let mut full_timer = interval(Duration::from_secs(10));
-        let mut fast_timer = interval(Duration::from_secs(3));
+        let mut timers = test_timers();
 
-        let initial = next_processing_mode(&mut full_timer, &mut fast_timer, false, 30).await;
-        assert_eq!(initial.0, ProcessingMode::Full);
+        let initial = next_mode(&mut timers, false, false).await;
+        assert_eq!(initial, ProcessingMode::Full);
 
         tokio::time::advance(Duration::from_secs(10)).await;
-        let next = next_processing_mode(&mut full_timer, &mut fast_timer, false, 30).await;
-        assert_eq!(next.0, ProcessingMode::Full);
+        let next = next_mode(&mut timers, false, false).await;
+        assert_eq!(next, ProcessingMode::Full);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconcile_ticks_on_its_own_cadence_and_yields_to_full() {
+        let mut timers = test_timers();
+
+        // Consume the immediate first ticks (full wins the shared start).
+        let initial = next_mode(&mut timers, false, true).await;
+        assert_eq!(initial, ProcessingMode::Full);
+        timers.reconcile.reset();
+
+        // The reconcile tick at t+60 shares a boundary with a full tick;
+        // full wins it, and the still-pending reconcile tick is served
+        // on the following selection.
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let shared = next_mode(&mut timers, false, true).await;
+        assert_eq!(shared, ProcessingMode::Full);
+        let deferred = next_mode(&mut timers, false, true).await;
+        assert_eq!(deferred, ProcessingMode::ReconcileRecoverable);
+
+        // Disabled reconciliation never selects the reconcile pass.
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let disabled = next_mode(&mut timers, false, false).await;
+        assert_eq!(disabled, ProcessingMode::Full);
     }
 
     #[tokio::test(start_paused = true)]
