@@ -18,7 +18,7 @@ export const DEFAULT_PROVER_MAX_ATTEMPTS = hasValidProverAttempts
 const configuredRpcAttempts = Number(import.meta.env.VITE_RPC_MAX_ATTEMPTS?.trim() || 2);
 const hasValidRpcAttempts =
   Number.isInteger(configuredRpcAttempts) &&
-  configuredRpcAttempts >= 0 &&
+  configuredRpcAttempts >= 1 &&
   configuredRpcAttempts <= 4_294_967_295;
 export const DEFAULT_RPC_MAX_ATTEMPTS = hasValidRpcAttempts ? configuredRpcAttempts : 2;
 

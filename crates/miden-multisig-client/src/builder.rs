@@ -86,9 +86,10 @@ fn configured_client_builder(
 
     let builder = match note_transport_endpoint(endpoint) {
         Some(transport_endpoint) if rpc_config.retry_policy().max_attempts() > 1 => {
+            let timeout_ms = rpc_config.timeout_ms().unwrap_or(DEFAULT_GRPC_TIMEOUT_MS);
             let transport: Arc<dyn NoteTransportClient> = Arc::new(GrpcNoteTransportClient::new(
                 transport_endpoint.to_string(),
-                DEFAULT_GRPC_TIMEOUT_MS,
+                timeout_ms,
             ));
             builder.note_transport(configured_note_transport_client(transport, rpc_config))
         }

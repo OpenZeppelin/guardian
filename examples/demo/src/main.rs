@@ -203,21 +203,33 @@ async fn handle_action(
 /// `MIDEN_RPC_TIMEOUT_MS`; unset variables keep the SDK defaults.
 fn rpc_config_from_env() -> Result<RpcConfig, String> {
     let mut rpc_config = RpcConfig::new();
-    if let Ok(value) = std::env::var("MIDEN_RPC_MAX_ATTEMPTS") {
-        let max_attempts = value
-            .trim()
-            .parse::<u32>()
-            .map_err(|error| format!("Invalid MIDEN_RPC_MAX_ATTEMPTS: {error}"))?;
-        rpc_config = rpc_config.with_retry_policy(RpcRetryPolicy::new(max_attempts));
+    match std::env::var("MIDEN_RPC_MAX_ATTEMPTS") {
+        Ok(value) => {
+            let max_attempts = value
+                .trim()
+                .parse::<u32>()
+                .map_err(|error| format!("Invalid MIDEN_RPC_MAX_ATTEMPTS: {error}"))?;
+            rpc_config = rpc_config.with_retry_policy(RpcRetryPolicy::new(max_attempts));
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("MIDEN_RPC_MAX_ATTEMPTS contains non-Unicode data".to_string());
+        }
     }
-    if let Ok(value) = std::env::var("MIDEN_RPC_TIMEOUT_MS") {
-        let timeout_ms = value
-            .trim()
-            .parse::<u64>()
-            .map_err(|error| format!("Invalid MIDEN_RPC_TIMEOUT_MS: {error}"))?;
-        rpc_config = rpc_config
-            .with_timeout_ms(timeout_ms)
-            .map_err(|error| error.to_string())?;
+    match std::env::var("MIDEN_RPC_TIMEOUT_MS") {
+        Ok(value) => {
+            let timeout_ms = value
+                .trim()
+                .parse::<u64>()
+                .map_err(|error| format!("Invalid MIDEN_RPC_TIMEOUT_MS: {error}"))?;
+            rpc_config = rpc_config
+                .with_timeout_ms(timeout_ms)
+                .map_err(|error| error.to_string())?;
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("MIDEN_RPC_TIMEOUT_MS contains non-Unicode data".to_string());
+        }
     }
     Ok(rpc_config)
 }

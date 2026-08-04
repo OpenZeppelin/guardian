@@ -79,8 +79,8 @@ To point at a node on another host or port without changing identity, set
 `GUARDIAN_MIDEN_RPC_ENDPOINT`; `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` and
 `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` tune the per-request deadline and the
 opt-in read retry budget for eligible non-canonicalization reads
-(submissions are never retried, and canonicalization always performs one
-node read per pass — later passes provide the retry). Embedders using the
+(submissions are never retried, and canonicalization makes one attempt per
+node read — later passes provide recovery). Embedders using the
 Rust builder can inject the same settings programmatically via
 `ServerBuilder::with_rpc(RpcSettings::from_env(network)?)` (or a directly
 constructed `RpcSettings::Miden(...)`) — the enum leaves room for future

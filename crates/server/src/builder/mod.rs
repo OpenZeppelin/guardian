@@ -214,6 +214,11 @@ impl ServerBuilder {
     /// let builder = ServerBuilder::new()
     ///     .with_canonicalization(None);
     /// ```
+    pub fn with_canonicalization(mut self, config: Option<CanonicalizationConfig>) -> Self {
+        self.canonicalization = config;
+        self
+    }
+
     /// Sets node RPC settings explicitly for the network they belong to.
     /// When no Miden settings are provided, `build()` resolves them from the
     /// `GUARDIAN_MIDEN_RPC_*` environment variables on top of the declared
@@ -222,11 +227,6 @@ impl ServerBuilder {
         match settings {
             crate::network::RpcSettings::Miden(miden) => self.miden_rpc = Some(miden),
         }
-        self
-    }
-
-    pub fn with_canonicalization(mut self, config: Option<CanonicalizationConfig>) -> Self {
-        self.canonicalization = config;
         self
     }
 
@@ -546,7 +546,17 @@ impl ServerBuilder {
         };
 
         let miden_rpc_settings = match self.miden_rpc {
-            Some(settings) => settings,
+            Some(settings) => {
+                if settings.network() != network_type {
+                    return Err(format!(
+                        "Miden RPC settings were resolved for {} but the builder network is {}; \
+                         resolve the settings for the declared network",
+                        settings.network(),
+                        network_type
+                    ));
+                }
+                settings
+            }
             None => crate::network::MidenRpcSettings::from_env(network_type)?,
         };
         if miden_rpc_settings.overrides_public_network() {
@@ -664,5 +674,16 @@ mod tests {
         let builder = ServerBuilder::new().with_rpc(crate::network::RpcSettings::Miden(settings));
         assert!(builder.miden_rpc.is_some());
         assert!(ServerBuilder::new().miden_rpc.is_none());
+    }
+
+    #[test]
+    fn build_time_settings_must_match_the_declared_network() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let devnet_settings =
+            crate::network::MidenRpcSettings::from_env(NetworkType::MidenDevnet).unwrap();
+        assert_eq!(devnet_settings.network(), NetworkType::MidenDevnet);
+        let local_settings =
+            crate::network::MidenRpcSettings::from_env(NetworkType::MidenLocal).unwrap();
+        assert_eq!(local_settings.network(), NetworkType::MidenLocal);
     }
 }

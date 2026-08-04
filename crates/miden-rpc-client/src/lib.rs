@@ -61,7 +61,13 @@ fn rpc_client_link_evidence(cause: &(dyn std::error::Error + 'static)) -> Struct
     }
     if let Some(error) = cause.downcast_ref::<RpcClientError>() {
         return match error {
-            RpcClientError::Connect(_) => StructuredEvidence::Transient,
+            RpcClientError::Connect(source) => {
+                if connect_failure_is_permanent(source) {
+                    StructuredEvidence::Permanent
+                } else {
+                    StructuredEvidence::Transient
+                }
+            }
             RpcClientError::InvalidEndpoint { .. }
             | RpcClientError::Tls(_)
             | RpcClientError::MalformedResponse { .. }
@@ -76,8 +82,8 @@ pub fn is_transient_rpc_client_error(error: &RpcClientError) -> bool {
     is_transient_error_with(error, rpc_client_link_evidence, &RPC_TRANSPORT_SIGNALS)
 }
 
-/// Node RPC transport settings. The default preserves the crate's original
-/// behavior: a 30s per-request deadline and no read retries.
+/// Node RPC transport settings. The default applies the shared
+/// [`DEFAULT_RPC_TIMEOUT`] per-request deadline and no read retries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcClientSettings {
     timeout: Duration,
@@ -113,15 +119,7 @@ impl RpcClientSettings {
     }
 }
 
-/// How a read selects its attempt budget. Canonicalization passes hold a
-/// lease and already retry structurally on their schedule, so their reads
-/// must stay single-attempt regardless of the configured policy; the caller
-/// chooses deliberately at every read site.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RpcReadMode {
-    Configured,
-    SingleAttempt,
-}
+pub use guardian_shared::retry::RpcReadMode;
 
 /// Observer for retry attempts beyond the first, keyed by operation name.
 /// Lets consumers surface retry activity (e.g. metrics) without this crate
@@ -250,7 +248,7 @@ impl MidenRpcClient {
         Fut: Future<Output = Result<T, tonic::Status>>,
     {
         let attempts = match read_mode {
-            RpcReadMode::Configured => self.settings.read_retry().max_attempts(),
+            RpcReadMode::Configured => self.settings.read_retry().max_attempts().max(1),
             RpcReadMode::SingleAttempt => 1,
         };
         for attempt in 0..attempts {

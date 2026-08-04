@@ -33,6 +33,15 @@ impl RetryPolicy {
     }
 }
 
+/// How a read selects its attempt budget. Callers holding a lease or other
+/// structural retry (e.g. a canonicalization pass) must pin reads to a
+/// single attempt; the choice is deliberate at every read site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpcReadMode {
+    Configured,
+    SingleAttempt,
+}
+
 #[async_trait::async_trait]
 pub trait RetryRuntime: Send + Sync {
     async fn sleep(&self, duration: Duration);

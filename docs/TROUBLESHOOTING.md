@@ -57,7 +57,7 @@ Most startup failures are environment misconfiguration. Check in order:
    dashboard, set `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` (prod) or
    `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` (local). Without either, the
    dashboard is unreachable.
-7. **Database TLS misconfigured.** With a verifying `sslmode`, startup fails
+8. **Database TLS misconfigured.** With a verifying `sslmode`, startup fails
    closed before migrations run. Map the error:
    - error naming `sslmode` (`allow`/`prefer` or an unknown value) → choose an
      explicit mode: `disable`, `require`, `verify-ca`, or `verify-full`.

@@ -39,8 +39,9 @@ pub enum MultisigError {
         source: Box<miden_client::ClientError>,
     },
 
-    /// Direct Miden RPC error retaining its endpoint and typed gRPC status.
-    #[error("miden RPC error: {0}")]
+    /// Direct Miden RPC error retaining its endpoint and typed gRPC status
+    /// in `source()`.
+    #[error("miden RPC error")]
     MidenRpc(#[source] Box<RpcError>),
 
     /// Direct Miden RPC error with call-site context, retaining the typed
@@ -183,7 +184,7 @@ impl MultisigError {
         err: miden_client::ClientError,
     ) -> Self {
         MultisigError::MidenClientSource {
-            message: format!("{}: {}", context.as_ref(), error_chain(&err)),
+            message: context.as_ref().to_string(),
             source: Box::new(err),
         }
     }
@@ -192,7 +193,7 @@ impl MultisigError {
     /// retaining the typed source for classification.
     pub(crate) fn miden_rpc_with_context(context: impl AsRef<str>, err: RpcError) -> Self {
         MultisigError::MidenRpcSource {
-            message: format!("{}: {}", context.as_ref(), error_chain(&err)),
+            message: context.as_ref().to_string(),
             source: Box::new(err),
         }
     }
@@ -204,7 +205,7 @@ impl MultisigError {
         err: miden_client::ClientError,
     ) -> Self {
         MultisigError::TransactionExecutionSource {
-            message: format!("{}: {}", context.as_ref(), error_chain(&err)),
+            message: context.as_ref().to_string(),
             source: Box::new(err),
         }
     }

@@ -206,7 +206,7 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Counter,
         labels: &[LABEL_OPERATION],
         help: "Miden chain-node RPC retry attempts beyond the first, by operation. \
-               Zero unless GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS raises the read budget.",
+               Zero unless the configured read budget allows more than one attempt.",
     },
     MetricDef {
         name: STORAGE_OPERATIONS_TOTAL,

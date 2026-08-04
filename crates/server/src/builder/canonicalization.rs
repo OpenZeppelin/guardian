@@ -125,13 +125,13 @@ impl CanonicalizationConfig {
         }
     }
 
-    /// Get check interval as Duration
     /// Lease TTL the worker acquires per pass; outlives several renew cycles
     /// so a healthy holder never loses the lease mid-pass.
     pub fn lease_ttl(&self) -> Duration {
         self.check_interval() * 3
     }
 
+    /// Get check interval as Duration
     pub fn check_interval(&self) -> Duration {
         Duration::from_secs(self.check_interval_seconds)
     }

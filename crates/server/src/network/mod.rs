@@ -1,6 +1,6 @@
 pub mod miden;
 
-pub use miden_rpc_client::RpcReadMode;
+pub use guardian_shared::retry::RpcReadMode;
 
 use crate::error::GuardianError;
 use crate::metadata::auth::{Auth, Credentials};
@@ -372,7 +372,7 @@ impl MidenRpcSettings {
 
     pub fn from_env(network: NetworkType) -> Result<Self, String> {
         let endpoint_override = match std::env::var(Self::ENDPOINT_ENV) {
-            Ok(value) => Some(value),
+            Ok(value) => Some(crate::secret::CredentialUrl::new(value)),
             Err(std::env::VarError::NotPresent) => None,
             Err(std::env::VarError::NotUnicode(_)) => {
                 return Err(format!("{} contains non-Unicode data", Self::ENDPOINT_ENV));
@@ -385,13 +385,13 @@ impl MidenRpcSettings {
 
     fn resolve(
         network: NetworkType,
-        endpoint_override: Option<String>,
+        endpoint_override: Option<crate::secret::CredentialUrl>,
         timeout_ms: u32,
         max_attempts: u32,
     ) -> Result<Self, String> {
         match endpoint_override {
             Some(value) => {
-                let trimmed = value.trim();
+                let trimmed = value.expose_secret().trim();
                 validate_rpc_endpoint(trimmed)
                     .map_err(|rule| format!("{}: {rule}", Self::ENDPOINT_ENV))?;
                 Ok(Self {
@@ -414,6 +414,10 @@ impl MidenRpcSettings {
 
     pub(crate) fn endpoint(&self) -> &crate::secret::CredentialUrl {
         &self.endpoint
+    }
+
+    pub(crate) fn network(&self) -> NetworkType {
+        self.network
     }
 
     pub fn timeout(&self) -> std::time::Duration {
@@ -823,7 +827,9 @@ mod tests {
     fn rpc_settings_accept_a_valid_override() {
         let settings = MidenRpcSettings::resolve(
             NetworkType::MidenLocal,
-            Some(" http://node-sidecar:57291 ".to_string()),
+            Some(crate::secret::CredentialUrl::new(
+                " http://node-sidecar:57291 ".to_string(),
+            )),
             30_000,
             1,
         )
@@ -846,7 +852,7 @@ mod tests {
         ] {
             let error = MidenRpcSettings::resolve(
                 NetworkType::MidenLocal,
-                Some(value.to_string()),
+                Some(crate::secret::CredentialUrl::new(value.to_string())),
                 30_000,
                 1,
             )
@@ -867,7 +873,9 @@ mod tests {
         for network in [NetworkType::MidenTestnet, NetworkType::MidenDevnet] {
             let settings = MidenRpcSettings::resolve(
                 network,
-                Some("https://mirror.internal".to_string()),
+                Some(crate::secret::CredentialUrl::new(
+                    "https://mirror.internal".to_string(),
+                )),
                 30_000,
                 1,
             )
@@ -880,7 +888,9 @@ mod tests {
     fn rpc_settings_sanitize_credentials_out_of_the_loggable_endpoint() {
         let settings = MidenRpcSettings::resolve(
             NetworkType::MidenLocal,
-            Some("https://user:s3cret@mirror.internal:8443/rpc?key=abc".to_string()),
+            Some(crate::secret::CredentialUrl::new(
+                "https://user:s3cret@mirror.internal:8443/rpc?key=abc".to_string(),
+            )),
             30_000,
             1,
         )
@@ -955,7 +965,7 @@ mod tests {
         for fixture in fixtures.endpoints {
             let result = MidenRpcSettings::resolve(
                 NetworkType::MidenLocal,
-                Some(fixture.input.clone()),
+                Some(crate::secret::CredentialUrl::new(fixture.input.clone())),
                 30_000,
                 1,
             );

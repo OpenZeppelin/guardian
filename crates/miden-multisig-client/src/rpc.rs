@@ -269,7 +269,7 @@ impl RetryingNodeRpcClient {
         Fut: Future<Output = std::result::Result<T, RpcError>> + Send,
     {
         let attempts = if operation.is_idempotent() {
-            self.policy.max_attempts()
+            self.policy.max_attempts().max(1)
         } else {
             1
         };
@@ -548,7 +548,7 @@ impl RetryingNoteTransportClient {
         F: Fn() -> Fut + Send + Sync,
         Fut: Future<Output = std::result::Result<T, NoteTransportError>> + Send,
     {
-        let attempts = self.policy.max_attempts();
+        let attempts = self.policy.max_attempts().max(1);
         for attempt in 0..attempts {
             match op().await {
                 Ok(value) => return Ok(value),
