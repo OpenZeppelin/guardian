@@ -88,6 +88,11 @@ import {
   type ResolvedProverConfig,
 } from './prover/config.js';
 import { ProverWorkflow } from './prover/workflow.js';
+import {
+  resolveRpcConfig,
+  type ResolvedRpcConfig,
+} from './rpc/config.js';
+import { retryRpcRead } from './rpc/retry.js';
 
 /**
  * Result of fetching account state from GUARDIAN.
@@ -151,6 +156,7 @@ export class Multisig {
   private readonly midenClient: MidenClient;
   private readonly rawClientPromise: Promise<WasmWebClient>;
   private readonly proverWorkflow: ProverWorkflow;
+  private readonly rpcConfig: ResolvedRpcConfig;
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
@@ -164,6 +170,7 @@ export class Multisig {
     accountId: string | undefined,
     midenRpcEndpoint: string,
     proverConfig?: ResolvedProverConfig,
+    rpcConfig?: ResolvedRpcConfig,
   ) {
     this.account = account;
     this.threshold = config.threshold;
@@ -183,6 +190,7 @@ export class Multisig {
       this.midenClient,
       proverConfig ?? resolveProverConfig(undefined, getTransactionProver(midenClient)),
     );
+    this.rpcConfig = rpcConfig ?? resolveRpcConfig(undefined);
   }
 
   private getMidenRpcEndpoint(): string {
@@ -238,7 +246,11 @@ export class Multisig {
    */
   async getStoreAccount(): Promise<Account> {
     const webClient = await this.getRawClient();
-    return (await webClient.getAccount(AccountId.fromHex(this._accountId))) ?? this.account;
+    const stored = await retryRpcRead(
+      () => webClient.getAccount(AccountId.fromHex(this._accountId)),
+      this.rpcConfig,
+    );
+    return stored ?? this.account;
   }
 
   /**
@@ -326,7 +338,10 @@ export class Multisig {
     const state = await this.fetchState();
     const accountId = AccountId.fromHex(this._accountId);
     const webClient = await this.getRawClient();
-    const localAccount = await webClient.getAccount(accountId);
+    const localAccount = await retryRpcRead(
+      () => webClient.getAccount(accountId),
+      this.rpcConfig,
+    );
     let accountForConfigRefresh: Account | null = localAccount ?? null;
 
     const guardianCommitment = normalizeHexWord(state.commitment);
@@ -351,7 +366,10 @@ export class Multisig {
   async verifyStateCommitment(): Promise<AccountStateVerificationResult> {
     const accountId = AccountId.fromHex(this._accountId);
     const webClient = await this.getRawClient();
-    const localAccount = await webClient.getAccount(accountId);
+    const localAccount = await retryRpcRead(
+      () => webClient.getAccount(accountId),
+      this.rpcConfig,
+    );
 
     if (!localAccount) {
       throw new Error(
@@ -434,7 +452,10 @@ export class Multisig {
     const rpcClient = new RpcClient(new Endpoint(this.getMidenRpcEndpoint()));
 
     try {
-      const accountDetails = await rpcClient.getAccountDetails(accountId);
+      const accountDetails = await retryRpcRead(
+        () => rpcClient.getAccountDetails(accountId),
+        this.rpcConfig,
+      );
       // If the account is not found or its commitment is zero, means that the account is not deployed yet
       if (!accountDetails) {
         return null;
@@ -1234,9 +1255,12 @@ export class Multisig {
 
       try {
         const webClient = await this.getRawClient();
-        await webClient.syncState();
+        await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
 
-        const updatedAccount = await webClient.getAccount(accountId);
+        const updatedAccount = await retryRpcRead(
+          () => webClient.getAccount(accountId),
+          this.rpcConfig,
+        );
         if (!updatedAccount) {
           throw new Error(
             `Updated account ${this._accountId} is missing from local client`

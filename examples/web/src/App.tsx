@@ -57,6 +57,7 @@ import {
   MIDEN_RPC_URL,
   GUARDIAN_ENDPOINT,
   PROVER_MAX_ATTEMPTS,
+  RPC_MAX_ATTEMPTS,
   PROVER_URL,
 } from '@/config';
 import { useParaSession } from '@/hooks/useParaSession';
@@ -341,6 +342,7 @@ export default function App() {
             url: PROVER_URL,
             retry: { maxAttempts: PROVER_MAX_ATTEMPTS },
           },
+          { retry: { maxAttempts: RPC_MAX_ATTEMPTS } },
         );
         setGuardianPubkey(pubkey);
         setMultisigClient(msClient);

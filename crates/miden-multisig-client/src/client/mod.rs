@@ -34,6 +34,7 @@ use crate::export::ExportedProposal;
 use crate::keystore::KeyManager;
 use crate::proposal::Proposal;
 use crate::prover::ProverConfig;
+use crate::rpc::RpcConfig;
 
 pub use notes::{ConsumableNote, NoteFilter};
 
@@ -97,6 +98,8 @@ pub struct MultisigClient {
     pub(crate) miden_endpoint: Endpoint,
     /// Prover selection and retry configuration (for recovery).
     pub(crate) prover_config: ProverConfig,
+    /// Node RPC timeout and read-retry configuration (for recovery).
+    pub(crate) rpc_config: RpcConfig,
 }
 
 impl MultisigClient {
@@ -113,6 +116,7 @@ impl MultisigClient {
         account_dir: PathBuf,
         miden_endpoint: Endpoint,
         prover_config: ProverConfig,
+        rpc_config: RpcConfig,
     ) -> Self {
         Self {
             miden_client,
@@ -122,7 +126,12 @@ impl MultisigClient {
             account_dir,
             miden_endpoint,
             prover_config,
+            rpc_config,
         }
+    }
+
+    pub(crate) fn node_rpc_client(&self) -> std::sync::Arc<dyn miden_client::rpc::NodeRpcClient> {
+        crate::builder::configured_node_rpc_client(&self.miden_endpoint, &self.rpc_config)
     }
 
     /// Returns the GUARDIAN endpoint.

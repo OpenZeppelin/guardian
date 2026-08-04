@@ -5,9 +5,15 @@ use std::sync::Arc;
 
 use miden_client::DebugMode;
 use miden_client::builder::ClientBuilder;
-use miden_client::grpc_support::{DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
+use miden_client::grpc_support::{
+    DEFAULT_GRPC_TIMEOUT_MS, DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT,
+};
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::Endpoint;
+use miden_client::note_transport::grpc::GrpcNoteTransportClient;
+use miden_client::note_transport::{
+    NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_TESTNET_ENDPOINT, NoteTransportClient,
+};
+use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
@@ -18,19 +24,75 @@ use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
 use crate::prover::{ProverConfig, ProverSelection, RetryingTransactionProver};
+use crate::rpc::{
+    RetryingNodeRpcClient, RpcConfig, RpcSelection, configured_note_transport_client,
+};
+
+/// Always constructed with the inner miden-client retry loop disabled:
+/// that loop retransmits rate-limited submissions (`is_retryable` covers
+/// `ResourceExhausted`/`Unavailable`), which violates at-most-once
+/// submission. [`RetryingNodeRpcClient`] is the only retry layer, and it
+/// never retries submissions.
+///
+/// The default per-request deadline is the miden-client 10s default on
+/// every path — preset, custom endpoint, and direct commitment reads.
+pub(crate) fn configured_node_rpc_client(
+    endpoint: &Endpoint,
+    rpc_config: &RpcConfig,
+) -> Arc<dyn NodeRpcClient> {
+    let (timeout_ms, retry_policy) = match rpc_config.resolve(DEFAULT_GRPC_TIMEOUT_MS) {
+        RpcSelection::Passthrough => (DEFAULT_GRPC_TIMEOUT_MS, None),
+        RpcSelection::Configured {
+            timeout_ms,
+            retry_policy,
+        } => (timeout_ms, Some(retry_policy)),
+    };
+    let grpc: Arc<dyn NodeRpcClient> =
+        Arc::new(GrpcClient::new(endpoint, timeout_ms).with_max_retries(0));
+    match retry_policy {
+        Some(policy) if policy.max_attempts() > 1 => {
+            Arc::new(RetryingNodeRpcClient::new(grpc, &policy))
+        }
+        _ => grpc,
+    }
+}
+
+fn note_transport_endpoint(endpoint: &Endpoint) -> Option<&'static str> {
+    if endpoint == &Endpoint::testnet() {
+        Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
+    } else if endpoint == &Endpoint::devnet() {
+        Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
+    } else {
+        None
+    }
+}
 
 fn configured_client_builder(
     endpoint: &Endpoint,
     prover_config: &ProverConfig,
+    rpc_config: &RpcConfig,
 ) -> ClientBuilder<FilesystemKeyStore> {
-    let builder = if endpoint == &Endpoint::devnet() {
+    let base = if endpoint == &Endpoint::devnet() {
         ClientBuilder::<FilesystemKeyStore>::for_devnet()
     } else if endpoint == &Endpoint::testnet() {
         ClientBuilder::<FilesystemKeyStore>::for_testnet()
     } else if endpoint == &Endpoint::localhost() {
         ClientBuilder::<FilesystemKeyStore>::for_localhost()
     } else {
-        ClientBuilder::<FilesystemKeyStore>::new().grpc_client(endpoint, Some(20_000))
+        ClientBuilder::<FilesystemKeyStore>::new()
+    };
+
+    let builder = base.rpc(configured_node_rpc_client(endpoint, rpc_config));
+
+    let builder = match note_transport_endpoint(endpoint) {
+        Some(transport_endpoint) if rpc_config.retry_policy().max_attempts() > 1 => {
+            let transport: Arc<dyn NoteTransportClient> = Arc::new(GrpcNoteTransportClient::new(
+                transport_endpoint.to_string(),
+                DEFAULT_GRPC_TIMEOUT_MS,
+            ));
+            builder.note_transport(configured_note_transport_client(transport, rpc_config))
+        }
+        _ => builder,
     };
 
     let default_remote = if endpoint == &Endpoint::devnet() {
@@ -81,6 +143,7 @@ pub struct MultisigClientBuilder {
     account_dir: Option<PathBuf>,
     key_manager: Option<Arc<dyn KeyManager>>,
     prover_config: ProverConfig,
+    rpc_config: RpcConfig,
 }
 
 impl Default for MultisigClientBuilder {
@@ -98,6 +161,7 @@ impl MultisigClientBuilder {
             account_dir: None,
             key_manager: None,
             prover_config: ProverConfig::new(),
+            rpc_config: RpcConfig::new(),
         }
     }
 
@@ -116,6 +180,12 @@ impl MultisigClientBuilder {
     /// Configures the remote transaction prover and its retry policy.
     pub fn prover_config(mut self, prover_config: ProverConfig) -> Self {
         self.prover_config = prover_config;
+        self
+    }
+
+    /// Configures the Miden node RPC timeout and idempotent-read retry policy.
+    pub fn rpc_config(mut self, rpc_config: RpcConfig) -> Self {
+        self.rpc_config = rpc_config;
         self
     }
 
@@ -178,8 +248,13 @@ impl MultisigClientBuilder {
             MultisigError::MidenClient(format!("failed to create account dir: {}", e))
         })?;
 
-        let miden_client =
-            create_miden_client(&account_dir, &miden_endpoint, &self.prover_config).await?;
+        let miden_client = create_miden_client(
+            &account_dir,
+            &miden_endpoint,
+            &self.prover_config,
+            &self.rpc_config,
+        )
+        .await?;
 
         Ok(MultisigClient::new(
             miden_client,
@@ -188,6 +263,7 @@ impl MultisigClientBuilder {
             account_dir,
             miden_endpoint,
             self.prover_config,
+            self.rpc_config,
         ))
     }
 }
@@ -200,6 +276,7 @@ pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
     prover_config: &ProverConfig,
+    rpc_config: &RpcConfig,
 ) -> Result<MidenSdkClient> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -218,7 +295,7 @@ pub(crate) async fn create_miden_client(
     let rng_seed: [u32; 4] = rand::random();
     let rng = Box::new(RandomCoin::new(rng_seed.into()));
 
-    configured_client_builder(endpoint, prover_config)
+    configured_client_builder(endpoint, prover_config, rpc_config)
         .store(store)
         .rng(rng)
         .in_debug_mode(DebugMode::Enabled)
@@ -227,4 +304,30 @@ pub(crate) async fn create_miden_client(
         .build()
         .await
         .map_err(|e| MultisigError::MidenClient(format!("failed to create miden client: {}", e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn note_transport_endpoints_exist_only_for_public_presets() {
+        assert_eq!(
+            note_transport_endpoint(&Endpoint::testnet()),
+            Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
+        );
+        assert_eq!(
+            note_transport_endpoint(&Endpoint::devnet()),
+            Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
+        );
+        assert_eq!(note_transport_endpoint(&Endpoint::localhost()), None);
+        assert_eq!(
+            note_transport_endpoint(&Endpoint::new(
+                "http".to_string(),
+                "node".to_string(),
+                Some(57291)
+            )),
+            None
+        );
+    }
 }

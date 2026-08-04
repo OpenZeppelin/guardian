@@ -1,5 +1,7 @@
 pub mod miden;
 
+pub use miden_rpc_client::RpcReadMode;
+
 use crate::error::GuardianError;
 use crate::metadata::auth::{Auth, Credentials};
 use async_trait::async_trait;
@@ -194,10 +196,16 @@ pub trait NetworkClient: Send + Sync {
 
     /// Compare an expected commitment against the on-chain account commitment.
     /// Returns `Err` only when the comparison could not be made.
+    ///
+    /// Canonicalization call sites must pass [`RpcReadMode::SingleAttempt`]:
+    /// the pass holds a lease and retries structurally on its schedule, so a
+    /// failed read is one missed observation, recovered by the next pass —
+    /// never by re-querying the same endpoint within the pass.
     async fn verify_commitment(
         &self,
         account_id: &str,
         expected_commitment: &str,
+        read_mode: RpcReadMode,
     ) -> Result<StateVerification, String>;
 
     /// Verify delta is valid for given state
@@ -321,6 +329,143 @@ impl NetworkType {
     }
 }
 
+/// Miden node RPC settings resolved from the environment on top of the
+/// declared [`NetworkType`]. The endpoint override changes only the transport
+/// target — network identity (bech32 prefixes, dashboard rendering) always
+/// derives from the network type.
+/// Node RPC settings keyed by the network they configure. Only Miden is
+/// designed today; future networks add a variant here without reshaping the
+/// builder surface.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RpcSettings {
+    Miden(MidenRpcSettings),
+}
+
+impl RpcSettings {
+    /// Resolves node RPC settings from the environment for the declared
+    /// network type. The match is the one place that maps a network to its
+    /// settings family; a future network type extends it here.
+    pub fn from_env(network: NetworkType) -> Result<Self, String> {
+        match network {
+            NetworkType::MidenTestnet | NetworkType::MidenDevnet | NetworkType::MidenLocal => {
+                Ok(Self::Miden(MidenRpcSettings::from_env(network)?))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MidenRpcSettings {
+    endpoint: crate::secret::CredentialUrl,
+    endpoint_overridden: bool,
+    network: NetworkType,
+    timeout_ms: u32,
+    max_attempts: u32,
+}
+
+impl MidenRpcSettings {
+    pub const ENDPOINT_ENV: &str = "GUARDIAN_MIDEN_RPC_ENDPOINT";
+    pub const TIMEOUT_ENV: &str = "GUARDIAN_MIDEN_RPC_TIMEOUT_MS";
+    pub const MAX_ATTEMPTS_ENV: &str = "GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS";
+    pub const DEFAULT_TIMEOUT_MS: u32 = 10_000;
+
+    pub fn from_env(network: NetworkType) -> Result<Self, String> {
+        let endpoint_override = match std::env::var(Self::ENDPOINT_ENV) {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(format!("{} contains non-Unicode data", Self::ENDPOINT_ENV));
+            }
+        };
+        let timeout_ms = positive_u32_from_env(Self::TIMEOUT_ENV, Self::DEFAULT_TIMEOUT_MS)?;
+        let max_attempts = positive_u32_from_env(Self::MAX_ATTEMPTS_ENV, 1)?;
+        Self::resolve(network, endpoint_override, timeout_ms, max_attempts)
+    }
+
+    fn resolve(
+        network: NetworkType,
+        endpoint_override: Option<String>,
+        timeout_ms: u32,
+        max_attempts: u32,
+    ) -> Result<Self, String> {
+        match endpoint_override {
+            Some(value) => {
+                let trimmed = value.trim();
+                validate_rpc_endpoint(trimmed)
+                    .map_err(|rule| format!("{}: {rule}", Self::ENDPOINT_ENV))?;
+                Ok(Self {
+                    endpoint: crate::secret::CredentialUrl::new(trimmed.to_owned()),
+                    endpoint_overridden: true,
+                    network,
+                    timeout_ms,
+                    max_attempts,
+                })
+            }
+            None => Ok(Self {
+                endpoint: crate::secret::CredentialUrl::new(network.rpc_endpoint().to_owned()),
+                endpoint_overridden: false,
+                network,
+                timeout_ms,
+                max_attempts,
+            }),
+        }
+    }
+
+    pub(crate) fn endpoint(&self) -> &crate::secret::CredentialUrl {
+        &self.endpoint
+    }
+
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(u64::from(self.timeout_ms))
+    }
+
+    pub fn read_retry_policy(&self) -> guardian_shared::retry::RetryPolicy {
+        guardian_shared::retry::RetryPolicy::new(self.max_attempts)
+    }
+
+    pub fn client_settings(&self) -> miden_rpc_client::RpcClientSettings {
+        miden_rpc_client::RpcClientSettings::new(self.timeout(), self.read_retry_policy())
+    }
+
+    /// `scheme://host[:port]` only — the full URL may carry credentials.
+    pub fn sanitized_endpoint(&self) -> String {
+        self.endpoint.scheme_and_host()
+    }
+
+    /// An override pointed at a public network identity is legitimate for a
+    /// mirror and a mistake otherwise; callers log a startup warning.
+    pub fn overrides_public_network(&self) -> bool {
+        self.endpoint_overridden
+            && matches!(
+                self.network,
+                NetworkType::MidenTestnet | NetworkType::MidenDevnet
+            )
+    }
+}
+
+fn positive_u32_from_env(key: &str, default: u32) -> Result<u32, String> {
+    match std::env::var(key) {
+        Ok(raw) => match raw.trim().parse::<u32>() {
+            Ok(0) => Err(format!("{key} must be a positive integer, got 0")),
+            Ok(value) => Ok(value),
+            Err(_) => Err(format!("{key} must be a positive integer, got {raw:?}")),
+        },
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{key} must contain valid UTF-8")),
+    }
+}
+
+/// The rule text never echoes the value: the URL may embed credentials.
+fn validate_rpc_endpoint(value: &str) -> Result<(), String> {
+    let rule = "must be an absolute HTTP(S) URL with a host".to_string();
+    let url = url::Url::parse(value).map_err(|_| rule.clone())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none_or(str::is_empty) {
+        return Err(rule);
+    }
+    Ok(())
+}
+
 impl std::fmt::Display for NetworkType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -333,6 +478,7 @@ impl std::fmt::Display for NetworkType {
 
 #[cfg(test)]
 mod tests {
+    use super::MidenRpcSettings;
     use super::{
         GuardianError, NetworkType, ReconstructError, Reconstructor,
         max_concurrent_reconstructions, reconstructor,
@@ -661,5 +807,173 @@ mod tests {
             assert_eq!(NetworkType::from_env(var_name).unwrap(), expected);
         }
         unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[test]
+    fn rpc_settings_default_to_the_network_endpoint() {
+        let settings = MidenRpcSettings::resolve(NetworkType::MidenLocal, None, 30_000, 1).unwrap();
+        assert_eq!(
+            settings.endpoint().expose_secret(),
+            "http://localhost:57291"
+        );
+        assert!(!settings.overrides_public_network());
+    }
+
+    #[test]
+    fn rpc_settings_accept_a_valid_override() {
+        let settings = MidenRpcSettings::resolve(
+            NetworkType::MidenLocal,
+            Some(" http://node-sidecar:57291 ".to_string()),
+            30_000,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.endpoint().expose_secret(),
+            "http://node-sidecar:57291"
+        );
+        assert!(!settings.overrides_public_network());
+    }
+
+    #[test]
+    fn rpc_settings_reject_invalid_overrides_without_echoing_the_value() {
+        for value in [
+            "localhost:57291",
+            "rpc.example",
+            "ftp://rpc.example",
+            "https://",
+            "",
+        ] {
+            let error = MidenRpcSettings::resolve(
+                NetworkType::MidenLocal,
+                Some(value.to_string()),
+                30_000,
+                1,
+            )
+            .unwrap_err();
+            assert!(error.contains("GUARDIAN_MIDEN_RPC_ENDPOINT"), "{error}");
+            assert!(error.contains("absolute HTTP(S) URL"), "{error}");
+            if !value.is_empty() {
+                assert!(
+                    !error.contains(value),
+                    "error must not echo the value: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rpc_settings_flag_public_network_overrides() {
+        for network in [NetworkType::MidenTestnet, NetworkType::MidenDevnet] {
+            let settings = MidenRpcSettings::resolve(
+                network,
+                Some("https://mirror.internal".to_string()),
+                30_000,
+                1,
+            )
+            .unwrap();
+            assert!(settings.overrides_public_network());
+        }
+    }
+
+    #[test]
+    fn rpc_settings_sanitize_credentials_out_of_the_loggable_endpoint() {
+        let settings = MidenRpcSettings::resolve(
+            NetworkType::MidenLocal,
+            Some("https://user:s3cret@mirror.internal:8443/rpc?key=abc".to_string()),
+            30_000,
+            1,
+        )
+        .unwrap();
+        let sanitized = settings.sanitized_endpoint();
+        assert_eq!(sanitized, "https://mirror.internal:8443");
+        assert!(!sanitized.contains("s3cret"));
+        assert!(!sanitized.contains("key=abc"));
+    }
+
+    #[test]
+    fn rpc_settings_from_env_reads_the_override() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let var = MidenRpcSettings::ENDPOINT_ENV;
+        unsafe { std::env::set_var(var, "http://node-sidecar:57291") };
+        let settings = MidenRpcSettings::from_env(NetworkType::MidenLocal).unwrap();
+        unsafe { std::env::remove_var(var) };
+        assert_eq!(
+            settings.endpoint().expose_secret(),
+            "http://node-sidecar:57291"
+        );
+    }
+
+    #[test]
+    fn rpc_settings_parse_timeout_and_attempts_with_defaults() {
+        let settings = MidenRpcSettings::resolve(
+            NetworkType::MidenLocal,
+            None,
+            MidenRpcSettings::DEFAULT_TIMEOUT_MS,
+            1,
+        )
+        .unwrap();
+        assert_eq!(settings.timeout(), std::time::Duration::from_secs(10));
+        assert_eq!(settings.read_retry_policy().max_attempts(), 1);
+
+        let tuned = MidenRpcSettings::resolve(NetworkType::MidenLocal, None, 10_000, 2).unwrap();
+        assert_eq!(tuned.timeout(), std::time::Duration::from_millis(10_000));
+        assert_eq!(tuned.read_retry_policy().max_attempts(), 2);
+    }
+
+    #[test]
+    fn rpc_settings_from_env_reject_malformed_numbers() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let var = MidenRpcSettings::TIMEOUT_ENV;
+        unsafe { std::env::set_var(var, "not-a-number") };
+        let error = MidenRpcSettings::from_env(NetworkType::MidenLocal).unwrap_err();
+        unsafe { std::env::remove_var(var) };
+        assert!(error.contains(var), "{error}");
+
+        let attempts_var = MidenRpcSettings::MAX_ATTEMPTS_ENV;
+        unsafe { std::env::set_var(attempts_var, "0") };
+        let error = MidenRpcSettings::from_env(NetworkType::MidenLocal).unwrap_err();
+        unsafe { std::env::remove_var(attempts_var) };
+        assert!(error.contains(attempts_var), "{error}");
+    }
+
+    #[test]
+    fn rpc_endpoint_validation_matches_the_fixture_corpus() {
+        #[derive(serde::Deserialize)]
+        struct Fixtures {
+            endpoints: Vec<EndpointFixture>,
+        }
+        #[derive(serde::Deserialize)]
+        struct EndpointFixture {
+            input: String,
+            valid: bool,
+        }
+        let fixtures: Fixtures = serde_json::from_str(include_str!(
+            "../../../../fixtures/miden-multisig-client/rpc-policy-fixtures.json"
+        ))
+        .expect("fixtures must parse");
+        for fixture in fixtures.endpoints {
+            let result = MidenRpcSettings::resolve(
+                NetworkType::MidenLocal,
+                Some(fixture.input.clone()),
+                30_000,
+                1,
+            );
+            assert_eq!(result.is_ok(), fixture.valid, "input: {:?}", fixture.input);
+        }
+    }
+
+    #[test]
+    fn rpc_settings_from_env_map_miden_networks_to_the_miden_family() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        for network in [
+            NetworkType::MidenLocal,
+            NetworkType::MidenTestnet,
+            NetworkType::MidenDevnet,
+        ] {
+            let settings = super::RpcSettings::from_env(network).unwrap();
+            let super::RpcSettings::Miden(miden) = settings;
+            assert_eq!(miden.endpoint().expose_secret(), network.rpc_endpoint());
+        }
     }
 }

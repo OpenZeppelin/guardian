@@ -72,6 +72,7 @@ import {
   DEFAULT_MIDEN_DB_NAME,
   DEFAULT_MIDEN_RPC_URL,
   DEFAULT_PROVER_MAX_ATTEMPTS,
+  DEFAULT_RPC_MAX_ATTEMPTS,
   DEFAULT_PROVER_URL,
 } from './config';
 
@@ -683,6 +684,7 @@ export function useSmokeHarness(): {
                   url: DEFAULT_PROVER_URL,
                   retry: { maxAttempts: DEFAULT_PROVER_MAX_ATTEMPTS },
                 },
+                { retry: { maxAttempts: DEFAULT_RPC_MAX_ATTEMPTS } },
               );
               const nextSigners = applySignatureScheme(
                 await initializeLocalSigners(),

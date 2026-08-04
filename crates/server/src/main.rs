@@ -5,7 +5,7 @@ use server::builder::{ServerBuilder, storage::StorageMetadataBuilder};
 use server::canonicalization::CanonicalizationConfig;
 use server::logging::LoggingConfig;
 use server::middleware::{BodyLimitConfig, CorsConfig, RateLimitConfig};
-use server::network::NetworkType;
+use server::network::{NetworkType, RpcSettings};
 use std::env;
 use std::path::PathBuf;
 
@@ -37,6 +37,7 @@ async fn main() {
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(network_type)
+        .with_rpc(RpcSettings::from_env(network_type).expect("Invalid RPC configuration"))
         .with_canonicalization(Some(
             CanonicalizationConfig::new(10, 48)
                 .with_submission_grace_period_seconds(600)

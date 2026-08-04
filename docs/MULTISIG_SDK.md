@@ -132,10 +132,87 @@ proving conditions such as cancellation, deadlines, temporary unavailability,
 capacity exhaustion, HTTP 408/429/502/503/504, I/O timeout, connection reset,
 and broken pipe. Permanent or unrecognized failures return immediately.
 
-Only proving is retried: transaction execution, GUARDIAN coordination, Miden
-submission, and local application each run once. A larger attempt budget can
-recover from brief failures but does not add prover capacity. This policy does
-not alter or retry Miden RPC requests.
+Only proving is retried by this policy: transaction execution, GUARDIAN
+coordination, Miden submission, and local application each run once. A larger
+attempt budget can recover from brief failures but does not add prover
+capacity. Idempotent Miden node reads have their own opt-in retry policy — see
+the next section.
+
+### Miden RPC retry policy
+
+Both multisig SDKs retry idempotent Miden node reads under an `rpc` policy
+that mirrors the prover configuration. The default is two total attempts —
+one classified, jittered retry — matching the prover policy's default; an
+explicit `maxAttempts` of 1 opts out. Transaction submission is **never
+retried**, under any configuration: a submission whose outcome is unknown
+could execute twice if re-sent.
+
+Coverage differs by language. In Rust, the policy wraps the node client
+itself, so every node read the SDK or the underlying Miden client issues —
+syncs, account, note, and block lookups — retries under it. On the testnet
+and devnet presets the same policy also covers the private-note transport:
+note fetches and stream establishment retry, while **note sends are never
+retried in-call** (the client's relay outbox re-sends undelivered notes on
+later syncs, so an in-call resend could deliver twice). Connection failures
+retry only when the cause is transport-shaped; TLS, certificate, and
+invalid-endpoint problems fail immediately. In TypeScript,
+the policy wraps the reads the SDK issues directly: on-chain account lookups,
+state-commitment verification, and the guardian-switch node sync; syncs you
+perform on the injected Miden client are owned by your application. As part
+of this policy the Rust SDK also disables the Miden client library's internal
+transport-retry loop, which silently retransmitted rate-limited requests —
+**including submissions** — up to four extra times. This explicit policy is
+the only retry layer: reads get one retry by default, submissions never.
+
+```typescript
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
+  prover: { retry: { maxAttempts: 4 } },
+  rpc: { retry: { maxAttempts: 3 } },
+});
+```
+
+```rust
+use miden_multisig_client::{RpcConfig, RpcRetryPolicy};
+
+let rpc = RpcConfig::new()
+    .with_timeout_ms(15_000)?
+    .with_retry_policy(RpcRetryPolicy::new(3));
+
+let client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::devnet())
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig-client")
+    .rpc_config(rpc)
+    .generate_key()
+    .build()
+    .await?;
+```
+
+The classifier is shared with the prover policy (same transient/permanent
+partition and backoff), extended with the node's transport renderings: a
+rate-limit rejection (`Too Many Requests!`), and connection failures the node
+reports under an `Unknown` status (`i/o timeout`, `connection error`,
+`transport error`). Permanent failures — invalid arguments, not-found,
+authentication — return immediately without consuming the budget, and once
+the budget is exhausted the final upstream error is returned unchanged. A
+larger budget adds patience against a rate-limited or briefly unreachable
+node; it does not add node capacity.
+
+In Rust, the per-request gRPC deadline defaults to 10 seconds on every SDK
+node connection (presets, custom endpoints, and the direct commitment
+reads); `with_timeout_ms` replaces it uniformly.
+The TypeScript configuration intentionally has **no timeout**: the browser
+WASM RPC client cannot cancel an in-flight request, and a JavaScript-side
+timeout would abandon the call — whose side effects may still land — while
+reporting failure. Retry behavior itself is fixture-verified to be identical
+across both SDKs.
+
+The Guardian server exposes the same policy for its own node reads via
+`GUARDIAN_MIDEN_RPC_ENDPOINT`, `GUARDIAN_MIDEN_RPC_TIMEOUT_MS`, and
+`GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` — see
+[docs/CONFIGURATION.md](./CONFIGURATION.md).
 
 #### Rust
 

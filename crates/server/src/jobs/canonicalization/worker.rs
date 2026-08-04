@@ -34,7 +34,7 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
     // TTL outlives several renew cycles so a healthy holder never loses the lease
     // mid-pass and the lease survives the idle gap between ticks; failover after a
     // crash happens within one TTL.
-    let lease_ttl = check_interval * 3;
+    let lease_ttl = config.lease_ttl();
     let renew_interval = check_interval;
     let mut full_timer = interval(check_interval);
     let mut fast_timer = interval(config.fast_promotion_interval());

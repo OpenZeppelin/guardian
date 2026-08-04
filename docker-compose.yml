@@ -23,6 +23,10 @@ services:
       - GUARDIAN_METADATA_PATH=/var/guardian/metadata
       - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
       - GUARDIAN_NETWORK_TYPE
+      # Optional Miden RPC overrides; pass through from the host environment.
+      - GUARDIAN_MIDEN_RPC_ENDPOINT
+      - GUARDIAN_MIDEN_RPC_TIMEOUT_MS
+      - GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS
 
 volumes:
   guardian-storage:

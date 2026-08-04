@@ -3303,12 +3303,12 @@ dependencies = [
 name = "guardian-shared"
 version = "0.16.0"
 dependencies = [
+ "async-trait",
  "base64",
  "hex",
  "miden-protocol",
  "miden-standards",
  "prost",
- "rand 0.8.5",
  "serde",
  "serde_json",
  "utoipa",
@@ -5009,11 +5009,15 @@ dependencies = [
 
 [[package]]
 name = "miden-rpc-client"
-version = "0.1.0"
+version = "0.16.0"
 dependencies = [
+ "async-trait",
+ "guardian-shared",
  "hex",
  "miden-node-proto",
  "miden-protocol",
+ "rand 0.8.5",
+ "thiserror 2.0.18",
  "tokio",
  "tonic",
 ]

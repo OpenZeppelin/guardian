@@ -111,6 +111,13 @@ function grpcMessageEvidence(message: string): StructuredEvidence | undefined {
   return hasTransient ? 'transient' : undefined;
 }
 
+/**
+ * The node's transport layer renders dropped connections with wording the
+ * prover policy deliberately rejects, so these extras apply to node-RPC
+ * classification only. Guarded by the negative classification fixtures.
+ */
+const RPC_TRANSPORT_SIGNALS = ['connection error', 'transport error'];
+
 function flattenedTransient(message: string): boolean {
   return [
     'cancelled',
@@ -130,6 +137,7 @@ function flattenedTransient(message: string): boolean {
     'io timeout',
     'connection reset',
     'broken pipe',
+    ...RPC_TRANSPORT_SIGNALS,
   ].some((signal) => message.includes(signal));
 }
 
@@ -137,7 +145,7 @@ function asRecord(value: unknown): ErrorRecord | undefined {
   return typeof value === 'object' && value !== null ? value as ErrorRecord : undefined;
 }
 
-export function isTransientProverError(error: unknown): boolean {
+export function isTransientRpcError(error: unknown): boolean {
   const seen = new Set<object>();
   const messages: string[] = [];
   let hasTransient = false;

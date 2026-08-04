@@ -50,8 +50,18 @@ client's prover is preserved. By default, cloneable remote provers get two total
 attempts; endpoint-less injected provers, including local and callback provers,
 run once. A custom URL must be absolute HTTP(S), overrides the injected prover,
 and never falls back to a default endpoint. Retries apply only to transient
-proof failures; transaction execution, submission, local state application,
-GUARDIAN calls, and Miden RPC requests are not retried.
+proof failures; transaction execution, submission, local state application, and
+GUARDIAN calls are not retried.
+
+An optional `rpc` configuration (`rpc: { retry: { maxAttempts: 3 } }`) tunes
+retries for the idempotent Miden node reads this SDK issues — on-chain
+account lookups, state-commitment verification, and the guardian-switch node
+sync — against transient failures such as rate limiting. The default is two
+total attempts (one retry); an explicit `maxAttempts` of 1 opts out. Syncs
+performed directly on the injected Miden client are owned by the
+application. Transaction submission is never retried under any
+configuration: a submission whose outcome is unknown could execute twice if
+re-sent.
 
 ## Usage
 

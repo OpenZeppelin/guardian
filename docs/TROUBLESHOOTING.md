@@ -21,10 +21,22 @@ Most startup failures are environment misconfiguration. Check in order:
    Replace the variable with `MidenLocal`, `MidenTestnet`, or
    `MidenDevnet` (short forms `local`/`testnet`/`devnet` work,
    case-insensitive).
-2. **`DATABASE_URL` missing under `--features postgres`.** The builder
+2. **Miden node unreachable or Miden RPC settings invalid.** The initial
+   node connection retries transient failures for ≈35 seconds (5 attempts
+   with backoff) before failing startup with
+   `Failed to create network client: failed to connect to the Miden RPC endpoint` —
+   a brief node blip at boot no longer kills the server, but a genuinely
+   down or wrong endpoint still does, as do TLS/certificate
+   misconfigurations, which fail immediately without retrying. An invalid
+   `GUARDIAN_MIDEN_RPC_ENDPOINT` (not an absolute `http(s)` URL with a
+   host) also fails immediately. Note that
+   `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` never affects canonicalization: those
+   reads make one attempt per pass and transient failures are recovered by
+   the next scheduled pass. See [CONFIGURATION.md](./CONFIGURATION.md).
+3. **`DATABASE_URL` missing under `--features postgres`.** The builder
    panics with `"DATABASE_URL environment variable is required"`. Either
    set it or rebuild without the `postgres` feature.
-3. **Filesystem paths not writable.** Filesystem builds use
+4. **Filesystem paths not writable.** Filesystem builds use
    `GUARDIAN_STORAGE_PATH`, `GUARDIAN_METADATA_PATH`, and
    `GUARDIAN_KEYSTORE_PATH` when set, defaulting to
    `/var/guardian/storage`, `/var/guardian/metadata`, and
@@ -34,14 +46,14 @@ Most startup failures are environment misconfiguration. Check in order:
    Either set the env vars to a writable location or `mkdir -p`
    `/var/guardian/{storage,metadata,keystore}` with the right
    permissions.
-4. **Postgres migrations fail.** The Postgres path runs migrations at
+5. **Postgres migrations fail.** The Postgres path runs migrations at
    startup. If the DB user lacks `CREATE` permissions, startup fails.
    Grant `CREATE` on the schema or run migrations as a privileged user.
-5. **ACK secrets missing in prod.**
+6. **ACK secrets missing in prod.**
    `scripts/aws-deploy.sh deploy` refuses to apply if either ACK secret
    is missing. Run `DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys`
    first (see [Secrets runbook](./runbooks/secrets.md#bootstrap-first-prod-deploy)).
-6. **Operator allowlist source not set.** If you intend to use the
+7. **Operator allowlist source not set.** If you intend to use the
    dashboard, set `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` (prod) or
    `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` (local). Without either, the
    dashboard is unreachable.

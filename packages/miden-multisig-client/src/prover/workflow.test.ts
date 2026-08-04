@@ -89,6 +89,37 @@ describe('ProverWorkflow', () => {
     expect(runtime.sleep).toHaveBeenCalledTimes(1);
   });
 
+  it('never re-submits when submission fails with transient-looking wording', async () => {
+    const rateLimited = Object.assign(new Error('Too Many Requests!'), {
+      code: 'ResourceExhausted',
+    });
+    const submit = vi.fn().mockRejectedValue(rateLimited);
+    const prove = vi.fn().mockResolvedValue({ submit });
+    const client = {
+      transactions: { executeRequest: vi.fn().mockResolvedValue({ prove }) },
+    };
+    const runtime: RetryRuntime = {
+      sleep: vi.fn().mockResolvedValue(undefined),
+      unitRandom: () => 0.5,
+    };
+    const workflow = new ProverWorkflow(
+      asType<MidenClient>(client),
+      {
+        kind: 'remote',
+        maxAttempts: 5,
+        createProver: () => asType<TransactionProver>({}),
+      },
+      runtime,
+    );
+
+    await expect(
+      workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({})),
+    ).rejects.toBe(rateLimited);
+    expect(prove).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(runtime.sleep).not.toHaveBeenCalled();
+  });
+
   it('uses the injected prover directly when no cloneable remote override exists', async () => {
     const apply = vi.fn().mockResolvedValue({});
     const submit = vi.fn().mockResolvedValue({ apply });
