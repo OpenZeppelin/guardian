@@ -209,10 +209,24 @@ impl NetworkClient for MidenNetworkClient {
             // reconstructs with the selector OFF, its commitment never matches the
             // chain, and the candidate is condemned as diverged instead of
             // canonicalizing — so release-on-switch (#305) never fires. An unparseable
-            // prev state falls back to `false`, preserving the delta's own selector.
-            guardian_enabled_pre_tx = Account::from_json(prev_state_json)
-                .map(|prev| MidenAccountInspector::new(&prev).has_guardian_auth())
-                .unwrap_or(false);
+            // prev state falls back to `false`, preserving the delta's own selector —
+            // but that fallback silently reintroduces exactly this divergence for
+            // guardian accounts, and a configured account always has a parseable
+            // initial state, so the warn below is silent in healthy operation and
+            // loud precisely when it matters.
+            guardian_enabled_pre_tx = match Account::from_json(prev_state_json) {
+                Ok(prev) => MidenAccountInspector::new(&prev).has_guardian_auth(),
+                Err(e) => {
+                    tracing::warn!(
+                        account_id = %account_delta.id().to_hex(),
+                        error = %e,
+                        "Unparseable prev state while reconstructing a full-state \
+                         delta; assuming guardian-disabled — a first-tx \
+                         SwitchGuardian will reconstruct diverged"
+                    );
+                    false
+                }
+            };
             Account::try_from(account_delta).map_err(|e| {
                 tracing::error!(
                     account_id = %account_delta.id().to_hex(),
@@ -720,7 +734,10 @@ mod tests {
 
         let delta_payload = tx_summary.to_json();
 
-        // For full state deltas, prev_state_json is ignored since we're creating a new account
+        // Full-state deltas read prev_state_json only for the pre-tx guardian
+        // selector; an unparseable prev state falls back to guardian-disabled
+        // (with a warn), which is fine here — this account has no guardian
+        // component, so the empty prev state exercises exactly that fallback.
         let empty_prev_state = serde_json::json!({});
 
         let (new_state_json, new_commitment) = client
