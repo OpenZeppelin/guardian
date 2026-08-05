@@ -446,6 +446,7 @@ impl MultisigClient {
         self.miden_client = create_miden_client(
             &self.account_dir,
             &self.miden_endpoint,
+            self.note_transport_endpoint.as_deref(),
             &self.prover_config,
             &self.rpc_config,
         )

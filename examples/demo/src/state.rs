@@ -58,6 +58,7 @@ impl SessionState {
     pub async fn initialize_client(
         &mut self,
         miden_endpoint: Endpoint,
+        note_transport_url: Option<String>,
         guardian_endpoint: &str,
         signature_scheme: SignatureScheme,
         prover_config: ProverConfig,
@@ -76,6 +77,11 @@ impl SessionState {
             .prover_config(prover_config)
             .rpc_config(rpc_config)
             .account_dir(account_dir);
+
+        let builder = match note_transport_url {
+            Some(url) => builder.note_transport_endpoint(url),
+            None => builder,
+        };
 
         let mut client = match self.signature_scheme {
             SignatureScheme::Falcon => builder.generate_key(),

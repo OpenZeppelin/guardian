@@ -91,6 +91,7 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     }
 
     let rpc_config = rpc_config_from_env()?;
+    let note_transport_url = note_transport_url_from_env()?;
 
     println!("\n  GUARDIAN Server: {}", guardian_endpoint);
     println!(
@@ -132,6 +133,7 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     state
         .initialize_client(
             miden_endpoint,
+            note_transport_url,
             &guardian_endpoint,
             signature_scheme,
             prover_config,
@@ -232,6 +234,21 @@ fn rpc_config_from_env() -> Result<RpcConfig, String> {
         }
     }
     Ok(rpc_config)
+}
+
+/// Reads the optional note transport endpoint override from
+/// `MIDEN_NOTE_TRANSPORT_URL`; unset keeps the SDK's preset mapping.
+fn note_transport_url_from_env() -> Result<Option<String>, String> {
+    match std::env::var("MIDEN_NOTE_TRANSPORT_URL") {
+        Ok(value) if value.trim().is_empty() => {
+            Err("MIDEN_NOTE_TRANSPORT_URL must not be empty".to_string())
+        }
+        Ok(value) => Ok(Some(value.trim().to_string())),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("MIDEN_NOTE_TRANSPORT_URL contains non-Unicode data".to_string())
+        }
+    }
 }
 
 #[tokio::main]

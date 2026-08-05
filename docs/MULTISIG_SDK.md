@@ -149,13 +149,14 @@ could execute twice if re-sent.
 
 Coverage differs by language. In Rust, the policy wraps the node client
 itself, so every node read the SDK or the underlying Miden client issues —
-syncs, account, note, and block lookups — retries under it. On the testnet
-and devnet presets the same policy also covers the private-note transport:
-note fetches and stream establishment retry, while **note sends are never
-retried in-call** (the client's relay outbox re-sends undelivered notes on
-later syncs, so an in-call resend could deliver twice). Connection failures
-retry only when the cause is transport-shaped; TLS, certificate, and
-invalid-endpoint problems fail immediately. In TypeScript,
+syncs, account, note, and block lookups — retries under it. The same policy
+also covers the private-note transport: note fetches and stream
+establishment retry, while **note sends are never retried in-call** (the
+client's relay outbox re-sends undelivered notes on later syncs, so an
+in-call resend could deliver twice). Configuring the transport endpoint
+itself is covered in [Note transport endpoint](#note-transport-endpoint).
+Connection failures retry only when the cause is transport-shaped; TLS,
+certificate, and invalid-endpoint problems fail immediately. In TypeScript,
 the policy wraps the reads the SDK issues directly: on-chain account lookups,
 state-commitment verification, and the guardian-switch node sync; syncs you
 perform on the injected Miden client are owned by your application. As part
@@ -213,6 +214,50 @@ The Guardian server exposes the same policy for its own node reads via
 `GUARDIAN_MIDEN_RPC_ENDPOINT`, `GUARDIAN_MIDEN_RPC_TIMEOUT_MS`, and
 `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` — see
 [docs/CONFIGURATION.md](./CONFIGURATION.md).
+
+### Note transport endpoint
+
+Private notes are relayed through a note transport service that is separate
+from the node RPC. On the testnet and devnet presets both SDKs derive the
+transport endpoint automatically; a custom node endpoint has no derivable
+transport service, so it must be set explicitly — otherwise private-note
+relay is disabled.
+
+In Rust the endpoint lives on the builder, next to the node endpoint:
+
+```rust
+let client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::try_from("https://my-node.internal:57291")?)
+    .note_transport_endpoint("https://my-transport.internal")
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig-client")
+    .generate_key()
+    .build()
+    .await?;
+```
+
+In TypeScript the injected Miden client owns note relay, so the endpoint is
+set when constructing it, not on the `MultisigClient` configuration:
+
+```typescript
+import { MidenClient } from '@miden-sdk/miden-sdk';
+import { MultisigClient } from '@openzeppelin/miden-multisig-client';
+
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://my-node.internal:57291',
+  noteTransportUrl: 'https://my-transport.internal',
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://my-node.internal:57291',
+});
+```
+
+`noteTransportUrl` also accepts the `'testnet'` and `'devnet'` shorthands, so
+a custom node on a public network can reuse that network's public transport
+service. In both SDKs the transport shares the node RPC resilience policy
+described above.
 
 #### Rust
 

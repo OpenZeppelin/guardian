@@ -57,7 +57,7 @@ pub(crate) fn configured_node_rpc_client(
     }
 }
 
-fn note_transport_endpoint(endpoint: &Endpoint) -> Option<&'static str> {
+fn preset_note_transport_endpoint(endpoint: &Endpoint) -> Option<&'static str> {
     if endpoint == &Endpoint::testnet() {
         Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
     } else if endpoint == &Endpoint::devnet() {
@@ -67,8 +67,28 @@ fn note_transport_endpoint(endpoint: &Endpoint) -> Option<&'static str> {
     }
 }
 
+/// An explicit endpoint always wires the transport; the preset endpoint is
+/// wired only when the RPC config is customized, so a passthrough build
+/// keeps the upstream miden-client transport defaults.
+fn resolved_note_transport_endpoint(
+    endpoint: &Endpoint,
+    note_transport_endpoint: Option<&str>,
+    rpc_config: &RpcConfig,
+) -> Option<String> {
+    if let Some(url) = note_transport_endpoint {
+        return Some(url.to_string());
+    }
+    match rpc_config.resolve(DEFAULT_GRPC_TIMEOUT_MS) {
+        RpcSelection::Passthrough => None,
+        RpcSelection::Configured { .. } => {
+            preset_note_transport_endpoint(endpoint).map(str::to_string)
+        }
+    }
+}
+
 fn configured_client_builder(
     endpoint: &Endpoint,
+    note_transport_endpoint: Option<&str>,
     prover_config: &ProverConfig,
     rpc_config: &RpcConfig,
 ) -> ClientBuilder<FilesystemKeyStore> {
@@ -84,17 +104,16 @@ fn configured_client_builder(
 
     let builder = base.rpc(configured_node_rpc_client(endpoint, rpc_config));
 
-    let builder = match note_transport_endpoint(endpoint) {
-        Some(transport_endpoint) if rpc_config.retry_policy().max_attempts() > 1 => {
-            let timeout_ms = rpc_config.timeout_ms().unwrap_or(DEFAULT_GRPC_TIMEOUT_MS);
-            let transport: Arc<dyn NoteTransportClient> = Arc::new(GrpcNoteTransportClient::new(
-                transport_endpoint.to_string(),
-                timeout_ms,
-            ));
-            builder.note_transport(configured_note_transport_client(transport, rpc_config))
-        }
-        _ => builder,
-    };
+    let builder =
+        match resolved_note_transport_endpoint(endpoint, note_transport_endpoint, rpc_config) {
+            Some(transport_endpoint) => {
+                let timeout_ms = rpc_config.timeout_ms().unwrap_or(DEFAULT_GRPC_TIMEOUT_MS);
+                let transport: Arc<dyn NoteTransportClient> =
+                    Arc::new(GrpcNoteTransportClient::new(transport_endpoint, timeout_ms));
+                builder.note_transport(configured_note_transport_client(transport, rpc_config))
+            }
+            None => builder,
+        };
 
     let default_remote = if endpoint == &Endpoint::devnet() {
         Some(DEVNET_PROVER_ENDPOINT)
@@ -140,6 +159,7 @@ fn configured_client_builder(
 /// ```
 pub struct MultisigClientBuilder {
     miden_endpoint: Option<Endpoint>,
+    note_transport_endpoint: Option<String>,
     guardian_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
     key_manager: Option<Arc<dyn KeyManager>>,
@@ -158,6 +178,7 @@ impl MultisigClientBuilder {
     pub fn new() -> Self {
         Self {
             miden_endpoint: None,
+            note_transport_endpoint: None,
             guardian_endpoint: None,
             account_dir: None,
             key_manager: None,
@@ -169,6 +190,17 @@ impl MultisigClientBuilder {
     /// Sets the Miden node RPC endpoint.
     pub fn miden_endpoint(mut self, endpoint: Endpoint) -> Self {
         self.miden_endpoint = Some(endpoint);
+        self
+    }
+
+    /// Sets the note transport service endpoint used for private note relay.
+    ///
+    /// Overrides the default derived from the Miden endpoint (the public
+    /// transport services for the testnet and devnet presets). A custom
+    /// Miden node endpoint has no derivable transport service, so this is
+    /// the only way to enable note transport there.
+    pub fn note_transport_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.note_transport_endpoint = Some(endpoint.into());
         self
     }
 
@@ -234,6 +266,14 @@ impl MultisigClientBuilder {
             .miden_endpoint
             .ok_or_else(|| MultisigError::MissingConfig("miden_endpoint".to_string()))?;
 
+        if let Some(endpoint) = &self.note_transport_endpoint
+            && endpoint.trim().is_empty()
+        {
+            return Err(MultisigError::InvalidConfig(
+                "note_transport_endpoint must not be empty".to_string(),
+            ));
+        }
+
         let guardian_endpoint = self
             .guardian_endpoint
             .ok_or_else(|| MultisigError::MissingConfig("guardian_endpoint".to_string()))?;
@@ -252,6 +292,7 @@ impl MultisigClientBuilder {
         let miden_client = create_miden_client(
             &account_dir,
             &miden_endpoint,
+            self.note_transport_endpoint.as_deref(),
             &self.prover_config,
             &self.rpc_config,
         )
@@ -263,6 +304,7 @@ impl MultisigClientBuilder {
             guardian_endpoint,
             account_dir,
             miden_endpoint,
+            self.note_transport_endpoint,
             self.prover_config,
             self.rpc_config,
         ))
@@ -276,6 +318,7 @@ impl MultisigClientBuilder {
 pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
+    note_transport_endpoint: Option<&str>,
     prover_config: &ProverConfig,
     rpc_config: &RpcConfig,
 ) -> Result<MidenSdkClient> {
@@ -296,7 +339,7 @@ pub(crate) async fn create_miden_client(
     let rng_seed: [u32; 4] = rand::random();
     let rng = Box::new(RandomCoin::new(rng_seed.into()));
 
-    configured_client_builder(endpoint, prover_config, rpc_config)
+    configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
         .store(store)
         .rng(rng)
         .in_debug_mode(DebugMode::Enabled)
@@ -310,24 +353,71 @@ pub(crate) async fn create_miden_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rpc::RpcRetryPolicy;
+
+    fn custom_endpoint() -> Endpoint {
+        Endpoint::new("http".to_string(), "node".to_string(), Some(57291))
+    }
+
+    fn single_attempt_config() -> RpcConfig {
+        RpcConfig::new().with_retry_policy(RpcRetryPolicy::new(1))
+    }
 
     #[test]
     fn note_transport_endpoints_exist_only_for_public_presets() {
         assert_eq!(
-            note_transport_endpoint(&Endpoint::testnet()),
+            preset_note_transport_endpoint(&Endpoint::testnet()),
             Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
         );
         assert_eq!(
-            note_transport_endpoint(&Endpoint::devnet()),
+            preset_note_transport_endpoint(&Endpoint::devnet()),
             Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
         );
-        assert_eq!(note_transport_endpoint(&Endpoint::localhost()), None);
+        assert_eq!(preset_note_transport_endpoint(&Endpoint::localhost()), None);
+        assert_eq!(preset_note_transport_endpoint(&custom_endpoint()), None);
+    }
+
+    #[test]
+    fn explicit_note_transport_endpoint_wires_regardless_of_rpc_config() {
         assert_eq!(
-            note_transport_endpoint(&Endpoint::new(
-                "http".to_string(),
-                "node".to_string(),
-                Some(57291)
-            )),
+            resolved_note_transport_endpoint(
+                &custom_endpoint(),
+                Some("https://transport.internal"),
+                &single_attempt_config(),
+            ),
+            Some("https://transport.internal".to_string())
+        );
+        assert_eq!(
+            resolved_note_transport_endpoint(
+                &Endpoint::testnet(),
+                Some("https://transport.internal"),
+                &RpcConfig::new(),
+            ),
+            Some("https://transport.internal".to_string())
+        );
+    }
+
+    #[test]
+    fn preset_note_transport_wires_unless_rpc_config_is_passthrough() {
+        assert_eq!(
+            resolved_note_transport_endpoint(&Endpoint::testnet(), None, &RpcConfig::new()),
+            Some(NOTE_TRANSPORT_TESTNET_ENDPOINT.to_string())
+        );
+        assert_eq!(
+            resolved_note_transport_endpoint(&Endpoint::testnet(), None, &single_attempt_config()),
+            None
+        );
+        let timeout_only = single_attempt_config().with_timeout_ms(5_000).unwrap();
+        assert_eq!(
+            resolved_note_transport_endpoint(&Endpoint::testnet(), None, &timeout_only),
+            Some(NOTE_TRANSPORT_TESTNET_ENDPOINT.to_string())
+        );
+    }
+
+    #[test]
+    fn custom_endpoint_without_override_has_no_note_transport() {
+        assert_eq!(
+            resolved_note_transport_endpoint(&custom_endpoint(), None, &RpcConfig::new()),
             None
         );
     }

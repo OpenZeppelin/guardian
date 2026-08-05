@@ -96,6 +96,8 @@ pub struct MultisigClient {
     pub(crate) account_dir: PathBuf,
     /// Miden node endpoint (for recovery).
     pub(crate) miden_endpoint: Endpoint,
+    /// Note transport endpoint override (for recovery).
+    pub(crate) note_transport_endpoint: Option<String>,
     /// Prover selection and retry configuration (for recovery).
     pub(crate) prover_config: ProverConfig,
     /// Node RPC timeout and read-retry configuration (for recovery).
@@ -109,12 +111,14 @@ impl MultisigClient {
     }
 
     /// Creates a new MultisigClient (internal use, prefer builder).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         miden_client: MidenSdkClient,
         key_manager: Arc<dyn KeyManager>,
         guardian_endpoint: String,
         account_dir: PathBuf,
         miden_endpoint: Endpoint,
+        note_transport_endpoint: Option<String>,
         prover_config: ProverConfig,
         rpc_config: RpcConfig,
     ) -> Self {
@@ -125,6 +129,7 @@ impl MultisigClient {
             account: None,
             account_dir,
             miden_endpoint,
+            note_transport_endpoint,
             prover_config,
             rpc_config,
         }
