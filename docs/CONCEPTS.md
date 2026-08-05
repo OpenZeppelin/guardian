@@ -42,11 +42,13 @@ flowchart LR
   end
   T["M-of-N threshold<br/>(user keys only)"]
   G["Guardian check<br/>(one ACK signature —<br/>never counted toward M)"]
+  B{"Both must pass"}
   A["Transaction authorized"]
   H --> T
   C --> T
-  T --> A
-  G --> A
+  T --> B
+  G --> B
+  B --> A
 ```
 
 - **The user threshold** counts only the user's signer set. The Guardian
@@ -107,7 +109,7 @@ sequenceDiagram
   U->>U: 1. Execute transaction locally, compute delta
   U->>G: 2. Submit signed delta (prev_commitment, nonce, payload)
   G->>G: validate against stored state
-  G-->>U: 3. ACK signature over the tx summary commitment<br/>(delta status: candidate)
+  G-->>U: 3. ACK signature over the transaction summary commitment<br/>(delta status: candidate)
   U->>M: 4. Submit proven account update
   M-->>U: account commitment accepted
   G->>M: poll for canonical commitment
@@ -217,7 +219,7 @@ flowchart TB
   F1["Guardian unavailable"] --> R1["Use local state · retry · rotate provider"]
   F2["Candidate fails canonicalization"] --> R2["Resync from latest canonical · rebuild transaction"]
   F3["Stale delta submission<br/>(prev_commitment mismatch)"] --> R3["Fetch /delta/since · replay canonical deltas · retry"]
-  F4["Operator withholds updates"] --> R4["Compare against Miden · rotate Guardian using cold key"]
+  F4["Operator withholds updates"] --> R4["Compare against Miden · rotate Guardian<br/>(user threshold)"]
   F5["Guardian database corruption"] --> R5["Reject unverifiable data · recover from another device or operator"]
 ```
 
@@ -227,16 +229,16 @@ flowchart TB
 | Stale delta (`commitment_mismatch`) | `400` with `code: commitment_mismatch` | `GET /delta/since` → replay canonical chain → retry the local transaction. |
 | Candidate parked (`retained`) | Delta status flips `candidate` → `retained`; the account is released | Usually means the Miden proof was never submitted, the on-chain commitment diverged, or the guardian's RPC view lagged. No action is strictly required: if the transaction actually landed, the guardian reconciles and promotes it automatically. To move on immediately, refetch state, rebuild and resubmit — a new submission at the same nonce supersedes the retained delta. Because superseding forfeits that automatic recovery, check the delta's status once before resubmitting: if it already flipped to `canonical`, the original transaction landed and there is nothing to redo. |
 | Transaction died after approval (stranded candidate) | New proposals answered `409 conflict_pending_delta` while the candidate waits out the grace + retry window | Call `POST /delta/candidate/abandon` (SDKs: `abandonCandidate` / `abandon_candidate`). The worker confirms over a short quarantine that the transaction did not land, flips the delta to `discarded` with reason `client_abandoned`, and releases the account — typically well under a minute. Poll via `abandonStatus` / `abandon_status`. |
-| Operator censors / withholds | Other cosigners see stale state | Use the user's cold key to rotate Guardian; the new operator inherits canonical state from Miden. |
+| Operator censors / withholds | Other cosigners see stale state | Rotate Guardian by meeting the applicable user threshold (the cold key can participate); the new operator inherits canonical state from Miden. |
 | Account paused by operator | State-transition, proposal, and EVM mutation paths return `409 GUARDIAN_ACCOUNT_PAUSED` with `paused_reason` (reads and `ConfigureAccount` keep working) | Operator-driven safety lever, not a fault. An operator with `accounts:pause` clears it via `POST /dashboard/accounts/{id}/unpause`. See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
 | Account switched to another guardian | After the `switch_guardian` delta canonicalizes on this server, mutation paths return `409 GUARDIAN_ACCOUNT_RELEASED` with `released_at` (reads and `ConfigureAccount` keep working); the dashboard shows `released_at` | Expected outcome of a guardian switch, not a fault. Terminal until the wallet re-onboards via `/configure`, which re-validates the guardian binding. An operator unpause never reactivates a released account. |
 | Pubkey changed unexpectedly | `/pubkey` returns a key your client doesn't pin | Treat as compromise. Halt, verify rotation through an out-of-band channel. |
 
 ## Provider rotation
 
-Because Guardian is non-custodial and Miden is the source of truth, a user
-holding their cold key can switch from one Guardian operator to another
-without the current operator's cooperation:
+Because Guardian is non-custodial and Miden is the source of truth, users
+who can meet their account's signing threshold can switch from one Guardian
+operator to another without the current operator's cooperation:
 
 1. Stand up (or contract with) a new Guardian instance.
 2. Meet the applicable user threshold to execute the `SwitchGuardian`
