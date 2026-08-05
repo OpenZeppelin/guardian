@@ -30,26 +30,45 @@ Guardian is:
 ## The custody spectrum
 
 Traditional crypto custody is binary — either a full custodian holds the
-key, or the user does. Guardian creates a third position by serving as one
-signer in a multisig arrangement, typically:
+key, or the user does. Guardian creates a third position — but **not** by
+holding a seat in the user's multisig. The account component enforces two
+independent checks on every transaction:
 
 ```mermaid
 flowchart LR
-  H["User hot key<br/>(daily transactions)"]
-  C["User cold key<br/>(recovery, offline)"]
-  G["Guardian service key<br/>(policy / co-signing)"]
-  T["2-of-3 threshold"]
+  subgraph S["User signer set"]
+    H["Hot key<br/>(daily transactions)"]
+    C["Cold key<br/>(recovery, offline)"]
+  end
+  T["M-of-N threshold<br/>(user keys only)"]
+  G["Guardian check<br/>(one ACK signature —<br/>never counted toward M)"]
+  A["Transaction authorized"]
   H --> T
   C --> T
-  G --> T
+  T --> A
+  G --> A
 ```
 
-- **Hot + Guardian** signs the everyday transaction path.
-- **Cold + hot** (or **cold alone**, depending on policy) lets the user
-  recover or rotate Guardian without the current Guardian's cooperation.
-- **Guardian alone** can never move funds.
+- **The user threshold** counts only the user's signer set. The Guardian
+  key is stored in a separate storage slot and can never satisfy or
+  contribute to M.
+- **The Guardian check** verifies exactly one Guardian signature over the
+  same transaction summary the cosigners sign. It is a pass/fail gate:
+  the Guardian can veto a transaction by withholding its ACK, but its
+  signature alone authorizes nothing — **Guardian alone can never move
+  funds**.
+- **The rotation exception.** The one transaction the account component
+  executes without the Guardian check is `SwitchGuardian` (rotating the
+  Guardian key), which needs only the user threshold. Guardian's blocking
+  power is therefore temporary and defeasible: the user's own keys can
+  always remove it.
 
-The reference deployment runs as exactly this kind of signer.
+So the Guardian participates in every ordinary transaction, but as a
+separate authentication input — not as one of the M counted signatures.
+Describing the account as "2-of-3" (user hot, user cold, Guardian)
+understates the user threshold's independence and overstates Guardian's
+authority; the accurate description is *M-of-N over user keys, plus a
+removable Guardian gate*.
 
 ## State and Delta
 
@@ -73,7 +92,7 @@ are:
 | **Nonce** | Monotonically increasing counter — orders deltas in the chain. |
 | **Account ID** | Unique identifier; one Guardian hosts many accounts. |
 | **Delta proposal** | Multi-party coordination object — sits in `pending` until threshold cosigners have signed. |
-| **Acknowledgement (ACK)** | Guardian's signature over an accepted delta's new commitment. Clients verify the ACK to confirm a delta was actually accepted by the Guardian they expected. |
+| **Acknowledgement (ACK)** | Guardian's signature over an accepted delta's transaction summary commitment — the same message the cosigners sign. Issued only after Guardian has validated the delta against the stored state. Clients verify the ACK to confirm a delta was actually accepted by the Guardian they expected. |
 
 ## Transaction lifecycle
 
@@ -88,7 +107,7 @@ sequenceDiagram
   U->>U: 1. Execute transaction locally, compute delta
   U->>G: 2. Submit signed delta (prev_commitment, nonce, payload)
   G->>G: validate against stored state
-  G-->>U: 3. ACK signature over new_commitment<br/>(delta status: candidate)
+  G-->>U: 3. ACK signature over the tx summary commitment<br/>(delta status: candidate)
   U->>M: 4. Submit proven account update
   M-->>U: account commitment accepted
   G->>M: poll for canonical commitment
@@ -220,8 +239,11 @@ holding their cold key can switch from one Guardian operator to another
 without the current operator's cooperation:
 
 1. Stand up (or contract with) a new Guardian instance.
-2. Use the cold key to re-configure the account with the new Guardian
-   service key in the multisig set.
+2. Meet the user threshold (cold key included) to execute the
+   `SwitchGuardian` transaction, which installs the new Guardian service
+   key in the account's Guardian slot. This is the rotation exception
+   described above: the account component accepts it without the current
+   Guardian's signature.
 3. Point clients at the new endpoint and pubkey.
 
 The multisig SDK's `SwitchGuardian` flow implements this. See
