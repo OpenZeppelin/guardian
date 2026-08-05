@@ -32,7 +32,7 @@ Guardian is:
 Traditional crypto custody is binary — either a full custodian holds the
 key, or the user does. Guardian creates a third position — but **not** by
 holding a seat in the user's multisig. The account component enforces two
-independent checks on every transaction:
+independent checks on every ordinary transaction:
 
 ```mermaid
 flowchart LR
@@ -239,9 +239,9 @@ holding their cold key can switch from one Guardian operator to another
 without the current operator's cooperation:
 
 1. Stand up (or contract with) a new Guardian instance.
-2. Meet the user threshold (cold key included) to execute the
-   `SwitchGuardian` transaction, which installs the new Guardian service
-   key in the account's Guardian slot. This is the rotation exception
+2. Meet the applicable user threshold to execute the `SwitchGuardian`
+   transaction, which installs the new Guardian service key in the
+   account's Guardian slot. This is the rotation exception
    described above: the account component accepts it without the current
    Guardian's signature.
 3. Point clients at the new endpoint and pubkey.
