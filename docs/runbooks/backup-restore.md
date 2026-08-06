@@ -225,9 +225,10 @@ aws rds delete-db-instance --db-instance-identifier <stack>-postgres-old \
 
 `./scripts/aws-deploy.sh cleanup` destroys everything Terraform manages —
 not just the database but also the subnet group, security group, RDS Proxy,
-ECS service, and the Terraform state entries for all of them. The snapshot
-(`<stack>-postgres-final` and any automated snapshots within the retention
-window) survives, but the stack-intact procedure cannot run against a
+ECS service, and the Terraform state entries for all of them. The final
+snapshot (`<stack>-postgres-final`) survives, but automated backups are
+deleted along with the instance, so point-in-time recovery is no longer
+available. The stack-intact procedure cannot run against a
 destroyed stack: its commands reference resources that no longer exist, and
 a plain redeploy would try to *create* a database, not adopt a restored one.
 
