@@ -12,6 +12,8 @@ description = "Shared types and utilities for Guardian"
 [dependencies]
 async-trait = "0.1"
 miden-protocol = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 base64 = { workspace = true }

@@ -39,11 +39,6 @@ pub enum MultisigError {
         source: Box<miden_client::ClientError>,
     },
 
-    /// Direct Miden RPC error retaining its endpoint and typed gRPC status
-    /// in `source()`.
-    #[error("miden RPC error")]
-    MidenRpc(#[source] Box<RpcError>),
-
     /// Direct Miden RPC error with call-site context, retaining the typed
     /// status.
     #[error("miden RPC error: {message}")]
@@ -215,7 +210,6 @@ impl MultisigError {
     pub fn miden_rpc_kind(&self) -> Option<&GrpcError> {
         match self {
             Self::MidenClientSource { source, .. } => rpc_kind_from_client_error(source),
-            Self::MidenRpc(source) => rpc_kind(source),
             Self::MidenRpcSource { source, .. } => rpc_kind(source),
             Self::TransactionExecutionSource { source, .. } => rpc_kind_from_client_error(source),
             _ => None,
@@ -268,12 +262,6 @@ impl From<miden_client::ClientError> for MultisigError {
     }
 }
 
-impl From<RpcError> for MultisigError {
-    fn from(err: RpcError) -> Self {
-        MultisigError::MidenRpc(Box::new(err))
-    }
-}
-
 impl From<miden_client::transaction::TransactionRequestError> for MultisigError {
     fn from(err: miden_client::transaction::TransactionRequestError) -> Self {
         MultisigError::TransactionExecution(err.to_string())
@@ -311,21 +299,6 @@ mod tests {
             Some(GrpcError::ResourceExhausted)
         ));
         assert!(error.to_string().contains("sync_chain_mmr"));
-    }
-
-    #[test]
-    fn direct_rpc_conversion_retains_typed_rpc_kind() {
-        let error = MultisigError::from(RpcError::RequestError {
-            endpoint: RpcEndpoint::GetAccount,
-            error_kind: GrpcError::Unavailable,
-            endpoint_error: None,
-            source: None,
-        });
-
-        assert!(matches!(
-            error.miden_rpc_kind(),
-            Some(GrpcError::Unavailable)
-        ));
     }
 
     #[test]

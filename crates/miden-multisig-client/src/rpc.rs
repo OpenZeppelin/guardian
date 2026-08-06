@@ -4,8 +4,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use guardian_shared::retry::{
-    RPC_TRANSPORT_SIGNALS, RetryPolicy, RetryRuntime, StructuredEvidence,
-    connect_failure_is_permanent, is_transient_error_with, retry_delay,
+    ProductionRetryRuntime, RPC_TRANSPORT_SIGNALS, RetryPolicy, RetryRuntime, StructuredEvidence,
+    connect_failure_is_permanent, is_transient_error_with, run_retries,
 };
 use miden_client::note_transport::{
     NoteInfo, NoteStream, NoteTransportClient, NoteTransportCursor, NoteTransportError,
@@ -30,7 +30,6 @@ use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
 
 use crate::error::{MultisigError, Result, rpc_kind};
-use crate::prover::ProductionRetryRuntime;
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 2;
 
@@ -183,52 +182,6 @@ pub(crate) fn is_transient_note_transport_error(error: &NoteTransportError) -> b
     is_transient_error_with(error, note_transport_link_evidence, &RPC_TRANSPORT_SIGNALS)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NodeRpcOperation {
-    SetGenesisCommitment,
-    GetBlockHeaderByNumber,
-    GetBlockByNumber,
-    GetNotesById,
-    SyncChainMmr,
-    SyncNotes,
-    SyncNullifiers,
-    GetAccount,
-    GetNoteScriptByRoot,
-    SyncStorageMaps,
-    SyncAccountVault,
-    SyncTransactions,
-    GetNetworkId,
-    GetRpcLimits,
-    GetStatusUnversioned,
-    GetNetworkNoteStatus,
-    SubmitProvenTransaction,
-    SubmitProvenBatch,
-}
-
-impl NodeRpcOperation {
-    fn is_idempotent(self) -> bool {
-        match self {
-            Self::SetGenesisCommitment
-            | Self::GetBlockHeaderByNumber
-            | Self::GetBlockByNumber
-            | Self::GetNotesById
-            | Self::SyncChainMmr
-            | Self::SyncNotes
-            | Self::SyncNullifiers
-            | Self::GetAccount
-            | Self::GetNoteScriptByRoot
-            | Self::SyncStorageMaps
-            | Self::SyncAccountVault
-            | Self::SyncTransactions
-            | Self::GetNetworkId
-            | Self::GetRpcLimits
-            | Self::GetStatusUnversioned
-            | Self::GetNetworkNoteStatus => true,
-            Self::SubmitProvenTransaction | Self::SubmitProvenBatch => false,
-        }
-    }
-}
-
 pub(crate) struct RetryingNodeRpcClient {
     inner: Arc<dyn NodeRpcClient>,
     policy: RetryPolicy,
@@ -257,77 +210,58 @@ impl RetryingNodeRpcClient {
         }
     }
 
-    /// Non-idempotent operations run exactly once regardless of the policy:
-    /// re-sending a submission whose outcome is unknown could execute it twice.
-    async fn execute<T, F, Fut>(
-        &self,
-        operation: NodeRpcOperation,
-        op: F,
-    ) -> std::result::Result<T, RpcError>
+    /// Idempotent reads retry under the configured policy. Submissions never
+    /// route through here — they delegate to the inner client directly.
+    async fn execute<T, F, Fut>(&self, op: F) -> std::result::Result<T, RpcError>
     where
         F: Fn() -> Fut + Send + Sync,
         Fut: Future<Output = std::result::Result<T, RpcError>> + Send,
     {
-        let attempts = if operation.is_idempotent() {
-            self.policy.max_attempts().max(1)
-        } else {
-            1
-        };
-
-        for attempt in 0..attempts {
-            match op().await {
-                Ok(value) => return Ok(value),
-                Err(error) if is_transient_rpc_error(&error) && attempt + 1 < attempts => {
-                    let delay = retry_delay(attempt, self.runtime.unit_random());
-                    self.runtime.sleep(delay).await;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-
-        unreachable!("a normalized retry policy always performs at least one attempt")
+        run_retries(
+            self.policy.max_attempts(),
+            self.runtime.as_ref(),
+            is_transient_rpc_error,
+            |_, _| {},
+            op,
+        )
+        .await
     }
 }
 
 #[async_trait::async_trait]
 impl NodeRpcClient for RetryingNodeRpcClient {
     async fn set_genesis_commitment(&self, commitment: Word) -> std::result::Result<(), RpcError> {
-        self.execute(NodeRpcOperation::SetGenesisCommitment, || {
-            self.inner.set_genesis_commitment(commitment)
-        })
-        .await
+        self.execute(|| self.inner.set_genesis_commitment(commitment))
+            .await
     }
 
     fn has_genesis_commitment(&self) -> Option<Word> {
         self.inner.has_genesis_commitment()
     }
 
+    /// Never retried, regardless of the policy: re-sending a submission whose
+    /// outcome is unknown could execute it twice.
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
         transaction_inputs: TransactionInputs,
     ) -> std::result::Result<BlockNumber, RpcError> {
-        self.execute(NodeRpcOperation::SubmitProvenTransaction, || {
-            self.inner
-                .submit_proven_transaction(proven_transaction.clone(), transaction_inputs.clone())
-        })
-        .await
+        self.inner
+            .submit_proven_transaction(proven_transaction, transaction_inputs)
+            .await
     }
 
+    /// Never retried, regardless of the policy: re-sending a submission whose
+    /// outcome is unknown could execute it twice.
     async fn submit_proven_batch(
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
         transaction_inputs: Vec<TransactionInputs>,
     ) -> std::result::Result<BlockNumber, RpcError> {
-        self.execute(NodeRpcOperation::SubmitProvenBatch, || {
-            self.inner.submit_proven_batch(
-                proven_batch.clone(),
-                proposed_batch.clone(),
-                transaction_inputs.clone(),
-            )
-        })
-        .await
+        self.inner
+            .submit_proven_batch(proven_batch, proposed_batch, transaction_inputs)
+            .await
     }
 
     async fn get_block_header_by_number(
@@ -335,7 +269,7 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         block_num: Option<BlockNumber>,
         include_mmr_proof: bool,
     ) -> std::result::Result<(BlockHeader, Option<MmrProof>), RpcError> {
-        self.execute(NodeRpcOperation::GetBlockHeaderByNumber, || {
+        self.execute(|| {
             self.inner
                 .get_block_header_by_number(block_num, include_mmr_proof)
         })
@@ -347,20 +281,15 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> std::result::Result<ProvenBlock, RpcError> {
-        self.execute(NodeRpcOperation::GetBlockByNumber, || {
-            self.inner.get_block_by_number(block_num, include_proof)
-        })
-        .await
+        self.execute(|| self.inner.get_block_by_number(block_num, include_proof))
+            .await
     }
 
     async fn get_notes_by_id(
         &self,
         note_ids: &[NoteId],
     ) -> std::result::Result<Vec<FetchedNote>, RpcError> {
-        self.execute(NodeRpcOperation::GetNotesById, || {
-            self.inner.get_notes_by_id(note_ids)
-        })
-        .await
+        self.execute(|| self.inner.get_notes_by_id(note_ids)).await
     }
 
     async fn sync_chain_mmr(
@@ -368,10 +297,8 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         current_block_height: BlockNumber,
         upper_bound: SyncTarget,
     ) -> std::result::Result<ChainMmrInfo, RpcError> {
-        self.execute(NodeRpcOperation::SyncChainMmr, || {
-            self.inner.sync_chain_mmr(current_block_height, upper_bound)
-        })
-        .await
+        self.execute(|| self.inner.sync_chain_mmr(current_block_height, upper_bound))
+            .await
     }
 
     async fn sync_notes(
@@ -380,10 +307,8 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
     ) -> std::result::Result<Vec<NoteSyncBlock>, RpcError> {
-        self.execute(NodeRpcOperation::SyncNotes, || {
-            self.inner.sync_notes(block_from, block_to, note_tags)
-        })
-        .await
+        self.execute(|| self.inner.sync_notes(block_from, block_to, note_tags))
+            .await
     }
 
     async fn sync_nullifiers(
@@ -392,10 +317,8 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         block_from: BlockNumber,
         block_to: BlockNumber,
     ) -> std::result::Result<Vec<NullifierUpdate>, RpcError> {
-        self.execute(NodeRpcOperation::SyncNullifiers, || {
-            self.inner.sync_nullifiers(prefix, block_from, block_to)
-        })
-        .await
+        self.execute(|| self.inner.sync_nullifiers(prefix, block_from, block_to))
+            .await
     }
 
     async fn get_account(
@@ -403,20 +326,16 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> std::result::Result<(BlockNumber, AccountProof), RpcError> {
-        self.execute(NodeRpcOperation::GetAccount, || {
-            self.inner.get_account(account_id, request.clone())
-        })
-        .await
+        self.execute(|| self.inner.get_account(account_id, request.clone()))
+            .await
     }
 
     async fn get_note_script_by_root(
         &self,
         root: Word,
     ) -> std::result::Result<Option<NoteScript>, RpcError> {
-        self.execute(NodeRpcOperation::GetNoteScriptByRoot, || {
-            self.inner.get_note_script_by_root(root)
-        })
-        .await
+        self.execute(|| self.inner.get_note_script_by_root(root))
+            .await
     }
 
     async fn sync_storage_maps(
@@ -425,7 +344,7 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> std::result::Result<StorageMapInfo, RpcError> {
-        self.execute(NodeRpcOperation::SyncStorageMaps, || {
+        self.execute(|| {
             self.inner
                 .sync_storage_maps(block_from, block_to, account_id)
         })
@@ -438,7 +357,7 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> std::result::Result<AccountVaultInfo, RpcError> {
-        self.execute(NodeRpcOperation::SyncAccountVault, || {
+        self.execute(|| {
             self.inner
                 .sync_account_vault(block_from, block_to, account_id)
         })
@@ -451,7 +370,7 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         block_to: BlockNumber,
         account_ids: Vec<AccountId>,
     ) -> std::result::Result<Vec<TransactionRecord>, RpcError> {
-        self.execute(NodeRpcOperation::SyncTransactions, || {
+        self.execute(|| {
             self.inner
                 .sync_transactions(block_from, block_to, account_ids.clone())
         })
@@ -459,17 +378,11 @@ impl NodeRpcClient for RetryingNodeRpcClient {
     }
 
     async fn get_network_id(&self) -> std::result::Result<NetworkId, RpcError> {
-        self.execute(NodeRpcOperation::GetNetworkId, || {
-            self.inner.get_network_id()
-        })
-        .await
+        self.execute(|| self.inner.get_network_id()).await
     }
 
     async fn get_rpc_limits(&self) -> std::result::Result<RpcLimits, RpcError> {
-        self.execute(NodeRpcOperation::GetRpcLimits, || {
-            self.inner.get_rpc_limits()
-        })
-        .await
+        self.execute(|| self.inner.get_rpc_limits()).await
     }
 
     fn has_rpc_limits(&self) -> Option<RpcLimits> {
@@ -481,20 +394,15 @@ impl NodeRpcClient for RetryingNodeRpcClient {
     }
 
     async fn get_status_unversioned(&self) -> std::result::Result<RpcStatusInfo, RpcError> {
-        self.execute(NodeRpcOperation::GetStatusUnversioned, || {
-            self.inner.get_status_unversioned()
-        })
-        .await
+        self.execute(|| self.inner.get_status_unversioned()).await
     }
 
     async fn get_network_note_status(
         &self,
         note_id: NoteId,
     ) -> std::result::Result<NetworkNoteStatusInfo, RpcError> {
-        self.execute(NodeRpcOperation::GetNetworkNoteStatus, || {
-            self.inner.get_network_note_status(note_id)
-        })
-        .await
+        self.execute(|| self.inner.get_network_note_status(note_id))
+            .await
     }
 }
 
@@ -548,21 +456,14 @@ impl RetryingNoteTransportClient {
         F: Fn() -> Fut + Send + Sync,
         Fut: Future<Output = std::result::Result<T, NoteTransportError>> + Send,
     {
-        let attempts = self.policy.max_attempts().max(1);
-        for attempt in 0..attempts {
-            match op().await {
-                Ok(value) => return Ok(value),
-                Err(error)
-                    if is_transient_note_transport_error(&error) && attempt + 1 < attempts =>
-                {
-                    let delay = retry_delay(attempt, self.runtime.unit_random());
-                    self.runtime.sleep(delay).await;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-
-        unreachable!("a normalized retry policy always performs at least one attempt")
+        run_retries(
+            self.policy.max_attempts(),
+            self.runtime.as_ref(),
+            is_transient_note_transport_error,
+            |_, _| {},
+            op,
+        )
+        .await
     }
 }
 
@@ -771,132 +672,6 @@ mod tests {
 
         fn unit_random(&self) -> f64 {
             0.5
-        }
-    }
-
-    struct UnusedInner;
-
-    #[async_trait::async_trait]
-    impl NodeRpcClient for UnusedInner {
-        async fn set_genesis_commitment(&self, _: Word) -> std::result::Result<(), RpcError> {
-            unimplemented!()
-        }
-        fn has_genesis_commitment(&self) -> Option<Word> {
-            None
-        }
-        async fn submit_proven_transaction(
-            &self,
-            _: ProvenTransaction,
-            _: TransactionInputs,
-        ) -> std::result::Result<BlockNumber, RpcError> {
-            unimplemented!()
-        }
-        async fn submit_proven_batch(
-            &self,
-            _: ProvenBatch,
-            _: ProposedBatch,
-            _: Vec<TransactionInputs>,
-        ) -> std::result::Result<BlockNumber, RpcError> {
-            unimplemented!()
-        }
-        async fn get_block_header_by_number(
-            &self,
-            _: Option<BlockNumber>,
-            _: bool,
-        ) -> std::result::Result<(BlockHeader, Option<MmrProof>), RpcError> {
-            unimplemented!()
-        }
-        async fn get_block_by_number(
-            &self,
-            _: BlockNumber,
-            _: bool,
-        ) -> std::result::Result<ProvenBlock, RpcError> {
-            unimplemented!()
-        }
-        async fn get_notes_by_id(
-            &self,
-            _: &[NoteId],
-        ) -> std::result::Result<Vec<FetchedNote>, RpcError> {
-            unimplemented!()
-        }
-        async fn sync_chain_mmr(
-            &self,
-            _: BlockNumber,
-            _: SyncTarget,
-        ) -> std::result::Result<ChainMmrInfo, RpcError> {
-            unimplemented!()
-        }
-        async fn sync_notes(
-            &self,
-            _: BlockNumber,
-            _: BlockNumber,
-            _: &BTreeSet<NoteTag>,
-        ) -> std::result::Result<Vec<NoteSyncBlock>, RpcError> {
-            unimplemented!()
-        }
-        async fn sync_nullifiers(
-            &self,
-            _: &[u16],
-            _: BlockNumber,
-            _: BlockNumber,
-        ) -> std::result::Result<Vec<NullifierUpdate>, RpcError> {
-            unimplemented!()
-        }
-        async fn get_account(
-            &self,
-            _: AccountId,
-            _: GetAccountRequest,
-        ) -> std::result::Result<(BlockNumber, AccountProof), RpcError> {
-            unimplemented!()
-        }
-        async fn get_note_script_by_root(
-            &self,
-            _: Word,
-        ) -> std::result::Result<Option<NoteScript>, RpcError> {
-            unimplemented!()
-        }
-        async fn sync_storage_maps(
-            &self,
-            _: BlockNumber,
-            _: BlockNumber,
-            _: AccountId,
-        ) -> std::result::Result<StorageMapInfo, RpcError> {
-            unimplemented!()
-        }
-        async fn sync_account_vault(
-            &self,
-            _: BlockNumber,
-            _: BlockNumber,
-            _: AccountId,
-        ) -> std::result::Result<AccountVaultInfo, RpcError> {
-            unimplemented!()
-        }
-        async fn sync_transactions(
-            &self,
-            _: BlockNumber,
-            _: BlockNumber,
-            _: Vec<AccountId>,
-        ) -> std::result::Result<Vec<TransactionRecord>, RpcError> {
-            unimplemented!()
-        }
-        async fn get_network_id(&self) -> std::result::Result<NetworkId, RpcError> {
-            unimplemented!()
-        }
-        async fn get_rpc_limits(&self) -> std::result::Result<RpcLimits, RpcError> {
-            unimplemented!()
-        }
-        fn has_rpc_limits(&self) -> Option<RpcLimits> {
-            None
-        }
-        async fn set_rpc_limits(&self, _: RpcLimits) {}
-        async fn get_status_unversioned(&self) -> std::result::Result<RpcStatusInfo, RpcError> {
-            unimplemented!()
-        }
-        async fn get_network_note_status(
-            &self,
-            _: NoteId,
-        ) -> std::result::Result<NetworkNoteStatusInfo, RpcError> {
-            unimplemented!()
         }
     }
 
@@ -1154,40 +929,6 @@ mod tests {
         client.get_network_id().await.unwrap_err();
 
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
-        assert!(runtime.sleeps.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_submission_is_never_retried_even_under_transient_failures() {
-        let calls = AtomicU32::new(0);
-        let runtime = Arc::new(RecordingRuntime::default());
-        let client = RetryingNodeRpcClient::with_runtime(
-            Arc::new(UnusedInner),
-            &RpcRetryPolicy::new(5),
-            runtime.clone(),
-        );
-
-        let error = client
-            .execute(NodeRpcOperation::SubmitProvenTransaction, || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                async { Err::<(), RpcError>(rate_limit_error()) }
-            })
-            .await
-            .unwrap_err();
-
-        assert!(is_transient_rpc_error(&error));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(runtime.sleeps.lock().unwrap().is_empty());
-
-        let batch_calls = AtomicU32::new(0);
-        client
-            .execute(NodeRpcOperation::SubmitProvenBatch, || {
-                batch_calls.fetch_add(1, Ordering::SeqCst);
-                async { Err::<(), RpcError>(rate_limit_error()) }
-            })
-            .await
-            .unwrap_err();
-        assert_eq!(batch_calls.load(Ordering::SeqCst), 1);
         assert!(runtime.sleeps.lock().unwrap().is_empty());
     }
 

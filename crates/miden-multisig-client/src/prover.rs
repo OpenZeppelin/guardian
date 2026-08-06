@@ -1,9 +1,9 @@
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
 
 use guardian_shared::retry::{
-    RetryRuntime, StructuredEvidence, grpc_code_evidence, is_transient_error, retry_delay,
+    ProductionRetryRuntime, RetryPolicy, RetryRuntime, StructuredEvidence, grpc_code_evidence,
+    is_transient_error, run_retries,
 };
 use miden_client::RemoteTransactionProver;
 use miden_client::transaction::TransactionProver;
@@ -17,13 +17,13 @@ const DEFAULT_MAX_ATTEMPTS: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProverRetryPolicy {
-    max_attempts: u32,
+    inner: RetryPolicy,
 }
 
 impl Default for ProverRetryPolicy {
     fn default() -> Self {
         Self {
-            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            inner: RetryPolicy::new(DEFAULT_MAX_ATTEMPTS),
         }
     }
 }
@@ -32,13 +32,13 @@ impl ProverRetryPolicy {
     #[must_use]
     pub fn new(max_attempts: u32) -> Self {
         Self {
-            max_attempts: max_attempts.max(1),
+            inner: RetryPolicy::new(max_attempts),
         }
     }
 
     #[must_use]
     pub fn max_attempts(&self) -> u32 {
-        self.max_attempts
+        self.inner.max_attempts()
     }
 }
 
@@ -121,19 +121,6 @@ fn parse_prover_url(value: &str) -> Result<Url> {
     Ok(url)
 }
 
-pub(crate) struct ProductionRetryRuntime;
-
-#[async_trait::async_trait]
-impl RetryRuntime for ProductionRetryRuntime {
-    async fn sleep(&self, duration: Duration) {
-        tokio::time::sleep(duration).await;
-    }
-
-    fn unit_random(&self) -> f64 {
-        rand::random()
-    }
-}
-
 pub(crate) struct RetryingTransactionProver {
     inner: Arc<dyn TransactionProver + Send + Sync>,
     policy: ProverRetryPolicy,
@@ -169,21 +156,14 @@ impl TransactionProver for RetryingTransactionProver {
         &self,
         tx_inputs: TransactionInputs,
     ) -> std::result::Result<ProvenTransaction, TransactionProverError> {
-        for attempt in 0..self.policy.max_attempts {
-            match self.inner.prove(tx_inputs.clone()).await {
-                Ok(proven) => return Ok(proven),
-                Err(error)
-                    if is_transient_prover_error(&error)
-                        && attempt + 1 < self.policy.max_attempts =>
-                {
-                    let delay = retry_delay(attempt, self.runtime.unit_random());
-                    self.runtime.sleep(delay).await;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-
-        unreachable!("a normalized retry policy always performs at least one attempt")
+        run_retries(
+            self.policy.max_attempts(),
+            self.runtime.as_ref(),
+            is_transient_prover_error,
+            |_, _| {},
+            || self.inner.prove(tx_inputs.clone()),
+        )
+        .await
     }
 }
 
@@ -203,6 +183,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::fmt;
     use std::sync::Mutex;
+    use std::time::Duration;
+
+    use guardian_shared::retry::retry_delay;
 
     use miden_client::testing::{Auth, MockChain};
     use miden_protocol::account::AccountBuilder;

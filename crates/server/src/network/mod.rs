@@ -2,6 +2,7 @@ pub mod miden;
 
 pub use guardian_shared::retry::RpcReadMode;
 
+use crate::config::positive_u32_from_env;
 use crate::error::GuardianError;
 use crate::metadata::auth::{Auth, Credentials};
 use async_trait::async_trait;
@@ -445,18 +446,6 @@ impl MidenRpcSettings {
                 self.network,
                 NetworkType::MidenTestnet | NetworkType::MidenDevnet
             )
-    }
-}
-
-fn positive_u32_from_env(key: &str, default: u32) -> Result<u32, String> {
-    match std::env::var(key) {
-        Ok(raw) => match raw.trim().parse::<u32>() {
-            Ok(0) => Err(format!("{key} must be a positive integer, got 0")),
-            Ok(value) => Ok(value),
-            Err(_) => Err(format!("{key} must be a positive integer, got {raw:?}")),
-        },
-        Err(std::env::VarError::NotPresent) => Ok(default),
-        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{key} must contain valid UTF-8")),
     }
 }
 

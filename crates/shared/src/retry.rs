@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::future::Future;
 use std::time::Duration;
 
 pub const BASE_DELAY_MS: u64 = 500;
@@ -48,11 +49,83 @@ pub trait RetryRuntime: Send + Sync {
     fn unit_random(&self) -> f64;
 }
 
+pub struct ProductionRetryRuntime;
+
+#[async_trait::async_trait]
+impl RetryRuntime for ProductionRetryRuntime {
+    async fn sleep(&self, duration: Duration) {
+        tokio::time::sleep(duration).await;
+    }
+
+    fn unit_random(&self) -> f64 {
+        rand::random()
+    }
+}
+
+/// Runs `op` under an attempt budget: the budget is consulted before the
+/// error is classified, transient failures back off with [`retry_delay`],
+/// and permanent failures or the final attempt return the error unchanged.
+/// `on_retry` fires once per retry, before the backoff sleep.
+pub async fn run_retries<T, E, F, Fut>(
+    max_attempts: u32,
+    runtime: &dyn RetryRuntime,
+    is_transient: impl Fn(&E) -> bool,
+    on_retry: impl Fn(u32, &E),
+    op: F,
+) -> Result<T, E>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let attempts = max_attempts.max(1);
+    for attempt in 0..attempts {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt + 1 < attempts && is_transient(&error) => {
+                on_retry(attempt, &error);
+                runtime
+                    .sleep(retry_delay(attempt, runtime.unit_random()))
+                    .await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the attempt budget always admits at least one attempt")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StructuredEvidence {
     Transient,
     Permanent,
     Indeterminate,
+}
+
+/// Accumulates evidence under the one precedence rule of the classifier:
+/// permanent anywhere vetoes transient anywhere.
+#[derive(Default)]
+struct EvidenceLedger {
+    transient: bool,
+    permanent: bool,
+}
+
+impl EvidenceLedger {
+    fn note(&mut self, evidence: StructuredEvidence) {
+        match evidence {
+            StructuredEvidence::Transient => self.transient = true,
+            StructuredEvidence::Permanent => self.permanent = true,
+            StructuredEvidence::Indeterminate => {}
+        }
+    }
+
+    fn verdict(&self) -> Option<StructuredEvidence> {
+        if self.permanent {
+            Some(StructuredEvidence::Permanent)
+        } else if self.transient {
+            Some(StructuredEvidence::Transient)
+        } else {
+            None
+        }
+    }
 }
 
 /// Classifies a numeric gRPC status code. Permanent codes veto retries even
@@ -66,49 +139,51 @@ pub fn grpc_code_evidence(code: i32) -> StructuredEvidence {
     }
 }
 
+/// Extracts HTTP statuses by scanning for the marker wordings and parsing the
+/// number that follows ("http status 503" is caught by the "status " marker).
+/// A marker only counts when it starts on a word boundary and is followed by
+/// exactly three digits in the 4xx/5xx range.
 #[must_use]
 pub fn http_evidence(message: &str) -> Option<StructuredEvidence> {
     const TRANSIENT: [u16; 5] = [408, 429, 502, 503, 504];
-    let mut found_transient = false;
-    let mut found_permanent = false;
+    const STATUS_MARKERS: [&str; 3] = ["http ", "status: ", "status "];
 
-    for status in 400..=599 {
-        let structured = [
-            format!("http {status}"),
-            format!("http status {status}"),
-            format!("status: {status}"),
-            format!("status {status}"),
-        ];
-        if structured
-            .iter()
-            .any(|pattern| contains_exact_status_pattern(message, pattern))
-        {
-            if TRANSIENT.contains(&status) {
-                found_transient = true;
-            } else {
-                found_permanent = true;
+    let bytes = message.as_bytes();
+    let mut ledger = EvidenceLedger::default();
+    for marker in STATUS_MARKERS {
+        for (start, matched) in message.match_indices(marker) {
+            let on_word_boundary = start
+                .checked_sub(1)
+                .and_then(|index| bytes.get(index))
+                .is_none_or(|byte| !byte.is_ascii_alphanumeric());
+            if !on_word_boundary {
+                continue;
             }
+            let Some(status) = leading_status(bytes, start + matched.len()) else {
+                continue;
+            };
+            if !(400..=599).contains(&status) {
+                continue;
+            }
+            ledger.note(if TRANSIENT.contains(&status) {
+                StructuredEvidence::Transient
+            } else {
+                StructuredEvidence::Permanent
+            });
         }
     }
-
-    if found_permanent {
-        Some(StructuredEvidence::Permanent)
-    } else if found_transient {
-        Some(StructuredEvidence::Transient)
-    } else {
-        None
-    }
+    ledger.verdict()
 }
 
-fn contains_exact_status_pattern(message: &str, pattern: &str) -> bool {
-    message.match_indices(pattern).any(|(start, matched)| {
-        let before = start
-            .checked_sub(1)
-            .and_then(|index| message.as_bytes().get(index));
-        let after = message.as_bytes().get(start + matched.len());
-        before.is_none_or(|byte| !byte.is_ascii_alphanumeric())
-            && after.is_none_or(|byte| !byte.is_ascii_digit())
-    })
+fn leading_status(bytes: &[u8], from: usize) -> Option<u16> {
+    let mut end = from;
+    while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+        end += 1;
+    }
+    if end - from != 3 {
+        return None;
+    }
+    std::str::from_utf8(&bytes[from..end]).ok()?.parse().ok()
 }
 
 #[must_use]
@@ -137,26 +212,13 @@ pub fn flattened_grpc_evidence(message: &str) -> Option<StructuredEvidence> {
         ("grpccodeunknown", 2),
     ];
 
-    let mut found_transient = false;
-    let mut found_permanent = false;
-
+    let mut ledger = EvidenceLedger::default();
     for (pattern, code) in patterns {
         if normalized.contains(pattern) {
-            match grpc_code_evidence(code) {
-                StructuredEvidence::Transient => found_transient = true,
-                StructuredEvidence::Permanent => found_permanent = true,
-                StructuredEvidence::Indeterminate => {}
-            }
+            ledger.note(grpc_code_evidence(code));
         }
     }
-
-    if found_permanent {
-        Some(StructuredEvidence::Permanent)
-    } else if found_transient {
-        Some(StructuredEvidence::Transient)
-    } else {
-        None
-    }
+    ledger.verdict()
 }
 
 /// Last-resort transient wording, consulted only when the whole chain carried
@@ -236,49 +298,34 @@ pub fn is_transient_error_with<F>(
 where
     F: Fn(&(dyn Error + 'static)) -> StructuredEvidence,
 {
-    let mut messages = Vec::new();
     let mut has_transient = false;
-    let mut has_permanent = false;
+    let mut has_fallback = false;
     let mut current: Option<&(dyn Error + 'static)> = Some(error);
 
     while let Some(cause) = current {
         let message = cause.to_string().to_ascii_lowercase();
-        match link_evidence(cause) {
-            StructuredEvidence::Transient => has_transient = true,
-            StructuredEvidence::Permanent => has_permanent = true,
-            StructuredEvidence::Indeterminate => {}
-        }
+        let mut ledger = EvidenceLedger::default();
+        ledger.note(link_evidence(cause));
         if let Some(evidence) = http_evidence(&message) {
-            match evidence {
-                StructuredEvidence::Transient => has_transient = true,
-                StructuredEvidence::Permanent => has_permanent = true,
-                StructuredEvidence::Indeterminate => {}
-            }
+            ledger.note(evidence);
         }
         if let Some(evidence) = flattened_grpc_evidence(&message) {
-            match evidence {
-                StructuredEvidence::Transient => has_transient = true,
-                StructuredEvidence::Permanent => has_permanent = true,
-                StructuredEvidence::Indeterminate => {}
-            }
+            ledger.note(evidence);
         }
-        messages.push(message);
+        match ledger.verdict() {
+            Some(StructuredEvidence::Permanent) => return false,
+            Some(_) => has_transient = true,
+            None => {}
+        }
+        has_fallback = has_fallback
+            || flattened_transient(&message)
+            || extra_transient_signals
+                .iter()
+                .any(|signal| message.contains(signal));
         current = cause.source();
     }
 
-    if has_permanent {
-        return false;
-    }
-    if has_transient {
-        return true;
-    }
-
-    messages.iter().any(|message| {
-        flattened_transient(message)
-            || extra_transient_signals
-                .iter()
-                .any(|signal| message.contains(signal))
-    })
+    has_transient || has_fallback
 }
 
 #[must_use]

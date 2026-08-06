@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use guardian_shared::retry::{
-    RPC_TRANSPORT_SIGNALS, RetryPolicy, RetryRuntime, StructuredEvidence,
-    connect_failure_is_permanent, grpc_code_evidence, is_transient_error_with, retry_delay,
+    ProductionRetryRuntime, RPC_TRANSPORT_SIGNALS, RetryPolicy, RetryRuntime, StructuredEvidence,
+    connect_failure_is_permanent, grpc_code_evidence, is_transient_error_with, run_retries,
 };
 use miden_protocol::{account::AccountId, utils::serde::Serializable};
 use tonic::{
@@ -126,19 +126,6 @@ pub use guardian_shared::retry::RpcReadMode;
 /// depending on their telemetry stack.
 pub type RetryObserver = Arc<dyn Fn(&'static str) + Send + Sync>;
 
-struct ProductionRetryRuntime;
-
-#[async_trait::async_trait]
-impl RetryRuntime for ProductionRetryRuntime {
-    async fn sleep(&self, duration: Duration) {
-        tokio::time::sleep(duration).await;
-    }
-
-    fn unit_random(&self) -> f64 {
-        rand::random()
-    }
-}
-
 /// Simple wrapper around the tonic-generated ApiClient
 pub struct MidenRpcClient {
     client: ApiClient<Channel>,
@@ -175,33 +162,22 @@ impl MidenRpcClient {
             .tls_config(ClientTlsConfig::new().with_native_roots())
             .map_err(RpcClientError::Tls)?;
 
-        let mut last_error = None;
-        for attempt in 0..CONNECT_MAX_ATTEMPTS {
-            match base.clone().connect().await {
-                Ok(channel) => {
-                    return Ok(Self {
-                        client: ApiClient::new(channel),
-                        settings,
-                        runtime,
-                        retry_observer: None,
-                    });
-                }
-                Err(error) if connect_failure_is_permanent(&error) => {
-                    return Err(RpcClientError::Connect(error));
-                }
-                Err(error) => {
-                    last_error = Some(error);
-                    if attempt + 1 < CONNECT_MAX_ATTEMPTS {
-                        let delay = retry_delay(attempt, runtime.unit_random());
-                        runtime.sleep(delay).await;
-                    }
-                }
-            }
-        }
+        let channel = run_retries(
+            CONNECT_MAX_ATTEMPTS,
+            runtime.as_ref(),
+            |error: &tonic::transport::Error| !connect_failure_is_permanent(error),
+            |_, _| {},
+            || async { base.connect().await },
+        )
+        .await
+        .map_err(RpcClientError::Connect)?;
 
-        Err(RpcClientError::Connect(last_error.expect(
-            "the connect loop always records an error before exhausting",
-        )))
+        Ok(Self {
+            client: ApiClient::new(channel),
+            settings,
+            runtime,
+            retry_observer: None,
+        })
     }
 
     /// Builds a client over a lazily-created channel that is never proactively
@@ -248,28 +224,25 @@ impl MidenRpcClient {
         Fut: Future<Output = Result<T, tonic::Status>>,
     {
         let attempts = match read_mode {
-            RpcReadMode::Configured => self.settings.read_retry().max_attempts().max(1),
+            RpcReadMode::Configured => self.settings.read_retry().max_attempts(),
             RpcReadMode::SingleAttempt => 1,
         };
-        for attempt in 0..attempts {
-            match op(self.client.clone()).await {
-                Ok(value) => return Ok(value),
-                Err(status) => {
-                    let error = RpcClientError::Call { operation, status };
-                    if is_transient_rpc_client_error(&error) && attempt + 1 < attempts {
-                        if let Some(observer) = &self.retry_observer {
-                            observer(operation);
-                        }
-                        let delay = retry_delay(attempt, self.runtime.unit_random());
-                        self.runtime.sleep(delay).await;
-                    } else {
-                        return Err(error);
-                    }
+        run_retries(
+            attempts,
+            self.runtime.as_ref(),
+            is_transient_rpc_client_error,
+            |_, _| {
+                if let Some(observer) = &self.retry_observer {
+                    observer(operation);
                 }
-            }
-        }
-
-        unreachable!("a normalized retry policy always performs at least one attempt")
+            },
+            || async {
+                op(self.client.clone())
+                    .await
+                    .map_err(|status| RpcClientError::Call { operation, status })
+            },
+        )
+        .await
     }
 
     /// Get the status of the Miden node
@@ -483,6 +456,8 @@ impl MidenRpcClient {
 mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    use guardian_shared::retry::retry_delay;
 
     use super::*;
 

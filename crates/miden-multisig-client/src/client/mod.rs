@@ -98,6 +98,9 @@ pub struct MultisigClient {
     pub(crate) miden_endpoint: Endpoint,
     /// Note transport endpoint override (for recovery).
     pub(crate) note_transport_endpoint: Option<String>,
+    /// Node client for direct commitment reads, built once so its channel is
+    /// reused across reads.
+    node_rpc_client: Arc<dyn miden_client::rpc::NodeRpcClient>,
     /// Prover selection and retry configuration (for recovery).
     pub(crate) prover_config: ProverConfig,
     /// Node RPC timeout and read-retry configuration (for recovery).
@@ -122,6 +125,8 @@ impl MultisigClient {
         prover_config: ProverConfig,
         rpc_config: RpcConfig,
     ) -> Self {
+        let node_rpc_client =
+            crate::builder::configured_node_rpc_client(&miden_endpoint, &rpc_config);
         Self {
             miden_client,
             key_manager,
@@ -130,13 +135,14 @@ impl MultisigClient {
             account_dir,
             miden_endpoint,
             note_transport_endpoint,
+            node_rpc_client,
             prover_config,
             rpc_config,
         }
     }
 
-    pub(crate) fn node_rpc_client(&self) -> std::sync::Arc<dyn miden_client::rpc::NodeRpcClient> {
-        crate::builder::configured_node_rpc_client(&self.miden_endpoint, &self.rpc_config)
+    pub(crate) fn node_rpc_client(&self) -> Arc<dyn miden_client::rpc::NodeRpcClient> {
+        Arc::clone(&self.node_rpc_client)
     }
 
     /// Returns the GUARDIAN endpoint.

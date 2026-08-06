@@ -73,12 +73,12 @@ fn preset_note_transport_endpoint(endpoint: &Endpoint) -> Option<&'static str> {
 fn resolved_note_transport_endpoint(
     endpoint: &Endpoint,
     note_transport_endpoint: Option<&str>,
-    rpc_config: &RpcConfig,
+    selection: &RpcSelection,
 ) -> Option<String> {
     if let Some(url) = note_transport_endpoint {
         return Some(url.to_string());
     }
-    match rpc_config.resolve(DEFAULT_GRPC_TIMEOUT_MS) {
+    match selection {
         RpcSelection::Passthrough => None,
         RpcSelection::Configured { .. } => {
             preset_note_transport_endpoint(endpoint).map(str::to_string)
@@ -104,10 +104,14 @@ fn configured_client_builder(
 
     let builder = base.rpc(configured_node_rpc_client(endpoint, rpc_config));
 
+    let selection = rpc_config.resolve(DEFAULT_GRPC_TIMEOUT_MS);
     let builder =
-        match resolved_note_transport_endpoint(endpoint, note_transport_endpoint, rpc_config) {
+        match resolved_note_transport_endpoint(endpoint, note_transport_endpoint, &selection) {
             Some(transport_endpoint) => {
-                let timeout_ms = rpc_config.timeout_ms().unwrap_or(DEFAULT_GRPC_TIMEOUT_MS);
+                let timeout_ms = match &selection {
+                    RpcSelection::Passthrough => DEFAULT_GRPC_TIMEOUT_MS,
+                    RpcSelection::Configured { timeout_ms, .. } => *timeout_ms,
+                };
                 let transport: Arc<dyn NoteTransportClient> =
                     Arc::new(GrpcNoteTransportClient::new(transport_endpoint, timeout_ms));
                 builder.note_transport(configured_note_transport_client(transport, rpc_config))
@@ -363,6 +367,10 @@ mod tests {
         RpcConfig::new().with_retry_policy(RpcRetryPolicy::new(1))
     }
 
+    fn selection(rpc_config: &RpcConfig) -> RpcSelection {
+        rpc_config.resolve(DEFAULT_GRPC_TIMEOUT_MS)
+    }
+
     #[test]
     fn note_transport_endpoints_exist_only_for_public_presets() {
         assert_eq!(
@@ -383,7 +391,7 @@ mod tests {
             resolved_note_transport_endpoint(
                 &custom_endpoint(),
                 Some("https://transport.internal"),
-                &single_attempt_config(),
+                &selection(&single_attempt_config()),
             ),
             Some("https://transport.internal".to_string())
         );
@@ -391,7 +399,7 @@ mod tests {
             resolved_note_transport_endpoint(
                 &Endpoint::testnet(),
                 Some("https://transport.internal"),
-                &RpcConfig::new(),
+                &selection(&RpcConfig::new()),
             ),
             Some("https://transport.internal".to_string())
         );
@@ -400,16 +408,24 @@ mod tests {
     #[test]
     fn preset_note_transport_wires_unless_rpc_config_is_passthrough() {
         assert_eq!(
-            resolved_note_transport_endpoint(&Endpoint::testnet(), None, &RpcConfig::new()),
+            resolved_note_transport_endpoint(
+                &Endpoint::testnet(),
+                None,
+                &selection(&RpcConfig::new())
+            ),
             Some(NOTE_TRANSPORT_TESTNET_ENDPOINT.to_string())
         );
         assert_eq!(
-            resolved_note_transport_endpoint(&Endpoint::testnet(), None, &single_attempt_config()),
+            resolved_note_transport_endpoint(
+                &Endpoint::testnet(),
+                None,
+                &selection(&single_attempt_config())
+            ),
             None
         );
         let timeout_only = single_attempt_config().with_timeout_ms(5_000).unwrap();
         assert_eq!(
-            resolved_note_transport_endpoint(&Endpoint::testnet(), None, &timeout_only),
+            resolved_note_transport_endpoint(&Endpoint::testnet(), None, &selection(&timeout_only)),
             Some(NOTE_TRANSPORT_TESTNET_ENDPOINT.to_string())
         );
     }
@@ -417,7 +433,11 @@ mod tests {
     #[test]
     fn custom_endpoint_without_override_has_no_note_transport() {
         assert_eq!(
-            resolved_note_transport_endpoint(&custom_endpoint(), None, &RpcConfig::new()),
+            resolved_note_transport_endpoint(
+                &custom_endpoint(),
+                None,
+                &selection(&RpcConfig::new())
+            ),
             None
         );
     }

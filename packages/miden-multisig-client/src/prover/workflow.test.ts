@@ -6,7 +6,7 @@ import type {
 } from '@miden-sdk/miden-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedProverConfig } from './config.js';
-import type { RetryRuntime } from './retry.js';
+import type { RetryRuntime } from '../retry/runtime.js';
 import { ProverWorkflow } from './workflow.js';
 
 function asType<T>(value: unknown): T {

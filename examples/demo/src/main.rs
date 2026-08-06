@@ -201,37 +201,34 @@ async fn handle_action(
     }
 }
 
+/// Reads an optional environment variable, trimming whitespace and rejecting
+/// non-Unicode or blank values with the variable name in the error.
+fn optional_env(name: &str) -> Result<Option<String>, String> {
+    match std::env::var(name) {
+        Ok(value) if value.trim().is_empty() => Err(format!("{name} must not be empty")),
+        Ok(value) => Ok(Some(value.trim().to_string())),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} contains non-Unicode data")),
+    }
+}
+
 /// Reads the optional node RPC policy from `MIDEN_RPC_MAX_ATTEMPTS` and
 /// `MIDEN_RPC_TIMEOUT_MS`; unset variables keep the SDK defaults.
 fn rpc_config_from_env() -> Result<RpcConfig, String> {
     let mut rpc_config = RpcConfig::new();
-    match std::env::var("MIDEN_RPC_MAX_ATTEMPTS") {
-        Ok(value) => {
-            let max_attempts = value
-                .trim()
-                .parse::<u32>()
-                .map_err(|error| format!("Invalid MIDEN_RPC_MAX_ATTEMPTS: {error}"))?;
-            rpc_config = rpc_config.with_retry_policy(RpcRetryPolicy::new(max_attempts));
-        }
-        Err(std::env::VarError::NotPresent) => {}
-        Err(std::env::VarError::NotUnicode(_)) => {
-            return Err("MIDEN_RPC_MAX_ATTEMPTS contains non-Unicode data".to_string());
-        }
+    if let Some(value) = optional_env("MIDEN_RPC_MAX_ATTEMPTS")? {
+        let max_attempts = value
+            .parse::<u32>()
+            .map_err(|error| format!("Invalid MIDEN_RPC_MAX_ATTEMPTS: {error}"))?;
+        rpc_config = rpc_config.with_retry_policy(RpcRetryPolicy::new(max_attempts));
     }
-    match std::env::var("MIDEN_RPC_TIMEOUT_MS") {
-        Ok(value) => {
-            let timeout_ms = value
-                .trim()
-                .parse::<u64>()
-                .map_err(|error| format!("Invalid MIDEN_RPC_TIMEOUT_MS: {error}"))?;
-            rpc_config = rpc_config
-                .with_timeout_ms(timeout_ms)
-                .map_err(|error| error.to_string())?;
-        }
-        Err(std::env::VarError::NotPresent) => {}
-        Err(std::env::VarError::NotUnicode(_)) => {
-            return Err("MIDEN_RPC_TIMEOUT_MS contains non-Unicode data".to_string());
-        }
+    if let Some(value) = optional_env("MIDEN_RPC_TIMEOUT_MS")? {
+        let timeout_ms = value
+            .parse::<u64>()
+            .map_err(|error| format!("Invalid MIDEN_RPC_TIMEOUT_MS: {error}"))?;
+        rpc_config = rpc_config
+            .with_timeout_ms(timeout_ms)
+            .map_err(|error| error.to_string())?;
     }
     Ok(rpc_config)
 }
@@ -239,16 +236,7 @@ fn rpc_config_from_env() -> Result<RpcConfig, String> {
 /// Reads the optional note transport endpoint override from
 /// `MIDEN_NOTE_TRANSPORT_URL`; unset keeps the SDK's preset mapping.
 fn note_transport_url_from_env() -> Result<Option<String>, String> {
-    match std::env::var("MIDEN_NOTE_TRANSPORT_URL") {
-        Ok(value) if value.trim().is_empty() => {
-            Err("MIDEN_NOTE_TRANSPORT_URL must not be empty".to_string())
-        }
-        Ok(value) => Ok(Some(value.trim().to_string())),
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            Err("MIDEN_NOTE_TRANSPORT_URL contains non-Unicode data".to_string())
-        }
-    }
+    optional_env("MIDEN_NOTE_TRANSPORT_URL")
 }
 
 #[tokio::main]
