@@ -42,6 +42,9 @@ const client = new MultisigClient(midenClient, {
     url: 'https://prover.example',
     retry: { maxAttempts: 4 },
   },
+  rpc: {
+    retry: { maxAttempts: 3 },
+  },
 });
 ```
 
@@ -61,7 +64,38 @@ total attempts (one retry); an explicit `maxAttempts` of 1 opts out. Syncs
 performed directly on the injected Miden client are owned by the
 application. Transaction submission is never retried under any
 configuration: a submission whose outcome is unknown could execute twice if
-re-sent.
+re-sent. There is no timeout setting: the browser WASM RPC client cannot
+cancel an in-flight request, so a JavaScript-side timeout would abandon a
+call whose side effects may still land.
+
+### Note transport endpoint
+
+Private notes are relayed through a note transport service that is separate
+from the node RPC. The injected Miden client owns note relay, so the endpoint
+is set when constructing it rather than on `MultisigClientConfig`. The
+`createDevnet` / `createTestnet` helpers wire the matching public transport
+service automatically; a custom node endpoint has no derivable transport
+service, so private-note relay stays disabled until `noteTransportUrl` is set
+explicitly.
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://my-node.internal:57291',
+  noteTransportUrl: 'https://my-transport.internal',
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://my-node.internal:57291',
+});
+```
+
+`noteTransportUrl` also accepts the `'devnet'` and `'testnet'` shorthands, so
+a custom node on a public network can reuse that network's public transport
+service.
+
+The full cross-SDK reference, including the Rust equivalents, is
+[`docs/MULTISIG_SDK.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MULTISIG_SDK.md).
 
 ## Usage
 
