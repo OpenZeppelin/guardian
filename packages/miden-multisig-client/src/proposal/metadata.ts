@@ -30,8 +30,11 @@ export class ProposalMetadataCodec {
           // keeps the pre-#322 wire shape and matches the Rust encoder (which
           // round-trips through the NoteType enum). Absent => public.
           noteType: metadata.noteType === 'private' ? 'private' : undefined,
-          reclaimHeight: metadata.reclaimHeight,
-          timelockHeight: metadata.timelockHeight,
+          // Validated on encode too: the create path already rejects bad
+          // heights when building the note, but metadata handed directly to
+          // the codec must not reach the wire with a value cosigners reject.
+          reclaimHeight: parseP2ideHeight('reclaimHeight', metadata.reclaimHeight),
+          timelockHeight: parseP2ideHeight('timelockHeight', metadata.timelockHeight),
         };
       case 'switch_guardian':
         return {

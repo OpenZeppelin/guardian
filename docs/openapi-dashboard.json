@@ -3149,8 +3149,9 @@
               "null"
             ],
             "format": "int32",
-            "description": "P2IDE reclaim block height (issue #366). Presence of either height\nmeans the proposal creates a P2IDE note; absent => plain P2ID.",
-            "minimum": 0
+            "description": "P2IDE reclaim block height (issue #366). Presence of either height\nmeans the proposal creates a P2IDE note; absent => plain P2ID.\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain\nand is rejected by every client parser.",
+            "maximum": 4294967295,
+            "minimum": 1
           },
           "required_signatures": {
             "type": [
@@ -3192,8 +3193,9 @@
               "null"
             ],
             "format": "int32",
-            "description": "P2IDE timelock block height (issue #366).",
-            "minimum": 0
+            "description": "P2IDE timelock block height (issue #366).\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain\nand is rejected by every client parser.",
+            "maximum": 4294967295,
+            "minimum": 1
           }
         }
       },

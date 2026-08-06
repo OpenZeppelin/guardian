@@ -216,4 +216,20 @@ describe('ProposalMetadataCodec p2id P2IDE heights (issue #366)', () => {
     } as unknown as P2IdProposalMetadata;
     expect(() => ProposalMetadataCodec.validate(md)).toThrow(/unsupported reclaimHeight/);
   });
+
+  it('toGuardian rejects an invalid height instead of emitting it on the wire', () => {
+    const base = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xrecipient',
+      faucetId: '0xfaucet',
+      amount: '1000',
+    };
+    expect(() =>
+      ProposalMetadataCodec.toGuardian({ ...base, reclaimHeight: 0 } as P2IdProposalMetadata),
+    ).toThrow(/unsupported reclaimHeight/);
+    expect(() =>
+      ProposalMetadataCodec.toGuardian({ ...base, timelockHeight: 1.5 } as P2IdProposalMetadata),
+    ).toThrow(/unsupported timelockHeight/);
+  });
 });

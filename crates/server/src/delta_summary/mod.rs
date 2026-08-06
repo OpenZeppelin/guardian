@@ -146,11 +146,17 @@ pub struct ProposalMetadata {
 
     /// P2IDE reclaim block height (issue #366). Presence of either height
     /// means the proposal creates a P2IDE note; absent => plain P2ID.
+    /// Valid heights are 1..=u32::MAX; 0 encodes "no constraint" on-chain
+    /// and is rejected by every client parser.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1, maximum = 4294967295_u32)]
     pub reclaim_height: Option<u32>,
 
     /// P2IDE timelock block height (issue #366).
+    /// Valid heights are 1..=u32::MAX; 0 encodes "no constraint" on-chain
+    /// and is rejected by every client parser.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1, maximum = 4294967295_u32)]
     pub timelock_height: Option<u32>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
