@@ -354,6 +354,58 @@ impl RpcSettings {
             }
         }
     }
+
+    /// Resolves explicit settings against the declared network — rejecting
+    /// settings that were resolved for a different network — or falls back
+    /// to the environment.
+    pub(crate) fn resolve_for(
+        explicit: Option<Self>,
+        network: NetworkType,
+    ) -> Result<Self, String> {
+        match explicit {
+            Some(Self::Miden(settings)) => {
+                if settings.network() != network {
+                    return Err(format!(
+                        "Miden RPC settings were resolved for {} but the builder network is {}; \
+                         resolve the settings for the declared network",
+                        settings.network(),
+                        network
+                    ));
+                }
+                Ok(Self::Miden(settings))
+            }
+            None => Self::from_env(network),
+        }
+    }
+
+    /// The endpoint with credentials stripped, for startup logging.
+    pub(crate) fn sanitized_endpoint(&self) -> String {
+        match self {
+            Self::Miden(settings) => settings.sanitized_endpoint(),
+        }
+    }
+
+    /// Connects the network client for these settings. An endpoint override
+    /// pointed at a public network identity warns: legitimate for a mirror,
+    /// a mistake otherwise.
+    pub(crate) async fn connect(&self) -> Result<Arc<dyn NetworkClient>, String> {
+        match self {
+            Self::Miden(settings) => {
+                if settings.overrides_public_network() {
+                    tracing::warn!(
+                        network = %settings.network(),
+                        rpc_endpoint = settings.sanitized_endpoint(),
+                        "Miden RPC endpoint override points a public network identity at a \
+                         custom node; legitimate for a mirror, a mistake otherwise"
+                    );
+                }
+                let client = miden::MidenNetworkClient::from_settings(settings)
+                    .await
+                    .map_err(|e| format!("Failed to create network client: {e}"))?;
+                Ok(Arc::new(client))
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -471,9 +523,8 @@ impl std::fmt::Display for NetworkType {
 
 #[cfg(test)]
 mod tests {
-    use super::MidenRpcSettings;
     use super::{
-        GuardianError, NetworkType, ReconstructError, Reconstructor,
+        GuardianError, MidenRpcSettings, NetworkType, ReconstructError, Reconstructor, RpcSettings,
         max_concurrent_reconstructions, reconstructor,
     };
     use crate::testing::env_lock::ENV_LOCK;
@@ -748,6 +799,26 @@ mod tests {
         assert!(error.contains("MidenLocal"));
         assert!(error.contains("MidenTestnet"));
         assert!(error.contains("MidenDevnet"));
+    }
+
+    #[test]
+    fn resolve_for_rejects_settings_for_a_different_network() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let devnet = RpcSettings::from_env(NetworkType::MidenDevnet).unwrap();
+
+        let error = RpcSettings::resolve_for(Some(devnet), NetworkType::MidenLocal).unwrap_err();
+
+        assert!(error.contains("resolved for MidenDevnet"));
+        assert!(error.contains("MidenLocal"));
+    }
+
+    #[test]
+    fn resolve_for_accepts_matching_settings_and_falls_back_to_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let local = RpcSettings::from_env(NetworkType::MidenLocal).unwrap();
+
+        assert!(RpcSettings::resolve_for(Some(local), NetworkType::MidenLocal).is_ok());
+        assert!(RpcSettings::resolve_for(None, NetworkType::MidenLocal).is_ok());
     }
 
     #[test]

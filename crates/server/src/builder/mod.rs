@@ -25,7 +25,7 @@ use crate::logging::LoggingConfig;
 use crate::metadata::MetadataStore;
 use crate::metrics::{InstrumentedStorage, MetricsConfig};
 use crate::middleware::{BodyLimitConfig, RateLimitConfig};
-use crate::network::{NetworkType, miden::MidenNetworkClient};
+use crate::network::NetworkType;
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use guardian_shared::SignatureScheme;
@@ -39,7 +39,7 @@ pub struct ServerBuilder {
     auditor: Option<crate::audit::SharedAuditor>,
     ack: Option<AckRegistry>,
     canonicalization: Option<CanonicalizationConfig>,
-    miden_rpc: Option<crate::network::MidenRpcSettings>,
+    rpc: Option<crate::network::RpcSettings>,
     dashboard: Option<Arc<DashboardState>>,
     coordination: Option<crate::coordination::CoordinationHandles>,
     logging_config: Option<LoggingConfig>,
@@ -63,7 +63,7 @@ impl ServerBuilder {
             auditor: None,
             ack: None,
             canonicalization: Some(CanonicalizationConfig::default()),
-            miden_rpc: None,
+            rpc: None,
             dashboard: None,
             coordination: None,
             logging_config: None,
@@ -220,13 +220,10 @@ impl ServerBuilder {
     }
 
     /// Sets node RPC settings explicitly for the network they belong to.
-    /// When no Miden settings are provided, `build()` resolves them from the
-    /// `GUARDIAN_MIDEN_RPC_*` environment variables on top of the declared
-    /// network type.
+    /// When no settings are provided, `build()` resolves them from the
+    /// environment on top of the declared network type.
     pub fn with_rpc(mut self, settings: crate::network::RpcSettings) -> Self {
-        match settings {
-            crate::network::RpcSettings::Miden(miden) => self.miden_rpc = Some(miden),
-        }
+        self.rpc = Some(settings);
         self
     }
 
@@ -545,35 +542,12 @@ impl ServerBuilder {
             Arc::new(EvmAppState::from_env_with_sessions(sessions).await?)
         };
 
-        let miden_rpc_settings = match self.miden_rpc {
-            Some(settings) => {
-                if settings.network() != network_type {
-                    return Err(format!(
-                        "Miden RPC settings were resolved for {} but the builder network is {}; \
-                         resolve the settings for the declared network",
-                        settings.network(),
-                        network_type
-                    ));
-                }
-                settings
-            }
-            None => crate::network::MidenRpcSettings::from_env(network_type)?,
-        };
-        if miden_rpc_settings.overrides_public_network() {
-            tracing::warn!(
-                network = %network_type,
-                rpc_endpoint = miden_rpc_settings.sanitized_endpoint(),
-                "Miden RPC endpoint override points a public network identity at a custom node; \
-                 legitimate for a mirror, a mistake otherwise"
-            );
-        }
-        let network_client = MidenNetworkClient::from_settings(&miden_rpc_settings)
-            .await
-            .map_err(|e| format!("Failed to create network client: {e}"))?;
+        let rpc_settings = crate::network::RpcSettings::resolve_for(self.rpc, network_type)?;
+        let network_client = rpc_settings.connect().await?;
 
         let startup_info = startup::StartupInfo::new(
             network_type,
-            miden_rpc_settings.sanitized_endpoint(),
+            rpc_settings.sanitized_endpoint(),
             storage.kind(),
             coordination_mode.as_str(),
             ack.ecdsa_backend_id(),
@@ -628,7 +602,7 @@ impl ServerBuilder {
         let app_state = AppState {
             storage,
             metadata,
-            network_client: Arc::new(network_client),
+            network_client,
             ack,
             canonicalization: self.canonicalization,
             clock: Arc::new(SystemClock),
@@ -668,22 +642,11 @@ mod tests {
     use crate::testing::env_lock::ENV_LOCK;
 
     #[test]
-    fn with_rpc_stores_explicit_miden_settings() {
+    fn with_rpc_stores_explicit_settings() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let settings = crate::network::MidenRpcSettings::from_env(NetworkType::MidenLocal).unwrap();
-        let builder = ServerBuilder::new().with_rpc(crate::network::RpcSettings::Miden(settings));
-        assert!(builder.miden_rpc.is_some());
-        assert!(ServerBuilder::new().miden_rpc.is_none());
-    }
-
-    #[test]
-    fn build_time_settings_must_match_the_declared_network() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let devnet_settings =
-            crate::network::MidenRpcSettings::from_env(NetworkType::MidenDevnet).unwrap();
-        assert_eq!(devnet_settings.network(), NetworkType::MidenDevnet);
-        let local_settings =
-            crate::network::MidenRpcSettings::from_env(NetworkType::MidenLocal).unwrap();
-        assert_eq!(local_settings.network(), NetworkType::MidenLocal);
+        let settings = crate::network::RpcSettings::from_env(NetworkType::MidenLocal).unwrap();
+        let builder = ServerBuilder::new().with_rpc(settings);
+        assert!(builder.rpc.is_some());
+        assert!(ServerBuilder::new().rpc.is_none());
     }
 }
