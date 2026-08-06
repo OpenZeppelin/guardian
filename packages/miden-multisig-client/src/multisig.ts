@@ -1249,8 +1249,15 @@ export class Multisig {
           ...switchDelta,
           deltaPayload: switchDelta.deltaPayload.txSummary,
         });
-      } catch {
-        // best-effort; see above
+      } catch (error) {
+        // Best-effort — see above — but the failure must be visible: a
+        // silently lost push leaves the pre-switch GUARDIAN serving this
+        // account (split-brain, issue #305) with nothing to diagnose by.
+        console.warn(
+          'SwitchGuardian delta push to the pre-switch GUARDIAN failed; it ' +
+            'will keep serving this account until reconciliation',
+          error,
+        );
       }
 
       try {

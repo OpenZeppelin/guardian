@@ -11,9 +11,9 @@ description = "High-level SDK for interacting with multisig accounts on Miden vi
 
 [dependencies]
 # Internal crates
-guardian-client = { version = "=0.16.0", path = "../client" }
-guardian-shared = { version = "=0.16.0", path = "../shared" }
-miden-confidential-contracts = { version = "=0.16.0", path = "../contracts" }
+guardian-client = { version = "=0.16.1", path = "../client" }
+guardian-shared = { version = "=0.16.1", path = "../shared" }
+miden-confidential-contracts = { version = "=0.16.1", path = "../contracts" }
 
 # Miden
 miden-client = { workspace = true, features = ["tonic"] }
@@ -35,6 +35,9 @@ base64 = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
+
+# Logging (facade only; host applications install the subscriber)
+tracing = "0.1"
 anyhow = { workspace = true }
 
 # Utilities
