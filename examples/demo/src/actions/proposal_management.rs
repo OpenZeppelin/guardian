@@ -1030,6 +1030,7 @@ async fn action_create_custom_proposal(
             faucet_id,
             amount,
             note_type,
+            ..
         } => (recipient, faucet_id, amount, note_type),
         _ => return Err("expected a P2ID transaction".to_string()),
     };
@@ -1048,6 +1049,8 @@ async fn action_create_custom_proposal(
         recipient,
         vec![asset.into()],
         note_type,
+        None,
+        None,
         salt,
         std::iter::empty(),
     )
@@ -1113,6 +1116,8 @@ async fn action_execute_custom_proposal(
         recipe.recipient,
         vec![asset.into()],
         recipe.note_type,
+        None,
+        None,
         recipe.salt,
         std::iter::empty(),
     )
@@ -1305,20 +1310,50 @@ fn prompt_p2id(
         other => return Err(format!("Invalid note visibility '{}'", other)),
     };
 
+    // Get optional P2IDE heights (issue #366)
+    let reclaim_height = prompt_p2ide_height(editor, "  Reclaim block height (blank = none): ")?;
+    let timelock_height = prompt_p2ide_height(editor, "  Timelock block height (blank = none): ")?;
+
     println!("\nTransfer details:");
     println!("  Recipient: {}", shorten_hex(recipient_input.trim()));
     println!("  Faucet:    {}", shorten_hex(&faucet_id.to_hex()));
     println!("  Amount:    {} / {} available", amount, max_amount);
     println!("  Note:      {}", note_type);
+    if let Some(height) = reclaim_height {
+        println!("  Reclaim:   block {}", height);
+    }
+    if let Some(height) = timelock_height {
+        println!("  Timelock:  block {}", height);
+    }
 
     let confirm = prompt_input(editor, "\nConfirm? [y/N]: ")?;
     if confirm.to_lowercase() != "y" {
         return Err("Cancelled".to_string());
     }
 
-    Ok(TransactionType::transfer_with_note_type(
-        recipient, faucet_id, amount, note_type,
+    Ok(TransactionType::transfer_p2ide(
+        recipient,
+        faucet_id,
+        amount,
+        note_type,
+        reclaim_height,
+        timelock_height,
     ))
+}
+
+/// Prompts for an optional P2IDE block height (issue #366). Blank => none;
+/// `0` is rejected because it encodes "no constraint" on-chain.
+fn prompt_p2ide_height(editor: &mut DefaultEditor, prompt: &str) -> Result<Option<u32>, String> {
+    let input = prompt_input(editor, prompt)?;
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    match input.parse::<u32>() {
+        Ok(0) => Err("Block height must be greater than 0".to_string()),
+        Ok(height) => Ok(Some(height)),
+        Err(_) => Err(format!("Invalid block height '{}'", input)),
+    }
 }
 
 async fn prompt_consume_notes(

@@ -340,6 +340,8 @@ mod tests {
                     faucet_id: account_id,
                     amount: 10,
                     note_type: miden_protocol::note::NoteType::Public,
+                    reclaim_height: None,
+                    timelock_height: None,
                 })
                 .expect("threshold"),
             1

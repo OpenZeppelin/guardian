@@ -324,6 +324,7 @@ export async function createP2idProposal(
   faucetId: string,
   amount: bigint,
   noteType?: NoteType,
+  heights?: { reclaimHeight?: number; timelockHeight?: number },
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createP2idProposal(
@@ -331,7 +332,7 @@ export async function createP2idProposal(
       faucetId,
       amount,
       proposalNonce(multisig),
-      { noteType },
+      { noteType, ...heights },
     ));
 }
 

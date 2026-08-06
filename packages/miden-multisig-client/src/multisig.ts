@@ -872,7 +872,7 @@ export class Multisig {
     faucetId: string,
     amount: bigint,
     nonce?: number,
-    options: { noteType?: NoteType } = {},
+    options: { noteType?: NoteType; reclaimHeight?: number; timelockHeight?: number } = {},
   ): Promise<Proposal> {
     const webClient = await this.getRawClient();
     if (amount <= 0n) {
@@ -887,7 +887,11 @@ export class Multisig {
       faucetId,
       amount,
       account,
-      { noteType: options.noteType },
+      {
+        noteType: options.noteType,
+        reclaimHeight: options.reclaimHeight,
+        timelockHeight: options.timelockHeight,
+      },
     );
 
     const summary = await executeForSummary(webClient, this._accountId, request);
@@ -903,6 +907,9 @@ export class Multisig {
       amount: amount.toString(),
       // Omitted for public notes so the wire shape matches pre-#322 proposals.
       noteType: p2idNoteTypeToMetadata(options.noteType),
+      // Omitted when absent so plain-P2ID payloads keep the pre-#366 wire shape.
+      reclaimHeight: options.reclaimHeight,
+      timelockHeight: options.timelockHeight,
       description: `Send ${amount} of asset ${faucetId.slice(0, 10)}... to ${recipientId.slice(0, 10)}...`,
     };
 
@@ -1101,6 +1108,7 @@ export class Multisig {
       account,
       parseP2idNoteType(metadata.noteType),
       metadata.saltHex,
+      { reclaimHeight: metadata.reclaimHeight, timelockHeight: metadata.timelockHeight },
     );
     return note.id().toString();
   }
@@ -1935,7 +1943,13 @@ export class Multisig {
           metadata.faucetId,
           BigInt(metadata.amount),
           account,
-          { salt, signatureAdviceMap, noteType: parseP2idNoteType(metadata.noteType) }
+          {
+            salt,
+            signatureAdviceMap,
+            noteType: parseP2idNoteType(metadata.noteType),
+            reclaimHeight: metadata.reclaimHeight,
+            timelockHeight: metadata.timelockHeight,
+          }
         );
         return request;
       }

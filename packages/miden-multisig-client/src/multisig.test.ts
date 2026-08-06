@@ -1435,6 +1435,130 @@ describe('Multisig', () => {
       expect(proposal.metadata.proposalType).toBe('p2id');
       expect((proposal.metadata as { noteType?: string }).noteType).toBe('private');
     });
+
+    it('threads P2IDE reclaim/timelock heights into the request and wire metadata (issue #366)', async () => {
+      const { executeForSummary, buildP2idTransactionRequest } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'p2id',
+            recipient_id: '0xrecipient',
+            faucet_id: '0xfaucet',
+            amount: '100',
+            reclaim_height: 12345,
+            timelock_height: 700,
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1, {
+        reclaimHeight: 12345,
+        timelockHeight: 700,
+      });
+
+      // Propose path builds the P2IDE note from the heights...
+      const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
+      expect(lastCall[5]).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
+
+      // ...and the pushed wire metadata carries the heights so cosigners
+      // rebuild the same P2IDE note at verification/execution.
+      const pushBody = JSON.parse(mockFetch.mock.calls.at(-1)![1].body as string);
+      expect(pushBody.delta_payload.metadata.reclaim_height).toBe(12345);
+      expect(pushBody.delta_payload.metadata.timelock_height).toBe(700);
+
+      expect(proposal.metadata.proposalType).toBe('p2id');
+      expect(proposal.metadata).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
+    });
+
+    it('omits the heights from wire metadata for a plain P2ID send (pre-#366 shape)', async () => {
+      const { executeForSummary } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'p2id',
+            recipient_id: '0xrecipient',
+            faucet_id: '0xfaucet',
+            amount: '100',
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1);
+
+      const pushBody = JSON.parse(mockFetch.mock.calls.at(-1)![1].body as string);
+      expect('reclaim_height' in pushBody.delta_payload.metadata).toBe(false);
+      expect('timelock_height' in pushBody.delta_payload.metadata).toBe(false);
+    });
   });
 
   describe('exportNoteToBytes / importNoteFromBytes (issue #356)', () => {

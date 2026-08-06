@@ -248,8 +248,11 @@ import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client
 // The options object accepts `noteType` (`NoteType.Public` (default) or
 // `NoteType.Private`, from `@miden-sdk/miden-sdk`); a private note publishes
 // only its hash on chain, so the recipient needs the note shared out-of-band.
+// It also accepts `reclaimHeight`/`timelockHeight` (absolute block heights,
+// issue #366); presence of either builds a P2IDE note instead of plain P2ID.
 // The typed path is `createP2idProposal(recipient, faucet, amount, nonce?,
-// { noteType })`, which persists the choice in signed metadata.
+// { noteType, reclaimHeight, timelockHeight })`, which persists the choices
+// in signed metadata.
 const { request, salt } = buildP2idTransactionRequest(senderId, recipientId, faucetId, amount);
 const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg');
 

@@ -157,3 +157,63 @@ describe('ProposalMetadataCodec p2id noteType (issue #322)', () => {
     expect(() => ProposalMetadataCodec.validate(md)).toThrow(/unsupported noteType/);
   });
 });
+
+describe('ProposalMetadataCodec p2id P2IDE heights (issue #366)', () => {
+  const baseWire: GuardianProposalMetadata = {
+    proposalType: 'p2id',
+    recipientId: '0xrecipient',
+    faucetId: '0xfaucet',
+    amount: '1000',
+  };
+
+  it('round-trips reclaim and timelock heights through the codec', () => {
+    const md = ProposalMetadataCodec.fromGuardian({
+      ...baseWire,
+      reclaimHeight: 12345,
+      timelockHeight: 700,
+    }) as P2IdProposalMetadata;
+    expect(md.reclaimHeight).toBe(12345);
+    expect(md.timelockHeight).toBe(700);
+
+    const wire = ProposalMetadataCodec.toGuardian(md);
+    expect(wire.reclaimHeight).toBe(12345);
+    expect(wire.timelockHeight).toBe(700);
+  });
+
+  it('leaves heights absent for plain P2ID proposals (pre-#366 wire shape)', () => {
+    const md = ProposalMetadataCodec.fromGuardian(baseWire) as P2IdProposalMetadata;
+    expect(md.reclaimHeight).toBeUndefined();
+    expect(md.timelockHeight).toBeUndefined();
+
+    const wire = ProposalMetadataCodec.toGuardian(md);
+    expect(wire.reclaimHeight).toBeUndefined();
+    expect(wire.timelockHeight).toBeUndefined();
+  });
+
+  it('fromGuardian rejects a zero height (encodes "no constraint" on-chain)', () => {
+    expect(() =>
+      ProposalMetadataCodec.fromGuardian({ ...baseWire, reclaimHeight: 0 }),
+    ).toThrow(/unsupported reclaimHeight/);
+  });
+
+  it('fromGuardian rejects a non-integer or out-of-range height', () => {
+    expect(() =>
+      ProposalMetadataCodec.fromGuardian({ ...baseWire, timelockHeight: 1.5 }),
+    ).toThrow(/unsupported timelockHeight/);
+    expect(() =>
+      ProposalMetadataCodec.fromGuardian({ ...baseWire, reclaimHeight: 0x1_0000_0000 }),
+    ).toThrow(/unsupported reclaimHeight/);
+  });
+
+  it('validate rejects an invalid height', () => {
+    const md = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xrecipient',
+      faucetId: '0xfaucet',
+      amount: '1000',
+      reclaimHeight: -1,
+    } as unknown as P2IdProposalMetadata;
+    expect(() => ProposalMetadataCodec.validate(md)).toThrow(/unsupported reclaimHeight/);
+  });
+});

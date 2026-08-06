@@ -63,6 +63,7 @@ export {
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
   type P2idTransactionOptions,
+  type P2ideHeightOptions,
 } from './transaction.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
@@ -108,6 +109,8 @@ export {
   isConsumeNotesV2,
   isP2idNoteVisibility,
   type P2idNoteVisibility,
+  MAX_P2IDE_BLOCK_HEIGHT,
+  parseP2ideHeight,
 } from './types/proposal.js';
 
 export {

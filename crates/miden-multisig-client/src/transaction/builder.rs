@@ -78,6 +78,8 @@ impl ProposalBuilder {
                 faucet_id,
                 amount,
                 note_type,
+                reclaim_height,
+                timelock_height,
             } => {
                 self.build_p2id(
                     miden_client,
@@ -87,6 +89,8 @@ impl ProposalBuilder {
                     faucet_id,
                     amount,
                     note_type,
+                    reclaim_height,
+                    timelock_height,
                     key_manager,
                 )
                 .await
@@ -201,6 +205,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -309,6 +315,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -362,6 +370,8 @@ impl ProposalBuilder {
         faucet_id: AccountId,
         amount: u64,
         note_type: NoteType,
+        reclaim_height: Option<u32>,
+        timelock_height: Option<u32>,
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
@@ -379,6 +389,8 @@ impl ProposalBuilder {
             recipient,
             vec![asset.into()],
             note_type,
+            reclaim_height,
+            timelock_height,
             salt,
             std::iter::empty(),
         )?;
@@ -400,6 +412,8 @@ impl ProposalBuilder {
             faucet_id_hex: Some(faucet_id.to_string()),
             amount: Some(amount),
             note_type: (note_type != NoteType::Public).then(|| note_type.to_string()),
+            reclaim_height,
+            timelock_height,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -419,6 +433,8 @@ impl ProposalBuilder {
                 amount,
                 word_to_hex(&salt),
                 note_type,
+                reclaim_height,
+                timelock_height,
             )
             .with_required_signatures(required_signatures);
 
@@ -440,6 +456,8 @@ impl ProposalBuilder {
                 faucet_id,
                 amount,
                 note_type,
+                reclaim_height,
+                timelock_height,
             },
             metadata,
         );
@@ -491,6 +509,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: note_ids_hex.clone(),
             consume_notes_metadata_version: Some(
                 crate::proposal::CONSUME_NOTES_METADATA_VERSION_V2,
@@ -595,6 +615,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -674,6 +696,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),

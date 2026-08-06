@@ -69,6 +69,14 @@ let tx = TransactionType::transfer(recipient, faucet, 1_000);
 use miden_protocol::note::NoteType;
 let tx = TransactionType::transfer_with_note_type(recipient, faucet, 1_000, NoteType::Private);
 
+// For a reclaimable and/or timelocked send use `transfer_p2ide` (issue #366):
+// presence of either height creates a P2IDE note instead of a plain P2ID note.
+let tx = TransactionType::transfer_p2ide(
+    recipient, faucet, 1_000, NoteType::Public,
+    Some(500_000), // reclaim_height: sender may reclaim from this block on
+    None,          // timelock_height: no consume-not-before constraint
+);
+
 // Proposer creates the delta on GUARDIAN
 let proposal = client.propose_transaction(tx).await?;
 

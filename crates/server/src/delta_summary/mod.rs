@@ -144,6 +144,15 @@ pub struct ProposalMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_type: Option<String>,
 
+    /// P2IDE reclaim block height (issue #366). Presence of either height
+    /// means the proposal creates a P2IDE note; absent => plain P2ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_height: Option<u32>,
+
+    /// P2IDE timelock block height (issue #366).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timelock_height: Option<u32>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

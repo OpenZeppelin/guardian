@@ -40,6 +40,16 @@ pub struct ProposalMetadataPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_type: Option<String>,
 
+    /// P2IDE reclaim block height (issue #366). Presence of either height
+    /// means the proposal creates a P2IDE note; omitted when unset so
+    /// plain-P2ID payloads keep the pre-#366 wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_height: Option<u32>,
+
+    /// P2IDE timelock block height (issue #366).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timelock_height: Option<u32>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_signatures: Option<u64>,
 
@@ -154,7 +164,12 @@ impl ProposalPayload {
 
     /// Sets the metadata for P2ID payment transfers. `note_type` is written to
     /// the wire only when it is private, so public payloads keep the legacy
-    /// shape (issue #322).
+    /// shape (issue #322). The P2IDE heights are written only when set, so
+    /// plain-P2ID payloads keep the pre-#366 wire shape (issue #366).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "payment metadata mirrors the wire fields one-to-one"
+    )]
     pub fn with_payment_metadata(
         mut self,
         recipient_id: String,
@@ -162,6 +177,8 @@ impl ProposalPayload {
         amount: u64,
         salt: String,
         note_type: NoteType,
+        reclaim_height: Option<u32>,
+        timelock_height: Option<u32>,
     ) -> Self {
         self.metadata = Some(ProposalMetadataPayload {
             proposal_type: "p2id".to_string(),
@@ -169,6 +186,8 @@ impl ProposalPayload {
             faucet_id: Some(faucet_id),
             amount: Some(amount.to_string()),
             note_type: (note_type != NoteType::Public).then(|| note_type.to_string()),
+            reclaim_height,
+            timelock_height,
             salt: Some(salt),
             ..Default::default()
         });
@@ -349,6 +368,8 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Public,
+            None,
+            None,
         );
 
         let meta = payload.metadata.unwrap();
@@ -375,6 +396,8 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Public,
+            None,
+            None,
         );
 
         let json = serde_json::to_value(payload.metadata.unwrap()).unwrap();
@@ -394,11 +417,60 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Private,
+            None,
+            None,
         );
 
         let json = serde_json::to_string(&payload.metadata.unwrap()).unwrap();
         let parsed: ProposalMetadataPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.note_type, Some("private".to_string()));
+    }
+
+    /// Unset heights must be omitted on the wire so plain-P2ID payloads keep
+    /// the pre-#366 shape (issue #366).
+    #[test]
+    fn with_payment_metadata_omits_unset_heights_on_wire() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_payment_metadata(
+            "0xrecipient".to_string(),
+            "0xfaucet".to_string(),
+            1000,
+            "0xsalt".to_string(),
+            NoteType::Public,
+            None,
+            None,
+        );
+
+        let json = serde_json::to_value(payload.metadata.unwrap()).unwrap();
+        assert!(json.get("reclaim_height").is_none());
+        assert!(json.get("timelock_height").is_none());
+    }
+
+    #[test]
+    fn with_payment_metadata_round_trips_p2ide_heights() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_payment_metadata(
+            "0xrecipient".to_string(),
+            "0xfaucet".to_string(),
+            1000,
+            "0xsalt".to_string(),
+            NoteType::Public,
+            Some(12345),
+            Some(700),
+        );
+
+        let json = serde_json::to_string(&payload.metadata.unwrap()).unwrap();
+        let parsed: ProposalMetadataPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.reclaim_height, Some(12345));
+        assert_eq!(parsed.timelock_height, Some(700));
     }
 
     #[test]

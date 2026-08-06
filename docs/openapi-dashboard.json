@@ -3143,6 +3143,15 @@
               "null"
             ]
           },
+          "reclaim_height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "P2IDE reclaim block height (issue #366). Presence of either height\nmeans the proposal creates a P2IDE note; absent => plain P2ID.",
+            "minimum": 0
+          },
           "required_signatures": {
             "type": [
               "integer",
@@ -3175,6 +3184,15 @@
               "null"
             ],
             "format": "int64",
+            "minimum": 0
+          },
+          "timelock_height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "P2IDE timelock block height (issue #366).",
             "minimum": 0
           }
         }

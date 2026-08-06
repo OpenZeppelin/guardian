@@ -1723,6 +1723,18 @@ function parseDeltaProposalMetadata(
   if (typeof record.faucet_id === 'string') proposal.faucetId = record.faucet_id;
   if (typeof record.amount === 'string') proposal.amount = record.amount;
   if (typeof record.note_type === 'string') proposal.noteType = record.note_type;
+  if (record.reclaim_height !== undefined)
+    proposal.reclaimHeight = requireNonNegativeInteger(
+      record.reclaim_height,
+      'reclaim_height',
+      context,
+    );
+  if (record.timelock_height !== undefined)
+    proposal.timelockHeight = requireNonNegativeInteger(
+      record.timelock_height,
+      'timelock_height',
+      context,
+    );
   if (record.note_ids !== undefined)
     proposal.noteIds = assertStringArray(
       requireArray(record, 'note_ids', context),
