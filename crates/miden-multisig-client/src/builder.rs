@@ -441,4 +441,41 @@ mod tests {
             None
         );
     }
+
+    /// Guards the `with_max_retries(0)` carve-out over a real gRPC wire: the
+    /// miden-client internal transport-retry loop retransmits rate-limited
+    /// requests — including submissions — up to four extra times per attempt
+    /// when enabled, so two wrapper attempts must reach the node as exactly
+    /// two requests.
+    #[tokio::test]
+    async fn the_inner_miden_client_retry_loop_stays_disabled_over_a_real_wire() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let node = miden_rpc_client::test_node::ScriptedNode::failing(
+            u32::MAX,
+            || tonic::Status::resource_exhausted("Too Many Requests!"),
+            calls.clone(),
+        );
+        let url = miden_rpc_client::test_node::serve(node).await;
+        let address = url
+            .strip_prefix("http://")
+            .expect("scripted node is plain http");
+        let (host, port) = address.rsplit_once(':').expect("endpoint carries a port");
+        let endpoint = Endpoint::new(
+            "http".to_string(),
+            host.to_string(),
+            Some(port.parse().expect("ephemeral port parses")),
+        );
+
+        let rpc_config = RpcConfig::new().with_retry_policy(RpcRetryPolicy::new(2));
+        let client = configured_node_rpc_client(&endpoint, &rpc_config);
+
+        client
+            .get_rpc_limits()
+            .await
+            .expect_err("the scripted node always rate-limits");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 }

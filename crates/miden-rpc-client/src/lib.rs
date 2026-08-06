@@ -15,6 +15,9 @@ use tonic::{
 pub use miden_node_proto::generated::{account, blockchain, note, primitives, rpc, transaction};
 pub use rpc::api_client::ApiClient;
 
+#[cfg(any(test, feature = "scripted-node"))]
+pub mod test_node;
+
 /// Per-request deadline applied to the channel. Without one, a hung
 /// node holds a caller (and everything awaiting it) indefinitely —
 /// concurrent callers share the multiplexed channel, so no request may
@@ -696,6 +699,129 @@ mod tests {
             }
         ));
         assert_eq!(observed.load(Ordering::SeqCst), 0);
+    }
+
+    async fn wire_client(
+        failures: u32,
+        error: fn() -> tonic::Status,
+        max_attempts: u32,
+        timeout: Duration,
+        delay: Duration,
+    ) -> (MidenRpcClient, Arc<AtomicU32>, Arc<RecordingRuntime>) {
+        let calls = Arc::new(AtomicU32::new(0));
+        let node = test_node::ScriptedNode::failing(failures, error, calls.clone())
+            .with_response_delay(delay);
+        let endpoint = test_node::serve(node).await;
+        let runtime = Arc::new(RecordingRuntime::default());
+        let client = MidenRpcClient::connect_with_runtime(
+            endpoint,
+            RpcClientSettings::new(timeout, RetryPolicy::new(max_attempts)),
+            runtime.clone(),
+        )
+        .await
+        .expect("the scripted node must accept connections");
+        (client, calls, runtime)
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_read_recovers_over_a_real_wire() {
+        let (mut client, calls, runtime) = wire_client(
+            2,
+            || tonic::Status::resource_exhausted("Too Many Requests!"),
+            3,
+            Duration::from_secs(2),
+            Duration::ZERO,
+        )
+        .await;
+
+        let status = client.get_status().await.expect("third attempt succeeds");
+
+        assert_eq!(status.version, "scripted");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(runtime.sleeps.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_nodes_rate_limit_text_rendering_retries_over_a_real_wire() {
+        let (mut client, calls, runtime) = wire_client(
+            u32::MAX,
+            || tonic::Status::unknown("Too Many Requests!"),
+            2,
+            Duration::from_secs(2),
+            Duration::ZERO,
+        )
+        .await;
+
+        client.get_status().await.expect_err("budget exhausts");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(runtime.sleeps.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_permanent_status_fails_fast_over_a_real_wire() {
+        let (mut client, calls, runtime) = wire_client(
+            u32::MAX,
+            || tonic::Status::invalid_argument("malformed account id"),
+            3,
+            Duration::from_secs(2),
+            Duration::ZERO,
+        )
+        .await;
+
+        client.get_status().await.expect_err("permanent failure");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(runtime.sleeps.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_request_deadline_expiry_is_transient_over_a_real_wire() {
+        let (mut client, calls, runtime) = wire_client(
+            0,
+            || unreachable!("the deadline expires before the scripted response"),
+            2,
+            Duration::from_millis(100),
+            Duration::from_millis(500),
+        )
+        .await;
+
+        let error = client
+            .get_status()
+            .await
+            .expect_err("both attempts time out");
+
+        assert!(is_transient_rpc_client_error(&error));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(runtime.sleeps.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_renders_transient_and_the_read_retries() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        });
+
+        let runtime = Arc::new(RecordingRuntime::default());
+        let mut client = MidenRpcClient::connect_with_runtime(
+            format!("http://{address}"),
+            RpcClientSettings::new(Duration::from_secs(2), RetryPolicy::new(2)),
+            runtime.clone(),
+        )
+        .await
+        .expect("plain TCP accept satisfies the eager connect");
+
+        let error = client
+            .get_status()
+            .await
+            .expect_err("requests on a dropped connection must fail");
+
+        assert!(is_transient_rpc_client_error(&error));
+        assert_eq!(runtime.sleeps.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -17,5 +17,8 @@ miden-node-proto = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
 tonic = { workspace = true, features = ["tls-native-roots", "tls-ring", "transport"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
 hex = { workspace = true }
+
+[features]
+scripted-node = []
