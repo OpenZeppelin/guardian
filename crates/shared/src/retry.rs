@@ -139,14 +139,15 @@ pub fn grpc_code_evidence(code: i32) -> StructuredEvidence {
     }
 }
 
-/// Extracts HTTP statuses by scanning for the marker wordings and parsing the
-/// number that follows ("http status 503" is caught by the "status " marker).
-/// A marker only counts when it starts on a word boundary and is followed by
-/// exactly three digits in the 4xx/5xx range.
+/// Extracts HTTP statuses by scanning for the marker wordings and parsing
+/// the number that follows. Mirrors the TypeScript classifier's pattern —
+/// `http`, `http status`, or `status` on a word boundary, an optional `code`
+/// token, an optional colon, then exactly three digits ending on a word
+/// boundary — and is pinned to it by the classification fixtures.
 #[must_use]
 pub fn http_evidence(message: &str) -> Option<StructuredEvidence> {
     const TRANSIENT: [u16; 5] = [408, 429, 502, 503, 504];
-    const STATUS_MARKERS: [&str; 3] = ["http ", "status: ", "status "];
+    const STATUS_MARKERS: [&str; 3] = ["http status", "http", "status"];
 
     let bytes = message.as_bytes();
     let mut ledger = EvidenceLedger::default();
@@ -155,7 +156,7 @@ pub fn http_evidence(message: &str) -> Option<StructuredEvidence> {
             let on_word_boundary = start
                 .checked_sub(1)
                 .and_then(|index| bytes.get(index))
-                .is_none_or(|byte| !byte.is_ascii_alphanumeric());
+                .is_none_or(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_');
             if !on_word_boundary {
                 continue;
             }
@@ -175,15 +176,35 @@ pub fn http_evidence(message: &str) -> Option<StructuredEvidence> {
     ledger.verdict()
 }
 
+fn skip_ascii_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
+    while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+        cursor += 1;
+    }
+    cursor
+}
+
 fn leading_status(bytes: &[u8], from: usize) -> Option<u16> {
-    let mut end = from;
+    let mut cursor = skip_ascii_whitespace(bytes, from);
+    if cursor > from && bytes[cursor..].starts_with(b"code") {
+        cursor = skip_ascii_whitespace(bytes, cursor + 4);
+    }
+    if bytes.get(cursor) == Some(&b':') {
+        cursor = skip_ascii_whitespace(bytes, cursor + 1);
+    }
+    let mut end = cursor;
     while bytes.get(end).is_some_and(u8::is_ascii_digit) {
         end += 1;
     }
-    if end - from != 3 {
+    if end - cursor != 3 {
         return None;
     }
-    std::str::from_utf8(&bytes[from..end]).ok()?.parse().ok()
+    if bytes
+        .get(end)
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+    {
+        return None;
+    }
+    std::str::from_utf8(&bytes[cursor..end]).ok()?.parse().ok()
 }
 
 #[must_use]

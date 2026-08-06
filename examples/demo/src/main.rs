@@ -220,6 +220,9 @@ fn rpc_config_from_env() -> Result<RpcConfig, String> {
         let max_attempts = value
             .parse::<u32>()
             .map_err(|error| format!("Invalid MIDEN_RPC_MAX_ATTEMPTS: {error}"))?;
+        if max_attempts == 0 {
+            return Err("MIDEN_RPC_MAX_ATTEMPTS must be a positive integer, got 0".to_string());
+        }
         rpc_config = rpc_config.with_retry_policy(RpcRetryPolicy::new(max_attempts));
     }
     if let Some(value) = optional_env("MIDEN_RPC_TIMEOUT_MS")? {

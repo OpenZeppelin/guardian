@@ -99,7 +99,7 @@ function httpEvidence(value: unknown): StructuredEvidence | undefined {
 function httpMessageEvidence(message: string): StructuredEvidence | undefined {
   let hasTransient = false;
   for (const match of message.matchAll(
-    /(?:\bhttp(?:\s+status)?|\bstatus\s*:?)\s*(\d{3})\b/g,
+    /(?:\bhttp(?:\s+status)?|\bstatus)(?:\s+code)?\s*:?\s*(\d{3})\b/g,
   )) {
     const evidence = httpEvidence(Number(match[1]));
     if (evidence === 'permanent') {

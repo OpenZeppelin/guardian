@@ -43,10 +43,13 @@ impl ScriptedNode {
         if !self.response_delay.is_zero() {
             tokio::time::sleep(self.response_delay).await;
         }
-        let remaining = self.failures_before_success.load(Ordering::SeqCst);
-        if remaining > 0 {
-            self.failures_before_success
-                .store(remaining - 1, Ordering::SeqCst);
+        let burns_a_failure = self
+            .failures_before_success
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok();
+        if burns_a_failure {
             return Err((self.error)());
         }
         Ok(())

@@ -178,6 +178,33 @@
       "transient": true
     },
     {
+      "name": "colon-tight status rendering is transient",
+      "chain": [
+        {
+          "message": "status:503 from upstream"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http status code wording is transient",
+      "chain": [
+        {
+          "message": "HTTP status code: 503"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "status code 400 is permanent",
+      "chain": [
+        {
+          "message": "status code 400; malformed request"
+        }
+      ],
+      "transient": false
+    },
+    {
       "name": "note transport fetch timeout is transient",
       "chain": [
         {

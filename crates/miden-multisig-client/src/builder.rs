@@ -270,13 +270,18 @@ impl MultisigClientBuilder {
             .miden_endpoint
             .ok_or_else(|| MultisigError::MissingConfig("miden_endpoint".to_string()))?;
 
-        if let Some(endpoint) = &self.note_transport_endpoint
-            && endpoint.trim().is_empty()
-        {
-            return Err(MultisigError::InvalidConfig(
-                "note_transport_endpoint must not be empty".to_string(),
-            ));
-        }
+        let note_transport_endpoint = match self.note_transport_endpoint {
+            Some(endpoint) => {
+                let trimmed = endpoint.trim();
+                if trimmed.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "note_transport_endpoint must not be empty".to_string(),
+                    ));
+                }
+                Some(trimmed.to_string())
+            }
+            None => None,
+        };
 
         let guardian_endpoint = self
             .guardian_endpoint
@@ -296,7 +301,7 @@ impl MultisigClientBuilder {
         let miden_client = create_miden_client(
             &account_dir,
             &miden_endpoint,
-            self.note_transport_endpoint.as_deref(),
+            note_transport_endpoint.as_deref(),
             &self.prover_config,
             &self.rpc_config,
         )
@@ -308,7 +313,7 @@ impl MultisigClientBuilder {
             guardian_endpoint,
             account_dir,
             miden_endpoint,
-            self.note_transport_endpoint,
+            note_transport_endpoint,
             self.prover_config,
             self.rpc_config,
         ))

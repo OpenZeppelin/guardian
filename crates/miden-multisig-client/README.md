@@ -82,7 +82,7 @@ let mut client = MultisigClient::builder()
     .await?;
 ```
 
-The defaults are a 10 second deadline and two total attempts (one classified,
+The defaults are a 10-second deadline and two total attempts (one classified,
 jittered retry); `RpcRetryPolicy::new(1)` opts out. Rate limiting and
 transport-shaped connection failures retry. Permanent failures (invalid
 argument, not found, authentication, TLS or certificate problems, invalid
