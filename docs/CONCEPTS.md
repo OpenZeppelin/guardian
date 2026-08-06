@@ -30,26 +30,47 @@ Guardian is:
 ## The custody spectrum
 
 Traditional crypto custody is binary — either a full custodian holds the
-key, or the user does. Guardian creates a third position by serving as one
-signer in a multisig arrangement, typically:
+key, or the user does. Guardian creates a third position — but **not** by
+holding a seat in the user's multisig. The account component enforces two
+independent checks on every ordinary transaction:
 
 ```mermaid
 flowchart LR
-  H["User hot key<br/>(daily transactions)"]
-  C["User cold key<br/>(recovery, offline)"]
-  G["Guardian service key<br/>(policy / co-signing)"]
-  T["2-of-3 threshold"]
+  subgraph S["User signer set"]
+    H["Hot key<br/>(daily transactions)"]
+    C["Cold key<br/>(recovery, offline)"]
+  end
+  T["M-of-N threshold<br/>(user keys only)"]
+  G["Guardian check<br/>(one ACK signature —<br/>never counted toward M)"]
+  B{"Both must pass"}
+  A["Transaction authorized"]
   H --> T
   C --> T
-  G --> T
+  T --> B
+  G --> B
+  B --> A
 ```
 
-- **Hot + Guardian** signs the everyday transaction path.
-- **Cold + hot** (or **cold alone**, depending on policy) lets the user
-  recover or rotate Guardian without the current Guardian's cooperation.
-- **Guardian alone** can never move funds.
+- **The user threshold** counts only the user's signer set. The Guardian
+  key is stored in a separate storage slot and can never satisfy or
+  contribute to M.
+- **The Guardian check** verifies exactly one Guardian signature over the
+  same transaction summary the cosigners sign. It is a pass/fail gate:
+  the Guardian can veto a transaction by withholding its ACK, but its
+  signature alone authorizes nothing — **Guardian alone can never move
+  funds**.
+- **The rotation exception.** The one transaction the account component
+  executes without the Guardian check is `SwitchGuardian` (rotating the
+  Guardian key), which needs only the user threshold. Guardian's blocking
+  power is therefore temporary and defeasible: the user's own keys can
+  always remove it.
 
-The reference deployment runs as exactly this kind of signer.
+So the Guardian participates in every ordinary transaction, but as a
+separate authentication input — not as one of the M counted signatures.
+Describing the account as "2-of-3" (user hot, user cold, Guardian)
+understates the user threshold's independence and overstates Guardian's
+authority; the accurate description is *M-of-N over user keys, plus a
+removable Guardian gate*.
 
 ## State and Delta
 
@@ -73,7 +94,7 @@ are:
 | **Nonce** | Monotonically increasing counter — orders deltas in the chain. |
 | **Account ID** | Unique identifier; one Guardian hosts many accounts. |
 | **Delta proposal** | Multi-party coordination object — sits in `pending` until threshold cosigners have signed. |
-| **Acknowledgement (ACK)** | Guardian's signature over an accepted delta's new commitment. Clients verify the ACK to confirm a delta was actually accepted by the Guardian they expected. |
+| **Acknowledgement (ACK)** | Guardian's signature over an accepted delta's transaction summary commitment — the same message the cosigners sign. Issued only after Guardian has validated the delta against the stored state. Clients verify the ACK to confirm a delta was actually accepted by the Guardian they expected. |
 
 ## Transaction lifecycle
 
@@ -88,7 +109,7 @@ sequenceDiagram
   U->>U: 1. Execute transaction locally, compute delta
   U->>G: 2. Submit signed delta (prev_commitment, nonce, payload)
   G->>G: validate against stored state
-  G-->>U: 3. ACK signature over new_commitment<br/>(delta status: candidate)
+  G-->>U: 3. ACK signature over the transaction summary commitment<br/>(delta status: candidate)
   U->>M: 4. Submit proven account update
   M-->>U: account commitment accepted
   G->>M: poll for canonical commitment
@@ -198,7 +219,7 @@ flowchart TB
   F1["Guardian unavailable"] --> R1["Use local state · retry · rotate provider"]
   F2["Candidate fails canonicalization"] --> R2["Resync from latest canonical · rebuild transaction"]
   F3["Stale delta submission<br/>(prev_commitment mismatch)"] --> R3["Fetch /delta/since · replay canonical deltas · retry"]
-  F4["Operator withholds updates"] --> R4["Compare against Miden · rotate Guardian using cold key"]
+  F4["Operator withholds updates"] --> R4["Compare against Miden · rotate Guardian<br/>(user threshold)"]
   F5["Guardian database corruption"] --> R5["Reject unverifiable data · recover from another device or operator"]
 ```
 
@@ -208,20 +229,23 @@ flowchart TB
 | Stale delta (`commitment_mismatch`) | `400` with `code: commitment_mismatch` | `GET /delta/since` → replay canonical chain → retry the local transaction. |
 | Candidate parked (`retained`) | Delta status flips `candidate` → `retained`; the account is released | Usually means the Miden proof was never submitted, the on-chain commitment diverged, or the guardian's RPC view lagged. No action is strictly required: if the transaction actually landed, the guardian reconciles and promotes it automatically. To move on immediately, refetch state, rebuild and resubmit — a new submission at the same nonce supersedes the retained delta. Because superseding forfeits that automatic recovery, check the delta's status once before resubmitting: if it already flipped to `canonical`, the original transaction landed and there is nothing to redo. |
 | Transaction died after approval (stranded candidate) | New proposals answered `409 conflict_pending_delta` while the candidate waits out the grace + retry window | Call `POST /delta/candidate/abandon` (SDKs: `abandonCandidate` / `abandon_candidate`). The worker confirms over a short quarantine that the transaction did not land, flips the delta to `discarded` with reason `client_abandoned`, and releases the account — typically well under a minute. Poll via `abandonStatus` / `abandon_status`. |
-| Operator censors / withholds | Other cosigners see stale state | Use the user's cold key to rotate Guardian; the new operator inherits canonical state from Miden. |
+| Operator censors / withholds | Other cosigners see stale state | Rotate Guardian by meeting the applicable user threshold (the cold key can participate); the new operator inherits canonical state from Miden. |
 | Account paused by operator | State-transition, proposal, and EVM mutation paths return `409 GUARDIAN_ACCOUNT_PAUSED` with `paused_reason` (reads and `ConfigureAccount` keep working) | Operator-driven safety lever, not a fault. An operator with `accounts:pause` clears it via `POST /dashboard/accounts/{id}/unpause`. See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
 | Account switched to another guardian | After the `switch_guardian` delta canonicalizes on this server, mutation paths return `409 GUARDIAN_ACCOUNT_RELEASED` with `released_at` (reads and `ConfigureAccount` keep working); the dashboard shows `released_at` | Expected outcome of a guardian switch, not a fault. Terminal until the wallet re-onboards via `/configure`, which re-validates the guardian binding. An operator unpause never reactivates a released account. |
 | Pubkey changed unexpectedly | `/pubkey` returns a key your client doesn't pin | Treat as compromise. Halt, verify rotation through an out-of-band channel. |
 
 ## Provider rotation
 
-Because Guardian is non-custodial and Miden is the source of truth, a user
-holding their cold key can switch from one Guardian operator to another
-without the current operator's cooperation:
+Because Guardian is non-custodial and Miden is the source of truth, users
+who can meet their account's signing threshold can switch from one Guardian
+operator to another without the current operator's cooperation:
 
 1. Stand up (or contract with) a new Guardian instance.
-2. Use the cold key to re-configure the account with the new Guardian
-   service key in the multisig set.
+2. Meet the applicable user threshold to execute the `SwitchGuardian`
+   transaction, which installs the new Guardian service key in the
+   account's Guardian slot. This is the rotation exception
+   described above: the account component accepts it without the current
+   Guardian's signature.
 3. Point clients at the new endpoint and pubkey.
 
 The multisig SDK's `SwitchGuardian` flow implements this. See
