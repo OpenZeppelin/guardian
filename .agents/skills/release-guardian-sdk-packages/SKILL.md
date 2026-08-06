@@ -126,6 +126,19 @@ cd packages/guardian-operator-client && npm test
 cd packages/guardian-operator-client && npm run build
 ```
 
+Then check that each publishable README still matches its shipped surface.
+The README is the crates.io / npm landing page, and a config field documented
+only under `docs/` never reaches it:
+
+```bash
+git diff v<previous-version>..HEAD --stat -- crates/*/src packages/*/src
+git diff v<previous-version>..HEAD --stat -- crates/*/README.md packages/*/README.md
+```
+
+For every package whose `src` gained a public API, builder option, or config
+field with no matching README change, read the new surface and update that
+README before publishing. Report any package deliberately left unchanged.
+
 Then run publish dry-runs:
 
 ```bash
