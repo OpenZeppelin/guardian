@@ -1024,16 +1024,25 @@ async fn action_create_custom_proposal(
     }
 
     print_info("Building a transfer transaction to use as the custom transaction request.");
-    let (recipient, faucet_id, amount, note_type) = match prompt_p2id(state, editor)? {
-        TransactionType::P2ID {
-            recipient,
-            faucet_id,
-            amount,
-            note_type,
-            ..
-        } => (recipient, faucet_id, amount, note_type),
-        _ => return Err("expected a P2ID transaction".to_string()),
-    };
+    let (recipient, faucet_id, amount, note_type, reclaim_height, timelock_height) =
+        match prompt_p2id(state, editor)? {
+            TransactionType::P2ID {
+                recipient,
+                faucet_id,
+                amount,
+                note_type,
+                reclaim_height,
+                timelock_height,
+            } => (
+                recipient,
+                faucet_id,
+                amount,
+                note_type,
+                reclaim_height,
+                timelock_height,
+            ),
+            _ => return Err("expected a P2ID transaction".to_string()),
+        };
 
     let client = state.get_client_mut()?;
     let account = client
@@ -1049,8 +1058,8 @@ async fn action_create_custom_proposal(
         recipient,
         vec![asset.into()],
         note_type,
-        None,
-        None,
+        reclaim_height,
+        timelock_height,
         salt,
         std::iter::empty(),
     )
@@ -1073,6 +1082,8 @@ async fn action_create_custom_proposal(
             faucet_id,
             amount,
             note_type,
+            reclaim_height,
+            timelock_height,
             salt,
         },
     );
@@ -1116,8 +1127,8 @@ async fn action_execute_custom_proposal(
         recipe.recipient,
         vec![asset.into()],
         recipe.note_type,
-        None,
-        None,
+        recipe.reclaim_height,
+        recipe.timelock_height,
         recipe.salt,
         std::iter::empty(),
     )

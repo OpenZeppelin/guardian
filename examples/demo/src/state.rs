@@ -17,6 +17,9 @@ pub struct CustomProposalRecipe {
     pub faucet_id: AccountId,
     pub amount: u64,
     pub note_type: NoteType,
+    /// P2IDE heights (issue #366); both `None` => plain P2ID note.
+    pub reclaim_height: Option<u32>,
+    pub timelock_height: Option<u32>,
     pub salt: Word,
 }
 

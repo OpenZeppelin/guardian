@@ -1367,6 +1367,26 @@ function requireNonNegativeInteger(
   return value;
 }
 
+/**
+ * P2IDE block heights are 1..=u32::MAX (issue #366): `0` encodes "no
+ * constraint" on-chain, so surfacing it as a real height would misrender
+ * a buggy peer's payload.
+ */
+function requireP2ideHeight(value: unknown, key: string, context: string): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > 0xffff_ffff
+  ) {
+    throw new GuardianOperatorContractError(
+      context,
+      `field "${key}" must be an integer between 1 and 4294967295`,
+    );
+  }
+  return value;
+}
+
 function assertStringArray(
   value: unknown[],
   key: string,
@@ -1724,13 +1744,9 @@ function parseDeltaProposalMetadata(
   if (typeof record.amount === 'string') proposal.amount = record.amount;
   if (typeof record.note_type === 'string') proposal.noteType = record.note_type;
   if (record.reclaim_height !== undefined)
-    proposal.reclaimHeight = requireNonNegativeInteger(
-      record.reclaim_height,
-      'reclaim_height',
-      context,
-    );
+    proposal.reclaimHeight = requireP2ideHeight(record.reclaim_height, 'reclaim_height', context);
   if (record.timelock_height !== undefined)
-    proposal.timelockHeight = requireNonNegativeInteger(
+    proposal.timelockHeight = requireP2ideHeight(
       record.timelock_height,
       'timelock_height',
       context,

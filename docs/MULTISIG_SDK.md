@@ -452,6 +452,11 @@ const reclaimableProposal = await multisig.createP2idProposal(
 );
 ```
 
+> **Note:** the two heights are independent and the SDK does not cross-check
+> them. A `timelockHeight` at or above `reclaimHeight` means the recipient
+> never has a window in which they can claim before the sender can reclaim —
+> usually not what you want.
+
 > **Warning:** a `private` P2ID note publishes only its hash on chain. The
 > recipient cannot discover the note by syncing; the full note details must
 > be shared with them out-of-band before they can consume it. Use
