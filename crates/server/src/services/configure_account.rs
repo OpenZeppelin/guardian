@@ -84,6 +84,42 @@ pub async fn configure_account(
                 ))
             })?;
 
+        // The stored cosigner list is the authorization source of truth for
+        // every later request (`Auth::verify`), so the full client-declared
+        // set must match the signer set actually stored in the submitted
+        // account state — `validate_credential` above only proves the
+        // *requesting* key is a signer, not the rest of the list (#102).
+        // `None` means the state carries no extractable signer set, matching
+        // the canonicalization-side semantics of `should_update_auth`.
+        let extracted_auth = client
+            .should_update_auth(&params.initial_state, &params.auth)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "Failed to extract signer commitments from initial state"
+                );
+                GuardianError::NetworkError(format!(
+                    "Failed to extract signer commitments from initial state: {e}"
+                ))
+            })?;
+        if let Some(expected_auth) = extracted_auth
+            && expected_auth != params.auth
+        {
+            tracing::error!(
+                account_id = %params.account_id,
+                expected = ?expected_auth,
+                provided = ?params.auth,
+                "Cosigner commitments do not match account state in configure_account"
+            );
+            return Err(GuardianError::InvalidInput(format!(
+                "cosigner_commitments do not match the signer set in initial_state: expected {:?}, provided {:?}",
+                expected_auth.cosigner_commitments(),
+                params.auth.cosigner_commitments()
+            )));
+        }
+
         // Verifies the credential authorization.
         params
             .auth
@@ -254,6 +290,9 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            })))
             .with_get_state_commitment(Ok("0x1234".to_string()));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
@@ -691,5 +730,175 @@ mod tests {
             storage_backend.get_submit_state_calls().is_empty(),
             "state should not be persisted on unauthorized configuration"
         );
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_rejects_mismatched_cosigner_commitments() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, _commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xactual_commitment".to_string()],
+            })));
+
+        let storage_backend = MockStorageBackend::new();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None));
+
+        let state =
+            create_test_app_state(network_client, storage_backend.clone(), metadata_store).await;
+
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xmalicious_commitment".to_string()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({"balance": 100}),
+            credential,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        match result.unwrap_err() {
+            GuardianError::InvalidInput(msg) => {
+                assert!(msg.contains("cosigner_commitments"), "got: {msg}");
+            }
+            e => panic!("Expected InvalidInput, got: {:?}", e),
+        }
+
+        assert!(
+            storage_backend.get_submit_state_calls().is_empty(),
+            "state should not be persisted on mismatched cosigner commitments"
+        );
+    }
+
+    /// The declared list must match the state's signer set exactly:
+    /// appending an extra (non-signer) commitment to an otherwise
+    /// correct list is rejected — the injected key would otherwise be
+    /// authorized for every later request against this account.
+    #[tokio::test]
+    async fn test_configure_account_rejects_injected_extra_cosigner() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            })));
+
+        let storage_backend = MockStorageBackend::new();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None));
+
+        let state =
+            create_test_app_state(network_client, storage_backend.clone(), metadata_store).await;
+
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex, "0xinjected_commitment".to_string()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({"balance": 100}),
+            credential,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        assert!(
+            matches!(result, Err(GuardianError::InvalidInput(_))),
+            "expected InvalidInput, got: {result:?}"
+        );
+        assert!(
+            storage_backend.get_submit_state_calls().is_empty(),
+            "state should not be persisted when an extra cosigner is injected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_cosigner_extraction_error() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_should_update_auth(Err("failed to deserialize account".to_string()));
+
+        let storage_backend = MockStorageBackend::new();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None));
+
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
+
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({"balance": 100}),
+            credential,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        assert!(
+            matches!(result, Err(GuardianError::NetworkError(_))),
+            "expected NetworkError, got: {result:?}"
+        );
+    }
+
+    /// `should_update_auth` returning `None` means the state carries no
+    /// extractable signer set (e.g. non-multisig layouts); the declared
+    /// list is then accepted as-is, matching canonicalization semantics.
+    #[tokio::test]
+    async fn test_configure_account_skips_validation_without_extractable_signers() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(None))
+            .with_get_state_commitment(Ok("0x1234".to_string()));
+
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
+
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
+
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({"balance": 100}),
+            credential,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        assert!(result.is_ok(), "got: {result:?}");
     }
 }
