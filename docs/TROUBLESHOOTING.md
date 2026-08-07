@@ -28,8 +28,10 @@ Most startup failures are environment misconfiguration. Check in order:
    a brief node blip at boot no longer kills the server, but a genuinely
    down or wrong endpoint still does, as do TLS/certificate
    misconfigurations, which fail immediately without retrying. An invalid
-   `GUARDIAN_MIDEN_RPC_ENDPOINT` (not an absolute `http(s)` URL with a
-   host) also fails immediately. Note that
+   `GUARDIAN_MIDEN_RPC_ENDPOINT` (not an origin-only `http(s)` URL in the
+   form `scheme://host[:port]`) also fails immediately. Embedded credentials,
+   paths, queries, and fragments are rejected because tonic does not send them
+   as authentication. Note that
    `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` never affects canonicalization: those
    reads make one attempt per pass and transient failures are recovered by
    the next scheduled pass. See [CONFIGURATION.md](./CONFIGURATION.md).

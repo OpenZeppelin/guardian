@@ -34,7 +34,7 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Failure surface of [`MidenRpcClient`]. `Call` retains the typed
 /// `tonic::Status` so transient and permanent failures stay distinguishable.
-/// Endpoint values are never echoed — they may embed credentials.
+/// Endpoint values are never echoed in errors.
 #[derive(Debug, thiserror::Error)]
 pub enum RpcClientError {
     #[error("invalid Miden RPC endpoint: {reason}")]

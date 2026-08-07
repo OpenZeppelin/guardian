@@ -173,34 +173,37 @@ impl MultisigError {
     }
 
     /// Wraps a Miden client failure with call-site context while retaining the
-    /// typed source for classification.
+    /// typed source for classification. The message flattens the cause chain so
+    /// a plain `Display` render still names the underlying failure.
     pub(crate) fn miden_client_with_context(
         context: impl AsRef<str>,
         err: miden_client::ClientError,
     ) -> Self {
         MultisigError::MidenClientSource {
-            message: context.as_ref().to_string(),
+            message: format!("{}: {}", context.as_ref(), error_chain(&err)),
             source: Box::new(err),
         }
     }
 
     /// Wraps a direct Miden RPC failure with call-site context while
-    /// retaining the typed source for classification.
+    /// retaining the typed source for classification. The message flattens the
+    /// cause chain so a plain `Display` render still names the gRPC status.
     pub(crate) fn miden_rpc_with_context(context: impl AsRef<str>, err: RpcError) -> Self {
         MultisigError::MidenRpcSource {
-            message: context.as_ref().to_string(),
+            message: format!("{}: {}", context.as_ref(), error_chain(&err)),
             source: Box::new(err),
         }
     }
 
     /// Wraps a transaction-stage Miden client failure with call-site context
-    /// while retaining the typed source.
+    /// while retaining the typed source. The message flattens the cause chain
+    /// so a plain `Display` render still names the underlying failure.
     pub(crate) fn transaction_execution_with_context(
         context: impl AsRef<str>,
         err: miden_client::ClientError,
     ) -> Self {
         MultisigError::TransactionExecutionSource {
-            message: context.as_ref().to_string(),
+            message: format!("{}: {}", context.as_ref(), error_chain(&err)),
             source: Box::new(err),
         }
     }
@@ -309,6 +312,7 @@ mod tests {
         );
 
         assert!(error.to_string().contains("account 0xabc"));
+        assert!(error.to_string().contains("sync_chain_mmr"));
         assert!(matches!(
             error.miden_rpc_kind(),
             Some(GrpcError::Unavailable)
@@ -342,6 +346,7 @@ mod tests {
         );
 
         assert!(error.to_string().contains("account 0xabc"));
+        assert!(error.to_string().contains("get_account"));
         assert!(matches!(
             error.miden_rpc_kind(),
             Some(GrpcError::ResourceExhausted)
@@ -356,6 +361,7 @@ mod tests {
         );
 
         assert!(error.to_string().contains("transaction submission failed"));
+        assert!(error.to_string().contains("sync_chain_mmr"));
         assert!(matches!(
             error.miden_rpc_kind(),
             Some(GrpcError::Unavailable)

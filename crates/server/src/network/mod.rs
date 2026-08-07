@@ -485,7 +485,7 @@ impl MidenRpcSettings {
         miden_rpc_client::RpcClientSettings::new(self.timeout(), self.read_retry_policy())
     }
 
-    /// `scheme://host[:port]` only — the full URL may carry credentials.
+    /// Returns the validated `scheme://host[:port]` endpoint origin.
     pub fn sanitized_endpoint(&self) -> String {
         self.endpoint.scheme_and_host()
     }
@@ -501,11 +501,19 @@ impl MidenRpcSettings {
     }
 }
 
-/// The rule text never echoes the value: the URL may embed credentials.
+/// The rule text never echoes the operator-supplied value.
 fn validate_rpc_endpoint(value: &str) -> Result<(), String> {
-    let rule = "must be an absolute HTTP(S) URL with a host".to_string();
+    let rule = "must be an origin-only absolute HTTP(S) URL (scheme://host[:port])".to_string();
     let url = url::Url::parse(value).map_err(|_| rule.clone())?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none_or(str::is_empty) {
+    let is_origin_only = url.username().is_empty()
+        && url.password().is_none()
+        && matches!(url.path(), "" | "/")
+        && url.query().is_none()
+        && url.fragment().is_none();
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none_or(str::is_empty)
+        || !is_origin_only
+    {
         return Err(rule);
     }
     Ok(())
@@ -945,20 +953,27 @@ mod tests {
     }
 
     #[test]
-    fn rpc_settings_sanitize_credentials_out_of_the_loggable_endpoint() {
-        let settings = MidenRpcSettings::resolve(
-            NetworkType::MidenLocal,
-            Some(crate::secret::CredentialUrl::new(
-                "https://user:s3cret@mirror.internal:8443/rpc?key=abc".to_string(),
-            )),
-            30_000,
-            1,
-        )
-        .unwrap();
-        let sanitized = settings.sanitized_endpoint();
-        assert_eq!(sanitized, "https://mirror.internal:8443");
-        assert!(!sanitized.contains("s3cret"));
-        assert!(!sanitized.contains("key=abc"));
+    fn rpc_settings_reject_endpoint_components_tonic_does_not_send_as_auth() {
+        for value in [
+            "https://user:s3cret@mirror.internal:8443",
+            "https://mirror.internal:8443/rpc",
+            "https://mirror.internal:8443?key=abc",
+            "https://mirror.internal:8443#rpc",
+        ] {
+            let error = MidenRpcSettings::resolve(
+                NetworkType::MidenLocal,
+                Some(crate::secret::CredentialUrl::new(value.to_string())),
+                30_000,
+                1,
+            )
+            .unwrap_err();
+
+            assert!(error.contains("origin-only absolute HTTP(S) URL"));
+            assert!(
+                !error.contains(value),
+                "error must not echo the value: {error}"
+            );
+        }
     }
 
     #[test]
