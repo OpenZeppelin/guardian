@@ -1944,8 +1944,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Rate-limit rejections by type",
-      "description": "burst / sustained",
+      "title": "Rate-limit rejections by type and transport",
+      "description": "burst / sustained, http / grpc",
       "datasource": {
         "type": "prometheus",
         "uid": "guardian-prometheus"

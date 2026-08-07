@@ -249,9 +249,11 @@ EVM proposal/session operations) return `409 GUARDIAN_ACCOUNT_PAUSED`
 Over HTTP: `429` with `code: rate_limit_exceeded` and a `Retry-After`
 header. Over gRPC: `RESOURCE_EXHAUSTED` with a `retry-after` metadata key
 (seconds) and the same `rate_limit_exceeded` envelope in the status
-details. Both transports draw from one shared budget, so heavy gRPC
+details. The sustained limit is keyed per IP alone, so heavy gRPC
 traffic (the Rust SDK and benchmark harness default) can exhaust the
 sustained allowance for HTTP calls from the same client, and vice versa.
+The burst limit is keyed per IP and endpoint, and HTTP paths never
+collide with gRPC method names, so burst buckets are not shared.
 The rejection counter `guardian_rate_limit_rejections_total` carries a
 `transport` label to tell the two surfaces apart. Rate-limit rejections
 happen before any handler runs, so retrying after the hint is always safe.

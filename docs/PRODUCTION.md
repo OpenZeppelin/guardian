@@ -42,14 +42,18 @@ audit table, no schema migrations, and cannot safely back multiple ECS tasks.
 The rate limiter keys clients by IP, and that identity comes from the
 ingress in front of the server. The reference ALB deployment handles
 this automatically; if you run Guardian behind your own proxy or load
-balancer instead, three things must hold:
+balancer instead, these must hold:
 
-- Your ingress must **append or overwrite** `X-Forwarded-For` (or set
-  `X-Real-IP` from the socket) on **both** listeners: the HTTP port and
-  the gRPC port. Guardian keys on the rightmost `X-Forwarded-For` entry,
-  the one your ingress appended. Note that proxies often need separate
-  configuration for gRPC (for example nginx `grpc_pass` does not add
-  forwarding headers unless `grpc_set_header` is configured explicitly).
+- Your ingress must **append or overwrite** `X-Forwarded-For` on **both**
+  listeners: the HTTP port and the gRPC port. Guardian keys on the
+  rightmost `X-Forwarded-For` entry, the one your ingress appended. Note
+  that proxies often need separate configuration for gRPC (for example
+  nginx `grpc_pass` does not add forwarding headers unless
+  `grpc_set_header` is configured explicitly).
+- If your ingress identifies callers with `X-Real-IP` instead, it must
+  **strip** any client-supplied `X-Forwarded-For`. `X-Forwarded-For` is
+  read first, so a caller that sends one wins over the `X-Real-IP` your
+  proxy set and picks its own rate-limit identity.
 - Only the ingress may reach the server ports (3000/50051). Forwarding
   headers are trusted whenever present, so a client that can connect
   directly can choose its own rate-limit identity.
@@ -99,11 +103,13 @@ Before treating a deployment as production-ready:
   `GUARDIAN_DASHBOARD_CURSOR_SECRET` into every ECS task.
 - Validate `/`, `/pubkey`, and the relevant SDK or dashboard smoke path after
   deploy.
-- Size `GUARDIAN_RATE_BURST_PER_SEC` / `GUARDIAN_RATE_PER_MIN` for the
-  combined HTTP **and** gRPC volume: both transports draw from one shared
-  budget, so gRPC traffic (the Rust SDK's and benchmark harness's default
-  transport) is throttled too. Budgets sized for HTTP-only traffic
-  under-provision after the transport-bypass fix.
+- Size `GUARDIAN_RATE_PER_MIN` for the combined HTTP **and** gRPC volume:
+  the sustained limit is keyed per IP alone, so gRPC traffic (the Rust
+  SDK's and benchmark harness's default transport) draws on the same
+  allowance as HTTP. Budgets sized for HTTP-only traffic under-provision
+  after the transport-bypass fix. `GUARDIAN_RATE_BURST_PER_SEC` is keyed
+  per IP and endpoint, so it applies to each HTTP path and gRPC method
+  separately and can be sized per-endpoint rather than in aggregate.
 - On the first deploy that ships gRPC rate limiting, verify keying on the
   deployed gRPC path: against staging with a deliberately low
   `guardian_rate_burst_per_sec`, exhaust the budget from one machine,

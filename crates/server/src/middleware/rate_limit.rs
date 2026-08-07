@@ -245,6 +245,12 @@ impl RateLimitStore {
     /// HTTP, normalized proto method on gRPC). When rate limiting is
     /// disabled this returns without deriving keys or touching the
     /// entry map.
+    ///
+    /// Each loop consumes the base key before consulting the narrower
+    /// enhanced key, so a request rejected on the enhanced key has
+    /// already spent a slot in the per-IP bucket. That is deliberate:
+    /// the coarse budget is the DoS floor and must count every request
+    /// that reaches it, including ones a per-signer budget then refuses.
     pub fn check_request<B>(
         &self,
         req: &Request<B>,

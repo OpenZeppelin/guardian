@@ -30,8 +30,10 @@ Run artifacts live under `reports/<run-id>/`.
 
 ## Rate limiting applies to gRPC
 
-The harness speaks gRPC, and the server rate-limits gRPC and HTTP from one
-shared budget (the gRPC surface used to be unthrottled). Over-budget calls
+The harness speaks gRPC, and the server now meters it (the gRPC surface used
+to be unthrottled): the sustained per-minute limit is keyed per IP and is
+therefore shared with any HTTP traffic from the same worker, while the burst
+limit is keyed per IP and method. Over-budget calls
 fail with `ResourceExhausted`, `code: rate_limit_exceeded`, and a
 `retry-after` metadata hint. Before a run, check the target's
 `GUARDIAN_RATE_BURST_PER_SEC` / `GUARDIAN_RATE_PER_MIN` (divided per

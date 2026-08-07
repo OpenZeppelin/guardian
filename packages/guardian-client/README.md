@@ -219,21 +219,23 @@ Rate-limit rejections happen before the server touches any state, so
 retrying them is always safe. The client does not retry automatically
 (automatic backoff is tracked in
 [#360](https://github.com/OpenZeppelin/guardian/issues/360)); a bounded
-loop over the exposed hint is one line:
+loop over the exposed hint is a few lines:
 
 ```typescript
-for (let attempt = 0; ; attempt++) {
-  try {
-    return await client.getState(accountId);
-  } catch (error) {
-    if (
-      !(error instanceof GuardianHttpError) ||
-      !error.isRetryable() ||
-      attempt >= maxAttempts
-    ) {
-      throw error;
+async function getStateWithRetry(accountId: string, maxAttempts = 3) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await client.getState(accountId);
+    } catch (error) {
+      if (
+        !(error instanceof GuardianHttpError) ||
+        !error.isRetryable() ||
+        attempt >= maxAttempts
+      ) {
+        throw error;
+      }
+      await new Promise((r) => setTimeout(r, (error.retryAfterSecs() ?? 1) * 1000));
     }
-    await new Promise((r) => setTimeout(r, (error.retryAfterSecs() ?? 1) * 1000));
   }
 }
 ```

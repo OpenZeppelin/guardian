@@ -59,6 +59,7 @@ retrying them is always safe. The client does not retry automatically
 loop over the exposed hint is a few lines:
 
 ```rust
+let max_attempts = 3;
 let mut attempts = 0;
 let state = loop {
     match client.get_state(&account_id).await {
