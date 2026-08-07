@@ -21,6 +21,42 @@ pub struct ConfigureAccountResult {
     pub ack_commitment: String,
 }
 
+/// Requires each declared cosigner commitment to be canonical — `0x` plus
+/// 64 lowercase hex digits, the only form the server itself emits — and the
+/// list to be non-empty and duplicate-free. The list is later compared by
+/// exact string equality against the signer set extracted from
+/// `initial_state`, so a non-canonical spelling could only ever fail that
+/// comparison; rejecting it here names the offending entry instead of
+/// surfacing a confusing mismatch. An empty list can never match a real
+/// signer map and would leave the account unable to authorize any request.
+fn validate_commitment_list(commitments: &[String]) -> Result<()> {
+    if commitments.is_empty() {
+        return Err(GuardianError::InvalidInput(
+            "cosigner_commitments must not be empty".to_string(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for entry in commitments {
+        let hex_digits = entry.strip_prefix("0x").unwrap_or("");
+        if hex_digits.len() != 64
+            || !hex_digits
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(GuardianError::InvalidInput(format!(
+                "cosigner_commitments entry '{entry}' is not a canonical commitment \
+                 (expected 0x followed by 64 lowercase hex digits)"
+            )));
+        }
+        if !seen.insert(entry) {
+            return Err(GuardianError::InvalidInput(format!(
+                "cosigner_commitments contains duplicate entry '{entry}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Configure a new account
 #[tracing::instrument(
     skip(state, params),
@@ -43,6 +79,8 @@ pub async fn configure_account(
             operation: "configure".to_string(),
         });
     }
+
+    validate_commitment_list(params.auth.cosigner_commitments())?;
 
     let existing = state.metadata.get(&params.account_id).await.map_err(|e| {
         tracing::error!(
@@ -743,7 +781,7 @@ mod tests {
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
             .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
-                cosigner_commitments: vec!["0xactual_commitment".to_string()],
+                cosigner_commitments: vec![format!("0x{}", "aa".repeat(32))],
             })));
 
         let storage_backend = MockStorageBackend::new();
@@ -757,7 +795,7 @@ mod tests {
         let params = ConfigureAccountParams {
             account_id: account_id_hex.to_string(),
             auth: Auth::MidenFalconRpo {
-                cosigner_commitments: vec!["0xmalicious_commitment".to_string()],
+                cosigner_commitments: vec![format!("0x{}", "bb".repeat(32))],
             },
             network_config: crate::metadata::NetworkConfig::miden_default(),
             initial_state: serde_json::json!({"balance": 100}),
@@ -862,6 +900,97 @@ mod tests {
             matches!(result, Err(GuardianError::NetworkError(_))),
             "expected NetworkError, got: {result:?}"
         );
+    }
+
+    /// The comparison is deliberately order-sensitive: the signer map's
+    /// index order is the canonical order, and the SDK emits it verbatim.
+    #[tokio::test]
+    async fn test_rejects_reordered_commitments() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let other_hex = format!("0x{}", "aa".repeat(32));
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone(), other_hex.clone()],
+            })));
+
+        let storage_backend = MockStorageBackend::new();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None));
+
+        let state =
+            create_test_app_state(network_client, storage_backend.clone(), metadata_store).await;
+
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![other_hex, commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({"balance": 100}),
+            credential,
+        };
+
+        let result = configure_account(&state, params).await;
+
+        assert!(
+            matches!(result, Err(GuardianError::InvalidInput(_))),
+            "same set in a different order must be rejected, got: {result:?}"
+        );
+        assert!(storage_backend.get_submit_state_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_rejects_non_canonical_empty_and_duplicate_commitment_lists() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let canonical = format!("0x{}", "ab".repeat(32));
+
+        let cases: Vec<(Vec<String>, &str)> = vec![
+            (vec![], "empty list"),
+            (
+                vec![canonical.clone(), canonical.clone()],
+                "duplicate entry",
+            ),
+            (vec![format!("0x{}", "AB".repeat(32))], "uppercase hex"),
+            (vec!["ab".repeat(32)], "missing 0x prefix"),
+            (vec![format!("0x{}", "ab".repeat(31))], "wrong length"),
+            (vec!["0xnot_hex".to_string()], "non-hex characters"),
+        ];
+
+        for (list, label) in cases {
+            let (pubkey_hex, _, signature_hex, timestamp) =
+                generate_falcon_signature(account_id_hex);
+            let state = create_test_app_state(
+                MockNetworkClient::new(),
+                MockStorageBackend::new(),
+                MockMetadataStore::new(),
+            )
+            .await;
+
+            let params = ConfigureAccountParams {
+                account_id: account_id_hex.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: list,
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state: serde_json::json!({"balance": 100}),
+                credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+            };
+
+            let result = configure_account(&state, params).await;
+            assert!(
+                matches!(result, Err(GuardianError::InvalidInput(_))),
+                "{label}: expected InvalidInput, got: {result:?}"
+            );
+        }
     }
 
     /// `should_update_auth` returning `None` means the state carries no
