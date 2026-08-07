@@ -191,6 +191,12 @@ grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' guardi
 terraform destroy
 ```
 
+In the prod stage the RDS instance has deletion protection on and takes a
+final snapshot (`<stack>-postgres-final`) on destroy. To tear down a prod
+stack, set `TF_VAR_rds_deletion_protection=false`, apply, then destroy. If a
+snapshot named `<stack>-postgres-final` is left over from a previous
+teardown, copy or delete it first — the destroy fails on the name collision.
+
 ECR repositories are not managed by Terraform:
 
 ```bash
@@ -220,9 +226,13 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `postgres_db` | `guardian` | Postgres database name |
 | `postgres_user` | `guardian` | Postgres username |
 | `postgres_password` | `guardian_dev_password` | Postgres password |
-| `rds_instance_class` | `db.t3.micro` in dev, `db.t3.medium` in prod | RDS instance class |
+| `rds_instance_class` | `db.t3.micro` in dev, `db.r6g.large` in prod | RDS instance class |
 | `rds_allocated_storage` | `20` in dev, `50` in prod | RDS allocated storage in GiB |
 | `rds_max_allocated_storage` | `null` in dev, `200` in prod | RDS storage autoscaling ceiling |
+| `rds_backup_retention_days` | `7` | Automated backup retention in days; enables point-in-time recovery |
+| `rds_deletion_protection` | `false` in dev, `true` in prod | Whether the RDS instance is protected from deletion |
+| `rds_skip_final_snapshot` | `true` in dev, `false` in prod | Whether destroying the RDS instance skips the final snapshot |
+| `rds_multi_az` | `false` | Whether RDS runs as a Multi-AZ deployment with a standby replica |
 | `rds_proxy_enabled` | `false` in dev, `true` in prod | Whether RDS Proxy is enabled |
 | `domain_name` | `openzeppelin.com` | Root domain for HTTPS endpoint |
 | `subdomain` | `guardian` | Subdomain for HTTPS endpoint |

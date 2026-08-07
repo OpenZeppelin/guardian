@@ -134,11 +134,11 @@ Mapping AWS resources to the Terraform files that own them:
 | HTTP listener `:80` | [`alb.tf:61`](../../infra/alb.tf#L61) | Forwards when no cert, redirects to HTTPS when cert is present. |
 | HTTPS listener `:443` | [`alb.tf:95`](../../infra/alb.tf#L95) | TLS 1.3-1.2 policy; default action → HTTP target group. |
 | gRPC listener rule | [`alb.tf:110`](../../infra/alb.tf#L110) | Path `/guardian.Guardian/*` → gRPC target group, priority `10`. |
-| RDS Postgres instance | [`rds.tf:20`](../../infra/rds.tf#L20) | Storage encrypted, backups retained per `rds_backup_retention_days`. |
+| RDS Postgres instance | [`rds.tf:20`](../../infra/rds.tf#L20) | Storage encrypted, backups retained per `rds_backup_retention_days`; prod defaults enable deletion protection and a final snapshot on destroy. |
 | RDS subnet group | [`rds.tf:8`](../../infra/rds.tf#L8) | Requires ≥2 subnets. |
-| `DATABASE_URL` secret | [`rds.tf:43`](../../infra/rds.tf#L43) | Always created; consumed by the server task. |
-| RDS Proxy + credentials secret | [`rds.tf:48`](../../infra/rds.tf#L48), [`rds.tf:70`](../../infra/rds.tf#L70) | Prod-only via `effective_rds_proxy_enabled`. |
-| RDS Proxy target / pool config | [`rds.tf:106`](../../infra/rds.tf#L106), [`rds.tf:118`](../../infra/rds.tf#L118) | 80% max connections, 50% max idle. |
+| `DATABASE_URL` secret | [`rds.tf:45`](../../infra/rds.tf#L45) | Always created; consumed by the server task. |
+| RDS Proxy + credentials secret | [`rds.tf:50`](../../infra/rds.tf#L50), [`rds.tf:72`](../../infra/rds.tf#L72) | Prod-only via `effective_rds_proxy_enabled`. |
+| RDS Proxy target / pool config | [`rds.tf:108`](../../infra/rds.tf#L108), [`rds.tf:120`](../../infra/rds.tf#L120) | 80% max connections, 50% max idle. |
 | Operator public keys secret | [`operator_secrets.tf`](../../infra/operator_secrets.tf) | Optional dashboard operator Falcon pubkey list. |
 | ACK Falcon/ECDSA secrets (existing) | [`data.tf`](../../infra/data.tf) | Looked up via `data` in `prod`; created out-of-band by `aws-deploy.sh bootstrap-ack-keys`. |
 | EVM allowed chains + RPC URLs secrets | [`data.tf`](../../infra/data.tf) | Optional; populated by deploy script from `config/evm/chains.json`. |
@@ -193,11 +193,11 @@ Concrete defaults are in
 Five categories of secret participate in a deploy:
 
 1. **`DATABASE_URL`** — written by Terraform from RDS connection details
-   ([`rds.tf:55`](../../infra/rds.tf#L55)). Server task reads it via the
+   ([`rds.tf:57`](../../infra/rds.tf#L57)). Server task reads it via the
    execution role at task start; injected as the `DATABASE_URL` env var
    ([`ecs.tf:121`](../../infra/ecs.tf#L121)).
 2. **RDS Proxy credentials** (prod) — separate JSON secret consumed by the
-   proxy's IAM role ([`rds.tf:60`](../../infra/rds.tf#L60),
+   proxy's IAM role ([`rds.tf:62`](../../infra/rds.tf#L62),
    [`iam.tf:155`](../../infra/iam.tf#L155)).
 3. **ACK signing keys** (prod) — Falcon + ECDSA secret keys for Guardian's
    own response signing. Created out-of-band by
@@ -273,7 +273,10 @@ remains an open production-hardening gap.
 - **No WAF, no Shield Advanced.** The ALB is reachable from
   `alb_ingress_cidrs`, default `0.0.0.0/0`.
 - **No RDS read replica, no automated DR drill.** Backups are
-  configured via `rds_backup_retention_days` (default 7) but there is
-  no rehearsed, automated DR path.
+  configured via `rds_backup_retention_days` (default 7) and the manual
+  restore procedure is documented in
+  [`runbooks/backup-restore.md`](../runbooks/backup-restore.md), but there
+  is no rehearsed, automated DR path. Multi-AZ standby failover is opt-in
+  via `rds_multi_az` (off by default).
 - **No KMS-managed Secrets Manager keys.** Secrets use the default AWS-owned
   key. Rotation is manual.

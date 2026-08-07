@@ -4,7 +4,7 @@ This guide covers the current AWS deployment for Guardian. The AWS stack now use
 
 The deployment surface supports two stage profiles:
 - `DEPLOY_STAGE=dev` keeps the current low-cost, fixed-capacity behavior
-- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, and benchmark-oriented runtime defaults
+- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, RDS deletion protection with a final snapshot on destroy, and benchmark-oriented runtime defaults
 
 ## Published Docker images
 
@@ -493,6 +493,12 @@ You can override that with `TF_STATE_PATH` if needed.
 ```bash
 ./scripts/aws-deploy.sh cleanup
 ```
+
+In the prod stage the RDS instance has deletion protection on and takes a
+final snapshot (`<stack>-postgres-final`) on destroy, so a prod cleanup
+fails until you set `TF_VAR_rds_deletion_protection=false` and re-apply.
+Restoring from the final snapshot is covered in
+[`runbooks/backup-restore.md`](./runbooks/backup-restore.md).
 
 ECR repositories are not managed by Terraform:
 

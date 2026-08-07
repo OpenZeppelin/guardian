@@ -137,6 +137,8 @@ locals {
   effective_rds_proxy_enabled                = var.rds_proxy_enabled != null ? var.rds_proxy_enabled : local.is_prod
   effective_rds_proxy_route_database_url     = local.effective_rds_proxy_enabled && (var.rds_proxy_route_database_url != null ? var.rds_proxy_route_database_url : true)
   effective_rds_max_allocated_storage        = var.rds_max_allocated_storage != null ? var.rds_max_allocated_storage : (local.is_prod ? max(local.effective_rds_allocated_storage, 200) : null)
+  effective_rds_deletion_protection          = var.rds_deletion_protection != null ? var.rds_deletion_protection : local.is_prod
+  effective_rds_skip_final_snapshot          = var.rds_skip_final_snapshot != null ? var.rds_skip_final_snapshot : !local.is_prod
   effective_guardian_rate_limit_enabled      = var.guardian_rate_limit_enabled != null ? var.guardian_rate_limit_enabled : true
   effective_guardian_rate_burst_per_sec      = var.guardian_rate_burst_per_sec != null ? var.guardian_rate_burst_per_sec : (local.is_prod ? 200 : 10)
   effective_guardian_rate_per_min            = var.guardian_rate_per_min != null ? var.guardian_rate_per_min : (local.is_prod ? 5000 : 60)
