@@ -85,9 +85,9 @@ pub proc assert_new_tx(msg: word)
 
     # Set the key value pair in the map to mark transaction as executed
     exec.native_account::set_map_item
-    # => [[0, 0, 0, is_executed]]
+    # => [[is_executed, 0, 0, 0]]
 
-    drop drop drop
+    movdn.3 drop drop drop
     # => [is_executed]
 
     assertz.err=ERR_TX_ALREADY_EXECUTED
@@ -641,9 +641,9 @@ pub proc assert_new_tx(msg: word)
 
     # Set the key value pair in the map to mark transaction as executed
     exec.native_account::set_map_item
-    # => [[0, 0, 0, is_executed]]
+    # => [[is_executed, 0, 0, 0]]
 
-    drop drop drop
+    movdn.3 drop drop drop
     # => [is_executed]
 
     assertz.err=ERR_TX_ALREADY_EXECUTED
@@ -1294,7 +1294,7 @@ end
 pub proc verify_guardian_signature(msg: word)
     push.GUARDIAN_SELECTOR_SLOT[0..2]
     exec.active_account::get_item
-    drop drop drop
+    movdn.3 drop drop drop
     # => [selector, MSG]
 
     push.1 eq
@@ -1491,7 +1491,7 @@ end
 pub proc verify_guardian_signature(msg: word)
     push.GUARDIAN_SELECTOR_SLOT[0..2]
     exec.active_account::get_item
-    drop drop drop
+    movdn.3 drop drop drop
     # => [selector, MSG]
 
     push.1 eq

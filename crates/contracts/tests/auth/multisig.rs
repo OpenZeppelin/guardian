@@ -1476,3 +1476,148 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
         Err(err) => anyhow::bail!("expected Unauthorized, got abort: {err:?}"),
     }
 }
+
+/// Tests that a GUARDIAN-enabled multisig rejects a transaction carrying the full
+/// cosigner threshold but no GUARDIAN signature.
+#[tokio::test]
+async fn test_multisig_rejects_missing_guardian_signature() -> anyhow::Result<()> {
+    let (
+        _secret_keys,
+        public_keys,
+        authenticators,
+        _guardian_secret_key,
+        guardian_public_key,
+        _guardian_authenticator,
+    ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
+
+    let multisig_account =
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone(), true)?;
+
+    let output_note_asset = FungibleAsset::mock(0);
+    let mut mock_chain_builder =
+        MockChainBuilder::with_accounts([multisig_account.clone()]).unwrap();
+
+    let output_note = mock_chain_builder.add_p2id_note(
+        multisig_account.id(),
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE
+            .try_into()
+            .unwrap(),
+        &[output_note_asset],
+        NoteType::Public,
+    )?;
+    let input_note = mock_chain_builder.add_spawn_note([&output_note])?;
+    let mock_chain = mock_chain_builder.build().unwrap();
+
+    let salt = Word::from([Felt::new_unchecked(1); 4]);
+
+    let tx_context_init = mock_chain
+        .build_tx_context(multisig_account.id(), &[input_note.id()], &[])?
+        .authenticator(None)
+        .extend_expected_output_notes(vec![RawOutputNote::Full(output_note.clone())])
+        .auth_args(salt)
+        .build()?;
+
+    let tx_summary = match tx_context_init.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+
+    let msg = tx_summary.as_ref().to_commitment();
+    let tx_summary = SigningInputs::TransactionSummary(tx_summary);
+
+    let sig_1 = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
+        .await?;
+    let sig_2 = authenticators[1]
+        .get_signature(public_keys[1].to_commitment().into(), &tx_summary)
+        .await?;
+
+    // The GUARDIAN signature is deliberately omitted.
+    let result = mock_chain
+        .build_tx_context(multisig_account.id(), &[input_note.id()], &[])?
+        .authenticator(None)
+        .extend_expected_output_notes(vec![RawOutputNote::Full(output_note)])
+        .add_signature(public_keys[0].clone().into(), msg, sig_1)
+        .add_signature(public_keys[1].clone().into(), msg, sig_2)
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await;
+
+    match result {
+        Err(TransactionExecutorError::Unauthorized(_)) => Ok(()),
+        Ok(_) => anyhow::bail!(
+            "transaction was executed with the GUARDIAN enabled and no GUARDIAN signature"
+        ),
+        Err(err) => anyhow::bail!("expected Unauthorized, got abort: {err:?}"),
+    }
+}
+
+/// Tests that `assert_new_tx` rejects a transaction whose summary has already been
+/// executed and committed.
+#[tokio::test]
+async fn test_multisig_rejects_replayed_transaction() -> anyhow::Result<()> {
+    let (_secret_keys, public_keys, authenticators, _, guardian_public_key, guardian_authenticator) =
+        setup_keys_and_authenticators_with_guardian(2, 1)?;
+
+    let signer_commitments: Vec<Word> = public_keys.iter().map(|pk| pk.to_commitment()).collect();
+    let config =
+        MultisigGuardianConfig::new(1, signer_commitments, guardian_public_key.to_commitment())
+            .with_account_type(AccountType::Public);
+    let multisig_account = MultisigGuardianBuilder::new(config).build_existing()?;
+
+    let mut mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
+    let salt = Word::from([Felt::new_unchecked(5); 4]);
+
+    let tx_context_init = mock_chain
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
+        .auth_args(salt)
+        .build()?;
+
+    let tx_summary = match tx_context_init.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+
+    let msg = tx_summary.as_ref().to_commitment();
+    let tx_summary = SigningInputs::TransactionSummary(tx_summary);
+
+    let signer_sig = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
+        .await?;
+    let guardian_sig = guardian_authenticator
+        .get_signature(guardian_public_key.to_commitment().into(), &tx_summary)
+        .await?;
+
+    let first_tx = mock_chain
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
+        .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig.clone())
+        .add_signature(guardian_public_key.to_commitment().into(), msg, guardian_sig.clone())
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await?;
+
+    mock_chain.add_pending_executed_transaction(&first_tx)?;
+    mock_chain.prove_next_block()?;
+
+    let replay = mock_chain
+        .build_tx_context(multisig_account.id(), &[], &[])?
+        .authenticator(None)
+        .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig)
+        .add_signature(guardian_public_key.to_commitment().into(), msg, guardian_sig)
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await;
+
+    match replay {
+        Err(_) => Ok(()),
+        Ok(tx) => anyhow::bail!(
+            "replay of an already-executed transaction was accepted (nonce_delta = {})",
+            tx.account_delta().nonce_delta()
+        ),
+    }
+}
