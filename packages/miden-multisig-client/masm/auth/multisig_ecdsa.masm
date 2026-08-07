@@ -82,9 +82,9 @@ pub proc assert_new_tx(msg: word)
 
     # Set the key value pair in the map to mark transaction as executed
     exec.native_account::set_map_item
-    # => [[0, 0, 0, is_executed]]
+    # => [[is_executed, 0, 0, 0]]
 
-    drop drop drop
+    movdn.3 drop drop drop
     # => [is_executed]
 
     assertz.err=ERR_TX_ALREADY_EXECUTED

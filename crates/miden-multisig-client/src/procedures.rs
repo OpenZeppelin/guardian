@@ -23,7 +23,7 @@ impl ProcedureName {
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => procedure_root_word(
-                "0x34963b067dbba634e57b416bc2f2a9a8d4ac24147f40b2900148c9ba44774274",
+                "0x3a5c07142f2501edd45b93db0d5c97d88093d92defc4c5d01f09840db7951cd8",
             ),
             ProcedureName::UpdateProcedureThreshold => procedure_root_word(
                 "0xec74c4b96ce593c11017ae54dec9c0ae5e0d242e8b3074eb3908d961300aed67",
@@ -35,7 +35,7 @@ impl ProcedureName {
                 "0xeceb1f2c2d7d20312dbaf091e9a27a2b63f9fcba120948043069793a5715bc96",
             ),
             ProcedureName::VerifyGuardian => procedure_root_word(
-                "0xe6a8a62d37117f55a79b5345aa3d263ab16e973d486bac9a1612663dfdecf82d",
+                "0xff45881bc28ced66a55102c5410d6b2253ca3ac757daf308fb72d1b0af76fcf9",
             ),
             ProcedureName::SendAsset => procedure_root_word(
                 "0xfb1c73d10de1954e9e8948964e3e77cf4e33759d2e012cb00eb10c50f2974eb4",

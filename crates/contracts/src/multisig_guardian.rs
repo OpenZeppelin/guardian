@@ -474,11 +474,12 @@ mod tests {
 
         // Cross-SDK parity contract: the TypeScript builder must produce these
         // same identity values for the same inputs. Re-verify it against these
-        // when validating smoke-web.
-        assert_eq!(account.id().to_hex(), "0xc42d3ebf2d6ac86103906b4a71b642");
+        // when validating smoke-web. Updated here because the auth MASM changed,
+        // which changes the account code commitment and therefore the derived id.
+        assert_eq!(account.id().to_hex(), "0x7d17c59e6dbfa98162326cfad0a312");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0xf3e34ccf284ed0d9defc573d8ae7ab2d136f11dc65937939294b6155f62588c2"
+            "0x56a5cfb496800eaa45530ad8af37025ff9fbbfb0caae8b046dbb7b36b9824df6"
         );
     }
 }

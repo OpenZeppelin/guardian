@@ -175,7 +175,7 @@ end
 pub proc verify_guardian_signature(msg: word)
     push.GUARDIAN_SELECTOR_SLOT[0..2]
     exec.active_account::get_item
-    drop drop drop
+    movdn.3 drop drop drop
     # => [selector, MSG]
 
     push.1 eq
