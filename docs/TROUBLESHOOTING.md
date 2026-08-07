@@ -283,7 +283,7 @@ Server knobs (set on the task, not per-account):
 | Variable | Default | Notes |
 |---|---|---|
 | `GUARDIAN_RATE_LIMIT_ENABLED` | `true` | Set `false` only in test environments. |
-| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (dev), `200` (prod) | Token-bucket burst. |
+| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (dev), `200` (prod) | Requests per one-second window. |
 | `GUARDIAN_RATE_PER_MIN` | `60` (dev), `5000` (prod) | Sustained rate. |
 | `GUARDIAN_MAX_REQUEST_BYTES` | `1048576` (1 MB) | Reject larger bodies. |
 
