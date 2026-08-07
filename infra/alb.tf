@@ -8,6 +8,12 @@ resource "aws_lb" "main" {
 
   enable_deletion_protection = false
 
+  # The server's rate limiter keys clients by the rightmost
+  # X-Forwarded-For entry, which is only trustworthy because the ALB
+  # appends the real caller address after any client-supplied values.
+  # Pinned so the trust assumption survives provider default changes.
+  xff_header_processing_mode = "append"
+
   lifecycle {
     precondition {
       condition     = length(local.load_balancer_subnet_ids) >= 2

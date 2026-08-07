@@ -369,8 +369,8 @@ default to `false`, at which point v1 proposals are refused with
 `UnsupportedMetadataVersionError(undefined)` on every code path.
 Deployments should drain or re-propose any v1 `consume_notes`
 proposals in flight before upgrading past the cut-over client version.
-Tracked by spec
-[`006-consume-notes-metadata`](../../speckit/features/006-consume-notes-metadata/spec.md).
+Tracked by the `006-consume-notes-metadata` feature spec in the
+repository.
 
 ## Testing
 

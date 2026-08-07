@@ -11,3 +11,5 @@ mod metrics_http;
 mod miden_rpc_integration;
 mod proposals_grpc;
 mod proposals_http;
+mod rate_limit_grpc;
+mod rate_limit_http;

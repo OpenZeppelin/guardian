@@ -37,6 +37,43 @@ the trade-offs in [`runbooks/secrets.md`](./runbooks/secrets.md#hosted-ecdsa-bac
 Filesystem mode is a local development backend only. It has no durable admin
 audit table, no schema migrations, and cannot safely back multiple ECS tasks.
 
+### Running behind your own ingress (non-AWS)
+
+The rate limiter keys clients by IP, and that identity comes from the
+ingress in front of the server. The reference ALB deployment handles
+this automatically; if you run Guardian behind your own proxy or load
+balancer instead, these must hold:
+
+- Your ingress must **append or overwrite** `X-Forwarded-For` on **both**
+  listeners: the HTTP port and the gRPC port. Guardian keys on the
+  rightmost `X-Forwarded-For` entry, the one your ingress appended. Note
+  that proxies often need separate configuration for gRPC (for example
+  nginx `grpc_pass` does not add forwarding headers unless
+  `grpc_set_header` is configured explicitly).
+- If your ingress identifies callers with `X-Real-IP` instead, it must
+  **strip** any client-supplied `X-Forwarded-For`. `X-Forwarded-For` is
+  read first, so a caller that sends one wins over the `X-Real-IP` your
+  proxy set and picks its own rate-limit identity.
+- Only the ingress may reach the server ports (3000/50051). Forwarding
+  headers are trusted whenever present, so a client that can connect
+  directly can choose its own rate-limit identity.
+- If the ingress does not forward the client address at all (an
+  unconfigured proxy, Kubernetes `externalTrafficPolicy: Cluster` SNAT,
+  an L4 balancer without client-IP preservation), every client collapses
+  into one shared budget keyed on the proxy's address: one noisy client
+  then throttles everyone, and the sustained limit caps the whole
+  deployment's throughput.
+
+To check which case you are in, restart with
+`RUST_LOG=info,server::middleware::rate_limit=debug` (the per-rejection
+lines are `debug`, since refusals are expected traffic), trip the limiter
+and read the `Request rate limited` lines: `client_ip` must show real
+client addresses: not your proxy's address, not `unknown`, and not a
+value you forged in a test request. Two probes settle it: exhaust the
+budget from one machine and confirm a second machine on a different
+address still succeeds, then retry from the exhausted machine with a
+forged `X-Forwarded-For` prefix and confirm it stays throttled.
+
 ## Production checklist
 
 Before treating a deployment as production-ready:
@@ -66,6 +103,19 @@ Before treating a deployment as production-ready:
   `GUARDIAN_DASHBOARD_CURSOR_SECRET` into every ECS task.
 - Validate `/`, `/pubkey`, and the relevant SDK or dashboard smoke path after
   deploy.
+- Size `GUARDIAN_RATE_PER_MIN` for the combined HTTP **and** gRPC volume:
+  the sustained limit is keyed per IP alone, so gRPC traffic (the Rust
+  SDK's and benchmark harness's default transport) draws on the same
+  allowance as HTTP. Budgets sized for HTTP-only traffic under-provision
+  after the transport-bypass fix. `GUARDIAN_RATE_BURST_PER_SEC` is keyed
+  per IP and endpoint, so it applies to each HTTP path and gRPC method
+  separately and can be sized per-endpoint rather than in aggregate.
+- On the first deploy that ships gRPC rate limiting, verify keying on the
+  deployed gRPC path: against staging with a deliberately low
+  `guardian_rate_burst_per_sec`, exhaust the budget from one machine,
+  confirm a second machine on a different address is unaffected, then
+  confirm a forged `X-Forwarded-For` prefix from the exhausted machine
+  stays throttled. Owned by whoever runs the deploy.
 - If Prometheus scraping is wanted, set `GUARDIAN_METRICS_ENABLED=true`,
   bind `GUARDIAN_METRICS_ADDR=0.0.0.0:9464` (containers), keep the port
   reachable only from the scraper's network, and set
@@ -110,8 +160,7 @@ none and behavior is unchanged.
   existing records still decrypt. Bulk re-encryption tooling is not yet provided.
 
 Full configuration and a dev walkthrough are in
-[`CONFIGURATION.md`](./CONFIGURATION.md#storage-encryption-at-rest) and the
-[storage-encryption quickstart](../speckit/features/001-storage-encryption/quickstart.md).
+[`CONFIGURATION.md`](./CONFIGURATION.md#storage-encryption-at-rest).
 
 ## Where details live
 
