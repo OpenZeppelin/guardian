@@ -3243,6 +3243,7 @@ dependencies = [
  "miden-confidential-contracts",
  "miden-keystore",
  "miden-protocol",
+ "miden-remote-prover-client",
  "miden-rpc-client",
  "miden-standards",
  "miden-testing",

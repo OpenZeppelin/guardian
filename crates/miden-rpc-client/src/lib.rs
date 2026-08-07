@@ -102,7 +102,53 @@ impl MidenRpcClient {
         Ok(())
     }
 
-    /// Sync state for specified accounts and note tags
+    /// Fetch the chain MMR delta needed to advance a partial MMR to the committed tip.
+    ///
+    /// `current_client_block_height` is the last block the caller **already has** in its
+    /// partial MMR, so `0` means "genesis is present". The response payload carries merge
+    /// authentication nodes plus new peaks — it is logarithmic in chain length, not
+    /// proportional to it — which is what makes acquiring peaks from a cold start affordable.
+    pub async fn sync_chain_mmr(
+        &mut self,
+        current_client_block_height: u32,
+    ) -> Result<rpc::SyncChainMmrResponse, String> {
+        let request = rpc::SyncChainMmrRequest {
+            current_client_block_height,
+            finality_level: rpc::FinalityLevel::Committed as i32,
+        };
+
+        let response = self
+            .client
+            .sync_chain_mmr(Request::new(request))
+            .await
+            .map_err(|e| format!("SyncChainMmr RPC failed: {e}"))?;
+
+        Ok(response.into_inner())
+    }
+
+    /// Fetches one page of notes whose tags match within an explicit, inclusive block range.
+    ///
+    /// Keeping `block_to` explicit is important for transaction witness assembly: every returned
+    /// block MMR path is generated for the forest at `block_to + 1`, so callers can pin note
+    /// proofs to the forest committed by the reference block returned by `SyncChainMmr`.
+    pub async fn sync_notes(
+        &mut self,
+        block_from: u32,
+        block_to: u32,
+        note_tags: Vec<u32>,
+    ) -> Result<rpc::SyncNotesResponse, String> {
+        let request = sync_notes_request(block_from, block_to, note_tags)?;
+
+        let response = self
+            .client
+            .sync_notes(Request::new(request))
+            .await
+            .map_err(|e| format!("SyncNotes RPC failed: {e}"))?;
+
+        Ok(response.into_inner())
+    }
+
+    /// Legacy note-sync wrapper. Account syncing is not supported by the raw node RPC client.
     pub async fn sync_state(
         &mut self,
         block_num: u32,
@@ -115,21 +161,7 @@ impl MidenRpcClient {
             );
         }
 
-        let request = rpc::SyncNotesRequest {
-            block_range: Some(rpc::BlockRange {
-                block_from: block_num,
-                block_to: u32::MAX,
-            }),
-            note_tags,
-        };
-
-        let response = self
-            .client
-            .sync_notes(Request::new(request))
-            .await
-            .map_err(|e| format!("SyncNotes RPC failed: {e}"))?;
-
-        Ok(response.into_inner())
+        self.sync_notes(block_num, u32::MAX, note_tags).await
     }
 
     /// Get notes by their IDs
@@ -219,5 +251,47 @@ impl MidenRpcClient {
             .map_err(|e| format!("RPC call failed: {e}"))?;
 
         Ok(response.into_inner())
+    }
+}
+
+fn sync_notes_request(
+    block_from: u32,
+    block_to: u32,
+    note_tags: Vec<u32>,
+) -> Result<rpc::SyncNotesRequest, String> {
+    if block_from > block_to {
+        return Err(format!(
+            "invalid SyncNotes block range: block_from {block_from} exceeds block_to {block_to}"
+        ));
+    }
+
+    Ok(rpc::SyncNotesRequest {
+        block_range: Some(rpc::BlockRange {
+            block_from,
+            block_to,
+        }),
+        note_tags,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sync_notes_request;
+
+    #[test]
+    fn sync_notes_request_preserves_the_reference_block_upper_bound() {
+        let request = sync_notes_request(17, 42, vec![7, 11]).expect("valid range");
+        let range = request.block_range.expect("block range is required");
+
+        assert_eq!(range.block_from, 17);
+        assert_eq!(range.block_to, 42);
+        assert_eq!(request.note_tags, vec![7, 11]);
+    }
+
+    #[test]
+    fn sync_notes_request_rejects_an_inverted_range() {
+        let error = sync_notes_request(43, 42, vec![7]).expect_err("range must be rejected");
+
+        assert!(error.contains("block_from 43 exceeds block_to 42"));
     }
 }

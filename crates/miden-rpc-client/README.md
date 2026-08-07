@@ -43,10 +43,10 @@ let header = client.get_block_header(Some(12345), true).await?;
 // Submit transaction
 let response = client.submit_transaction(proven_tx_bytes).await?;
 
-// Sync state for accounts and notes
-let sync_response = client.sync_state(
-    block_num,
-    account_ids,
+// Fetch one page of matching notes, pinned to an inclusive block range
+let sync_response = client.sync_notes(
+    block_from,
+    block_to,
     note_tags,
 ).await?;
 
