@@ -2,7 +2,7 @@
 
 ## Services overview
 
-- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and initial state. EVM accounts are not configured through this service.
+- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and initial state. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. EVM accounts are not configured through this service.
 - **push_delta**: verifies a Miden delta against the current state, computes the new commitment, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
@@ -28,6 +28,8 @@ sequenceDiagram
   S->>S: verify timestamp (within 300s skew window)
   S->>S: validate network_config for account_id
   S->>N: validate_credential(initial_state, credential)
+  S->>N: should_update_auth(initial_state)\n(extract signer map)
+  S->>S: reject unless auth.cosigner_commitments == extracted signer map\n(exact set and order)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_commitment(account_id, initial_state)
   S->>ST: submit_state(state_json, commitment)
