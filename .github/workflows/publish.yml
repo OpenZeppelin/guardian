@@ -13,6 +13,26 @@ on:
         type: boolean
         required: false
         default: false
+      guardian-client:
+        description: "Publish @openzeppelin/guardian-client"
+        type: boolean
+        required: false
+        default: false
+      guardian-evm-client:
+        description: "Publish @openzeppelin/guardian-evm-client"
+        type: boolean
+        required: false
+        default: false
+      guardian-operator-client:
+        description: "Publish @openzeppelin/guardian-operator-client"
+        type: boolean
+        required: false
+        default: false
+      miden-multisig-client:
+        description: "Publish @openzeppelin/miden-multisig-client"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: publish-npm
@@ -24,18 +44,68 @@ permissions:
   attestations: write
 
 jobs:
+  prepare:
+    name: Select packages
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.select.outputs.packages }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Select packages
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GUARDIAN_CLIENT: ${{ inputs['guardian-client'] }}
+          GUARDIAN_EVM_CLIENT: ${{ inputs['guardian-evm-client'] }}
+          GUARDIAN_OPERATOR_CLIENT: ${{ inputs['guardian-operator-client'] }}
+          MIDEN_MULTISIG_CLIENT: ${{ inputs['miden-multisig-client'] }}
+        run: |
+          set -euo pipefail
+
+          packages=()
+          if [[ "${EVENT_NAME}" == "release" ]]; then
+            packages+=(
+              "guardian-client"
+              "guardian-evm-client"
+              "guardian-operator-client"
+              "miden-multisig-client"
+            )
+          else
+            [[ "${GUARDIAN_CLIENT}" == "true" ]] && packages+=("guardian-client")
+            [[ "${GUARDIAN_EVM_CLIENT}" == "true" ]] && packages+=("guardian-evm-client")
+            [[ "${GUARDIAN_OPERATOR_CLIENT}" == "true" ]] && packages+=("guardian-operator-client")
+            [[ "${MIDEN_MULTISIG_CLIENT}" == "true" ]] && packages+=("miden-multisig-client")
+          fi
+
+          if [[ "${#packages[@]}" -eq 0 ]]; then
+            echo "::error::Select at least one package for a manual run."
+            {
+              echo "### Selected packages"
+              echo
+              echo "No packages were selected. Select at least one package and run the workflow again."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
+
+          packages_json=$(printf '%s\n' "${packages[@]}" | jq --raw-input --slurp --compact-output 'split("\n")[:-1]')
+          echo "packages=${packages_json}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "### Selected packages"
+            echo
+            printf -- '- `%s`\n' "${packages[@]}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   publish:
+    name: Publish selected packages
+    needs: prepare
     runs-on: ubuntu-latest
     environment: release
-    strategy:
-      fail-fast: true
-      max-parallel: 1
-      matrix:
-        package:
-          - guardian-client
-          - guardian-evm-client
-          - guardian-operator-client
-          - miden-multisig-client
+    timeout-minutes: 60
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -55,46 +125,63 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - name: Install dependencies
-        working-directory: packages/${{ matrix.package }}
-        run: npm ci
-
-      - name: Build
-        working-directory: packages/${{ matrix.package }}
-        run: npm run build
-
-      - name: Run tests
-        working-directory: packages/${{ matrix.package }}
-        run: npm test
-
-      - name: Check if version is already published
-        id: check-version
-        working-directory: packages/${{ matrix.package }}
+      - name: Build, test, and publish
+        env:
+          PACKAGES: ${{ needs.prepare.outputs.packages }}
+          DRY_RUN: ${{ inputs['dry-run'] }}
+          NPM_CONFIG_PROVENANCE: true
         run: |
           set -euo pipefail
-          PACKAGE_NAME=$(jq -r '.name' package.json)
-          PACKAGE_VERSION=$(jq -r '.version' package.json)
-          echo "name=${PACKAGE_NAME}" >> "${GITHUB_OUTPUT}"
-          echo "version=${PACKAGE_VERSION}" >> "${GITHUB_OUTPUT}"
 
-          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version 2>/dev/null; then
-            echo "already_published=true" >> "${GITHUB_OUTPUT}"
-            echo "⚠️ ${PACKAGE_NAME}@${PACKAGE_VERSION} is already published — skipping."
-          else
-            echo "already_published=false" >> "${GITHUB_OUTPUT}"
-            echo "📦 ${PACKAGE_NAME}@${PACKAGE_VERSION} will be published."
-          fi
+          {
+            echo "### Publish result"
+            echo
+            echo "| Package | Version | Result |"
+            echo "| --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Publish to npm
-        if: steps.check-version.outputs.already_published == 'false' && !(github.event.inputs.dry-run == 'true')
-        working-directory: packages/${{ matrix.package }}
-        run: npm publish --provenance --access public
-        env:
-          NPM_CONFIG_PROVENANCE: true
+          summarize() {
+            local package_name=$1
+            local package_version=$2
+            local result=$3
+            echo "| \`${package_name}\` | \`${package_version}\` | ${result} |" >> "${GITHUB_STEP_SUMMARY}"
+          }
 
-      - name: Publish to npm (dry run)
-        if: steps.check-version.outputs.already_published == 'false' && github.event.inputs.dry-run == 'true'
-        working-directory: packages/${{ matrix.package }}
-        run: npm publish --provenance --access public --dry-run
-        env:
-          NPM_CONFIG_PROVENANCE: true
+          mapfile -t packages < <(jq -r '.[]' <<< "${PACKAGES}")
+          for package in "${packages[@]}"; do
+            package_dir="packages/${package}"
+            package_name=$(jq -r '.name' "${package_dir}/package.json")
+            package_version=$(jq -r '.version' "${package_dir}/package.json")
+
+            if ! npm --prefix "${package_dir}" ci; then
+              summarize "${package_name}" "${package_version}" "❌ Dependency installation failed"
+              exit 1
+            fi
+
+            if ! npm --prefix "${package_dir}" run build; then
+              summarize "${package_name}" "${package_version}" "❌ Build failed"
+              exit 1
+            fi
+
+            if ! npm --prefix "${package_dir}" test; then
+              summarize "${package_name}" "${package_version}" "❌ Tests failed"
+              exit 1
+            fi
+
+            if npm view "${package_name}@${package_version}" version 2>/dev/null; then
+              echo "⚠️ ${package_name}@${package_version} is already published — skipping."
+              summarize "${package_name}" "${package_version}" "⏭️ Already published"
+            elif [[ "${DRY_RUN}" == "true" ]]; then
+              if npm --prefix "${package_dir}" publish --provenance --access public --dry-run; then
+                summarize "${package_name}" "${package_version}" "✅ Dry run succeeded"
+              else
+                summarize "${package_name}" "${package_version}" "❌ Dry run failed"
+                exit 1
+              fi
+            elif npm --prefix "${package_dir}" publish --provenance --access public; then
+              summarize "${package_name}" "${package_version}" "✅ Published"
+            else
+              summarize "${package_name}" "${package_version}" "❌ Publish failed"
+              exit 1
+            fi
+          done
