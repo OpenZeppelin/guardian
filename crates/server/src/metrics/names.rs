@@ -41,6 +41,7 @@ pub const DB_POOL_PENDING_ACQUIRES: &str = "guardian_db_pool_pending_acquires";
 
 pub const MIDEN_RPC_REQUESTS_TOTAL: &str = "guardian_miden_rpc_requests_total";
 pub const MIDEN_RPC_DURATION_SECONDS: &str = "guardian_miden_rpc_duration_seconds";
+pub const MIDEN_RPC_RETRIES_TOTAL: &str = "guardian_miden_rpc_retries_total";
 
 // --- Canonicalization jobs ----------------------------------------------
 
@@ -199,6 +200,13 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Histogram,
         labels: &[LABEL_OPERATION],
         help: "Outbound Miden chain-node RPC latency in seconds, by operation.",
+    },
+    MetricDef {
+        name: MIDEN_RPC_RETRIES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OPERATION],
+        help: "Miden chain-node RPC retry attempts beyond the first, by operation. \
+               Zero unless the configured read budget allows more than one attempt.",
     },
     MetricDef {
         name: STORAGE_OPERATIONS_TOTAL,

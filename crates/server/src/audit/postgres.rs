@@ -222,6 +222,7 @@ mod tests {
         // tokio-spawned work inherits the calling task's subscriber
         // context when we set it as the default for the duration of
         // the spawn. Use `with_default` to scope.
+        let _registry_pin = crate::testing::log_capture::dispatcher_registry_pin();
         tracing::subscriber::with_default(subscriber, || {
             // Spawn + await synchronously inside the scope so all
             // tracing events from the spawned task land in `writer`.

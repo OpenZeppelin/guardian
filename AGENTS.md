@@ -199,7 +199,9 @@ Before finishing, confirm all are true:
    - EVM `/evm/*` change → `packages/guardian-evm-client` in the same PR.
 3. Tests updated where behavior changed.
 4. At least one upstream consumer validated for changed lower-layer behavior.
-5. README/docs touched if external behavior changed.
+5. README/docs touched if external behavior changed. A public API or config
+   field added to a published crate or package means its own `README.md`, not
+   just `docs/`. See §9.
 6. No unrelated file churn.
 
 ## 9) Documentation Impact Check
@@ -209,7 +211,8 @@ Do not update docs mechanically for every code edit. Do check and update the mat
 Common mappings:
 
 - Server or API behavior -> `spec/`, `docs/CONCEPTS.md`, SDK docs
-- Multisig SDK behavior -> `docs/MULTISIG_SDK.md`, `examples/demo`, `examples/web`, `examples/smoke-web`
+- Multisig SDK behavior -> `docs/MULTISIG_SDK.md`, `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`, `examples/demo`, `examples/web`, `examples/smoke-web`
+- New or changed public API, builder option, or config field on a published crate or package -> that crate's or package's own `README.md`, in the same PR. These READMEs are the crates.io and npm landing pages, so a field documented only in `docs/` is invisible to every consumer who never opens the repo. Published surfaces: `crates/shared`, `crates/client`, `crates/contracts`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/guardian-evm-client`, `packages/guardian-operator-client`, `packages/miden-multisig-client`. Keep relative links out of npm READMEs; they resolve only on GitHub.
 - Operator/dashboard behavior -> `docs/DASHBOARD.md`, `docs/PRODUCTION.md`, `examples/operator-smoke-web`
 - EVM proposal behavior -> `speckit/features/001-evm-proposal-support/`, `packages/guardian-evm-client`, `examples/evm-smoke-web`
 - Deployment, config, infrastructure, or secrets -> `docs/PRODUCTION.md`, `docs/architecture/infra.md`, `docs/runbooks/secrets.md`, `docs/SERVER_AWS_DEPLOY.md`, `infra/README.md`

@@ -105,7 +105,7 @@ impl MultisigClient {
             .get_consumable_notes(Some(account_id))
             .await
             .map_err(|e| {
-                MultisigError::MidenClient(format!("failed to get consumable notes: {}", e))
+                MultisigError::miden_client_with_context("failed to get consumable notes", e)
             })?;
 
         // Convert to our wrapper type, filtering for notes consumable
@@ -145,7 +145,7 @@ impl MultisigClient {
             .miden_client
             .get_consumable_notes(Some(account_id))
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to get notes: {}", e)))?;
+            .map_err(|e| MultisigError::miden_client_with_context("failed to get notes", e))?;
 
         let result = notes
             .into_iter()
@@ -174,7 +174,7 @@ impl MultisigClient {
             .miden_client
             .get_consumable_notes(Some(account_id))
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to get notes: {}", e)))?;
+            .map_err(|e| MultisigError::miden_client_with_context("failed to get notes", e))?;
 
         let result = notes
             .into_iter()

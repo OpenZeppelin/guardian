@@ -1,29 +1,29 @@
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
 
+use guardian_shared::retry::{
+    ProductionRetryRuntime, RetryPolicy, RetryRuntime, StructuredEvidence, grpc_code_evidence,
+    is_transient_error, run_retries,
+};
 use miden_client::RemoteTransactionProver;
 use miden_client::transaction::TransactionProver;
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
 use miden_tx::TransactionProverError;
-use tonic::Code;
 use url::Url;
 
 use crate::error::{MultisigError, Result};
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 2;
-const BASE_DELAY_MS: u64 = 500;
-const MAX_DELAY_MS: u64 = 8_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProverRetryPolicy {
-    max_attempts: u32,
+    inner: RetryPolicy,
 }
 
 impl Default for ProverRetryPolicy {
     fn default() -> Self {
         Self {
-            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            inner: RetryPolicy::new(DEFAULT_MAX_ATTEMPTS),
         }
     }
 }
@@ -32,13 +32,13 @@ impl ProverRetryPolicy {
     #[must_use]
     pub fn new(max_attempts: u32) -> Self {
         Self {
-            max_attempts: max_attempts.max(1),
+            inner: RetryPolicy::new(max_attempts),
         }
     }
 
     #[must_use]
     pub fn max_attempts(&self) -> u32 {
-        self.max_attempts
+        self.inner.max_attempts()
     }
 }
 
@@ -121,25 +121,6 @@ fn parse_prover_url(value: &str) -> Result<Url> {
     Ok(url)
 }
 
-#[async_trait::async_trait]
-trait RetryRuntime: Send + Sync {
-    async fn sleep(&self, duration: Duration);
-    fn unit_random(&self) -> f64;
-}
-
-struct ProductionRetryRuntime;
-
-#[async_trait::async_trait]
-impl RetryRuntime for ProductionRetryRuntime {
-    async fn sleep(&self, duration: Duration) {
-        tokio::time::sleep(duration).await;
-    }
-
-    fn unit_random(&self) -> f64 {
-        rand::random()
-    }
-}
-
 pub(crate) struct RetryingTransactionProver {
     inner: Arc<dyn TransactionProver + Send + Sync>,
     policy: ProverRetryPolicy,
@@ -175,216 +156,26 @@ impl TransactionProver for RetryingTransactionProver {
         &self,
         tx_inputs: TransactionInputs,
     ) -> std::result::Result<ProvenTransaction, TransactionProverError> {
-        for attempt in 0..self.policy.max_attempts {
-            match self.inner.prove(tx_inputs.clone()).await {
-                Ok(proven) => return Ok(proven),
-                Err(error)
-                    if is_transient_prover_error(&error)
-                        && attempt + 1 < self.policy.max_attempts =>
-                {
-                    let delay = retry_delay(attempt, self.runtime.unit_random());
-                    self.runtime.sleep(delay).await;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-
-        unreachable!("a normalized retry policy always performs at least one attempt")
+        run_retries(
+            self.policy.max_attempts(),
+            self.runtime.as_ref(),
+            is_transient_prover_error,
+            |_, _| {},
+            || self.inner.prove(tx_inputs.clone()),
+        )
+        .await
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StructuredEvidence {
-    Transient,
-    Permanent,
-    Indeterminate,
-}
-
-fn grpc_evidence(code: Code) -> StructuredEvidence {
-    match code {
-        Code::Cancelled | Code::DeadlineExceeded | Code::Unavailable | Code::ResourceExhausted => {
-            StructuredEvidence::Transient
-        }
-        Code::InvalidArgument
-        | Code::FailedPrecondition
-        | Code::PermissionDenied
-        | Code::Unauthenticated
-        | Code::NotFound
-        | Code::AlreadyExists
-        | Code::OutOfRange
-        | Code::Unimplemented
-        | Code::Aborted
-        | Code::Internal
-        | Code::DataLoss => StructuredEvidence::Permanent,
-        Code::Unknown | Code::Ok => StructuredEvidence::Indeterminate,
-    }
-}
-
-fn http_evidence(message: &str) -> Option<StructuredEvidence> {
-    const TRANSIENT: [u16; 5] = [408, 429, 502, 503, 504];
-    let mut found_transient = false;
-    let mut found_permanent = false;
-
-    for status in 400..=599 {
-        let structured = [
-            format!("http {status}"),
-            format!("http status {status}"),
-            format!("status: {status}"),
-            format!("status {status}"),
-        ];
-        if structured
-            .iter()
-            .any(|pattern| contains_exact_status_pattern(message, pattern))
-        {
-            if TRANSIENT.contains(&status) {
-                found_transient = true;
-            } else {
-                found_permanent = true;
-            }
-        }
-    }
-
-    if found_permanent {
-        Some(StructuredEvidence::Permanent)
-    } else if found_transient {
-        Some(StructuredEvidence::Transient)
-    } else {
-        None
-    }
-}
-
-fn contains_exact_status_pattern(message: &str, pattern: &str) -> bool {
-    message.match_indices(pattern).any(|(start, matched)| {
-        let before = start
-            .checked_sub(1)
-            .and_then(|index| message.as_bytes().get(index));
-        let after = message.as_bytes().get(start + matched.len());
-        before.is_none_or(|byte| !byte.is_ascii_alphanumeric())
-            && after.is_none_or(|byte| !byte.is_ascii_digit())
-    })
-}
-
-fn flattened_grpc_evidence(message: &str) -> Option<StructuredEvidence> {
-    let normalized = message
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .collect::<String>();
-    let patterns = [
-        ("grpccodecancelled", Code::Cancelled),
-        ("grpccodecanceled", Code::Cancelled),
-        ("grpccodedeadlineexceeded", Code::DeadlineExceeded),
-        ("grpccodeunavailable", Code::Unavailable),
-        ("grpccoderesourceexhausted", Code::ResourceExhausted),
-        ("grpccodeinvalidargument", Code::InvalidArgument),
-        ("grpccodefailedprecondition", Code::FailedPrecondition),
-        ("grpccodepermissiondenied", Code::PermissionDenied),
-        ("grpccodeunauthenticated", Code::Unauthenticated),
-        ("grpccodenotfound", Code::NotFound),
-        ("grpccodealreadyexists", Code::AlreadyExists),
-        ("grpccodeoutofrange", Code::OutOfRange),
-        ("grpccodeunimplemented", Code::Unimplemented),
-        ("grpccodeaborted", Code::Aborted),
-        ("grpccodeinternal", Code::Internal),
-        ("grpccodedataloss", Code::DataLoss),
-        ("grpccodeunknown", Code::Unknown),
-    ];
-
-    let mut found_transient = false;
-    let mut found_permanent = false;
-
-    for (pattern, code) in patterns {
-        if normalized.contains(pattern) {
-            match grpc_evidence(code) {
-                StructuredEvidence::Transient => found_transient = true,
-                StructuredEvidence::Permanent => found_permanent = true,
-                StructuredEvidence::Indeterminate => {}
-            }
-        }
-    }
-
-    if found_permanent {
-        Some(StructuredEvidence::Permanent)
-    } else if found_transient {
-        Some(StructuredEvidence::Transient)
-    } else {
-        None
-    }
-}
-
-fn flattened_transient(message: &str) -> bool {
-    [
-        "cancelled",
-        "canceled",
-        "deadline exceeded",
-        "timeout",
-        "unavailable",
-        "resource exhausted",
-        "request timeout",
-        "too many requests",
-        "rate limited",
-        "rate limit",
-        "bad gateway",
-        "service unavailable",
-        "gateway timeout",
-        "i/o timeout",
-        "io timeout",
-        "connection reset",
-        "broken pipe",
-    ]
-    .iter()
-    .any(|signal| message.contains(signal))
+pub(crate) fn tonic_link_evidence(cause: &(dyn Error + 'static)) -> StructuredEvidence {
+    cause
+        .downcast_ref::<tonic::Status>()
+        .map(|status| grpc_code_evidence(status.code() as i32))
+        .unwrap_or(StructuredEvidence::Indeterminate)
 }
 
 pub(crate) fn is_transient_prover_error(error: &TransactionProverError) -> bool {
-    let mut messages = Vec::new();
-    let mut has_transient = false;
-    let mut has_permanent = false;
-    let mut current: Option<&(dyn Error + 'static)> = Some(error);
-
-    while let Some(cause) = current {
-        let message = cause.to_string().to_ascii_lowercase();
-        if let Some(status) = cause.downcast_ref::<tonic::Status>() {
-            match grpc_evidence(status.code()) {
-                StructuredEvidence::Transient => has_transient = true,
-                StructuredEvidence::Permanent => has_permanent = true,
-                StructuredEvidence::Indeterminate => {}
-            }
-        }
-        if let Some(evidence) = http_evidence(&message) {
-            match evidence {
-                StructuredEvidence::Transient => has_transient = true,
-                StructuredEvidence::Permanent => has_permanent = true,
-                StructuredEvidence::Indeterminate => {}
-            }
-        }
-        if let Some(evidence) = flattened_grpc_evidence(&message) {
-            match evidence {
-                StructuredEvidence::Transient => has_transient = true,
-                StructuredEvidence::Permanent => has_permanent = true,
-                StructuredEvidence::Indeterminate => {}
-            }
-        }
-        messages.push(message);
-        current = cause.source();
-    }
-
-    if has_permanent {
-        return false;
-    }
-    if has_transient {
-        return true;
-    }
-
-    messages.iter().any(|message| flattened_transient(message))
-}
-
-fn retry_delay(retry_index: u32, unit_random: f64) -> Duration {
-    let exponent = retry_index.min(127);
-    let raw = u128::from(BASE_DELAY_MS).saturating_mul(1_u128 << exponent);
-    let bounded_random = unit_random.clamp(0.0, 1.0 - f64::EPSILON);
-    let factor = 0.75 + bounded_random * 0.5;
-    let jittered = (raw as f64 * factor).floor();
-    Duration::from_millis((jittered as u64).min(MAX_DELAY_MS))
+    is_transient_error(error, tonic_link_evidence)
 }
 
 #[cfg(test)]
@@ -392,6 +183,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::fmt;
     use std::sync::Mutex;
+    use std::time::Duration;
+
+    use guardian_shared::retry::retry_delay;
 
     use miden_client::testing::{Auth, MockChain};
     use miden_protocol::account::AccountBuilder;

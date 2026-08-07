@@ -6,7 +6,7 @@ import type {
 } from '@miden-sdk/miden-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedProverConfig } from './config.js';
-import type { RetryRuntime } from './retry.js';
+import type { RetryRuntime } from '../retry/runtime.js';
 import { ProverWorkflow } from './workflow.js';
 
 function asType<T>(value: unknown): T {
@@ -87,6 +87,37 @@ describe('ProverWorkflow', () => {
     ).rejects.toBe(final);
     expect(prove).toHaveBeenCalledTimes(2);
     expect(runtime.sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('never re-submits when submission fails with transient-looking wording', async () => {
+    const rateLimited = Object.assign(new Error('Too Many Requests!'), {
+      code: 'ResourceExhausted',
+    });
+    const submit = vi.fn().mockRejectedValue(rateLimited);
+    const prove = vi.fn().mockResolvedValue({ submit });
+    const client = {
+      transactions: { executeRequest: vi.fn().mockResolvedValue({ prove }) },
+    };
+    const runtime: RetryRuntime = {
+      sleep: vi.fn().mockResolvedValue(undefined),
+      unitRandom: () => 0.5,
+    };
+    const workflow = new ProverWorkflow(
+      asType<MidenClient>(client),
+      {
+        kind: 'remote',
+        maxAttempts: 5,
+        createProver: () => asType<TransactionProver>({}),
+      },
+      runtime,
+    );
+
+    await expect(
+      workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({})),
+    ).rejects.toBe(rateLimited);
+    expect(prove).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(runtime.sleep).not.toHaveBeenCalled();
   });
 
   it('uses the injected prover directly when no cloneable remote override exists', async () => {

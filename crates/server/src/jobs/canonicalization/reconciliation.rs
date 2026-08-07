@@ -330,7 +330,11 @@ impl DeltasProcessorBase {
         let verification = self
             .state
             .network_client
-            .verify_commitment(account_id, &current_state.commitment)
+            .verify_commitment(
+                account_id,
+                &current_state.commitment,
+                crate::network::RpcReadMode::SingleAttempt,
+            )
             .await;
         // The two quiet outcomes below are deliberately NOT recorded as
         // `reconcile_deferred`: a healthy steady state probes every due

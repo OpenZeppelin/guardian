@@ -74,6 +74,19 @@ GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-public-keys.json \
 cargo run -p guardian-server --bin server
 ```
 
+`GUARDIAN_NETWORK_TYPE` pins network identity and the default node endpoint.
+To point at a node on another host or port without changing identity, set
+`GUARDIAN_MIDEN_RPC_ENDPOINT`; `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` and
+`GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` tune the per-request deadline and the
+opt-in read retry budget for eligible non-canonicalization reads
+(submissions are never retried, and canonicalization makes one attempt per
+node read — later passes provide recovery). Embedders using the
+Rust builder can inject the same settings programmatically via
+`ServerBuilder::with_rpc(RpcSettings::from_env(network)?)` (or a directly
+constructed `RpcSettings::Miden(...)`) — the enum leaves room for future
+networks without reshaping the builder surface. See
+[docs/CONFIGURATION.md](../../docs/CONFIGURATION.md).
+
 Deployed example:
 
 ```bash
