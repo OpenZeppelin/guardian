@@ -52,7 +52,6 @@ struct MetadataRow {
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
-    last_auth_timestamp: Option<i64>,
     paused_at: Option<chrono::DateTime<chrono::Utc>>,
     paused_reason: Option<String>,
     released_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -68,7 +67,6 @@ struct NewMetadata<'a> {
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     has_pending_candidate: bool,
-    last_auth_timestamp: Option<i64>,
     paused_at: Option<chrono::DateTime<chrono::Utc>>,
     paused_reason: Option<String>,
     released_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -90,7 +88,6 @@ impl TryFrom<MetadataRow> for AccountMetadata {
             created_at: row.created_at.to_rfc3339(),
             updated_at: row.updated_at.to_rfc3339(),
             has_pending_candidate: row.has_pending_candidate,
-            last_auth_timestamp: row.last_auth_timestamp,
             paused_at: row.paused_at,
             paused_reason: row.paused_reason,
             released_at: row.released_at,
@@ -159,7 +156,6 @@ impl MetadataStore for PostgresMetadataStore {
             created_at,
             updated_at,
             has_pending_candidate: metadata.has_pending_candidate,
-            last_auth_timestamp: metadata.last_auth_timestamp,
             paused_at: metadata.paused_at,
             paused_reason: metadata.paused_reason.clone(),
             released_at: metadata.released_at,
@@ -175,7 +171,6 @@ impl MetadataStore for PostgresMetadataStore {
                 account_metadata::auth.eq(&auth_json),
                 account_metadata::network_config.eq(&network_config_json),
                 account_metadata::updated_at.eq(updated_at),
-                account_metadata::last_auth_timestamp.eq(metadata.last_auth_timestamp),
             ))
             .execute(&mut conn)
             .await
@@ -263,12 +258,10 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(rows)
     }
 
-    /// Atomically update last_auth_timestamp using compare-and-swap.
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,
         new_timestamp: i64,
-        now: &str,
     ) -> Result<bool, String> {
         let mut conn = self
             .pool
@@ -276,25 +269,18 @@ impl MetadataStore for PostgresMetadataStore {
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        let updated_at: chrono::DateTime<chrono::Utc> = now
-            .parse()
-            .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
-
-        // Atomic CAS: only update if new_timestamp > current (or current is NULL)
-        let rows_updated = diesel::update(account_metadata::table)
-            .filter(account_metadata::account_id.eq(account_id))
-            .filter(
-                account_metadata::last_auth_timestamp
-                    .is_null()
-                    .or(account_metadata::last_auth_timestamp.lt(new_timestamp)),
-            )
-            .set((
-                account_metadata::last_auth_timestamp.eq(Some(new_timestamp)),
-                account_metadata::updated_at.eq(updated_at),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
+        let rows_updated = diesel::sql_query(
+            "INSERT INTO account_auth_state (account_id, last_auth_timestamp) \
+             VALUES ($1, $2) \
+             ON CONFLICT (account_id) DO UPDATE \
+             SET last_auth_timestamp = EXCLUDED.last_auth_timestamp \
+             WHERE account_auth_state.last_auth_timestamp < EXCLUDED.last_auth_timestamp",
+        )
+        .bind::<Text, _>(account_id)
+        .bind::<diesel::sql_types::BigInt, _>(new_timestamp)
+        .execute(&mut conn)
+        .await
+        .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
 
         Ok(rows_updated > 0)
     }
@@ -574,12 +560,224 @@ impl MetadataStore for PostgresMetadataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::account_auth_state;
     use crate::storage::postgres::run_migrations;
+    use std::sync::Arc;
 
     fn database_url() -> Option<String> {
         std::env::var("DATABASE_URL")
             .ok()
             .filter(|url| !url.trim().is_empty())
+    }
+
+    fn pg_serial_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    async fn insert_account_row(store: &PostgresMetadataStore, account_id: &str) {
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata");
+    }
+
+    async fn stored_auth_timestamp(store: &PostgresMetadataStore, account_id: &str) -> i64 {
+        let mut conn = store.pool.get().await.expect("conn");
+        account_auth_state::table
+            .filter(account_auth_state::account_id.eq(account_id))
+            .select(account_auth_state::last_auth_timestamp)
+            .first(&mut conn)
+            .await
+            .expect("stored auth timestamp")
+    }
+
+    async fn metadata_updated_at(store: &PostgresMetadataStore, account_id: &str) -> DateTime<Utc> {
+        let mut conn = store.pool.get().await.expect("conn");
+        account_metadata::table
+            .filter(account_metadata::account_id.eq(account_id))
+            .select(account_metadata::updated_at)
+            .first(&mut conn)
+            .await
+            .expect("updated_at read")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn cas_does_not_advance_metadata_updated_at() {
+        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let _guard = pg_serial_lock().lock().await;
+        run_migrations(&url).await.expect("migrations apply");
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xfrozen{}", Utc::now().timestamp_micros());
+        insert_account_row(&store, &account_id).await;
+
+        let before = metadata_updated_at(&store, &account_id).await;
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(&account_id, 100)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            metadata_updated_at(&store, &account_id).await,
+            before,
+            "authentication must not advance updated_at"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn cas_records_only_strictly_increasing_timestamps() {
+        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let _guard = pg_serial_lock().lock().await;
+        run_migrations(&url).await.expect("migrations apply");
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xcas{}", Utc::now().timestamp_micros());
+        insert_account_row(&store, &account_id).await;
+
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(&account_id, 100)
+                .await
+                .unwrap(),
+            "first timestamp creates the record"
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas(&account_id, 100)
+                .await
+                .unwrap(),
+            "equal timestamp is a replay"
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas(&account_id, 99)
+                .await
+                .unwrap(),
+            "older timestamp is a replay"
+        );
+        assert_eq!(
+            stored_auth_timestamp(&store, &account_id).await,
+            100,
+            "rejected timestamps must not change the stored value"
+        );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(&account_id, 101)
+                .await
+                .unwrap()
+        );
+        assert_eq!(stored_auth_timestamp(&store, &account_id).await, 101);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn cas_for_unknown_account_is_a_storage_error_not_a_replay() {
+        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let _guard = pg_serial_lock().lock().await;
+        run_migrations(&url).await.expect("migrations apply");
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xghost{}", Utc::now().timestamp_micros());
+
+        store
+            .update_last_auth_timestamp_cas(&account_id, 100)
+            .await
+            .expect_err("unknown account must violate the foreign key, not record state");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn concurrent_identical_timestamps_admit_exactly_one_winner() {
+        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let _guard = pg_serial_lock().lock().await;
+        run_migrations(&url).await.expect("migrations apply");
+        let store = Arc::new(PostgresMetadataStore::new(&url, 8).await.expect("store"));
+        let account_id = format!("0xrace{}", Utc::now().timestamp_micros());
+        insert_account_row(&store, &account_id).await;
+
+        for round in 0..4 {
+            let timestamp = 1_000 + round;
+            let attempts = (0..8).map(|_| {
+                let store = store.clone();
+                let account_id = account_id.clone();
+                tokio::spawn(async move {
+                    store
+                        .update_last_auth_timestamp_cas(&account_id, timestamp)
+                        .await
+                })
+            });
+            let mut accepted = 0;
+            for attempt in attempts {
+                if attempt.await.expect("task").expect("cas") {
+                    accepted += 1;
+                }
+            }
+            assert_eq!(accepted, 1, "exactly one concurrent request may win");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL; reverts and re-applies the newest migration"]
+    async fn migration_backfills_legacy_timestamps_into_account_auth_state() {
+        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let _guard = pg_serial_lock().lock().await;
+        run_migrations(&url).await.expect("migrations apply");
+
+        let account_id = format!("0xbackfill{}", Utc::now().timestamp_micros());
+        {
+            let url = url.clone();
+            let account_id = account_id.clone();
+            tokio::task::spawn_blocking(move || {
+                use diesel::Connection;
+                use diesel_migrations::MigrationHarness;
+                let mut conn =
+                    diesel::PgConnection::establish(&url).expect("sync connection for revert");
+                conn.revert_last_migration(crate::storage::postgres::MIGRATIONS)
+                    .expect("revert newest migration");
+                diesel::RunQueryDsl::execute(
+                    diesel::sql_query(
+                        "INSERT INTO account_metadata \
+                         (account_id, auth, network_config, created_at, updated_at, \
+                          has_pending_candidate, last_auth_timestamp) \
+                         VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false, 4242)",
+                    )
+                    .bind::<Text, _>(&account_id),
+                    &mut conn,
+                )
+                .expect("insert legacy row");
+            })
+            .await
+            .expect("blocking revert task");
+        }
+
+        run_migrations(&url).await.expect("migration reapplies");
+
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        assert_eq!(
+            stored_auth_timestamp(&store, &account_id).await,
+            4242,
+            "legacy timestamp must be backfilled"
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas(&account_id, 4242)
+                .await
+                .unwrap(),
+            "backfilled timestamp must be enforced"
+        );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(&account_id, 4243)
+                .await
+                .unwrap()
+        );
     }
 
     async fn flag(store: &PostgresMetadataStore, account_id: &str) -> bool {
@@ -622,7 +820,6 @@ mod tests {
             created_at: now.clone(),
             updated_at: now,
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,

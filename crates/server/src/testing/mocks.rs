@@ -1204,7 +1204,6 @@ impl MetadataStore for MockMetadataStore {
         &self,
         _account_id: &str,
         _new_timestamp: i64,
-        _now: &str,
     ) -> StdResult<bool, String> {
         self.update_timestamp_cas_responses
             .lock()
