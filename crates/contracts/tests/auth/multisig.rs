@@ -1593,8 +1593,16 @@ async fn test_multisig_rejects_replayed_transaction() -> anyhow::Result<()> {
     let first_tx = mock_chain
         .build_tx_context(multisig_account.id(), &[], &[])?
         .authenticator(None)
-        .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig.clone())
-        .add_signature(guardian_public_key.to_commitment().into(), msg, guardian_sig.clone())
+        .add_signature(
+            public_keys[0].to_commitment().into(),
+            msg,
+            signer_sig.clone(),
+        )
+        .add_signature(
+            guardian_public_key.to_commitment().into(),
+            msg,
+            guardian_sig.clone(),
+        )
         .auth_args(salt)
         .build()?
         .execute()
@@ -1607,7 +1615,11 @@ async fn test_multisig_rejects_replayed_transaction() -> anyhow::Result<()> {
         .build_tx_context(multisig_account.id(), &[], &[])?
         .authenticator(None)
         .add_signature(public_keys[0].to_commitment().into(), msg, signer_sig)
-        .add_signature(guardian_public_key.to_commitment().into(), msg, guardian_sig)
+        .add_signature(
+            guardian_public_key.to_commitment().into(),
+            msg,
+            guardian_sig,
+        )
         .auth_args(salt)
         .build()?
         .execute()
