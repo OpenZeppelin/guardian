@@ -1,7 +1,7 @@
 import type { ProposalMetadata as GuardianProposalMetadata } from '@openzeppelin/guardian-client';
 import type { ProposalMetadata } from '../types.js';
 import { isProcedureName } from '../procedures.js';
-import { isP2idNoteVisibility } from '../types/proposal.js';
+import { isP2idNoteVisibility, parseP2ideHeight } from '../types/proposal.js';
 
 export class ProposalMetadataCodec {
   static toGuardian(metadata: ProposalMetadata): GuardianProposalMetadata {
@@ -30,6 +30,11 @@ export class ProposalMetadataCodec {
           // keeps the pre-#322 wire shape and matches the Rust encoder (which
           // round-trips through the NoteType enum). Absent => public.
           noteType: metadata.noteType === 'private' ? 'private' : undefined,
+          // Validated on encode too: the create path already rejects bad
+          // heights when building the note, but metadata handed directly to
+          // the codec must not reach the wire with a value cosigners reject.
+          reclaimHeight: parseP2ideHeight('reclaimHeight', metadata.reclaimHeight),
+          timelockHeight: parseP2ideHeight('timelockHeight', metadata.timelockHeight),
         };
       case 'switch_guardian':
         return {
@@ -87,6 +92,8 @@ export class ProposalMetadataCodec {
           faucetId: guardian.faucetId,
           amount: guardian.amount,
           noteType: guardian.noteType,
+          reclaimHeight: parseP2ideHeight('reclaimHeight', guardian.reclaimHeight),
+          timelockHeight: parseP2ideHeight('timelockHeight', guardian.timelockHeight),
         };
       case 'consume_notes':
         if (!guardian.noteIds || guardian.noteIds.length === 0) {
@@ -182,6 +189,8 @@ export class ProposalMetadataCodec {
         if (metadata.noteType !== undefined && !isP2idNoteVisibility(metadata.noteType)) {
           throw new Error(`p2id proposal has unsupported noteType '${metadata.noteType}'`);
         }
+        parseP2ideHeight('reclaimHeight', metadata.reclaimHeight);
+        parseP2ideHeight('timelockHeight', metadata.timelockHeight);
         return metadata;
       case 'custom':
         // Custom proposals are opaque to the SDK; nothing to validate beyond

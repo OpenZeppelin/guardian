@@ -109,6 +109,8 @@ export function fromServerProposalMetadata(server: ServerProposalMetadata): Prop
     faucetId: server.faucet_id,
     amount: server.amount,
     noteType: server.note_type,
+    reclaimHeight: server.reclaim_height,
+    timelockHeight: server.timelock_height,
   };
 }
 
@@ -221,6 +223,8 @@ export function toServerProposalMetadata(meta: ProposalMetadata): ServerProposal
     faucet_id: meta.faucetId,
     amount: meta.amount,
     note_type: meta.noteType,
+    reclaim_height: meta.reclaimHeight,
+    timelock_height: meta.timelockHeight,
   };
 }
 

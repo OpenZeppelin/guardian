@@ -97,6 +97,14 @@ pub enum TransactionType {
         /// Visibility of the created note (issue #322). Absent in legacy
         /// proposal metadata, which maps to [`NoteType::Public`].
         note_type: NoteType,
+        /// Absolute block height at which the sender may reclaim the note
+        /// (issue #366). Presence of either height creates a P2IDE note
+        /// instead of a plain P2ID note; both `None` => plain P2ID, the
+        /// shape of pre-#366 proposals.
+        reclaim_height: Option<u32>,
+        /// Absolute block height before which the note cannot be consumed
+        /// (issue #366).
+        timelock_height: Option<u32>,
     },
     ConsumeNotes {
         note_ids: Vec<NoteId>,
@@ -151,6 +159,29 @@ impl TransactionType {
             faucet_id,
             amount,
             note_type,
+            reclaim_height: None,
+            timelock_height: None,
+        }
+    }
+
+    /// Creates a P2IDE transfer transaction: a P2ID note with optional
+    /// reclaim and/or timelock block heights (issue #366). Passing both
+    /// heights as `None` degenerates to a plain P2ID transfer.
+    pub fn transfer_p2ide(
+        recipient: AccountId,
+        faucet_id: AccountId,
+        amount: u64,
+        note_type: NoteType,
+        reclaim_height: Option<u32>,
+        timelock_height: Option<u32>,
+    ) -> Self {
+        Self::P2ID {
+            recipient,
+            faucet_id,
+            amount,
+            note_type,
+            reclaim_height,
+            timelock_height,
         }
     }
 
@@ -280,6 +311,12 @@ pub struct ProposalMetadata {
     /// `None` => public, the wire shape of pre-#322 proposals.
     pub note_type: Option<String>,
 
+    /// P2IDE reclaim block height (issue #366). Presence of either height
+    /// means the proposal creates a P2IDE note; both `None` => plain P2ID.
+    pub reclaim_height: Option<u32>,
+    /// P2IDE timelock block height (issue #366).
+    pub timelock_height: Option<u32>,
+
     pub note_ids_hex: Vec<String>,
 
     /// `consume_notes` metadata version. `None` => v1, `Some(2)` => v2.
@@ -350,6 +387,20 @@ impl ProposalMetadata {
         }
     }
 
+    /// Validates a P2IDE reclaim/timelock height (issue #366). Heights are
+    /// `u32` block numbers; `0` is rejected because it is the on-chain
+    /// encoding for "no constraint", so accepting it would silently build an
+    /// unconstrained note.
+    pub fn p2ide_height(field: &str, value: Option<u32>) -> Result<Option<u32>> {
+        match value {
+            Some(0) => Err(MultisigError::InvalidConfig(format!(
+                "unsupported metadata.{} '0': expected a positive block height",
+                field
+            ))),
+            other => Ok(other),
+        }
+    }
+
     /// Converts note ID hex strings to NoteIds.
     pub fn note_ids(&self) -> Result<Vec<NoteId>> {
         self.note_ids_hex
@@ -408,6 +459,8 @@ impl ProposalMetadata {
                     faucet_id,
                     amount: parsed_amount,
                     note_type: self.p2id_note_type()?,
+                    reclaim_height: Self::p2ide_height("reclaim_height", self.reclaim_height)?,
+                    timelock_height: Self::p2ide_height("timelock_height", self.timelock_height)?,
                 })
             }
             "switch_guardian" => {
@@ -615,6 +668,8 @@ impl Proposal {
             None => None,
         };
         let note_type = metadata_payload.note_type;
+        let reclaim_height = metadata_payload.reclaim_height;
+        let timelock_height = metadata_payload.timelock_height;
         let note_ids_hex = metadata_payload.note_ids;
         let consume_notes_metadata_version = metadata_payload.consume_notes_metadata_version;
         let consume_notes_notes = metadata_payload
@@ -637,6 +692,8 @@ impl Proposal {
             faucet_id_hex: faucet_id_hex.clone(),
             amount,
             note_type,
+            reclaim_height,
+            timelock_height,
             note_ids_hex: note_ids_hex.clone(),
             consume_notes_metadata_version,
             consume_notes_notes,
@@ -865,6 +922,8 @@ mod tests {
                 faucet_id,
                 amount,
                 note_type: NoteType::Public,
+                reclaim_height: None,
+                timelock_height: None,
             }
         );
     }
@@ -1347,6 +1406,62 @@ mod tests {
             .to_transaction_type("p2id")
             .expect_err("unknown note_type must be rejected");
         assert!(err.to_string().contains("unsupported metadata.note_type"));
+    }
+
+    /// Absent heights must keep mapping to a plain P2ID note — the only
+    /// behavior that existed before the fields, so pre-#366 proposals
+    /// rebuild identically (issue #366).
+    #[test]
+    fn to_transaction_type_p2id_defaults_to_no_heights() {
+        let tx_type = p2id_metadata(None)
+            .to_transaction_type("p2id")
+            .expect("to_transaction_type");
+        assert!(matches!(
+            tx_type,
+            TransactionType::P2ID {
+                reclaim_height: None,
+                timelock_height: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn to_transaction_type_p2id_threads_p2ide_heights() {
+        let metadata = ProposalMetadata {
+            reclaim_height: Some(12345),
+            timelock_height: Some(700),
+            ..p2id_metadata(None)
+        };
+        let tx_type = metadata
+            .to_transaction_type("p2id")
+            .expect("to_transaction_type");
+        assert!(matches!(
+            tx_type,
+            TransactionType::P2ID {
+                reclaim_height: Some(12345),
+                timelock_height: Some(700),
+                ..
+            }
+        ));
+    }
+
+    /// A zero height must be rejected: `0` encodes "no constraint"
+    /// on-chain, so accepting it would silently build an unconstrained
+    /// note (issue #366).
+    #[test]
+    fn to_transaction_type_p2id_rejects_zero_height() {
+        let metadata = ProposalMetadata {
+            reclaim_height: Some(0),
+            ..p2id_metadata(None)
+        };
+        let err = metadata
+            .to_transaction_type("p2id")
+            .expect_err("zero reclaim_height must be rejected");
+        assert!(
+            err.to_string()
+                .contains("unsupported metadata.reclaim_height")
+        );
     }
 
     #[test]
