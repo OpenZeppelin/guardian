@@ -65,10 +65,10 @@ To check which case you are in, restart with
 lines are `debug`, since refusals are expected traffic), trip the limiter
 and read the `Request rate limited` lines: `client_ip` must show real
 client addresses: not your proxy's address, not `unknown`, and not a
-value you forged in a test request. The
-[deployed-path verification runbook](./runbooks/verify-grpc-rate-limit.md)
-is written against the ALB, but its two-machine and forged-prefix probes
-apply to any ingress.
+value you forged in a test request. Two probes settle it: exhaust the
+budget from one machine and confirm a second machine on a different
+address still succeeds, then retry from the exhausted machine with a
+forged `X-Forwarded-For` prefix and confirm it stays throttled.
 
 ## Production checklist
 
@@ -104,10 +104,12 @@ Before treating a deployment as production-ready:
   budget, so gRPC traffic (the Rust SDK's and benchmark harness's default
   transport) is throttled too. Budgets sized for HTTP-only traffic
   under-provision after the transport-bypass fix.
-- On the first deploy that ships gRPC rate limiting, run the deployed-path
-  keying verification: see
-  [`runbooks/verify-grpc-rate-limit.md`](./runbooks/verify-grpc-rate-limit.md),
-  owned by whoever runs the deploy.
+- On the first deploy that ships gRPC rate limiting, verify keying on the
+  deployed gRPC path: against staging with a deliberately low
+  `guardian_rate_burst_per_sec`, exhaust the budget from one machine,
+  confirm a second machine on a different address is unaffected, then
+  confirm a forged `X-Forwarded-For` prefix from the exhausted machine
+  stays throttled. Owned by whoever runs the deploy.
 - If Prometheus scraping is wanted, set `GUARDIAN_METRICS_ENABLED=true`,
   bind `GUARDIAN_METRICS_ADDR=0.0.0.0:9464` (containers), keep the port
   reachable only from the scraper's network, and set
@@ -165,7 +167,6 @@ Full configuration and a dev walkthrough are in
 | Check runtime and deploy-time env vars | [`CONFIGURATION.md`](./CONFIGURATION.md) |
 | Bootstrap, replace, or respond to ACK/operator/EVM secret issues | [`runbooks/secrets.md`](./runbooks/secrets.md) |
 | Migrate a deployed stack to verified database TLS | [`runbooks/enable-db-tls.md`](./runbooks/enable-db-tls.md) |
-| Verify rate-limit keying on the deployed gRPC path | [`runbooks/verify-grpc-rate-limit.md`](./runbooks/verify-grpc-rate-limit.md) |
 | Configure dashboard operators and permissions | [`DASHBOARD.md`](./DASHBOARD.md) |
 | Scrape Prometheus metrics and visualize them | [`guides/observability/`](./guides/observability/README.md) |
 | Diagnose deploy/runtime failures | [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md) |
