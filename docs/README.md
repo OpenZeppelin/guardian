@@ -112,6 +112,7 @@ You are a contributor.
 - [Deploying to AWS ECS](./SERVER_AWS_DEPLOY.md)
 - [Secrets and key management](./runbooks/secrets.md)
 - [Enabling verified database TLS](./runbooks/enable-db-tls.md)
+- [Verifying rate-limit keying on the deployed gRPC path](./runbooks/verify-grpc-rate-limit.md)
 - [Operator dashboard](./DASHBOARD.md)
 
 **SDKs**

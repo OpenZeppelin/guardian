@@ -53,6 +53,35 @@ async fn test_get_pubkey_error() {
 }
 
 #[tokio::test]
+async fn rate_limit_rejection_round_trips_retry_classification() {
+    // The exact Status shape the server's gRPC rate-limit layer produces,
+    // sent over a real channel so the retry-after metadata and the details
+    // envelope survive actual HTTP/2 encoding.
+    let details = serde_json::json!({
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests — please try again shortly.",
+        "meta": { "retryable": true, "retry_after_secs": 1 }
+    })
+    .to_string()
+    .into_bytes();
+    let mut status = Status::with_details(
+        tonic::Code::ResourceExhausted,
+        "Too many requests — please try again shortly.",
+        details.into(),
+    );
+    status.metadata_mut().insert("retry-after", 1.into());
+
+    let service = MockGuardianService::default().with_get_pubkey(Err(status));
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint).await.unwrap();
+
+    let err = client.get_pubkey(None).await.unwrap_err();
+    assert_eq!(err.guardian_code().as_deref(), Some("rate_limit_exceeded"));
+    assert!(err.is_retryable());
+    assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(1)));
+}
+
+#[tokio::test]
 async fn test_configure_success() {
     let service = MockGuardianService::default().with_configure(Ok(ConfigureResponse {
         success: true,

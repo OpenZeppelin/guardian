@@ -28,6 +28,19 @@ Current scaffold status:
 Profiles live in `profiles/`.
 Run artifacts live under `reports/<run-id>/`.
 
+## Rate limiting applies to gRPC
+
+The harness speaks gRPC, and the server rate-limits gRPC and HTTP from one
+shared budget (the gRPC surface used to be unthrottled). Over-budget calls
+fail with `ResourceExhausted`, `code: rate_limit_exceeded`, and a
+`retry-after` metadata hint. Before a run, check the target's
+`GUARDIAN_RATE_BURST_PER_SEC` / `GUARDIAN_RATE_PER_MIN` (divided per
+replica by `GUARDIAN_MAX_REPLICAS`) against the profile's intended
+request rate: a throughput number measured while the limiter is rejecting
+is a limiter benchmark, not a server benchmark. Worker source IPs share
+one sustained budget per IP, so distributed workers behind one NAT
+address collapse into a single budget.
+
 Initial commands:
 
 ```bash

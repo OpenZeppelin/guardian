@@ -43,6 +43,36 @@ assert_eq!(response.state, "pending");
 let delta = client.get_delta(&account_id, nonce).await?;
 ```
 
+### Rate Limits and Retries
+
+The server rate-limits both its gRPC and HTTP surfaces from one shared
+budget. An over-budget call fails with `ResourceExhausted`, code
+`rate_limit_exceeded`, and a backoff hint. `ClientError` classifies it:
+`is_retryable()` reads the error envelope (falling back to the status-code
+class), and `retry_after()` returns the server's hint, preferring the
+`retry-after` status metadata over the envelope value.
+
+Rate-limit rejections happen before the server touches any state, so
+retrying them is always safe. The client does not retry automatically
+(automatic backoff is tracked in
+[#360](https://github.com/OpenZeppelin/guardian/issues/360)); a bounded
+loop over the exposed hint is a few lines:
+
+```rust
+let mut attempts = 0;
+let state = loop {
+    match client.get_state(&account_id).await {
+        Ok(state) => break state,
+        Err(err) if err.is_retryable() && attempts < max_attempts => {
+            attempts += 1;
+            let delay = err.retry_after().unwrap_or(Duration::from_secs(1));
+            tokio::time::sleep(delay).await;
+        }
+        Err(err) => return Err(err.into()),
+    }
+};
+```
+
 Retries are idempotent (the original request timestamp is preserved). The
 server refuses with `GUARDIAN_CANDIDATE_LANDED` when the transaction
 demonstrably landed.

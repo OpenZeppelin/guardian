@@ -246,7 +246,35 @@ EVM proposal/session operations) return `409 GUARDIAN_ACCOUNT_PAUSED`
 
 ### Rate limits triggered
 
-`429` with `code: rate_limit_exceeded` and a `Retry-After` header.
+Over HTTP: `429` with `code: rate_limit_exceeded` and a `Retry-After`
+header. Over gRPC: `RESOURCE_EXHAUSTED` with a `retry-after` metadata key
+(seconds) and the same `rate_limit_exceeded` envelope in the status
+details. Both transports draw from one shared budget, so heavy gRPC
+traffic (the Rust SDK and benchmark harness default) can exhaust the
+sustained allowance for HTTP calls from the same client, and vice versa.
+The rejection counter `guardian_rate_limit_rejections_total` carries a
+`transport` label to tell the two surfaces apart. Rate-limit rejections
+happen before any handler runs, so retrying after the hint is always safe.
+
+ALB gRPC health checks (`/guardian.Guardian/GetPubkey`) are metered like
+any other traffic, keyed per ALB-node address. Their volume is far below
+any sane budget, but a global limit below `GUARDIAN_MAX_REPLICAS`
+partitions each replica's budget to zero and would fail health checks and
+cycle tasks; the prod builder refuses to start in that configuration, dev
+builds only warn.
+
+If clients report throttling at request rates well below the configured
+budget, check the `Request rate limited` lines' `client_ip` field. They
+are logged at `debug` (rejections are expected traffic, and their volume
+tracks the flood being shed), so enable them with
+`RUST_LOG=info,server::middleware::rate_limit=debug`.
+The proxy's address (or `unknown`) on every line means your ingress is
+not forwarding the client address, so all clients share one budget:
+common with unconfigured reverse proxies (nginx `grpc_pass` needs
+explicit `grpc_set_header` for forwarding headers), Kubernetes
+`externalTrafficPolicy: Cluster`, or L4 balancers without client-IP
+preservation. See
+[PRODUCTION.md](./PRODUCTION.md#running-behind-your-own-ingress-non-aws).
 
 Server knobs (set on the task, not per-account):
 
