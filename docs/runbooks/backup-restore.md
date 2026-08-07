@@ -302,7 +302,12 @@ Accounts whose on-chain state advanced past the restored database state fail
 state-commitment verification until a client device holding the newer state
 re-syncs it — the "Guardian database corruption" row in the
 [`CONCEPTS.md` failure table](../CONCEPTS.md#failure-and-recovery). Accounts
-with no post-restore-point activity are unaffected.
+onboarded after the restore point disappear from the guardian entirely:
+requests fail with `account_not_found` (HTTP 404, gRPC `NOT_FOUND`) rather than
+failing verification. A device holding the account re-onboards via
+`/configure`, which re-registers it with the state that device currently holds;
+other cosigner devices then sync from the guardian. Accounts with no
+post-restore-point activity are unaffected.
 
 ## Logical backups (optional)
 
