@@ -208,8 +208,10 @@ try {
 
 ### Rate limits and retries
 
-The server rate-limits both its HTTP and gRPC surfaces from one shared
-budget. An over-budget request fails with HTTP 429, code
+The server rate-limits both its HTTP and gRPC surfaces. The sustained
+per-minute limit is keyed per IP alone, so HTTP and gRPC calls from one
+client draw on the same allowance; the burst limit is keyed per IP and
+endpoint. An over-budget request fails with HTTP 429, code
 `rate_limit_exceeded`, and a backoff hint. `GuardianHttpError` classifies
 it: `isRetryable()` reads the error envelope (falling back to the status
 class), and `retryAfterSecs()` returns the server's hint, preferring the

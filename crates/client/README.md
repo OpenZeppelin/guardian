@@ -45,8 +45,10 @@ let delta = client.get_delta(&account_id, nonce).await?;
 
 ### Rate Limits and Retries
 
-The server rate-limits both its gRPC and HTTP surfaces from one shared
-budget. An over-budget call fails with `ResourceExhausted`, code
+The server rate-limits both its gRPC and HTTP surfaces. The sustained
+per-minute limit is keyed per IP alone, so gRPC and HTTP calls from one
+client draw on the same allowance; the burst limit is keyed per IP and
+method. An over-budget call fails with `ResourceExhausted`, code
 `rate_limit_exceeded`, and a backoff hint. `ClientError` classifies it:
 `is_retryable()` reads the error envelope (falling back to the status-code
 class), and `retry_after()` returns the server's hint, preferring the

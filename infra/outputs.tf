@@ -170,17 +170,17 @@ output "server_autoscaling_max_capacity" {
 }
 
 output "guardian_rate_burst_per_sec" {
-  description = "Effective Guardian HTTP burst rate limit"
+  description = "Effective Guardian burst rate limit (HTTP and gRPC)"
   value       = local.effective_guardian_rate_burst_per_sec
 }
 
 output "guardian_rate_limit_enabled" {
-  description = "Whether Guardian HTTP rate limiting is enabled"
+  description = "Whether Guardian rate limiting is enabled (HTTP and gRPC)"
   value       = local.effective_guardian_rate_limit_enabled
 }
 
 output "guardian_rate_per_min" {
-  description = "Effective Guardian HTTP sustained rate limit"
+  description = "Effective Guardian sustained rate limit (HTTP and gRPC)"
   value       = local.effective_guardian_rate_per_min
 }
 
