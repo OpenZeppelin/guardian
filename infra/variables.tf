@@ -526,7 +526,7 @@ variable "guardian_log_format" {
   default     = "json"
 
   validation {
-    condition     = contains(["text", "json", "compact"], var.guardian_log_format)
+    condition     = contains(["text", "json", "compact"], lower(trimspace(var.guardian_log_format)))
     error_message = "guardian_log_format must be text, json, or compact."
   }
 }

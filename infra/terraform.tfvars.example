@@ -86,7 +86,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_metadata_db_pool_max_size = 32
 # guardian_canonicalization_fast_promotion_enabled = false
 
-# Optional: Log format (text, json, compact) — json for CloudWatch Insights
+# Optional: Log format (text, json, compact) — json for CloudWatch Logs Insights
 # guardian_log_format = "json"
 
 # Optional: Resource naming (defaults match the original bash script)
