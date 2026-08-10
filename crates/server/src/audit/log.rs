@@ -95,6 +95,7 @@ mod tests {
             .with_max_level(Level::TRACE)
             .with_ansi(false)
             .finish();
+        let _registry_pin = crate::testing::log_capture::dispatcher_registry_pin();
         tracing::subscriber::with_default(subscriber, events);
         writer.contents()
     }

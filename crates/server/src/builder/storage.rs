@@ -560,6 +560,7 @@ mod tests {
             .finish();
 
         let writer_for_assert = writer.clone();
+        let _registry_pin = crate::testing::log_capture::dispatcher_registry_pin();
         tracing::subscriber::with_default(subscriber, || {
             futures::executor::block_on(async {
                 let builder = StorageMetadataBuilder::new()

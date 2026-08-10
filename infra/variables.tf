@@ -261,15 +261,21 @@ variable "rds_backup_retention_days" {
 }
 
 variable "rds_deletion_protection" {
-  description = "Whether to enable deletion protection for RDS"
+  description = "Optional override for RDS deletion protection; defaults to true in prod, false otherwise"
   type        = bool
-  default     = false
+  default     = null
 }
 
 variable "rds_skip_final_snapshot" {
-  description = "Whether to skip the final snapshot when destroying RDS"
+  description = "Optional override for skipping the final snapshot when destroying RDS; defaults to false in prod, true otherwise"
   type        = bool
-  default     = true
+  default     = null
+}
+
+variable "rds_multi_az" {
+  description = "Whether the RDS instance runs as a Multi-AZ deployment with a standby replica"
+  type        = bool
+  default     = false
 }
 
 variable "rds_publicly_accessible" {

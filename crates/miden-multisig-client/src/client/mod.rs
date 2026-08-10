@@ -34,6 +34,7 @@ use crate::export::ExportedProposal;
 use crate::keystore::KeyManager;
 use crate::proposal::Proposal;
 use crate::prover::ProverConfig;
+use crate::rpc::RpcConfig;
 
 pub use notes::{ConsumableNote, NoteFilter};
 
@@ -95,8 +96,15 @@ pub struct MultisigClient {
     pub(crate) account_dir: PathBuf,
     /// Miden node endpoint (for recovery).
     pub(crate) miden_endpoint: Endpoint,
+    /// Note transport endpoint override (for recovery).
+    pub(crate) note_transport_endpoint: Option<String>,
+    /// Node client for direct commitment reads, built once so its channel is
+    /// reused across reads.
+    node_rpc_client: Arc<dyn miden_client::rpc::NodeRpcClient>,
     /// Prover selection and retry configuration (for recovery).
     pub(crate) prover_config: ProverConfig,
+    /// Node RPC timeout and read-retry configuration (for recovery).
+    pub(crate) rpc_config: RpcConfig,
 }
 
 impl MultisigClient {
@@ -106,14 +114,19 @@ impl MultisigClient {
     }
 
     /// Creates a new MultisigClient (internal use, prefer builder).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         miden_client: MidenSdkClient,
         key_manager: Arc<dyn KeyManager>,
         guardian_endpoint: String,
         account_dir: PathBuf,
         miden_endpoint: Endpoint,
+        note_transport_endpoint: Option<String>,
         prover_config: ProverConfig,
+        rpc_config: RpcConfig,
     ) -> Self {
+        let node_rpc_client =
+            crate::builder::configured_node_rpc_client(&miden_endpoint, &rpc_config);
         Self {
             miden_client,
             key_manager,
@@ -121,8 +134,15 @@ impl MultisigClient {
             account: None,
             account_dir,
             miden_endpoint,
+            note_transport_endpoint,
+            node_rpc_client,
             prover_config,
+            rpc_config,
         }
+    }
+
+    pub(crate) fn node_rpc_client(&self) -> Arc<dyn miden_client::rpc::NodeRpcClient> {
+        Arc::clone(&self.node_rpc_client)
     }
 
     /// Returns the GUARDIAN endpoint.

@@ -50,10 +50,20 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # Optional: Managed RDS sizing overrides
 # Stage defaults:
 # - dev  -> db.t3.micro, 20 GiB allocated
-# - prod -> db.t3.medium, 50 GiB allocated, 200 GiB max allocated
-# rds_instance_class = "db.t3.medium"
+# - prod -> db.r6g.large, 50 GiB allocated, 200 GiB max allocated
+# rds_instance_class = "db.r6g.large"
 # rds_allocated_storage = 50
 # rds_max_allocated_storage = 200
+
+# Optional: Managed RDS durability overrides
+# Stage defaults:
+# - dev  -> deletion protection off, final snapshot skipped on destroy
+# - prod -> deletion protection on, final snapshot taken on destroy
+# Multi-AZ is off in every stage unless enabled here.
+# rds_backup_retention_days = 7
+# rds_deletion_protection = true
+# rds_skip_final_snapshot = false
+# rds_multi_az = true
 
 # Optional: Route 53 hosted zone ID (auto-lookup by domain name)
 # route53_zone_id = "Z1234567890ABC"

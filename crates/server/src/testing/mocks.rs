@@ -29,6 +29,7 @@ fn delta_to_proposal_record(proposal: DeltaObject) -> crate::storage::ProposalRe
 pub struct MockNetworkClient {
     pub verify_commitment_responses: Arc<StdMutex<Vec<StdResult<StateVerification, String>>>>,
     pub verify_commitment_calls: Arc<StdMutex<Vec<(String, String)>>>,
+    pub verify_commitment_modes: Arc<StdMutex<Vec<crate::network::RpcReadMode>>>,
     pub get_state_commitment_responses: Arc<StdMutex<Vec<StdResult<String, String>>>>,
     pub get_state_commitment_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
@@ -112,6 +113,10 @@ impl MockNetworkClient {
         self.verify_commitment_calls.lock().unwrap().clone()
     }
 
+    pub fn get_verify_commitment_modes(&self) -> Vec<crate::network::RpcReadMode> {
+        self.verify_commitment_modes.lock().unwrap().clone()
+    }
+
     pub fn get_state_commitment_calls(&self) -> Vec<(String, serde_json::Value)> {
         self.get_state_commitment_calls.lock().unwrap().clone()
     }
@@ -143,11 +148,13 @@ impl NetworkClient for MockNetworkClient {
         &self,
         account_id: &str,
         expected_commitment: &str,
+        read_mode: crate::network::RpcReadMode,
     ) -> StdResult<StateVerification, String> {
         self.verify_commitment_calls
             .lock()
             .unwrap()
             .push((account_id.to_string(), expected_commitment.to_string()));
+        self.verify_commitment_modes.lock().unwrap().push(read_mode);
 
         self.verify_commitment_responses
             .lock()

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { retryDelay } from './retry.js';
+import { retryDelay } from '../retry/runtime.js';
 
 interface Fixtures {
   delays: Array<{ retryIndex: number; unitRandom: number; delayMs: number }>;

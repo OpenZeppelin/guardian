@@ -1,5 +1,6 @@
 //! Error types for the multisig client SDK.
 
+use miden_client::rpc::{GrpcError, RpcError};
 use miden_protocol::account::AccountId;
 use miden_protocol::note::NoteId;
 use thiserror::Error;
@@ -30,6 +31,23 @@ pub enum MultisigError {
     #[error("miden client error: {0}")]
     MidenClient(String),
 
+    /// Miden client error retaining the concrete source and its RPC status.
+    #[error("miden client error: {message}")]
+    MidenClientSource {
+        message: String,
+        #[source]
+        source: Box<miden_client::ClientError>,
+    },
+
+    /// Direct Miden RPC error with call-site context, retaining the typed
+    /// status.
+    #[error("miden RPC error: {message}")]
+    MidenRpcSource {
+        message: String,
+        #[source]
+        source: Box<RpcError>,
+    },
+
     /// Sync panicked due to corrupted local state (miden-client v0.12.x workaround).
     #[error("sync panicked (corrupted local state): {0}")]
     SyncPanicked(String),
@@ -37,6 +55,16 @@ pub enum MultisigError {
     /// Transaction execution failed.
     #[error("transaction execution failed: {0}")]
     TransactionExecution(String),
+
+    /// Transaction-stage Miden client failure retaining the typed source.
+    /// Never used for retry decisions — execution stages run once — but the
+    /// typed status survives for caller diagnostics.
+    #[error("transaction execution failed: {message}")]
+    TransactionExecutionSource {
+        message: String,
+        #[source]
+        source: Box<miden_client::ClientError>,
+    },
 
     /// Invalid configuration.
     #[error("invalid configuration: {0}")]
@@ -143,6 +171,70 @@ impl MultisigError {
             _ => None,
         }
     }
+
+    /// Wraps a Miden client failure with call-site context while retaining the
+    /// typed source for classification. The message flattens the cause chain so
+    /// a plain `Display` render still names the underlying failure.
+    pub(crate) fn miden_client_with_context(
+        context: impl AsRef<str>,
+        err: miden_client::ClientError,
+    ) -> Self {
+        MultisigError::MidenClientSource {
+            message: format!("{}: {}", context.as_ref(), error_chain(&err)),
+            source: Box::new(err),
+        }
+    }
+
+    /// Wraps a direct Miden RPC failure with call-site context while
+    /// retaining the typed source for classification. The message flattens the
+    /// cause chain so a plain `Display` render still names the gRPC status.
+    pub(crate) fn miden_rpc_with_context(context: impl AsRef<str>, err: RpcError) -> Self {
+        MultisigError::MidenRpcSource {
+            message: format!("{}: {}", context.as_ref(), error_chain(&err)),
+            source: Box::new(err),
+        }
+    }
+
+    /// Wraps a transaction-stage Miden client failure with call-site context
+    /// while retaining the typed source. The message flattens the cause chain
+    /// so a plain `Display` render still names the underlying failure.
+    pub(crate) fn transaction_execution_with_context(
+        context: impl AsRef<str>,
+        err: miden_client::ClientError,
+    ) -> Self {
+        MultisigError::TransactionExecutionSource {
+            message: format!("{}: {}", context.as_ref(), error_chain(&err)),
+            source: Box::new(err),
+        }
+    }
+
+    /// Returns the typed gRPC failure kind when this error originated from a
+    /// Miden RPC request.
+    pub fn miden_rpc_kind(&self) -> Option<&GrpcError> {
+        match self {
+            Self::MidenClientSource { source, .. } => rpc_kind_from_client_error(source),
+            Self::MidenRpcSource { source, .. } => rpc_kind(source),
+            Self::TransactionExecutionSource { source, .. } => rpc_kind_from_client_error(source),
+            _ => None,
+        }
+    }
+}
+
+fn rpc_kind_from_client_error(error: &miden_client::ClientError) -> Option<&GrpcError> {
+    match error {
+        miden_client::ClientError::RpcError(error) => rpc_kind(error),
+        miden_client::ClientError::ApplyTransactionAfterSubmitFailed { source, .. } => {
+            rpc_kind_from_client_error(source)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn rpc_kind(error: &RpcError) -> Option<&GrpcError> {
+    match error {
+        RpcError::RequestError { error_kind, .. } => Some(error_kind),
+        _ => None,
+    }
 }
 
 impl From<guardian_client::ClientError> for MultisigError {
@@ -166,7 +258,10 @@ pub(crate) fn error_chain(err: &dyn std::error::Error) -> String {
 
 impl From<miden_client::ClientError> for MultisigError {
     fn from(err: miden_client::ClientError) -> Self {
-        MultisigError::MidenClient(error_chain(&err))
+        MultisigError::MidenClientSource {
+            message: error_chain(&err),
+            source: Box::new(err),
+        }
     }
 }
 
@@ -179,5 +274,97 @@ impl From<miden_client::transaction::TransactionRequestError> for MultisigError 
 impl From<miden_client::transaction::TransactionExecutorError> for MultisigError {
     fn from(err: miden_client::transaction::TransactionExecutorError) -> Self {
         MultisigError::TransactionExecution(err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_client::rpc::RpcEndpoint;
+
+    use super::*;
+
+    pub(crate) fn request_error(kind: GrpcError) -> miden_client::ClientError {
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::SyncChainMmr,
+            error_kind: kind,
+            endpoint_error: None,
+            source: None,
+        }
+        .into()
+    }
+
+    #[test]
+    fn miden_client_conversion_retains_typed_rpc_kind() {
+        let error = MultisigError::from(request_error(GrpcError::ResourceExhausted));
+
+        assert!(matches!(
+            error.miden_rpc_kind(),
+            Some(GrpcError::ResourceExhausted)
+        ));
+        assert!(error.to_string().contains("sync_chain_mmr"));
+    }
+
+    #[test]
+    fn context_wrapper_keeps_call_site_detail_and_typed_source() {
+        let error = MultisigError::miden_client_with_context(
+            "failed to fetch on-chain commitment for account 0xabc",
+            request_error(GrpcError::Unavailable),
+        );
+
+        assert!(error.to_string().contains("account 0xabc"));
+        assert!(error.to_string().contains("sync_chain_mmr"));
+        assert!(matches!(
+            error.miden_rpc_kind(),
+            Some(GrpcError::Unavailable)
+        ));
+    }
+
+    #[test]
+    fn errors_without_rpc_origin_have_no_rpc_kind() {
+        assert!(
+            MultisigError::GuardianServer("There's already a pending change".to_string())
+                .miden_rpc_kind()
+                .is_none()
+        );
+        assert!(
+            MultisigError::MidenClient("account not found on chain".to_string())
+                .miden_rpc_kind()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rpc_context_wrapper_keeps_call_site_detail_and_typed_source() {
+        let error = MultisigError::miden_rpc_with_context(
+            "failed to fetch on-chain commitment for account 0xabc",
+            RpcError::RequestError {
+                endpoint: RpcEndpoint::GetAccount,
+                error_kind: GrpcError::ResourceExhausted,
+                endpoint_error: None,
+                source: None,
+            },
+        );
+
+        assert!(error.to_string().contains("account 0xabc"));
+        assert!(error.to_string().contains("get_account"));
+        assert!(matches!(
+            error.miden_rpc_kind(),
+            Some(GrpcError::ResourceExhausted)
+        ));
+    }
+
+    #[test]
+    fn execution_context_wrapper_keeps_typed_source() {
+        let error = MultisigError::transaction_execution_with_context(
+            "transaction submission failed",
+            request_error(GrpcError::Unavailable),
+        );
+
+        assert!(error.to_string().contains("transaction submission failed"));
+        assert!(error.to_string().contains("sync_chain_mmr"));
+        assert!(matches!(
+            error.miden_rpc_kind(),
+            Some(GrpcError::Unavailable)
+        ));
     }
 }

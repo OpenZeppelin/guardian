@@ -1,6 +1,7 @@
 use chrono::Duration;
 use zeroize::Zeroizing;
 
+use crate::config::positive_u32_from_env;
 use crate::dashboard::cursor::CursorSecret;
 use crate::middleware::RateLimitConfig;
 use crate::middleware::rate_limit::partition_limit;
@@ -102,18 +103,6 @@ impl DashboardConfig {
 
     pub(crate) fn take_cursor_secret(&mut self) -> Option<CursorSecret> {
         self.cursor_secret.take()
-    }
-}
-
-fn positive_u32_from_env(key: &str, default: u32) -> std::result::Result<u32, String> {
-    match std::env::var(key) {
-        Ok(raw) => match raw.trim().parse::<u32>() {
-            Ok(0) => Err(format!("{key} must be a positive integer, got 0")),
-            Ok(value) => Ok(value),
-            Err(_) => Err(format!("{key} must be a positive integer, got {raw:?}")),
-        },
-        Err(std::env::VarError::NotPresent) => Ok(default),
-        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{key} must contain valid UTF-8")),
     }
 }
 

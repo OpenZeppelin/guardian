@@ -28,6 +28,10 @@ services:
       # of 10/sec and 60/min are tight locally. Override in .env.
       - GUARDIAN_RATE_BURST_PER_SEC=${GUARDIAN_RATE_BURST_PER_SEC:-200}
       - GUARDIAN_RATE_PER_MIN=${GUARDIAN_RATE_PER_MIN:-5000}
+      # Optional Miden RPC overrides; pass through from the host environment.
+      - GUARDIAN_MIDEN_RPC_ENDPOINT
+      - GUARDIAN_MIDEN_RPC_TIMEOUT_MS
+      - GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS
 
 volumes:
   guardian-storage:

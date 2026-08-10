@@ -2,7 +2,9 @@ pub mod account_inspector;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{MidenAccountInspector, OZ_GUARDIAN_PUBLIC_KEY};
-use crate::network::{NetworkClient, NetworkType, StateVerification};
+use crate::network::{
+    MidenRpcSettings, NetworkClient, NetworkType, RpcReadMode, StateVerification,
+};
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
 use miden_protocol::Word;
@@ -20,8 +22,24 @@ pub struct MidenNetworkClient {
 impl MidenNetworkClient {
     /// Create a new Miden network client from a NetworkType
     pub async fn from_network(network: NetworkType) -> Result<Self, String> {
-        let endpoint = network.rpc_endpoint();
-        let client = MidenRpcClient::connect(endpoint).await?;
+        Self::from_settings(&MidenRpcSettings::from_env(network)?).await
+    }
+
+    /// Create a new Miden network client from resolved RPC settings.
+    pub(crate) async fn from_settings(settings: &MidenRpcSettings) -> Result<Self, String> {
+        let mut client = MidenRpcClient::connect_with_settings(
+            settings.endpoint().expose_secret(),
+            settings.client_settings(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        client.set_retry_observer(std::sync::Arc::new(|operation| {
+            metrics::counter!(
+                crate::metrics::names::MIDEN_RPC_RETRIES_TOTAL,
+                crate::metrics::names::LABEL_OPERATION => operation
+            )
+            .increment(1);
+        }));
         Ok(Self { client })
     }
 
@@ -103,6 +121,7 @@ impl NetworkClient for MidenNetworkClient {
         &self,
         account_id: &str,
         expected_commitment: &str,
+        read_mode: RpcReadMode,
     ) -> Result<StateVerification, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
             tracing::error!(
@@ -117,7 +136,10 @@ impl NetworkClient for MidenNetworkClient {
         // server's availability hangs on, so it gets its own metric
         // (`operation` is the static RPC method name, a closed set).
         let rpc_started = std::time::Instant::now();
-        let rpc_result = self.client.get_account_commitment(&account_id).await;
+        let rpc_result = self
+            .client
+            .get_account_commitment(&account_id, read_mode)
+            .await;
         metrics::counter!(
             crate::metrics::names::MIDEN_RPC_REQUESTS_TOTAL,
             crate::metrics::names::LABEL_OPERATION => "get_account_commitment",
@@ -588,7 +610,7 @@ mod tests {
         let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
 
         let result = client
-            .verify_commitment("not_a_valid_hex", "0xexpected")
+            .verify_commitment("not_a_valid_hex", "0xexpected", RpcReadMode::SingleAttempt)
             .await;
 
         assert!(result.is_err(), "Should fail with invalid account ID");

@@ -28,7 +28,12 @@ Three decisions when running Guardian locally:
 - Docker if you will use `docker-compose.*.yml`.
 - A Miden node — required for almost every flow. Either point at a
   Miden Devnet endpoint or run one locally; configure via
-  `GUARDIAN_NETWORK_TYPE`.
+  `GUARDIAN_NETWORK_TYPE`. A node on a non-default host or port (for
+  example a sidecar container) is reachable via
+  `GUARDIAN_MIDEN_RPC_ENDPOINT` without changing the network type; see
+  [CONFIGURATION.md](./CONFIGURATION.md) for that and the optional
+  `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` / `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS`
+  read-retry knobs.
 
 ## Environment file
 
