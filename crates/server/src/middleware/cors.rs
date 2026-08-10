@@ -23,11 +23,15 @@ impl CorsConfig {
     }
 
     pub fn layer(&self) -> CorsLayer {
+        // `Retry-After` is not a CORS-safelisted response header; without an
+        // explicit expose, cross-origin browser clients cannot read the
+        // rate-limit backoff hint.
         if self.allowed_origins.is_empty() {
             return CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods(Any)
-                .allow_headers(Any);
+                .allow_headers(Any)
+                .expose_headers([header::RETRY_AFTER]);
         }
 
         CorsLayer::new()
@@ -46,6 +50,7 @@ impl CorsConfig {
                 HeaderName::from_static("x-signature"),
                 HeaderName::from_static("x-timestamp"),
             ])
+            .expose_headers([header::RETRY_AFTER])
             .allow_credentials(true)
     }
 }
@@ -94,5 +99,52 @@ mod tests {
         let error = parse_allowed_origins("*").expect_err("wildcard should fail");
 
         assert!(error.contains("explicit origins"));
+    }
+
+    #[tokio::test]
+    async fn both_configurations_expose_retry_after_cross_origin() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::{ServiceBuilder, ServiceExt};
+
+        let configs = [
+            super::CorsConfig::new(Vec::new()),
+            super::CorsConfig::new(vec![HeaderValue::from_static("https://app.example.com")]),
+        ];
+
+        for config in configs {
+            let service = ServiceBuilder::new()
+                .layer(config.layer())
+                .service(tower::service_fn(|_request: Request<Body>| async {
+                    Ok::<_, std::convert::Infallible>(
+                        axum::http::Response::builder()
+                            .header("Retry-After", "60")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                }));
+
+            let response = service
+                .oneshot(
+                    Request::builder()
+                        .uri("/pubkey")
+                        .header("Origin", "https://app.example.com")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            let exposed = response
+                .headers()
+                .get("access-control-expose-headers")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            assert!(
+                exposed.contains("retry-after"),
+                "browser clients must be able to read Retry-After, got {exposed:?}"
+            );
+        }
     }
 }

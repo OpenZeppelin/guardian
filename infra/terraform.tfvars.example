@@ -78,7 +78,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # server_cpu    = 512
 # server_memory = 1024
 
-# Optional: HTTP rate limiting and DB pool overrides
+# Optional: rate limiting (HTTP and gRPC) and DB pool overrides
 # guardian_rate_limit_enabled = false
 # guardian_rate_burst_per_sec = 200
 # guardian_rate_per_min = 5000

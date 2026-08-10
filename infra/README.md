@@ -242,7 +242,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_memory` | `1024` | Server task memory (MB) |
 | `server_desired_count` | `1` in dev, `2` in prod | ECS service desired task count |
 | `server_autoscaling_enabled` | `false` in dev, `true` in prod | Whether ECS autoscaling is enabled |
-| `guardian_rate_limit_enabled` | `true` | Whether Guardian HTTP rate limiting is enabled |
+| `guardian_rate_limit_enabled` | `true` | Whether Guardian rate limiting is enabled (HTTP and gRPC) |
 | `guardian_rate_burst_per_sec` | `10` in dev, `200` in prod | Guardian HTTP burst limit |
 | `guardian_rate_per_min` | `60` in dev, `5000` in prod | Guardian HTTP sustained limit |
 | `guardian_max_replicas` | greater of desired count and autoscaling max when enabled, desired count otherwise (prod `6` by default) | `GUARDIAN_MAX_REPLICAS` rate-limit partition divisor; an explicit value is clamped **up** to steady-state capacity. A rolling deployment may temporarily allow up to `server_deployment_maximum_percent / 100` times the configured fleet limit. |
@@ -280,7 +280,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_service_arn` | Server ECS service ARN |
 | `server_log_group` | CloudWatch log group for the server |
 | `cluster_log_group` | CloudWatch log group for ECS execute command |
-| `guardian_rate_limit_enabled` | Whether HTTP rate limiting is enabled |
+| `guardian_rate_limit_enabled` | Whether rate limiting is enabled (HTTP and gRPC) |
 | `guardian_max_replicas` | Effective `GUARDIAN_MAX_REPLICAS` after clamping to steady-state capacity |
 | `guardian_dashboard_commitment_rate_burst_per_sec` | Effective fleet-wide dashboard per-commitment burst budget |
 | `guardian_dashboard_commitment_rate_per_min` | Effective fleet-wide dashboard per-commitment sustained budget |
