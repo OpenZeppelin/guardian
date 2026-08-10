@@ -6,7 +6,6 @@ use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::resolve_account;
 use crate::utils::normalize_commitment_hex;
 use guardian_shared::DeltaSignature;
-use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct SignDeltaProposalParams {
@@ -21,6 +20,16 @@ pub struct SignDeltaProposalResult {
     pub delta: DeltaObject,
 }
 
+#[tracing::instrument(
+    level = "info",
+    skip(state, params),
+    fields(
+        account_id = %params.account_id,
+        commitment = %params.commitment,
+        signer_commitment = tracing::field::Empty,
+        total_signatures = tracing::field::Empty
+    )
+)]
 pub async fn sign_delta_proposal(
     state: &AppState,
     params: SignDeltaProposalParams,
@@ -93,6 +102,10 @@ pub async fn sign_delta_proposal(
                 ))
             })?,
     };
+    tracing::Span::current().record(
+        "signer_commitment",
+        tracing::field::display(&signer_commitment_hex),
+    );
 
     // Check if already signed by this signer
     if cosigner_sigs
@@ -112,6 +125,7 @@ pub async fn sign_delta_proposal(
         signer_id: signer_commitment_hex.clone(),
     };
     cosigner_sigs.push(new_signature);
+    tracing::Span::current().record("total_signatures", cosigner_sigs.len());
 
     let new_sig = DeltaSignature {
         signer_id: signer_commitment_hex.clone(),
@@ -140,13 +154,6 @@ pub async fn sign_delta_proposal(
             );
     }
 
-    info!(
-        account_id = %account_id,
-        signer_commitment = %signer_commitment_hex,
-        total_signatures = cosigner_sigs.len(),
-        "sign_delta_proposal appended signature"
-    );
-
     // Update the delta proposal with the new signature
     delta_proposal.status = DeltaStatus::Pending {
         timestamp,
@@ -166,6 +173,7 @@ pub async fn sign_delta_proposal(
             crate::metrics::labels::ProposalEvent::Signed.as_str()
     )
     .increment(1);
+    tracing::debug!("Delta proposal signature stored");
 
     Ok(SignDeltaProposalResult {
         delta: delta_proposal.clone(),

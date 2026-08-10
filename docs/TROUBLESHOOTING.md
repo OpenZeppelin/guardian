@@ -379,17 +379,28 @@ come from
 
 ## Logging and observability
 
-The server emits structured JSON logs via `tracing`. Useful filters:
+The server emits `tracing` logs — `text` by default, `json` when `GUARDIAN_LOG_FORMAT=json` (see [`CONFIGURATION.md`](./CONFIGURATION.md#logging)). `text` uses ANSI colors only when stdout is a TTY; `json` emits flattened JSON with span context for CloudWatch Logs Insights.
+
+Hot-path service handlers emit request events at `debug` — enable them with `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug`. Their request-context spans remain enabled at `info` without emitting lifecycle lines, so warn/error events retain fields such as account ID and nonce at the default filter. The per-read `Commitment mismatch during state verification` (`network::miden`) is also `debug`; persistent divergence is surfaced by the canonicalization processor's streak-gated WARN (confirmed divergence), not the per-read log.
+
+Useful filters:
 
 ```bash
-# Watch canonicalization worker decisions
+# Watch canonicalization worker decisions (including confirmed divergence WARN)
 RUST_LOG=server::jobs::canonicalization=debug
+
+# Watch per-request debug events
+RUST_LOG=server=debug
+RUST_LOG=server::services=debug
 
 # Watch auth verifier rejections
 RUST_LOG=server::middleware::auth=debug,server::metadata::auth=debug
 
 # Watch dashboard authz
 RUST_LOG=server::dashboard=debug
+
+# JSON output for CloudWatch
+GUARDIAN_LOG_FORMAT=json RUST_LOG=info cargo run -p guardian-server
 ```
 
 ### Startup configuration banner

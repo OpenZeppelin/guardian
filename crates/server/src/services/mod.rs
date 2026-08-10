@@ -98,7 +98,11 @@ impl std::fmt::Debug for ResolvedAccount {
     }
 }
 
-#[tracing::instrument(skip(state, creds), fields(account_id = %account_id))]
+#[tracing::instrument(
+    level = "info",
+    skip(state, creds),
+    fields(account_id = %account_id)
+)]
 pub async fn resolve_account(
     state: &AppState,
     account_id: &str,

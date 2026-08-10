@@ -252,6 +252,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_db_pool_max_size` | `16` in dev, `32` in prod | Guardian storage DB pool size |
 | `guardian_metadata_db_pool_max_size` | matches storage by default | Guardian metadata DB pool size |
 | `guardian_canonicalization_fast_promotion_enabled` | `true` | Enables the recent-candidate promotion-only pass in the ECS task definition |
+| `guardian_log_format` | `json` | Log format for `GUARDIAN_LOG_FORMAT` (`text`, `json`, `compact`) |
 | `log_retention_days` | `7` | CloudWatch log retention in days |
 
 ## Outputs

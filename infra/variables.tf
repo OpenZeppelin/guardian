@@ -520,6 +520,17 @@ variable "guardian_canonicalization_fast_promotion_enabled" {
   default     = true
 }
 
+variable "guardian_log_format" {
+  description = "Log output format for GUARDIAN_LOG_FORMAT (text, json, compact). json enables flattened JSON for CloudWatch Logs Insights"
+  type        = string
+  default     = "json"
+
+  validation {
+    condition     = contains(["text", "json", "compact"], var.guardian_log_format)
+    error_message = "guardian_log_format must be text, json, or compact."
+  }
+}
+
 # Resource naming
 variable "cluster_name" {
   description = "ECS cluster name"

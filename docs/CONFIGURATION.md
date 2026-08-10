@@ -296,7 +296,8 @@ separate variable.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `RUST_LOG` | `info` | Standard `tracing-subscriber` filter. Module-scoped filters work: `RUST_LOG=server::jobs::canonicalization=debug`. |
+| `RUST_LOG` | `info` | Standard `tracing-subscriber` filter. Module-scoped filters work: `RUST_LOG=server::jobs::canonicalization=debug`. Hot-path request events (`get_state`, `get_delta`, `push_delta`, proposal create/sign, `lookup_account`) are `debug` — use `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug`. Their request-context spans remain enabled at `info`, so warn/error events retain fields such as account ID and nonce without producing per-request info lines. |
+| `GUARDIAN_LOG_FORMAT` | `text` | Log output format. `text` — human-readable (ANSI when TTY, plain otherwise). `json` — flattened JSON with span context for CloudWatch Logs Insights. `compact` — single-line text. Value is trimmed and case-insensitive; unknown values fall back to `text` with a stderr warn (emitted before the tracing subscriber is installed). Defaults to `text` when unset. ECS default is `json` (see `infra/variables.tf` `guardian_log_format`). |
 
 Useful filters during debugging — see
 [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#logging-and-observability).

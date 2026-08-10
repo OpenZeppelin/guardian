@@ -22,11 +22,12 @@ pub struct PushDeltaResult {
 }
 
 #[tracing::instrument(
+    level = "info",
     skip(state, params),
     fields(account_id = %params.delta.account_id)
 )]
 pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<PushDeltaResult> {
-    tracing::info!(account_id = %params.delta.account_id, "Pushing delta");
+    tracing::debug!("Pushing delta");
 
     let resolved = resolve_account(state, &params.delta.account_id, &params.credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;

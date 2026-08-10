@@ -22,7 +22,8 @@ let builder = ServerBuilder::new()
 - `GUARDIAN_ENV` - Runtime environment (`prod` uses Secrets Manager-backed ack bootstrap, anything else uses filesystem ack keys)
 - `GUARDIAN_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/guardian/keystore`)
 - `AWS_REGION` - AWS region used to fetch production ack keys from Secrets Manager
-- `RUST_LOG` - Logging level (default: `info`)
+- `RUST_LOG` - Logging level (default: `info`; hot-path request events require `debug`, e.g. `RUST_LOG=server=debug`)
+- `GUARDIAN_LOG_FORMAT` - Log format (`text` default local, `json` for CloudWatch Logs Insights, `compact` single-line; trim + case-insensitive, unknown falls back to `text` with a stderr warn)
 
 #### Rate Limiting
 
@@ -213,15 +214,28 @@ The server uses structured logging via the `tracing` crate. Configure logging pr
 
 ```rust
 use server::builder::ServerBuilder;
-use server::logging::LoggingConfig;
+use server::logging::{LoggingConfig, LogFormat};
 use tracing::Level;
 
 ServerBuilder::new()
     .with_logging(LoggingConfig::new(Level::DEBUG))
     // ... other configuration
+
+// JSON output for CloudWatch (flattened fields + span context)
+ServerBuilder::new()
+    .with_logging(LoggingConfig::new(Level::INFO).with_format(LogFormat::Json))
+
+// Env-driven (reads GUARDIAN_LOG_FORMAT)
+ServerBuilder::new()
+    .with_logging(LoggingConfig::default())
 ```
 
-Or use the `RUST_LOG` environment variable to override:
+Env vars (see [docs/CONFIGURATION.md](../../docs/CONFIGURATION.md#logging)):
+
+- `RUST_LOG` — filter (default `info`). Hot-path request events are `debug`, while their context spans remain available to warn/error events at `info`, e.g. `RUST_LOG=server=debug`.
+- `GUARDIAN_LOG_FORMAT` — `text` (ANSI when TTY), `json` (flattened JSON for CloudWatch), `compact`. Trimmed, case-insensitive; unknown → `text` with a stderr warn. Default `text` locally; ECS task defaults to `json`.
+
+Via env:
 
 ```bash
 # Debug level for entire server
@@ -232,6 +246,9 @@ RUST_LOG=server::jobs::canonicalization=trace cargo run
 
 # Multiple modules
 RUST_LOG=server::jobs=debug,server::services=info cargo run
+
+# JSON output for CloudWatch Logs Insights
+GUARDIAN_LOG_FORMAT=json RUST_LOG=info cargo run --package guardian-server
 ```
 
 ### Rate Limiting

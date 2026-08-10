@@ -18,11 +18,12 @@ pub struct GetDeltaResult {
 
 /// Get a specific delta
 #[tracing::instrument(
+    level = "info",
     skip(state, params),
     fields(account_id = %params.account_id, nonce = params.nonce)
 )]
 pub async fn get_delta(state: &AppState, params: GetDeltaParams) -> Result<GetDeltaResult> {
-    tracing::info!(account_id = %params.account_id, nonce = params.nonce, "Getting delta");
+    tracing::debug!("Getting delta");
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
     if resolved.metadata.network_config.is_evm() {
