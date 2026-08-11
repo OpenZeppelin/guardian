@@ -87,19 +87,31 @@ variable "postgres_password" {
 }
 
 variable "domain_name" {
-  description = "Root domain name for the HTTPS endpoint (e.g., openzeppelin.com)"
+  description = "Root domain name for the canonical HTTPS endpoint (e.g., example.com)"
   type        = string
   default     = "openzeppelin.com"
 }
 
 variable "subdomain" {
-  description = "Subdomain for the service (e.g., guardian -> guardian.openzeppelin.com). Empty uses the root domain."
+  description = "Subdomain for the canonical service hostname (e.g., guardian -> guardian.example.com). Empty uses the root domain."
   type        = string
   default     = "guardian"
 }
 
 variable "acm_certificate_arn" {
-  description = "ACM certificate ARN for the service domain (e.g., guardian-stg.openzeppelin.com)"
+  description = "ACM certificate ARN for the canonical service hostname"
+  type        = string
+  default     = ""
+}
+
+variable "alias_subdomain" {
+  description = "Migration-only legacy subdomain under domain_name pointing to the same ALB. Leave empty for normal deployments."
+  type        = string
+  default     = ""
+}
+
+variable "alias_acm_certificate_arn" {
+  description = "Migration-only ACM certificate ARN for the legacy hostname. When empty, acm_certificate_arn is reused and must cover both names."
   type        = string
   default     = ""
 }

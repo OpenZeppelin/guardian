@@ -107,9 +107,10 @@ export GUARDIAN_NETWORK_TYPE=MidenTestnet
 export DEPLOY_STAGE=dev
 # export DEPLOY_STAGE=prod
 
-# Optional: override the stack base name or public hostname
+# Optional: override the stack base name or canonical public hostname
 export STACK_NAME=guardian
-# export SUBDOMAIN=guardian-stg
+# export DOMAIN_NAME=example.com
+# export SUBDOMAIN=guardian
 
 aws sts get-caller-identity
 ./scripts/aws-deploy.sh deploy
@@ -209,6 +210,10 @@ aws_region = "us-east-1"
 # cloudflare_zone_id = "..."
 # cloudflare_api_token = "..."
 ```
+
+For the one-time OpenZeppelin hostname change in issue #341, follow
+[`runbooks/guardian-domain-migration.md`](./runbooks/guardian-domain-migration.md).
+Normal deployments should leave `ALIAS_SUBDOMAIN` unset.
 
 ## Database TLS verification
 

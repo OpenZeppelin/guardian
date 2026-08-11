@@ -32,6 +32,8 @@ set -euo pipefail
 #   CLOUDFLARE_API_TOKEN  - Cloudflare API token (optional)
 #   CLOUDFLARE_PROXIED    - Cloudflare proxied setting (true/false)
 #   ACM_CERTIFICATE_ARN   - ACM certificate ARN for HTTPS
+#   ALIAS_SUBDOMAIN       - Migration-only legacy subdomain under DOMAIN_NAME
+#   ALIAS_ACM_CERTIFICATE_ARN - Migration-only legacy hostname certificate for SNI
 #   GUARDIAN_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
 #   GUARDIAN_SERVER_FEATURES   - Cargo features for guardian-server Docker build (default: postgres)
 #   GUARDIAN_CORS_ALLOWED_ORIGINS - Comma-separated explicit HTTP origins allowed by credentialed CORS (optional)
@@ -58,6 +60,8 @@ ROUTE53_ZONE_ID="${ROUTE53_ZONE_ID-}"
 CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID-}"
 CLOUDFLARE_PROXIED="${CLOUDFLARE_PROXIED:-true}"
 ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN-}"
+ALIAS_SUBDOMAIN="${ALIAS_SUBDOMAIN-}"
+ALIAS_ACM_CERTIFICATE_ARN="${ALIAS_ACM_CERTIFICATE_ARN-}"
 GUARDIAN_NETWORK_TYPE="${GUARDIAN_NETWORK_TYPE:-MidenTestnet}"
 GUARDIAN_SERVER_FEATURES="${GUARDIAN_SERVER_FEATURES:-postgres}"
 GUARDIAN_CORS_ALLOWED_ORIGINS="${GUARDIAN_CORS_ALLOWED_ORIGINS:-${TF_VAR_guardian_cors_allowed_origins:-}}"
@@ -322,6 +326,12 @@ build_tf_vars() {
     fi
     if [ -n "$ROUTE53_ZONE_ID" ]; then
       TF_VARS+=("-var" "route53_zone_id=${ROUTE53_ZONE_ID}")
+    fi
+  fi
+  if [ -n "$ALIAS_SUBDOMAIN" ]; then
+    TF_VARS+=("-var" "alias_subdomain=${ALIAS_SUBDOMAIN}")
+    if [ -n "$ALIAS_ACM_CERTIFICATE_ARN" ]; then
+      TF_VARS+=("-var" "alias_acm_certificate_arn=${ALIAS_ACM_CERTIFICATE_ARN}")
     fi
   fi
   if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
@@ -735,7 +745,9 @@ cmd_deploy() {
   local ALB_DNS
   local HTTPS_URL
   local CUSTOM_DOMAIN_URL
+  local ALIAS_DOMAIN_URL
   local GRPC_ENDPOINT
+  local ALIAS_GRPC_ENDPOINT
   local DATABASE_ENDPOINT
   local DEPLOYMENT_STAGE_OUTPUT
   local RDS_PROXY_ENDPOINT
@@ -759,7 +771,9 @@ cmd_deploy() {
   ALB_URL=$(terraform_output_raw alb_url)
   ALB_DNS=$(terraform_output_raw alb_dns_name)
   CUSTOM_DOMAIN_URL=$(terraform_output_raw custom_domain_url)
+  ALIAS_DOMAIN_URL=$(terraform_output_raw alias_domain_url)
   GRPC_ENDPOINT=$(terraform_output_raw grpc_endpoint)
+  ALIAS_GRPC_ENDPOINT=$(terraform_output_raw alias_grpc_endpoint)
   DATABASE_ENDPOINT=$(terraform_output_raw database_endpoint)
   DEPLOYMENT_STAGE_OUTPUT=$(terraform_output_raw deployment_stage)
   RDS_PROXY_ENDPOINT=$(terraform_output_raw rds_proxy_endpoint)
@@ -798,8 +812,14 @@ cmd_deploy() {
     if [ -n "$CUSTOM_DOMAIN_URL" ]; then
       echo "  Custom domain: ${CUSTOM_DOMAIN_URL}"
     fi
+    if [ -n "$ALIAS_DOMAIN_URL" ]; then
+      echo "  Legacy migration domain: ${ALIAS_DOMAIN_URL}"
+    fi
     if [ -n "$GRPC_ENDPOINT" ]; then
       echo "  gRPC endpoint: ${GRPC_ENDPOINT}"
+    fi
+    if [ -n "$ALIAS_GRPC_ENDPOINT" ]; then
+      echo "  Legacy migration gRPC endpoint: ${ALIAS_GRPC_ENDPOINT}"
     fi
     if [ -n "$DATABASE_ENDPOINT" ]; then
       echo "  Database endpoint: ${DATABASE_ENDPOINT}"
@@ -851,6 +871,12 @@ cmd_deploy() {
     echo "  Public key:   curl ${ALB_URL}/pubkey"
     if [ -n "$GRPC_ENDPOINT" ]; then
       echo "  gRPC check:   grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' ${GRPC_ENDPOINT#https://}:443 guardian.Guardian/GetPubkey"
+    fi
+    if [ -n "$ALIAS_DOMAIN_URL" ]; then
+      echo "  Legacy migration public key: curl ${ALIAS_DOMAIN_URL}/pubkey"
+    fi
+    if [ -n "$ALIAS_GRPC_ENDPOINT" ]; then
+      echo "  Legacy migration gRPC check: grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' ${ALIAS_GRPC_ENDPOINT#https://}:443 guardian.Guardian/GetPubkey"
     fi
   fi
   echo ""
@@ -931,6 +957,12 @@ for arg in "$@"; do
     --acm-certificate-arn=*)
       ACM_CERTIFICATE_ARN="${arg#*=}"
       ;;
+    --alias-subdomain=*)
+      ALIAS_SUBDOMAIN="${arg#*=}"
+      ;;
+    --alias-acm-certificate-arn=*)
+      ALIAS_ACM_CERTIFICATE_ARN="${arg#*=}"
+      ;;
     *)
       if [ -z "$COMMAND" ]; then
         COMMAND="$arg"
@@ -996,12 +1028,17 @@ case "${COMMAND:-}" in
     echo "  --cloudflare-zone-id=  Cloudflare zone ID (optional)"
     echo "  --cloudflare-proxied=  Cloudflare proxied setting (true/false)"
     echo "  --acm-certificate-arn= ACM certificate ARN for HTTPS"
+    echo "  --alias-subdomain= Migration-only legacy subdomain under --domain"
+    echo "  --alias-acm-certificate-arn= Migration-only legacy certificate ARN for SNI"
     echo "Environment:"
     echo "  CPU_ARCHITECTURE=  ECS/image architecture (X86_64 or ARM64, default: X86_64)"
     echo "  STACK_NAME=   Base stack name for AWS resources (default: guardian)"
     echo "  DEPLOY_STAGE= Deployment profile (dev or prod, default: dev)"
     echo "  ECR_REPO_NAME= Override the ECR/image repository name (default: <stack-name>-server)"
     echo "  TF_STATE_PATH= Override the Terraform state file path (default: infra/terraform.<stack>.<stage>.tfstate)"
+    echo "  DOMAIN_NAME/SUBDOMAIN= Canonical public hostname"
+    echo "  ALIAS_SUBDOMAIN= Migration-only legacy subdomain under DOMAIN_NAME"
+    echo "  ALIAS_ACM_CERTIFICATE_ARN= Migration-only legacy certificate attached through SNI"
     echo "  GUARDIAN_NETWORK_TYPE= Runtime Miden network for the server (default: MidenTestnet)"
     echo "  GUARDIAN_SERVER_FEATURES= Cargo features for guardian-server Docker build (default: postgres)"
     echo "  GUARDIAN_CORS_ALLOWED_ORIGINS= Comma-separated explicit HTTP origins allowed by credentialed CORS"
@@ -1026,8 +1063,8 @@ case "${COMMAND:-}" in
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-storage-encryption-key  # prints the name to export"
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret"
     echo "  GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-prod/server/storage-encryption-key DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh deploy --skip-build"
-    echo "  DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
-    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"
+    echo "  GUARDIAN_NETWORK_TYPE=MidenDevnet DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-devnet ALIAS_SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
+    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian-testnet ALIAS_SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"
     echo "  ./scripts/aws-deploy.sh cleanup"
     ;;
