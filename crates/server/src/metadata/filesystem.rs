@@ -282,6 +282,11 @@ impl MetadataStore for FilesystemMetadataStore {
         account_id: &str,
         new_timestamp: i64,
     ) -> Result<bool, String> {
+        // Advisory only: the cache lock is released before the auth-state
+        // lock is taken, so this check does not serialize against metadata
+        // writes. Safe while accounts cannot be deleted (callers resolve the
+        // account before authenticating); a delete operation would have to
+        // hold both locks or re-check under `auth_state`.
         {
             let cache = self.cache.read().await;
             if !cache.contains_key(account_id) {
