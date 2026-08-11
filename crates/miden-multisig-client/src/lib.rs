@@ -54,6 +54,7 @@ mod payload;
 mod procedures;
 mod proposal;
 mod prover;
+mod rpc;
 mod transaction;
 mod utils;
 
@@ -96,6 +97,7 @@ pub use proposal::{
     ProposalMetadata, ProposalStatus, SerializedNote, TransactionType,
 };
 pub use prover::{ProverConfig, ProverRetryPolicy};
+pub use rpc::{RpcConfig, RpcRetryPolicy};
 pub use transaction::{
     ProposalBuilder, build_p2id_transaction_request, deserialize_transaction_request, generate_salt,
 };

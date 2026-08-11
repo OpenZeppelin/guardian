@@ -42,6 +42,9 @@ const client = new MultisigClient(midenClient, {
     url: 'https://prover.example',
     retry: { maxAttempts: 4 },
   },
+  rpc: {
+    retry: { maxAttempts: 3 },
+  },
 });
 ```
 
@@ -50,8 +53,49 @@ client's prover is preserved. By default, cloneable remote provers get two total
 attempts; endpoint-less injected provers, including local and callback provers,
 run once. A custom URL must be absolute HTTP(S), overrides the injected prover,
 and never falls back to a default endpoint. Retries apply only to transient
-proof failures; transaction execution, submission, local state application,
-GUARDIAN calls, and Miden RPC requests are not retried.
+proof failures; transaction execution, submission, local state application, and
+GUARDIAN calls are not retried.
+
+An optional `rpc` configuration (`rpc: { retry: { maxAttempts: 3 } }`) tunes
+retries for the idempotent Miden node reads this SDK issues — on-chain
+account lookups, state-commitment verification, and the guardian-switch node
+sync — against transient failures such as rate limiting. The default is two
+total attempts (one retry); an explicit `maxAttempts` of 1 opts out. Syncs
+performed directly on the injected Miden client are owned by the
+application. Transaction submission is never retried under any
+configuration: a submission whose outcome is unknown could execute twice if
+re-sent. There is no timeout setting: the browser WASM RPC client cannot
+cancel an in-flight request, so a JavaScript-side timeout would abandon a
+call whose side effects may still land.
+
+### Note transport endpoint
+
+Private notes are relayed through a note transport service that is separate
+from the node RPC. The injected Miden client owns note relay, so the endpoint
+is set when constructing it rather than on `MultisigClientConfig`. The
+`createDevnet` / `createTestnet` helpers wire the matching public transport
+service automatically; a custom node endpoint has no derivable transport
+service, so private-note relay stays disabled until `noteTransportUrl` is set
+explicitly.
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://my-node.internal:57291',
+  noteTransportUrl: 'https://my-transport.internal',
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://my-node.internal:57291',
+});
+```
+
+`noteTransportUrl` also accepts the `'devnet'` and `'testnet'` shorthands, so
+a custom node on a public network can reuse that network's public transport
+service.
+
+The full cross-SDK reference, including the Rust equivalents, is
+[`docs/MULTISIG_SDK.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MULTISIG_SDK.md).
 
 ## Usage
 
@@ -372,8 +416,8 @@ default to `false`, at which point v1 proposals are refused with
 `UnsupportedMetadataVersionError(undefined)` on every code path.
 Deployments should drain or re-propose any v1 `consume_notes`
 proposals in flight before upgrading past the cut-over client version.
-Tracked by spec
-[`006-consume-notes-metadata`](../../speckit/features/006-consume-notes-metadata/spec.md).
+Tracked by the `006-consume-notes-metadata` feature spec in the
+repository.
 
 ## Testing
 

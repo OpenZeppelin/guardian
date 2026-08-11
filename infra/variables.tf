@@ -261,15 +261,21 @@ variable "rds_backup_retention_days" {
 }
 
 variable "rds_deletion_protection" {
-  description = "Whether to enable deletion protection for RDS"
+  description = "Optional override for RDS deletion protection; defaults to true in prod, false otherwise"
   type        = bool
-  default     = false
+  default     = null
 }
 
 variable "rds_skip_final_snapshot" {
-  description = "Whether to skip the final snapshot when destroying RDS"
+  description = "Optional override for skipping the final snapshot when destroying RDS; defaults to false in prod, true otherwise"
   type        = bool
-  default     = true
+  default     = null
+}
+
+variable "rds_multi_az" {
+  description = "Whether the RDS instance runs as a Multi-AZ deployment with a standby replica"
+  type        = bool
+  default     = false
 }
 
 variable "rds_publicly_accessible" {
@@ -291,13 +297,13 @@ variable "rds_proxy_route_database_url" {
 }
 
 variable "guardian_rate_burst_per_sec" {
-  description = "Optional override for the Guardian HTTP burst rate limit"
+  description = "Optional override for the Guardian burst rate limit (HTTP and gRPC)"
   type        = number
   default     = null
 }
 
 variable "guardian_rate_per_min" {
-  description = "Optional override for the Guardian HTTP sustained rate limit"
+  description = "Optional override for the Guardian sustained rate limit (HTTP and gRPC)"
   type        = number
   default     = null
 }
@@ -386,7 +392,7 @@ variable "server_deployment_maximum_percent" {
 }
 
 variable "guardian_rate_limit_enabled" {
-  description = "Optional override to enable or disable Guardian HTTP rate limiting"
+  description = "Optional override to enable or disable Guardian rate limiting (HTTP and gRPC)"
   type        = bool
   default     = null
 }

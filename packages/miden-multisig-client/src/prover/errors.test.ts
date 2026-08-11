@@ -50,4 +50,12 @@ describe('isTransientProverError', () => {
     expect(isTransientProverError({ code: 14, message: 'unavailable' })).toBe(true);
     expect(isTransientProverError({ code: 3, message: 'timeout text' })).toBe(false);
   });
+
+  it('reads grpc code wording out of plain message text', () => {
+    expect(isTransientProverError(new Error('grpc code: NotFound'))).toBe(false);
+    expect(
+      isTransientProverError(new Error('grpc code: Internal; nested timeout')),
+    ).toBe(false);
+    expect(isTransientProverError(new Error('grpc code: Unavailable'))).toBe(true);
+  });
 });

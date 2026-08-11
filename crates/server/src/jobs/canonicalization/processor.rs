@@ -680,7 +680,11 @@ impl DeltasProcessorBase {
         let verify_result = self
             .state
             .network_client
-            .verify_commitment(&delta.account_id, &recomputed_commitment)
+            .verify_commitment(
+                &delta.account_id,
+                &recomputed_commitment,
+                crate::network::RpcReadMode::SingleAttempt,
+            )
             .await;
 
         match verify_result {
@@ -777,7 +781,11 @@ impl DeltasProcessorBase {
         match self
             .state
             .network_client
-            .verify_commitment(&delta.account_id, &claimed_commitment)
+            .verify_commitment(
+                &delta.account_id,
+                &claimed_commitment,
+                crate::network::RpcReadMode::SingleAttempt,
+            )
             .await
         {
             Ok(StateVerification::Match) => {}
@@ -2117,6 +2125,7 @@ mod tests {
             &self,
             _account_id: &str,
             _expected_commitment: &str,
+            _read_mode: crate::network::RpcReadMode,
         ) -> std::result::Result<StateVerification, String> {
             self.cancel.cancel();
             Ok(StateVerification::Mismatch {
@@ -2580,6 +2589,64 @@ mod tests {
 
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn canonicalization_reads_are_single_attempt_and_recover_on_the_next_pass() {
+        let account_id = "0xtest_account";
+        let candidate = create_candidate_delta(account_id, 1);
+
+        let mock_storage = MockStorageBackend::new()
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_deltas_after(Ok(vec![candidate.clone()]))
+            .with_pull_state(Ok(create_test_state(account_id)))
+            .with_pull_state(Ok(create_test_state(account_id)));
+
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Match))
+            .with_verify_commitment(Err(
+                "get_account_commitment RPC failed: transport error".to_string()
+            ));
+        let network_handle = mock_network.clone();
+
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata),
+        );
+
+        let config = CanonicalizationConfig::new(10, 18);
+        let processor = DeltasProcessor::new(state, config);
+
+        processor.process_all_accounts().await.unwrap();
+        assert_eq!(network_handle.get_verify_commitment_calls().len(), 1);
+
+        processor.process_all_accounts().await.unwrap();
+        assert_eq!(network_handle.get_verify_commitment_calls().len(), 2);
+
+        let modes = network_handle.get_verify_commitment_modes();
+        assert_eq!(modes.len(), 2);
+        assert!(
+            modes
+                .iter()
+                .all(|mode| *mode == crate::network::RpcReadMode::SingleAttempt)
+        );
     }
 
     #[tokio::test]

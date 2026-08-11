@@ -238,11 +238,19 @@ EVM proposal response:
 
 ### Rate Limiting
 
-- HTTP endpoints are rate limited by client IP.
-- Burst limits are applied per IP and endpoint path.
-- Sustained limits are applied per IP and per IP+account/signer when available.
-- Client IP detection prefers `X-Forwarded-For`, then `X-Real-IP`, then the socket peer IP.
-- Exceeded limits return `429 Too Many Requests` and include `Retry-After`.
+- Both transports are rate limited by client IP, metered from one store.
+- Burst limits are applied per IP and endpoint, where the endpoint is the
+  HTTP path or the gRPC method. HTTP paths and gRPC method names differ, so
+  a burst bucket is never shared across transports.
+- Sustained limits are applied per IP alone, so HTTP and gRPC calls from one
+  client draw on the same allowance, and per IP+account/signer when available.
+- Client IP detection prefers the **rightmost** `X-Forwarded-For` entry (the
+  one the nearest proxy appended; any prefix is client-supplied and ignored),
+  then `X-Real-IP`, then the socket peer IP.
+- Exceeded limits return `429 Too Many Requests` with `Retry-After` on HTTP,
+  and `RESOURCE_EXHAUSTED` with a `retry-after` metadata key (ASCII decimal
+  seconds) on gRPC. Both carry the same `rate_limit_exceeded` error envelope,
+  including `meta.retry_after_secs`.
 
 ### Request Size Limits
 
@@ -413,6 +421,10 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
 
+Every gRPC method is rate limited from the same store as the HTTP surface;
+see [Rate Limiting](#rate-limiting) for the keying rules and the rejection
+shape.
+
 `GetAccountByKeyCommitment` mirrors the HTTP `GET /state/lookup` route. Authentication is carried in gRPC metadata (`x-pubkey`, `x-signature`, `x-timestamp`) and signed under the **Lookup Request Signing** format. Errors propagate as `tonic::Status` via the structured `GuardianError` mapping (`InvalidInput → INVALID_ARGUMENT`, `AuthenticationFailed → UNAUTHENTICATED`, `StorageError → INTERNAL`); the response contains a `repeated AccountRef accounts` field, with empty list as the success-with-no-matches signal.
 
 ## Metrics Endpoint (Prometheus)
@@ -489,7 +501,7 @@ behavior.
 | `guardian_operator_auth_challenges_total` | counter | `outcome` |
 | `guardian_operator_auth_verifications_total` | counter | `outcome` |
 | `guardian_operator_sessions_started_total` | counter | — |
-| `guardian_rate_limit_rejections_total` | counter | `limit_type` (`burst`/`sustained`) |
+| `guardian_rate_limit_rejections_total` | counter | `limit_type` (`burst`/`sustained`), `transport` (`http`/`grpc`) |
 | `guardian_deltas` | gauge | `status` (`candidate`/`canonical`/`retained`/`discarded`) |
 | `guardian_proposals_in_flight` | gauge | — |
 | `guardian_accounts` | gauge | — |

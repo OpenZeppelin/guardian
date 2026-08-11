@@ -168,7 +168,11 @@ pub async fn abandon_candidate(
 
     let verify_result = state
         .network_client
-        .verify_commitment(&account_id, &expected_commitment)
+        .verify_commitment(
+            &account_id,
+            &expected_commitment,
+            crate::network::RpcReadMode::Configured,
+        )
         .await;
     match verify_result {
         Ok(StateVerification::Match) => {

@@ -41,6 +41,7 @@ pub const DB_POOL_PENDING_ACQUIRES: &str = "guardian_db_pool_pending_acquires";
 
 pub const MIDEN_RPC_REQUESTS_TOTAL: &str = "guardian_miden_rpc_requests_total";
 pub const MIDEN_RPC_DURATION_SECONDS: &str = "guardian_miden_rpc_duration_seconds";
+pub const MIDEN_RPC_RETRIES_TOTAL: &str = "guardian_miden_rpc_retries_total";
 
 // --- Canonicalization jobs ----------------------------------------------
 
@@ -101,10 +102,15 @@ pub const LABEL_OUTCOME: &str = "outcome";
 pub const LABEL_KIND: &str = "kind";
 pub const LABEL_EVENT: &str = "event";
 pub const LABEL_LIMIT_TYPE: &str = "limit_type";
+pub const LABEL_TRANSPORT: &str = "transport";
 pub const LABEL_POOL: &str = "pool";
 pub const LABEL_VERSION: &str = "version";
 pub const LABEL_GIT_COMMIT: &str = "git_commit";
 pub const LABEL_PROFILE: &str = "profile";
+
+/// The closed value set for `LABEL_TRANSPORT`.
+pub const TRANSPORT_HTTP: &str = "http";
+pub const TRANSPORT_GRPC: &str = "grpc";
 
 /// Every label key any guardian metric is allowed to carry. The
 /// `REGISTRY` unit test enforces membership; adding a new label means
@@ -120,6 +126,7 @@ pub const LABEL_ALLOWLIST: &[&str] = &[
     LABEL_KIND,
     LABEL_EVENT,
     LABEL_LIMIT_TYPE,
+    LABEL_TRANSPORT,
     LABEL_POOL,
     LABEL_VERSION,
     LABEL_GIT_COMMIT,
@@ -199,6 +206,13 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Histogram,
         labels: &[LABEL_OPERATION],
         help: "Outbound Miden chain-node RPC latency in seconds, by operation.",
+    },
+    MetricDef {
+        name: MIDEN_RPC_RETRIES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OPERATION],
+        help: "Miden chain-node RPC retry attempts beyond the first, by operation. \
+               Zero unless the configured read budget allows more than one attempt.",
     },
     MetricDef {
         name: STORAGE_OPERATIONS_TOTAL,
@@ -354,8 +368,9 @@ pub const REGISTRY: &[MetricDef] = &[
     MetricDef {
         name: RATE_LIMIT_REJECTIONS_TOTAL,
         kind: MetricKind::Counter,
-        labels: &[LABEL_LIMIT_TYPE],
-        help: "Requests rejected by the rate limiter, by limit type (burst, sustained).",
+        labels: &[LABEL_LIMIT_TYPE, LABEL_TRANSPORT],
+        help: "Requests rejected by the rate limiter, by limit type (burst, sustained) \
+               and transport (http, grpc).",
     },
     MetricDef {
         name: DELTAS_GAUGE,

@@ -25,7 +25,7 @@ use crate::logging::LoggingConfig;
 use crate::metadata::MetadataStore;
 use crate::metrics::{InstrumentedStorage, MetricsConfig};
 use crate::middleware::{BodyLimitConfig, RateLimitConfig};
-use crate::network::{NetworkType, miden::MidenNetworkClient};
+use crate::network::NetworkType;
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use guardian_shared::SignatureScheme;
@@ -39,6 +39,7 @@ pub struct ServerBuilder {
     auditor: Option<crate::audit::SharedAuditor>,
     ack: Option<AckRegistry>,
     canonicalization: Option<CanonicalizationConfig>,
+    rpc: Option<crate::network::RpcSettings>,
     dashboard: Option<Arc<DashboardState>>,
     coordination: Option<crate::coordination::CoordinationHandles>,
     logging_config: Option<LoggingConfig>,
@@ -62,6 +63,7 @@ impl ServerBuilder {
             auditor: None,
             ack: None,
             canonicalization: Some(CanonicalizationConfig::default()),
+            rpc: None,
             dashboard: None,
             coordination: None,
             logging_config: None,
@@ -214,6 +216,14 @@ impl ServerBuilder {
     /// ```
     pub fn with_canonicalization(mut self, config: Option<CanonicalizationConfig>) -> Self {
         self.canonicalization = config;
+        self
+    }
+
+    /// Sets node RPC settings explicitly for the network they belong to.
+    /// When no settings are provided, `build()` resolves them from the
+    /// environment on top of the declared network type.
+    pub fn with_rpc(mut self, settings: crate::network::RpcSettings) -> Self {
+        self.rpc = Some(settings);
         self
     }
 
@@ -532,12 +542,12 @@ impl ServerBuilder {
             Arc::new(EvmAppState::from_env_with_sessions(sessions).await?)
         };
 
-        let network_client = MidenNetworkClient::from_network(network_type)
-            .await
-            .map_err(|e| format!("Failed to create network client: {e}"))?;
+        let rpc_settings = crate::network::RpcSettings::resolve_for(self.rpc, network_type)?;
+        let network_client = rpc_settings.connect().await?;
 
         let startup_info = startup::StartupInfo::new(
             network_type,
+            rpc_settings.sanitized_endpoint(),
             storage.kind(),
             coordination_mode.as_str(),
             ack.ecdsa_backend_id(),
@@ -592,7 +602,7 @@ impl ServerBuilder {
         let app_state = AppState {
             storage,
             metadata,
-            network_client: Arc::new(network_client),
+            network_client,
             ack,
             canonicalization: self.canonicalization,
             clock: Arc::new(SystemClock),
@@ -625,3 +635,18 @@ impl Default for ServerBuilder {
 }
 
 // ServerHandle moved to builder::handle
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::env_lock::ENV_LOCK;
+
+    #[test]
+    fn with_rpc_stores_explicit_settings() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let settings = crate::network::RpcSettings::from_env(NetworkType::MidenLocal).unwrap();
+        let builder = ServerBuilder::new().with_rpc(settings);
+        assert!(builder.rpc.is_some());
+        assert!(ServerBuilder::new().rpc.is_none());
+    }
+}

@@ -191,6 +191,12 @@ grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' guardi
 terraform destroy
 ```
 
+In the prod stage the RDS instance has deletion protection on and takes a
+final snapshot (`<stack>-postgres-final`) on destroy. To tear down a prod
+stack, set `TF_VAR_rds_deletion_protection=false`, apply, then destroy. If a
+snapshot named `<stack>-postgres-final` is left over from a previous
+teardown, copy or delete it first — the destroy fails on the name collision.
+
 ECR repositories are not managed by Terraform:
 
 ```bash
@@ -220,9 +226,13 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `postgres_db` | `guardian` | Postgres database name |
 | `postgres_user` | `guardian` | Postgres username |
 | `postgres_password` | `guardian_dev_password` | Postgres password |
-| `rds_instance_class` | `db.t3.micro` in dev, `db.t3.medium` in prod | RDS instance class |
+| `rds_instance_class` | `db.t3.micro` in dev, `db.r6g.large` in prod | RDS instance class |
 | `rds_allocated_storage` | `20` in dev, `50` in prod | RDS allocated storage in GiB |
 | `rds_max_allocated_storage` | `null` in dev, `200` in prod | RDS storage autoscaling ceiling |
+| `rds_backup_retention_days` | `7` | Automated backup retention in days; enables point-in-time recovery |
+| `rds_deletion_protection` | `false` in dev, `true` in prod | Whether the RDS instance is protected from deletion |
+| `rds_skip_final_snapshot` | `true` in dev, `false` in prod | Whether destroying the RDS instance skips the final snapshot |
+| `rds_multi_az` | `false` | Whether RDS runs as a Multi-AZ deployment with a standby replica |
 | `rds_proxy_enabled` | `false` in dev, `true` in prod | Whether RDS Proxy is enabled |
 | `domain_name` | `openzeppelin.com` | Root domain for HTTPS endpoint |
 | `subdomain` | `guardian` | Subdomain for HTTPS endpoint |
@@ -232,7 +242,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_memory` | `1024` | Server task memory (MB) |
 | `server_desired_count` | `1` in dev, `2` in prod | ECS service desired task count |
 | `server_autoscaling_enabled` | `false` in dev, `true` in prod | Whether ECS autoscaling is enabled |
-| `guardian_rate_limit_enabled` | `true` | Whether Guardian HTTP rate limiting is enabled |
+| `guardian_rate_limit_enabled` | `true` | Whether Guardian rate limiting is enabled (HTTP and gRPC) |
 | `guardian_rate_burst_per_sec` | `10` in dev, `200` in prod | Guardian HTTP burst limit |
 | `guardian_rate_per_min` | `60` in dev, `5000` in prod | Guardian HTTP sustained limit |
 | `guardian_max_replicas` | greater of desired count and autoscaling max when enabled, desired count otherwise (prod `6` by default) | `GUARDIAN_MAX_REPLICAS` rate-limit partition divisor; an explicit value is clamped **up** to steady-state capacity. A rolling deployment may temporarily allow up to `server_deployment_maximum_percent / 100` times the configured fleet limit. |
@@ -270,7 +280,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_service_arn` | Server ECS service ARN |
 | `server_log_group` | CloudWatch log group for the server |
 | `cluster_log_group` | CloudWatch log group for ECS execute command |
-| `guardian_rate_limit_enabled` | Whether HTTP rate limiting is enabled |
+| `guardian_rate_limit_enabled` | Whether rate limiting is enabled (HTTP and gRPC) |
 | `guardian_max_replicas` | Effective `GUARDIAN_MAX_REPLICAS` after clamping to steady-state capacity |
 | `guardian_dashboard_commitment_rate_burst_per_sec` | Effective fleet-wide dashboard per-commitment burst budget |
 | `guardian_dashboard_commitment_rate_per_min` | Effective fleet-wide dashboard per-commitment sustained budget |

@@ -149,10 +149,13 @@ export class GuardianHttpError extends Error {
    */
   public readonly releasedAt: string | null;
 
+  private readonly headerRetryAfterSecs?: number;
+
   constructor(
     public readonly status: number,
     public readonly statusText: string,
-    public readonly body: string
+    public readonly body: string,
+    retryAfterHeader?: string | null
   ) {
     // Only the parsed, user-safe message is folded into Error.message; the
     // raw body (which may carry backend/proxy internals) stays on the `body`
@@ -165,7 +168,37 @@ export class GuardianHttpError extends Error {
     this.userMessage = parsed?.message;
     this.meta = parsed?.meta;
     this.releasedAt = parsed?.meta.releasedAt ?? null;
+    this.headerRetryAfterSecs = parseRetryAfterSeconds(retryAfterHeader);
   }
+
+  /**
+   * Whether the server marked this error safe to retry: `meta.retryable`
+   * from the envelope, falling back to the status class (429 rejections
+   * happen before any handler runs). Mirrors the Rust client's
+   * `ClientError::is_retryable`.
+   */
+  isRetryable(): boolean {
+    return this.meta?.retryable ?? this.status === 429;
+  }
+
+  /**
+   * Server-provided backoff hint in seconds: the `Retry-After` header,
+   * falling back to `meta.retryAfterSecs`. Unparseable values mean no
+   * hint. Mirrors the Rust client's `ClientError::retry_after`.
+   */
+  retryAfterSecs(): number | undefined {
+    return this.headerRetryAfterSecs ?? this.meta?.retryAfterSecs;
+  }
+}
+
+// Decimal digits only, mirroring the Rust client's `parse::<u64>()`: no
+// signs, exponents, hex, or empty strings (`Number('')` is 0).
+function parseRetryAfterSeconds(header: string | null | undefined): number | undefined {
+  if (typeof header !== 'string') return undefined;
+  const trimmed = header.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const secs = Number(trimmed);
+  return Number.isSafeInteger(secs) ? secs : undefined;
 }
 
 /**
@@ -431,7 +464,12 @@ export class GuardianHttpClient {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new GuardianHttpError(response.status, response.statusText, body);
+      throw new GuardianHttpError(
+        response.status,
+        response.statusText,
+        body,
+        response.headers.get('Retry-After')
+      );
     }
 
     return response;
