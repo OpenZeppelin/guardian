@@ -72,6 +72,17 @@ Most startup failures are environment misconfiguration. Check in order:
      includes the Amazon Trust Services roots, not only the RDS CA roots.
    - works under `verify-ca` but fails under `verify-full` → hostname/SAN
      mismatch with the endpoint. See [Database TLS](./CONFIGURATION.md#database-tls).
+8. **Replay-protection state file missing (filesystem builds).** Startup
+   fails with `Replay-protection state file ... is missing` when
+   `.metadata/auth_state.json` has been deleted from a store whose
+   `accounts.json` was already migrated off legacy timestamps. Starting
+   anyway would reset replay protection and re-accept previously seen
+   request timestamps, so the server refuses instead. Restore
+   `auth_state.json` from backup together with the rest of the metadata
+   directory. If no backup exists, recreating the file with the literal
+   content `{}` lets the server start — that is an explicit operator
+   decision to accept a replay window as wide as the timestamp skew
+   allowance.
 
 ### Guardian public key changes unexpectedly
 

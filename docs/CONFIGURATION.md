@@ -26,7 +26,7 @@ the runtime env vars in this document.
 |---|---|---|---|
 | `DATABASE_URL` | _required_ | `postgres` | Postgres connection string. Server panics at startup if unset under `--features postgres`. TLS verification is controlled by the standard `sslmode`/`sslrootcert` parameters — see [Database TLS](#database-tls). |
 | `GUARDIAN_STORAGE_PATH` | `/var/guardian/storage` | filesystem | Path for state + delta blobs. |
-| `GUARDIAN_METADATA_PATH` | `/var/guardian/metadata` | filesystem | Path for accounts, auth credentials, network config. |
+| `GUARDIAN_METADATA_PATH` | `/var/guardian/metadata` | filesystem | Path for accounts, auth credentials, network config. Holds `.metadata/accounts.json` (account records) and `.metadata/auth_state.json` (replay-protection timestamps). Back up and restore the two files together: the server refuses to start if `auth_state.json` is missing while migrated accounts exist, because empty replay state would re-accept previously seen requests (see [Troubleshooting](./TROUBLESHOOTING.md#server-fails-to-start)). |
 | `GUARDIAN_KEYSTORE_PATH` | `/var/guardian/keystore` | any | Local Falcon/ECDSA key files (ACK signers and per-account creds). |
 | `GUARDIAN_DB_POOL_MAX_SIZE` | `16` (code default); `32` set by the prod Terraform profile | `postgres` | Storage backend pool size. |
 | `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | matches storage | `postgres` | Metadata backend pool size; usually leave equal. |
