@@ -13,6 +13,8 @@ on:
         type: boolean
         required: false
         default: false
+      # The per-package inputs below must stay in sync with the package
+      # lists in the "Select packages" step of the prepare job.
       guardian-client:
         description: "Publish @openzeppelin/guardian-client"
         type: boolean
@@ -66,6 +68,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Keep the release list and the manual-run guards below in sync
+          # with the workflow_dispatch package inputs.
           packages=()
           if [[ "${EVENT_NAME}" == "release" ]]; then
             packages+=(
@@ -148,40 +152,52 @@ jobs:
           }
 
           mapfile -t packages < <(jq -r '.[]' <<< "${PACKAGES}")
-          for package in "${packages[@]}"; do
+
+          abort() {
+            local package_name=$1
+            local package_version=$2
+            local result=$3
+            local next_index=$4
+            summarize "${package_name}" "${package_version}" "${result}"
+            local remaining remaining_dir
+            for remaining in "${packages[@]:${next_index}}"; do
+              remaining_dir="packages/${remaining}"
+              summarize "$(jq -r '.name' "${remaining_dir}/package.json")" "$(jq -r '.version' "${remaining_dir}/package.json")" "⏭️ Not attempted"
+            done
+            exit 1
+          }
+
+          for index in "${!packages[@]}"; do
+            package="${packages[${index}]}"
             package_dir="packages/${package}"
             package_name=$(jq -r '.name' "${package_dir}/package.json")
             package_version=$(jq -r '.version' "${package_dir}/package.json")
+            next_index=$((index + 1))
 
-            if ! npm --prefix "${package_dir}" ci; then
-              summarize "${package_name}" "${package_version}" "❌ Dependency installation failed"
-              exit 1
+            if ! (cd "${package_dir}" && npm ci); then
+              abort "${package_name}" "${package_version}" "❌ Dependency installation failed" "${next_index}"
             fi
 
-            if ! npm --prefix "${package_dir}" run build; then
-              summarize "${package_name}" "${package_version}" "❌ Build failed"
-              exit 1
+            if ! (cd "${package_dir}" && npm run build); then
+              abort "${package_name}" "${package_version}" "❌ Build failed" "${next_index}"
             fi
 
-            if ! npm --prefix "${package_dir}" test; then
-              summarize "${package_name}" "${package_version}" "❌ Tests failed"
-              exit 1
+            if ! (cd "${package_dir}" && npm test); then
+              abort "${package_name}" "${package_version}" "❌ Tests failed" "${next_index}"
             fi
 
             if npm view "${package_name}@${package_version}" version 2>/dev/null; then
-              echo "⚠️ ${package_name}@${package_version} is already published — skipping."
+              echo "⚠️ ${package_name}@${package_version} is already published, skipping."
               summarize "${package_name}" "${package_version}" "⏭️ Already published"
             elif [[ "${DRY_RUN}" == "true" ]]; then
-              if npm --prefix "${package_dir}" publish --provenance --access public --dry-run; then
+              if (cd "${package_dir}" && npm publish --provenance --access public --dry-run); then
                 summarize "${package_name}" "${package_version}" "✅ Dry run succeeded"
               else
-                summarize "${package_name}" "${package_version}" "❌ Dry run failed"
-                exit 1
+                abort "${package_name}" "${package_version}" "❌ Dry run failed" "${next_index}"
               fi
-            elif npm --prefix "${package_dir}" publish --provenance --access public; then
+            elif (cd "${package_dir}" && npm publish --provenance --access public); then
               summarize "${package_name}" "${package_version}" "✅ Published"
             else
-              summarize "${package_name}" "${package_version}" "❌ Publish failed"
-              exit 1
+              abort "${package_name}" "${package_version}" "❌ Publish failed" "${next_index}"
             fi
           done
