@@ -1063,8 +1063,8 @@ case "${COMMAND:-}" in
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-storage-encryption-key  # prints the name to export"
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret"
     echo "  GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-prod/server/storage-encryption-key DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh deploy --skip-build"
-    echo "  GUARDIAN_NETWORK_TYPE=MidenDevnet DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-devnet ALIAS_SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
-    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian-testnet ALIAS_SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"
+    echo "  GUARDIAN_NETWORK_TYPE=MidenDevnet DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-devnet ./scripts/aws-deploy.sh deploy"
+    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian-testnet ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"
     echo "  ./scripts/aws-deploy.sh cleanup"
     ;;
