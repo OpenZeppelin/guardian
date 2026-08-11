@@ -242,12 +242,6 @@ jobs:
             echo "- Authentication: \`none\`"
             echo "- Selected: \`$(jq -r 'join(", ")' <<<"${SELECTED}")\`"
             echo "- Result: \`${STATUS}\`"
-            echo
-            echo "| Crate | Validation |"
-            echo "|---|---|"
-            while IFS= read -r crate; do
-              echo "| \`${crate}\` | \`${STATUS}\` |"
-            done < <(jq -r '.[]' <<<"${SELECTED}")
           } >> "${GITHUB_STEP_SUMMARY}"
 
   publish:
@@ -359,10 +353,11 @@ jobs:
           STATUS: ${{ job.status }}
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          authentication=none
-          if jq -e 'length > 0' <<<"${PACKAGES:-[]}" >/dev/null; then
-            authentication=trusted-publishing
-          fi
+          case "${AUTH_OUTCOME}" in
+            success) authentication=trusted-publishing ;;
+            failure) authentication=failed ;;
+            *) authentication=none ;;
+          esac
 
           {
             echo "## Rust crate publication"
