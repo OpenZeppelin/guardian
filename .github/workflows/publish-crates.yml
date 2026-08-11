@@ -1,0 +1,395 @@
+name: Publish Rust Crates
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Validate packages without publishing"
+        type: boolean
+        required: false
+        default: false
+      guardian-shared:
+        description: "Select guardian-shared"
+        type: boolean
+        required: false
+        default: false
+      guardian-client:
+        description: "Select guardian-client"
+        type: boolean
+        required: false
+        default: false
+      miden-confidential-contracts:
+        description: "Select miden-confidential-contracts"
+        type: boolean
+        required: false
+        default: false
+      miden-multisig-client:
+        description: "Select miden-multisig-client"
+        type: boolean
+        required: false
+        default: false
+  pull_request:
+    paths:
+      - ".github/workflows/publish-crates.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.prepare.outputs.mode }}
+      selected: ${{ steps.prepare.outputs.selected }}
+      source_ref: ${{ steps.prepare.outputs.source_ref }}
+      source_sha: ${{ steps.prepare.outputs.source_sha }}
+      trigger: ${{ steps.prepare.outputs.trigger }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Resolve publication request
+        id: prepare
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_DRY_RUN: ${{ inputs['dry-run'] }}
+          INPUT_GUARDIAN_CLIENT: ${{ inputs['guardian-client'] }}
+          INPUT_GUARDIAN_SHARED: ${{ inputs['guardian-shared'] }}
+          INPUT_CONTRACTS: ${{ inputs['miden-confidential-contracts'] }}
+          INPUT_MULTISIG: ${{ inputs['miden-multisig-client'] }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          all_crates=(
+            guardian-shared
+            guardian-client
+            miden-confidential-contracts
+            miden-multisig-client
+          )
+          selected=()
+
+          case "${EVENT_NAME}" in
+            release)
+              trigger=release
+              mode=publish
+              source_ref="${RELEASE_TAG}"
+              selected=("${all_crates[@]}")
+              ;;
+            pull_request)
+              trigger=pull_request
+              mode=dry_run
+              source_ref="${SOURCE_REF}"
+              selected=("${all_crates[@]}")
+              ;;
+            workflow_dispatch)
+              trigger=manual
+              source_ref="${SOURCE_REF}"
+              [[ "${INPUT_GUARDIAN_SHARED}" == "true" ]] && selected+=(guardian-shared)
+              [[ "${INPUT_GUARDIAN_CLIENT}" == "true" ]] && selected+=(guardian-client)
+              [[ "${INPUT_CONTRACTS}" == "true" ]] && selected+=(miden-confidential-contracts)
+              [[ "${INPUT_MULTISIG}" == "true" ]] && selected+=(miden-multisig-client)
+              if [[ "${INPUT_DRY_RUN}" == "true" ]]; then
+                mode=dry_run
+              else
+                mode=publish
+              fi
+              ;;
+            *)
+              echo "Unsupported event: ${EVENT_NAME}" >&2
+              exit 1
+              ;;
+          esac
+
+          if (( ${#selected[@]} == 0 )); then
+            echo "Select at least one Rust crate." >&2
+            exit 1
+          fi
+
+          selected_json="$(printf '%s\n' "${selected[@]}" | jq -R . | jq -sc .)"
+          {
+            echo "trigger=${trigger}"
+            echo "mode=${mode}"
+            echo "source_ref=${source_ref}"
+            echo "source_sha=${SOURCE_SHA}"
+            echo "selected=${selected_json}"
+          } >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "## Rust crate publication request"
+            echo
+            echo "- Trigger: \`${trigger}\`"
+            echo "- Mode: \`${mode}\`"
+            echo "- Source: \`${source_ref}\`"
+            echo "- Commit: \`${SOURCE_SHA}\`"
+            echo "- Selected: \`$(jq -r 'join(", ")' <<<"${selected_json}")\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  validate:
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Install Rust 1.93.0
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup default 1.93.0
+
+      - name: Install packaging prerequisites
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Validate coordinated version
+        id: metadata
+        env:
+          EXPECTED_SHA: ${{ needs.prepare.outputs.source_sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RUN_TRIGGER: ${{ needs.prepare.outputs.trigger }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          [[ "${actual_sha}" == "${EXPECTED_SHA}" ]] || {
+            echo "Checked out ${actual_sha}, expected ${EXPECTED_SHA}." >&2
+            exit 1
+          }
+
+          metadata="$(cargo metadata --format-version 1 --no-deps --locked)"
+          crates=(
+            guardian-shared
+            guardian-client
+            miden-confidential-contracts
+            miden-multisig-client
+          )
+          version=
+          for crate in "${crates[@]}"; do
+            crate_version="$(jq -er --arg crate "${crate}" \
+              '.packages[] | select(.name == $crate) | .version' <<<"${metadata}")"
+            if [[ -z "${version}" ]]; then
+              version="${crate_version}"
+            elif [[ "${crate_version}" != "${version}" ]]; then
+              echo "${crate} is ${crate_version}; expected coordinated version ${version}." >&2
+              exit 1
+            fi
+          done
+
+          if [[ "${version}" == *+* ]]; then
+            echo "Build metadata is not supported in release versions." >&2
+            exit 1
+          fi
+          if [[ "${RUN_TRIGGER}" == "release" && "${RELEASE_TAG}" != "v${version}" ]]; then
+            echo "Release tag ${RELEASE_TAG} does not match v${version}." >&2
+            exit 1
+          fi
+
+          {
+            echo "source_sha=${actual_sha}"
+            echo "version=${version}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Test selected crates
+        if: needs.prepare.outputs.trigger != 'pull_request'
+        env:
+          SELECTED: ${{ needs.prepare.outputs.selected }}
+        run: |
+          set -euo pipefail
+          args=(test --locked)
+          while IFS= read -r crate; do
+            args+=(-p "${crate}")
+          done < <(jq -r '.[]' <<<"${SELECTED}")
+          cargo "${args[@]}"
+
+      - name: Dry-run selected crates
+        env:
+          SELECTED: ${{ needs.prepare.outputs.selected }}
+        run: |
+          set -euo pipefail
+          args=(publish --dry-run --locked)
+          while IFS= read -r crate; do
+            args+=(-p "${crate}")
+          done < <(jq -r '.[]' <<<"${SELECTED}")
+          cargo "${args[@]}"
+
+      - name: Summarize validation
+        if: always()
+        env:
+          MODE: ${{ needs.prepare.outputs.mode }}
+          SELECTED: ${{ needs.prepare.outputs.selected }}
+          STATUS: ${{ job.status }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          {
+            echo "## Rust crate validation"
+            echo
+            echo "- Mode: \`${MODE}\`"
+            echo "- Version: \`${VERSION:-unknown}\`"
+            echo "- Authentication: \`none\`"
+            echo "- Selected: \`$(jq -r 'join(", ")' <<<"${SELECTED}")\`"
+            echo "- Result: \`${STATUS}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  publish:
+    needs: [prepare, validate]
+    if: >-
+      needs.validate.result == 'success' &&
+      needs.prepare.outputs.mode == 'publish' &&
+      github.repository == 'OpenZeppelin/guardian'
+    runs-on: ubuntu-latest
+    environment: release
+    concurrency:
+      group: publish-rust-crates
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout approved source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Install Rust 1.93.0
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup default 1.93.0
+
+      - name: Install packaging prerequisites
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Skip versions already on crates.io
+        id: preflight
+        env:
+          EXPECTED_SHA: ${{ needs.validate.outputs.source_sha }}
+          SELECTED: ${{ needs.prepare.outputs.selected }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${EXPECTED_SHA}" ]] || {
+            echo "Approved source SHA changed." >&2
+            exit 1
+          }
+
+          packages=()
+          while IFS= read -r crate; do
+            status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+              --connect-timeout 5 --max-time 15 --retry 2 --retry-all-errors \
+              --user-agent "guardian-publish-crates/${GITHUB_RUN_ID}" \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}")"
+            case "${status}" in
+              200)
+                echo "${crate}@${VERSION} is already published; skipping."
+                ;;
+              404)
+                packages+=("${crate}")
+                ;;
+              *)
+                echo "Could not determine crates.io state for ${crate}@${VERSION} (HTTP ${status})." >&2
+                exit 1
+                ;;
+            esac
+          done < <(jq -r '.[]' <<<"${SELECTED}")
+
+          packages_json='[]'
+          if (( ${#packages[@]} > 0 )); then
+            packages_json="$(printf '%s\n' "${packages[@]}" | jq -R . | jq -sc .)"
+          fi
+          {
+            echo "packages=${packages_json}"
+            echo "has_packages=$(( ${#packages[@]} > 0 ))"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Authenticate with crates.io trusted publishing
+        id: auth
+        if: steps.preflight.outputs.has_packages == '1'
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      - name: Publish selected crates
+        id: publish
+        if: steps.preflight.outputs.has_packages == '1'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          PACKAGES: ${{ steps.preflight.outputs.packages }}
+        run: |
+          set -euo pipefail
+          args=(publish --locked)
+          while IFS= read -r crate; do
+            args+=(-p "${crate}")
+          done < <(jq -r '.[]' <<<"${PACKAGES}")
+          cargo "${args[@]}"
+
+      - name: Summarize publication
+        if: always()
+        env:
+          AUTH_OUTCOME: ${{ steps.auth.outcome }}
+          PACKAGES: ${{ steps.preflight.outputs.packages }}
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          REPOSITORY: ${{ github.repository }}
+          SELECTED: ${{ needs.prepare.outputs.selected }}
+          SOURCE_REF: ${{ needs.prepare.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+          STATUS: ${{ job.status }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          case "${AUTH_OUTCOME}" in
+            success) authentication=trusted-publishing ;;
+            failure) authentication=failed ;;
+            *) authentication=none ;;
+          esac
+
+          {
+            echo "## Rust crate publication"
+            echo
+            echo "- Source: \`${SOURCE_REF}\` at [\`${SOURCE_SHA}\`](https://github.com/${REPOSITORY}/commit/${SOURCE_SHA})"
+            echo "- Version: \`${VERSION}\`"
+            echo "- Authentication: \`${authentication}\`"
+            echo "- Selected: \`$(jq -r 'join(", ")' <<<"${SELECTED}")\`"
+            echo "- Attempted: \`$(jq -r 'if length == 0 then "none" else join(", ") end' <<<"${PACKAGES:-[]}")\`"
+            echo "- Registry preflight: \`${PREFLIGHT_OUTCOME}\`"
+            echo "- Publish: \`${PUBLISH_OUTCOME}\`"
+            echo "- Result: \`${STATUS}\`"
+            echo
+            echo "| Crate | Outcome |"
+            echo "|---|---|"
+            while IFS= read -r crate; do
+              if [[ "${PREFLIGHT_OUTCOME}" != "success" ]]; then
+                outcome=registry_check_failed
+              elif jq -e --arg crate "${crate}" 'index($crate) != null' \
+                <<<"${PACKAGES:-[]}" >/dev/null; then
+                if [[ "${AUTH_OUTCOME}" == "failure" ]]; then
+                  outcome=authentication_failed
+                elif [[ "${PUBLISH_OUTCOME}" == "success" ]]; then
+                  outcome=published
+                elif [[ "${PUBLISH_OUTCOME}" == "failure" ]]; then
+                  outcome=attempted_check_registry
+                else
+                  outcome=not_attempted
+                fi
+              else
+                outcome=already_published
+              fi
+              echo "| \`${crate}\` | \`${outcome}\` |"
+            done < <(jq -r '.[]' <<<"${SELECTED}")
+          } >> "${GITHUB_STEP_SUMMARY}"

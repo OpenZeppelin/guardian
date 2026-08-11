@@ -221,7 +221,6 @@ pub async fn configure_account(
             .as_ref()
             .map(|m| m.has_pending_candidate)
             .unwrap_or(false),
-        last_auth_timestamp: existing.as_ref().and_then(|m| m.last_auth_timestamp),
         paused_at: existing.as_ref().and_then(|m| m.paused_at),
         paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
         // `set` never touches released state; the explicit
@@ -447,7 +446,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: Some(1000),
             paused_at: None,
             paused_reason: None,
             released_at: None,
@@ -511,7 +509,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: Some(1000),
             paused_at: Some(paused_at),
             paused_reason: Some("compliance".to_string()),
             released_at: None,
@@ -578,7 +575,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: Some(1000),
             paused_at: None,
             paused_reason: None,
             released_at: Some(released_at),
@@ -640,7 +636,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: Some(1000),
             paused_at: None,
             paused_reason: None,
             released_at: Some(released_at),

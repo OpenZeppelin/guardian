@@ -34,7 +34,9 @@ use crate::metrics::{
     MetricsConfig, MetricsGrpcLayer, describe_metrics, metrics_router, record_build_info,
     start_refresher, track_http,
 };
-use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitLayer};
+use crate::middleware::{
+    BodyLimitConfig, GrpcRateLimitLayer, RateLimitConfig, RateLimitLayer, RateLimitStore,
+};
 use crate::services::start_canonicalization_worker;
 use crate::state::AppState;
 
@@ -138,12 +140,28 @@ impl ServerHandle {
 
         start_session_sweep_worker(self.app_state.clone());
 
+        // One store for both transports, so HTTP and gRPC draw from a
+        // single budget instead of one each.
+        let rate_limit_store = {
+            let config = self
+                .rate_limit_config
+                .clone()
+                .unwrap_or_else(RateLimitConfig::from_env);
+            tracing::info!(
+                enabled = config.enabled,
+                burst_per_sec = config.burst_per_sec,
+                per_min = config.per_min,
+                "Rate limiter initialized"
+            );
+            RateLimitStore::new(config)
+        };
+
         // Start HTTP server if enabled
         if self.http_enabled {
             let state = self.app_state.clone();
             let port = self.http_port;
             let cors_layer = self.cors_layer.clone();
-            let rate_limit_config = self.rate_limit_config.clone();
+            let rate_limit_store = rate_limit_store.clone();
             let body_limit_config = self.body_limit_config;
 
             let task = tokio::spawn(async move {
@@ -279,8 +297,7 @@ impl ServerHandle {
                 app = app.layer(DefaultBodyLimit::max(body_limit.max_bytes));
 
                 // Apply rate limiting
-                let rate_limit = rate_limit_config.unwrap_or_else(RateLimitConfig::from_env);
-                app = app.layer(RateLimitLayer::new(rate_limit));
+                app = app.layer(RateLimitLayer::new(rate_limit_store));
 
                 if let Some(cors) = cors_layer {
                     app = app.layer(cors);
@@ -320,6 +337,7 @@ impl ServerHandle {
         if self.grpc_enabled {
             let state = self.app_state.clone();
             let port = self.grpc_port;
+            let rate_limit = GrpcRateLimitLayer::new(rate_limit_store.clone());
 
             let task = tokio::spawn(async move {
                 let addr = format!("0.0.0.0:{port}")
@@ -337,13 +355,15 @@ impl ServerHandle {
                 tracing::info!(address = %addr, "gRPC server listening");
 
                 // Mirror the HTTP side: the metrics layer is attached
-                // only when metrics are enabled, so the disabled path
-                // does no wrapping or measurement work at all. The two
-                // arms are duplicated because the layered server is a
-                // different type.
+                // only when metrics are enabled (and outermost, so it
+                // observes rate-limit rejections), while the rate-limit
+                // layer is always attached and consults its kill switch
+                // per request. The two arms are duplicated because the
+                // layered server is a different type.
                 if metrics_enabled {
                     Server::builder()
                         .layer(MetricsGrpcLayer::new())
+                        .layer(rate_limit)
                         .add_service(GuardianServer::new(service))
                         .add_service(reflection_service)
                         .serve(addr)
@@ -351,6 +371,7 @@ impl ServerHandle {
                         .expect("gRPC server failed");
                 } else {
                     Server::builder()
+                        .layer(rate_limit)
                         .add_service(GuardianServer::new(service))
                         .add_service(reflection_service)
                         .serve(addr)

@@ -206,6 +206,42 @@ try {
 }
 ```
 
+### Rate limits and retries
+
+The server rate-limits both its HTTP and gRPC surfaces. The sustained
+per-minute limit is keyed per IP alone, so HTTP and gRPC calls from one
+client draw on the same allowance; the burst limit is keyed per IP and
+endpoint. An over-budget request fails with HTTP 429, code
+`rate_limit_exceeded`, and a backoff hint. `GuardianHttpError` classifies
+it: `isRetryable()` reads the error envelope (falling back to the status
+class), and `retryAfterSecs()` returns the server's hint, preferring the
+`Retry-After` header over the envelope value.
+
+Rate-limit rejections happen before the server touches any state, so
+retrying them is always safe. The client does not retry automatically
+(automatic backoff is tracked in
+[#360](https://github.com/OpenZeppelin/guardian/issues/360)); a bounded
+loop over the exposed hint is a few lines:
+
+```typescript
+async function getStateWithRetry(accountId: string, maxAttempts = 3) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await client.getState(accountId);
+    } catch (error) {
+      if (
+        !(error instanceof GuardianHttpError) ||
+        !error.isRetryable() ||
+        attempt >= maxAttempts
+      ) {
+        throw error;
+      }
+      await new Promise((r) => setTimeout(r, (error.retryAfterSecs() ?? 1) * 1000));
+    }
+  }
+}
+```
+
 ## Testing
 
 ```bash

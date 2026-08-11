@@ -130,7 +130,6 @@ pub async fn register_account(
             created_at,
             updated_at: now,
             has_pending_candidate: false,
-            last_auth_timestamp: existing.as_ref().and_then(|m| m.last_auth_timestamp),
             paused_at: existing.as_ref().and_then(|m| m.paused_at),
             paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
             released_at: existing.as_ref().and_then(|m| m.released_at),
@@ -516,7 +515,6 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: Some(
                 chrono::Utc
                     .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)

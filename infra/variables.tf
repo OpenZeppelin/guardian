@@ -309,13 +309,13 @@ variable "rds_proxy_route_database_url" {
 }
 
 variable "guardian_rate_burst_per_sec" {
-  description = "Optional override for the Guardian HTTP burst rate limit"
+  description = "Optional override for the Guardian burst rate limit (HTTP and gRPC)"
   type        = number
   default     = null
 }
 
 variable "guardian_rate_per_min" {
-  description = "Optional override for the Guardian HTTP sustained rate limit"
+  description = "Optional override for the Guardian sustained rate limit (HTTP and gRPC)"
   type        = number
   default     = null
 }
@@ -404,7 +404,7 @@ variable "server_deployment_maximum_percent" {
 }
 
 variable "guardian_rate_limit_enabled" {
-  description = "Optional override to enable or disable Guardian HTTP rate limiting"
+  description = "Optional override to enable or disable Guardian rate limiting (HTTP and gRPC)"
   type        = bool
   default     = null
 }

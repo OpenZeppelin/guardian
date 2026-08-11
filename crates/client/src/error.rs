@@ -90,6 +90,36 @@ impl ClientError {
             _ => false,
         }
     }
+
+    /// Whether the server marked this error safe to retry: `meta.retryable`
+    /// from the structured details, falling back to the status-code class
+    /// (`ResourceExhausted` rejections happen before any handler runs).
+    pub fn is_retryable(&self) -> bool {
+        if let Some(meta) = self.guardian_meta()
+            && let Some(retryable) = meta.get("retryable").and_then(|v| v.as_bool())
+        {
+            return retryable;
+        }
+        matches!(
+            self,
+            ClientError::Status(status) if status.code() == tonic::Code::ResourceExhausted
+        )
+    }
+
+    /// Server-provided backoff hint: the `retry-after` status metadata
+    /// (decimal seconds), falling back to `meta.retry_after_secs`.
+    /// Unparseable values mean no hint; classification is unaffected.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        if let ClientError::Status(status) = self
+            && let Some(value) = status.metadata().get("retry-after")
+            && let Ok(text) = value.to_str()
+            && let Ok(secs) = text.trim().parse::<u64>()
+        {
+            return Some(std::time::Duration::from_secs(secs));
+        }
+        let secs = self.guardian_meta()?.get("retry_after_secs")?.as_u64()?;
+        Some(std::time::Duration::from_secs(secs))
+    }
 }
 
 #[cfg(test)]
@@ -140,5 +170,50 @@ mod tests {
         assert!(status.is_not_found());
         assert!(ClientError::ServerError("Delta not found for account".into()).is_not_found());
         assert!(!ClientError::ServerError("boom".into()).is_not_found());
+    }
+
+    #[test]
+    fn retry_classification_matches_shared_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/guardian-client/rate-limit-policy.json"
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+
+        for case in fixture["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let grpc = &case["grpc"];
+            let code = tonic::Code::from_i32(grpc["code"].as_i64().unwrap() as i32);
+            let mut status = if case["body"].is_null() {
+                tonic::Status::new(code, "plain failure")
+            } else {
+                tonic::Status::with_details(
+                    code,
+                    "test",
+                    case["body"].to_string().into_bytes().into(),
+                )
+            };
+            if let Some(hint) = grpc["retryAfterMetadata"].as_str() {
+                status.metadata_mut().insert(
+                    "retry-after",
+                    hint.parse().expect("fixture hints are ASCII"),
+                );
+            }
+
+            let err: ClientError = status.into();
+            assert_eq!(
+                err.is_retryable(),
+                case["expected"]["retryable"].as_bool().unwrap(),
+                "retryable mismatch: {name}"
+            );
+            assert_eq!(
+                err.retry_after(),
+                case["expected"]["retryAfterSecs"]
+                    .as_u64()
+                    .map(std::time::Duration::from_secs),
+                "retry hint mismatch: {name}"
+            );
+        }
     }
 }

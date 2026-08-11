@@ -571,14 +571,23 @@ struct ErrorBody {
 }
 
 impl GuardianError {
-    /// Build the structured `meta` block for this error.
-    fn error_meta(&self) -> ErrorMeta {
-        let retry_after_secs = match self {
+    /// Backoff hint in seconds for errors that carry one. The single
+    /// source for `meta.retry_after_secs`, the HTTP `Retry-After`
+    /// header, and the gRPC `retry-after` metadata, so a new
+    /// hint-carrying variant cannot reach one transport and not the
+    /// other.
+    fn retry_after_secs(&self) -> Option<u32> {
+        match self {
             GuardianError::RateLimitExceeded {
                 retry_after_secs, ..
             } => Some(*retry_after_secs),
             _ => None,
-        };
+        }
+    }
+
+    /// Build the structured `meta` block for this error.
+    fn error_meta(&self) -> ErrorMeta {
+        let retry_after_secs = self.retry_after_secs();
         let (missing_permissions, paused_at, paused_reason, released_at) = match self {
             GuardianError::InsufficientOperatorPermission {
                 missing_permissions,
@@ -629,12 +638,7 @@ impl IntoResponse for GuardianError {
         } else {
             tracing::debug!(code = self.code(), detail = %self, "guardian error (HTTP 4xx)");
         }
-        let retry_after_secs = match &self {
-            GuardianError::RateLimitExceeded {
-                retry_after_secs, ..
-            } => Some(*retry_after_secs),
-            _ => None,
-        };
+        let retry_after_secs = self.retry_after_secs();
         let body = Json(self.error_body());
         if let Some(retry_after_secs) = retry_after_secs {
             (
@@ -649,6 +653,10 @@ impl IntoResponse for GuardianError {
     }
 }
 
+/// gRPC counterpart of the HTTP `Retry-After` header, carried as ASCII
+/// decimal seconds in the rejection `Status` metadata.
+pub const RETRY_AFTER_METADATA_KEY: &str = "retry-after";
+
 impl From<GuardianError> for tonic::Status {
     fn from(err: GuardianError) -> Self {
         // gRPC carries the same `{ code, message, meta }` object as HTTP, in
@@ -659,8 +667,16 @@ impl From<GuardianError> for tonic::Status {
         } else {
             tracing::debug!(code = err.code(), detail = %err, "guardian error (gRPC)");
         }
+        let retry_after_secs = err.retry_after_secs();
         let details = serde_json::to_vec(&err.error_body()).unwrap_or_default();
-        tonic::Status::with_details(err.grpc_status(), err.user_message(), details.into())
+        let mut status =
+            tonic::Status::with_details(err.grpc_status(), err.user_message(), details.into());
+        if let Some(secs) = retry_after_secs {
+            status
+                .metadata_mut()
+                .insert(RETRY_AFTER_METADATA_KEY, secs.into());
+        }
+        status
     }
 }
 
@@ -1487,5 +1503,32 @@ mod tests {
         assert_eq!(parsed["code"], "rate_limit_exceeded");
         assert_eq!(parsed["meta"]["retryable"], serde_json::Value::Bool(true));
         assert_eq!(parsed["meta"]["retry_after_secs"], serde_json::json!(30));
+    }
+
+    #[test]
+    fn rate_limit_grpc_status_carries_retry_after_metadata() {
+        let err = GuardianError::RateLimitExceeded {
+            retry_after_secs: 30,
+            scope: "ip".into(),
+        };
+        let status: tonic::Status = err.into();
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(
+            status
+                .metadata()
+                .get(RETRY_AFTER_METADATA_KEY)
+                .and_then(|v| v.to_str().ok()),
+            Some("30")
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("details are valid JSON");
+        assert_eq!(parsed["code"], "rate_limit_exceeded");
+        assert_eq!(parsed["meta"]["retry_after_secs"], serde_json::json!(30));
+    }
+
+    #[test]
+    fn non_rate_limit_grpc_status_has_no_retry_after_metadata() {
+        let status: tonic::Status = GuardianError::AccountNotFound("0x1".into()).into();
+        assert!(status.metadata().get(RETRY_AFTER_METADATA_KEY).is_none());
     }
 }
