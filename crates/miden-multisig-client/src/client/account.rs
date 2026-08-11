@@ -241,7 +241,7 @@ impl MultisigClient {
         self.miden_client
             .sync_state()
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to sync state: {:#?}", e)))?;
+            .map_err(|e| MultisigError::miden_client_with_context("failed to sync state", e))?;
         Ok(())
     }
 
@@ -253,7 +253,7 @@ impl MultisigClient {
                 .get_account(account_id)
                 .await
                 .map_err(|e| {
-                    MultisigError::MidenClient(format!("failed to get updated account: {}", e))
+                    MultisigError::miden_client_with_context("failed to get updated account", e)
                 })?
                 .ok_or_else(|| {
                     MultisigError::MissingConfig("account not found after sync".to_string())

@@ -11,9 +11,9 @@ description = "High-level SDK for interacting with multisig accounts on Miden vi
 
 [dependencies]
 # Internal crates
-guardian-client = { version = "=0.16.0", path = "../client" }
-guardian-shared = { version = "=0.16.0", path = "../shared" }
-miden-confidential-contracts = { version = "=0.16.0", path = "../contracts" }
+guardian-client = { version = "=0.16.1", path = "../client" }
+guardian-shared = { version = "=0.16.1", path = "../shared" }
+miden-confidential-contracts = { version = "=0.16.1", path = "../contracts" }
 
 # Miden
 miden-client = { workspace = true, features = ["tonic"] }
@@ -23,7 +23,8 @@ miden-tx = { workspace = true }
 miden-standards = { workspace = true }
 
 # Async
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+async-trait = "0.1"
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "time"] }
 futures = { workspace = true }
 
 # Serialization
@@ -34,10 +35,15 @@ base64 = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
+
+# Logging (facade only; host applications install the subscriber)
+tracing = "0.1"
 anyhow = { workspace = true }
 
 # Utilities
 rand = { workspace = true }
+tonic = { workspace = true }
+url = "2.5"
 
 [features]
 default = ["legacy-consume-notes"]
@@ -48,3 +54,4 @@ legacy-consume-notes = []
 [dev-dependencies]
 tempfile = { workspace = true }
 miden-client = { workspace = true, features = ["tonic", "testing"] }
+miden-rpc-client = { path = "../miden-rpc-client", features = ["scripted-node"] }

@@ -131,7 +131,13 @@ gRPC uses `NetworkConfig::{miden, evm}`.
 - `{ "status": "pending", "timestamp": string, "proposer_id": string, "cosigner_sigs": CosignerSignature[] }`
 - `{ "status": "candidate", "timestamp": string, "retry_count": number }`
 - `{ "status": "canonical", "timestamp": string }`
-- `{ "status": "discarded", "timestamp": string }`
+- `{ "status": "retained", "timestamp": string, "reason": "retry_exhausted" | "diverged" }` —
+  a candidate the worker gave up verifying, kept for background
+  reconciliation (issue #345): promoted to `canonical` if the chain ever
+  shows it landed, dropped after a server-side TTL otherwise. `reason`
+  is omitted when not recorded.
+- `{ "status": "discarded", "timestamp": string, "reason": "client_abandoned" }` —
+  `reason` is omitted for discards without a recorded reason.
 
 ### Proposal Payloads
 
@@ -230,11 +236,19 @@ EVM proposal response:
 
 ### Rate Limiting
 
-- HTTP endpoints are rate limited by client IP.
-- Burst limits are applied per IP and endpoint path.
-- Sustained limits are applied per IP and per IP+account/signer when available.
-- Client IP detection prefers `X-Forwarded-For`, then `X-Real-IP`, then the socket peer IP.
-- Exceeded limits return `429 Too Many Requests` and include `Retry-After`.
+- Both transports are rate limited by client IP, metered from one store.
+- Burst limits are applied per IP and endpoint, where the endpoint is the
+  HTTP path or the gRPC method. HTTP paths and gRPC method names differ, so
+  a burst bucket is never shared across transports.
+- Sustained limits are applied per IP alone, so HTTP and gRPC calls from one
+  client draw on the same allowance, and per IP+account/signer when available.
+- Client IP detection prefers the **rightmost** `X-Forwarded-For` entry (the
+  one the nearest proxy appended; any prefix is client-supplied and ignored),
+  then `X-Real-IP`, then the socket peer IP.
+- Exceeded limits return `429 Too Many Requests` with `Retry-After` on HTTP,
+  and `RESOURCE_EXHAUSTED` with a `retry-after` metadata key (ASCII decimal
+  seconds) on gRPC. Both carry the same `rate_limit_exceeded` error envelope,
+  including `meta.retry_after_secs`.
 
 ### Request Size Limits
 
@@ -405,6 +419,10 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
 
+Every gRPC method is rate limited from the same store as the HTTP surface;
+see [Rate Limiting](#rate-limiting) for the keying rules and the rejection
+shape.
+
 `GetAccountByKeyCommitment` mirrors the HTTP `GET /state/lookup` route. Authentication is carried in gRPC metadata (`x-pubkey`, `x-signature`, `x-timestamp`) and signed under the **Lookup Request Signing** format. Errors propagate as `tonic::Status` via the structured `GuardianError` mapping (`InvalidInput → INVALID_ARGUMENT`, `AuthenticationFailed → UNAUTHENTICATED`, `StorageError → INTERNAL`); the response contains a `repeated AccountRef accounts` field, with empty list as the success-with-no-matches signal.
 
 ## Metrics Endpoint (Prometheus)
@@ -468,7 +486,9 @@ behavior.
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |
 | `guardian_canonicalization_fast_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_fast_run_duration_seconds` | histogram | — |
-| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`) |
+| `guardian_canonicalization_reconcile_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
+| `guardian_canonicalization_reconcile_run_duration_seconds` | histogram | — |
+| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |
 | `guardian_canonicalization_pass_accounts` | gauge | — |
@@ -479,8 +499,8 @@ behavior.
 | `guardian_operator_auth_challenges_total` | counter | `outcome` |
 | `guardian_operator_auth_verifications_total` | counter | `outcome` |
 | `guardian_operator_sessions_started_total` | counter | — |
-| `guardian_rate_limit_rejections_total` | counter | `limit_type` (`burst`/`sustained`) |
-| `guardian_deltas` | gauge | `status` (`candidate`/`canonical`/`discarded`) |
+| `guardian_rate_limit_rejections_total` | counter | `limit_type` (`burst`/`sustained`), `transport` (`http`/`grpc`) |
+| `guardian_deltas` | gauge | `status` (`candidate`/`canonical`/`retained`/`discarded`) |
 | `guardian_proposals_in_flight` | gauge | — |
 | `guardian_accounts` | gauge | — |
 | `guardian_accounts_created_total` | counter | `kind` (`miden`/`evm`) |
@@ -489,8 +509,9 @@ behavior.
 | `process_*` (CPU, RSS, fds, start time) | standard | — |
 
 Durations use seconds with explicit buckets from 1ms to 10s, except
-`guardian_canonicalization_run_duration_seconds` and
-`guardian_canonicalization_fast_run_duration_seconds`, which use extended
+`guardian_canonicalization_run_duration_seconds`,
+`guardian_canonicalization_fast_run_duration_seconds` and
+`guardian_canonicalization_reconcile_run_duration_seconds`, which use extended
 buckets up to 5 minutes, and
 `guardian_canonicalization_candidate_age_seconds` which spans 1 second
 to 24 hours so stuck candidates stay visible. The

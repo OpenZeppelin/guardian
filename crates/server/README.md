@@ -26,7 +26,7 @@ let builder = ServerBuilder::new()
 
 #### Rate Limiting
 
-- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable HTTP rate limiting entirely (default: `true`)
+- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable rate limiting on both transports (default: `true`)
 - `GUARDIAN_RATE_BURST_PER_SEC` - Maximum requests per second (burst limit, default: `10`)
 - `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (sustained limit, default: `60`)
 
@@ -73,6 +73,19 @@ GUARDIAN_NETWORK_TYPE=MidenLocal \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-public-keys.json \
 cargo run -p guardian-server --bin server
 ```
+
+`GUARDIAN_NETWORK_TYPE` pins network identity and the default node endpoint.
+To point at a node on another host or port without changing identity, set
+`GUARDIAN_MIDEN_RPC_ENDPOINT`; `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` and
+`GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` tune the per-request deadline and the
+opt-in read retry budget for eligible non-canonicalization reads
+(submissions are never retried, and canonicalization makes one attempt per
+node read — later passes provide recovery). Embedders using the
+Rust builder can inject the same settings programmatically via
+`ServerBuilder::with_rpc(RpcSettings::from_env(network)?)` (or a directly
+constructed `RpcSettings::Miden(...)`) — the enum leaves room for future
+networks without reshaping the builder surface. See
+[docs/CONFIGURATION.md](../../docs/CONFIGURATION.md).
 
 Deployed example:
 
@@ -231,7 +244,7 @@ The HTTP API includes built-in rate limiting to protect against abuse. Rate limi
 - **Enhanced keying**: When `x-pubkey` header or `account_id` query parameter is present, limits are applied per IP+account/signer combination
 - **Two windows**: Burst (per second) and sustained (per minute) limits are enforced independently
 - **Ingress assumption**: GUARDIAN prefers `X-Forwarded-For`, then `X-Real-IP`, then the socket peer IP. Deployments should restrict direct access so only the ingress proxy/load balancer can reach the server
-- **Disable switch**: `GUARDIAN_RATE_LIMIT_ENABLED=false` bypasses HTTP rate limiting entirely
+- **Disable switch**: `GUARDIAN_RATE_LIMIT_ENABLED=false` bypasses rate limiting on both transports
 
 If `GUARDIAN_RATE_LIMIT_ENABLED=false`, the HTTP server skips rate limiting regardless of the other rate-limit settings.
 

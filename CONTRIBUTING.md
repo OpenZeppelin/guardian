@@ -162,6 +162,7 @@ If your change is user- or operator-visible, update the matching doc:
 | Published Docker image / publish workflow | [`docs/SERVER_AWS_DEPLOY.md`](./docs/SERVER_AWS_DEPLOY.md) ("Published Docker images"); image at `ghcr.io/openzeppelin/guardian` |
 | Wire contract changes | [`spec/api.md`](./spec/api.md), [`spec/processes.md`](./spec/processes.md) |
 | New SDK feature | [`docs/MULTISIG_SDK.md`](./docs/MULTISIG_SDK.md) where relevant |
+| New public API, builder option, or config field on a published crate or package | That crate's or package's own `README.md`, in the same PR. It is the crates.io / npm landing page, so `docs/` alone leaves it invisible to consumers. |
 
 Doc-only PRs are welcome and reviewed under the same process.
 

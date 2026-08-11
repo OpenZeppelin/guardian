@@ -29,6 +29,7 @@ fn delta_to_proposal_record(proposal: DeltaObject) -> crate::storage::ProposalRe
 pub struct MockNetworkClient {
     pub verify_commitment_responses: Arc<StdMutex<Vec<StdResult<StateVerification, String>>>>,
     pub verify_commitment_calls: Arc<StdMutex<Vec<(String, String)>>>,
+    pub verify_commitment_modes: Arc<StdMutex<Vec<crate::network::RpcReadMode>>>,
     pub get_state_commitment_responses: Arc<StdMutex<Vec<StdResult<String, String>>>>,
     pub get_state_commitment_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
@@ -112,6 +113,10 @@ impl MockNetworkClient {
         self.verify_commitment_calls.lock().unwrap().clone()
     }
 
+    pub fn get_verify_commitment_modes(&self) -> Vec<crate::network::RpcReadMode> {
+        self.verify_commitment_modes.lock().unwrap().clone()
+    }
+
     pub fn get_state_commitment_calls(&self) -> Vec<(String, serde_json::Value)> {
         self.get_state_commitment_calls.lock().unwrap().clone()
     }
@@ -143,11 +148,13 @@ impl NetworkClient for MockNetworkClient {
         &self,
         account_id: &str,
         expected_commitment: &str,
+        read_mode: crate::network::RpcReadMode,
     ) -> StdResult<StateVerification, String> {
         self.verify_commitment_calls
             .lock()
             .unwrap()
             .push((account_id.to_string(), expected_commitment.to_string()));
+        self.verify_commitment_modes.lock().unwrap().push(read_mode);
 
         self.verify_commitment_responses
             .lock()
@@ -281,6 +288,9 @@ pub struct MockStorageBackend {
             )>,
         >,
     >,
+    pub pull_recoverable_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
+    pub list_accounts_with_recoverable_deltas_responses:
+        Arc<StdMutex<Vec<StdResult<Vec<String>, String>>>>,
     pub submit_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
     pub pull_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
@@ -309,6 +319,7 @@ pub struct MockStorageBackend {
     pub promote_candidate_fences: Arc<StdMutex<Vec<Option<crate::storage::LeaseFence>>>>,
     pub discard_candidate_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
+    pub discard_candidate_calls: Arc<StdMutex<Vec<(String, u64, crate::storage::DeltaStatusKind)>>>,
     pub update_candidate_status_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
@@ -395,6 +406,28 @@ impl MockStorageBackend {
         self
     }
 
+    pub fn with_pull_recoverable_deltas(
+        self,
+        response: StdResult<Vec<DeltaObject>, String>,
+    ) -> Self {
+        self.pull_recoverable_deltas_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_list_accounts_with_recoverable_deltas(
+        self,
+        response: StdResult<Vec<String>, String>,
+    ) -> Self {
+        self.list_accounts_with_recoverable_deltas_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
     pub fn get_pull_recent_candidate_deltas_calls(
         &self,
     ) -> Vec<(
@@ -406,6 +439,12 @@ impl MockStorageBackend {
             .lock()
             .unwrap()
             .clone()
+    }
+
+    pub fn get_discard_candidate_calls(
+        &self,
+    ) -> Vec<(String, u64, crate::storage::DeltaStatusKind)> {
+        self.discard_candidate_calls.lock().unwrap().clone()
     }
 
     pub fn get_submit_state_calls(&self) -> Vec<StateObject> {
@@ -717,6 +756,31 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or_else(|| Ok(Vec::new()))
     }
 
+    // An explicit response wins; otherwise no retained rows, so tests
+    // that never touch issue #345 recovery see no behavior change.
+    async fn pull_recoverable_deltas(
+        &self,
+        _account_id: &str,
+        _abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> StdResult<Vec<DeltaObject>, String> {
+        self.pull_recoverable_deltas_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        _abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> StdResult<Vec<String>, String> {
+        self.list_accounts_with_recoverable_deltas_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(vec![]))
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -869,13 +933,19 @@ impl StorageBackend for MockStorageBackend {
         metadata: &dyn crate::metadata::MetadataStore,
         account_id: &str,
         nonce: u64,
+        kind: crate::storage::DeltaStatusKind,
         now: &str,
         _fence: Option<&crate::storage::LeaseFence>,
     ) -> Result<crate::storage::CanonicalWrite, String> {
+        self.discard_candidate_calls
+            .lock()
+            .unwrap()
+            .push((account_id.to_string(), nonce, kind));
         if let Some(response) = self.discard_candidate_responses.lock().unwrap().pop() {
             return response;
         }
-        crate::storage::discard_candidate_sequential(self, metadata, account_id, nonce, now).await
+        crate::storage::discard_candidate_sequential(self, metadata, account_id, nonce, kind, now)
+            .await
     }
 
     async fn update_candidate_status(

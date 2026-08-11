@@ -4,7 +4,9 @@ mod menu;
 mod state;
 
 use miden_client::rpc::Endpoint;
-use miden_multisig_client::SignatureScheme;
+use miden_multisig_client::{
+    ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
+};
 use rustyline::DefaultEditor;
 
 use actions::{
@@ -66,6 +68,31 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
         }
     };
 
+    println!("\n  Select transaction prover:");
+    println!("    [1] Network default");
+    println!("    [2] Custom remote prover");
+    println!();
+
+    let prover_choice = prompt_input(editor, "Prover [1]: ")?;
+    let mut prover_config = ProverConfig::new();
+    if prover_choice.trim() == "2" {
+        let prover_url = prompt_input(editor, "Enter prover URL: ")?;
+        prover_config = prover_config
+            .with_url(prover_url)
+            .map_err(|error| error.to_string())?;
+    }
+    let attempts = prompt_input(editor, "Proof attempts [2]: ")?;
+    if !attempts.trim().is_empty() {
+        let max_attempts = attempts
+            .trim()
+            .parse::<u32>()
+            .map_err(|error| format!("Invalid proof attempt budget: {error}"))?;
+        prover_config = prover_config.with_retry_policy(ProverRetryPolicy::new(max_attempts));
+    }
+
+    let rpc_config = rpc_config_from_env()?;
+    let note_transport_url = note_transport_url_from_env()?;
+
     println!("\n  GUARDIAN Server: {}", guardian_endpoint);
     println!(
         "  Miden Node: {}://{}{}",
@@ -104,7 +131,14 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
 
     let mut state = SessionState::new()?;
     state
-        .initialize_client(miden_endpoint, &guardian_endpoint, signature_scheme)
+        .initialize_client(
+            miden_endpoint,
+            note_transport_url,
+            &guardian_endpoint,
+            signature_scheme,
+            prover_config,
+            rpc_config,
+        )
         .await?;
 
     let commitment_hex = state.user_commitment_hex()?;
@@ -165,6 +199,47 @@ async fn handle_action(
             std::process::exit(0);
         }
     }
+}
+
+/// Reads an optional environment variable, trimming whitespace and rejecting
+/// non-Unicode or blank values with the variable name in the error.
+fn optional_env(name: &str) -> Result<Option<String>, String> {
+    match std::env::var(name) {
+        Ok(value) if value.trim().is_empty() => Err(format!("{name} must not be empty")),
+        Ok(value) => Ok(Some(value.trim().to_string())),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} contains non-Unicode data")),
+    }
+}
+
+/// Reads the optional node RPC policy from `MIDEN_RPC_MAX_ATTEMPTS` and
+/// `MIDEN_RPC_TIMEOUT_MS`; unset variables keep the SDK defaults.
+fn rpc_config_from_env() -> Result<RpcConfig, String> {
+    let mut rpc_config = RpcConfig::new();
+    if let Some(value) = optional_env("MIDEN_RPC_MAX_ATTEMPTS")? {
+        let max_attempts = value
+            .parse::<u32>()
+            .map_err(|error| format!("Invalid MIDEN_RPC_MAX_ATTEMPTS: {error}"))?;
+        if max_attempts == 0 {
+            return Err("MIDEN_RPC_MAX_ATTEMPTS must be a positive integer, got 0".to_string());
+        }
+        rpc_config = rpc_config.with_retry_policy(RpcRetryPolicy::new(max_attempts));
+    }
+    if let Some(value) = optional_env("MIDEN_RPC_TIMEOUT_MS")? {
+        let timeout_ms = value
+            .parse::<u64>()
+            .map_err(|error| format!("Invalid MIDEN_RPC_TIMEOUT_MS: {error}"))?;
+        rpc_config = rpc_config
+            .with_timeout_ms(timeout_ms)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(rpc_config)
+}
+
+/// Reads the optional note transport endpoint override from
+/// `MIDEN_NOTE_TRANSPORT_URL`; unset keeps the SDK's preset mapping.
+fn note_transport_url_from_env() -> Result<Option<String>, String> {
+    optional_env("MIDEN_NOTE_TRANSPORT_URL")
 }
 
 #[tokio::main]

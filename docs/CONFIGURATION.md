@@ -102,7 +102,16 @@ DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian
 |---|---|---|
 | `GUARDIAN_ENV` | _unset_ | Selects the **default** ACK secret source: `prod` → AWS Secrets Manager; anything else (or unset) → ephemeral filesystem keys, regenerated each restart. Override explicitly with `GUARDIAN_ACK_SECRET_PROVIDER` (below) — e.g. `file` for a stable identity without AWS. |
 | `AWS_REGION` | _unset_ | **Required** when `GUARDIAN_ENV=prod`. Region for Secrets Manager calls. |
-| `GUARDIAN_NETWORK_TYPE` | _none — **required**_ | Miden network identifier: `MidenLocal` (`local`), `MidenTestnet` (`testnet`), `MidenDevnet` (`devnet`); case-insensitive. Pins which Miden RPC and on-chain consensus the server speaks to. The server refuses to start when it is unset or unrecognized — there is no fallback network. |
+| `GUARDIAN_NETWORK_TYPE` | _none — **required**_ | Miden network identifier: `MidenLocal` (`local`), `MidenTestnet` (`testnet`), `MidenDevnet` (`devnet`); case-insensitive. Pins the network *identity* (bech32 address prefixes, dashboard rendering) and the default Miden RPC endpoint. The server refuses to start when it is unset or unrecognized — there is no fallback network. |
+| `GUARDIAN_MIDEN_RPC_ENDPOINT` | per-network default | Overrides the Miden node RPC endpoint (self-hosted node, private RPC, sidecar container) without changing network identity. Must be an origin-only `http(s)` URL (`scheme://host[:port]`); userinfo, non-root paths, queries, and fragments are rejected because tonic does not send them as authentication. An invalid value fails startup. Startup logs the validated origin. Combining an override with `MidenTestnet`/`MidenDevnet` logs a warning (legitimate for a mirror). A configured endpoint never falls back to the network default. |
+| `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` | `10000` | Per-request deadline on the node channel (the same 10s default every Miden RPC surface uses). Positive integer; `0` or a malformed value fails startup. |
+| `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` | `1` (retries off) | Attempt budget for eligible idempotent node reads **outside canonicalization**. Canonicalization performs exactly one node read per observation regardless of this value — transient failures there are recovered by the next scheduled pass, so raising this budget never makes a canonicalization pass hold its lease longer. Transaction submission is never retried regardless of this value. Endpoint failover is not currently implemented. Retry activity is visible as `guardian_miden_rpc_retries_total` (never incremented by canonicalization reads). |
+
+> **Upgrade note:** this release reduces the default Miden RPC deadline from 30
+> seconds to 10 seconds for existing deployments. The deadline is applied at
+> the channel level, so it caps submissions as well as reads even though
+> submissions remain single-attempt. Set `GUARDIAN_MIDEN_RPC_TIMEOUT_MS=30000`
+> to retain the previous deadline.
 
 ACK secret IDs are configurable. The server reads two env vars at startup
 and falls back to fixed defaults when they're unset
@@ -135,7 +144,7 @@ Application-layer encryption of the sensitive stored payloads (account state,
 delta and proposal payloads). It is **opt-in by key-source presence** — configure
 a key and the server encrypts; configure none and it stores plaintext exactly as
 before. Routing/index fields (account id, nonce, commitments, status, timestamps)
-always stay plaintext. See the [storage-encryption quickstart](../speckit/features/001-storage-encryption/quickstart.md).
+always stay plaintext.
 
 **Which variable do I set?** Choose **one key source** — the dev key for local
 work, or the Secrets Manager secret for production. You never set both (doing so
@@ -209,10 +218,10 @@ multi-stack deployments get scoped IDs.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GUARDIAN_RATE_LIMIT_ENABLED` | `true` | Master kill-switch for HTTP rate limiting. Set `false` only in test environments. |
-| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (code default); `200` set by the prod Terraform profile | Token-bucket burst. |
-| `GUARDIAN_RATE_PER_MIN` | `60` (code default); `5000` set by the prod Terraform profile | Sustained rate. |
-| `GUARDIAN_MAX_REPLICAS` | `1` (code default); greater of desired count and autoscaling max when enabled, or desired count otherwise, set by Terraform | Per-replica rate-limit divisor used by global HTTP and dashboard per-commitment limits. Each replica enforces `global / GUARDIAN_MAX_REPLICAS`, keeping the aggregate at or below the configured limit through steady-state autoscaling. During a rolling deployment the temporary aggregate may rise by up to `deployment_maximum_percent / 100` (2× by default). Drives rate-limiting only — coordination mode is backend-derived. Running below the steady-state maximum over-throttles; HTTP keep-alive can pin a client to one replica. An override is clamped up to steady-state capacity by Terraform. Must be a positive integer when set: an invalid value **fails startup in prod** and is treated as `1` with a warning elsewhere. See [`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md). |
+| `GUARDIAN_RATE_LIMIT_ENABLED` | `true` | Master kill-switch for rate limiting on **both** transports (HTTP and gRPC; there is no per-transport toggle). Set `false` only in test environments. Client identity for keying comes from the ingress (rightmost `X-Forwarded-For` entry, then `X-Real-IP`, then the socket peer); deployments not behind the reference ALB must forward the client address on both listeners, strip any client-supplied `X-Forwarded-For` if they identify callers with `X-Real-IP`, and restrict direct access to the server ports; see [PRODUCTION.md](./PRODUCTION.md#running-behind-your-own-ingress-non-aws). |
+| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (code default); `200` set by the prod Terraform profile | Requests allowed in any one-second window, keyed per IP **and** endpoint, where the endpoint is the HTTP path or the gRPC method. Both transports are metered from one store, but because their endpoint names differ, a burst bucket is never shared across transports. |
+| `GUARDIAN_RATE_PER_MIN` | `60` (code default); `5000` set by the prod Terraform profile | Sustained rate, keyed per IP only, so HTTP and gRPC calls from one client draw on the same allowance. This is the cross-transport limit: deployments sized for HTTP-only traffic should re-check it, since gRPC traffic (the Rust SDK's default transport) counts against it since the transport-bypass fix. |
+| `GUARDIAN_MAX_REPLICAS` | `1` (code default); greater of desired count and autoscaling max when enabled, or desired count otherwise, set by Terraform | Per-replica rate-limit divisor used by global HTTP+gRPC and dashboard per-commitment limits. Each replica enforces `global / GUARDIAN_MAX_REPLICAS`, keeping the aggregate at or below the configured limit through steady-state autoscaling. During a rolling deployment the temporary aggregate may rise by up to `deployment_maximum_percent / 100` (2× by default). Drives rate-limiting only — coordination mode is backend-derived. Running below the steady-state maximum over-throttles; HTTP keep-alive can pin a client to one replica. An override is clamped up to steady-state capacity by Terraform. Must be a positive integer when set: an invalid value **fails startup in prod** and is treated as `1` with a warning elsewhere. See [`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md). |
 | `GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC` | `6` | Fleet-wide dashboard challenge and verification burst budget for one operator commitment. Divided by `GUARDIAN_MAX_REPLICAS` and clamped to at least 1 per replica. A custom value below the divisor can therefore exceed its nominal fleet-wide budget. |
 | `GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN` | `30` | Fleet-wide dashboard challenge and verification sustained budget for one operator commitment. Divided by `GUARDIAN_MAX_REPLICAS` and clamped to at least 1 per replica. A custom value below the divisor can therefore exceed its nominal fleet-wide budget. |
 | `GUARDIAN_MAX_REQUEST_BYTES` | `1048576` (1 MB) | Reject request bodies larger than this. |

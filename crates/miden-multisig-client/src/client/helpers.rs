@@ -8,7 +8,7 @@ use guardian_shared::SignatureScheme;
 use guardian_shared::ToJson;
 use miden_client::account::Account;
 use miden_client::rpc::domain::account::GetAccountRequest;
-use miden_client::rpc::{GrpcClient, GrpcError, NodeRpcClient, RpcError};
+use miden_client::rpc::{GrpcError, RpcError};
 use miden_client::transaction::{TransactionRequest, TransactionSummary};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -56,7 +56,7 @@ impl MultisigClient {
         &self,
         account_id: AccountId,
     ) -> Result<Word> {
-        let rpc_client = GrpcClient::new(&self.miden_endpoint, 10_000);
+        let rpc_client = self.node_rpc_client();
         let (_, proof) = rpc_client
             .get_account(account_id, GetAccountRequest::new())
             .await
@@ -67,10 +67,10 @@ impl MultisigClient {
                 } => {
                     MultisigError::MidenClient(format!("account {} not found on chain", account_id))
                 }
-                other => MultisigError::MidenClient(format!(
-                    "failed to fetch on-chain commitment for account {}: {}",
-                    account_id, other
-                )),
+                other => MultisigError::miden_rpc_with_context(
+                    format!("failed to fetch on-chain commitment for account {account_id}"),
+                    other,
+                ),
             })?;
 
         Ok(proof.account_witness().state_commitment())
@@ -80,7 +80,7 @@ impl MultisigClient {
         &self,
         account_id: AccountId,
     ) -> Result<Option<Word>> {
-        let rpc_client = GrpcClient::new(&self.miden_endpoint, 10_000);
+        let rpc_client = self.node_rpc_client();
         match rpc_client
             .get_account(account_id, GetAccountRequest::new())
             .await
@@ -97,10 +97,10 @@ impl MultisigClient {
                 error_kind: GrpcError::NotFound,
                 ..
             }) => Ok(None),
-            Err(e) => Err(MultisigError::MidenClient(format!(
-                "failed to fetch on-chain commitment for account {}: {}",
-                account_id, e
-            ))),
+            Err(e) => Err(MultisigError::miden_rpc_with_context(
+                format!("failed to fetch on-chain commitment for account {account_id}"),
+                e,
+            )),
         }
     }
 
@@ -331,10 +331,10 @@ impl MultisigClient {
                 .get_account(account_id)
                 .await
                 .map_err(|e| {
-                    MultisigError::MidenClient(format!(
-                        "failed to get account before execution: {}",
-                        e
-                    ))
+                    MultisigError::miden_client_with_context(
+                        "failed to get account before execution",
+                        e,
+                    )
                 })?
                 .ok_or_else(|| {
                     MultisigError::MissingConfig("account not found before execution".to_string())
@@ -345,10 +345,10 @@ impl MultisigClient {
                 .execute_transaction(account_id, tx_request)
                 .await
                 .map_err(|e| {
-                    MultisigError::TransactionExecution(format!(
-                        "transaction execution failed: {:?}",
-                        e
-                    ))
+                    MultisigError::transaction_execution_with_context(
+                        "transaction execution failed",
+                        e,
+                    )
                 })?;
 
             let proven = self
@@ -356,20 +356,20 @@ impl MultisigClient {
                 .prove_transaction(&tx_result)
                 .await
                 .map_err(|e| {
-                    MultisigError::TransactionExecution(format!(
-                        "transaction proving failed: {:?}",
-                        e
-                    ))
+                    MultisigError::transaction_execution_with_context(
+                        "transaction proving failed",
+                        e,
+                    )
                 })?;
 
             self.miden_client
                 .submit_proven_transaction(proven, &tx_result)
                 .await
                 .map_err(|e| {
-                    MultisigError::TransactionExecution(format!(
-                        "transaction submission failed: {:?}",
-                        e
-                    ))
+                    MultisigError::transaction_execution_with_context(
+                        "transaction submission failed",
+                        e,
+                    )
                 })?;
 
             let account_delta = tx_result.account_delta();
@@ -401,10 +401,10 @@ impl MultisigClient {
                 .submit_new_transaction(account_id, tx_request)
                 .await
                 .map_err(|e| {
-                    MultisigError::TransactionExecution(format!(
-                        "transaction execution failed: {:?}",
-                        e
-                    ))
+                    MultisigError::transaction_execution_with_context(
+                        "transaction execution failed",
+                        e,
+                    )
                 })?;
 
             let _ = self.miden_client.sync_state().await;
@@ -443,7 +443,14 @@ impl MultisigClient {
 
     /// Resets the miden-client by creating a new instance with a fresh database.
     pub async fn reset_miden_client(&mut self) -> Result<()> {
-        self.miden_client = create_miden_client(&self.account_dir, &self.miden_endpoint).await?;
+        self.miden_client = create_miden_client(
+            &self.account_dir,
+            &self.miden_endpoint,
+            self.note_transport_endpoint.as_deref(),
+            &self.prover_config,
+            &self.rpc_config,
+        )
+        .await?;
         Ok(())
     }
 

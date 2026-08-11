@@ -71,6 +71,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &self,
         account_id: &str,
         expected_commitment: &str,
+        _read_mode: crate::network::RpcReadMode,
     ) -> Result<StateVerification, String> {
         let mut commitments = self.initial_commitments.lock().expect("commitments lock");
         if let Some(on_chain_commitment) = commitments.get(account_id) {
