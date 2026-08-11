@@ -6,6 +6,7 @@
 //!
 
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 
 use guardian_shared::FromJson;
 use guardian_shared::SignatureScheme;
@@ -93,13 +94,13 @@ pub struct ExportedMetadata {
 
     /// P2IDE reclaim block height (issue #366). Presence of either height
     /// means the proposal creates a P2IDE note; absent => plain P2ID
-    /// (pre-#366 exports).
+    /// (pre-#366 exports). `NonZeroU32`: a `0` fails deserialization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reclaim_height: Option<u32>,
+    pub reclaim_height: Option<NonZeroU32>,
 
     /// P2IDE timelock block height (issue #366).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timelock_height: Option<u32>,
+    pub timelock_height: Option<NonZeroU32>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids_hex: Vec<String>,

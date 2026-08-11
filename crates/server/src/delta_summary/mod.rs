@@ -11,6 +11,8 @@
 //! pushes. Dashboard listings are pure column reads and spread the
 //! fields to L1 (no nested `metadata` envelope on the wire).
 
+use std::num::NonZeroU32;
+
 use serde::{Deserialize, Serialize};
 
 pub mod build;
@@ -146,18 +148,21 @@ pub struct ProposalMetadata {
 
     /// P2IDE reclaim block height (issue #366). Presence of either height
     /// means the proposal creates a P2IDE note; absent => plain P2ID.
-    /// Valid heights are 1..=u32::MAX; 0 encodes "no constraint" on-chain
-    /// and is rejected by every client parser.
+    /// Valid heights are 1..=u32::MAX; 0 encodes "no constraint" on-chain,
+    /// so `NonZeroU32` rejects it at the serde boundary. `value_type = u64`
+    /// emits an int64-capable OpenAPI schema: `format: int32` implies a
+    /// signed range that cannot hold heights above 2^31-1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(minimum = 1, maximum = 4294967295_u32)]
-    pub reclaim_height: Option<u32>,
+    #[schema(value_type = Option<u64>, minimum = 1, maximum = 4294967295_u64)]
+    pub reclaim_height: Option<NonZeroU32>,
 
     /// P2IDE timelock block height (issue #366).
-    /// Valid heights are 1..=u32::MAX; 0 encodes "no constraint" on-chain
-    /// and is rejected by every client parser.
+    /// Valid heights are 1..=u32::MAX; 0 encodes "no constraint" on-chain,
+    /// so `NonZeroU32` rejects it at the serde boundary. `value_type = u64`
+    /// emits an int64-capable OpenAPI schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(minimum = 1, maximum = 4294967295_u32)]
-    pub timelock_height: Option<u32>,
+    #[schema(value_type = Option<u64>, minimum = 1, maximum = 4294967295_u64)]
+    pub timelock_height: Option<NonZeroU32>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids: Vec<String>,

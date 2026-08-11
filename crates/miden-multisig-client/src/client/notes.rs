@@ -256,8 +256,7 @@ impl MultisigClient {
             faucet_id,
             amount,
             note_type,
-            reclaim_height,
-            timelock_height,
+            heights,
         } = &proposal.transaction_type
         else {
             return Err(MultisigError::UnsupportedTransactionType(
@@ -274,11 +273,12 @@ impl MultisigClient {
         let asset = crate::execution::build_transfer_asset(account.inner(), *faucet_id, *amount)?;
 
         let mut rng = RandomCoin::new(salt);
-        let note = if reclaim_height.is_some() || timelock_height.is_some() {
+        let is_p2ide = heights.is_p2ide();
+        let note = if is_p2ide {
             let storage = P2ideNoteStorage::new(
                 *recipient,
-                reclaim_height.map(BlockNumber::from),
-                timelock_height.map(BlockNumber::from),
+                heights.reclaim.map(|h| BlockNumber::from(h.get())),
+                heights.timelock.map(|h| BlockNumber::from(h.get())),
             );
             P2ideNote::create(
                 account.id(),

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use miden_client::rpc::Endpoint;
-use miden_multisig_client::{ExportedProposal, MultisigClient, ProverConfig, SignatureScheme};
+use miden_multisig_client::{
+    ExportedProposal, MultisigClient, P2ideHeights, ProverConfig, SignatureScheme,
+};
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use miden_protocol::note::NoteType;
@@ -17,9 +19,8 @@ pub struct CustomProposalRecipe {
     pub faucet_id: AccountId,
     pub amount: u64,
     pub note_type: NoteType,
-    /// P2IDE heights (issue #366); both `None` => plain P2ID note.
-    pub reclaim_height: Option<u32>,
-    pub timelock_height: Option<u32>,
+    /// P2IDE heights (issue #366); the default => plain P2ID note.
+    pub heights: P2ideHeights,
     pub salt: Word,
 }
 

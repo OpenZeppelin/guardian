@@ -71,10 +71,17 @@ let tx = TransactionType::transfer_with_note_type(recipient, faucet, 1_000, Note
 
 // For a reclaimable and/or timelocked send use `transfer_p2ide` (issue #366):
 // presence of either height creates a P2IDE note instead of a plain P2ID note.
+// `P2ideHeights` uses `NonZeroU32` — the invalid zero height ("no constraint"
+// on-chain) is unrepresentable.
+use std::num::NonZeroU32;
+use miden_multisig_client::P2ideHeights;
+
 let tx = TransactionType::transfer_p2ide(
     recipient, faucet, 1_000, NoteType::Public,
-    Some(500_000), // reclaim_height: sender may reclaim from this block on
-    None,          // timelock_height: no consume-not-before constraint
+    P2ideHeights {
+        reclaim: NonZeroU32::new(500_000), // sender may reclaim from this block on
+        timelock: None,                    // no consume-not-before constraint
+    },
 );
 
 // Proposer creates the delta on GUARDIAN

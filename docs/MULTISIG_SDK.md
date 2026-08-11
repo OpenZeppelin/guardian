@@ -753,11 +753,14 @@ let tx = TransactionType::transfer_with_note_type(
 
 // P2IDE Transfer (issue #366): optional reclaim and/or timelock block
 // heights. Presence of either height creates a P2IDE note instead of a
-// plain P2ID note.
+// plain P2ID note. `P2ideHeights` uses `NonZeroU32`, so the invalid zero
+// height is unrepresentable.
+use std::num::NonZeroU32;
+use miden_multisig_client::P2ideHeights;
+
 let tx = TransactionType::transfer_p2ide(
     recipient_id, faucet_id, 1000, NoteType::Public,
-    Some(500_000), // reclaim_height
-    None,          // timelock_height
+    P2ideHeights { reclaim: NonZeroU32::new(500_000), timelock: None },
 );
 
 // Consume Notes
@@ -953,7 +956,7 @@ full note, so a post-commit sync is enough.
 
 | Variant | Description |
 |---------|-------------|
-| `P2ID { recipient, faucet_id, amount, note_type, reclaim_height, timelock_height }` | Transfer funds (`note_type` selects note visibility; presence of either height creates a P2IDE note — use `transfer_p2ide()`; `transfer()` defaults to a public plain-P2ID note) |
+| `P2ID { recipient, faucet_id, amount, note_type, heights }` | Transfer funds (`note_type` selects note visibility; `heights: P2ideHeights` with either constraint set creates a P2IDE note — use `transfer_p2ide()`; `transfer()` defaults to a public plain-P2ID note) |
 | `ConsumeNotes { note_ids }` | Consume notes |
 | `AddCosigner { new_commitment }` | Add signer |
 | `RemoveCosigner { commitment }` | Remove signer |

@@ -1,5 +1,7 @@
 //! Payload types for multisig transaction proposals.
 
+use std::num::NonZeroU32;
+
 use guardian_shared::{DeltaSignature, ProposalSignature, ToJson};
 use miden_protocol::note::NoteType;
 use miden_protocol::transaction::TransactionSummary;
@@ -7,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::keystore::{KeyManager, proposal_public_key_hex};
 use crate::procedures::ProcedureName;
+use crate::proposal::P2ideHeights;
 
 /// Metadata for multisig transaction proposals.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -42,13 +45,16 @@ pub struct ProposalMetadataPayload {
 
     /// P2IDE reclaim block height (issue #366). Presence of either height
     /// means the proposal creates a P2IDE note; omitted when unset so
-    /// plain-P2ID payloads keep the pre-#366 wire shape.
+    /// plain-P2ID payloads keep the pre-#366 wire shape. `NonZeroU32`
+    /// enforces the documented 1..=u32::MAX range at the serde boundary:
+    /// a wire `0` ("no constraint" on-chain) fails deserialization instead
+    /// of silently rebuilding an unconstrained note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reclaim_height: Option<u32>,
+    pub reclaim_height: Option<NonZeroU32>,
 
     /// P2IDE timelock block height (issue #366).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timelock_height: Option<u32>,
+    pub timelock_height: Option<NonZeroU32>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_signatures: Option<u64>,
@@ -166,10 +172,6 @@ impl ProposalPayload {
     /// the wire only when it is private, so public payloads keep the legacy
     /// shape (issue #322). The P2IDE heights are written only when set, so
     /// plain-P2ID payloads keep the pre-#366 wire shape (issue #366).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "payment metadata mirrors the wire fields one-to-one"
-    )]
     pub fn with_payment_metadata(
         mut self,
         recipient_id: String,
@@ -177,8 +179,7 @@ impl ProposalPayload {
         amount: u64,
         salt: String,
         note_type: NoteType,
-        reclaim_height: Option<u32>,
-        timelock_height: Option<u32>,
+        heights: P2ideHeights,
     ) -> Self {
         self.metadata = Some(ProposalMetadataPayload {
             proposal_type: "p2id".to_string(),
@@ -186,8 +187,8 @@ impl ProposalPayload {
             faucet_id: Some(faucet_id),
             amount: Some(amount.to_string()),
             note_type: (note_type != NoteType::Public).then(|| note_type.to_string()),
-            reclaim_height,
-            timelock_height,
+            reclaim_height: heights.reclaim,
+            timelock_height: heights.timelock,
             salt: Some(salt),
             ..Default::default()
         });
@@ -368,8 +369,7 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Public,
-            None,
-            None,
+            P2ideHeights::default(),
         );
 
         let meta = payload.metadata.unwrap();
@@ -396,8 +396,7 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Public,
-            None,
-            None,
+            P2ideHeights::default(),
         );
 
         let json = serde_json::to_value(payload.metadata.unwrap()).unwrap();
@@ -417,8 +416,7 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Private,
-            None,
-            None,
+            P2ideHeights::default(),
         );
 
         let json = serde_json::to_string(&payload.metadata.unwrap()).unwrap();
@@ -441,8 +439,7 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Public,
-            None,
-            None,
+            P2ideHeights::default(),
         );
 
         let json = serde_json::to_value(payload.metadata.unwrap()).unwrap();
@@ -463,14 +460,35 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Public,
-            Some(12345),
-            Some(700),
+            P2ideHeights {
+                reclaim: NonZeroU32::new(12345),
+                timelock: NonZeroU32::new(700),
+            },
         );
 
         let json = serde_json::to_string(&payload.metadata.unwrap()).unwrap();
         let parsed: ProposalMetadataPayload = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.reclaim_height, Some(12345));
-        assert_eq!(parsed.timelock_height, Some(700));
+        assert_eq!(parsed.reclaim_height, NonZeroU32::new(12345));
+        assert_eq!(parsed.timelock_height, NonZeroU32::new(700));
+    }
+
+    /// A wire `0` height must fail at the serde boundary (issue #366):
+    /// `0` encodes "no constraint" on-chain, so accepting it would
+    /// silently rebuild an unconstrained note. `NonZeroU32` makes the
+    /// value unrepresentable past this point.
+    #[test]
+    fn payment_metadata_rejects_zero_height_on_wire() {
+        let json = r#"{"proposal_type":"p2id","reclaim_height":0}"#;
+        let err = serde_json::from_str::<ProposalMetadataPayload>(json)
+            .expect_err("zero reclaim_height must fail deserialization");
+        assert!(
+            err.to_string().contains("nonzero"),
+            "unexpected error: {err}"
+        );
+
+        let json = r#"{"proposal_type":"p2id","timelock_height":0}"#;
+        serde_json::from_str::<ProposalMetadataPayload>(json)
+            .expect_err("zero timelock_height must fail deserialization");
     }
 
     #[test]

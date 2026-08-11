@@ -1,6 +1,7 @@
 //! Proposal types and utilities for multisig transactions.
 
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -64,6 +65,29 @@ impl SerializedNote {
     }
 }
 
+/// P2IDE execution constraints for a P2ID transfer (issue #366).
+///
+/// Presence of either height creates a P2IDE note instead of a plain P2ID
+/// note; both `None` (the [`Default`]) means plain P2ID. `NonZeroU32` makes
+/// the invalid zero height unrepresentable — `0` is the on-chain encoding
+/// for "no constraint", so a zero here could silently build an
+/// unconstrained note — and serde rejects a wire `0` at parse time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct P2ideHeights {
+    /// Absolute block height at which the sender may reclaim the note.
+    pub reclaim: Option<NonZeroU32>,
+    /// Absolute block height before which the note cannot be consumed.
+    pub timelock: Option<NonZeroU32>,
+}
+
+impl P2ideHeights {
+    /// Returns true when either constraint is set, i.e. the transfer
+    /// creates a P2IDE note instead of a plain P2ID note.
+    pub fn is_p2ide(&self) -> bool {
+        self.reclaim.is_some() || self.timelock.is_some()
+    }
+}
+
 /// Status of a proposal in the signing workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProposalStatus {
@@ -97,14 +121,10 @@ pub enum TransactionType {
         /// Visibility of the created note (issue #322). Absent in legacy
         /// proposal metadata, which maps to [`NoteType::Public`].
         note_type: NoteType,
-        /// Absolute block height at which the sender may reclaim the note
-        /// (issue #366). Presence of either height creates a P2IDE note
-        /// instead of a plain P2ID note; both `None` => plain P2ID, the
-        /// shape of pre-#366 proposals.
-        reclaim_height: Option<u32>,
-        /// Absolute block height before which the note cannot be consumed
-        /// (issue #366).
-        timelock_height: Option<u32>,
+        /// P2IDE reclaim/timelock constraints (issue #366). The default
+        /// (both `None`) is a plain P2ID note, the shape of pre-#366
+        /// proposals.
+        heights: P2ideHeights,
     },
     ConsumeNotes {
         note_ids: Vec<NoteId>,
@@ -159,29 +179,26 @@ impl TransactionType {
             faucet_id,
             amount,
             note_type,
-            reclaim_height: None,
-            timelock_height: None,
+            heights: P2ideHeights::default(),
         }
     }
 
     /// Creates a P2IDE transfer transaction: a P2ID note with optional
-    /// reclaim and/or timelock block heights (issue #366). Passing both
-    /// heights as `None` degenerates to a plain P2ID transfer.
+    /// reclaim and/or timelock block heights (issue #366). Passing
+    /// `P2ideHeights::default()` degenerates to a plain P2ID transfer.
     pub fn transfer_p2ide(
         recipient: AccountId,
         faucet_id: AccountId,
         amount: u64,
         note_type: NoteType,
-        reclaim_height: Option<u32>,
-        timelock_height: Option<u32>,
+        heights: P2ideHeights,
     ) -> Self {
         Self::P2ID {
             recipient,
             faucet_id,
             amount,
             note_type,
-            reclaim_height,
-            timelock_height,
+            heights,
         }
     }
 
@@ -313,9 +330,10 @@ pub struct ProposalMetadata {
 
     /// P2IDE reclaim block height (issue #366). Presence of either height
     /// means the proposal creates a P2IDE note; both `None` => plain P2ID.
-    pub reclaim_height: Option<u32>,
+    /// `NonZeroU32`: a wire `0` is rejected at deserialization.
+    pub reclaim_height: Option<NonZeroU32>,
     /// P2IDE timelock block height (issue #366).
-    pub timelock_height: Option<u32>,
+    pub timelock_height: Option<NonZeroU32>,
 
     pub note_ids_hex: Vec<String>,
 
@@ -387,20 +405,6 @@ impl ProposalMetadata {
         }
     }
 
-    /// Validates a P2IDE reclaim/timelock height (issue #366). Heights are
-    /// `u32` block numbers; `0` is rejected because it is the on-chain
-    /// encoding for "no constraint", so accepting it would silently build an
-    /// unconstrained note.
-    pub fn p2ide_height(field: &str, value: Option<u32>) -> Result<Option<u32>> {
-        match value {
-            Some(0) => Err(MultisigError::InvalidConfig(format!(
-                "unsupported metadata.{} '0': expected a positive block height",
-                field
-            ))),
-            other => Ok(other),
-        }
-    }
-
     /// Converts note ID hex strings to NoteIds.
     pub fn note_ids(&self) -> Result<Vec<NoteId>> {
         self.note_ids_hex
@@ -459,8 +463,10 @@ impl ProposalMetadata {
                     faucet_id,
                     amount: parsed_amount,
                     note_type: self.p2id_note_type()?,
-                    reclaim_height: Self::p2ide_height("reclaim_height", self.reclaim_height)?,
-                    timelock_height: Self::p2ide_height("timelock_height", self.timelock_height)?,
+                    heights: P2ideHeights {
+                        reclaim: self.reclaim_height,
+                        timelock: self.timelock_height,
+                    },
                 })
             }
             "switch_guardian" => {
@@ -922,8 +928,7 @@ mod tests {
                 faucet_id,
                 amount,
                 note_type: NoteType::Public,
-                reclaim_height: None,
-                timelock_height: None,
+                heights: P2ideHeights::default(),
             }
         );
     }
@@ -1419,8 +1424,10 @@ mod tests {
         assert!(matches!(
             tx_type,
             TransactionType::P2ID {
-                reclaim_height: None,
-                timelock_height: None,
+                heights: P2ideHeights {
+                    reclaim: None,
+                    timelock: None,
+                },
                 ..
             }
         ));
@@ -1429,39 +1436,18 @@ mod tests {
     #[test]
     fn to_transaction_type_p2id_threads_p2ide_heights() {
         let metadata = ProposalMetadata {
-            reclaim_height: Some(12345),
-            timelock_height: Some(700),
+            reclaim_height: NonZeroU32::new(12345),
+            timelock_height: NonZeroU32::new(700),
             ..p2id_metadata(None)
         };
         let tx_type = metadata
             .to_transaction_type("p2id")
             .expect("to_transaction_type");
-        assert!(matches!(
-            tx_type,
-            TransactionType::P2ID {
-                reclaim_height: Some(12345),
-                timelock_height: Some(700),
-                ..
-            }
-        ));
-    }
-
-    /// A zero height must be rejected: `0` encodes "no constraint"
-    /// on-chain, so accepting it would silently build an unconstrained
-    /// note (issue #366).
-    #[test]
-    fn to_transaction_type_p2id_rejects_zero_height() {
-        let metadata = ProposalMetadata {
-            reclaim_height: Some(0),
-            ..p2id_metadata(None)
+        let TransactionType::P2ID { heights, .. } = tx_type else {
+            panic!("expected a P2ID transaction");
         };
-        let err = metadata
-            .to_transaction_type("p2id")
-            .expect_err("zero reclaim_height must be rejected");
-        assert!(
-            err.to_string()
-                .contains("unsupported metadata.reclaim_height")
-        );
+        assert_eq!(heights.reclaim, NonZeroU32::new(12345));
+        assert_eq!(heights.timelock, NonZeroU32::new(700));
     }
 
     #[test]

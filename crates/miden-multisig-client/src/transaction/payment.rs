@@ -14,55 +14,34 @@ use miden_standards::account::interface::AccountInterface;
 use miden_standards::note::{P2idNote, P2ideNote, P2ideNoteStorage};
 
 use crate::error::{MultisigError, Result};
-
-/// Rejects a zero P2IDE height at creation time (issue #366). `0` is the
-/// on-chain encoding for "no constraint", so building from it would sign a
-/// note without the constraint while the wire metadata carries an explicit
-/// `0` — which every metadata parser rejects, poisoning the proposal.
-fn validate_p2ide_height(field: &str, value: Option<u32>) -> Result<Option<u32>> {
-    match value {
-        Some(0) => Err(MultisigError::InvalidConfig(format!(
-            "invalid {} '0': expected a positive block height",
-            field
-        ))),
-        other => Ok(other),
-    }
-}
+use crate::proposal::P2ideHeights;
 
 /// Builds a P2ID transaction request.
 ///
 /// Creates a pay-to-id note of the given `note_type` and builds a transaction
-/// request to send it. Presence of `reclaim_height` and/or `timelock_height`
-/// creates a P2IDE note instead of a plain P2ID note (issue #366); the note's
-/// serial number is drawn from the same salt-seeded rng either way, so
-/// cosigners rebuild the identical note.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "request building mirrors the proposal metadata fields one-to-one"
-)]
+/// request to send it. When `heights` carries a reclaim and/or timelock
+/// constraint, a P2IDE note is created instead of a plain P2ID note (issue
+/// #366); the note's serial number is drawn from the same salt-seeded rng
+/// either way, so cosigners rebuild the identical note.
 pub fn build_p2id_transaction_request<I>(
     sender_account: &Account,
     recipient: AccountId,
     assets: Vec<Asset>,
     note_type: NoteType,
-    reclaim_height: Option<u32>,
-    timelock_height: Option<u32>,
+    heights: P2ideHeights,
     salt: Word,
     signature_advice: I,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let reclaim_height = validate_p2ide_height("reclaim_height", reclaim_height)?;
-    let timelock_height = validate_p2ide_height("timelock_height", timelock_height)?;
-
     let mut rng = RandomCoin::new(salt);
 
-    let note = if reclaim_height.is_some() || timelock_height.is_some() {
+    let note = if heights.is_p2ide() {
         let storage = P2ideNoteStorage::new(
             recipient,
-            reclaim_height.map(BlockNumber::from),
-            timelock_height.map(BlockNumber::from),
+            heights.reclaim.map(|h| BlockNumber::from(h.get())),
+            heights.timelock.map(|h| BlockNumber::from(h.get())),
         );
         P2ideNote::create(
             sender_account.id(),
@@ -163,8 +142,7 @@ mod tests {
             recipient,
             vec![asset],
             NoteType::Public,
-            None,
-            None,
+            P2ideHeights::default(),
             Word::from([1u32, 2, 3, 4]),
             std::iter::empty::<(Word, Vec<Felt>)>(),
         )
@@ -220,8 +198,7 @@ mod tests {
                 recipient,
                 vec![asset],
                 note_type,
-                None,
-                None,
+                P2ideHeights::default(),
                 salt,
                 std::iter::empty::<(Word, Vec<Felt>)>(),
             )
@@ -279,13 +256,16 @@ mod tests {
             let asset: Asset = miden_protocol::asset::FungibleAsset::new(faucet.id(), 100)
                 .unwrap()
                 .into();
+            let heights = P2ideHeights {
+                reclaim: reclaim.and_then(std::num::NonZeroU32::new),
+                timelock: timelock.and_then(std::num::NonZeroU32::new),
+            };
             build_p2id_transaction_request(
                 &account,
                 recipient,
                 vec![asset],
                 NoteType::Public,
-                reclaim,
-                timelock,
+                heights,
                 salt,
                 std::iter::empty::<(Word, Vec<Felt>)>(),
             )
@@ -310,48 +290,5 @@ mod tests {
         // Deterministic in (salt, heights): a cosigner rebuilding from the
         // same metadata produces the identical output note.
         assert_eq!(recipient_digests(&build(Some(12345), None)), with_reclaim);
-    }
-
-    /// A zero height must be rejected at creation (issue #366): building from
-    /// it would sign an unconstrained note while pushing metadata with an
-    /// explicit `0` that every parser rejects — a poisoned proposal.
-    #[test]
-    fn build_p2id_transaction_request_rejects_zero_height() {
-        let secret_key = SecretKey::new();
-        let signer_commitment = secret_key.public_key().to_commitment();
-        let account = MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
-            1,
-            vec![signer_commitment],
-            Word::from([9u32, 8, 7, 6]),
-        ))
-        .build()
-        .unwrap();
-        let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
-
-        let err = build_p2id_transaction_request(
-            &account,
-            recipient,
-            vec![],
-            NoteType::Public,
-            Some(0),
-            None,
-            Word::from([1u32, 2, 3, 4]),
-            std::iter::empty::<(Word, Vec<Felt>)>(),
-        )
-        .expect_err("zero reclaim_height must be rejected");
-        assert!(err.to_string().contains("invalid reclaim_height '0'"));
-
-        let err = build_p2id_transaction_request(
-            &account,
-            recipient,
-            vec![],
-            NoteType::Public,
-            None,
-            Some(0),
-            Word::from([1u32, 2, 3, 4]),
-            std::iter::empty::<(Word, Vec<Felt>)>(),
-        )
-        .expect_err("zero timelock_height must be rejected");
-        assert!(err.to_string().contains("invalid timelock_height '0'"));
     }
 }

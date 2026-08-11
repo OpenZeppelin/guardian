@@ -5811,8 +5811,8 @@
               "integer",
               "null"
             ],
-            "format": "int32",
-            "description": "P2IDE reclaim block height (issue #366). Presence of either height\nmeans the proposal creates a P2IDE note; absent => plain P2ID.\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain\nand is rejected by every client parser.",
+            "format": "int64",
+            "description": "P2IDE reclaim block height (issue #366). Presence of either height\nmeans the proposal creates a P2IDE note; absent => plain P2ID.\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain,\nso `NonZeroU32` rejects it at the serde boundary. `value_type = u64`\nemits an int64-capable OpenAPI schema: `format: int32` implies a\nsigned range that cannot hold heights above 2^31-1.",
             "maximum": 4294967295,
             "minimum": 1
           },
@@ -5855,8 +5855,8 @@
               "integer",
               "null"
             ],
-            "format": "int32",
-            "description": "P2IDE timelock block height (issue #366).\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain\nand is rejected by every client parser.",
+            "format": "int64",
+            "description": "P2IDE timelock block height (issue #366).\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain,\nso `NonZeroU32` rejects it at the serde boundary. `value_type = u64`\nemits an int64-capable OpenAPI schema.",
             "maximum": 4294967295,
             "minimum": 1
           }
