@@ -1248,6 +1248,7 @@ cargo test --locked \
 # TypeScript
 cd packages/guardian-client && npm test
 cd packages/guardian-evm-client && npm test
+cd packages/guardian-operator-client && npm test
 cd packages/miden-multisig-client && npm test
 cd packages/guardian-operator-client && npm test
 ```
@@ -1257,6 +1258,7 @@ cd packages/guardian-operator-client && npm test
 ```bash
 cd packages/guardian-client && npm run build
 cd packages/guardian-evm-client && npm run build
+cd packages/guardian-operator-client && npm run build
 cd packages/miden-multisig-client && npm run build
 cd packages/guardian-operator-client && npm run build
 ```
@@ -1285,6 +1287,7 @@ Update the version in these files:
 | `crates/miden-multisig-client/Cargo.toml` | `guardian-client`, `guardian-shared`, `miden-confidential-contracts` dep versions | - |
 | `packages/guardian-client/package.json` | `version` | - |
 | `packages/guardian-evm-client/package.json` | `version` | - |
+| `packages/guardian-operator-client/package.json` | `version` | - |
 | `packages/miden-multisig-client/package.json` | `version` + `@openzeppelin/guardian-client` dep version | - |
 | `packages/guardian-operator-client/package.json` | `version` | - |
 
@@ -1341,12 +1344,14 @@ Publish in dependency order:
 # 1. Build TypeScript packages
 cd packages/guardian-client && npm run build
 cd packages/guardian-evm-client && npm run build
+cd packages/guardian-operator-client && npm run build
 cd packages/miden-multisig-client && npm run build
 cd packages/guardian-operator-client && npm run build
 
 # 2. Publish base clients first (no internal deps)
 cd packages/guardian-client && npm publish --access public
 cd packages/guardian-evm-client && npm publish --access public
+cd packages/guardian-operator-client && npm publish --access public
 
 # 3. Publish miden-multisig-client (depends on guardian-client)
 cd packages/miden-multisig-client && npm publish --access public
@@ -1354,6 +1359,12 @@ cd packages/miden-multisig-client && npm publish --access public
 # 4. Publish operator-client (no internal dependencies)
 cd packages/guardian-operator-client && npm publish --access public
 ```
+
+Publishing a GitHub release runs the `Publish NPM Packages` workflow for all
+four packages. A manual workflow run can select any subset of the four package
+inputs; at least one package must be selected. The `dry-run` input applies only
+to that selected subset. All selected packages run serially in one protected
+`release` environment job, so the workflow requires one approval.
 
 ### Post-Release
 
