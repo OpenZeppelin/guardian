@@ -211,10 +211,6 @@ aws_region = "us-east-1"
 # cloudflare_api_token = "..."
 ```
 
-For the one-time OpenZeppelin hostname change in issue #341, follow
-[`runbooks/guardian-domain-migration.md`](./runbooks/guardian-domain-migration.md).
-Normal deployments should leave `ALIAS_SUBDOMAIN` unset.
-
 ## Database TLS verification
 
 By default the server `DATABASE_URL` uses `sslmode=require` — the connection is
