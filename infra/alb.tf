@@ -31,8 +31,18 @@ resource "aws_lb" "main" {
     }
 
     precondition {
-      condition     = var.alias_acm_certificate_arn == "" || (local.alias_domain_enabled && local.acm_certificate_arn != "")
-      error_message = "alias_acm_certificate_arn requires an enabled alias_subdomain and acm_certificate_arn because the secondary certificate attaches through SNI."
+      condition     = var.cloudflare_zone_id == "" || trimspace(var.cloudflare_api_token) != ""
+      error_message = "cloudflare_api_token is required when cloudflare_zone_id is configured."
+    }
+
+    precondition {
+      condition     = !local.alias_domain_enabled || local.acm_certificate_arn != ""
+      error_message = "An enabled alias_subdomain requires acm_certificate_arn so the legacy hostname remains available over HTTPS."
+    }
+
+    precondition {
+      condition     = var.alias_acm_certificate_arn == "" || local.alias_domain_enabled
+      error_message = "alias_acm_certificate_arn requires an enabled alias_subdomain because the secondary certificate attaches through SNI."
     }
   }
 }

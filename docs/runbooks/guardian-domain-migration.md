@@ -100,19 +100,38 @@ record without first reconciling who owns it.
 If a primary address is present, back up the state:
 
 ```bash
-cp -p "$TF_STATE_PATH" "${TF_STATE_PATH}.before-domain-migration"
+chmod 600 "$TF_STATE_PATH"
+install -m 600 "$TF_STATE_PATH" "${TF_STATE_PATH}.before-domain-migration"
 ```
 
 Move only the record type shown by `state list`; move both only if the stack
-actually manages both providers:
+actually manages both providers. Each block fails before the move unless the
+tracked record is the expected legacy hostname:
 
 ```bash
 # Cloudflare-managed DNS
+EXPECTED_LEGACY_FQDN="${ALIAS_SUBDOMAIN}.${DOMAIN_NAME}"
+CURRENT_LEGACY_FQDN=$(terraform -chdir=infra state show -state="$TF_STATE_PATH" \
+  'cloudflare_dns_record.service[0]' |
+  sed -nE 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')
+test "$CURRENT_LEGACY_FQDN" = "$EXPECTED_LEGACY_FQDN" || {
+  echo "Refusing state move: expected ${EXPECTED_LEGACY_FQDN}, found ${CURRENT_LEGACY_FQDN:-<empty>}" >&2
+  exit 1
+}
 terraform -chdir=infra state mv -state="$TF_STATE_PATH" \
   'cloudflare_dns_record.service[0]' \
   'cloudflare_dns_record.service_secondary[0]'
 
-# Route 53-managed DNS
+# Route 53-managed DNS; the record's alias block holds a second name
+# attribute (the ALB DNS name), so read the top-level fqdn instead.
+EXPECTED_LEGACY_FQDN="${ALIAS_SUBDOMAIN}.${DOMAIN_NAME}"
+CURRENT_LEGACY_FQDN=$(terraform -chdir=infra state show -state="$TF_STATE_PATH" \
+  'aws_route53_record.service_alias[0]' |
+  sed -nE 's/^[[:space:]]*fqdn[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')
+test "$CURRENT_LEGACY_FQDN" = "$EXPECTED_LEGACY_FQDN" || {
+  echo "Refusing state move: expected ${EXPECTED_LEGACY_FQDN}, found ${CURRENT_LEGACY_FQDN:-<empty>}" >&2
+  exit 1
+}
 terraform -chdir=infra state mv -state="$TF_STATE_PATH" \
   'aws_route53_record.service_alias[0]' \
   'aws_route53_record.service_secondary[0]'
@@ -146,12 +165,12 @@ Verify HTTP, gRPC, and certificate hostname matching on both names. This example
 shows testnet; repeat it for `guardian-devnet` and `guardian-stg`:
 
 ```bash
-curl https://guardian-testnet.openzeppelin.com/pubkey
-curl https://guardian.openzeppelin.com/pubkey
+curl --fail-with-body https://guardian-testnet.openzeppelin.com/pubkey
+curl --fail-with-body https://guardian.openzeppelin.com/pubkey
 grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian-testnet.openzeppelin.com:443 guardian.Guardian/GetPubkey
 grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
-openssl s_client -connect guardian-testnet.openzeppelin.com:443 -servername guardian-testnet.openzeppelin.com -verify_hostname guardian-testnet.openzeppelin.com </dev/null
-openssl s_client -connect guardian.openzeppelin.com:443 -servername guardian.openzeppelin.com -verify_hostname guardian.openzeppelin.com </dev/null
+openssl s_client -connect guardian-testnet.openzeppelin.com:443 -servername guardian-testnet.openzeppelin.com -verify_hostname guardian-testnet.openzeppelin.com -verify_return_error </dev/null
+openssl s_client -connect guardian.openzeppelin.com:443 -servername guardian.openzeppelin.com -verify_hostname guardian.openzeppelin.com -verify_return_error </dev/null
 ```
 
 Keep SDK, smoke-test, benchmark, and operational defaults on the legacy names

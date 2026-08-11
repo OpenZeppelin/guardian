@@ -180,11 +180,15 @@ terraform output
 ALB_URL=$(terraform output -raw alb_url)
 CUSTOM_DOMAIN_URL=$(terraform output -raw custom_domain_url)
 GRPC_ENDPOINT=$(terraform output -raw grpc_endpoint)
+ALIAS_DOMAIN_URL=$(terraform output -raw alias_domain_url)
+ALIAS_GRPC_ENDPOINT=$(terraform output -raw alias_grpc_endpoint)
 
-curl "$ALB_URL/"
-curl "$ALB_URL/pubkey"
-[ -z "$CUSTOM_DOMAIN_URL" ] || curl "$CUSTOM_DOMAIN_URL/pubkey"
+curl --fail-with-body "$ALB_URL/"
+curl --fail-with-body "$ALB_URL/pubkey"
+[ -z "$CUSTOM_DOMAIN_URL" ] || curl --fail-with-body "$CUSTOM_DOMAIN_URL/pubkey"
 [ -z "$GRPC_ENDPOINT" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${GRPC_ENDPOINT#https://}:443" guardian.Guardian/GetPubkey
+[ -z "$ALIAS_DOMAIN_URL" ] || curl --fail-with-body "$ALIAS_DOMAIN_URL/pubkey"
+[ -z "$ALIAS_GRPC_ENDPOINT" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${ALIAS_GRPC_ENDPOINT#https://}:443" guardian.Guardian/GetPubkey
 ```
 
 ### 6. Destroy

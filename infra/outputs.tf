@@ -15,19 +15,17 @@ output "custom_domain_url" {
 
 output "alias_domain_url" {
   description = "Migration-only legacy domain URL"
-  value = local.alias_domain_enabled ? (
-    local.alias_acm_certificate_arn != "" ? "https://${local.alias_service_fqdn}" : "http://${local.alias_service_fqdn}"
-  ) : null
+  value       = local.alias_domain_enabled ? "https://${local.alias_service_fqdn}" : ""
 }
 
 output "alias_service_fqdn" {
   description = "Migration-only legacy service FQDN"
-  value       = local.alias_domain_enabled ? local.alias_service_fqdn : null
+  value       = local.alias_domain_enabled ? local.alias_service_fqdn : ""
 }
 
 output "alias_grpc_endpoint" {
   description = "Migration-only legacy gRPC endpoint when HTTPS is enabled"
-  value       = local.alias_domain_enabled && local.alias_acm_certificate_arn != "" ? "https://${local.alias_service_fqdn}" : null
+  value       = local.alias_domain_enabled && local.alias_acm_certificate_arn != "" ? "https://${local.alias_service_fqdn}" : ""
 }
 
 output "grpc_endpoint" {
