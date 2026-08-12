@@ -185,8 +185,7 @@ console.log('Created:', state.createdAt);
 // Create a proposal to add a new signer
 const proposal = await multisig.createAddSignerProposal(
   newSignerCommitment, // Commitment of signer to add
-  undefined,
-  3,
+  { newThreshold: 3 }, // Options: nonce, newThreshold
 );
 console.log('Proposal ID:', proposal.id);
 ```
@@ -294,9 +293,9 @@ import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client
 // only its hash on chain, so the recipient needs the note shared out-of-band.
 // It also accepts `reclaimHeight`/`timelockHeight` (absolute block heights,
 // issue #366); presence of either builds a P2IDE note instead of plain P2ID.
-// The typed path is `createP2idProposal(recipient, faucet, amount, nonce?,
-// { noteType, reclaimHeight, timelockHeight })`, which persists the choices
-// in signed metadata.
+// The typed path is `createP2idProposal(recipient, faucet, amount,
+// { nonce, noteType, reclaimHeight, timelockHeight })`, which persists the
+// choices in signed metadata.
 const { request, salt } = buildP2idTransactionRequest(senderId, recipientId, faucetId, amount);
 const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg');
 

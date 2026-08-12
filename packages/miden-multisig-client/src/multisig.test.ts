@@ -1355,7 +1355,7 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1);
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 1 });
 
       expect(proposal.metadata.description).toBe('Send 100 of asset 0xfaucet... to 0xrecipien...');
     });
@@ -1410,7 +1410,8 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1, {
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, {
+        nonce: 1,
         noteType: NoteType.Private,
       });
 
@@ -1486,7 +1487,8 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1, {
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, {
+        nonce: 1,
         reclaimHeight: 12345,
         timelockHeight: 700,
       });
@@ -1553,7 +1555,7 @@ describe('Multisig', () => {
         }),
       });
 
-      await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1);
+      await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 1 });
 
       const pushBody = JSON.parse(mockFetch.mock.calls.at(-1)![1].body as string);
       expect('reclaim_height' in pushBody.delta_payload.metadata).toBe(false);
@@ -1761,7 +1763,7 @@ describe('Multisig', () => {
       });
 
       const multisig = createTestMultisig(config, ecdsaSigner);
-      await multisig.createChangeThresholdProposal(2, 1);
+      await multisig.createChangeThresholdProposal(2, { nonce: 1 });
 
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
@@ -1950,7 +1952,7 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, 1);
+      const proposal = await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, { nonce: 1 });
 
       expect(buildUpdateProcedureThresholdTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
@@ -2018,7 +2020,7 @@ describe('Multisig', () => {
         }),
       });
 
-      await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, 1);
+      await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, { nonce: 1 });
 
       expect(buildUpdateProcedureThresholdTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,

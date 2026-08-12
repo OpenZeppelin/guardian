@@ -47,6 +47,7 @@ import {
   buildP2idTransactionRequest,
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
+  type P2ideHeightOptions,
 } from './transaction.js';
 import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
 import {
@@ -112,6 +113,34 @@ export interface AccountStateVerificationResult {
   accountId: string;
   localCommitment: string;
   onChainCommitment: string;
+}
+
+/**
+ * Options shared by the `create*Proposal` family (issue #387). Every optional
+ * knob lives in a single trailing options bag, so call sites never need
+ * positional `undefined` holes to reach a later option.
+ */
+export interface CreateProposalOptions {
+  /** Proposal nonce; defaults to `Date.now()`. */
+  nonce?: number;
+}
+
+export interface CreateAddSignerProposalOptions extends CreateProposalOptions {
+  /** New signing threshold; defaults to the current threshold. */
+  newThreshold?: number;
+}
+
+export interface CreateRemoveSignerProposalOptions extends CreateProposalOptions {
+  /**
+   * New signing threshold; defaults to
+   * `min(current threshold, remaining signer count)`.
+   */
+  newThreshold?: number;
+}
+
+export interface CreateP2idProposalOptions extends CreateProposalOptions, P2ideHeightOptions {
+  /** Visibility of the created note. Defaults to `NoteType.Public` (issue #322). */
+  noteType?: NoteType;
 }
 
 /**
@@ -599,16 +628,15 @@ export class Multisig {
    * Create an "add signer" proposal.
    *
    * @param newCommitment - Commitment of the new signer (hex)
-   * @param nonce - Optional proposal nonce (defaults to Date.now())
-   * @param newThreshold - Optional new threshold (defaults to current threshold)
+   * @param options - Optional settings: `nonce`, `newThreshold` (defaults to
+   *   current threshold)
    */
   async createAddSignerProposal(
     newCommitment: string,
-    nonce?: number,
-    newThreshold?: number,
+    options: CreateAddSignerProposalOptions = {},
   ): Promise<Proposal> {
     const webClient = await this.getRawClient();
-    const targetThreshold = newThreshold ?? this.threshold;
+    const targetThreshold = options.newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
@@ -620,7 +648,7 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = nonce ?? Date.now();
+    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'add_signer',
@@ -638,13 +666,12 @@ export class Multisig {
    * Create a "remove signer" proposal by executing the update_signers script to summary.
    *
    * @param signerToRemove - Commitment of the signer to remove (hex)
-   * @param nonce - Optional proposal nonce (defaults to Date.now())
-   * @param newThreshold - Optional new threshold (defaults to min of current threshold and new signer count)
+   * @param options - Optional settings: `nonce`, `newThreshold` (defaults to
+   *   min of current threshold and new signer count)
    */
   async createRemoveSignerProposal(
     signerToRemove: string,
-    nonce?: number,
-    newThreshold?: number,
+    options: CreateRemoveSignerProposalOptions = {},
   ): Promise<Proposal> {
     const webClient = await this.getRawClient();
     const normalizedRemove = signerToRemove.toLowerCase();
@@ -659,7 +686,7 @@ export class Multisig {
       throw new Error('Cannot remove the last signer');
     }
 
-    const targetThreshold = newThreshold ?? Math.min(this.threshold, targetSignerCommitments.length);
+    const targetThreshold = options.newThreshold ?? Math.min(this.threshold, targetSignerCommitments.length);
 
     if (targetThreshold < 1 || targetThreshold > targetSignerCommitments.length) {
       throw new Error(
@@ -676,7 +703,7 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = nonce ?? Date.now();
+    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'remove_signer',
@@ -694,11 +721,11 @@ export class Multisig {
    * Create a "change threshold" proposal.
    *
    * @param newThreshold - The new threshold value
-   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   * @param options - Optional settings: `nonce`
    */
   async createChangeThresholdProposal(
     newThreshold: number,
-    nonce?: number,
+    options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     const webClient = await this.getRawClient();
     if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
@@ -720,7 +747,7 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = nonce ?? Date.now();
+    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'change_threshold',
@@ -737,7 +764,7 @@ export class Multisig {
   async createUpdateProcedureThresholdProposal(
     targetProcedure: ProcedureName,
     targetThreshold: number,
-    nonce?: number,
+    options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     const webClient = await this.getRawClient();
     if (targetThreshold < 0 || targetThreshold > this.signerCommitments.length) {
@@ -766,7 +793,7 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = nonce ?? Date.now();
+    const proposalNonce = options.nonce ?? Date.now();
     const action = targetThreshold === 0
       ? `Clear threshold override for ${targetProcedure}`
       : `Set ${targetProcedure} threshold override to ${targetThreshold}`;
@@ -788,12 +815,12 @@ export class Multisig {
    * 
    * @param newGuardianEndpoint - The new GUARDIAN server endpoint URL
    * @param newGuardianPubkey - The new GUARDIAN server's public key commitment (hex)
-   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   * @param options - Optional settings: `nonce`
    */
   async createSwitchGuardianProposal(
     newGuardianEndpoint: string,
     newGuardianPubkey: string,
-    nonce?: number,
+    options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     const webClient = await this.getRawClient();
     await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
@@ -806,7 +833,7 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = nonce ?? Date.now();
+    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'switch_guardian',
@@ -826,11 +853,11 @@ export class Multisig {
    * Create a "consume notes" proposal to consume notes sent to the multisig account.
    *
    * @param noteIds - IDs of the notes to consume (hex strings)
-   * @param nonce - Optional proposal nonce (defaults to Date.now())
+   * @param options - Optional settings: `nonce`
    */
   async createConsumeNotesProposal(
     noteIds: string[],
-    nonce?: number,
+    options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     const webClient = await this.getRawClient();
     if (noteIds.length === 0) {
@@ -853,7 +880,7 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = nonce ?? Date.now();
+    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'consume_notes',
@@ -884,16 +911,15 @@ export class Multisig {
    * @param recipientId - Account ID of the recipient (hex string)
    * @param faucetId - Faucet/token account ID (hex string)
    * @param amount - Amount to send
-   * @param nonce - Optional proposal nonce (defaults to Date.now())
-   * @param options - Optional settings; `noteType` selects the created note's
-   *   visibility (defaults to `NoteType.Public`, issue #322)
+   * @param options - Optional settings: `nonce`; `noteType` selects the created
+   *   note's visibility (defaults to `NoteType.Public`, issue #322);
+   *   `reclaimHeight`/`timelockHeight` build a P2IDE note (issue #366)
    */
   async createP2idProposal(
     recipientId: string,
     faucetId: string,
     amount: bigint,
-    nonce?: number,
-    options: { noteType?: NoteType; reclaimHeight?: number; timelockHeight?: number } = {},
+    options: CreateP2idProposalOptions = {},
   ): Promise<Proposal> {
     const webClient = await this.getRawClient();
     if (amount <= 0n) {
@@ -917,7 +943,7 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = nonce ?? Date.now();
+    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'p2id',
