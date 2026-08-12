@@ -105,42 +105,60 @@ install -m 600 "$TF_STATE_PATH" "${TF_STATE_PATH}.before-domain-migration"
 ```
 
 Move only the record type shown by `state list`; move both only if the stack
-actually manages both providers. Each block fails before the move unless the
-tracked record is the expected legacy hostname:
+actually manages both providers. Run each matching block separately. The
+subshell keeps a failed guard from terminating the operator's shell, and each
+block fails before the move unless the tracked record is the expected legacy
+hostname.
+
+For Cloudflare-managed DNS, provider state may store `name` as either the
+relative record name or the full hostname:
 
 ```bash
-# Cloudflare-managed DNS
-EXPECTED_LEGACY_FQDN="${ALIAS_SUBDOMAIN}.${DOMAIN_NAME}"
-CURRENT_LEGACY_FQDN=$(terraform -chdir=infra state show -state="$TF_STATE_PATH" \
-  'cloudflare_dns_record.service[0]' |
-  sed -nE 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')
-test "$CURRENT_LEGACY_FQDN" = "$EXPECTED_LEGACY_FQDN" || {
-  echo "Refusing state move: expected ${EXPECTED_LEGACY_FQDN}, found ${CURRENT_LEGACY_FQDN:-<empty>}" >&2
-  exit 1
-}
-terraform -chdir=infra state mv -state="$TF_STATE_PATH" \
-  'cloudflare_dns_record.service[0]' \
-  'cloudflare_dns_record.service_secondary[0]'
+(
+  EXPECTED_LEGACY_FQDN="${ALIAS_SUBDOMAIN}.${DOMAIN_NAME}"
+  CURRENT_LEGACY_NAME=$(terraform -chdir=infra state show -state="$TF_STATE_PATH" \
+    'cloudflare_dns_record.service[0]' |
+    sed -nE 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')
+  case "$CURRENT_LEGACY_NAME" in
+    "$ALIAS_SUBDOMAIN"|"$EXPECTED_LEGACY_FQDN") ;;
+    *)
+      echo "Refusing state move: expected ${ALIAS_SUBDOMAIN} or ${EXPECTED_LEGACY_FQDN}, found ${CURRENT_LEGACY_NAME:-<empty>}" >&2
+      exit 1
+      ;;
+  esac
+  terraform -chdir=infra state mv -state="$TF_STATE_PATH" \
+    'cloudflare_dns_record.service[0]' \
+    'cloudflare_dns_record.service_secondary[0]'
+)
+```
 
-# Route 53-managed DNS; the record's alias block holds a second name
-# attribute (the ALB DNS name), so read the top-level fqdn instead.
-EXPECTED_LEGACY_FQDN="${ALIAS_SUBDOMAIN}.${DOMAIN_NAME}"
-CURRENT_LEGACY_FQDN=$(terraform -chdir=infra state show -state="$TF_STATE_PATH" \
-  'aws_route53_record.service_alias[0]' |
-  sed -nE 's/^[[:space:]]*fqdn[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')
-test "$CURRENT_LEGACY_FQDN" = "$EXPECTED_LEGACY_FQDN" || {
-  echo "Refusing state move: expected ${EXPECTED_LEGACY_FQDN}, found ${CURRENT_LEGACY_FQDN:-<empty>}" >&2
-  exit 1
-}
-terraform -chdir=infra state mv -state="$TF_STATE_PATH" \
-  'aws_route53_record.service_alias[0]' \
-  'aws_route53_record.service_secondary[0]'
+For Route 53-managed DNS, the record's alias block holds a second `name`
+attribute for the ALB, so the guard reads the top-level `fqdn` instead:
+
+```bash
+(
+  EXPECTED_LEGACY_FQDN="${ALIAS_SUBDOMAIN}.${DOMAIN_NAME}"
+  CURRENT_LEGACY_FQDN=$(terraform -chdir=infra state show -state="$TF_STATE_PATH" \
+    'aws_route53_record.service_alias[0]' |
+    sed -nE 's/^[[:space:]]*fqdn[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')
+  test "$CURRENT_LEGACY_FQDN" = "$EXPECTED_LEGACY_FQDN" || {
+    echo "Refusing state move: expected ${EXPECTED_LEGACY_FQDN}, found ${CURRENT_LEGACY_FQDN:-<empty>}" >&2
+    exit 1
+  }
+  terraform -chdir=infra state mv -state="$TF_STATE_PATH" \
+    'aws_route53_record.service_alias[0]' \
+    'aws_route53_record.service_secondary[0]'
+)
 ```
 
 The hosted devnet and testnet states currently use Cloudflare rather than Route
 53, but always trust `terraform state list` for the selected state. After a
 move, run it again and confirm the record appears only at the corresponding
 `service_secondary[0]` address.
+
+When DNS is managed outside Terraform, skip both state-move blocks and create or
+retain the canonical and legacy records with that provider. Terraform still
+attaches the required ACM certificates to the ALB.
 
 ## Plan, deploy, and verify
 
@@ -151,11 +169,13 @@ Run the plan with the same `STACK_NAME`, `DEPLOY_STAGE`, `SUBDOMAIN`, and
 ./scripts/aws-deploy.sh plan
 ```
 
-The plan must retain the legacy secondary record and create the new canonical
-record. An in-place comment update on the legacy Cloudflare record is harmless.
-Certificate and output changes are also expected. Do not apply if the plan
-destroys or replaces the legacy DNS record, ALB, ECS service, or database.
-After reviewing the plan:
+For Terraform-managed DNS, the plan must retain the legacy secondary record and
+create the new canonical record. An in-place comment update on the legacy
+Cloudflare record is harmless. With external DNS, the plan should not add DNS
+resources; confirm both records separately with that provider. Certificate and
+output changes are expected in either case. Do not apply if the plan destroys or
+replaces the legacy DNS record, ALB, ECS service, or database. After reviewing
+the plan:
 
 ```bash
 ./scripts/aws-deploy.sh deploy --skip-build

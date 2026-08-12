@@ -319,7 +319,7 @@ turns them into Terraform variables or build-time choices.
 | `CLOUDFLARE_ZONE_ID` | _unset_ | Optional Cloudflare zone for CNAME management. |
 | `CLOUDFLARE_API_TOKEN` | _unset_ | Required when either primary or secondary Cloudflare DNS management is enabled. |
 | `CLOUDFLARE_PROXIED` | `false` | Whether the Cloudflare CNAME should be proxied. |
-| `ALIAS_SUBDOMAIN` | _unset_ | Migration-only legacy subdomain under `DOMAIN_NAME`; leave unset for normal deployments. |
+| `ALIAS_SUBDOMAIN` | _unset_ | Migration-only legacy subdomain under `DOMAIN_NAME`; leave unset for normal deployments. DNS may be Terraform-managed or external. |
 | `ALIAS_ACM_CERTIFICATE_ARN` | `ACM_CERTIFICATE_ARN` | Migration-only distinct certificate for the legacy hostname, attached through SNI when needed. |
 | `GUARDIAN_ACK_FALCON_SECRET_NAME` | _unset_ → `${STACK_NAME}/server/ack-falcon-secret-key` | Deploy-side override for the Falcon ACK secret. Passed into Terraform as `guardian_ack_falcon_secret_name` and set on the ECS task as the runtime `GUARDIAN_ACK_FALCON_SECRET_ID`. |
 | `GUARDIAN_ACK_ECDSA_SECRET_NAME` | _unset_ → `${STACK_NAME}/server/ack-ecdsa-secret-key` | Deploy-side override for the ECDSA ACK secret. Same flow as the Falcon entry above. |

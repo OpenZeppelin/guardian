@@ -114,9 +114,9 @@ sequenceDiagram
   ALB-->>C: response
 ```
 
-Health checks: the HTTP target group probes `GET /` ([`alb.tf:43`](../../infra/alb.tf#L43));
+Health checks: the HTTP target group probes `GET /` ([`alb.tf:59`](../../infra/alb.tf#L59));
 the gRPC target group probes `/guardian.Guardian/GetPubkey` with matcher `0`
-([`alb.tf:65`](../../infra/alb.tf#L65)).
+([`alb.tf:81`](../../infra/alb.tf#L81)).
 
 ## Resource inventory
 
@@ -129,11 +129,11 @@ Mapping AWS resources to the Terraform files that own them:
 | ECS task definition | [`ecs.tf:32`](../../infra/ecs.tf#L32) | One container, ports `3000` + `50051`, env + secret env from Secrets Manager. |
 | ECS autoscaling target + policies | [`ecs_autoscaling.tf`](../../infra/ecs_autoscaling.tf) | CPU + memory target-tracking, only created when `effective_server_autoscaling_enabled`. |
 | ALB | [`alb.tf:2`](../../infra/alb.tf#L2) | Internet-facing, at least two subnets enforced as precondition. |
-| HTTP target group (`:3000`) | [`alb.tf:35`](../../infra/alb.tf#L35) | Health check `GET /`. |
-| gRPC target group (`:50051`) | [`alb.tf:54`](../../infra/alb.tf#L54) | Created only when an ACM cert is present. |
-| HTTP listener `:80` | [`alb.tf:76`](../../infra/alb.tf#L76) | Forwards when no cert, redirects to HTTPS when cert is present. |
-| HTTPS listener `:443` | [`alb.tf:110`](../../infra/alb.tf#L110) | TLS 1.3-1.2 policy; default action → HTTP target group. A migration can temporarily attach a second certificate through [`alb.tf:127`](../../infra/alb.tf#L127). |
-| gRPC listener rule | [`alb.tf:140`](../../infra/alb.tf#L140) | Path `/guardian.Guardian/*` → gRPC target group, priority `10`. |
+| HTTP target group (`:3000`) | [`alb.tf:46`](../../infra/alb.tf#L46) | Health check `GET /`. |
+| gRPC target group (`:50051`) | [`alb.tf:65`](../../infra/alb.tf#L65) | Created only when an ACM cert is present. |
+| HTTP listener `:80` | [`alb.tf:87`](../../infra/alb.tf#L87) | Forwards when no cert, redirects to HTTPS when cert is present. |
+| HTTPS listener `:443` | [`alb.tf:121`](../../infra/alb.tf#L121) | TLS 1.3-1.2 policy; default action → HTTP target group. A migration can temporarily attach a second certificate through [`alb.tf:138`](../../infra/alb.tf#L138). |
+| gRPC listener rule | [`alb.tf:151`](../../infra/alb.tf#L151) | Path `/guardian.Guardian/*` → gRPC target group, priority `10`. |
 | RDS Postgres instance | [`rds.tf:20`](../../infra/rds.tf#L20) | Storage encrypted, backups retained per `rds_backup_retention_days`; prod defaults enable deletion protection and a final snapshot on destroy. |
 | RDS subnet group | [`rds.tf:8`](../../infra/rds.tf#L8) | Requires ≥2 subnets. |
 | `DATABASE_URL` secret | [`rds.tf:45`](../../infra/rds.tf#L45) | Always created; consumed by the server task. |

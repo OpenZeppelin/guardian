@@ -26,11 +26,6 @@ resource "aws_lb" "main" {
     }
 
     precondition {
-      condition     = !local.alias_domain_enabled || local.alias_dns_configured
-      error_message = "Configure route53_zone_id or cloudflare_zone_id so Terraform can create the secondary subdomain record."
-    }
-
-    precondition {
       condition     = var.cloudflare_zone_id == "" || trimspace(var.cloudflare_api_token) != ""
       error_message = "cloudflare_api_token is required when cloudflare_zone_id is configured."
     }

@@ -107,10 +107,9 @@ export GUARDIAN_NETWORK_TYPE=MidenTestnet
 export DEPLOY_STAGE=dev
 # export DEPLOY_STAGE=prod
 
-# Optional: override the stack base name or canonical public hostname
+# Optional: override the stack base name or public hostname
 export STACK_NAME=guardian
-# export DOMAIN_NAME=example.com
-# export SUBDOMAIN=guardian
+# export SUBDOMAIN=guardian-stg
 
 aws sts get-caller-identity
 ./scripts/aws-deploy.sh deploy
@@ -531,7 +530,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name |
 | `alb_url` | Full ALB URL |
-| `custom_domain_url` | Custom domain URL when configured |
+| `custom_domain_url` | Custom domain URL when HTTPS is configured |
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |

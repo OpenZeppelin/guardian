@@ -182,5 +182,4 @@ locals {
   alias_service_fqdn        = local.alias_domain_requested && var.domain_name != "" ? "${var.alias_subdomain}.${var.domain_name}" : ""
   alias_domain_enabled      = local.alias_service_fqdn != "" && local.alias_service_fqdn != local.service_fqdn
   alias_acm_certificate_arn = local.alias_domain_enabled ? (var.alias_acm_certificate_arn != "" ? var.alias_acm_certificate_arn : local.acm_certificate_arn) : ""
-  alias_dns_configured      = var.route53_zone_id != "" || var.cloudflare_zone_id != ""
 }

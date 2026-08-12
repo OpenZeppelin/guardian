@@ -330,9 +330,9 @@ build_tf_vars() {
   fi
   if [ -n "$ALIAS_SUBDOMAIN" ]; then
     TF_VARS+=("-var" "alias_subdomain=${ALIAS_SUBDOMAIN}")
-    if [ -n "$ALIAS_ACM_CERTIFICATE_ARN" ]; then
-      TF_VARS+=("-var" "alias_acm_certificate_arn=${ALIAS_ACM_CERTIFICATE_ARN}")
-    fi
+  fi
+  if [ -n "$ALIAS_ACM_CERTIFICATE_ARN" ]; then
+    TF_VARS+=("-var" "alias_acm_certificate_arn=${ALIAS_ACM_CERTIFICATE_ARN}")
   fi
   if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
     TF_VARS+=("-var" "cloudflare_api_token=${CLOUDFLARE_API_TOKEN}")
@@ -747,7 +747,6 @@ cmd_deploy() {
   local CUSTOM_DOMAIN_URL
   local ALIAS_DOMAIN_URL
   local GRPC_ENDPOINT
-  local ALIAS_GRPC_ENDPOINT
   local DATABASE_ENDPOINT
   local DEPLOYMENT_STAGE_OUTPUT
   local RDS_PROXY_ENDPOINT
@@ -773,7 +772,6 @@ cmd_deploy() {
   CUSTOM_DOMAIN_URL=$(terraform_output_raw custom_domain_url)
   ALIAS_DOMAIN_URL=$(terraform_output_raw alias_domain_url)
   GRPC_ENDPOINT=$(terraform_output_raw grpc_endpoint)
-  ALIAS_GRPC_ENDPOINT=$(terraform_output_raw alias_grpc_endpoint)
   DATABASE_ENDPOINT=$(terraform_output_raw database_endpoint)
   DEPLOYMENT_STAGE_OUTPUT=$(terraform_output_raw deployment_stage)
   RDS_PROXY_ENDPOINT=$(terraform_output_raw rds_proxy_endpoint)
@@ -817,9 +815,6 @@ cmd_deploy() {
     fi
     if [ -n "$GRPC_ENDPOINT" ]; then
       echo "  gRPC endpoint: ${GRPC_ENDPOINT}"
-    fi
-    if [ -n "$ALIAS_GRPC_ENDPOINT" ]; then
-      echo "  Legacy migration gRPC endpoint: ${ALIAS_GRPC_ENDPOINT}"
     fi
     if [ -n "$DATABASE_ENDPOINT" ]; then
       echo "  Database endpoint: ${DATABASE_ENDPOINT}"
@@ -875,8 +870,8 @@ cmd_deploy() {
     if [ -n "$ALIAS_DOMAIN_URL" ]; then
       echo "  Legacy migration public key: curl ${ALIAS_DOMAIN_URL}/pubkey"
     fi
-    if [ -n "$ALIAS_GRPC_ENDPOINT" ]; then
-      echo "  Legacy migration gRPC check: grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' ${ALIAS_GRPC_ENDPOINT#https://}:443 guardian.Guardian/GetPubkey"
+    if [ -n "$ALIAS_DOMAIN_URL" ]; then
+      echo "  Legacy migration gRPC check: grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' ${ALIAS_DOMAIN_URL#https://}:443 guardian.Guardian/GetPubkey"
     fi
   fi
   echo ""
@@ -1063,8 +1058,8 @@ case "${COMMAND:-}" in
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-storage-encryption-key  # prints the name to export"
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret"
     echo "  GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-prod/server/storage-encryption-key DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh deploy --skip-build"
-    echo "  GUARDIAN_NETWORK_TYPE=MidenDevnet DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-devnet ./scripts/aws-deploy.sh deploy"
-    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian-testnet ./scripts/aws-deploy.sh deploy --skip-build"
+    echo "  DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
+    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"
     echo "  ./scripts/aws-deploy.sh cleanup"
     ;;

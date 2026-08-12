@@ -181,14 +181,13 @@ ALB_URL=$(terraform output -raw alb_url)
 CUSTOM_DOMAIN_URL=$(terraform output -raw custom_domain_url)
 GRPC_ENDPOINT=$(terraform output -raw grpc_endpoint)
 ALIAS_DOMAIN_URL=$(terraform output -raw alias_domain_url)
-ALIAS_GRPC_ENDPOINT=$(terraform output -raw alias_grpc_endpoint)
 
 curl --fail-with-body "$ALB_URL/"
 curl --fail-with-body "$ALB_URL/pubkey"
 [ -z "$CUSTOM_DOMAIN_URL" ] || curl --fail-with-body "$CUSTOM_DOMAIN_URL/pubkey"
 [ -z "$GRPC_ENDPOINT" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${GRPC_ENDPOINT#https://}:443" guardian.Guardian/GetPubkey
 [ -z "$ALIAS_DOMAIN_URL" ] || curl --fail-with-body "$ALIAS_DOMAIN_URL/pubkey"
-[ -z "$ALIAS_GRPC_ENDPOINT" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${ALIAS_GRPC_ENDPOINT#https://}:443" guardian.Guardian/GetPubkey
+[ -z "$ALIAS_DOMAIN_URL" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${ALIAS_DOMAIN_URL#https://}:443" guardian.Guardian/GetPubkey
 ```
 
 ### 6. Destroy
@@ -270,11 +269,10 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name for accessing the server |
 | `alb_url` | Full URL (http or https) |
-| `custom_domain_url` | Custom domain URL when configured |
+| `custom_domain_url` | Custom domain URL when HTTPS is configured |
 | `alias_domain_url` | Migration-only legacy domain URL |
 | `alias_service_fqdn` | Migration-only legacy service hostname |
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
-| `alias_grpc_endpoint` | Migration-only legacy gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |
 | `rds_instance_class` | Effective RDS instance class |
@@ -319,7 +317,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 
 ## HTTPS Configuration
 
-HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, or both depending on which variables are provided. The migration-only secondary-subdomain settings are covered in [`docs/runbooks/guardian-domain-migration.md`](../docs/runbooks/guardian-domain-migration.md).
+HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, both, or an external provider. Terraform creates canonical and migration-only alias records only for the configured providers; external records remain operator-managed. The migration-only secondary-subdomain settings are covered in [`docs/runbooks/guardian-domain-migration.md`](../docs/runbooks/guardian-domain-migration.md).
 
 When HTTPS is enabled, the ALB routes standard HTTPS requests to the server HTTP port `3000` and gRPC requests for `/guardian.Guardian/*` to the server gRPC port `50051`. The public gRPC endpoint uses the same hostname on port `443`.
 

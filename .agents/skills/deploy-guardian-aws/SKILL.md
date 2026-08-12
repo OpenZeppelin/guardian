@@ -137,7 +137,7 @@ Treat these as stale or conditional:
 - `CLOUDFLARE_ZONE_ID` without `CLOUDFLARE_API_TOKEN` is invalid for Terraform-managed Cloudflare DNS
 - the alias hostname is migration-only; leave `ALIAS_SUBDOMAIN` unset for normal deployments
 - keep the canonical hostname in `SUBDOMAIN` and use `ALIAS_SUBDOMAIN` for a secondary or legacy name
-- both subdomains use `DOMAIN_NAME` and the existing `ROUTE53_ZONE_ID` and/or `CLOUDFLARE_ZONE_ID`
+- both subdomains use `DOMAIN_NAME`; Terraform creates their records for the configured `ROUTE53_ZONE_ID` and/or `CLOUDFLARE_ZONE_ID`, while external DNS remains operator-managed
 - `ROUTE53_ZONE_ID` is only needed if Terraform should create the AWS Route 53 record; current Terraform does not auto-discover the zone
 - `DATABASE_MODE` is stale and should not appear in commands or advice
 - old ECS Postgres naming overrides such as `TF_VAR_postgres_service_name`, `TF_VAR_sd_namespace_name`, `TF_VAR_postgres_task_family`, and `TF_VAR_postgres_log_group_name` are stale and should not be used

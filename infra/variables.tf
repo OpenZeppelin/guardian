@@ -105,7 +105,7 @@ variable "acm_certificate_arn" {
 }
 
 variable "alias_subdomain" {
-  description = "Migration-only legacy subdomain under domain_name pointing to the same ALB. Leave empty for normal deployments."
+  description = "Migration-only legacy subdomain under domain_name pointing to the same ALB. Terraform manages its DNS record only when a DNS provider is configured; external DNS is supported. Leave empty for normal deployments."
   type        = string
   default     = ""
 }
