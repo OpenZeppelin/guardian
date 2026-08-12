@@ -2293,6 +2293,7 @@ describe('Multisig', () => {
         ok: false,
         status: 404,
         statusText: 'Not Found',
+        headers: new Headers(),
         // Feature 009: only a conforming { code, message, meta } envelope is
         // folded into the error message; raw text bodies are dropped.
         text: async () =>
