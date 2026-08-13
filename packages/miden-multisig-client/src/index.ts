@@ -52,7 +52,13 @@ export {
 export type { ProverConfig, ProverRetryPolicy } from './prover/config.js';
 export type { RpcConfig, RpcRetryPolicy } from './rpc/config.js';
 export { lookupAuthDigest } from './lookupAuth.js';
-export { Multisig, type AccountState } from './multisig.js';
+export {
+  Multisig,
+  type AccountState,
+  type CreateProposalOptions,
+  type CreateSignerProposalOptions,
+  type CreateP2idProposalOptions,
+} from './multisig.js';
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {
   executeForSummary,
