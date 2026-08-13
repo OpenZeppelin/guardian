@@ -177,13 +177,16 @@ terraform output
 ### 5. Test
 
 ```bash
-ALB_URL=$(terraform output -raw alb_url)
+ALB_DNS=$(terraform output -raw alb_dns_name)
 CUSTOM_DOMAIN_URL=$(terraform output -raw custom_domain_url)
 GRPC_ENDPOINT=$(terraform output -raw grpc_endpoint)
-ALIAS_DOMAIN_URL=$(terraform output -raw alias_domain_url)
+ALIAS_DOMAIN_URL=$(terraform output -raw alias_domain_url 2>/dev/null || true)
 
-curl --fail-with-body "$ALB_URL/"
-curl --fail-with-body "$ALB_URL/pubkey"
+# ACM certificates never cover the raw ALB hostname, so the direct checks
+# stay on plain HTTP; on HTTPS stacks they return the 301 redirect and the
+# hostname checks below verify TLS end to end.
+curl --fail-with-body "http://$ALB_DNS/"
+curl --fail-with-body "http://$ALB_DNS/pubkey"
 [ -z "$CUSTOM_DOMAIN_URL" ] || curl --fail-with-body "$CUSTOM_DOMAIN_URL/pubkey"
 [ -z "$GRPC_ENDPOINT" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${GRPC_ENDPOINT#https://}:443" guardian.Guardian/GetPubkey
 [ -z "$ALIAS_DOMAIN_URL" ] || curl --fail-with-body "$ALIAS_DOMAIN_URL/pubkey"
@@ -269,9 +272,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name for accessing the server |
 | `alb_url` | Full URL (http or https) |
-| `custom_domain_url` | Custom domain URL when HTTPS is configured |
+| `custom_domain_url` | Canonical service URL: https with a certificate, http when Terraform manages only the DNS record |
 | `alias_domain_url` | Migration-only legacy domain URL |
-| `alias_service_fqdn` | Migration-only legacy service hostname |
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |

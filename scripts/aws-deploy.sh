@@ -327,12 +327,12 @@ build_tf_vars() {
     if [ -n "$ROUTE53_ZONE_ID" ]; then
       TF_VARS+=("-var" "route53_zone_id=${ROUTE53_ZONE_ID}")
     fi
-  fi
-  if [ -n "$ALIAS_SUBDOMAIN" ]; then
-    TF_VARS+=("-var" "alias_subdomain=${ALIAS_SUBDOMAIN}")
-  fi
-  if [ -n "$ALIAS_ACM_CERTIFICATE_ARN" ]; then
-    TF_VARS+=("-var" "alias_acm_certificate_arn=${ALIAS_ACM_CERTIFICATE_ARN}")
+    if [ -n "$ALIAS_SUBDOMAIN" ]; then
+      TF_VARS+=("-var" "alias_subdomain=${ALIAS_SUBDOMAIN}")
+    fi
+    if [ -n "$ALIAS_ACM_CERTIFICATE_ARN" ]; then
+      TF_VARS+=("-var" "alias_acm_certificate_arn=${ALIAS_ACM_CERTIFICATE_ARN}")
+    fi
   fi
   if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
     TF_VARS+=("-var" "cloudflare_api_token=${CLOUDFLARE_API_TOKEN}")
@@ -743,7 +743,6 @@ cmd_deploy() {
 
   local ALB_URL
   local ALB_DNS
-  local HTTPS_URL
   local CUSTOM_DOMAIN_URL
   local ALIAS_DOMAIN_URL
   local GRPC_ENDPOINT
@@ -792,9 +791,6 @@ cmd_deploy() {
   EVM_RPC_URLS_SECRET_ARN=$(terraform_output_raw guardian_evm_rpc_urls_secret_arn)
   EVM_ENTRYPOINT_ADDRESS=$(terraform_output_raw guardian_evm_entrypoint_address)
   CORS_ALLOWED_ORIGINS=$(terraform_output_raw guardian_cors_allowed_origins)
-  if [ -n "$ALB_DNS" ] && [[ "$ALB_URL" == https://* ]]; then
-    HTTPS_URL="https://${ALB_DNS}"
-  fi
 
   echo ""
   log_info "Deployment complete!"
@@ -804,9 +800,6 @@ cmd_deploy() {
   if [ -n "$ALB_URL" ]; then
     echo ""
     echo "  URL: ${ALB_URL}"
-    if [ -n "$HTTPS_URL" ]; then
-      echo "  HTTPS URL: ${HTTPS_URL}"
-    fi
     if [ -n "$CUSTOM_DOMAIN_URL" ]; then
       echo "  Custom domain: ${CUSTOM_DOMAIN_URL}"
     fi
@@ -862,15 +855,16 @@ cmd_deploy() {
       echo "  CORS allowed origins: ${CORS_ALLOWED_ORIGINS}"
     fi
     echo ""
-    echo "  Health check: curl ${ALB_URL}/"
-    echo "  Public key:   curl ${ALB_URL}/pubkey"
+    echo "  Health check: curl http://${ALB_DNS}/"
+    echo "  Public key:   curl http://${ALB_DNS}/pubkey"
+    if [ -n "$CUSTOM_DOMAIN_URL" ]; then
+      echo "  Custom domain public key: curl ${CUSTOM_DOMAIN_URL}/pubkey"
+    fi
     if [ -n "$GRPC_ENDPOINT" ]; then
       echo "  gRPC check:   grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' ${GRPC_ENDPOINT#https://}:443 guardian.Guardian/GetPubkey"
     fi
     if [ -n "$ALIAS_DOMAIN_URL" ]; then
       echo "  Legacy migration public key: curl ${ALIAS_DOMAIN_URL}/pubkey"
-    fi
-    if [ -n "$ALIAS_DOMAIN_URL" ]; then
       echo "  Legacy migration gRPC check: grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' ${ALIAS_DOMAIN_URL#https://}:443 guardian.Guardian/GetPubkey"
     fi
   fi

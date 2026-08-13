@@ -9,18 +9,17 @@ output "alb_url" {
 }
 
 output "custom_domain_url" {
-  description = "Custom domain URL when HTTPS is configured"
-  value       = local.domain_enabled && local.acm_certificate_arn != "" ? "https://${local.service_fqdn}" : ""
+  description = "Canonical service URL: https when a certificate is configured, http when Terraform manages only the DNS record"
+  value = !local.domain_enabled ? "" : (
+    local.acm_certificate_arn != "" ? "https://${local.service_fqdn}" : (
+      local.route53_zone_id != "" || var.cloudflare_zone_id != "" ? "http://${local.service_fqdn}" : ""
+    )
+  )
 }
 
 output "alias_domain_url" {
   description = "Migration-only legacy domain URL"
   value       = local.alias_domain_enabled ? "https://${local.alias_service_fqdn}" : ""
-}
-
-output "alias_service_fqdn" {
-  description = "Migration-only legacy service FQDN"
-  value       = local.alias_domain_enabled ? local.alias_service_fqdn : ""
 }
 
 output "grpc_endpoint" {

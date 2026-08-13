@@ -530,7 +530,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name |
 | `alb_url` | Full ALB URL |
-| `custom_domain_url` | Custom domain URL when HTTPS is configured |
+| `custom_domain_url` | Canonical service URL: https with a certificate, http when Terraform manages only the DNS record |
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |

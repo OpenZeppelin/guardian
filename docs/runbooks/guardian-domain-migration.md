@@ -21,7 +21,10 @@ names, or the legacy hostname's certificate must be supplied separately through
 
 Load shared credentials and deployment settings from `.env`, then override every
 value that identifies the stack. Do not rely on the current values in `.env`
-when selecting a state file manually.
+when selecting a state file manually. The `GUARDIAN_NETWORK_TYPE` exports pin
+the network each stack already runs (the hosted devnet stack runs `MidenDevnet`,
+the testnet stack `MidenTestnet`) so a stale `.env` value cannot switch the
+server's network inside this domain-only apply.
 
 For testnet:
 
@@ -35,6 +38,7 @@ export GUARDIAN_NETWORK_TYPE=MidenTestnet
 export DOMAIN_NAME=openzeppelin.com
 export SUBDOMAIN=guardian-testnet
 export ALIAS_SUBDOMAIN=guardian
+export ACM_CERTIFICATE_ARN="arn:aws:acm:us-east-1:<account-id>:certificate/<canonical-cert-id>"
 export TF_STATE_PATH="$(pwd)/infra/terraform.guardian-prod.prod.tfstate"
 ```
 
@@ -50,13 +54,21 @@ export GUARDIAN_NETWORK_TYPE=MidenDevnet
 export DOMAIN_NAME=openzeppelin.com
 export SUBDOMAIN=guardian-devnet
 export ALIAS_SUBDOMAIN=guardian-stg
+export ACM_CERTIFICATE_ARN="arn:aws:acm:us-east-1:<account-id>:certificate/<canonical-cert-id>"
 export TF_STATE_PATH="$(pwd)/infra/terraform.guardian.dev.tfstate"
 ```
 
-Set `ACM_CERTIFICATE_ARN` to an issued certificate covering the canonical
-hostname. If that certificate does not also cover the legacy hostname, set
-`ALIAS_ACM_CERTIFICATE_ARN` to its existing certificate. Both certificates must
-be in the ALB's AWS region.
+`ACM_CERTIFICATE_ARN` must point at an issued certificate covering the canonical
+hostname. If that certificate does not also cover the legacy hostname, also
+export `ALIAS_ACM_CERTIFICATE_ARN` with the legacy hostname's existing
+certificate. Both certificates must be in the ALB's AWS region.
+
+With a split-certificate setup, the apply swaps the listener's default
+certificate to the canonical one before it creates the SNI attachment for the
+legacy certificate, so TLS on the live legacy hostname can fail for a brief
+window during the apply. Prefer a single certificate covering both names; when
+`ALIAS_ACM_CERTIFICATE_ARN` is unavoidable, schedule the apply for a
+low-traffic window.
 
 Before continuing, authenticate and confirm that the selected state belongs to
 the intended deployment:
@@ -174,14 +186,22 @@ create the new canonical record. An in-place comment update on the legacy
 Cloudflare record is harmless. With external DNS, the plan should not add DNS
 resources; confirm both records separately with that provider. Certificate and
 output changes are expected in either case. Do not apply if the plan destroys or
-replaces the legacy DNS record, ALB, ECS service, or database. After reviewing
-the plan:
+replaces the legacy DNS record, ALB, ECS service, or database.
+
+A wrong `.env` value surfaces as an in-place `aws_ecs_task_definition` update
+rather than a destroy or replace, so inspect that diff too. This domain-only
+apply must not change the task definition at all: an environment diff (network
+type, CORS origins, operator keys) means per-stack configuration leaked from
+`.env`, and an image diff means the ECR `latest` tag has moved since the
+stack's last deploy. Stop and pin the correct values before applying. After
+reviewing the plan:
 
 ```bash
 ./scripts/aws-deploy.sh deploy --skip-build
 ```
 
-Verify HTTP, gRPC, and certificate hostname matching on both names. This example
+Verify HTTP and gRPC on both names; the `curl` and `grpcurl` calls each verify
+the certificate chain and hostname as part of the TLS handshake. This example
 shows testnet; repeat it for `guardian-devnet` and `guardian-stg`:
 
 ```bash
@@ -189,8 +209,6 @@ curl --fail-with-body https://guardian-testnet.openzeppelin.com/pubkey
 curl --fail-with-body https://guardian.openzeppelin.com/pubkey
 grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian-testnet.openzeppelin.com:443 guardian.Guardian/GetPubkey
 grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
-openssl s_client -connect guardian-testnet.openzeppelin.com:443 -servername guardian-testnet.openzeppelin.com -verify_hostname guardian-testnet.openzeppelin.com -verify_return_error </dev/null
-openssl s_client -connect guardian.openzeppelin.com:443 -servername guardian.openzeppelin.com -verify_hostname guardian.openzeppelin.com -verify_return_error </dev/null
 ```
 
 Keep SDK, smoke-test, benchmark, and operational defaults on the legacy names
