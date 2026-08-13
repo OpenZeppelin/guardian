@@ -179,6 +179,33 @@ console.log('Commitment:', state.commitment);
 console.log('Created:', state.createdAt);
 ```
 
+### Creating Proposals
+
+Every `create*Proposal` method takes its required arguments followed by a
+single optional options object (issue #387) — there are no positional
+optional parameters:
+
+```typescript
+createP2idProposal(recipientId, faucetId, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)
+createConsumeNotesProposal(noteIds, { nonce }?)
+createAddSignerProposal(commitment, { nonce, newThreshold }?)
+createRemoveSignerProposal(commitment, { nonce, newThreshold }?)
+createChangeThresholdProposal(threshold, { nonce }?)
+createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)
+createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)
+createCustomProposal(requestBytes, label, { nonce }?)
+```
+
+All methods accept `nonce` (identifies the proposal; defaults to
+`Date.now()`). `newThreshold` defaults to the current threshold on add and to
+the min of the current threshold and the remaining signer count on remove.
+The option shapes are exported as `CreateProposalOptions`,
+`CreateSignerProposalOptions`, and `CreateP2idProposalOptions`.
+
+> **Breaking change (issue #387):** these methods previously took `nonce` (and
+> `newThreshold`) as positional parameters. Passing the old positional form
+> now throws at runtime instead of silently applying defaults.
+
 ### Create a Proposal (Add Signer)
 
 ```typescript

@@ -332,9 +332,9 @@ export async function createP2idProposal(
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createP2idProposal(recipientId, faucetId, amount, {
+      ...heights,
       nonce: proposalNonce(multisig),
       noteType,
-      ...heights,
     }));
 }
 
@@ -437,7 +437,7 @@ export async function createCustomP2idProposal(
   );
 
   const created = await createProposalResult(multisig, () =>
-    multisig.createCustomProposal(request.serialize(), label, proposalNonce(multisig)));
+    multisig.createCustomProposal(request.serialize(), label, { nonce: proposalNonce(multisig) }));
 
   const recipe: CustomProposalRecipe = {
     proposalId: created.proposal.id,

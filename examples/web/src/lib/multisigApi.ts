@@ -368,9 +368,9 @@ export async function createP2idProposal(
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createP2idProposal(recipientId, faucetId, amount, {
+      ...heights,
       nonce: proposalNonce(multisig),
       noteType,
-      ...heights,
     }));
 }
 

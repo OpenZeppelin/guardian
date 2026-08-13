@@ -125,15 +125,10 @@ export interface CreateProposalOptions {
   nonce?: number;
 }
 
-export interface CreateAddSignerProposalOptions extends CreateProposalOptions {
-  /** New signing threshold; defaults to the current threshold. */
-  newThreshold?: number;
-}
-
-export interface CreateRemoveSignerProposalOptions extends CreateProposalOptions {
+export interface CreateSignerProposalOptions extends CreateProposalOptions {
   /**
-   * New signing threshold; defaults to
-   * `min(current threshold, remaining signer count)`.
+   * New signing threshold. Defaults to the current threshold on add, and to
+   * `min(current threshold, remaining signer count)` on remove.
    */
   newThreshold?: number;
 }
@@ -170,6 +165,27 @@ function deserializeTransactionRequest(bytes: Uint8Array): TransactionRequest {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(`failed to decode transaction request: ${detail}`);
   }
+}
+
+/**
+ * Single home for the proposal-nonce default, plus a runtime guard for
+ * pre-#387 positional callers. Untyped JS passing the old `nonce` number (or
+ * a legacy trailing argument) would otherwise bind it as the options bag and
+ * silently fall back to every default — a public note instead of a private
+ * one, or the current threshold instead of the requested one — so it must
+ * fail loudly instead.
+ */
+function resolveProposalNonce(
+  method: string,
+  options: CreateProposalOptions,
+  legacyArgs: readonly unknown[] = [],
+): number {
+  if (typeof options !== 'object' || options === null || legacyArgs.length > 0) {
+    throw new Error(
+      `${method}: positional optional parameters were replaced by a trailing options object (issue #387); pass { nonce, ... } instead`,
+    );
+  }
+  return options.nonce ?? Date.now();
 }
 
 export class Multisig {
@@ -633,8 +649,10 @@ export class Multisig {
    */
   async createAddSignerProposal(
     newCommitment: string,
-    options: CreateAddSignerProposalOptions = {},
+    options: CreateSignerProposalOptions = {},
+    ...legacyArgs: never[]
   ): Promise<Proposal> {
+    const proposalNonce = resolveProposalNonce('createAddSignerProposal', options, legacyArgs);
     const webClient = await this.getRawClient();
     const targetThreshold = options.newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
@@ -648,7 +666,6 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'add_signer',
@@ -671,8 +688,10 @@ export class Multisig {
    */
   async createRemoveSignerProposal(
     signerToRemove: string,
-    options: CreateRemoveSignerProposalOptions = {},
+    options: CreateSignerProposalOptions = {},
+    ...legacyArgs: never[]
   ): Promise<Proposal> {
+    const proposalNonce = resolveProposalNonce('createRemoveSignerProposal', options, legacyArgs);
     const webClient = await this.getRawClient();
     const normalizedRemove = signerToRemove.toLowerCase();
     const targetSignerCommitments = this.signerCommitments.filter(
@@ -703,7 +722,6 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'remove_signer',
@@ -727,6 +745,7 @@ export class Multisig {
     newThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    const proposalNonce = resolveProposalNonce('createChangeThresholdProposal', options);
     const webClient = await this.getRawClient();
     if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
       throw new Error(
@@ -747,7 +766,6 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'change_threshold',
@@ -766,6 +784,7 @@ export class Multisig {
     targetThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    const proposalNonce = resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
     const webClient = await this.getRawClient();
     if (targetThreshold < 0 || targetThreshold > this.signerCommitments.length) {
       throw new Error(
@@ -793,7 +812,6 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = options.nonce ?? Date.now();
     const action = targetThreshold === 0
       ? `Clear threshold override for ${targetProcedure}`
       : `Set ${targetProcedure} threshold override to ${targetThreshold}`;
@@ -822,6 +840,7 @@ export class Multisig {
     newGuardianPubkey: string,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    const proposalNonce = resolveProposalNonce('createSwitchGuardianProposal', options);
     const webClient = await this.getRawClient();
     await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
 
@@ -833,7 +852,6 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'switch_guardian',
@@ -859,6 +877,7 @@ export class Multisig {
     noteIds: string[],
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    const proposalNonce = resolveProposalNonce('createConsumeNotesProposal', options);
     const webClient = await this.getRawClient();
     if (noteIds.length === 0) {
       throw new Error('At least one note ID is required');
@@ -880,7 +899,6 @@ export class Multisig {
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'consume_notes',
@@ -920,7 +938,9 @@ export class Multisig {
     faucetId: string,
     amount: bigint,
     options: CreateP2idProposalOptions = {},
+    ...legacyArgs: never[]
   ): Promise<Proposal> {
+    const proposalNonce = resolveProposalNonce('createP2idProposal', options, legacyArgs);
     const webClient = await this.getRawClient();
     if (amount <= 0n) {
       throw new Error('Amount must be greater than 0');
@@ -928,22 +948,20 @@ export class Multisig {
 
     const account = await this.getStoreAccount();
 
+    // Forward everything but the nonce, so a note option added to
+    // CreateP2idProposalOptions can't be silently dropped before the builder.
+    const { nonce: _nonce, ...noteOptions } = options;
     const { request, salt } = buildP2idTransactionRequest(
       this._accountId,
       recipientId,
       faucetId,
       amount,
       account,
-      {
-        noteType: options.noteType,
-        reclaimHeight: options.reclaimHeight,
-        timelockHeight: options.timelockHeight,
-      },
+      noteOptions,
     );
 
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = options.nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'p2id',
@@ -1344,8 +1362,9 @@ export class Multisig {
   async createCustomProposal(
     transactionRequestBytes: Uint8Array,
     proposalType: string,
-    nonce?: number,
+    options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    const proposalNonce = resolveProposalNonce('createCustomProposal', options);
     const label = proposalType.trim().toLowerCase();
     if (label.length === 0) {
       throw new Error('proposalType must not be empty');
@@ -1365,7 +1384,6 @@ export class Multisig {
     const request = deserializeTransactionRequest(transactionRequestBytes);
     const summary = await executeForSummary(webClient, this._accountId, request);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
-    const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
       proposalType: 'custom',

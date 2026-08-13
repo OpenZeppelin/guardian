@@ -539,6 +539,12 @@ one implicitly.
 
 ### Proposal Operations
 
+Every `create*Proposal` method takes a single trailing options object (issue
+#387). All of them accept an optional `nonce` that identifies the proposal
+(defaults to `Date.now()`); method-specific options are listed with each
+method below. Passing a legacy positional `nonce` number where the options
+object is expected throws instead of silently applying defaults.
+
 #### P2ID Transfer (Send Funds)
 
 ```typescript
@@ -731,10 +737,12 @@ await multisig.executeProposal(signedProposal.id);
 | `exportNoteToFile(noteId, filename?)` | Browser-only: download the note file |
 | `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
-| `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal |
-| `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal |
+| `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
+| `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
+| `createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)` | Create per-procedure threshold override proposal (`threshold: 0` clears the override) |
 | `createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal |
+| `createCustomProposal(requestBytes, label, { nonce }?)` | Create a producer-built custom proposal (issue #266) |
 | `signProposal(id)` | Sign a proposal |
 | `executeProposal(id)` | Execute ready proposal |
 | `exportProposalToJson(id)` | Export for offline signing |

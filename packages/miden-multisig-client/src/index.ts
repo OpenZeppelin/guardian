@@ -56,8 +56,7 @@ export {
   Multisig,
   type AccountState,
   type CreateProposalOptions,
-  type CreateAddSignerProposalOptions,
-  type CreateRemoveSignerProposalOptions,
+  type CreateSignerProposalOptions,
   type CreateP2idProposalOptions,
 } from './multisig.js';
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
