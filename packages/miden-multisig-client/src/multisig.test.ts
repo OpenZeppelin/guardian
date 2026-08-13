@@ -8,10 +8,18 @@ import {
   executeForSummary,
 } from './transaction.js';
 
-const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig } = vi.hoisted(() => ({
+const {
+  mockRpcGetAccountDetails,
+  mockAccountDeserialize,
+  mockDetectConfig,
+  mockGetSignerCommitments,
+  mockGetGuardianCommitment,
+} = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
   mockDetectConfig: vi.fn(),
+  mockGetSignerCommitments: vi.fn(),
+  mockGetGuardianCommitment: vi.fn(),
 }));
 
 // Mock the Miden SDK
@@ -124,6 +132,8 @@ vi.mock('./utils/encoding.js', async () => {
 vi.mock('./inspector.js', () => ({
   AccountInspector: {
     fromAccount: mockDetectConfig,
+    getSignerPublicKeyCommitments: mockGetSignerCommitments,
+    getGuardianPublicKeyCommitment: mockGetGuardianCommitment,
   },
 }));
 
@@ -320,6 +330,56 @@ describe('Multisig', () => {
 
       const multisig = createTestMultisig(config);
       expect(multisig.signerCommitment).toBe(mockSigner.commitment);
+    });
+  });
+
+  describe('getSignerPublicKeyCommitments (issue #306)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it('reads commitments from the store-backed account', async () => {
+      const storeAccount = mockedAccount('0x' + 'b'.repeat(64), 1);
+      mockWebClient.getAccount.mockResolvedValueOnce(storeAccount);
+      const expected = ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)];
+      mockGetSignerCommitments.mockReturnValueOnce(expected);
+
+      const multisig = createTestMultisig(config);
+      const commitments = await multisig.getSignerPublicKeyCommitments();
+
+      expect(commitments).toEqual(expected);
+      expect(mockGetSignerCommitments).toHaveBeenCalledWith(storeAccount);
+    });
+
+    it('falls back to the account snapshot when the store has no record', async () => {
+      mockWebClient.getAccount.mockResolvedValueOnce(null);
+      mockGetSignerCommitments.mockReturnValueOnce(['0x' + '3'.repeat(64)]);
+
+      const multisig = createTestMultisig(config);
+      await multisig.getSignerPublicKeyCommitments();
+
+      expect(mockGetSignerCommitments).toHaveBeenCalledWith(mockAccount);
+    });
+  });
+
+  describe('getGuardianPublicKeyCommitment (issue #306)', () => {
+    it('reads the guardian commitment from the store-backed account', async () => {
+      const storeAccount = mockedAccount('0x' + 'b'.repeat(64), 1);
+      mockWebClient.getAccount.mockResolvedValueOnce(storeAccount);
+      mockGetGuardianCommitment.mockReturnValueOnce('0x' + '4'.repeat(64));
+
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+
+      const commitment = await multisig.getGuardianPublicKeyCommitment();
+
+      expect(commitment).toBe('0x' + '4'.repeat(64));
+      expect(mockGetGuardianCommitment).toHaveBeenCalledWith(storeAccount);
     });
   });
 
