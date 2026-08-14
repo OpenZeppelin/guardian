@@ -955,6 +955,121 @@ describe('Multisig', () => {
       expect(proposals[0].status).toBe('pending');
     });
 
+    it('should prune proposals GUARDIAN no longer reports (executed/canonicalized)', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const pendingProposal = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [
+            {
+              signer_id: '0x' + 'a'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+
+      // First sync: GUARDIAN reports the pending proposal, priming the cache.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingProposal] }),
+      });
+      const first = await multisig.syncProposals();
+      expect(first.length).toBe(1);
+
+      // Second sync: another signer executed the proposal, so GUARDIAN pruned it
+      // and now returns an empty list. The cache must reconcile to empty rather
+      // than keep returning the stale (still-pending-looking) proposal forever.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const second = await multisig.syncProposals();
+      expect(second).toEqual([]);
+      expect(multisig.listProposals()).toEqual([]);
+    });
+
+    it('should skip proposals already consumed by the committed account nonce', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      // Local account is already at nonce 5; a proposal at nonce 5 has been
+      // consumed even though GUARDIAN still reports it pending (canonicalization
+      // has not pruned it yet). It must not be returned as pending.
+      const multisig = new Multisig(
+        mockedAccount('0x' + 'b'.repeat(64), 5),
+        config,
+        guardian,
+        mockSigner,
+        mockWebClient,
+        '0x' + 'a'.repeat(30),
+        MIDEN_RPC_ENDPOINT,
+      );
+
+      const staleProposal = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 5,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [
+            {
+              signer_id: '0x' + 'a'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [staleProposal] }),
+      });
+
+      const proposals = await multisig.syncProposals();
+      expect(proposals).toEqual([]);
+      expect(multisig.listProposals()).toEqual([]);
+    });
+
     it('should return ready status when enough signatures', async () => {
       const config = {
         threshold: 1, // Only 1 signature needed

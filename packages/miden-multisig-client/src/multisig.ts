@@ -536,13 +536,59 @@ export class Multisig {
   }
 
   /**
+   * The committed nonce of the local account, or null when it cannot be read
+   * (no account loaded yet, or a nonce larger than a safe integer). Mirrors the
+   * example app's `currentAccountNonce` helper.
+   */
+  private committedAccountNonce(): number | null {
+    if (!this.account) {
+      return null;
+    }
+
+    try {
+      const nonce = this.account.nonce().asInt();
+      if (nonce > BigInt(Number.MAX_SAFE_INTEGER)) {
+        return null;
+      }
+      return Number(nonce);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Sync proposals from the GUARDIAN server.
+   *
+   * The GUARDIAN response is authoritative for the set of pending proposals: the
+   * server only reports proposals whose status is still pending and drops them
+   * once they are executed and canonicalized. The local cache is therefore
+   * rebuilt to match the response, so a proposal the server has pruned does not
+   * linger locally and keep showing as pending forever — e.g. a co-signer's
+   * browser after another signer executed the transaction. This mirrors the Rust
+   * client's `list_proposals`, which rebuilds its result set from the response on
+   * every call.
+   *
+   * Rebuilding is safe for the offline export/import flow: every proposal is
+   * pushed to GUARDIAN when it is created (`createProposal`), so an imported
+   * proposal is still GUARDIAN-tracked and is returned here while pending; it is
+   * only dropped once GUARDIAN itself stops reporting it (executed / abandoned).
    */
   async syncProposals(): Promise<Proposal[]> {
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
+    const committedNonce = this.committedAccountNonce();
+    const reconciled = new Map<string, Proposal>();
+
     for (const delta of deltas) {
+      // Skip proposals already consumed by the committed account nonce. GUARDIAN
+      // may still report them pending until canonicalization prunes them; mirror
+      // the Rust client's `proposal.nonce <= account.nonce()` staleness filter so
+      // an executed-but-not-yet-pruned proposal is not shown as pending.
+      if (committedNonce !== null && delta.nonce <= committedNonce) {
+        continue;
+      }
+
       const proposalId = normalizeHexWord(
         computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
       );
@@ -555,9 +601,10 @@ export class Multisig {
       );
       await this.verifyProposalMetadataBinding(proposal);
 
-      this.proposals.set(proposal.id, proposal);
+      reconciled.set(proposal.id, proposal);
     }
 
+    this.proposals = reconciled;
     return Array.from(this.proposals.values());
   }
 
