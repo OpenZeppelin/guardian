@@ -559,9 +559,12 @@ export class Multisig {
    * Nonce-based staleness hiding — a proposal the account has already advanced
    * past, which GUARDIAN may still briefly report as pending before it prunes it
    * — is intentionally left to callers' own visible-proposal filter (see the
-   * examples' `filterVisibleProposals`). The proposal `nonce` field has no single
-   * cross-app convention (some callers store the pre-execution account nonce,
-   * others the next nonce), so the client cannot safely filter on it here.
+   * examples' `filterVisibleProposals`). The Rust client applies a
+   * `proposal.nonce <= account.nonce()` filter directly, but it owns a single
+   * nonce convention end to end; this shared client serves callers that disagree
+   * on what the proposal `nonce` means (some store the pre-execution account
+   * nonce, others the next nonce), so it cannot safely apply that comparison here
+   * and defers it to the caller. This is an intentional TS/Rust surface difference.
    */
   async syncProposals(): Promise<Proposal[]> {
     // Snapshot the ids known before the network round-trip so only these are
@@ -601,7 +604,11 @@ export class Multisig {
   }
 
   /**
-   * List all known proposals
+   * Returns the proposals cached by the most recent {@link syncProposals} call.
+   *
+   * This is that sync's reconciled set, not a durable log: proposals GUARDIAN no
+   * longer reports were pruned, so do not treat the result as an ever-growing
+   * history of every proposal ever seen.
    */
   listProposals(): Proposal[] {
     return Array.from(this.proposals.values());
