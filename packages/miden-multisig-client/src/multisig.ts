@@ -160,6 +160,10 @@ export class Multisig {
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
+  // Proposal ids GUARDIAN returned on the most recent syncProposals. Only these
+  // are eligible for pruning on the next sync, so a locally created/imported
+  // proposal GUARDIAN has not yet reported is never evicted (see syncProposals).
+  private lastReportedProposalIds: Set<string> = new Set();
 
   constructor(
     account: Account,
@@ -541,20 +545,19 @@ export class Multisig {
    * The GUARDIAN response is authoritative for the set of pending proposals: the
    * server only reports proposals whose status is still pending and drops them
    * once they are executed and canonicalized. The local cache is therefore
-   * reconciled to the response — proposals the server no longer reports are
-   * pruned — so a stale proposal does not linger locally and keep showing as
-   * pending forever, e.g. a co-signer's browser after another signer executed the
-   * transaction. Only ids present in the cache when the sync started are eligible
-   * for pruning, so a proposal created/signed/imported concurrently during the
-   * awaits below is never dropped.
+   * reconciled to the response — a proposal GUARDIAN reported on a previous sync
+   * but no longer reports is pruned — so a stale proposal does not linger locally
+   * and keep showing as pending forever, e.g. a co-signer's browser after another
+   * signer executed the transaction.
    *
-   * Reconciling is safe for the offline export/import flow. `importProposal`
-   * itself does not push to GUARDIAN, but the only way to create a proposal is
-   * `createProposal`, which pushes to GUARDIAN before caching — so by the time a
-   * proposal is exported, shared over a side channel, and imported elsewhere, its
-   * creator has already registered it with GUARDIAN. An imported proposal is thus
-   * GUARDIAN-tracked and returned here while pending; it is only dropped once
-   * GUARDIAN itself stops reporting it (executed / abandoned).
+   * Only proposals GUARDIAN has actually reported are eligible for pruning. A
+   * proposal that is in the cache but that GUARDIAN has not (yet) returned in a
+   * response is left untouched. This keeps two flows correct: (1) a
+   * `createProposal` immediately followed by a sync is not evicted if GUARDIAN's
+   * read-your-writes lags and omits the just-pushed proposal; (2) the offline
+   * export/import flow — `importProposal` caches a proposal this client has not
+   * synced yet — is not evicted before GUARDIAN first reports it. A proposal is
+   * only dropped once GUARDIAN reported it and then stopped (executed / abandoned).
    *
    * Nonce-based staleness hiding — a proposal the account has already advanced
    * past, which GUARDIAN may still briefly report as pending before it prunes it
@@ -567,10 +570,6 @@ export class Multisig {
    * and defers it to the caller. This is an intentional TS/Rust surface difference.
    */
   async syncProposals(): Promise<Proposal[]> {
-    // Snapshot the ids known before the network round-trip so only these are
-    // eligible for pruning; anything added concurrently below is preserved.
-    const knownIds = new Set(this.proposals.keys());
-
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
@@ -592,13 +591,15 @@ export class Multisig {
       reportedIds.add(proposal.id);
     }
 
-    // Prune proposals GUARDIAN no longer reports (executed / canonicalized /
-    // abandoned) so they do not linger as stale pending entries.
-    for (const id of knownIds) {
+    // Prune proposals GUARDIAN reported before but no longer reports (executed /
+    // canonicalized / abandoned). Proposals GUARDIAN has never reported to this
+    // client (freshly created, or imported and not yet synced) are left alone.
+    for (const id of this.lastReportedProposalIds) {
       if (!reportedIds.has(id)) {
         this.proposals.delete(id);
       }
     }
+    this.lastReportedProposalIds = reportedIds;
 
     return Array.from(this.proposals.values());
   }

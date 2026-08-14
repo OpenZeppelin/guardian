@@ -1068,6 +1068,55 @@ describe('Multisig', () => {
       expect(multisig.listProposals().length).toBe(1);
     });
 
+    it('should not prune a locally-created proposal GUARDIAN has not reported yet', async () => {
+      // createProposal pushes to GUARDIAN then caches. If GUARDIAN's
+      // read-your-writes lags and the immediately-following sync omits the
+      // just-pushed proposal, it must NOT be evicted: GUARDIAN never reported it
+      // to this client, so it is not a prune candidate.
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: { tx_summary: { data: 'AQID' }, signatures: [] },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+      const created = await multisig.createProposal(1, 'AQID', {
+        proposalType: 'add_signer',
+        targetThreshold: 1,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      });
+      expect(multisig.listProposals().length).toBe(1);
+
+      // GUARDIAN's next getDeltaProposals lags and returns [].
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const synced = await multisig.syncProposals();
+      expect(synced.length).toBe(1);
+      expect(synced[0].id).toBe(created.id);
+      expect(multisig.listProposals().length).toBe(1);
+    });
+
     it('should return ready status when enough signatures', async () => {
       const config = {
         threshold: 1, // Only 1 signature needed
