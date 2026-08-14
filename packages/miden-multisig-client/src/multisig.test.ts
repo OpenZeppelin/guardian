@@ -1012,6 +1012,62 @@ describe('Multisig', () => {
       expect(multisig.listProposals()).toEqual([]);
     });
 
+    it('should keep proposals GUARDIAN still reports across syncs', async () => {
+      // Guards against over-pruning: a proposal the server still reports on a
+      // later sync must survive the reconcile, not be deleted.
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const pendingProposal = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [
+            {
+              signer_id: '0x' + 'a'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingProposal] }),
+      });
+      const first = await multisig.syncProposals();
+      expect(first.length).toBe(1);
+
+      // GUARDIAN still reports the same pending proposal on the next sync.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingProposal] }),
+      });
+      const second = await multisig.syncProposals();
+      expect(second.length).toBe(1);
+      expect(multisig.listProposals().length).toBe(1);
+    });
+
     it('should return ready status when enough signatures', async () => {
       const config = {
         threshold: 1, // Only 1 signature needed

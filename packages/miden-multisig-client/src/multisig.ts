@@ -548,10 +548,13 @@ export class Multisig {
    * for pruning, so a proposal created/signed/imported concurrently during the
    * awaits below is never dropped.
    *
-   * Rebuilding is safe for the offline export/import flow: every proposal is
-   * pushed to GUARDIAN when it is created (`createProposal`), so an imported
-   * proposal is still GUARDIAN-tracked and is returned here while pending; it is
-   * only dropped once GUARDIAN itself stops reporting it (executed / abandoned).
+   * Reconciling is safe for the offline export/import flow. `importProposal`
+   * itself does not push to GUARDIAN, but the only way to create a proposal is
+   * `createProposal`, which pushes to GUARDIAN before caching — so by the time a
+   * proposal is exported, shared over a side channel, and imported elsewhere, its
+   * creator has already registered it with GUARDIAN. An imported proposal is thus
+   * GUARDIAN-tracked and returned here while pending; it is only dropped once
+   * GUARDIAN itself stops reporting it (executed / abandoned).
    *
    * Nonce-based staleness hiding — a proposal the account has already advanced
    * past, which GUARDIAN may still briefly report as pending before it prunes it
