@@ -25,6 +25,29 @@ export interface DetectedMultisigConfig {
 }
 
 /**
+ * Fail-closed validation for consuming a lenient `fromAccount()` result on a
+ * mutation path. `fromAccount` tolerates partial reads (absent entries are
+ * skipped), which is fine for inspection but not for callers that store the
+ * result as the authoritative config: membership proposals treat the signer
+ * set as the complete on-chain set, so adopting a truncated read could
+ * rewrite the account without the omitted keys.
+ */
+export function assertCompleteDetectedConfig(
+  detected: DetectedMultisigConfig,
+): asserts detected is DetectedMultisigConfig & { guardianCommitment: string } {
+  if (detected.numSigners === 0 || detected.signerCommitments.length !== detected.numSigners) {
+    throw new Error(
+      `incomplete signer set: storage reports ${detected.numSigners} signers, read ${detected.signerCommitments.length}`,
+    );
+  }
+  if (!detected.guardianCommitment) {
+    throw new Error(
+      'missing guardian commitment: the guarded-multisig always includes a guardian',
+    );
+  }
+}
+
+/**
  * Rejects accounts built from a different contract version before any
  * layout-dependent read: against such an account the slot names and
  * procedure-root-keyed maps below describe a different component, so reads

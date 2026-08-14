@@ -165,13 +165,19 @@ vi.mock('./utils/encoding.js', async () => {
   };
 });
 
-vi.mock('./inspector.js', () => ({
-  AccountInspector: {
-    fromAccount: mockDetectConfig,
-    getSignerPublicKeyCommitments: mockGetSignerCommitments,
-    getGuardianPublicKeyCommitment: mockGetGuardianCommitment,
-  },
-}));
+// Keep the real assertCompleteDetectedConfig so refreshConfigFromAccount's
+// fail-closed validation is exercised.
+vi.mock('./inspector.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./inspector.js')>();
+  return {
+    ...actual,
+    AccountInspector: {
+      fromAccount: mockDetectConfig,
+      getSignerPublicKeyCommitments: mockGetSignerCommitments,
+      getGuardianPublicKeyCommitment: mockGetGuardianCommitment,
+    },
+  };
+});
 
 // Mock fetch for GUARDIAN client
 const mockFetch = vi.fn();
@@ -637,6 +643,44 @@ describe('Multisig', () => {
       ]);
       expect(multisig.guardianCommitment).toBe('0x' + 'd'.repeat(64));
       expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+    });
+
+    it('keeps the previous config when a refresh reads an incomplete signer set (issue #306 review)', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config, mockSigner, '0x' + 'a'.repeat(30));
+
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+      // Storage reports 3 signers but only 1 entry was readable: adopting
+      // this would let membership proposals rewrite the on-chain set without
+      // the omitted keys. The refresh must keep the previous config instead.
+      mockDetectConfig.mockReturnValueOnce({
+        threshold: 2,
+        numSigners: 3,
+        signerCommitments: ['0x' + '1'.repeat(64)],
+        guardianCommitment: '0x' + 'd'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      await multisig.syncState();
+
+      expect(multisig.threshold).toBe(1);
+      expect(multisig.signerCommitments).toEqual(['0x' + 'a'.repeat(64)]);
+      expect(multisig.guardianCommitment).toBe('0x' + 'c'.repeat(64));
     });
 
     it('should overwrite local state when account is not found on-chain', async () => {

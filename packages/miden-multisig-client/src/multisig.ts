@@ -81,7 +81,7 @@ import {
 } from './utils/signature.js';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
 import { buildGuardianSignatureFromSigner } from './multisig/signing.js';
-import { AccountInspector } from './inspector.js';
+import { AccountInspector, assertCompleteDetectedConfig } from './inspector.js';
 import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
 import { ProposalSignatures } from './proposal/signatures.js';
@@ -600,12 +600,14 @@ export class Multisig {
 
     try {
       const detected = AccountInspector.fromAccount(account);
+      // Fail closed on a partial read: adopting a truncated signer set would
+      // let membership proposals rewrite the account without the omitted
+      // keys. The catch below keeps the previously validated config instead.
+      assertCompleteDetectedConfig(detected);
       this.account = account;
       this.threshold = detected.threshold;
       this.signerCommitments = detected.signerCommitments;
-      if (detected.guardianCommitment) {
-        this.guardianCommitment = detected.guardianCommitment;
-      }
+      this.guardianCommitment = detected.guardianCommitment;
       this.procedureThresholds = new Map(detected.procedureThresholds);
     } catch (error) {
       console.warn('Failed to refresh multisig config from account state', error);
