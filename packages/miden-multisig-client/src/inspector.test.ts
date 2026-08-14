@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { AccountInspector } from './inspector.js';
+import { AccountInspector, assertCompleteDetectedConfig } from './inspector.js';
+import type { DetectedMultisigConfig } from './inspector.js';
 
 // Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => {
@@ -494,5 +495,48 @@ describe('AccountInspector.getGuardianPublicKeyCommitment', () => {
     expect(() => AccountInspector.getGuardianPublicKeyCommitment(account)).toThrow(
       'storage backend exploded'
     );
+  });
+});
+
+describe('assertCompleteDetectedConfig', () => {
+  const complete: DetectedMultisigConfig = {
+    threshold: 2,
+    numSigners: 2,
+    signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+    guardianCommitment: '0x' + 'c'.repeat(64),
+    vaultBalances: [],
+    procedureThresholds: new Map(),
+  };
+
+  it('accepts a complete config', () => {
+    expect(() => assertCompleteDetectedConfig(complete)).not.toThrow();
+  });
+
+  it('rejects a signer set shorter than the reported count', () => {
+    expect(() =>
+      assertCompleteDetectedConfig({
+        ...complete,
+        numSigners: 3,
+      }),
+    ).toThrow(/incomplete signer set: storage reports 3 signers, read 2/);
+  });
+
+  it('rejects a zero signer count', () => {
+    expect(() =>
+      assertCompleteDetectedConfig({
+        ...complete,
+        numSigners: 0,
+        signerCommitments: [],
+      }),
+    ).toThrow(/incomplete signer set/);
+  });
+
+  it('rejects a missing guardian commitment', () => {
+    expect(() =>
+      assertCompleteDetectedConfig({
+        ...complete,
+        guardianCommitment: null,
+      }),
+    ).toThrow(/missing guardian commitment/);
   });
 });
