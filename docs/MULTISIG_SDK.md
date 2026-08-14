@@ -545,6 +545,8 @@ await multisig.executeProposal(signedProposal.id);
 | `importProposal(json)` | Import offline proposal |
 | `signProposalOffline(id)` | Sign imported proposal offline |
 | `getConsumableNotes()` | Get notes that can be consumed |
+| `getSignerPublicKeyCommitments()` | Read the current signer public-key commitments from account storage, ordered by signer index (strict; throws on partial reads) |
+| `getGuardianPublicKeyCommitment()` | Read the current guardian commitment from account storage (strict; throws when the entry is missing — the guarded-multisig always includes a guardian) |
 
 #### FalconSigner
 
@@ -562,13 +564,30 @@ await multisig.executeProposal(signedProposal.id);
 |--------|-------------|
 | `fromBase64(data)` | Inspect base64-encoded account |
 | `fromAccount(account)` | Inspect Account object |
+| `getSignerPublicKeyCommitments(account)` | Read the signer public-key commitments ordered by signer index (strict; throws on a foreign contract version or any absent entry) |
+| `getGuardianPublicKeyCommitment(account)` | Read the guardian commitment (strict; throws on a foreign contract version or a missing entry) |
 
-Returns `DetectedMultisigConfig`:
+`fromBase64` / `fromAccount` return `DetectedMultisigConfig`:
 - `threshold`: number
 - `numSigners`: number
 - `signerCommitments`: string[]
-- `guardianCommitment`: string
+- `guardianCommitment`: string | null
 - `vaultBalances`: { faucetId, amount }[]
+
+> **Reading an account's keys:** since the account uses the upstream
+> `AuthGuardedMultisig` component, the Miden SDK's
+> `Account.getPublicKeyCommitments()` returns the approver commitments
+> natively. The accessors above are the strict, layout-insulated
+> alternative (issue #306): they validate the complete set against the
+> configured signer count and throw instead of silently omitting
+> unreadable entries, and they shield consumers from storage-layout
+> changes across contract versions (both are gated on the pinned contract
+> version — see [Contract version pinning](#contract-version-pinning)).
+> Commitments are ordered by signer index as currently stored (indices
+> re-pack when signers are removed); hot/cold roles are a consumer-side
+> convention. The `Account` must come from the same copy of
+> `@miden-sdk/miden-sdk` that this package links — a separately bundled
+> SDK copy is rejected by the SDK's instance checks.
 
 ---
 

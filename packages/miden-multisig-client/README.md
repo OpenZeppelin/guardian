@@ -88,6 +88,47 @@ The configuration is automatically detected from the account's on-chain storage:
 const multisig = await client.load(accountId, signer);
 ```
 
+### Read Signer Public-Key Commitments
+
+Since accounts use the upstream `AuthGuardedMultisig` component, the Miden
+SDK's `Account.getPublicKeyCommitments()` returns the approver commitments
+natively. The `AccountInspector` accessors are the strict, layout-insulated
+alternative (issue #306): they validate the complete set against the
+configured signer count and throw instead of silently omitting unreadable
+entries, and they shield consumers from storage-layout changes across
+contract versions.
+
+Holding only a fetched Miden SDK `Account` (e.g. a wallet or dApp):
+
+```typescript
+import { AccountInspector } from '@openzeppelin/miden-multisig-client';
+
+const commitments = AccountInspector.getSignerPublicKeyCommitments(account);
+const guardianKey = AccountInspector.getGuardianPublicKeyCommitment(account);
+```
+
+Or from a loaded `Multisig` instance (reads current store-backed state):
+
+```typescript
+const signerKeys = await multisig.getSignerPublicKeyCommitments();
+```
+
+Commitments are ordered by signer index as currently stored; indices re-pack
+when signers are removed, so index 0 is the key listed first at creation (by
+convention the creating client's own key) only until the first membership
+change. Hot/cold roles are a consumer-side convention, not part of on-chain
+state. `getSignerPublicKeyCommitments` throws rather than silently returning
+a truncated list when any signer entry is absent; `getGuardianPublicKeyCommitment`
+throws when the guardian entry is missing (the guarded-multisig always
+includes a guardian). Both are gated on this SDK's pinned contract version
+and reject accounts built from a different miden-standards release.
+
+The `Account` passed to `AccountInspector` must come from the same copy of
+`@miden-sdk/miden-sdk` that this package links. An application bundling its
+own SDK copy (common in wallets) will get a descriptive error from the SDK's
+instance checks; construct the account with this package's SDK instance
+instead.
+
 ### Recover An Account By Key
 
 When the wallet only holds a signing key from the account's authorization

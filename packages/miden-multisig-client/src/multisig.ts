@@ -72,7 +72,7 @@ import {
 } from './utils/signature.js';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
 import { buildGuardianSignatureFromSigner } from './multisig/signing.js';
-import { AccountInspector } from './inspector.js';
+import { AccountInspector, assertCompleteDetectedConfig } from './inspector.js';
 import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
 import { ProposalSignatures } from './proposal/signatures.js';
@@ -228,6 +228,32 @@ export class Multisig {
   async getStoreAccount(): Promise<Account> {
     const webClient = await this.getRawClient();
     return (await webClient.getAccount(AccountId.fromHex(this._accountId))) ?? this.account;
+  }
+
+  /**
+   * Read the current ordered signer public-key commitments from account
+   * storage (store-backed state, falling back to the snapshot).
+   *
+   * Commitments are ordered by signer index as currently stored; indices
+   * re-pack when signers are removed, so index 0 is the creation-time first
+   * key only until the first membership change. Unlike the
+   * `signerCommitments` field, which reflects the config detected at
+   * construction / last sync, this reads the account state directly.
+   * See `AccountInspector.getSignerPublicKeyCommitments` (issue #306).
+   */
+  async getSignerPublicKeyCommitments(): Promise<string[]> {
+    const account = await this.getStoreAccount();
+    return AccountInspector.getSignerPublicKeyCommitments(account);
+  }
+
+  /**
+   * Read the current guardian public-key commitment from account storage.
+   * The guarded-multisig always includes a guardian, so this throws (rather
+   * than returning null) when the entry is missing.
+   */
+  async getGuardianPublicKeyCommitment(): Promise<string> {
+    const account = await this.getStoreAccount();
+    return AccountInspector.getGuardianPublicKeyCommitment(account);
   }
 
   /**
@@ -491,12 +517,14 @@ export class Multisig {
 
     try {
       const detected = AccountInspector.fromAccount(account);
+      // Fail closed on a partial read: adopting a truncated signer set would
+      // let membership proposals rewrite the account without the omitted
+      // keys. The catch below keeps the previously validated config instead.
+      assertCompleteDetectedConfig(detected);
       this.account = account;
       this.threshold = detected.threshold;
       this.signerCommitments = detected.signerCommitments;
-      if (detected.guardianCommitment) {
-        this.guardianCommitment = detected.guardianCommitment;
-      }
+      this.guardianCommitment = detected.guardianCommitment;
       this.procedureThresholds = new Map(detected.procedureThresholds);
     } catch (error) {
       console.warn('Failed to refresh multisig config from account state', error);

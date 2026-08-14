@@ -19,21 +19,27 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       vault: vi.fn(),
     })),
   },
+  Word: vi.fn(),
 }));
 
-// Mock the AccountInspector
-vi.mock('./inspector.js', () => ({
-  AccountInspector: {
-    fromAccount: vi.fn(() => ({
-      threshold: 2,
-      numSigners: 2,
-      signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-      guardianCommitment: '0x' + 'c'.repeat(64),
-      vaultBalances: [],
-      procedureThresholds: new Map(),
-    })),
-  },
-}));
+// Mock the AccountInspector, keeping the real assertCompleteDetectedConfig
+// so load()'s fail-closed validation is exercised.
+vi.mock('./inspector.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./inspector.js')>();
+  return {
+    ...actual,
+    AccountInspector: {
+      fromAccount: vi.fn(() => ({
+        threshold: 2,
+        numSigners: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      })),
+    },
+  };
+});
 
 // Mock the account creation module
 vi.mock('./account/index.js', () => ({
@@ -229,6 +235,66 @@ describe('MultisigClient', () => {
       expect(multisig.account).not.toBeNull();
       expect(webClient.accounts.get).toHaveBeenCalledTimes(1);
       expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed when the detected signer set is incomplete (issue #306 review)', async () => {
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
+
+      const { AccountInspector } = await import('./inspector.js');
+      // Storage reports 3 signers but only 2 entries were readable — adopting
+      // this config would let membership proposals drop the missing key.
+      vi.mocked(AccountInspector.fromAccount).mockReturnValueOnce({
+        threshold: 2,
+        numSigners: 3,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await expect(client.load('0x' + 'd'.repeat(30), mockSigner)).rejects.toThrow(
+        /incomplete signer set: storage reports 3 signers, read 2/,
+      );
+    });
+
+    it('fails closed when the guardian commitment is missing', async () => {
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
+
+      const { AccountInspector } = await import('./inspector.js');
+      vi.mocked(AccountInspector.fromAccount).mockReturnValueOnce({
+        threshold: 1,
+        numSigners: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: null,
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await expect(client.load('0x' + 'd'.repeat(30), mockSigner)).rejects.toThrow(
+        /missing guardian commitment/,
+      );
     });
 
     it('should throw if account not found on GUARDIAN', async () => {
