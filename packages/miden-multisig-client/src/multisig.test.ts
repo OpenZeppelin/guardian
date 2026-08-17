@@ -7,6 +7,7 @@ import {
   buildUpdateSignersTransactionRequest,
   executeForSummary,
 } from './transaction.js';
+import { assertMetadataMatchesSummary } from './multisig/summaryBinding.js';
 
 const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig, mockNoteFileDeserialize } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
@@ -137,6 +138,14 @@ vi.mock('./inspector.js', () => ({
   AccountInspector: {
     fromAccount: mockDetectConfig,
   },
+}));
+
+// The metadata<->summary binding is tested exhaustively in
+// ./multisig/summaryBinding.test.ts. Here it is mocked to a no-op so these
+// tests exercise the surrounding flows; individual tests override it to throw
+// when they want to assert that a binding rejection propagates.
+vi.mock('./multisig/summaryBinding.js', () => ({
+  assertMetadataMatchesSummary: vi.fn(),
 }));
 
 // Mock fetch for GUARDIAN client
@@ -1042,11 +1051,9 @@ describe('Multisig', () => {
         }),
       });
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'f'.repeat(64),
-        }),
-      } as any);
+      vi.mocked(assertMetadataMatchesSummary).mockImplementationOnce((id: string) => {
+        throw new Error(`Invalid proposal: metadata does not match tx_summary for ${id}`);
+      });
 
       await expect(multisig.syncProposals()).rejects.toThrow(
         'Invalid proposal: metadata does not match tx_summary'
@@ -1289,11 +1296,9 @@ describe('Multisig', () => {
         }),
       });
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'f'.repeat(64),
-        }),
-      } as any);
+      vi.mocked(assertMetadataMatchesSummary).mockImplementationOnce((id: string) => {
+        throw new Error(`Invalid proposal: metadata does not match tx_summary for ${id}`);
+      });
 
       await expect(
         multisig.createProposal(1, 'AQID', {
@@ -2024,11 +2029,9 @@ describe('Multisig', () => {
         description: '',
       });
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'f'.repeat(64),
-        }),
-      } as any);
+      vi.mocked(assertMetadataMatchesSummary).mockImplementationOnce((id: string) => {
+        throw new Error(`Invalid proposal: metadata does not match tx_summary for ${id}`);
+      });
 
       await expect(multisig.signProposal('0x' + 'c'.repeat(64))).rejects.toThrow(
         'Invalid proposal: metadata does not match tx_summary'
@@ -2091,11 +2094,9 @@ describe('Multisig', () => {
 
       const multisig = createTestMultisig(config);
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'f'.repeat(64),
-        }),
-      } as any);
+      vi.mocked(assertMetadataMatchesSummary).mockImplementationOnce((id: string) => {
+        throw new Error(`Invalid proposal: metadata does not match tx_summary for ${id}`);
+      });
 
       await expect(
         multisig.importProposal(
@@ -2127,12 +2128,6 @@ describe('Multisig', () => {
 
       const multisig = createTestMultisig(config);
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'c'.repeat(64),
-        }),
-      } as any);
-
       const proposal = await multisig.importProposal(
         JSON.stringify({
           accountId: '0x' + 'a'.repeat(30),
@@ -2156,11 +2151,9 @@ describe('Multisig', () => {
         description: '',
       };
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'f'.repeat(64),
-        }),
-      } as any);
+      vi.mocked(assertMetadataMatchesSummary).mockImplementationOnce((id: string) => {
+        throw new Error(`Invalid proposal: metadata does not match tx_summary for ${id}`);
+      });
 
       await expect(multisig.signProposalOffline(proposal.id)).rejects.toThrow(
         'Invalid proposal: metadata does not match tx_summary'
@@ -2486,17 +2479,13 @@ describe('Multisig', () => {
       const ackSignature = '0x' + '6'.repeat(130);
       const finalRequest = { kind: 'final-change-threshold-request' };
 
-      vi.mocked(buildUpdateSignersTransactionRequest)
-        .mockResolvedValueOnce({
-          request: { kind: 'verify-change-threshold-request' },
-          salt: { toHex: () => '0x' + 'd'.repeat(64) },
-          configHash: { toHex: () => '0x' + 'e'.repeat(64) },
-        } as any)
-        .mockResolvedValueOnce({
-          request: finalRequest,
-          salt: { toHex: () => '0x' + 'd'.repeat(64) },
-          configHash: { toHex: () => '0x' + 'e'.repeat(64) },
-        } as any);
+      // Only one reconstruction now: verifyProposalMetadataBinding no longer
+      // rebuilds the request, so it is built once for execution.
+      vi.mocked(buildUpdateSignersTransactionRequest).mockResolvedValueOnce({
+        request: finalRequest,
+        salt: { toHex: () => '0x' + 'd'.repeat(64) },
+        configHash: { toHex: () => '0x' + 'e'.repeat(64) },
+      } as any);
 
       (multisig as any).proposals.set(cachedProposalId, {
         id: cachedProposalId,
@@ -2723,11 +2712,9 @@ describe('Multisig', () => {
       const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'd'.repeat(64),
-        }),
-      } as any);
+      vi.mocked(assertMetadataMatchesSummary).mockImplementationOnce((id: string) => {
+        throw new Error(`Invalid proposal: metadata does not match tx_summary for ${id}`);
+      });
 
       (multisig as any).proposals.set(proposalId, {
         id: proposalId,
@@ -2881,17 +2868,13 @@ describe('Multisig', () => {
         const proposalId = '0x' + 'c'.repeat(64);
         const finalRequest = { kind: 'fresh-message-word-request' };
 
-        vi.mocked(buildUpdateSignersTransactionRequest)
-          .mockResolvedValueOnce({
-            request: { kind: 'verify-change-threshold-request' },
-            salt: { toHex: () => '0x' + 'd'.repeat(64) },
-            configHash: { toHex: () => '0x' + 'e'.repeat(64) },
-          } as any)
-          .mockResolvedValueOnce({
-            request: finalRequest,
-            salt: { toHex: () => '0x' + 'd'.repeat(64) },
-            configHash: { toHex: () => '0x' + 'e'.repeat(64) },
-          } as any);
+        // Only one reconstruction now: verifyProposalMetadataBinding no longer
+        // rebuilds the request, so it is built once for execution.
+        vi.mocked(buildUpdateSignersTransactionRequest).mockResolvedValueOnce({
+          request: finalRequest,
+          salt: { toHex: () => '0x' + 'd'.repeat(64) },
+          configHash: { toHex: () => '0x' + 'e'.repeat(64) },
+        } as any);
 
         (multisig as any).proposals.set(proposalId, {
           id: proposalId,

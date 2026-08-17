@@ -74,6 +74,7 @@ import {
 } from './utils/signature.js';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
 import { buildGuardianSignatureFromSigner } from './multisig/signing.js';
+import { assertMetadataMatchesSummary } from './multisig/summaryBinding.js';
 import { AccountInspector } from './inspector.js';
 import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
@@ -1834,40 +1835,23 @@ export class Multisig {
     return txSummaryCommitment;
   }
 
+  /**
+   * Verify a proposal's integrity and return the tx_summary commitment cosigners
+   * sign. The id must equal the commitment of the stored tx_summary, and the
+   * human-readable metadata must match what the signed summary actually does.
+   *
+   * The metadata↔summary binding is done by decoding the signed summary and
+   * comparing its intent-bearing components (output/input notes, storage deltas)
+   * against the metadata — NOT by re-executing. Re-execution was block-height
+   * dependent (the fee is derived from the reference block and is part of the
+   * summary's account delta), so it falsely rejected honest proposals whenever a
+   * cosigner synced at a different height than the proposer. See
+   * {@link assertMetadataMatchesSummary}.
+   */
   private async verifyProposalMetadataBinding(proposal: Proposal): Promise<string> {
     const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
-    if (proposal.metadata.proposalType === 'custom') {
-      // Custom proposals (issue #266) have no per-type reconstruction recipe;
-      // the id ↔ tx_summary commitment match above is the only available
-      // integrity guarantee for an opaque proposal.
-      return txSummaryCommitment;
-    }
-
-    if (proposal.metadata.proposalType === 'switch_guardian') {
-      // Exempt from binding re-execution (mirrors the `custom` exemption above).
-      // The WASM `executeForSummary` leaves the guardian-disabling side effect
-      // applied to the in-session account, so re-execution reconstructs a smaller
-      // delta and falsely rejects with "metadata does not match tx_summary". The
-      // native Rust client does not mutate, so this is an intentional divergence.
-      // The id ↔ tx_summary match above plus `verifyGuardianEndpointCommitment`
-      // at propose/execute time still bind the proposal.
-      return txSummaryCommitment;
-    }
-
     const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
-    const salt = proposal.metadata.saltHex
-      ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
-      : summary.salt();
-
-    const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
-    const webClient = await this.getRawClient();
-    const reconstructed = await executeForSummary(webClient, this._accountId, request);
-    const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
-
-    if (reconstructedCommitment !== txSummaryCommitment) {
-      throw new Error(`Invalid proposal: metadata does not match tx_summary for ${proposal.id}`);
-    }
-
+    assertMetadataMatchesSummary(proposal.id, proposal.metadata, summary);
     return txSummaryCommitment;
   }
 
