@@ -130,11 +130,15 @@ function assertP2idBinding(
 
   const expectedFaucet = AccountId.fromHex(metadata.faucetId).toString();
   const expectedAmount = BigInt(metadata.amount);
-  const asset = note
-    .assets()
-    ?.fungibleAssets()
-    .find((a) => a.faucetId().toString() === expectedFaucet && a.amount() === expectedAmount);
-  if (!asset) {
+  const assets = note.assets()?.fungibleAssets() ?? [];
+  // The note must carry EXACTLY the one declared asset. Requiring a single
+  // matching asset (not merely "contains one") stops an attacker from attaching
+  // extra assets that would leave the account beyond what the metadata describes.
+  if (
+    assets.length !== 1 ||
+    assets[0].faucetId().toString() !== expectedFaucet ||
+    assets[0].amount() !== expectedAmount
+  ) {
     reject(proposalId);
   }
 }

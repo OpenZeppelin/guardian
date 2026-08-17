@@ -140,6 +140,21 @@ describe('assertMetadataMatchesSummary', () => {
     it('rejects when no output note is present', () => {
       expectReject(metadata, mockSummary({ outputNotes: [] }));
     });
+
+    it('rejects a note carrying an extra asset beyond the declared one', () => {
+      // Correct recipient + declared asset, but an additional asset would leave
+      // the account beyond what the metadata describes.
+      const noteWithExtra = {
+        recipientDigest: () => ({ toHex: () => digest }),
+        assets: () => ({
+          fungibleAssets: () => [
+            { faucetId: () => FAUCET, amount: () => 1000n },
+            { faucetId: () => AccountId.fromHex(ACCOUNT_1), amount: () => 500n },
+          ],
+        }),
+      };
+      expectReject(metadata, mockSummary({ outputNotes: [noteWithExtra] }));
+    });
   });
 
   describe('consume_notes (v1)', () => {
