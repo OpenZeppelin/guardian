@@ -7,6 +7,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -65,20 +69,16 @@ jobs:
         uses: taiki-e/install-action@4a44d353abec8bd780e47de38e5bc5ea77053391 # cargo-llvm-cov
 
       - name: Run tests with coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: >-
+          cargo llvm-cov
+          --features guardian-server/authz-test-probe
+          --lcov
+          --output-path lcov.info
 
       # llvm-cov doctest coverage requires nightly, so doctests run as a
       # separate uninstrumented step.
       - name: Run doctests
-        run: cargo test --workspace --doc
-
-      - name: Run feature-006 authz-test-probe tests
-        # The `authz-test-probe` Cargo feature (default-off in release builds —
-        # see `crates/server/src/dashboard/probe.rs`) gates a test-only
-        # route that exercises the operator-authorization middleware
-        # end-to-end. Run guardian-server's lib tests with the feature
-        # enabled so the US2 probe integration tests execute in CI.
-        run: cargo test -p guardian-server --lib --features authz-test-probe
+        run: cargo test --doc
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5

@@ -116,9 +116,10 @@ cd examples/demo && cargo run --release   # Rust TUI multisig flow
 # smoke-web / operator-smoke-web / evm-smoke-web have their own READMEs
 ```
 
-CI enforces the Rust workspace tests and doctests, formatting, clippy, and the
-build and test scripts for all TypeScript packages. Run the matching checks
-locally before pushing when you touch a package or browser example.
+CI enforces tests and doctests for the Rust workspace's default members,
+formatting, clippy, and the build and test scripts for all TypeScript packages.
+Run the matching checks locally before pushing when you touch a package or
+browser example.
 
 For UI / SDK changes you cannot fully verify with `cargo test` alone,
 run the matching smoke example end to end. The
