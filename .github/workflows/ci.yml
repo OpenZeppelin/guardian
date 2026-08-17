@@ -31,6 +31,8 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
@@ -71,14 +73,25 @@ jobs:
       - name: Run tests with coverage
         run: >-
           cargo llvm-cov
-          --features guardian-server/authz-test-probe
+          --workspace
+          --exclude guardian-prod-benchmarks
+          --exclude guardian-server-bench-loadgen
+          --exclude guardian-demo
+          --exclude guardian-rust-example
           --lcov
           --output-path lcov.info
 
       # llvm-cov doctest coverage requires nightly, so doctests run as a
       # separate uninstrumented step.
       - name: Run doctests
-        run: cargo test --doc
+        run: >-
+          cargo test
+          --workspace
+          --exclude guardian-prod-benchmarks
+          --exclude guardian-server-bench-loadgen
+          --exclude guardian-demo
+          --exclude guardian-rust-example
+          --doc
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
@@ -86,6 +99,43 @@ jobs:
           files: ./lcov.info
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  authz-test-probe:
+    name: Authz Test Probe
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'OpenZeppelin'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
+        with:
+          toolchain: 1.93.0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-authz-test-probe-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-authz-test-probe-
+
+      - name: Run authz test probe tests
+        run: cargo test -p guardian-server --lib --features authz-test-probe
 
   npm-test:
     name: TypeScript Package Tests
