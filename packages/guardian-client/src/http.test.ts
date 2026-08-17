@@ -1150,7 +1150,17 @@ describe('GuardianHttpError', () => {
 
     it('retries an authentication_replay rejection with a fresh timestamp and signature', async () => {
       client.setSigner(mockSigner);
-      vi.mocked(mockSigner.signRequest!).mockClear();
+      const signRequest = mockSigner.signRequest;
+      if (!signRequest) {
+        throw new Error('test signer must implement signRequest');
+      }
+      const signRequestMock = vi.mocked(signRequest);
+      signRequestMock.mockClear();
+      const signatureForTimestamp = (_accountId: string, timestamp: number) =>
+        `0x${timestamp.toString(16).padStart(128, '0')}`;
+      signRequestMock
+        .mockImplementationOnce(signatureForTimestamp)
+        .mockImplementationOnce(signatureForTimestamp);
       const replayResponse = {
         ok: false,
         headers: new Headers(),
@@ -1193,8 +1203,12 @@ describe('GuardianHttpError', () => {
       const timestamps = mockFetch.mock.calls.map((call) =>
         Number((call[1].headers as Record<string, string>)['x-timestamp'])
       );
+      const signatures = mockFetch.mock.calls.map(
+        (call) => (call[1].headers as Record<string, string>)['x-signature']
+      );
       expect(timestamps[1]).toBeGreaterThan(timestamps[0]);
-      expect(mockSigner.signRequest).toHaveBeenCalledTimes(2);
+      expect(signatures[1]).not.toBe(signatures[0]);
+      expect(signRequestMock).toHaveBeenCalledTimes(2);
     });
 
     it('gives up after exhausting the bounded replay retry budget', async () => {

@@ -131,13 +131,18 @@ impl FilesystemMetadataStore {
 }
 
 /// Separator for the composite `{account_id}:{signer_commitment}` replay-state
-/// key. `:` cannot appear in hex account IDs or signer commitments, so the two
-/// segments cannot collide, and a key without it is recognizably account-scoped
-/// (pre-#367).
+/// key. Account IDs may themselves contain `:`, so startup classifies a key as
+/// signer-scoped only when the prefix before its final separator is a known
+/// account and the suffix is non-empty.
 const AUTH_STATE_KEY_SEPARATOR: char = ':';
 
 fn auth_state_key(account_id: &str, signer_commitment: &str) -> String {
     format!("{account_id}{AUTH_STATE_KEY_SEPARATOR}{signer_commitment}")
+}
+
+fn is_signer_scoped_auth_state_key(accounts: &HashMap<String, AccountMetadata>, key: &str) -> bool {
+    key.rsplit_once(AUTH_STATE_KEY_SEPARATOR)
+        .is_some_and(|(account_id, signer)| !signer.is_empty() && accounts.contains_key(account_id))
 }
 
 /// Replay state was account-scoped before issue #367. An account-scoped entry
@@ -153,7 +158,7 @@ fn expand_account_scoped_auth_state(
     let mut expanded = HashMap::with_capacity(state.len());
     let mut changed = false;
     for (key, timestamp) in state {
-        if key.contains(AUTH_STATE_KEY_SEPARATOR) {
+        if is_signer_scoped_auth_state_key(accounts, &key) {
             merge_auth_timestamp(&mut expanded, key, timestamp);
             continue;
         }
@@ -658,6 +663,7 @@ mod auth_state_tests {
 
     const SIGNER_A: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SIGNER_B: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const EVM_SIGNER: &str = "0xcccccccccccccccccccccccccccccccccccccccc";
 
     fn sample_metadata(account_id: &str) -> AccountMetadata {
         AccountMetadata {
@@ -800,6 +806,58 @@ mod auth_state_tests {
                 .await
                 .unwrap(),
             "the pre-upgrade floor must still reject replays for every signer"
+        );
+    }
+
+    #[tokio::test]
+    async fn evm_account_scoped_auth_state_with_colons_expands_on_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let account_address = "0x1111111111111111111111111111111111111111";
+        let account_id = crate::metadata::network::evm_account_id(1, account_address);
+        {
+            let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+                .await
+                .unwrap();
+            store
+                .set(AccountMetadata {
+                    account_id: account_id.clone(),
+                    auth: Auth::EvmEcdsa {
+                        signers: vec![EVM_SIGNER.into()],
+                    },
+                    network_config: NetworkConfig::Evm {
+                        chain_id: 1,
+                        account_address: account_address.into(),
+                        multisig_validator_address: "0x2222222222222222222222222222222222222222"
+                            .into(),
+                    },
+                    created_at: "2026-05-19T10:00:00Z".into(),
+                    updated_at: "2026-05-19T10:00:00Z".into(),
+                    has_pending_candidate: false,
+                    paused_at: None,
+                    paused_reason: None,
+                    released_at: None,
+                })
+                .await
+                .unwrap();
+        }
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([(account_id.clone(), 4242_i64)])).unwrap(),
+        )
+        .unwrap();
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        let signer_key = auth_state_key(&account_id, EVM_SIGNER);
+        assert_eq!(persisted_auth_state(&dir).get(&signer_key), Some(&4242));
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas(&account_id, EVM_SIGNER, 4242)
+                .await
+                .unwrap(),
+            "the legacy EVM replay floor must remain enforced"
         );
     }
 

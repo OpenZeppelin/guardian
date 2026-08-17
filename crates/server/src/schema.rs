@@ -93,8 +93,8 @@ diesel::table! {
     /// Representation of the `account_auth_state` table.
     ///
     /// Per-(account, signer) replay-protection record, kept apart from
-    /// `account_metadata` so the per-request CAS rewrites a ~40-byte
-    /// tuple instead of the full metadata row. Keyed per signer
+    /// `account_metadata` so the per-request CAS rewrites two identifiers
+    /// and a timestamp instead of the full metadata row. Keyed per signer
     /// commitment (issue #367) so independent cosigners never contend
     /// on one timestamp.
     account_auth_state (account_id, signer_commitment) {

@@ -814,7 +814,7 @@ mod tests {
         let suffix = Utc::now().timestamp_micros();
         let falcon_account_id = format!("0xfalconbackfill{suffix}");
         let ecdsa_account_id = format!("0xecdsa_backfill{suffix}");
-        let evm_account_id = format!("0xevm_backfill{suffix}");
+        let evm_account_id = format!("evm:1:0x{suffix:040x}");
         let falcon_signer_a = format!("0x{}", "aa".repeat(32));
         let falcon_signer_b = format!("0x{}", "bb".repeat(32));
         let ecdsa_signer = format!("0x{}", "cc".repeat(32));

@@ -9,7 +9,7 @@ SET LOCAL lock_timeout = '5s';
 
 LOCK TABLE account_auth_state IN ACCESS EXCLUSIVE MODE;
 
-CREATE TABLE account_auth_state_collapsed AS
+CREATE TEMP TABLE account_auth_state_collapsed AS
 SELECT account_id, MAX(last_auth_timestamp) AS last_auth_timestamp
   FROM account_auth_state
  GROUP BY account_id;

@@ -328,11 +328,8 @@ impl GuardianError {
             | GuardianError::PendingProposalsLimit { .. } => {
                 "There's already a pending change for this account. Finish or cancel it first."
             }
-            // Per-request signed auth has no session; the same code also
-            // covers dashboard/EVM session auth, so the wording stays
-            // neutral between "retry" and "reconnect".
             GuardianError::AuthenticationFailed(_) => {
-                "Guardian could not authenticate this request. Please retry or reconnect your signer."
+                "Guardian could not authenticate this request. Please reconnect your signer."
             }
             GuardianError::AuthenticationReplay => {
                 "Guardian received this request out of order. Please try again."
@@ -1399,6 +1396,7 @@ mod tests {
             },
             GuardianError::InvalidCommitment("0xAAAACOMMITMENT".into()),
             GuardianError::AuthenticationFailed("bad creds for 0xSIGNER".into()),
+            GuardianError::AuthenticationReplay,
             GuardianError::AuthorizationFailed("0xSIGNER not in policy".into()),
             GuardianError::InvalidInput("/var/secret/path".into()),
             GuardianError::StorageError("/var/lib/guardian/db: disk full".into()),
