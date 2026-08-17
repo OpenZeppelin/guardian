@@ -23,6 +23,7 @@ const SALT = Word.fromHex('0x' + 'ab'.repeat(32));
 const THRESHOLD_CONFIG_SLOT = 'openzeppelin::multisig::threshold_config';
 const SIGNER_PUBLIC_KEYS_SLOT = 'openzeppelin::multisig::signer_public_keys';
 const PROCEDURE_THRESHOLDS_SLOT = 'openzeppelin::multisig::procedure_thresholds';
+const GUARDIAN_PUBLIC_KEY_SLOT = 'openzeppelin::guardian::public_key';
 
 // Two known-valid Miden account ids (arbitrary hex has an invalid version byte).
 const ACCOUNT_1 = '0x69817bcc6fb9f99127c2245f6979c5';
@@ -40,8 +41,14 @@ interface SummaryParts {
 function mockSummary(parts: SummaryParts): any {
   return {
     salt: () => parts.salt ?? SALT,
-    outputNotes: () => ({ notes: () => parts.outputNotes ?? [] }),
-    inputNotes: () => ({ notes: () => parts.inputNotes ?? [] }),
+    outputNotes: () => ({
+      notes: () => parts.outputNotes ?? [],
+      numNotes: () => (parts.outputNotes ?? []).length,
+    }),
+    inputNotes: () => ({
+      notes: () => parts.inputNotes ?? [],
+      numNotes: () => (parts.inputNotes ?? []).length,
+    }),
     accountDelta: () => ({
       storage: () => ({
         valueDeltas: () =>
@@ -155,6 +162,43 @@ describe('assertMetadataMatchesSummary', () => {
       };
       expectReject(metadata, mockSummary({ outputNotes: [noteWithExtra] }));
     });
+
+    it('rejects a piggybacked value-slot write (threshold takeover)', () => {
+      // Correct p2id note, but the summary ALSO rewrites the threshold config.
+      expectReject(
+        metadata,
+        mockSummary({
+          outputNotes: [p2idOutputNote(digest, FAUCET, 1000n)],
+          valueDeltas: [{ slotName: THRESHOLD_CONFIG_SLOT, valueHex: wordHex([1n, 1n, 0n, 0n]) }],
+        }),
+      );
+    });
+
+    it('rejects a piggybacked signer-map write (signer-set takeover)', () => {
+      // Correct p2id note, but the summary ALSO installs an attacker signer.
+      expectReject(
+        metadata,
+        mockSummary({
+          outputNotes: [p2idOutputNote(digest, FAUCET, 1000n)],
+          maps: [
+            {
+              slotName: SIGNER_PUBLIC_KEYS_SLOT,
+              entries: [{ keyHex: wordHex([0n, 0n, 0n, 0n]), valueHex: normalizeHexWord('0x' + '9'.repeat(64)) }],
+            },
+          ],
+        }),
+      );
+    });
+
+    it('rejects a piggybacked input note', () => {
+      expectReject(
+        metadata,
+        mockSummary({
+          outputNotes: [p2idOutputNote(digest, FAUCET, 1000n)],
+          inputNotes: [inputNote(NoteId.fromHex('0x' + '44'.repeat(32)).toString())],
+        }),
+      );
+    });
   });
 
   describe('consume_notes (v1)', () => {
@@ -182,6 +226,25 @@ describe('assertMetadataMatchesSummary', () => {
     it('rejects a substituted note', () => {
       const idC = NoteId.fromHex('0x' + '33'.repeat(32)).toString();
       expectReject(metadata, mockSummary({ inputNotes: [inputNote(idA), inputNote(idC)] }));
+    });
+
+    it('rejects a consume that also emits an output note (drain)', () => {
+      // Declared input set matches, but the summary ALSO sends value out.
+      const drain = p2idOutputNote(p2idRecipientDigest(ACCOUNT_2, SALT), FAUCET, 1_000_000n);
+      expectReject(
+        metadata,
+        mockSummary({ inputNotes: [inputNote(idA), inputNote(idB)], outputNotes: [drain] }),
+      );
+    });
+
+    it('rejects a consume that also writes storage (takeover)', () => {
+      expectReject(
+        metadata,
+        mockSummary({
+          inputNotes: [inputNote(idA), inputNote(idB)],
+          valueDeltas: [{ slotName: THRESHOLD_CONFIG_SLOT, valueHex: wordHex([1n, 1n, 0n, 0n]) }],
+        }),
+      );
     });
   });
 
@@ -267,6 +330,43 @@ describe('assertMetadataMatchesSummary', () => {
     it('rejects when the threshold-config value slot is absent', () => {
       expectReject(metadata, mockSummary({ valueDeltas: [], maps: pubkeyMap(signers) }));
     });
+
+    it('rejects a duplicated declared signer with an omitted one', () => {
+      // Declared {A,B}; summary writes index 0->A and index 1->A (B omitted, A
+      // duplicated). Index 1's value (A) is not the declared signer at index 1 (B).
+      expectReject(
+        metadata,
+        mockSummary({
+          valueDeltas: [{ slotName: THRESHOLD_CONFIG_SLOT, valueHex: configHex }],
+          maps: pubkeyMap([signers[0], signers[0]]),
+        }),
+      );
+    });
+
+    it('rejects a signer proposal that also emits an output note (drain)', () => {
+      const drain = p2idOutputNote(p2idRecipientDigest(ACCOUNT_2, SALT), FAUCET, 1_000_000n);
+      expectReject(
+        metadata,
+        mockSummary({
+          outputNotes: [drain],
+          valueDeltas: [{ slotName: THRESHOLD_CONFIG_SLOT, valueHex: configHex }],
+          maps: pubkeyMap(signers),
+        }),
+      );
+    });
+
+    it('rejects a signer proposal that writes an unexpected extra slot', () => {
+      expectReject(
+        metadata,
+        mockSummary({
+          valueDeltas: [
+            { slotName: THRESHOLD_CONFIG_SLOT, valueHex: configHex },
+            { slotName: PROCEDURE_THRESHOLDS_SLOT, valueHex: wordHex([9n, 0n, 0n, 0n]) },
+          ],
+          maps: pubkeyMap(signers),
+        }),
+      );
+    });
   });
 
   describe('update_procedure_threshold', () => {
@@ -302,18 +402,69 @@ describe('assertMetadataMatchesSummary', () => {
         mockSummary({ maps: [{ slotName: PROCEDURE_THRESHOLDS_SLOT, entries: [{ keyHex: otherRoot, valueHex }] }] }),
       );
     });
+
+    it('rejects a procedure-threshold proposal that also emits an output note', () => {
+      const drain = p2idOutputNote(p2idRecipientDigest(ACCOUNT_2, SALT), FAUCET, 1_000_000n);
+      expectReject(
+        metadata,
+        mockSummary({
+          outputNotes: [drain],
+          maps: [{ slotName: PROCEDURE_THRESHOLDS_SLOT, entries: [{ keyHex: procRoot, valueHex }] }],
+        }),
+      );
+    });
   });
 
-  describe('exempt types', () => {
-    it('never rejects custom proposals', () => {
-      expectPass({ proposalType: 'custom', rawProposalType: 'x', description: '' } as ProposalMetadata, mockSummary({}));
+  describe('switch_guardian', () => {
+    const newGuardianPubkey = '0x' + '7'.repeat(64);
+    const metadata: ProposalMetadata = {
+      proposalType: 'switch_guardian',
+      newGuardianPubkey,
+      description: '',
+    };
+    const guardianMap = (pubkey: string) => [
+      {
+        slotName: GUARDIAN_PUBLIC_KEY_SLOT,
+        entries: [{ keyHex: wordHex([0n, 0n, 0n, 0n]), valueHex: normalizeHexWord(pubkey) }],
+      },
+    ];
+
+    it('passes when the guardian public-key map is set to the declared key', () => {
+      expectPass(metadata, mockSummary({ maps: guardianMap(newGuardianPubkey) }));
     });
 
-    it('never rejects switch_guardian proposals', () => {
-      expectPass(
-        { proposalType: 'switch_guardian', newGuardianPubkey: '0x' + '1'.repeat(64), description: '' } as ProposalMetadata,
-        mockSummary({}),
+    it('rejects a different guardian public key in the summary', () => {
+      expectReject(metadata, mockSummary({ maps: guardianMap('0x' + '8'.repeat(64)) }));
+    });
+
+    it('rejects when no guardian public-key delta is present', () => {
+      expectReject(metadata, mockSummary({}));
+    });
+
+    it('rejects a switch_guardian that also emits a drain output note', () => {
+      const drain = p2idOutputNote(p2idRecipientDigest(ACCOUNT_2, SALT), FAUCET, 1_000_000n);
+      expectReject(metadata, mockSummary({ outputNotes: [drain], maps: guardianMap(newGuardianPubkey) }));
+    });
+
+    it('rejects a switch_guardian that piggybacks a signer-set write', () => {
+      expectReject(
+        metadata,
+        mockSummary({
+          maps: [
+            ...guardianMap(newGuardianPubkey),
+            {
+              slotName: SIGNER_PUBLIC_KEYS_SLOT,
+              entries: [{ keyHex: wordHex([0n, 0n, 0n, 0n]), valueHex: normalizeHexWord('0x' + '9'.repeat(64)) }],
+            },
+          ],
+        }),
       );
+    });
+  });
+
+  describe('custom', () => {
+    it('is exempt (no reconstruction recipe; WYSIWYS does not hold)', () => {
+      expectPass({ proposalType: 'custom', rawProposalType: 'x', description: '' } as ProposalMetadata, mockSummary({}));
     });
   });
 });
