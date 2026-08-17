@@ -83,6 +83,15 @@ export function assertMetadataMatchesSummary(
       return assertSignerBinding(proposalId, metadata, summary);
     case 'update_procedure_threshold':
       return assertProcedureThresholdBinding(proposalId, metadata, summary);
+    default: {
+      // Fail closed: a proposal type without a binding recipe must not silently
+      // pass. The union is exhaustive, so this is also a compile-time guard that
+      // any new built-in type is given an explicit binding (or an explicit
+      // exemption above) before it can be signed.
+      const _exhaustive: never = metadata;
+      void _exhaustive;
+      reject(proposalId);
+    }
   }
 }
 
