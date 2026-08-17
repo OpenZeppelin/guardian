@@ -403,12 +403,18 @@ SDK's own built-in execution uses. Extending a transaction's advice map with it
 therefore does not collide with the transaction's ordinary inputs; the
 integration extends rather than replaces its advice map.
 
-> **Security:** for first-party types the SDK reconstructs the transaction from
-> metadata and checks it against the signed `tx_summary` commitment. For custom
-> types there is no such reconstruction, so the SDK cannot verify that display
-> metadata (e.g. `description`) matches what the transaction actually does.
-> Cosigners must verify the raw `tx_summary` they are signing — not trust the
-> label or description.
+> **Security:** for first-party types the SDK verifies that the signed
+> `tx_summary` matches the proposal's metadata before a cosigner signs it. It
+> decodes the summary and asserts the transaction's effects — its output notes,
+> its consumed input notes, and the account-storage slots it changes — are
+> *exactly* what the metadata describes and nothing more, so a cosigner is shown
+> what they actually sign. The check is deterministic (it never reads the
+> block-dependent transaction fee, which is why it works across cosigners at
+> different sync heights). Two residual gaps: it cannot see **non-fungible**
+> assets (the SDK exposes only fungible note/vault assets), and for **custom**
+> types there is no metadata recipe at all, so the SDK cannot verify that display
+> metadata (e.g. `description`) matches what the transaction does. Cosigners must
+> verify the raw `tx_summary` for `custom` proposals — not trust the label.
 
 ### Offline Workflow
 
@@ -584,13 +590,15 @@ await multisig.exportNoteToFile(noteId);
 const importedNoteId = await multisig.importNoteFromBytes(noteFileBytes);
 ```
 
-> **Note:** every cosigner device that verifies or signs the consume-notes
-> proposal needs the note in its local store with the on-chain inclusion
-> proof — deliver the note file to each of them (import + sync), not just to
-> the proposer. A cosigner whose store lacks the authenticated note rebuilds
-> the transaction differently (the input-notes commitment distinguishes
-> authenticated from unauthenticated consumption) and rejects the proposal
-> with `metadata does not match tx_summary`. The sender's own device heals
+> **Note:** the device that **executes** the consume-notes proposal needs the
+> note in its local store with the on-chain inclusion proof — deliver the note
+> file to each cosigner (import + sync), any of whom may execute, not just to
+> the proposer. Verifying and signing no longer require the note: the SDK checks
+> the proposal by comparing the signed summary's input-note **ids** to the
+> metadata (note ids are proof-agnostic), so a cosigner can sign without the
+> note. But the device that executes rebuilds the consumption from its own store,
+> so a store lacking the authenticated note produces a transaction that no longer
+> matches the signed summary and fails on-chain. The sender's own device heals
 > itself: it already knows the full note, so a post-commit sync is enough.
 
 #### Consume Notes (Claim Received Funds)
