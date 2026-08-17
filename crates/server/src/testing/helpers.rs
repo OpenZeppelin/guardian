@@ -376,6 +376,7 @@ pub fn create_router(state: AppState) -> axum::Router {
     };
 
     let router = axum::Router::new()
+        .route("/", axum::routing::get(http::status_root))
         .route("/configure", axum::routing::post(http::configure))
         .route("/push_delta", axum::routing::post(http::push_delta))
         .route("/get_delta", axum::routing::get(http::get_delta))

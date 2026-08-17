@@ -194,6 +194,7 @@ impl Modify for CommonResponsesAddon {
         crate::api::http::lookup,
         crate::api::http::get_pubkey,
         crate::api::http::status,
+        crate::api::http::status_root,
         crate::api::http::push_delta_proposal,
         crate::api::http::get_delta_proposals,
         crate::api::http::get_delta_proposal,
@@ -326,6 +327,7 @@ mod tests {
         let paths = json["paths"].as_object().expect("paths object");
         assert!(paths.contains_key("/configure"), "client API path missing");
         assert!(paths.contains_key("/delta"), "client API path missing");
+        assert!(paths.contains_key("/"), "root status alias missing");
         assert!(
             paths.contains_key("/dashboard/accounts"),
             "dashboard API path missing"
@@ -370,6 +372,10 @@ mod tests {
         assert!(
             json["paths"]["/pubkey"]["get"].get("security").is_none(),
             "/pubkey should be public"
+        );
+        assert!(
+            json["paths"]["/"]["get"].get("security").is_none(),
+            "root status alias should be public"
         );
     }
 

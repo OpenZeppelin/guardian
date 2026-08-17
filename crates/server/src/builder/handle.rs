@@ -26,7 +26,7 @@ use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
     abandon_candidate, configure, get_delta, get_delta_proposal, get_delta_proposals,
     get_delta_since, get_pubkey, get_state, lookup, push_delta, push_delta_proposal,
-    sign_delta_proposal, status,
+    sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
 use crate::dashboard::require_dashboard_session;
@@ -60,10 +60,6 @@ pub struct ServerHandle {
 impl ServerHandle {
     /// Run the server with the configured settings
     pub async fn run(self) {
-        async fn root() -> &'static str {
-            "Hello, World!"
-        }
-
         // Issue #241: serve the auto-generated OpenAPI spec. Unauthenticated
         // and read-only — it documents the contract, not data.
         async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
@@ -247,7 +243,7 @@ impl ServerHandle {
                 };
 
                 let app = Router::new()
-                    .route("/", get(root))
+                    .route("/", get(status_root))
                     .route("/api-docs/openapi.json", get(openapi_json))
                     .route("/delta", post(push_delta))
                     .route("/delta", get(get_delta))

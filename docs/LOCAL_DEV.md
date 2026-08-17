@@ -172,7 +172,7 @@ The deploy script builds with `postgres,evm` when the EVM stack is requested
 ## Verifying the server is up
 
 ```bash
-curl http://localhost:3000/                   # liveness
+curl http://localhost:3000/                   # liveness (alias of /status)
 curl http://localhost:3000/pubkey             # ACK key commitment
 grpcurl -plaintext \
   -import-path crates/server/proto -proto guardian.proto \
