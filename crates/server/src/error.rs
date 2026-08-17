@@ -29,6 +29,15 @@ pub enum GuardianError {
     },
     InvalidCommitment(String),
     AuthenticationFailed(String),
+    /// A correctly signed request lost the replay-protection CAS: its
+    /// timestamp was not strictly greater than the last accepted timestamp
+    /// for that signer. Unlike every other authentication failure this is
+    /// transient: the client retries with a fresh timestamp and signature.
+    /// Stable code `authentication_replay`, HTTP 401, gRPC
+    /// `Unauthenticated`, `meta.retryable: true`. Deliberately coarse: it
+    /// reveals only that a replay was detected (not a useful oracle), while
+    /// signature-level diagnostics stay log-only (feature 009). Issue #367.
+    AuthenticationReplay,
     AuthorizationFailed(String),
     InvalidInput(String),
     StorageError(String),
@@ -149,6 +158,7 @@ impl GuardianError {
             GuardianError::PendingProposalsLimit { .. } => StatusCode::CONFLICT,
             GuardianError::ProposalAlreadySigned { .. } => StatusCode::CONFLICT,
             GuardianError::AuthenticationFailed(_) => StatusCode::UNAUTHORIZED,
+            GuardianError::AuthenticationReplay => StatusCode::UNAUTHORIZED,
             GuardianError::AuthorizationFailed(_) => StatusCode::FORBIDDEN,
             GuardianError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             GuardianError::InvalidAccountId(_) => StatusCode::BAD_REQUEST,
@@ -193,6 +203,7 @@ impl GuardianError {
             GuardianError::PendingProposalsLimit { .. } => tonic::Code::FailedPrecondition,
             GuardianError::ProposalAlreadySigned { .. } => tonic::Code::AlreadyExists,
             GuardianError::AuthenticationFailed(_) => tonic::Code::Unauthenticated,
+            GuardianError::AuthenticationReplay => tonic::Code::Unauthenticated,
             GuardianError::AuthorizationFailed(_) => tonic::Code::PermissionDenied,
             GuardianError::InvalidInput(_) => tonic::Code::InvalidArgument,
             GuardianError::InvalidAccountId(_) => tonic::Code::InvalidArgument,
@@ -242,6 +253,7 @@ impl GuardianError {
             GuardianError::CommitmentMismatch { .. } => "commitment_mismatch",
             GuardianError::InvalidCommitment(_) => "invalid_commitment",
             GuardianError::AuthenticationFailed(_) => "authentication_failed",
+            GuardianError::AuthenticationReplay => "authentication_replay",
             GuardianError::AuthorizationFailed(_) => "authorization_failed",
             GuardianError::InvalidInput(_) => "invalid_input",
             GuardianError::StorageError(_) => "storage_error",
@@ -316,8 +328,14 @@ impl GuardianError {
             | GuardianError::PendingProposalsLimit { .. } => {
                 "There's already a pending change for this account. Finish or cancel it first."
             }
+            // Per-request signed auth has no session; the same code also
+            // covers dashboard/EVM session auth, so the wording stays
+            // neutral between "retry" and "reconnect".
             GuardianError::AuthenticationFailed(_) => {
-                "Your session has expired. Please sign in again."
+                "Guardian could not authenticate this request. Please retry or reconnect your signer."
+            }
+            GuardianError::AuthenticationReplay => {
+                "Guardian received this request out of order. Please try again."
             }
             GuardianError::AuthorizationFailed(_) | GuardianError::SignerNotAuthorized(_) => {
                 "You're not an authorized signer for this account."
@@ -375,7 +393,8 @@ impl GuardianError {
         // start serving the same request on retry), so it is NOT retryable.
         matches!(
             self,
-            GuardianError::AccountDataUnavailable(_)
+            GuardianError::AuthenticationReplay
+                | GuardianError::AccountDataUnavailable(_)
                 | GuardianError::StorageError(_)
                 | GuardianError::NetworkError(_)
                 | GuardianError::SigningError(_)
@@ -422,6 +441,11 @@ impl fmt::Display for GuardianError {
             }
             GuardianError::InvalidCommitment(msg) => write!(f, "Invalid commitment: {msg}"),
             GuardianError::AuthenticationFailed(msg) => write!(f, "Authentication failed: {msg}"),
+            GuardianError::AuthenticationReplay => write!(
+                f,
+                "Authentication replay rejected: request timestamp not greater \
+                 than the last accepted timestamp for this signer"
+            ),
             GuardianError::AuthorizationFailed(msg) => write!(f, "Authorization failed: {msg}"),
             GuardianError::InvalidInput(msg) => write!(f, "Invalid input: {msg}"),
             GuardianError::StorageError(msg) => write!(f, "Storage error: {msg}"),
@@ -895,6 +919,28 @@ mod tests {
             GuardianError::AuthorizationFailed("x".into()).grpc_status(),
             tonic::Code::PermissionDenied
         );
+    }
+
+    // -- Issue #367: AuthenticationReplay --
+
+    #[test]
+    fn authentication_replay_pins_http_grpc_code_and_retryable() {
+        let err = GuardianError::AuthenticationReplay;
+        assert_eq!(err.http_status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(err.grpc_status(), tonic::Code::Unauthenticated);
+        assert_eq!(err.code(), "authentication_replay");
+        assert!(err.retryable());
+        assert!(!GuardianError::AuthenticationFailed("x".into()).retryable());
+    }
+
+    #[test]
+    fn authentication_replay_grpc_details_carry_retryable_true() {
+        let status: tonic::Status = GuardianError::AuthenticationReplay.into();
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("details are JSON");
+        assert_eq!(details["code"], "authentication_replay");
+        assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(true));
     }
 
     #[test]

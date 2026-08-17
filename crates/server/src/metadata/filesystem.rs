@@ -94,6 +94,13 @@ impl FilesystemMetadataStore {
             ));
         };
 
+        let (auth_state, expanded) = expand_account_scoped_auth_state(&accounts, auth_state)?;
+        if expanded {
+            let content = serde_json::to_string_pretty(&auth_state)
+                .map_err(|e| format!("Failed to serialize auth state: {e}"))?;
+            write_atomic(&auth_state_path, &content).await?;
+        }
+
         let store = Self {
             file_path,
             auth_state_path,
@@ -121,6 +128,73 @@ impl FilesystemMetadataStore {
             .map_err(|e| format!("Failed to serialize auth state: {e}"))?;
         write_atomic(&self.auth_state_path, &content).await
     }
+}
+
+/// Separator for the composite `{account_id}:{signer_commitment}` replay-state
+/// key. `:` cannot appear in hex account IDs or signer commitments, so the two
+/// segments cannot collide, and a key without it is recognizably account-scoped
+/// (pre-#367).
+const AUTH_STATE_KEY_SEPARATOR: char = ':';
+
+fn auth_state_key(account_id: &str, signer_commitment: &str) -> String {
+    format!("{account_id}{AUTH_STATE_KEY_SEPARATOR}{signer_commitment}")
+}
+
+/// Replay state was account-scoped before issue #367. An account-scoped entry
+/// (key without the separator) is expanded to one per-signer entry for every
+/// currently authorized commitment (preserving the replay floor across the
+/// upgrade instead of re-accepting requests seen just before it), and the
+/// account-scoped entry is dropped. Entries for accounts that no longer exist
+/// are dropped with it.
+fn expand_account_scoped_auth_state(
+    accounts: &HashMap<String, AccountMetadata>,
+    state: HashMap<String, i64>,
+) -> Result<(HashMap<String, i64>, bool), String> {
+    let mut expanded = HashMap::with_capacity(state.len());
+    let mut changed = false;
+    for (key, timestamp) in state {
+        if key.contains(AUTH_STATE_KEY_SEPARATOR) {
+            merge_auth_timestamp(&mut expanded, key, timestamp);
+            continue;
+        }
+        changed = true;
+        let Some(metadata) = accounts.get(&key) else {
+            continue;
+        };
+        validate_auth_state_signers(&key, &metadata.auth)?;
+        for commitment in metadata.auth.cosigner_commitments() {
+            merge_auth_timestamp(&mut expanded, auth_state_key(&key, commitment), timestamp);
+        }
+    }
+    Ok((expanded, changed))
+}
+
+fn merge_auth_timestamp(state: &mut HashMap<String, i64>, key: String, timestamp: i64) {
+    let stored = state.entry(key).or_insert(timestamp);
+    *stored = (*stored).max(timestamp);
+}
+
+fn validate_auth_state_signers(account_id: &str, auth: &Auth) -> Result<(), String> {
+    let commitments = auth.cosigner_commitments();
+    let hex_length = match auth {
+        Auth::EvmEcdsa { .. } => 40,
+        Auth::MidenFalconRpo { .. } | Auth::MidenEcdsa { .. } => 64,
+    };
+    let invalid = commitments.is_empty()
+        || commitments.iter().any(|commitment| {
+            let hex = commitment.strip_prefix("0x").unwrap_or("");
+            hex.len() != hex_length
+                || !hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        });
+    if invalid {
+        return Err(format!(
+            "Replay state for account {account_id} cannot be expanded because its auth metadata \
+             has no canonical authorized signer set"
+        ));
+    }
+    Ok(())
 }
 
 /// Replay timestamps recorded by pre-split servers inside the metadata file.
@@ -280,6 +354,7 @@ impl MetadataStore for FilesystemMetadataStore {
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,
+        signer_commitment: &str,
         new_timestamp: i64,
     ) -> Result<bool, String> {
         // Advisory only: the cache lock is released before the auth-state
@@ -294,11 +369,12 @@ impl MetadataStore for FilesystemMetadataStore {
             }
         }
 
+        let key = auth_state_key(account_id, signer_commitment);
         let mut auth_state = self.auth_state.write().await;
 
         // One probe covers the replay check, the swap, and the prior value the
         // rollback below needs; only a first-ever record allocates a key.
-        let previous = match auth_state.get_mut(account_id) {
+        let previous = match auth_state.get_mut(&key) {
             Some(current) => {
                 if new_timestamp <= *current {
                     return Ok(false);
@@ -306,15 +382,15 @@ impl MetadataStore for FilesystemMetadataStore {
                 Some(std::mem::replace(current, new_timestamp))
             }
             None => {
-                auth_state.insert(account_id.to_string(), new_timestamp);
+                auth_state.insert(key.clone(), new_timestamp);
                 None
             }
         };
 
         if let Err(persist_error) = self.persist_auth_state(&auth_state).await {
             match previous {
-                Some(prior) => auth_state.insert(account_id.to_string(), prior),
-                None => auth_state.remove(account_id),
+                Some(prior) => auth_state.insert(key, prior),
+                None => auth_state.remove(&key),
             };
             return Err(persist_error);
         }
@@ -580,11 +656,14 @@ mod auth_state_tests {
     use super::*;
     use crate::metadata::{Auth, NetworkConfig};
 
+    const SIGNER_A: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SIGNER_B: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
     fn sample_metadata(account_id: &str) -> AccountMetadata {
         AccountMetadata {
             account_id: account_id.into(),
             auth: Auth::MidenFalconRpo {
-                cosigner_commitments: vec![],
+                cosigner_commitments: vec![SIGNER_A.into(), SIGNER_B.into()],
             },
             network_config: NetworkConfig::Miden {
                 network_type: crate::metadata::network::MidenNetworkType::Testnet,
@@ -626,35 +705,155 @@ mod auth_state_tests {
 
         assert!(
             store
-                .update_last_auth_timestamp_cas("acct", 100)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 100)
                 .await
                 .unwrap()
         );
         assert!(
             !store
-                .update_last_auth_timestamp_cas("acct", 100)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 100)
                 .await
                 .unwrap()
         );
         assert!(
             !store
-                .update_last_auth_timestamp_cas("acct", 99)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 99)
                 .await
                 .unwrap()
         );
         assert_eq!(
-            persisted_auth_state(&dir).get("acct"),
+            persisted_auth_state(&dir).get("acct:0xaa"),
             Some(&100),
             "rejected timestamps must not change the stored value"
         );
 
         assert!(
             store
-                .update_last_auth_timestamp_cas("acct", 101)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 101)
                 .await
                 .unwrap()
         );
-        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&101));
+        assert_eq!(persisted_auth_state(&dir).get("acct:0xaa"), Some(&101));
+    }
+
+    #[tokio::test]
+    async fn cas_is_scoped_per_signer_commitment() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_account(&dir).await;
+
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", "0xaa", 100)
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", "0xbb", 50)
+                .await
+                .unwrap(),
+            "another signer's newer timestamp must not lock this signer out"
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", "0xbb", 50)
+                .await
+                .unwrap(),
+            "a replay from the same signer must still be rejected"
+        );
+        assert_eq!(persisted_auth_state(&dir).get("acct:0xaa"), Some(&100));
+        assert_eq!(persisted_auth_state(&dir).get("acct:0xbb"), Some(&50));
+    }
+
+    #[tokio::test]
+    async fn account_scoped_auth_state_expands_to_per_signer_on_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([("acct".to_string(), 4242_i64)])).unwrap(),
+        )
+        .unwrap();
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        let persisted = persisted_auth_state(&dir);
+        assert_eq!(
+            persisted.get(&auth_state_key("acct", SIGNER_A)),
+            Some(&4242)
+        );
+        assert_eq!(
+            persisted.get(&auth_state_key("acct", SIGNER_B)),
+            Some(&4242)
+        );
+        assert!(
+            !persisted.contains_key("acct"),
+            "the account-scoped entry must be dropped after expansion"
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", SIGNER_B, 4242)
+                .await
+                .unwrap(),
+            "the pre-upgrade floor must still reject replays for every signer"
+        );
+    }
+
+    #[tokio::test]
+    async fn account_scoped_auth_state_with_unusable_signers_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let mut accounts: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(accounts_path(&dir)).unwrap()).unwrap();
+        accounts["acct"]["auth"]["MidenFalconRpo"]["cosigner_commitments"] = serde_json::json!([]);
+        std::fs::write(
+            accounts_path(&dir),
+            serde_json::to_string(&accounts).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([("acct".to_string(), 4242_i64)])).unwrap(),
+        )
+        .unwrap();
+
+        let error = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .err()
+            .expect("an account-scoped floor without usable signers must reject startup");
+
+        assert!(error.contains("no canonical authorized signer set"));
+        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&4242));
+    }
+
+    #[tokio::test]
+    async fn mixed_auth_state_keys_keep_the_highest_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let signer_key = auth_state_key("acct", SIGNER_A);
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([
+                ("acct".to_string(), 5000_i64),
+                (signer_key.clone(), 100_i64),
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let _store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert_eq!(persisted_auth_state(&dir).get(&signer_key), Some(&5000));
     }
 
     #[tokio::test]
@@ -663,7 +862,7 @@ mod auth_state_tests {
         let store = store_with_account(&dir).await;
 
         let err = store
-            .update_last_auth_timestamp_cas("ghost", 100)
+            .update_last_auth_timestamp_cas("ghost", "0xaa", 100)
             .await
             .expect_err("unknown account must error");
         assert!(err.contains("Account not found"));
@@ -677,7 +876,7 @@ mod auth_state_tests {
 
         assert!(
             store
-                .update_last_auth_timestamp_cas("acct", 100)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 100)
                 .await
                 .unwrap()
         );
@@ -699,7 +898,7 @@ mod auth_state_tests {
 
         assert!(
             store
-                .update_last_auth_timestamp_cas("acct", 100)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 100)
                 .await
                 .unwrap()
         );
@@ -728,7 +927,11 @@ mod auth_state_tests {
 
         let attempts = (0..16).map(|_| {
             let store = store.clone();
-            tokio::spawn(async move { store.update_last_auth_timestamp_cas("acct", 500).await })
+            tokio::spawn(async move {
+                store
+                    .update_last_auth_timestamp_cas("acct", "0xaa", 500)
+                    .await
+            })
         });
         let mut accepted = 0;
         for attempt in attempts {
@@ -766,17 +969,25 @@ mod auth_state_tests {
             .await
             .unwrap();
 
-        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&4242));
+        assert_eq!(
+            persisted_auth_state(&dir).get(&auth_state_key("acct", SIGNER_A)),
+            Some(&4242)
+        );
+        assert_eq!(
+            persisted_auth_state(&dir).get(&auth_state_key("acct", SIGNER_B)),
+            Some(&4242),
+            "the legacy account-scoped floor must cover every authorized signer"
+        );
         assert!(
             !store
-                .update_last_auth_timestamp_cas("acct", 4242)
+                .update_last_auth_timestamp_cas("acct", SIGNER_A, 4242)
                 .await
                 .unwrap(),
             "seeded timestamp must be enforced"
         );
         assert!(
             store
-                .update_last_auth_timestamp_cas("acct", 4243)
+                .update_last_auth_timestamp_cas("acct", SIGNER_A, 4243)
                 .await
                 .unwrap()
         );
@@ -862,13 +1073,13 @@ mod auth_state_tests {
             .unwrap();
 
         assert_eq!(
-            persisted_auth_state(&dir).get("acct"),
+            persisted_auth_state(&dir).get(&auth_state_key("acct", SIGNER_A)),
             Some(&5000),
             "the newer of legacy and auth-state values must win the merge"
         );
         assert!(
             !store
-                .update_last_auth_timestamp_cas("acct", 5000)
+                .update_last_auth_timestamp_cas("acct", SIGNER_A, 5000)
                 .await
                 .unwrap()
         );
@@ -900,10 +1111,13 @@ mod auth_state_tests {
             .await
             .unwrap();
 
-        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&5000));
+        assert_eq!(
+            persisted_auth_state(&dir).get(&auth_state_key("acct", SIGNER_A)),
+            Some(&5000)
+        );
         assert!(
             !store
-                .update_last_auth_timestamp_cas("acct", 4999)
+                .update_last_auth_timestamp_cas("acct", SIGNER_A, 4999)
                 .await
                 .unwrap()
         );
@@ -915,7 +1129,7 @@ mod auth_state_tests {
         let store = store_with_account(&dir).await;
         assert!(
             store
-                .update_last_auth_timestamp_cas("acct", 50)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 50)
                 .await
                 .unwrap()
         );
@@ -923,22 +1137,22 @@ mod auth_state_tests {
         std::fs::remove_file(auth_state_path(&dir)).unwrap();
         std::fs::create_dir(auth_state_path(&dir)).unwrap();
         store
-            .update_last_auth_timestamp_cas("acct", 100)
+            .update_last_auth_timestamp_cas("acct", "0xaa", 100)
             .await
             .expect_err("persisting over a directory must fail");
 
         std::fs::remove_dir(auth_state_path(&dir)).unwrap();
         assert!(
             store
-                .update_last_auth_timestamp_cas("acct", 100)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 100)
                 .await
                 .unwrap(),
             "a timestamp that was never durably recorded must not be treated as a replay"
         );
-        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&100));
+        assert_eq!(persisted_auth_state(&dir).get("acct:0xaa"), Some(&100));
         assert!(
             !store
-                .update_last_auth_timestamp_cas("acct", 50)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 50)
                 .await
                 .unwrap(),
             "rollback must restore the prior value, not clear it"
@@ -960,7 +1174,7 @@ mod auth_state_tests {
             .expect("an explicitly recreated auth-state file is an operator decision");
         assert!(
             store
-                .update_last_auth_timestamp_cas("acct", 1)
+                .update_last_auth_timestamp_cas("acct", "0xaa", 1)
                 .await
                 .unwrap()
         );

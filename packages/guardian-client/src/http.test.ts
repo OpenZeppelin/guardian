@@ -1114,17 +1114,13 @@ describe('GuardianHttpError', () => {
       expect(parsed.delta).toBeUndefined();
     });
 
-    it('surfaces 401 AUTHENTICATION_FAILED with a parseable error envelope', async () => {
+    it('does not retry a terminal 401 authentication_failed rejection', async () => {
       client.setSigner(mockSigner);
       const envelope = {
         code: 'authentication_failed',
-        message: 'Your session has expired. Please sign in again.',
+        message: 'Guardian could not authenticate this request.',
         meta: { retryable: false },
       };
-      // `authentication_failed` triggers the replay-retry path (the specific
-      // "Replay attack" detail is sanitized off the wire in feature 009, so we
-      // retry on the auth code). Use a persistent mock so the retries resolve
-      // and the final attempt throws the typed error.
       mockFetch.mockResolvedValue({
         ok: false,
         headers: new Headers(),
@@ -1146,9 +1142,89 @@ describe('GuardianHttpError', () => {
       expect(e.status).toBe(401);
       expect(e.code).toBe('authentication_failed');
       expect(typeof e.userMessage).toBe('string');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
       const parsed = JSON.parse(e.body);
       expect(parsed.success).toBeUndefined();
       expect(parsed.delta).toBeUndefined();
+    });
+
+    it('retries an authentication_replay rejection with a fresh timestamp and signature', async () => {
+      client.setSigner(mockSigner);
+      vi.mocked(mockSigner.signRequest!).mockClear();
+      const replayResponse = {
+        ok: false,
+        headers: new Headers(),
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () =>
+          JSON.stringify({
+            code: 'authentication_replay',
+            message: 'Guardian received this request out of order. Please try again.',
+            meta: { retryable: true },
+          }),
+      };
+      const serverResponse = {
+        delta: {
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: { tx_summary: { data: '' }, signatures: [] },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [],
+          },
+        },
+        commitment: '0x' + 'd'.repeat(64),
+      };
+      mockFetch
+        .mockResolvedValueOnce(replayResponse)
+        .mockResolvedValueOnce({ ok: true, json: async () => serverResponse });
+
+      const result = await client.pushDeltaProposal({
+        accountId: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        deltaPayload: { txSummary: { data: '' }, signatures: [] },
+      });
+
+      expect(result.commitment).toBe('0x' + 'd'.repeat(64));
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const timestamps = mockFetch.mock.calls.map((call) =>
+        Number((call[1].headers as Record<string, string>)['x-timestamp'])
+      );
+      expect(timestamps[1]).toBeGreaterThan(timestamps[0]);
+      expect(mockSigner.signRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it('gives up after exhausting the bounded replay retry budget', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValue({
+        ok: false,
+        headers: new Headers(),
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () =>
+          JSON.stringify({
+            code: 'authentication_replay',
+            message: 'Guardian received this request out of order. Please try again.',
+            meta: { retryable: true },
+          }),
+      });
+
+      const error = await client
+        .pushDeltaProposal({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          deltaPayload: { txSummary: { data: '' }, signatures: [] },
+        })
+        .catch((e) => e as GuardianHttpError);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      const e = error as GuardianHttpError;
+      expect(e.code).toBe('authentication_replay');
+      expect(e.meta?.retryable).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
     });
   });
 });

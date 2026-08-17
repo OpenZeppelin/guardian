@@ -10,6 +10,9 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 /// fails or yields a commitment outside the authorized set, the server falls
 /// back to the caller-provided public key from `x-pubkey` for compatibility
 /// with wallet providers that use a different recovery encoding.
+///
+/// Returns the verified signer's public-key commitment (hex), which callers
+/// use to scope replay-protection state per signer.
 pub fn verify_request_signature(
     account_id: &str,
     timestamp: i64,
@@ -17,7 +20,7 @@ pub fn verify_request_signature(
     signature: &str,
     pubkey_hex: &str,
     request_payload: &AuthRequestPayload,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let message = account_id_timestamp_to_digest(account_id, timestamp, request_payload)?;
     let sig = parse_signature(signature)?;
 
@@ -36,7 +39,9 @@ pub fn verify_request_signature(
         &sig,
         &public_key,
         &commitment_hex,
-    )
+    )?;
+
+    Ok(commitment_hex)
 }
 
 /// Convert an account ID and timestamp to a message digest (Word)

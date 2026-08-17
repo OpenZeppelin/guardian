@@ -22,6 +22,17 @@ fn create_test_signer() -> Arc<dyn Signer> {
     Arc::new(FalconKeyStore::new(SecretKey::new()))
 }
 
+fn guardian_auth_status(code: &str, retryable: bool) -> Status {
+    let details = serde_json::json!({
+        "code": code,
+        "message": "test",
+        "meta": { "retryable": retryable }
+    })
+    .to_string()
+    .into_bytes();
+    Status::with_details(tonic::Code::Unauthenticated, "test", details.into())
+}
+
 #[tokio::test]
 async fn test_get_pubkey_success() {
     let service = MockGuardianService::default().with_get_pubkey(Ok("test_pubkey_123".to_string()));
@@ -440,6 +451,96 @@ async fn test_get_state_success() {
     assert!(response.success);
     assert!(response.state.is_some());
     assert!(response.state.unwrap().state_json.contains("balance"));
+}
+
+#[tokio::test]
+async fn replay_rejections_are_retried_with_fresh_timestamp_and_signature_each_attempt() {
+    // Two queued replay errors force the client to use its entire retry
+    // budget; the mock then serves its default success, so a passing result
+    // proves both retries happened.
+    let service = MockGuardianService::default()
+        .with_get_state(Err(guardian_auth_status("authentication_replay", true)))
+        .with_get_state(Err(guardian_auth_status("authentication_replay", true)));
+    let recorded_headers = service.get_state_auth_headers_handle();
+
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    let response = client
+        .get_state(&create_test_account_id())
+        .await
+        .expect("replay rejections within the retry budget must be retried to success");
+    assert!(response.success);
+
+    let attempts = recorded_headers.lock().unwrap().clone();
+    assert_eq!(attempts.len(), 3, "one initial attempt plus two retries");
+    assert!(
+        attempts[0].0 < attempts[1].0 && attempts[1].0 < attempts[2].0,
+        "every attempt must mint a strictly increasing timestamp: {attempts:?}"
+    );
+    let signatures: std::collections::HashSet<&String> =
+        attempts.iter().map(|(_, signature)| signature).collect();
+    assert_eq!(
+        signatures.len(),
+        3,
+        "every attempt must carry a fresh signature over the new timestamp"
+    );
+}
+
+#[tokio::test]
+async fn replay_retries_stop_at_the_bounded_budget() {
+    // Three queued replay errors exceed the two-retry budget. If the client
+    // sent a fourth attempt it would hit the mock's default success, so the
+    // surfaced replay error proves the bound is exact.
+    let service = MockGuardianService::default()
+        .with_get_state(Err(guardian_auth_status("authentication_replay", true)))
+        .with_get_state(Err(guardian_auth_status("authentication_replay", true)))
+        .with_get_state(Err(guardian_auth_status("authentication_replay", true)));
+    let recorded_headers = service.get_state_auth_headers_handle();
+
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    let error = client
+        .get_state(&create_test_account_id())
+        .await
+        .expect_err("a replay condition outlasting the retry budget must surface");
+    assert!(error.is_replay_rejection());
+    assert_eq!(
+        recorded_headers.lock().unwrap().len(),
+        3,
+        "one initial attempt plus exactly two retries"
+    );
+}
+
+#[tokio::test]
+async fn terminal_authentication_failure_is_not_retried() {
+    // Same mock semantics as above: a retry would hit the default success
+    // response, so the surfaced error proves the client gave up immediately.
+    let service = MockGuardianService::default()
+        .with_get_state(Err(guardian_auth_status("authentication_failed", false)));
+
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    let error = client
+        .get_state(&create_test_account_id())
+        .await
+        .expect_err("a terminal authentication failure must not be retried");
+    assert_eq!(
+        error.guardian_code().as_deref(),
+        Some("authentication_failed")
+    );
+    assert!(!error.is_replay_rejection());
 }
 
 #[tokio::test]

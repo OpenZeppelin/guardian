@@ -24,7 +24,8 @@ pub struct MockGuardianService {
     push_delta_response: Arc<StdMutex<Option<Result<PushDeltaResponse, Status>>>>,
     get_delta_response: Arc<StdMutex<Option<Result<GetDeltaResponse, Status>>>>,
     get_delta_since_response: Arc<StdMutex<Option<Result<GetDeltaSinceResponse, Status>>>>,
-    get_state_response: Arc<StdMutex<Option<Result<GetStateResponse, Status>>>>,
+    get_state_responses: Arc<StdMutex<Vec<Result<GetStateResponse, Status>>>>,
+    get_state_auth_headers: Arc<StdMutex<Vec<(i64, String)>>>,
     get_account_by_key_commitment_response:
         Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
     abandon_delta_candidate_response:
@@ -89,9 +90,19 @@ impl MockGuardianService {
         self
     }
 
+    /// Queue a `get_state` response. Responses are served FIFO; once the
+    /// queue is empty the handler falls back to its default success, so
+    /// queueing N errors makes attempt N+1 succeed.
     pub fn with_get_state(self, response: Result<GetStateResponse, Status>) -> Self {
-        *self.get_state_response.lock().unwrap() = Some(response);
+        self.get_state_responses.lock().unwrap().push(response);
         self
+    }
+
+    /// Handle onto the `(x-timestamp, x-signature)` pairs recorded from every
+    /// `get_state` request, in arrival order. Clone before moving the service
+    /// into `start_mock_server` to observe per-attempt auth metadata.
+    pub fn get_state_auth_headers_handle(&self) -> Arc<StdMutex<Vec<(i64, String)>>> {
+        self.get_state_auth_headers.clone()
     }
 
     pub fn with_get_account_by_key_commitment(
@@ -322,20 +333,35 @@ impl Guardian for MockGuardianService {
 
     async fn get_state(
         &self,
-        _request: Request<GetStateRequest>,
+        request: Request<GetStateRequest>,
     ) -> Result<Response<GetStateResponse>, Status> {
-        let response = self
-            .get_state_response
+        let timestamp = request
+            .metadata()
+            .get("x-timestamp")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default();
+        let signature = request
+            .metadata()
+            .get("x-signature")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        self.get_state_auth_headers
             .lock()
             .unwrap()
-            .take()
-            .unwrap_or_else(|| {
-                Ok(GetStateResponse {
-                    success: true,
-                    message: String::new(),
-                    state: Some(create_mock_account_state()),
-                })
-            });
+            .push((timestamp, signature));
+
+        let mut responses = self.get_state_responses.lock().unwrap();
+        let response = if responses.is_empty() {
+            Ok(GetStateResponse {
+                success: true,
+                message: String::new(),
+                state: Some(create_mock_account_state()),
+            })
+        } else {
+            responses.remove(0)
+        };
 
         response.map(Response::new)
     }

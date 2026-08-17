@@ -218,8 +218,8 @@ class), and `retryAfterSecs()` returns the server's hint, preferring the
 `Retry-After` header over the envelope value.
 
 Rate-limit rejections happen before the server touches any state, so
-retrying them is always safe. The client does not retry automatically
-(automatic backoff is tracked in
+retrying them is always safe. The client does not retry rate limits
+automatically (automatic backoff is tracked in
 [#360](https://github.com/OpenZeppelin/guardian/issues/360)); a bounded
 loop over the exposed hint is a few lines:
 
@@ -241,6 +241,19 @@ async function getStateWithRetry(accountId: string, maxAttempts = 3) {
   }
 }
 ```
+
+### Replay-protection retries
+
+Signed requests carry a strictly increasing per-instance timestamp
+(`max(Date.now(), previous + 1)`). When a correctly signed request still
+loses the server's per-signer replay check (stable code
+`authentication_replay`, typically two in-flight requests landing out of
+order), the client retries automatically, up to 2 times with a 50ms
+backoff, minting a fresh timestamp and signature over the identical
+payload each attempt. Terminal authentication failures
+(`authentication_failed`: clock outside the skew window, invalid or
+unauthorized signature) are never retried; branch on `error.code`, never
+on message text.
 
 ## Testing
 

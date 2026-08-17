@@ -13,8 +13,10 @@
 
 - The signed payload includes a Unix timestamp in milliseconds.
 - The server enforces a maximum clock skew window of **300,000 milliseconds** (5 minutes).
-- The server tracks `last_auth_timestamp` per account; requests with a timestamp less than or equal to the last accepted timestamp are rejected.
-- `last_auth_timestamp` is updated atomically when authentication succeeds.
+- The server tracks `last_auth_timestamp` per `(account, signer commitment)`; a request whose timestamp is not strictly greater than the last accepted timestamp from the same signer is rejected with the dedicated stable code `authentication_replay` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: true`). Independent authorized signers never contend on one timestamp, while a replayed request from the same signer always loses: every accepted request advances that signer's own record.
+- All other authentication failures (clock skew, invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
+- `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds.
+- Clients generate strictly increasing timestamps per instance (`max(now_ms, previous + 1)`) and retry only `authentication_replay`, bounded, with a fresh timestamp, recomputed digest, and fresh signature over the identical payload on each attempt. Terminal authentication failures are never retried.
 
 ### Miden Request Signing
 
@@ -370,6 +372,7 @@ Stable error codes include:
 - `commitment_mismatch`
 - `invalid_commitment`
 - `authentication_failed`
+- `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))
 - `authorization_failed`
 - `invalid_input`
 - `storage_error`

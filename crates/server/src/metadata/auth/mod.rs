@@ -112,10 +112,13 @@ impl Auth {
     ///    optionally bound to request bytes when provided by the transport layer
     /// 2. The signer's commitment is in the authorized list
     ///
+    /// Returns the verified signer's public-key commitment (hex), which
+    /// scopes replay-protection state per (account, signer).
+    ///
     /// # Arguments
     /// * `account_id` - The account ID
     /// * `credentials` - The credentials to verify (includes timestamp)
-    pub fn verify(&self, account_id: &str, credentials: &Credentials) -> Result<(), String> {
+    pub fn verify(&self, account_id: &str, credentials: &Credentials) -> Result<String, String> {
         match self {
             Auth::MidenFalconRpo {
                 cosigner_commitments,

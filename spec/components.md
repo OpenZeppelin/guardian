@@ -9,7 +9,7 @@ The operator dashboard surface is HTTP-only and lives under `/dashboard/*`. Auth
 ## Metadata
 
 - Stores per-account configuration required to authorise requests, dispatch network-specific behavior, and route to storage.
-- Records: `account_id`, authentication policy, `network_config`, storage backend type, timestamps, and `last_auth_timestamp` for replay protection.
+- Records: `account_id`, authentication policy, `network_config`, storage backend type, and timestamps. Replay-protection timestamps live in a dedicated `account_auth_state` store keyed by `(account_id, signer_commitment)` so the per-request CAS never rewrites account metadata.
 - `network_config` is the durable source for account network identity.
 - Miden account metadata is created by `/configure` with initial state and acknowledgement binding.
 - EVM account metadata is created by `/evm/accounts` with the canonical smart account address, chain ID, multisig validator address, and signer snapshot auth policy. Chain RPC URLs and the shared EntryPoint address remain server-owned configuration.
@@ -25,7 +25,7 @@ The operator dashboard surface is HTTP-only and lives under `/dashboard/*`. Auth
 - Requests carry `x-pubkey`, `x-signature`, and `x-timestamp`.
 - Miden verification derives a commitment from the supplied public key, checks it is authorised, and verifies the signature over `(account_id, timestamp, request_payload_digest)`.
 - EVM verification uses `/evm/auth/*`: the server recovers the EOA from an EIP-712 session challenge and stores that address in a secure cookie-backed session.
-- Replay protection: the signed timestamp is validated against a 300-second skew window and must be strictly greater than the account's `last_auth_timestamp`.
+- Replay protection: the signed timestamp is validated against a 300-second skew window and must be strictly greater than the `last_auth_timestamp` recorded for the same `(account, signer commitment)`. A CAS loss is surfaced as the retryable stable code `authentication_replay`; every other authentication failure is the terminal `authentication_failed`.
 - Default server builds do not register EVM routes or initialize EVM state, sessions, contract readers, or proposal handlers.
 - The account-less lookup endpoint (`GET /state/lookup`, gRPC `GetAccountByKeyCommitment`) uses a dedicated signing primitive `LookupAuthMessage` whose digest is **domain-separated by construction** from the per-account `AuthRequestMessage` (a fixed RPO domain tag is prepended to the lookup digest input, and the array shapes differ in length and leading felts). A signature crafted under one shape cannot validate against the other in either direction. Lookup auth derives identity from the signature itself — Falcon signatures embed the public key, ECDSA signatures recover it via the recovery byte — and then enforces `commitment_of(derived_pk) == queried_key_commitment`. The `x-pubkey` header is sent for wire-format parity with per-account requests but not consulted on this path, so wallet signers that only expose a 32-byte commitment work without weakening proof-of-possession (the signature is what proves possession). New endpoints (including this one) emit failures via the structured `GuardianError` → `IntoResponse` envelope, NOT the legacy `get_state`-style 404-shaped body.
 

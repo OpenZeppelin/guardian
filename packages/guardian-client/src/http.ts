@@ -542,15 +542,16 @@ export class GuardianHttpClient {
         },
       });
     } catch (err) {
-      // Replay rejections (stale timestamp) are transient: retry once with a
-      // fresh timestamp. The specific "Replay attack" detail is now sanitized
-      // off the wire (feature 009), so branch on the stable auth code instead.
-      // Retrying a genuine auth failure is harmless — one extra attempt that
-      // also fails — and only happens when a retry budget remains.
+      // Replay rejections are transient: the request was correctly signed
+      // but lost the server's per-signer timestamp CAS. Retry with a fresh
+      // timestamp and signature, branching only on the dedicated
+      // `authentication_replay` code (issue #367); terminal authentication
+      // failures (invalid signature, clock outside the skew window) are
+      // never retried.
       if (
         retries > 0 &&
         err instanceof GuardianHttpError &&
-        err.code === 'authentication_failed'
+        err.code === 'authentication_replay'
       ) {
         await new Promise((resolve) => setTimeout(resolve, 50));
         return this.fetchAuthenticated(path, init, accountId, requestPayload, retries - 1);

@@ -177,9 +177,16 @@ pub trait MetadataStore: Send + Sync {
     /// replay signal, which must never surface as `Err`; `Err` is reserved for
     /// storage failure. Replay state is owned exclusively by this method: no other
     /// store operation may read or write it, and it must not affect `updated_at`.
+    ///
+    /// Scope is per `(account_id, signer_commitment)` (issue #367): independent
+    /// authorized cosigners never contend on one timestamp, while a replay of a
+    /// request from the same signer is still rejected: every accepted request
+    /// advances its own signer's record, so a captured request can never win the
+    /// CAS again.
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,
+        signer_commitment: &str,
         new_timestamp: i64,
     ) -> Result<bool, String>;
 

@@ -108,32 +108,45 @@ Common benign causes:
 
 ### Signed requests are rejected at the auth layer
 
-This section covers the auth-middleware verdict — `401` with
-`code: authentication_failed`. If your request was *authenticated* but
-still rejected (e.g. `403 authorization_failed`,
-`403 signer_not_authorized`, `400 commitment_mismatch`,
-`409 conflict_pending_*`), jump straight to the
-[error code reference](#error-code-reference) — the signature was fine,
-the service layer rejected the operation.
+This section covers the auth-middleware verdicts, `401` with
+`code: authentication_failed` or `code: authentication_replay`. If your
+request was *authenticated* but still rejected (e.g.
+`403 authorization_failed`, `403 signer_not_authorized`,
+`400 commitment_mismatch`, `409 conflict_pending_*`), jump straight to
+the [error code reference](#error-code-reference): the signature was
+fine, the service layer rejected the operation.
 
-The auth middleware returns `401 authentication_failed` for three
-reasons:
+The two 401 codes mean different things (issue #367 split them):
 
-1. **Clock skew.** Timestamps must be within ±5 minutes of server time
-   ([`metadata/auth/credentials.rs:6`](../crates/server/src/metadata/auth/credentials.rs#L6)).
-   Sync the client clock (NTP) or check for container time drift.
-2. **Reused timestamp.** The server enforces *strictly monotonic*
-   timestamps per public key. If you replay an old request, or two
-   in-flight requests share a millisecond, the second is rejected.
-   Generate fresh timestamps per request and serialise concurrent
-   requests from the same key.
-3. **Modified payload after signing.** The signature covers the request
-   body hash. Mutating the body (proxy reformatting, JSON re-serialise)
-   invalidates the signature. Sign-then-send; do not transform between.
+- **`authentication_replay`** (`meta.retryable: true`). The request was
+  correctly signed, but its `x-timestamp` was not strictly greater than
+  the last timestamp Guardian accepted *from the same signer* on that
+  account. This is the replay-protection CAS, not a credential problem:
+  it happens when two in-flight requests from one client land out of
+  order, or when the same key is used from two processes at once. Both
+  SDK clients retry it automatically (bounded, fresh timestamp and
+  signature per attempt); a user-visible `authentication_replay` means
+  the condition persisted through the retry budget; look for a second
+  process (background poller, second tab, another host) signing with
+  the same key. Replay state is scoped per `(account, signer)`, so
+  other cosigners of a multisig never cause this for you.
+- **`authentication_failed`** (`meta.retryable: false`, terminal) for
+  three reasons:
+  1. **Clock skew.** Timestamps must be within ±5 minutes of server time
+     ([`metadata/auth/credentials.rs:6`](../crates/server/src/metadata/auth/credentials.rs#L6)).
+     Sync the client clock (NTP) or check for container time drift.
+  2. **Invalid or unauthorized signature.** The signer's public-key
+     commitment is not in the account's authorized set, or the signature
+     does not verify.
+  3. **Modified payload after signing.** The signature covers the
+     request body hash. Mutating the body (proxy reformatting, JSON
+     re-serialise) invalidates the signature. Sign-then-send; do not
+     transform between.
 
 Headers required on every authenticated request: `x-pubkey`,
 `x-signature`, `x-timestamp`. If any are missing the response is also
-`authentication_failed`.
+`authentication_failed`. Never retry `authentication_failed`; it will
+not succeed until the underlying cause (clock, key, payload) changes.
 
 ### Pending proposals never resolve
 
@@ -354,7 +367,8 @@ come from
 
 | Code | HTTP | First check |
 |---|---|---|
-| `authentication_failed` | 401 | Clock skew, reused timestamp, modified payload, missing headers. |
+| `authentication_failed` | 401 | Clock skew, invalid/unauthorized signature, modified payload, missing headers. Terminal; never retried. |
+| `authentication_replay` | 401 | Correctly signed but the timestamp lost the per-signer replay CAS. `retryable: true`; SDK clients retry it automatically with a fresh timestamp and signature. See [the auth-layer section](#signed-requests-are-rejected-at-the-auth-layer). |
 | `authorization_failed` | 403 | Account credentials don't authorize the operation. |
 | `signer_not_authorized` | 403 | Signer isn't on the proposal's allowed signer set. |
 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`DASHBOARD.md`](./DASHBOARD.md#permission-vocabulary). |

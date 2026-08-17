@@ -1210,6 +1210,7 @@ impl MetadataStore for MockMetadataStore {
     async fn update_last_auth_timestamp_cas(
         &self,
         _account_id: &str,
+        _signer_commitment: &str,
         _new_timestamp: i64,
     ) -> StdResult<bool, String> {
         self.update_timestamp_cas_responses

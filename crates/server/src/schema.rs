@@ -92,12 +92,16 @@ diesel::table! {
 diesel::table! {
     /// Representation of the `account_auth_state` table.
     ///
-    /// Per-account replay-protection record, kept apart from
+    /// Per-(account, signer) replay-protection record, kept apart from
     /// `account_metadata` so the per-request CAS rewrites a ~40-byte
-    /// tuple instead of the full metadata row.
-    account_auth_state (account_id) {
+    /// tuple instead of the full metadata row. Keyed per signer
+    /// commitment (issue #367) so independent cosigners never contend
+    /// on one timestamp.
+    account_auth_state (account_id, signer_commitment) {
         #[max_length = 128]
         account_id -> Varchar,
+        #[max_length = 128]
+        signer_commitment -> Varchar,
         last_auth_timestamp -> Int8,
     }
 }
