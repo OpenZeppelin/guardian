@@ -148,7 +148,7 @@ describe('assertMetadataMatchesSummary', () => {
       expectReject(metadata, mockSummary({ outputNotes: [] }));
     });
 
-    it('rejects a note carrying an extra asset beyond the declared one', () => {
+    it('rejects a note carrying an extra fungible asset beyond the declared one', () => {
       // Correct recipient + declared asset, but an additional asset would leave
       // the account beyond what the metadata describes.
       const noteWithExtra = {
@@ -456,6 +456,18 @@ describe('assertMetadataMatchesSummary', () => {
               slotName: SIGNER_PUBLIC_KEYS_SLOT,
               entries: [{ keyHex: wordHex([0n, 0n, 0n, 0n]), valueHex: normalizeHexWord('0x' + '9'.repeat(64)) }],
             },
+          ],
+        }),
+      );
+    });
+
+    it('rejects a switch_guardian that disables the guardian (selector off)', () => {
+      expectReject(
+        metadata,
+        mockSummary({
+          maps: guardianMap(newGuardianPubkey),
+          valueDeltas: [
+            { slotName: 'openzeppelin::guardian::selector', valueHex: wordHex([0n, 0n, 0n, 0n]) },
           ],
         }),
       );

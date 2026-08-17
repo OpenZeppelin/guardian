@@ -134,9 +134,10 @@ function mapEntriesFor(
  * one that piggybacks an undeclared effect in any dimension, is rejected before a
  * cosigner signs it.
  *
- * Residual limitations (see the type comments): the SDK exposes only FUNGIBLE
- * note/vault assets, so a non-fungible asset attached to an otherwise-correct
- * p2id note cannot be detected here; and the signer check binds by storage-map
+ * Residual limitations (see the type comments): a non-fungible asset attached to
+ * an otherwise-correct p2id note is not yet bound (the SDK exposes only fungible
+ * note assets) — closable via output-note-id equality before merge, see
+ * `assertP2idBinding`; and the signer check binds by storage-map
  * index over the CHANGED entries (a real-summary integration test should confirm
  * the delta carries every changed index). `custom` proposals carry no metadata
  * recipe, so WYSIWYS does not hold for them — a cosigner must verify the raw
@@ -184,8 +185,14 @@ export function assertMetadataMatchesSummary(
  * match); the asset is read off the note (not the vault), so the block-dependent
  * fee never contaminates the comparison.
  *
- * Residual: `NoteAssets` exposes only fungible assets, so a non-fungible asset
- * attached to this note is invisible to the SDK and cannot be bound here.
+ * KNOWN GAP (must close before this leaves draft): the recipient and the
+ * fungible asset are bound separately, so a NON-FUNGIBLE asset attached to the
+ * note is not bound (`NoteAssets` exposes only fungible assets) — an NFT could
+ * be drained under a fungible-transfer label. Closure: bind the whole output
+ * note by `outputNote.id()` equality (a NoteId commits to ALL assets incl. NFTs;
+ * the consume path already binds by note id, and `p2id.ts` has the note-ID
+ * reconstruction), sourcing the fungible asset OFF the note to keep the callback
+ * flag and block-independence — validated by the pre-merge integration test.
  */
 function assertP2idBinding(
   proposalId: string,
@@ -405,6 +412,15 @@ function assertSwitchGuardianBinding(
   const expectedPubkey = normalizeHexWord(metadata.newGuardianPubkey);
   const entry = mapEntriesFor(storage, GUARDIAN_PUBLIC_KEY_SLOT).find((e) => e.key === ZERO_WORD_HEX);
   if (!entry || entry.value !== expectedPubkey) {
+    reject(proposalId);
+  }
+
+  // If the guardian selector value slot changed, it must be ON ([1,0,0,0]). An
+  // honest guardian switch leaves the guardian enabled (the MASM re-enables it),
+  // so a summary that disables the guardian is rejected here rather than relying
+  // on that MASM invariant.
+  const selector = valueDeltaFor(storage, GUARDIAN_SELECTOR_SLOT);
+  if (selector !== undefined && selector !== wordHexFromFelts([1n, 0n, 0n, 0n])) {
     reject(proposalId);
   }
 
