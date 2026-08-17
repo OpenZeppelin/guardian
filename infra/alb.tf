@@ -32,7 +32,7 @@ resource "aws_lb" "main" {
 
     precondition {
       condition     = !local.alias_domain_enabled || local.acm_certificate_arn != ""
-      error_message = "An enabled alias_subdomain requires acm_certificate_arn so the legacy hostname remains available over HTTPS."
+      error_message = "An enabled alias_subdomain requires acm_certificate_arn. Verify that it covers both hostnames or set alias_acm_certificate_arn for the legacy hostname."
     }
 
     precondition {

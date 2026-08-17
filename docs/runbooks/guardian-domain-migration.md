@@ -24,7 +24,9 @@ value that identifies the stack. Do not rely on the current values in `.env`
 when selecting a state file manually. The `GUARDIAN_NETWORK_TYPE` exports pin
 the network each stack already runs (the hosted devnet stack runs `MidenDevnet`,
 the testnet stack `MidenTestnet`) so a stale `.env` value cannot switch the
-server's network inside this domain-only apply.
+server's network inside this domain-only apply. Both hosted records are already
+Cloudflare-proxied, so the export blocks also pin `CLOUDFLARE_PROXIED=true` to
+prevent this migration from changing their proxy mode.
 
 For testnet:
 
@@ -38,6 +40,7 @@ export GUARDIAN_NETWORK_TYPE=MidenTestnet
 export DOMAIN_NAME=openzeppelin.com
 export SUBDOMAIN=guardian-testnet
 export ALIAS_SUBDOMAIN=guardian
+export CLOUDFLARE_PROXIED=true
 export ACM_CERTIFICATE_ARN="arn:aws:acm:us-east-1:<account-id>:certificate/<canonical-cert-id>"
 export TF_STATE_PATH="$(pwd)/infra/terraform.guardian-prod.prod.tfstate"
 ```
@@ -54,6 +57,7 @@ export GUARDIAN_NETWORK_TYPE=MidenDevnet
 export DOMAIN_NAME=openzeppelin.com
 export SUBDOMAIN=guardian-devnet
 export ALIAS_SUBDOMAIN=guardian-stg
+export CLOUDFLARE_PROXIED=true
 export ACM_CERTIFICATE_ARN="arn:aws:acm:us-east-1:<account-id>:certificate/<canonical-cert-id>"
 export TF_STATE_PATH="$(pwd)/infra/terraform.guardian.dev.tfstate"
 ```
@@ -62,6 +66,34 @@ export TF_STATE_PATH="$(pwd)/infra/terraform.guardian.dev.tfstate"
 hostname. If that certificate does not also cover the legacy hostname, also
 export `ALIAS_ACM_CERTIFICATE_ARN` with the legacy hostname's existing
 certificate. Both certificates must be in the ALB's AWS region.
+
+Inspect the certificate status and subject alternative names before changing
+state or planning the deployment:
+
+```bash
+CANONICAL_FQDN="${SUBDOMAIN}.${DOMAIN_NAME}"
+LEGACY_FQDN="${ALIAS_SUBDOMAIN}.${DOMAIN_NAME}"
+
+aws acm describe-certificate \
+  --region "$AWS_REGION" \
+  --certificate-arn "$ACM_CERTIFICATE_ARN" \
+  --query 'Certificate.{Status:Status,SANs:SubjectAlternativeNames}' \
+  --output json
+
+if [ -n "${ALIAS_ACM_CERTIFICATE_ARN:-}" ]; then
+  aws acm describe-certificate \
+    --region "$AWS_REGION" \
+    --certificate-arn "$ALIAS_ACM_CERTIFICATE_ARN" \
+    --query 'Certificate.{Status:Status,SANs:SubjectAlternativeNames}' \
+    --output json
+fi
+```
+
+Stop unless every displayed certificate is `ISSUED`. With one certificate, its
+SAN list must cover both `$CANONICAL_FQDN` and `$LEGACY_FQDN`, either explicitly
+or through a matching wildcard. With split certificates, the canonical
+certificate must cover `$CANONICAL_FQDN` and the alias certificate must cover
+`$LEGACY_FQDN`.
 
 With a split-certificate setup, the apply swaps the listener's default
 certificate to the canonical one before it creates the SNI attachment for the
@@ -182,11 +214,12 @@ Run the plan with the same `STACK_NAME`, `DEPLOY_STAGE`, `SUBDOMAIN`, and
 ```
 
 For Terraform-managed DNS, the plan must retain the legacy secondary record and
-create the new canonical record. An in-place comment update on the legacy
-Cloudflare record is harmless. With external DNS, the plan should not add DNS
-resources; confirm both records separately with that provider. Certificate and
-output changes are expected in either case. Do not apply if the plan destroys or
-replaces the legacy DNS record, ALB, ECS service, or database.
+create the new canonical record. On the legacy Cloudflare record, only the
+in-place `comment` update is expected; stop if `proxied`, `name`, `content`, or
+any other behavior-affecting field changes. With external DNS, the plan should
+not add DNS resources; confirm both records separately with that provider.
+Certificate and output changes are expected in either case. Do not apply if the
+plan destroys or replaces the legacy DNS record, ALB, ECS service, or database.
 
 A wrong `.env` value surfaces as an in-place `aws_ecs_task_definition` update
 rather than a destroy or replace, so inspect that diff too. This domain-only
