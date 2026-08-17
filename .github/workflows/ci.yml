@@ -135,7 +135,12 @@ jobs:
             ${{ runner.os }}-cargo-authz-test-probe-
 
       - name: Run authz test probe tests
-        run: cargo test -p guardian-server --lib --features authz-test-probe
+        run: >-
+          cargo test
+          -p guardian-server
+          --lib
+          --features authz-test-probe
+          api::dashboard::tests::authz_probe::
 
   npm-test:
     name: TypeScript Package Tests
