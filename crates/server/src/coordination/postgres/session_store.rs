@@ -139,13 +139,8 @@ impl SessionStore for PgSessionStore {
 mod tests {
     use super::*;
     use crate::storage::postgres::{build_postgres_pool_lazy, run_migrations};
+    use crate::testing::pg::test_database_url;
     use chrono::Duration;
-
-    fn database_url() -> Option<String> {
-        std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-    }
 
     fn unique_key(now: DateTime<Utc>) -> SessionKey {
         let mut key = [0u8; 32];
@@ -165,9 +160,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn session_visible_across_replicas_and_revoke_propagates() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = test_database_url().await;
         run_migrations(&url).await.expect("migrations apply");
         let replica_a = PgSessionStore::new(
             build_postgres_pool_lazy(&url, 2).expect("pool a"),

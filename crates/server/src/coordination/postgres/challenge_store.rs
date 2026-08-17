@@ -199,13 +199,8 @@ impl ChallengeStore for PgChallengeStore {
 mod tests {
     use super::*;
     use crate::storage::postgres::{build_postgres_pool_lazy, run_migrations};
+    use crate::testing::pg::test_database_url;
     use chrono::Duration;
-
-    fn database_url() -> Option<String> {
-        std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-    }
 
     #[tokio::test]
     async fn active_for_fails_closed_when_store_unreachable() {
@@ -219,9 +214,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn challenge_is_single_use_across_replicas() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = test_database_url().await;
         run_migrations(&url).await.expect("migrations apply");
         let replica_a = PgChallengeStore::new(
             build_postgres_pool_lazy(&url, 2).expect("pool a"),

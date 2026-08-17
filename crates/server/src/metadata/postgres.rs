@@ -562,13 +562,8 @@ mod tests {
     use super::*;
     use crate::schema::account_auth_state;
     use crate::storage::postgres::run_migrations;
+    use crate::testing::pg::test_database_url;
     use std::sync::Arc;
-
-    fn database_url() -> Option<String> {
-        std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-    }
 
     fn pg_serial_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -609,9 +604,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn cas_does_not_advance_metadata_updated_at() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
         run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
@@ -633,9 +628,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn cas_records_only_strictly_increasing_timestamps() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
         run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
@@ -678,9 +673,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn cas_for_unknown_account_is_a_storage_error_not_a_replay() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
         run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
@@ -693,9 +688,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn concurrent_identical_timestamps_admit_exactly_one_winner() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
         run_migrations(&url).await.expect("migrations apply");
         let store = Arc::new(PostgresMetadataStore::new(&url, 8).await.expect("store"));
@@ -724,9 +719,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL; reverts and re-applies the newest migration"]
+    #[ignore = "requires Postgres; reverts and re-applies the newest migration; run ./scripts/test-postgres.sh"]
     async fn migration_backfills_legacy_timestamps_into_account_auth_state() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
         run_migrations(&url).await.expect("migrations apply");
 
@@ -791,9 +786,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn generic_set_preserves_pending_candidate_flag() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = test_database_url().await;
         run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         let account_id = format!("0xsetrace{}", Utc::now().timestamp_micros());
@@ -843,9 +838,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn clear_pending_candidate_is_conditional_on_candidate_rows() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = test_database_url().await;
         run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         let account_id = format!("0xwedge{}", Utc::now().timestamp_micros());

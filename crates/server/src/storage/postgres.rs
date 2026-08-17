@@ -2793,15 +2793,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn pull_candidate_deltas_filters_in_the_store() {
         use crate::delta_object::DeltaStatus;
         use diesel::sql_types::Text;
 
-        let url = std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-            .expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = crate::testing::pg::test_database_url().await;
         run_migrations(&url).await.expect("migrations apply");
 
         let service = PostgresService::new(&url, 4).await.expect("storage");
@@ -2888,7 +2885,7 @@ mod tests {
     /// faster than the full-history read (the real ratio is orders of
     /// magnitude; the margin absorbs timer jitter).
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn pull_candidate_deltas_stays_flat_under_deep_history() {
         use crate::delta_object::DeltaStatus;
         use diesel::sql_types::{BigInt, Text};
@@ -2896,10 +2893,7 @@ mod tests {
         const CANONICAL_ROWS: i64 = 5_000;
         const DISCARDED_ROWS: i64 = 2_000;
 
-        let url = std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-            .expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = crate::testing::pg::test_database_url().await;
         run_migrations(&url).await.expect("migrations apply");
 
         let service = PostgresService::new(&url, 4).await.expect("storage");
@@ -3026,7 +3020,7 @@ mod tests {
     /// `update_candidate_status`. These behaviors live in Postgres
     /// predicates the filesystem tests cannot exercise.
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn retain_and_reconcile_writes_are_kind_exact() {
         use crate::coordination::LeaderElector;
         use crate::coordination::postgres::PgLeaseElector;
@@ -3035,10 +3029,7 @@ mod tests {
         use diesel::sql_types::Text;
         use std::time::Duration;
 
-        let url = std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-            .expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = crate::testing::pg::test_database_url().await;
         run_migrations(&url).await.expect("migrations apply");
 
         let service = PostgresService::new(&url, 4).await.expect("storage");
@@ -3321,7 +3312,7 @@ mod tests {
     /// mutated; the current holder promotes atomically; and once canonical,
     /// the delta survives both a repeated promotion and a discard attempt.
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn fenced_canonicalization_writes_reject_stale_owners() {
         use crate::coordination::LeaderElector;
         use crate::coordination::postgres::PgLeaseElector;
@@ -3329,10 +3320,7 @@ mod tests {
         use diesel::sql_types::Text;
         use std::time::Duration;
 
-        let url = std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-            .expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = crate::testing::pg::test_database_url().await;
         run_migrations(&url).await.expect("migrations apply");
 
         let service = PostgresService::new(&url, 4).await.expect("storage");
@@ -3636,7 +3624,7 @@ mod tests {
     /// neutralized by the candidate conditional (NotCandidate), so the delta is
     /// promoted exactly once with no double-apply.
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn lease_transfer_does_not_wait_for_a_validated_write_transaction() {
         use crate::coordination::LeaderElector;
         use crate::coordination::postgres::PgLeaseElector;
@@ -3645,10 +3633,7 @@ mod tests {
         use std::time::Duration;
         use tokio::sync::oneshot;
 
-        let url = std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-            .expect("DATABASE_URL must be set for this #[ignore] test");
+        let url = crate::testing::pg::test_database_url().await;
         run_migrations(&url).await.expect("migrations apply");
 
         let service = PostgresService::new(&url, 4).await.expect("storage");
