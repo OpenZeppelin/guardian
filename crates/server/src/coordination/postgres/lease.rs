@@ -144,7 +144,7 @@ impl LeaderElector for PgLeaseElector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::postgres::{build_postgres_pool_lazy, run_migrations};
+    use crate::storage::postgres::build_postgres_pool_lazy;
     use crate::testing::pg::test_database_url;
 
     #[tokio::test]
@@ -162,7 +162,6 @@ mod tests {
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn single_owner_failover_fences_the_old_holder() {
         let url = test_database_url().await;
-        run_migrations(&url).await.expect("migrations apply");
         let name = format!("canon-test-{}", Utc::now().timestamp_micros());
         let short_ttl = Duration::from_secs(1);
         let ttl = Duration::from_secs(60);

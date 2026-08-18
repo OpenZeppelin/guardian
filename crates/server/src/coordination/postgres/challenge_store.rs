@@ -198,7 +198,7 @@ impl ChallengeStore for PgChallengeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::postgres::{build_postgres_pool_lazy, run_migrations};
+    use crate::storage::postgres::build_postgres_pool_lazy;
     use crate::testing::pg::test_database_url;
     use chrono::Duration;
 
@@ -217,7 +217,6 @@ mod tests {
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn challenge_is_single_use_across_replicas() {
         let url = test_database_url().await;
-        run_migrations(&url).await.expect("migrations apply");
         let replica_a = PgChallengeStore::new(
             build_postgres_pool_lazy(&url, 2).expect("pool a"),
             Realm::Evm,

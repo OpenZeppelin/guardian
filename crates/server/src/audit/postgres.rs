@@ -262,9 +262,6 @@ mod tests {
         let database_url =
             crate::secret::CredentialUrl::new(crate::testing::pg::test_database_url().await);
         let raw_url = database_url.expose_secret();
-        crate::storage::postgres::run_migrations(raw_url)
-            .await
-            .expect("migrations run");
         let pool = build_postgres_pool_lazy(raw_url, 1).expect("pool builds");
         // Sanity: prove the pool is reachable; if not, abort early
         // with a clear error rather than a confusing trigger failure.

@@ -70,13 +70,6 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@4a44d353abec8bd780e47de38e5bc5ea77053391 # cargo-llvm-cov
 
-      # guardian-server/postgres is enabled so the ~50 tests behind that feature
-      # which need no database (TLS mode resolution, certificate verification,
-      # credential redaction, fail-closed store guards, the test-database name
-      # guard) actually execute. Clippy and Build compile them via --all-features
-      # but run nothing, and no other job enables the feature, so before this
-      # they ran in no job at all. The database-backed tests stay #[ignore] here
-      # and run in the postgres-test job, so this job needs no database.
       - name: Run tests with coverage
         run: >-
           cargo llvm-cov
@@ -85,9 +78,13 @@ jobs:
           --exclude guardian-server-bench-loadgen
           --exclude guardian-demo
           --exclude guardian-rust-example
-          --features guardian-server/postgres
           --lcov
           --output-path lcov.info
+
+      # Run the non-database tests behind guardian-server/postgres separately.
+      # Database-backed tests stay ignored here and run in postgres-test.
+      - name: Run Postgres feature tests
+        run: cargo test -p guardian-server --lib --features postgres
 
       # llvm-cov doctest coverage requires nightly, so doctests run as a
       # separate uninstrumented step.

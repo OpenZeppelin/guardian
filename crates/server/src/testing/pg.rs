@@ -2,9 +2,12 @@ use diesel::sql_types::Text;
 use diesel::{Connection, PgConnection, QueryableByName, RunQueryDsl};
 use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
+use tokio_postgres::error::SqlState;
 use url::Url;
 
-use crate::storage::postgres::run_migrations;
+use crate::storage::postgres::{
+    TestPostgresConnectionError, connect_test_postgres_client, run_migrations,
+};
 
 static PREPARED: OnceCell<String> = OnceCell::const_new();
 
@@ -40,22 +43,31 @@ async fn prepare() -> String {
         .expect("DATABASE_URL must be set; run ./scripts/test-postgres.sh");
 
     let parsed = Url::parse(&url).expect("DATABASE_URL must be a postgres:// or postgresql:// URL");
-    let declared = database_name(&parsed);
+    let declared = database_name(&parsed).unwrap_or_else(|error| panic!("{error}"));
     assert!(
-        is_test_database_name(declared),
+        is_test_database_name(&declared),
         "{}",
-        refusal_message(declared)
+        refusal_message(&declared)
     );
 
-    ensure_database_exists(&parsed, declared).await;
+    ensure_database_exists(&parsed, &declared).await;
     reset_public_schema(&url).await;
     run_migrations(&url).await.expect("migrations apply");
 
     url
 }
 
-fn database_name(url: &Url) -> &str {
-    url.path().trim_start_matches('/')
+fn database_name(url: &Url) -> Result<String, String> {
+    let names: Vec<String> = url
+        .query_pairs()
+        .filter(|(key, _)| key == "dbname")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+    match names.as_slice() {
+        [] => Ok(url.path().trim_start_matches('/').to_string()),
+        [name] => Ok(name.clone()),
+        _ => Err("DATABASE_URL must not contain duplicate 'dbname' parameters".to_string()),
+    }
 }
 
 fn is_test_database_name(name: &str) -> bool {
@@ -96,10 +108,27 @@ fn probe_url(url: &Url) -> String {
     probe.to_string()
 }
 
+fn maintenance_url(url: &Url) -> Url {
+    let mut maintenance = url.clone();
+    maintenance.set_path("/postgres");
+    let preserved: Vec<(String, String)> = maintenance
+        .query_pairs()
+        .filter(|(key, _)| key != "dbname")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    {
+        let mut pairs = maintenance.query_pairs_mut();
+        pairs.clear();
+        pairs.extend_pairs(preserved);
+    }
+    maintenance
+}
+
 async fn ensure_database_exists(url: &Url, name: &str) {
+    let maintenance = maintenance_url(url);
     let deadline = Instant::now() + READINESS_TIMEOUT;
     loop {
-        match probe(probe_url(url), name.to_string()).await {
+        match probe(probe_url(&maintenance), name).await {
             Probe::Ready => return,
             Probe::Missing => return create_database(url, name).await,
             Probe::Fatal(error) => panic!("cannot reach {}: {error}", endpoint(url)),
@@ -113,32 +142,55 @@ async fn ensure_database_exists(url: &Url, name: &str) {
     }
 }
 
+fn is_retryable_postgres_error(error: &tokio_postgres::Error) -> bool {
+    let Some(database_error) = error.as_db_error() else {
+        return true;
+    };
+    matches!(
+        *database_error.code(),
+        SqlState::ADMIN_SHUTDOWN
+            | SqlState::CRASH_SHUTDOWN
+            | SqlState::CANNOT_CONNECT_NOW
+            | SqlState::TOO_MANY_CONNECTIONS
+    )
+}
+
+fn classify_postgres_error(error: tokio_postgres::Error) -> Probe {
+    let message = error.to_string();
+    if is_retryable_postgres_error(&error) {
+        Probe::Retryable(message)
+    } else {
+        Probe::Fatal(message)
+    }
+}
+
 /// `docker compose up -d` returns before Postgres accepts connections, so a
-/// cold server has to be waited out rather than reported as broken. Only an
-/// undefined database means "create it"; auth and host-level failures are the
-/// operator's problem and must surface as themselves.
-async fn probe(url: String, name: String) -> Probe {
-    tokio::task::spawn_blocking(move || match PgConnection::establish(&url) {
-        Ok(_) => Probe::Ready,
-        Err(error) => {
-            let message = error.to_string();
-            if message.contains(&format!("database \"{name}\" does not exist")) {
-                Probe::Missing
-            } else if message.contains("authentication failed") || message.contains("pg_hba.conf") {
-                Probe::Fatal(message)
-            } else {
-                Probe::Retryable(message)
-            }
+/// cold server has to be waited out rather than reported as broken. The probe
+/// uses the maintenance database so a missing target can be detected without
+/// parsing connection error text.
+async fn probe(url: String, name: &str) -> Probe {
+    let client = match connect_test_postgres_client(&url).await {
+        Ok(client) => client,
+        Err(TestPostgresConnectionError::Configuration(error)) => return Probe::Fatal(error),
+        Err(TestPostgresConnectionError::Connection(error)) => {
+            return classify_postgres_error(error);
         }
-    })
-    .await
-    .expect("connection probe task")
+    };
+    match client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
+            &[&name],
+        )
+        .await
+    {
+        Ok(row) if row.get::<_, bool>(0) => Probe::Ready,
+        Ok(_) => Probe::Missing,
+        Err(error) => classify_postgres_error(error),
+    }
 }
 
 async fn create_database(url: &Url, name: &str) {
-    let mut maintenance = url.clone();
-    maintenance.set_path("/postgres");
-    let maintenance_url = maintenance.to_string();
+    let maintenance_url = maintenance_url(url).to_string();
     let name = name.to_string();
     let hint = format!(
         "createdb -h {} -U {} {name}",
@@ -201,7 +253,7 @@ fn endpoint(url: &Url) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{database_name, is_test_database_name};
+    use super::{database_name, is_test_database_name, maintenance_url};
     use url::Url;
 
     #[test]
@@ -227,18 +279,36 @@ mod tests {
     #[test]
     fn declared_name_comes_from_the_url_path() {
         let url = Url::parse("postgres://guardian:guardian@localhost:5432/guardian_test").unwrap();
-        assert_eq!(database_name(&url), "guardian_test");
+        assert_eq!(database_name(&url).unwrap(), "guardian_test");
     }
 
     #[test]
-    fn a_dbname_parameter_hides_the_real_target_from_the_path() {
+    fn dbname_parameter_overrides_the_url_path() {
         let url =
-            Url::parse("postgres://u:p@localhost:5432/guardian_test?dbname=guardian").unwrap();
-        assert_eq!(database_name(&url), "guardian_test");
-        assert!(
-            is_test_database_name(database_name(&url)),
-            "the path alone cannot prove the target, which is why the reset re-checks \
-             current_database() against the server"
+            Url::parse("postgres://u:p@localhost:5432/guardian_test?dbname=other_test").unwrap();
+        assert_eq!(database_name(&url).unwrap(), "other_test");
+    }
+
+    #[test]
+    fn maintenance_url_removes_dbname_and_preserves_other_parameters() {
+        let url = Url::parse(
+            "postgres://u:p@localhost:5432/guardian_test?dbname=other_test&sslmode=require",
+        )
+        .unwrap();
+
+        assert_eq!(
+            maintenance_url(&url).as_str(),
+            "postgres://u:p@localhost:5432/postgres?sslmode=require"
         );
+    }
+
+    #[test]
+    fn duplicate_dbname_parameters_are_rejected() {
+        let url = Url::parse(
+            "postgres://u:p@localhost:5432/guardian_test?dbname=one_test&dbname=two_test",
+        )
+        .unwrap();
+
+        assert!(database_name(&url).is_err());
     }
 }

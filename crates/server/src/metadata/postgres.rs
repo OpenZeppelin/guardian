@@ -608,7 +608,6 @@ mod tests {
     async fn cas_does_not_advance_metadata_updated_at() {
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
-        run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         let account_id = format!("0xfrozen{}", Utc::now().timestamp_micros());
         insert_account_row(&store, &account_id).await;
@@ -632,7 +631,6 @@ mod tests {
     async fn cas_records_only_strictly_increasing_timestamps() {
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
-        run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         let account_id = format!("0xcas{}", Utc::now().timestamp_micros());
         insert_account_row(&store, &account_id).await;
@@ -677,7 +675,6 @@ mod tests {
     async fn cas_for_unknown_account_is_a_storage_error_not_a_replay() {
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
-        run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         let account_id = format!("0xghost{}", Utc::now().timestamp_micros());
 
@@ -692,7 +689,6 @@ mod tests {
     async fn concurrent_identical_timestamps_admit_exactly_one_winner() {
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
-        run_migrations(&url).await.expect("migrations apply");
         let store = Arc::new(PostgresMetadataStore::new(&url, 8).await.expect("store"));
         let account_id = format!("0xrace{}", Utc::now().timestamp_micros());
         insert_account_row(&store, &account_id).await;
@@ -723,7 +719,6 @@ mod tests {
     async fn migration_backfills_legacy_timestamps_into_account_auth_state() {
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
-        run_migrations(&url).await.expect("migrations apply");
 
         let account_id = format!("0xbackfill{}", Utc::now().timestamp_micros());
         {
@@ -789,7 +784,6 @@ mod tests {
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn generic_set_preserves_pending_candidate_flag() {
         let url = test_database_url().await;
-        run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         let account_id = format!("0xsetrace{}", Utc::now().timestamp_micros());
         let now = Utc::now().to_rfc3339();
@@ -841,7 +835,6 @@ mod tests {
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn clear_pending_candidate_is_conditional_on_candidate_rows() {
         let url = test_database_url().await;
-        run_migrations(&url).await.expect("migrations apply");
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         let account_id = format!("0xwedge{}", Utc::now().timestamp_micros());
         let now = Utc::now().to_rfc3339();
