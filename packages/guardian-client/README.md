@@ -255,6 +255,17 @@ payload each attempt. Terminal authentication failures
 unauthorized signature) are never retried; branch on `error.code`, never
 on message text.
 
+The client retries only `authentication_replay`; it never retries
+`authentication_failed`. During a mixed server/client rollout, a replay CAS
+reported under the older authentication code—or received by a client without
+replay-specific retry handling—can therefore surface as a terminal 401 until
+both sides use the same error contract.
+
+The upgraded server also returns the standard `{ code, message, meta }` error
+envelope for failed HTTP `/configure` requests instead of a
+`ConfigureResponse` with `success: false`. Direct HTTP integrations that inspect
+the old error body must migrate with the server rollout.
+
 ## Testing
 
 ```bash

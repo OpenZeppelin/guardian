@@ -50,7 +50,9 @@ Most startup failures are environment misconfiguration. Check in order:
    permissions.
 5. **Postgres migrations fail.** The Postgres path runs migrations at
    startup. If the DB user lacks `CREATE` permissions, startup fails.
-   Grant `CREATE` on the schema or run migrations as a privileged user.
+   Grant `CREATE` on the schema or run migrations as a privileged user. Before
+   upgrading an account-scoped replay-state database to per-signer state, run
+   the [replay-state preflight](#preflight-the-per-signer-replay-state-migration).
 6. **ACK secrets missing in prod.**
    `scripts/aws-deploy.sh deploy` refuses to apply if either ACK secret
    is missing. Run `DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys`
@@ -72,7 +74,7 @@ Most startup failures are environment misconfiguration. Check in order:
      includes the Amazon Trust Services roots, not only the RDS CA roots.
    - works under `verify-ca` but fails under `verify-full` → hostname/SAN
      mismatch with the endpoint. See [Database TLS](./CONFIGURATION.md#database-tls).
-8. **Replay-protection state file missing (filesystem builds).** Startup
+8. **Replay-protection state file missing or inconsistent (filesystem builds).** Startup
    fails with `Replay-protection state file ... is missing` when
    `.metadata/auth_state.json` has been deleted from a store whose
    `accounts.json` was already migrated off legacy timestamps. Starting
@@ -82,7 +84,57 @@ Most startup failures are environment misconfiguration. Check in order:
    directory. If no backup exists, recreating the file with the literal
    content `{}` lets the server start — that is an explicit operator
    decision to accept a replay window as wide as the timestamp skew
-   allowance.
+   allowance. If startup instead reports replay state with no matching account
+   metadata, restore `accounts.json` and `auth_state.json` from the same backup;
+   Guardian will not rewrite or discard the unmatched floors.
+
+### Preflight the per-signer replay-state migration
+
+Before deploying the migration that expands `account_auth_state` by signer,
+run this read-only query against the pre-upgrade database. Keep its canonical
+commitment patterns aligned with `Auth::is_canonical_signer_commitment` in
+`crates/server/src/metadata/auth/mod.rs` and the migration SQL:
+
+```sql
+WITH auth_sets AS (
+    SELECT s.account_id,
+           COALESCE(
+               m.auth -> 'MidenFalconRpo' -> 'cosigner_commitments',
+               m.auth -> 'MidenEcdsa' -> 'cosigner_commitments',
+               m.auth -> 'EvmEcdsa' -> 'signers'
+           ) AS commitments,
+           CASE WHEN m.auth ? 'EvmEcdsa'
+                THEN '^0x[0-9a-f]{40}$'
+                ELSE '^0x[0-9a-f]{64}$'
+           END AS commitment_pattern,
+           (m.auth ? 'MidenFalconRpo')::integer
+             + (m.auth ? 'MidenEcdsa')::integer
+             + (m.auth ? 'EvmEcdsa')::integer AS variant_count
+      FROM account_auth_state s
+      LEFT JOIN account_metadata m ON m.account_id = s.account_id
+)
+SELECT account_id
+  FROM auth_sets
+ WHERE variant_count IS NULL
+    OR variant_count <> 1
+    OR CASE
+           WHEN jsonb_typeof(commitments) = 'array' THEN
+               jsonb_array_length(commitments) = 0
+               OR EXISTS (
+                   SELECT 1
+                     FROM jsonb_array_elements(commitments) signer(value)
+                    WHERE jsonb_typeof(signer.value) <> 'string'
+                       OR NOT ((signer.value #>> '{}') ~ commitment_pattern)
+               )
+           ELSE TRUE
+       END;
+```
+
+An empty result is clean. Returned accounts have missing or inert signer
+metadata that should be repaired before deployment. The migration does not
+delete their replay state: it retains the old account-level floor, so a signer
+authorized after repair cannot replay an older request. Do not delete
+`account_auth_state` rows as remediation.
 
 ### Guardian public key changes unexpectedly
 
@@ -147,6 +199,18 @@ Headers required on every authenticated request: `x-pubkey`,
 `x-signature`, `x-timestamp`. If any are missing the response is also
 `authentication_failed`. Never retry `authentication_failed`; it will
 not succeed until the underlying cause (clock, key, payload) changes.
+
+**Mixed server/client rollout:** SDK clients retry only
+`authentication_replay`; they never retry `authentication_failed`. A replay CAS
+reported under the older authentication code—or received by a client without
+replay-specific retry handling—can therefore surface as a terminal 401 until
+both sides use the same error contract.
+
+The same server upgrade changes HTTP `/configure` failures from a
+`ConfigureResponse` carrying `success: false` to the standard
+`{ code, message, meta }` error envelope. Update direct HTTP integrations that
+inspect the old body shape before rolling out the server; gRPC continues to use
+the shared protobuf response.
 
 ### Pending proposals never resolve
 

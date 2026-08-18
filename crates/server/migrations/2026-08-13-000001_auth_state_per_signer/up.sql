@@ -2,7 +2,9 @@
 -- (issue #367) so independent authorized cosigners never contend on one
 -- timestamp. Each existing account-scoped row is expanded to one row per
 -- currently authorized signer commitment, preserving the replay floor across
--- the upgrade instead of re-accepting requests seen just before it.
+-- the upgrade instead of re-accepting requests seen just before it. A reserved
+-- account-level row is also retained so a signer absent during migration still
+-- inherits the old floor if it is authorized again later.
 --
 -- The exclusive lock blocks CAS writers still running the pre-#367 binary:
 -- a timestamp committed between the expansion snapshot and the table swap
@@ -30,14 +32,13 @@ CREATE TABLE account_auth_state_per_signer (
 -- Expand every account-scoped replay row against its authorized signer set
 -- exactly once, so the format check below and the copy that follows cannot
 -- read different metadata or disagree on which JSON paths hold commitments.
--- Producing a row is not enough on its own: reading these entries as text
--- also coerces numbers and objects, which would preserve the floor under a
--- key no real signer can ever present, silently resetting the replay window
--- once the metadata is repaired. Each element must be a canonical
--- commitment string: Miden writes 0x + 64 lowercase hex, EVM signers are
--- lowercased to 0x + 40 hex on ingest. An account whose signer set is empty
--- or whose auth JSON is not exactly one known variant yields a single row
--- with a NULL commitment, which fails the same check.
+-- Reading signer entries as text also coerces numbers and objects, which would
+-- create rows under keys no real signer can ever present. Only canonical
+-- commitments are expanded: Miden writes 0x + 64 lowercase hex, while EVM
+-- signers are lowercased to 0x + 40 hex on ingest. The reserved account-level
+-- row below retains the floor when metadata has no usable signer entries.
+-- Keep these patterns aligned with Auth::is_canonical_signer_commitment in
+-- crates/server/src/metadata/auth/mod.rs.
 CREATE TEMP TABLE auth_state_signer_expansion AS
 SELECT s.account_id,
        s.last_auth_timestamp,
@@ -72,25 +73,19 @@ SELECT s.account_id,
       END
   ) signer(value) ON TRUE;
 
-DO $$
-DECLARE
-    invalid_accounts text;
-BEGIN
-    SELECT string_agg(DISTINCT account_id, ', ') INTO invalid_accounts
-      FROM auth_state_signer_expansion
-     WHERE NOT is_canonical;
-
-    IF invalid_accounts IS NOT NULL THEN
-        RAISE EXCEPTION
-            'account_auth_state: replay rows for account(s) % have no canonical authorized signer set; inspect account_metadata.auth for these accounts, then delete their account_auth_state rows to explicitly accept the replay-window risk',
-            invalid_accounts;
-    END IF;
-END $$;
+-- Keep the old account-scoped floor under a value that no real signer can
+-- present. Runtime CAS checks this row as a lower bound for every signer.
+INSERT INTO account_auth_state_per_signer
+    (account_id, signer_commitment, last_auth_timestamp)
+SELECT s.account_id, '__legacy_account_floor__', s.last_auth_timestamp
+  FROM account_auth_state s
+  JOIN account_metadata m ON m.account_id = s.account_id;
 
 INSERT INTO account_auth_state_per_signer
     (account_id, signer_commitment, last_auth_timestamp)
 SELECT DISTINCT account_id, signer_commitment, last_auth_timestamp
-  FROM auth_state_signer_expansion;
+  FROM auth_state_signer_expansion
+ WHERE is_canonical;
 
 DROP TABLE auth_state_signer_expansion;
 

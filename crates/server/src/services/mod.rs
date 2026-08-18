@@ -1,6 +1,6 @@
 use crate::error::{GuardianError, Result};
-use crate::metadata::AccountMetadata;
 use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS};
+use crate::metadata::{AccountMetadata, LEGACY_ACCOUNT_AUTH_FLOOR};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use base64::Engine;
@@ -118,23 +118,7 @@ pub async fn resolve_account(
         })?
         .ok_or_else(|| GuardianError::AccountNotFound(account_id.to_string()))?;
 
-    let request_timestamp = creds.timestamp();
-    let server_now_ms = state.clock.now().timestamp_millis();
-    let time_diff_ms = (server_now_ms - request_timestamp).abs();
-    if time_diff_ms > MAX_TIMESTAMP_SKEW_MS {
-        tracing::warn!(
-            account_id = %account_id,
-            request_timestamp = %request_timestamp,
-            server_now_ms = %server_now_ms,
-            time_diff_ms = %time_diff_ms,
-            max_skew_ms = %MAX_TIMESTAMP_SKEW_MS,
-            "Request timestamp outside allowed skew window"
-        );
-        return Err(GuardianError::AuthenticationFailed(format!(
-            "Request timestamp outside allowed window: {}ms drift (max {}ms)",
-            time_diff_ms, MAX_TIMESTAMP_SKEW_MS
-        )));
-    }
+    let request_timestamp = validate_request_timestamp(state, account_id, creds)?;
 
     if metadata.network_config.is_evm()
         || matches!(metadata.auth, crate::metadata::Auth::EvmEcdsa { .. })
@@ -154,12 +138,48 @@ pub async fn resolve_account(
         GuardianError::AuthenticationFailed(e)
     })?;
 
-    // Atomically check and update the last auth timestamp for replay
-    // protection, scoped per (account, signer) so independent cosigners
-    // never contend on one timestamp (issue #367)
+    consume_auth_timestamp(state, account_id, &signer_commitment, request_timestamp).await?;
+
+    let storage = state.storage.clone();
+
+    Ok(ResolvedAccount { metadata, storage })
+}
+
+pub(crate) fn validate_request_timestamp(
+    state: &AppState,
+    account_id: &str,
+    creds: &Credentials,
+) -> Result<i64> {
+    let request_timestamp = creds.timestamp();
+    let server_now_ms = state.clock.now().timestamp_millis();
+    let time_diff_ms = (server_now_ms - request_timestamp).abs();
+    if time_diff_ms > MAX_TIMESTAMP_SKEW_MS {
+        tracing::warn!(
+            account_id = %account_id,
+            request_timestamp = %request_timestamp,
+            server_now_ms = %server_now_ms,
+            time_diff_ms = %time_diff_ms,
+            max_skew_ms = %MAX_TIMESTAMP_SKEW_MS,
+            "Request timestamp outside allowed skew window"
+        );
+        return Err(GuardianError::AuthenticationFailed(format!(
+            "Request timestamp outside allowed window: {}ms drift (max {}ms)",
+            time_diff_ms, MAX_TIMESTAMP_SKEW_MS
+        )));
+    }
+    Ok(request_timestamp)
+}
+
+pub(crate) async fn consume_auth_timestamp(
+    state: &AppState,
+    account_id: &str,
+    signer_commitment: &str,
+    request_timestamp: i64,
+) -> Result<()> {
+    debug_assert_ne!(signer_commitment, LEGACY_ACCOUNT_AUTH_FLOOR);
     let updated = state
         .metadata
-        .update_last_auth_timestamp_cas(account_id, &signer_commitment, request_timestamp)
+        .update_last_auth_timestamp_cas(account_id, signer_commitment, request_timestamp)
         .await
         .map_err(|e| {
             tracing::error!(
@@ -180,9 +200,7 @@ pub async fn resolve_account(
         return Err(GuardianError::AuthenticationReplay);
     }
 
-    let storage = state.storage.clone();
-
-    Ok(ResolvedAccount { metadata, storage })
+    Ok(())
 }
 
 pub fn normalize_payload(payload: Value) -> Result<Value> {

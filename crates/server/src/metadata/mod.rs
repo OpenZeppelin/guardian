@@ -11,6 +11,11 @@ pub mod postgres;
 pub use auth::{Auth, AuthHeader, Credentials, ExtractCredentials};
 pub use network::{MidenNetworkType, NetworkConfig};
 
+/// Per-account replay floor retained when legacy account-scoped state is
+/// expanded to signer-scoped rows. It protects signers that were absent during
+/// migration and are authorized again later.
+pub const LEGACY_ACCOUNT_AUTH_FLOOR: &str = "__legacy_account_floor__";
+
 /// Metadata for a single account
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AccountMetadata {
@@ -182,7 +187,8 @@ pub trait MetadataStore: Send + Sync {
     /// authorized cosigners never contend on one timestamp, while a replay of a
     /// request from the same signer is still rejected: every accepted request
     /// advances its own signer's record, so a captured request can never win the
-    /// CAS again.
+    /// CAS again. A migrated account-level floor is also consulted for signers
+    /// first seen after migration, including signers removed and later restored.
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,

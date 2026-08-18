@@ -1,4 +1,7 @@
-use crate::metadata::{AccountListCursor, AccountMetadata, Auth, MetadataStore, NetworkConfig};
+use crate::metadata::{
+    AccountListCursor, AccountMetadata, Auth, LEGACY_ACCOUNT_AUTH_FLOOR, MetadataStore,
+    NetworkConfig,
+};
 use crate::schema::account_metadata;
 use crate::services::account_status::{AccountStatus, PauseTransition};
 use crate::storage::postgres::build_postgres_pool;
@@ -272,7 +275,14 @@ impl MetadataStore for PostgresMetadataStore {
 
         let rows_updated = diesel::sql_query(
             "INSERT INTO account_auth_state (account_id, signer_commitment, last_auth_timestamp) \
-             VALUES ($1, $2, $3) \
+             SELECT $1, $2, $3 \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 \
+                   FROM account_auth_state legacy \
+                  WHERE legacy.account_id = $1 \
+                    AND legacy.signer_commitment = $4 \
+                    AND legacy.last_auth_timestamp >= $3 \
+             ) \
              ON CONFLICT (account_id, signer_commitment) DO UPDATE \
              SET last_auth_timestamp = EXCLUDED.last_auth_timestamp \
              WHERE account_auth_state.last_auth_timestamp < EXCLUDED.last_auth_timestamp",
@@ -280,6 +290,7 @@ impl MetadataStore for PostgresMetadataStore {
         .bind::<Text, _>(account_id)
         .bind::<Text, _>(signer_commitment)
         .bind::<diesel::sql_types::BigInt, _>(new_timestamp)
+        .bind::<Text, _>(LEGACY_ACCOUNT_AUTH_FLOOR)
         .execute(&mut conn)
         .await
         .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
@@ -834,7 +845,7 @@ mod tests {
                 let mut conn =
                     diesel::PgConnection::establish(&url).expect("sync connection for revert");
                 conn.revert_last_migration(crate::storage::postgres::MIGRATIONS)
-                    .expect("revert newest migration");
+                    .expect("revert per-signer migration");
                 insert_legacy_auth_state(
                     &mut conn,
                     &falcon_account_id,
@@ -888,6 +899,11 @@ mod tests {
             2020,
             "EVM signer sets live under a different JSON key and address width"
         );
+        assert_eq!(
+            stored_auth_timestamp(&store, &falcon_account_id, LEGACY_ACCOUNT_AUTH_FLOOR,).await,
+            4242,
+            "the account-level floor protects signers absent during migration"
+        );
         assert!(
             !store
                 .update_last_auth_timestamp_cas(&falcon_account_id, &falcon_signer_a, 4242)
@@ -908,11 +924,33 @@ mod tests {
                 .unwrap(),
             "signers must not contend after the expansion"
         );
+        let signer_added_after_migration = format!("0x{}", "ee".repeat(32));
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas(
+                    &falcon_account_id,
+                    &signer_added_after_migration,
+                    4242,
+                )
+                .await
+                .unwrap(),
+            "a signer absent during migration must inherit the account floor"
+        );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(
+                    &falcon_account_id,
+                    &signer_added_after_migration,
+                    4243,
+                )
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
     #[ignore = "requires DATABASE_URL; reverts and re-applies the newest migration"]
-    async fn migration_rejects_non_canonical_signer_metadata() {
+    async fn migration_preserves_floor_for_non_canonical_signer_metadata() {
         let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
         let _guard = pg_serial_lock().lock().await;
         run_migrations(&url).await.expect("migrations apply");
@@ -950,7 +988,7 @@ mod tests {
                 let mut conn =
                     diesel::PgConnection::establish(&url).expect("sync connection for revert");
                 conn.revert_last_migration(crate::storage::postgres::MIGRATIONS)
-                    .expect("revert newest migration");
+                    .expect("revert per-signer migration");
                 for (account_id, auth) in &malformed_accounts {
                     insert_legacy_auth_state(&mut conn, account_id, auth.clone(), 4242);
                 }
@@ -959,41 +997,15 @@ mod tests {
             .expect("blocking revert task");
         }
 
-        let migration_error = run_migrations(&url)
-            .await
-            .expect_err("malformed signer metadata must fail closed");
-
-        {
-            let url = url.clone();
-            let malformed_accounts = malformed_accounts.clone();
-            tokio::task::spawn_blocking(move || {
-                use diesel::Connection;
-                let mut conn =
-                    diesel::PgConnection::establish(&url).expect("sync connection for cleanup");
-                for (account_id, _) in &malformed_accounts {
-                    diesel::RunQueryDsl::execute(
-                        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
-                            .bind::<Text, _>(account_id),
-                        &mut conn,
-                    )
-                    .expect("remove malformed legacy row");
-                }
-            })
-            .await
-            .expect("blocking cleanup task");
-        }
         run_migrations(&url)
             .await
-            .expect("migration applies after malformed rows are removed");
+            .expect("the legacy account floor makes inert signer metadata safe to migrate");
 
-        assert!(
-            migration_error.contains("canonical"),
-            "migration error should explain the abort: {migration_error}"
-        );
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         for (account_id, _) in &malformed_accounts {
-            assert!(
-                migration_error.contains(account_id),
-                "migration error should identify {account_id}: {migration_error}"
+            assert_eq!(
+                stored_auth_timestamp(&store, account_id, LEGACY_ACCOUNT_AUTH_FLOOR).await,
+                4242
             );
         }
     }

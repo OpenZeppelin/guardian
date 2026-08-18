@@ -9,7 +9,7 @@ The operator dashboard surface is HTTP-only and lives under `/dashboard/*`. Auth
 ## Metadata
 
 - Stores per-account configuration required to authorise requests, dispatch network-specific behavior, and route to storage.
-- Records: `account_id`, authentication policy, `network_config`, storage backend type, and timestamps. Replay-protection timestamps live in a dedicated `account_auth_state` store keyed by `(account_id, signer_commitment)` so the per-request CAS never rewrites account metadata.
+- Records: `account_id`, authentication policy, `network_config`, storage backend type, and timestamps. Replay-protection timestamps live in a dedicated `account_auth_state` store keyed by `(account_id, signer_commitment)` so the per-request CAS never rewrites account metadata. Stores migrated from account-scoped replay state retain a reserved account-level floor consulted for every first-seen signer.
 - `network_config` is the durable source for account network identity.
 - Miden account metadata is created by `/configure` with initial state and acknowledgement binding.
 - EVM account metadata is created by `/evm/accounts` with the canonical smart account address, chain ID, multisig validator address, and signer snapshot auth policy. Chain RPC URLs and the shared EntryPoint address remain server-owned configuration.

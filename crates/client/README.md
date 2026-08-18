@@ -92,6 +92,12 @@ and signature over the identical payload each attempt.
 authentication failures (`authentication_failed`: clock outside the skew
 window, invalid or unauthorized signature) are never retried.
 
+The client retries only `authentication_replay`; it never retries
+`authentication_failed`. During a mixed server/client rollout, a replay CAS
+reported under the older authentication code—or received by a client without
+replay-specific retry handling—can therefore surface as a terminal error until
+both sides use the same error contract.
+
 ## Authentication
 
 The client uses Falcon Poseidon2 signatures for authenticated requests. Here is how to set it up:

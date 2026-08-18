@@ -329,7 +329,7 @@ impl GuardianError {
                 "There's already a pending change for this account. Finish or cancel it first."
             }
             GuardianError::AuthenticationFailed(_) => {
-                "Guardian could not authenticate this request. Please reconnect your signer."
+                "Guardian could not authenticate this request. Please authenticate again."
             }
             GuardianError::AuthenticationReplay => {
                 "Guardian received this request out of order. Please try again."

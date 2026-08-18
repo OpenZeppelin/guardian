@@ -1,4 +1,6 @@
-use crate::metadata::{AccountListCursor, AccountMetadata, Auth, MetadataStore};
+use crate::metadata::{
+    AccountListCursor, AccountMetadata, Auth, LEGACY_ACCOUNT_AUTH_FLOOR, MetadataStore,
+};
 use crate::services::account_status::{AccountStatus, PauseTransition};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -35,6 +37,8 @@ impl FilesystemMetadataStore {
 
         let file_path = metadata_dir.join("accounts.json");
         let auth_state_path = metadata_dir.join("auth_state.json");
+        let auth_floor_migration_path = metadata_dir.join("auth_state_legacy_floor_v1");
+        let repair_missing_legacy_floors = !auth_floor_migration_path.exists();
 
         let (accounts, legacy) = if file_path.exists() {
             let content = fs::read_to_string(&file_path)
@@ -51,26 +55,25 @@ impl FilesystemMetadataStore {
         };
         let keys_present = legacy.keys_present;
 
-        let auth_state = if auth_state_path.exists() {
+        let (auth_state, auth_state_needs_write) = if auth_state_path.exists() {
             let content = fs::read_to_string(&auth_state_path)
                 .await
                 .map_err(|e| format!("Failed to read auth state file: {e}"))?;
             let mut state: HashMap<String, i64> = serde_json::from_str(&content)
                 .map_err(|e| format!("Failed to parse auth state file: {e}"))?;
+            let mut needs_write = false;
             if keys_present {
                 for (account_id, legacy_ts) in legacy.values {
                     match state.get(&account_id) {
                         Some(current) if *current >= legacy_ts => {}
                         _ => {
                             state.insert(account_id, legacy_ts);
+                            needs_write = true;
                         }
                     }
                 }
-                let content = serde_json::to_string_pretty(&state)
-                    .map_err(|e| format!("Failed to serialize auth state: {e}"))?;
-                write_atomic(&auth_state_path, &content).await?;
             }
-            state
+            (state, needs_write)
         } else if accounts.is_empty() || keys_present {
             if !accounts.is_empty() {
                 tracing::warn!(
@@ -79,10 +82,7 @@ impl FilesystemMetadataStore {
                     "auth state file missing; initializing replay state from legacy metadata values"
                 );
             }
-            let content = serde_json::to_string_pretty(&legacy.values)
-                .map_err(|e| format!("Failed to serialize auth state: {e}"))?;
-            write_atomic(&auth_state_path, &content).await?;
-            legacy.values
+            (legacy.values, true)
         } else {
             return Err(format!(
                 "Replay-protection state file {} is missing but the metadata store \
@@ -94,8 +94,9 @@ impl FilesystemMetadataStore {
             ));
         };
 
-        let (auth_state, expanded) = expand_account_scoped_auth_state(&accounts, auth_state)?;
-        if expanded {
+        let (auth_state, expanded) =
+            expand_account_scoped_auth_state(&accounts, auth_state, repair_missing_legacy_floors)?;
+        if auth_state_needs_write || expanded {
             let content = serde_json::to_string_pretty(&auth_state)
                 .map_err(|e| format!("Failed to serialize auth state: {e}"))?;
             write_atomic(&auth_state_path, &content).await?;
@@ -111,6 +112,9 @@ impl FilesystemMetadataStore {
         if keys_present {
             let cache = store.cache.read().await;
             store.persist(&cache).await?;
+        }
+        if repair_missing_legacy_floors {
+            write_atomic(&auth_floor_migration_path, "1\n").await?;
         }
 
         Ok(store)
@@ -140,35 +144,86 @@ fn auth_state_key(account_id: &str, signer_commitment: &str) -> String {
     format!("{account_id}{AUTH_STATE_KEY_SEPARATOR}{signer_commitment}")
 }
 
-fn is_signer_scoped_auth_state_key(accounts: &HashMap<String, AccountMetadata>, key: &str) -> bool {
-    key.rsplit_once(AUTH_STATE_KEY_SEPARATOR)
-        .is_some_and(|(account_id, signer)| !signer.is_empty() && accounts.contains_key(account_id))
+fn signer_scoped_auth_state_key<'a>(
+    accounts: &HashMap<String, AccountMetadata>,
+    key: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    if accounts.contains_key(key) {
+        return None;
+    }
+    let (account_id, signer) = key.rsplit_once(AUTH_STATE_KEY_SEPARATOR)?;
+    let canonical_signer_shape = signer.strip_prefix("0x").is_some_and(|hex| {
+        matches!(hex.len(), 40 | 64) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+    });
+    (accounts.contains_key(account_id)
+        || signer == LEGACY_ACCOUNT_AUTH_FLOOR
+        || canonical_signer_shape)
+        .then_some((account_id, signer))
 }
 
 /// Replay state was account-scoped before issue #367. An account-scoped entry
 /// (key without the separator) is expanded to one per-signer entry for every
 /// currently authorized commitment (preserving the replay floor across the
 /// upgrade instead of re-accepting requests seen just before it), and the
-/// account-scoped entry is dropped. Entries for accounts that no longer exist
-/// are dropped with it.
+/// account-scoped entry is dropped. A legacy account-level floor is retained so
+/// a signer absent during migration cannot regain a replay window when added
+/// later. Entries whose accounts are missing abort startup: they indicate an
+/// incomplete restore, and dropping them would silently reset replay state.
 fn expand_account_scoped_auth_state(
     accounts: &HashMap<String, AccountMetadata>,
     state: HashMap<String, i64>,
+    repair_missing_legacy_floors: bool,
 ) -> Result<(HashMap<String, i64>, bool), String> {
     let mut expanded = HashMap::with_capacity(state.len());
     let mut changed = false;
+    let mut signer_floors = HashMap::<String, i64>::new();
     for (key, timestamp) in state {
-        if is_signer_scoped_auth_state_key(accounts, &key) {
+        if let Some((account_id, signer)) = signer_scoped_auth_state_key(accounts, &key) {
+            if !accounts.contains_key(account_id) {
+                return Err(format!(
+                    "Replay state entry '{key}' belongs to account '{account_id}', which has no \
+                     matching account metadata. Do not delete the replay entry; restore \
+                     accounts.json and auth_state.json from the same backup"
+                ));
+            }
+            if signer != LEGACY_ACCOUNT_AUTH_FLOOR {
+                let floor = signer_floors
+                    .entry(account_id.to_string())
+                    .or_insert(timestamp);
+                *floor = (*floor).max(timestamp);
+            }
             merge_auth_timestamp(&mut expanded, key, timestamp);
             continue;
         }
         changed = true;
         let Some(metadata) = accounts.get(&key) else {
-            continue;
+            return Err(format!(
+                "Replay state entry '{key}' has no matching account metadata; it may be an \
+                 account-scoped or signer-scoped key from an incomplete restore; restore \
+                 accounts.json and auth_state.json from the same backup"
+            ));
         };
-        validate_auth_state_signers(&key, &metadata.auth)?;
-        for commitment in metadata.auth.cosigner_commitments() {
+        merge_auth_timestamp(
+            &mut expanded,
+            auth_state_key(&key, LEGACY_ACCOUNT_AUTH_FLOOR),
+            timestamp,
+        );
+        for commitment in metadata
+            .auth
+            .cosigner_commitments()
+            .iter()
+            .filter(|commitment| metadata.auth.is_canonical_signer_commitment(commitment))
+        {
             merge_auth_timestamp(&mut expanded, auth_state_key(&key, commitment), timestamp);
+        }
+    }
+    if repair_missing_legacy_floors {
+        for (account_id, timestamp) in signer_floors {
+            let legacy_key = auth_state_key(&account_id, LEGACY_ACCOUNT_AUTH_FLOOR);
+            if !expanded.contains_key(&legacy_key) {
+                expanded.insert(legacy_key, timestamp);
+                changed = true;
+            }
         }
     }
     Ok((expanded, changed))
@@ -177,29 +232,6 @@ fn expand_account_scoped_auth_state(
 fn merge_auth_timestamp(state: &mut HashMap<String, i64>, key: String, timestamp: i64) {
     let stored = state.entry(key).or_insert(timestamp);
     *stored = (*stored).max(timestamp);
-}
-
-fn validate_auth_state_signers(account_id: &str, auth: &Auth) -> Result<(), String> {
-    let commitments = auth.cosigner_commitments();
-    let hex_length = match auth {
-        Auth::EvmEcdsa { .. } => 40,
-        Auth::MidenFalconRpo { .. } | Auth::MidenEcdsa { .. } => 64,
-    };
-    let invalid = commitments.is_empty()
-        || commitments.iter().any(|commitment| {
-            let hex = commitment.strip_prefix("0x").unwrap_or("");
-            hex.len() != hex_length
-                || !hex
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        });
-    if invalid {
-        return Err(format!(
-            "Replay state for account {account_id} cannot be expanded because its auth metadata \
-             has no canonical authorized signer set"
-        ));
-    }
-    Ok(())
 }
 
 /// Replay timestamps recorded by pre-split servers inside the metadata file.
@@ -375,17 +407,24 @@ impl MetadataStore for FilesystemMetadataStore {
         }
 
         let key = auth_state_key(account_id, signer_commitment);
+        let legacy_key = auth_state_key(account_id, LEGACY_ACCOUNT_AUTH_FLOOR);
         let mut auth_state = self.auth_state.write().await;
+
+        let signer_floor = auth_state.get(&key).copied();
+        let legacy_floor = auth_state.get(&legacy_key).copied();
+        if signer_floor
+            .into_iter()
+            .chain(legacy_floor)
+            .max()
+            .is_some_and(|floor| new_timestamp <= floor)
+        {
+            return Ok(false);
+        }
 
         // One probe covers the replay check, the swap, and the prior value the
         // rollback below needs; only a first-ever record allocates a key.
         let previous = match auth_state.get_mut(&key) {
-            Some(current) => {
-                if new_timestamp <= *current {
-                    return Ok(false);
-                }
-                Some(std::mem::replace(current, new_timestamp))
-            }
+            Some(current) => Some(std::mem::replace(current, new_timestamp)),
             None => {
                 auth_state.insert(key.clone(), new_timestamp);
                 None
@@ -699,6 +738,12 @@ mod auth_state_tests {
         dir.path().join(".metadata").join("accounts.json")
     }
 
+    fn auth_floor_migration_path(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path()
+            .join(".metadata")
+            .join("auth_state_legacy_floor_v1")
+    }
+
     fn persisted_auth_state(dir: &tempfile::TempDir) -> HashMap<String, i64> {
         let content = std::fs::read_to_string(auth_state_path(dir)).unwrap();
         serde_json::from_str(&content).unwrap()
@@ -782,6 +827,7 @@ mod auth_state_tests {
             serde_json::to_string(&HashMap::from([("acct".to_string(), 4242_i64)])).unwrap(),
         )
         .unwrap();
+        std::fs::remove_file(auth_floor_migration_path(&dir)).unwrap();
 
         let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
             .await
@@ -796,6 +842,10 @@ mod auth_state_tests {
             persisted.get(&auth_state_key("acct", SIGNER_B)),
             Some(&4242)
         );
+        assert_eq!(
+            persisted.get(&auth_state_key("acct", LEGACY_ACCOUNT_AUTH_FLOOR)),
+            Some(&4242)
+        );
         assert!(
             !persisted.contains_key("acct"),
             "the account-scoped entry must be dropped after expansion"
@@ -806,6 +856,71 @@ mod auth_state_tests {
                 .await
                 .unwrap(),
             "the pre-upgrade floor must still reject replays for every signer"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_migration_accounts_remain_per_signer_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = store_with_account(&dir).await;
+            assert!(
+                store
+                    .update_last_auth_timestamp_cas("acct", SIGNER_A, 100)
+                    .await
+                    .unwrap()
+            );
+        }
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", SIGNER_B, 50)
+                .await
+                .unwrap(),
+            "the one-time compatibility repair must not create a global floor for new accounts"
+        );
+        assert!(
+            !persisted_auth_state(&dir)
+                .contains_key(&auth_state_key("acct", LEGACY_ACCOUNT_AUTH_FLOOR))
+        );
+    }
+
+    #[tokio::test]
+    async fn already_expanded_auth_state_backfills_the_reserved_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([
+                (auth_state_key("acct", SIGNER_A), 4242_i64),
+                (auth_state_key("acct", SIGNER_B), 3131_i64),
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(auth_floor_migration_path(&dir)).unwrap();
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            persisted_auth_state(&dir).get(&auth_state_key("acct", LEGACY_ACCOUNT_AUTH_FLOOR)),
+            Some(&4242),
+            "an earlier per-signer expansion must inherit its highest observed floor"
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", "0xdddd", 4242)
+                .await
+                .unwrap(),
+            "a signer first seen after the repair must inherit the reserved floor"
         );
     }
 
@@ -862,7 +977,7 @@ mod auth_state_tests {
     }
 
     #[tokio::test]
-    async fn account_scoped_auth_state_with_unusable_signers_fails_closed() {
+    async fn unusable_legacy_signers_keep_an_account_level_floor() {
         let dir = tempfile::tempdir().unwrap();
         {
             let _store = store_with_account(&dir).await;
@@ -881,13 +996,138 @@ mod auth_state_tests {
         )
         .unwrap();
 
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .expect("the account-level floor makes inert signer metadata safe to migrate");
+
+        assert_eq!(
+            persisted_auth_state(&dir).get(&auth_state_key("acct", LEGACY_ACCOUNT_AUTH_FLOOR)),
+            Some(&4242)
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", SIGNER_A, 4242)
+                .await
+                .unwrap(),
+            "a repaired signer must inherit the legacy account floor"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_account_metadata_aborts_without_rewriting_auth_state() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let original = serde_json::to_string(&HashMap::from([
+            ("acct".to_string(), 4242_i64),
+            ("missing-account".to_string(), 3131_i64),
+        ]))
+        .unwrap();
+        std::fs::write(auth_state_path(&dir), &original).unwrap();
+
         let error = FilesystemMetadataStore::new(dir.path().to_path_buf())
             .await
             .err()
-            .expect("an account-scoped floor without usable signers must reject startup");
+            .expect("unmatched replay state must reject startup");
 
-        assert!(error.contains("no canonical authorized signer set"));
-        assert_eq!(persisted_auth_state(&dir).get("acct"), Some(&4242));
+        assert!(error.contains("missing-account"));
+        assert_eq!(
+            std::fs::read_to_string(auth_state_path(&dir)).unwrap(),
+            original
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_split_merge_aborts_without_rewriting_auth_state() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let mut accounts: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(accounts_path(&dir)).unwrap()).unwrap();
+        accounts["acct"]["last_auth_timestamp"] = serde_json::json!(4242);
+        std::fs::write(
+            accounts_path(&dir),
+            serde_json::to_string(&accounts).unwrap(),
+        )
+        .unwrap();
+        let original =
+            serde_json::to_string(&HashMap::from([("missing-account".to_string(), 3131_i64)]))
+                .unwrap();
+        std::fs::write(auth_state_path(&dir), &original).unwrap();
+
+        let error = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .err()
+            .expect("the in-memory legacy merge must fail before persistence");
+
+        assert!(error.contains("missing-account"));
+        assert_eq!(
+            std::fs::read_to_string(auth_state_path(&dir)).unwrap(),
+            original
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_signer_scoped_account_reports_the_replay_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        let unknown_entry = auth_state_key("missing-account", SIGNER_A);
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([(unknown_entry.clone(), 4242_i64)])).unwrap(),
+        )
+        .unwrap();
+
+        let error = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .err()
+            .expect("unmatched signer-scoped replay state must reject startup");
+
+        assert!(error.contains(&format!("Replay state entry '{unknown_entry}'")));
+        assert!(error.contains("belongs to account 'missing-account'"));
+        assert!(error.contains("Do not delete the replay entry"));
+    }
+
+    #[tokio::test]
+    async fn signer_absent_during_migration_inherits_the_legacy_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([("acct".to_string(), 4242_i64)])).unwrap(),
+        )
+        .unwrap();
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas(
+                    "acct",
+                    "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    4242
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(
+                    "acct",
+                    "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    4243
+                )
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

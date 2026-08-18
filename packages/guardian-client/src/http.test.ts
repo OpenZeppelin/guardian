@@ -232,6 +232,52 @@ describe('GuardianHttpClient', () => {
 
       await expect(client.configure(request)).rejects.toThrow('No signer configured');
     });
+
+    it('retries a configure replay rejection with fresh authentication', async () => {
+      client.setSigner(mockSigner);
+      const signRequest = mockSigner.signRequest;
+      if (!signRequest) {
+        throw new Error('test signer must implement signRequest');
+      }
+      const signRequestMock = vi.mocked(signRequest);
+      signRequestMock.mockImplementation(
+        (_accountId, timestamp) => `0x${timestamp.toString(16).padStart(128, '0')}`
+      );
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          headers: new Headers(),
+          status: 401,
+          statusText: 'Unauthorized',
+          text: async () =>
+            JSON.stringify({
+              code: 'authentication_replay',
+              message: 'Guardian received this request out of order. Please try again.',
+              meta: { retryable: true },
+            }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ success: true, message: 'Account configured' }),
+        });
+
+      await client.configure({
+        accountId: '0x' + 'd'.repeat(30),
+        auth: {
+          MidenFalconRpo: {
+            cosigner_commitments: ['0x' + 'e'.repeat(64)],
+          },
+        },
+        initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const timestamps = mockFetch.mock.calls.map((call) =>
+        Number((call[1].headers as Record<string, string>)['x-timestamp'])
+      );
+      expect(timestamps[1]).toBeGreaterThan(timestamps[0]);
+      expect(signRequestMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('getState', () => {

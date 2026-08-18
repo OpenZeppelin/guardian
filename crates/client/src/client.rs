@@ -509,12 +509,19 @@ impl GuardianClient {
 /// instance; the caller supplies the clock so the arithmetic stays
 /// deterministic under test.
 fn next_monotonic_timestamp(last_timestamp: &AtomicI64, now_ms: i64) -> i64 {
-    let previous = last_timestamp
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
-            Some(last.max(now_ms - 1) + 1)
-        })
-        .expect("update closure always returns Some");
-    previous.max(now_ms - 1) + 1
+    let mut previous = last_timestamp.load(Ordering::SeqCst);
+    loop {
+        let next = previous.saturating_add(1).max(now_ms);
+        match last_timestamp.compare_exchange_weak(
+            previous,
+            next,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => return next,
+            Err(actual) => previous = actual,
+        }
+    }
 }
 
 fn attach_auth_headers<T: prost::Message>(

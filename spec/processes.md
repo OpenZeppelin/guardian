@@ -32,8 +32,15 @@ sequenceDiagram
   S->>S: reject unless auth.cosigner_commitments == extracted signer map\n(exact set and order)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_commitment(account_id, initial_state)
+  alt existing account
+    S->>M: update last_auth_timestamp (verified signer, CAS)
+  end
   S->>ST: submit_state(state_json, commitment)
   S->>M: set(account_id, auth, network_config, timestamps)
+  alt first-time account
+    Note over S,M: metadata must exist first because replay state references it by FK
+    S->>M: seed last_auth_timestamp (verified signer, CAS)
+  end
   S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
 ```
 
