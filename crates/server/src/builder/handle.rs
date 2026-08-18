@@ -60,12 +60,6 @@ pub struct ServerHandle {
 impl ServerHandle {
     /// Run the server with the configured settings
     pub async fn run(self) {
-        // Issue #241: serve the auto-generated OpenAPI spec. Unauthenticated
-        // and read-only — it documents the contract, not data.
-        async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
-            axum::Json(crate::openapi::openapi())
-        }
-
         self.startup_info.log();
 
         let mut tasks = Vec::new();
@@ -161,151 +155,15 @@ impl ServerHandle {
             let body_limit_config = self.body_limit_config;
 
             let task = tokio::spawn(async move {
-                // Feature 006-operator-authz FR-013: every existing dashboard
-                // read route requires `{dashboard:read}`. The authorization
-                // middleware is layered *inside* the session middleware so
-                // session validation always runs first (FR-012) — axum
-                // `route_layer`s compose outer-first, so the session layer
-                // is added last and the authz layer first.
-                use crate::dashboard::authz::{AuthzState, enforce as enforce_authz};
-                use crate::dashboard::permissions::Permission;
-                let dashboard_read_authz =
-                    AuthzState::new(state.clone(), &[Permission::DashboardRead]);
-
-                let dashboard_routes = Router::new()
-                    .route("/accounts", get(list_operator_accounts))
-                    .route("/accounts/{account_id}", get(get_operator_account))
-                    .route(
-                        "/accounts/{account_id}/snapshot",
-                        get(get_operator_account_snapshot),
-                    )
-                    .route(
-                        "/accounts/{account_id}/deltas",
-                        get(list_account_deltas_handler),
-                    )
-                    .route(
-                        "/accounts/{account_id}/deltas/{nonce}",
-                        get(list_account_delta_detail_handler),
-                    )
-                    .route(
-                        "/accounts/{account_id}/proposals",
-                        get(list_account_proposals_handler),
-                    )
-                    .route("/info", get(get_dashboard_info_handler))
-                    .route("/deltas", get(list_global_deltas_handler))
-                    .route("/proposals", get(list_global_proposals_handler))
-                    .route_layer(from_fn_with_state(dashboard_read_authz, enforce_authz))
-                    .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
-
-                // FR-034: /session sits outside the dashboard:read
-                // authz layer so `permissions: []` operators get 200,
-                // not 403.
-                let session_router = Router::new()
-                    .route("/session", get(get_dashboard_session_handler))
-                    .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
-                let dashboard_routes = dashboard_routes.merge(session_router);
-
-                // Per-account pause / unpause endpoints. Same per-route
-                // authz composition as the probe: declares the
-                // `accounts:pause` permission and reuses the session
-                // middleware.
-                let dashboard_routes = {
-                    let accounts_pause_authz =
-                        AuthzState::new(state.clone(), &[Permission::AccountsPause]);
-                    let pause_router = Router::new()
-                        .route("/accounts/{account_id}/pause", post(pause_account_handler))
-                        .route(
-                            "/accounts/{account_id}/unpause",
-                            post(unpause_account_handler),
-                        )
-                        .route_layer(from_fn_with_state(accounts_pause_authz, enforce_authz))
-                        .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
-                    dashboard_routes.merge(pause_router)
-                };
-
-                // Feature 006-operator-authz FR-027 / FR-028: the
-                // authz-test-probe Cargo feature gates a single test-only
-                // route that exercises the middleware end-to-end with
-                // a non-`dashboard:read` requirement. Default-off in
-                // release builds.
-                #[cfg(feature = "authz-test-probe")]
-                let dashboard_routes = {
-                    let accounts_pause_authz =
-                        AuthzState::new(state.clone(), &[Permission::AccountsPause]);
-                    let probe_router = Router::new()
-                        .route(
-                            crate::dashboard::probe::PROBE_PATH,
-                            post(crate::dashboard::probe::handle),
-                        )
-                        .route_layer(from_fn_with_state(accounts_pause_authz, enforce_authz))
-                        .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
-                    dashboard_routes.merge(probe_router)
-                };
-
-                let app = Router::new()
-                    .route("/", get(status_root))
-                    .route("/api-docs/openapi.json", get(openapi_json))
-                    .route("/delta", post(push_delta))
-                    .route("/delta", get(get_delta))
-                    .route("/delta/since", get(get_delta_since))
-                    .route("/delta/proposal", post(push_delta_proposal))
-                    .route("/delta/proposal", get(get_delta_proposals))
-                    .route("/delta/proposal/single", get(get_delta_proposal))
-                    .route("/delta/proposal", put(sign_delta_proposal))
-                    .route("/delta/candidate/abandon", post(abandon_candidate))
-                    .route("/configure", post(configure))
-                    .route("/state", get(get_state))
-                    .route("/state/lookup", get(lookup))
-                    .route("/pubkey", get(get_pubkey))
-                    .route("/status", get(status))
-                    .route("/auth/challenge", get(challenge_operator_login))
-                    .route("/auth/verify", post(verify_operator_login))
-                    .route("/auth/logout", post(logout_operator));
-
-                #[cfg(feature = "evm")]
-                let app = app
-                    .route("/evm/auth/challenge", get(challenge_evm_session))
-                    .route("/evm/auth/verify", post(verify_evm_session))
-                    .route("/evm/auth/logout", post(logout_evm_session))
-                    .route("/evm/accounts", post(register_evm_account))
-                    .route(
-                        "/evm/proposals",
-                        post(create_evm_proposal).get(list_evm_proposals),
-                    )
-                    .route("/evm/proposals/{proposal_id}", get(get_evm_proposal))
-                    .route(
-                        "/evm/proposals/{proposal_id}/approve",
-                        post(approve_evm_proposal),
-                    )
-                    .route(
-                        "/evm/proposals/{proposal_id}/executable",
-                        get(get_executable_evm_proposal),
-                    )
-                    .route(
-                        "/evm/proposals/{proposal_id}/cancel",
-                        post(cancel_evm_proposal),
-                    );
-
-                let mut app = app.nest("/dashboard", dashboard_routes).with_state(state);
-
-                // Apply body size limit
-                let body_limit = body_limit_config.unwrap_or_else(BodyLimitConfig::from_env);
-                app = app.layer(DefaultBodyLimit::max(body_limit.max_bytes));
-
-                // Apply rate limiting
-                app = app.layer(RateLimitLayer::new(rate_limit_store));
-
-                if let Some(cors) = cors_layer {
-                    app = app.layer(cors);
-                }
-
-                // Outermost layer (added last) so rate-limit 429s and
-                // CORS short-circuits are observed too. Router-level
-                // layers run after routing, so MatchedPath is
-                // available for the bounded route label.
-                if metrics_enabled {
-                    app = app.layer(axum::middleware::from_fn(track_http));
-                }
+                let app = build_http_router(
+                    state,
+                    HttpRouterConfig {
+                        cors_layer,
+                        rate_limit_store,
+                        body_limit_config,
+                        metrics_enabled,
+                    },
+                );
 
                 let addr = format!("0.0.0.0:{port}");
                 let listener = tokio::net::TcpListener::bind(&addr)
@@ -387,6 +245,336 @@ impl ServerHandle {
         // Wait for all servers
         for task in tasks {
             let _ = task.await;
+        }
+    }
+}
+
+/// Layer wiring the HTTP router needs beyond the application state.
+pub(crate) struct HttpRouterConfig {
+    pub(crate) cors_layer: Option<CorsLayer>,
+    pub(crate) rate_limit_store: RateLimitStore,
+    pub(crate) body_limit_config: Option<BodyLimitConfig>,
+    pub(crate) metrics_enabled: bool,
+}
+
+/// Build the HTTP router the server serves. The single source of truth
+/// for the mounted route table: `run()` serves exactly what this returns,
+/// so a routing test against it is a test of production behavior.
+pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Router {
+    // Issue #241: serve the auto-generated OpenAPI spec. Unauthenticated
+    // and read-only — it documents the contract, not data.
+    async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
+        axum::Json(crate::openapi::openapi())
+    }
+
+    // Feature 006-operator-authz FR-013: every existing dashboard
+    // read route requires `{dashboard:read}`. The authorization
+    // middleware is layered *inside* the session middleware so
+    // session validation always runs first (FR-012) — axum
+    // `route_layer`s compose outer-first, so the session layer
+    // is added last and the authz layer first.
+    use crate::dashboard::authz::{AuthzState, enforce as enforce_authz};
+    use crate::dashboard::permissions::Permission;
+    let dashboard_read_authz = AuthzState::new(state.clone(), &[Permission::DashboardRead]);
+
+    let dashboard_routes = Router::new()
+        .route("/accounts", get(list_operator_accounts))
+        .route("/accounts/{account_id}", get(get_operator_account))
+        .route(
+            "/accounts/{account_id}/snapshot",
+            get(get_operator_account_snapshot),
+        )
+        .route(
+            "/accounts/{account_id}/deltas",
+            get(list_account_deltas_handler),
+        )
+        .route(
+            "/accounts/{account_id}/deltas/{nonce}",
+            get(list_account_delta_detail_handler),
+        )
+        .route(
+            "/accounts/{account_id}/proposals",
+            get(list_account_proposals_handler),
+        )
+        .route("/info", get(get_dashboard_info_handler))
+        .route("/deltas", get(list_global_deltas_handler))
+        .route("/proposals", get(list_global_proposals_handler))
+        .route_layer(from_fn_with_state(dashboard_read_authz, enforce_authz))
+        .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+
+    // FR-034: /session sits outside the dashboard:read
+    // authz layer so `permissions: []` operators get 200,
+    // not 403.
+    let session_router = Router::new()
+        .route("/session", get(get_dashboard_session_handler))
+        .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+    let dashboard_routes = dashboard_routes.merge(session_router);
+
+    // Per-account pause / unpause endpoints. Same per-route
+    // authz composition as the probe: declares the
+    // `accounts:pause` permission and reuses the session
+    // middleware.
+    let dashboard_routes = {
+        let accounts_pause_authz = AuthzState::new(state.clone(), &[Permission::AccountsPause]);
+        let pause_router = Router::new()
+            .route("/accounts/{account_id}/pause", post(pause_account_handler))
+            .route(
+                "/accounts/{account_id}/unpause",
+                post(unpause_account_handler),
+            )
+            .route_layer(from_fn_with_state(accounts_pause_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        dashboard_routes.merge(pause_router)
+    };
+
+    // Feature 006-operator-authz FR-027 / FR-028: the
+    // authz-test-probe Cargo feature gates a single test-only
+    // route that exercises the middleware end-to-end with
+    // a non-`dashboard:read` requirement. Default-off in
+    // release builds.
+    #[cfg(feature = "authz-test-probe")]
+    let dashboard_routes = {
+        let accounts_pause_authz = AuthzState::new(state.clone(), &[Permission::AccountsPause]);
+        let probe_router = Router::new()
+            .route(
+                crate::dashboard::probe::PROBE_PATH,
+                post(crate::dashboard::probe::handle),
+            )
+            .route_layer(from_fn_with_state(accounts_pause_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        dashboard_routes.merge(probe_router)
+    };
+
+    let app = Router::new()
+        .route("/", get(status_root))
+        .route("/api-docs/openapi.json", get(openapi_json))
+        .route("/delta", post(push_delta))
+        .route("/delta", get(get_delta))
+        .route("/delta/since", get(get_delta_since))
+        .route("/delta/proposal", post(push_delta_proposal))
+        .route("/delta/proposal", get(get_delta_proposals))
+        .route("/delta/proposal/single", get(get_delta_proposal))
+        .route("/delta/proposal", put(sign_delta_proposal))
+        .route("/delta/candidate/abandon", post(abandon_candidate))
+        .route("/configure", post(configure))
+        .route("/state", get(get_state))
+        .route("/state/lookup", get(lookup))
+        .route("/pubkey", get(get_pubkey))
+        .route("/status", get(status))
+        .route("/auth/challenge", get(challenge_operator_login))
+        .route("/auth/verify", post(verify_operator_login))
+        .route("/auth/logout", post(logout_operator));
+
+    #[cfg(feature = "evm")]
+    let app = app
+        .route("/evm/auth/challenge", get(challenge_evm_session))
+        .route("/evm/auth/verify", post(verify_evm_session))
+        .route("/evm/auth/logout", post(logout_evm_session))
+        .route("/evm/accounts", post(register_evm_account))
+        .route(
+            "/evm/proposals",
+            post(create_evm_proposal).get(list_evm_proposals),
+        )
+        .route("/evm/proposals/{proposal_id}", get(get_evm_proposal))
+        .route(
+            "/evm/proposals/{proposal_id}/approve",
+            post(approve_evm_proposal),
+        )
+        .route(
+            "/evm/proposals/{proposal_id}/executable",
+            get(get_executable_evm_proposal),
+        )
+        .route(
+            "/evm/proposals/{proposal_id}/cancel",
+            post(cancel_evm_proposal),
+        );
+
+    let mut app = app.nest("/dashboard", dashboard_routes).with_state(state);
+
+    // Apply body size limit
+    let body_limit = config
+        .body_limit_config
+        .unwrap_or_else(BodyLimitConfig::from_env);
+    app = app.layer(DefaultBodyLimit::max(body_limit.max_bytes));
+
+    // Apply rate limiting
+    app = app.layer(RateLimitLayer::new(config.rate_limit_store));
+
+    if let Some(cors) = config.cors_layer {
+        app = app.layer(cors);
+    }
+
+    // Outermost layer (added last) so rate-limit 429s and
+    // CORS short-circuits are observed too. Router-level
+    // layers run after routing, so MatchedPath is
+    // available for the bounded route label.
+    if config.metrics_enabled {
+        app = app.layer(axum::middleware::from_fn(track_http));
+    }
+
+    app
+}
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn production_router() -> Router {
+        let state = crate::testing::helpers::create_test_app_state().await;
+        build_http_router(
+            state,
+            HttpRouterConfig {
+                cors_layer: None,
+                rate_limit_store: RateLimitStore::new(RateLimitConfig::new(10_000, 10_000)),
+                body_limit_config: Some(BodyLimitConfig {
+                    max_bytes: 1024 * 1024,
+                }),
+                metrics_enabled: false,
+            },
+        )
+    }
+
+    /// The ALB target group health-checks `path = "/"` with
+    /// `matcher = "200"` (`infra/alb.tf`), so an unmounted or
+    /// authenticated root drains every target.
+    #[tokio::test]
+    async fn root_serves_the_status_body_unauthenticated() {
+        let res = production_router()
+            .await
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(res.status(), StatusCode::OK, "GET / must not require auth");
+
+        let bytes = to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("GET / must return JSON");
+        assert_eq!(json["status"], "ok");
+        assert!(json["version"].is_string());
+        assert!(json["uptime_seconds"].is_number());
+    }
+
+    /// Independent restatement of the mounted route table. Every other
+    /// test reaches these routes through `create_router`, which delegates
+    /// here, so a renamed or deleted `.route(...)` moves both the code and
+    /// its callers together and stays green. This list does not move with
+    /// them: it is the copy that has to be updated deliberately.
+    #[tokio::test]
+    async fn every_documented_route_is_mounted() {
+        let routes = [
+            ("GET", "/"),
+            ("GET", "/api-docs/openapi.json"),
+            ("POST", "/delta"),
+            ("GET", "/delta"),
+            ("GET", "/delta/since"),
+            ("POST", "/delta/proposal"),
+            ("GET", "/delta/proposal"),
+            ("PUT", "/delta/proposal"),
+            ("GET", "/delta/proposal/single"),
+            ("POST", "/delta/candidate/abandon"),
+            ("POST", "/configure"),
+            ("GET", "/state"),
+            ("GET", "/state/lookup"),
+            ("GET", "/pubkey"),
+            ("GET", "/status"),
+            ("GET", "/auth/challenge"),
+            ("POST", "/auth/verify"),
+            ("POST", "/auth/logout"),
+            ("GET", "/dashboard/info"),
+            ("GET", "/dashboard/session"),
+            ("GET", "/dashboard/accounts"),
+            ("GET", "/dashboard/accounts/0x1"),
+            ("GET", "/dashboard/accounts/0x1/snapshot"),
+            ("GET", "/dashboard/accounts/0x1/deltas"),
+            ("GET", "/dashboard/accounts/0x1/deltas/1"),
+            ("GET", "/dashboard/accounts/0x1/proposals"),
+            ("POST", "/dashboard/accounts/0x1/pause"),
+            ("POST", "/dashboard/accounts/0x1/unpause"),
+            ("GET", "/dashboard/deltas"),
+            ("GET", "/dashboard/proposals"),
+        ];
+
+        let router = production_router().await;
+
+        for (method, path) in routes {
+            let res = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .expect("request should succeed");
+
+            assert_ne!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "{method} {path} is not mounted"
+            );
+            assert_ne!(
+                res.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {path} is mounted under a different method"
+            );
+        }
+    }
+
+    #[cfg(feature = "evm")]
+    #[tokio::test]
+    async fn every_evm_route_is_mounted() {
+        let routes = [
+            ("GET", "/evm/auth/challenge"),
+            ("POST", "/evm/auth/verify"),
+            ("POST", "/evm/auth/logout"),
+            ("POST", "/evm/accounts"),
+            ("POST", "/evm/proposals"),
+            ("GET", "/evm/proposals"),
+            ("GET", "/evm/proposals/1"),
+            ("POST", "/evm/proposals/1/approve"),
+            ("GET", "/evm/proposals/1/executable"),
+            ("POST", "/evm/proposals/1/cancel"),
+        ];
+
+        let router = production_router().await;
+
+        for (method, path) in routes {
+            let res = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .expect("request should succeed");
+
+            assert_ne!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "{method} {path} is not mounted"
+            );
+            assert_ne!(
+                res.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {path} is mounted under a different method"
+            );
         }
     }
 }

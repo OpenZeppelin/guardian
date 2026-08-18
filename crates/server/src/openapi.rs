@@ -379,6 +379,36 @@ mod tests {
         );
     }
 
+    fn strip_prose(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.iter()
+                    .filter(|(key, _)| {
+                        !matches!(key.as_str(), "description" | "summary" | "operationId")
+                    })
+                    .map(|(key, val)| (key.clone(), strip_prose(val)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(strip_prose).collect())
+            }
+            _ => value.clone(),
+        }
+    }
+
+    #[test]
+    fn root_alias_operation_matches_status() {
+        let json = serde_json::to_value(openapi()).expect("spec serializes to JSON");
+        let root = strip_prose(&json["paths"]["/"]["get"]);
+        let status = strip_prose(&json["paths"]["/status"]["get"]);
+
+        assert_eq!(
+            root, status,
+            "GET / is an alias of GET /status: their documented contracts must \
+             agree on parameters, security, response codes, and body schemas"
+        );
+    }
+
     #[test]
     fn per_surface_specs_are_scoped() {
         let client = serde_json::to_value(client_openapi()).unwrap();

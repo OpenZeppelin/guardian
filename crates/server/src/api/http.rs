@@ -735,34 +735,34 @@ mod tests {
         (state, storage, network, metadata)
     }
 
-    #[tokio::test]
-    async fn status_route_returns_ok_without_auth() {
+    async fn get_json(state: AppState, uri: &str) -> serde_json::Value {
         use crate::testing::helpers::create_router;
         use axum::body::{Body, to_bytes};
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
 
-        let (state, ..) = create_test_state();
-        let app = create_router(state);
-
-        let res = app
+        let res = create_router(state)
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/status")
+                    .uri(uri)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
-            .expect("status request should succeed");
-
-        assert_eq!(res.status(), StatusCode::OK);
+            .expect("request should succeed");
+        assert_eq!(res.status(), StatusCode::OK, "{uri} should return 200");
 
         let bytes = to_bytes(res.into_body(), usize::MAX)
             .await
-            .expect("status body should read");
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("status body should be JSON");
+            .expect("body should read");
+        serde_json::from_slice(&bytes).expect("body should be JSON")
+    }
+
+    #[tokio::test]
+    async fn status_route_returns_ok_without_auth() {
+        let (state, ..) = create_test_state();
+        let json = get_json(state, "/status").await;
 
         assert_eq!(json["status"], "ok");
         assert!(json["version"].is_string());
@@ -776,30 +776,6 @@ mod tests {
 
     #[tokio::test]
     async fn root_route_returns_the_status_body_without_auth() {
-        use crate::testing::helpers::create_router;
-        use axum::body::{Body, to_bytes};
-        use axum::http::{Request, StatusCode};
-        use tower::ServiceExt;
-
-        async fn get_json(state: AppState, uri: &str) -> serde_json::Value {
-            let res = create_router(state)
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri(uri)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .expect("request should succeed");
-            assert_eq!(res.status(), StatusCode::OK, "{uri} should return 200");
-
-            let bytes = to_bytes(res.into_body(), usize::MAX)
-                .await
-                .expect("body should read");
-            serde_json::from_slice(&bytes).expect("body should be JSON")
-        }
-
         let (state, ..) = create_test_state();
         let mut root = get_json(state.clone(), "/").await;
         let mut status = get_json(state, "/status").await;
