@@ -58,7 +58,7 @@ async fn test_configure_and_push_delta_with_auth() {
     let (signature_hex_2, timestamp_2) = signer.sign_json_payload(&account_id_hex, &delta_body);
 
     let push_request = Request::builder()
-        .uri("/push_delta")
+        .uri("/delta")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -128,7 +128,7 @@ async fn test_push_delta_unauthorized_cosigner() {
         unauthorized_signer.sign_json_payload(&account_id_hex, &delta_body);
 
     let push_request = Request::builder()
-        .uri("/push_delta")
+        .uri("/delta")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &unauthorized_signer.pubkey_hex)
@@ -193,7 +193,7 @@ async fn test_push_delta_missing_auth_headers() {
     });
 
     let push_request = Request::builder()
-        .uri("/push_delta")
+        .uri("/delta")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         // NO auth headers!
