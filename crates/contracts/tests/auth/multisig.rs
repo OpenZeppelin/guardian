@@ -13,7 +13,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
 use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE;
-use miden_protocol::transaction::RawOutputNote;
+use miden_protocol::transaction::{RawOutputNote, TransactionScript};
 use miden_protocol::vm::{AdviceInputs, AdviceMap};
 use miden_protocol::{Felt, Hasher, Word};
 use miden_standards::StandardsLib;
@@ -1359,5 +1359,156 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
         Err(TransactionExecutorError::Unauthorized(_)) => Ok(()),
         Ok(_) => anyhow::bail!("expected Unauthorized, got success"),
         Err(err) => anyhow::bail!("expected Unauthorized, got abort: {err:?}"),
+    }
+}
+
+/// Pins the protocol behaviour Guardian's proposal flow depends on: since
+/// miden-protocol 0.16-rc a transaction summary commits to the reference block, so an
+/// otherwise identical re-execution at a later block produces a different commitment.
+/// Guardian proposes at one block and executes at a later one, so this is the property
+/// that decides whether a collected signature set still authorizes execution.
+#[tokio::test]
+async fn transaction_summary_commitment_is_bound_to_the_reference_block() -> anyhow::Result<()> {
+    let (_secret_keys, public_keys, _authenticators, _, guardian_public_key, _) =
+        setup_keys_and_authenticators_with_guardian(2, 2)?;
+
+    let multisig_account =
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone())?;
+    let mut mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
+
+    let salt = Word::from([Felt::new_unchecked(3); 4]);
+    let tx_script = build_guardian_key_rotation_script(&guardian_public_key)?;
+
+    let first = summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, salt).await?;
+    mock_chain.prove_next_block()?;
+    let second = summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, salt).await?;
+
+    let (a, b) = (first.as_ref(), second.as_ref());
+    assert_eq!(
+        a.account_delta().to_commitment(),
+        b.account_delta().to_commitment(),
+        "the account delta must not depend on the reference block"
+    );
+    assert_eq!(
+        a.user_params().as_elements(),
+        b.user_params().as_elements(),
+        "the auth-arg salt must not depend on the reference block"
+    );
+    assert_eq!(a.expiration_delta(), b.expiration_delta());
+    assert_ne!(
+        a.block_commitment(),
+        b.block_commitment(),
+        "the reference block is what changes between the two executions"
+    );
+    assert_ne!(
+        a.to_commitment(),
+        b.to_commitment(),
+        "so the summary commitment cosigners signed is not reproducible at a later block"
+    );
+
+    Ok(())
+}
+
+/// A signature set collected against one reference block does not authorize execution at a
+/// later block, but does authorize execution pinned back to the block it was collected at.
+/// Pinning is therefore the mechanism any fix has to reach; `miden-client` 0.16.0-rc.1 does
+/// not expose it on `execute_transaction`, which is why the Guardian flow currently fails.
+#[tokio::test]
+async fn signatures_authorize_only_at_the_reference_block_they_were_collected_at()
+-> anyhow::Result<()> {
+    let (_secret_keys, public_keys, authenticators, _, guardian_public_key, _) =
+        setup_keys_and_authenticators_with_guardian(2, 2)?;
+
+    let multisig_account =
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone())?;
+    let mut mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
+
+    let salt = Word::from([Felt::new_unchecked(3); 4]);
+    let tx_script = build_guardian_key_rotation_script(&guardian_public_key)?;
+
+    let proposed_at = mock_chain.latest_block_header().block_num();
+    let summary = summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, salt).await?;
+
+    let msg = summary.as_ref().to_commitment();
+    let signing_inputs = SigningInputs::TransactionSummary(summary);
+    let sig_1 = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &signing_inputs)
+        .await?;
+    let sig_2 = authenticators[1]
+        .get_signature(public_keys[1].to_commitment().into(), &signing_inputs)
+        .await?;
+
+    // Cosigners take their time; the chain advances while signatures are collected.
+    for _ in 0..8 {
+        mock_chain.prove_next_block()?;
+    }
+
+    let at_tip = mock_chain
+        .build_transaction(multisig_account.id())
+        .authenticator(None)
+        .tx_script(tx_script.clone())
+        .add_signature(public_keys[0].clone().into(), msg, sig_1.clone())
+        .add_signature(public_keys[1].clone().into(), msg, sig_2.clone())
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await;
+    assert!(
+        matches!(at_tip, Err(TransactionExecutorError::Unauthorized(_))),
+        "signatures must not authorize at a later reference block: {at_tip:?}"
+    );
+
+    let pinned = mock_chain
+        .build_transaction(multisig_account.id())
+        .reference_block(proposed_at)
+        .authenticator(None)
+        .tx_script(tx_script)
+        .add_signature(public_keys[0].clone().into(), msg, sig_1)
+        .add_signature(public_keys[1].clone().into(), msg, sig_2)
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await;
+    assert!(
+        pinned.is_ok(),
+        "pinning the reference block must restore authorization: {:?}",
+        pinned.err()
+    );
+
+    Ok(())
+}
+
+/// Builds the note-less guardian key-rotation script, whose carve-out needs only the
+/// multisig threshold signatures — the smallest transaction that exercises the auth path.
+fn build_guardian_key_rotation_script(
+    guardian_public_key: &PublicKey,
+) -> anyhow::Result<TransactionScript> {
+    let key_word: Word = guardian_public_key.to_commitment();
+    Ok(CodeBuilder::new()
+        .with_dynamically_linked_package(AuthGuardedMultisig::code())?
+        .compile_tx_script(format!(
+            "@transaction_script\npub proc main\n    push.{key_word}\n    push.2\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
+        ))?)
+}
+
+/// Runs the transaction without signatures to obtain the summary cosigners sign.
+async fn summarize_unauthorized(
+    mock_chain: &miden_testing::MockChain,
+    multisig_account: &Account,
+    tx_script: &TransactionScript,
+    salt: Word,
+) -> anyhow::Result<Box<miden_protocol::transaction::TransactionSummary>> {
+    match mock_chain
+        .build_transaction(multisig_account.id())
+        .authenticator(None)
+        .tx_script(tx_script.clone())
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await
+    {
+        Err(TransactionExecutorError::Unauthorized(effects)) => Ok(effects),
+        Ok(_) => anyhow::bail!("expected the unsigned transaction to abort as unauthorized"),
+        Err(error) => anyhow::bail!("expected an unauthorized abort, got: {error:?}"),
     }
 }
