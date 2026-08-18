@@ -28,6 +28,10 @@ async fn main() {
             Err(e) => println!("{endpoint}: connect error: {e}"),
         }
     }
-    println!("local client kernel (beta.1)   = 0x9b3876970730deff3fc4e1d90d68b0578ce19c6e5bd58a0ac5774dc65dbea1d7");
-    println!("failing advice-map key (alpha) = 0x60e15da40818dc87d8a04daee51e98ff4d6af6b2a24819a56abacefc09adb730");
+    println!(
+        "local client kernel (beta.1)   = 0x9b3876970730deff3fc4e1d90d68b0578ce19c6e5bd58a0ac5774dc65dbea1d7"
+    );
+    println!(
+        "failing advice-map key (alpha) = 0x60e15da40818dc87d8a04daee51e98ff4d6af6b2a24819a56abacefc09adb730"
+    );
 }
