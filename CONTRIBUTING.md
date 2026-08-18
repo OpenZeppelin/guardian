@@ -124,7 +124,9 @@ The Postgres-backed server tests stay `#[ignore]`, so `cargo test --workspace`
 skips them; `scripts/test-postgres.sh` is what opts in. Each run starts by
 dropping and recreating the schema, so no run inherits state from an earlier
 one, and it refuses any database whose name does not end in `_test` so it cannot
-destroy your development data. See
+destroy your development data. Database-backed ignored tests must live under a
+module path containing `postgres`; the script discovers them using that module
+path filter. See
 [LOCAL_DEV.md](./docs/LOCAL_DEV.md#postgres-backed-tests).
 
 CI enforces tests and doctests for the core Rust workspace crates, excluding

@@ -33,6 +33,7 @@ enum Probe {
     Ready,
     Missing,
     Retryable(String),
+    Configuration(String),
     Fatal(String),
 }
 
@@ -131,6 +132,9 @@ async fn ensure_database_exists(url: &Url, name: &str) {
         match probe(probe_url(&maintenance), name).await {
             Probe::Ready => return,
             Probe::Missing => return create_database(url, name).await,
+            Probe::Configuration(error) => {
+                panic!("invalid DATABASE_URL configuration: {error}")
+            }
             Probe::Fatal(error) => panic!("cannot reach {}: {error}", endpoint(url)),
             Probe::Retryable(error) if Instant::now() >= deadline => panic!(
                 "Postgres at {} did not accept connections within {}s: {error}",
@@ -171,7 +175,9 @@ fn classify_postgres_error(error: tokio_postgres::Error) -> Probe {
 async fn probe(url: String, name: &str) -> Probe {
     let client = match connect_test_postgres_client(&url).await {
         Ok(client) => client,
-        Err(TestPostgresConnectionError::Configuration(error)) => return Probe::Fatal(error),
+        Err(TestPostgresConnectionError::Configuration(error)) => {
+            return Probe::Configuration(error);
+        }
         Err(TestPostgresConnectionError::Connection(error)) => {
             return classify_postgres_error(error);
         }
@@ -253,7 +259,7 @@ fn endpoint(url: &Url) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{database_name, is_test_database_name, maintenance_url};
+    use super::{database_name, ensure_database_exists, is_test_database_name, maintenance_url};
     use url::Url;
 
     #[test]
@@ -310,5 +316,15 @@ mod tests {
         .unwrap();
 
         assert!(database_name(&url).is_err());
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "invalid DATABASE_URL configuration: sslmode 'allow'/'prefer'")]
+    async fn invalid_connection_options_are_reported_as_configuration_errors() {
+        let url =
+            Url::parse("postgres://guardian:guardian@localhost:5432/guardian_test?sslmode=prefer")
+                .unwrap();
+
+        ensure_database_exists(&url, "guardian_test").await;
     }
 }

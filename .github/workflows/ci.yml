@@ -81,11 +81,6 @@ jobs:
           --lcov
           --output-path lcov.info
 
-      # Run the non-database tests behind guardian-server/postgres separately.
-      # Database-backed tests stay ignored here and run in postgres-test.
-      - name: Run Postgres feature tests
-        run: cargo test -p guardian-server --lib --features postgres
-
       # llvm-cov doctest coverage requires nightly, so doctests run as a
       # separate uninstrumented step.
       - name: Run doctests
@@ -251,6 +246,11 @@ jobs:
         env:
           DATABASE_URL: postgres://guardian:guardian@localhost:5432/guardian_test
         run: ./scripts/test-postgres.sh
+
+      # The script runs only ignored database-backed tests. Run the remaining
+      # Postgres-feature tests here, reusing the binary compiled above.
+      - name: Run Postgres feature tests
+        run: cargo test -p guardian-server --lib --features postgres
 
   npm-test:
     name: TypeScript Package Tests
