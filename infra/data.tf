@@ -176,4 +176,10 @@ locals {
   domain_enabled      = var.domain_name != ""
   service_fqdn        = var.domain_name == "" ? "" : (var.subdomain != "" ? "${var.subdomain}.${var.domain_name}" : var.domain_name)
   acm_certificate_arn = local.domain_enabled ? var.acm_certificate_arn : ""
+
+  # Temporary legacy subdomain used during a hostname migration.
+  alias_domain_requested    = var.alias_subdomain != ""
+  alias_service_fqdn        = local.alias_domain_requested && var.domain_name != "" ? "${var.alias_subdomain}.${var.domain_name}" : ""
+  alias_domain_enabled      = local.alias_service_fqdn != "" && local.alias_service_fqdn != local.service_fqdn
+  alias_acm_certificate_arn = local.alias_domain_enabled ? (var.alias_acm_certificate_arn != "" ? var.alias_acm_certificate_arn : local.acm_certificate_arn) : ""
 }

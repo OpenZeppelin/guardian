@@ -178,11 +178,19 @@ terraform output
 
 ```bash
 ALB_DNS=$(terraform output -raw alb_dns_name)
+CUSTOM_DOMAIN_URL=$(terraform output -raw custom_domain_url)
+GRPC_ENDPOINT=$(terraform output -raw grpc_endpoint)
+ALIAS_DOMAIN_URL=$(terraform output -raw alias_domain_url 2>/dev/null || true)
 
-curl "http://$ALB_DNS/"
-curl "http://$ALB_DNS/pubkey"
-curl "https://guardian.openzeppelin.com/pubkey"
-grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
+# ACM certificates never cover the raw ALB hostname, so the direct checks
+# stay on plain HTTP; on HTTPS stacks they return the 301 redirect and the
+# hostname checks below verify TLS end to end.
+curl --fail-with-body "http://$ALB_DNS/"
+curl --fail-with-body "http://$ALB_DNS/pubkey"
+[ -z "$CUSTOM_DOMAIN_URL" ] || curl --fail-with-body "$CUSTOM_DOMAIN_URL/pubkey"
+[ -z "$GRPC_ENDPOINT" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${GRPC_ENDPOINT#https://}:443" guardian.Guardian/GetPubkey
+[ -z "$ALIAS_DOMAIN_URL" ] || curl --fail-with-body "$ALIAS_DOMAIN_URL/pubkey"
+[ -z "$ALIAS_DOMAIN_URL" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${ALIAS_DOMAIN_URL#https://}:443" guardian.Guardian/GetPubkey
 ```
 
 ### 6. Destroy
@@ -236,7 +244,11 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `rds_proxy_enabled` | `false` in dev, `true` in prod | Whether RDS Proxy is enabled |
 | `domain_name` | `openzeppelin.com` | Root domain for HTTPS endpoint |
 | `subdomain` | `guardian` | Subdomain for HTTPS endpoint |
+| `acm_certificate_arn` | `""` | ACM certificate for the canonical hostname |
 | `route53_zone_id` | `""` | Route 53 hosted zone ID for the domain |
+| `cloudflare_zone_id` | `""` | Cloudflare zone ID for the canonical hostname |
+| `alias_subdomain` | `""` | Migration-only legacy subdomain under `domain_name`; leave empty normally |
+| `alias_acm_certificate_arn` | `""` | Migration-only distinct legacy certificate attached through SNI |
 | `alb_ingress_cidrs` | `["0.0.0.0/0"]` | CIDR blocks allowed to reach the ALB |
 | `server_cpu` | `512` | Server task CPU units |
 | `server_memory` | `1024` | Server task memory (MB) |
@@ -260,7 +272,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name for accessing the server |
 | `alb_url` | Full URL (http or https) |
-| `custom_domain_url` | Custom domain URL when configured |
+| `custom_domain_url` | Canonical service URL: https with a certificate, http when Terraform manages only the DNS record |
+| `alias_domain_url` | Migration-only legacy domain URL |
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |
@@ -306,7 +319,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 
 ## HTTPS Configuration
 
-HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, or both depending on which variables are provided. In the current `guardian-stg` deployment, Terraform state shows Cloudflare DNS management and no Route 53 record.
+HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, both, or an external provider. Terraform creates canonical and migration-only alias records only for the configured providers; external records remain operator-managed. The migration-only secondary-subdomain settings are covered in [`docs/runbooks/guardian-domain-migration.md`](../docs/runbooks/guardian-domain-migration.md).
 
 When HTTPS is enabled, the ALB routes standard HTTPS requests to the server HTTP port `3000` and gRPC requests for `/guardian.Guardian/*` to the server gRPC port `50051`. The public gRPC endpoint uses the same hostname on port `443`.
 
