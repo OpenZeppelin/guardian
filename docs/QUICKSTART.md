@@ -29,7 +29,7 @@ This launches the server with the filesystem backend. HTTP binds on
 ## Verify
 
 ```bash
-curl http://localhost:3000/                   # liveness — expect 200 OK
+curl http://localhost:3000/                   # liveness — same body as /status, expect 200 OK
 curl http://localhost:3000/pubkey             # expect { "commitment": "0x..." }
 ```
 

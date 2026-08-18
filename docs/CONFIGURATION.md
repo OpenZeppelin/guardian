@@ -312,11 +312,15 @@ turns them into Terraform variables or build-time choices.
 | `DEPLOY_STAGE` | `dev` | `dev` or `prod`; selects stage profile (autoscaling, RDS Proxy, etc.). |
 | `CPU_ARCHITECTURE` | `X86_64` | `X86_64` or `ARM64`. Picks the Docker buildx platform and the ECS task arch. |
 | `AWS_REGION` | _required_ | All AWS API calls. |
+| `DOMAIN_NAME` | `openzeppelin.com` | Root domain for the canonical public hostname. |
 | `SUBDOMAIN` | `guardian` | Host portion of the public hostname. |
+| `ACM_CERTIFICATE_ARN` | _unset_ | ACM certificate for HTTPS on the canonical hostname. |
 | `ROUTE53_ZONE_ID` | _unset_ | Optional Route 53 hosted zone for an alias record. |
 | `CLOUDFLARE_ZONE_ID` | _unset_ | Optional Cloudflare zone for CNAME management. |
-| `CLOUDFLARE_API_TOKEN` | _unset_ | Required iff `CLOUDFLARE_ZONE_ID` is set. |
-| `CLOUDFLARE_PROXIED` | `false` | Whether the Cloudflare CNAME should be proxied. |
+| `CLOUDFLARE_API_TOKEN` | _unset_ | Required when either primary or secondary Cloudflare DNS management is enabled. |
+| `CLOUDFLARE_PROXIED` | `true` | Whether the Cloudflare CNAME should be proxied. |
+| `ALIAS_SUBDOMAIN` | _unset_ | Migration-only legacy subdomain under `DOMAIN_NAME`; leave unset for normal deployments. DNS may be Terraform-managed or external. |
+| `ALIAS_ACM_CERTIFICATE_ARN` | `ACM_CERTIFICATE_ARN` | Migration-only distinct certificate for the legacy hostname, attached through SNI when needed. |
 | `GUARDIAN_ACK_FALCON_SECRET_NAME` | _unset_ → `${STACK_NAME}/server/ack-falcon-secret-key` | Deploy-side override for the Falcon ACK secret. Passed into Terraform as `guardian_ack_falcon_secret_name` and set on the ECS task as the runtime `GUARDIAN_ACK_FALCON_SECRET_ID`. |
 | `GUARDIAN_ACK_ECDSA_SECRET_NAME` | _unset_ → `${STACK_NAME}/server/ack-ecdsa-secret-key` | Deploy-side override for the ECDSA ACK secret. Same flow as the Falcon entry above. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON` | _unset_ | Inline JSON array of operator pubkeys; Terraform creates the secret from this. Mutually exclusive with `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN`. |
