@@ -1,15 +1,28 @@
 [package]
 name = "miden-rpc-client"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Minimal Miden node RPC client for Guardian"
 
 [dependencies]
+async-trait = "0.1"
+guardian-shared = { path = "../shared" }
 miden-protocol = { workspace = true }
 tonic = { workspace = true, features = ["tls-native-roots", "tls-ring", "transport"] }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
 hex = { workspace = true }
+
+[features]
+scripted-node = []
 
 [build-dependencies]
 miden-node-proto-build = { workspace = true }

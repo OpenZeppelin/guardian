@@ -82,8 +82,23 @@ console.log(accepted.state); // 'pending'
 // The guardian's worker confirms over a short quarantine that the tx did
 // not land, then releases the account.
 const status = await client.abandonStatus(accountId, nonce);
-// 'waiting' | 'landed' | 'abandoned' | 'unexpected'
+// 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected'
 ```
+
+`'retained'` means the guardian stopped actively verifying the candidate
+and released the account slot, but the on-chain outcome is still
+**uncertain**: background reconciliation may promote the delta to
+`canonical` until its retention TTL expires. It is "unlocked but
+unresolved" — never read it as "the transaction did not land". Sync and
+check the chain before replacing the slot, since a resubmission
+supersedes the retained delta and forfeits automatic recovery.
+
+| Status | Account locked? | Outcome known? | Client action |
+|---|---|---|---|
+| `candidate` | Yes | No | Wait, or request abandonment |
+| `retained` | No | No | Sync/check chain before replacing |
+| `discarded: client_abandoned` | No | Probably not landed; late reconciliation remains possible | Continue cautiously |
+| `canonical` | No | Yes — landed | Sync account state |
 
 ### Look Up An Account By Key Commitment
 
@@ -187,6 +202,42 @@ try {
   if (error instanceof GuardianHttpError) {
     console.error(`HTTP ${error.status}: ${error.statusText}`);
     console.error('Body:', error.body);
+  }
+}
+```
+
+### Rate limits and retries
+
+The server rate-limits both its HTTP and gRPC surfaces. The sustained
+per-minute limit is keyed per IP alone, so HTTP and gRPC calls from one
+client draw on the same allowance; the burst limit is keyed per IP and
+endpoint. An over-budget request fails with HTTP 429, code
+`rate_limit_exceeded`, and a backoff hint. `GuardianHttpError` classifies
+it: `isRetryable()` reads the error envelope (falling back to the status
+class), and `retryAfterSecs()` returns the server's hint, preferring the
+`Retry-After` header over the envelope value.
+
+Rate-limit rejections happen before the server touches any state, so
+retrying them is always safe. The client does not retry automatically
+(automatic backoff is tracked in
+[#360](https://github.com/OpenZeppelin/guardian/issues/360)); a bounded
+loop over the exposed hint is a few lines:
+
+```typescript
+async function getStateWithRetry(accountId: string, maxAttempts = 3) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await client.getState(accountId);
+    } catch (error) {
+      if (
+        !(error instanceof GuardianHttpError) ||
+        !error.isRetryable() ||
+        attempt >= maxAttempts
+      ) {
+        throw error;
+      }
+      await new Promise((r) => setTimeout(r, (error.retryAfterSecs() ?? 1) * 1000));
+    }
   }
 }
 ```

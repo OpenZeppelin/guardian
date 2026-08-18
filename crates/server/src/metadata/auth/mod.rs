@@ -77,6 +77,20 @@ impl Auth {
         }
     }
 
+    /// The per-scheme list of authorized signer commitments
+    /// (`signers` for EVM accounts).
+    pub fn cosigner_commitments(&self) -> &[String] {
+        match self {
+            Auth::MidenFalconRpo {
+                cosigner_commitments,
+            }
+            | Auth::MidenEcdsa {
+                cosigner_commitments,
+            } => cosigner_commitments,
+            Auth::EvmEcdsa { signers } => signers,
+        }
+    }
+
     pub fn with_updated_commitments(&self, cosigner_commitments: Vec<String>) -> Self {
         match self {
             Auth::MidenFalconRpo { .. } => Auth::MidenFalconRpo {

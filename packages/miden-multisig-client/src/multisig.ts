@@ -19,7 +19,6 @@ import type {
 import type { ProcedureName } from './procedures.js';
 import type {
   MidenClient,
-  TransactionProver,
   WasmWebClient,
 } from '@miden-sdk/miden-sdk';
 import {
@@ -29,6 +28,8 @@ import {
   Endpoint,
   FeltArray,
   Note,
+  NoteExportFormat,
+  NoteFile,
   NoteType,
   RpcClient,
   Signature,
@@ -42,6 +43,7 @@ import {
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
   buildConsumeNotesTransactionRequest,
+  buildP2idNoteFromMetadata,
   buildP2idTransactionRequest,
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
@@ -81,6 +83,16 @@ import {
   getTransactionProver,
   requireMidenRpcEndpoint,
 } from './raw-client.js';
+import {
+  resolveProverConfig,
+  type ResolvedProverConfig,
+} from './prover/config.js';
+import { ProverWorkflow } from './prover/workflow.js';
+import {
+  resolveRpcConfig,
+  type ResolvedRpcConfig,
+} from './rpc/config.js';
+import { retryRpcRead } from './rpc/retry.js';
 
 /**
  * Result of fetching account state from GUARDIAN.
@@ -143,7 +155,8 @@ export class Multisig {
   private readonly signer: Signer;
   private readonly midenClient: MidenClient;
   private readonly rawClientPromise: Promise<WasmWebClient>;
-  private readonly transactionProver: TransactionProver | null;
+  private readonly proverWorkflow: ProverWorkflow;
+  private readonly rpcConfig: ResolvedRpcConfig;
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
@@ -155,7 +168,9 @@ export class Multisig {
     signer: Signer,
     midenClient: MidenClient,
     accountId: string | undefined,
-    midenRpcEndpoint: string
+    midenRpcEndpoint: string,
+    proverConfig?: ResolvedProverConfig,
+    rpcConfig?: ResolvedRpcConfig,
   ) {
     this.account = account;
     this.threshold = config.threshold;
@@ -170,8 +185,12 @@ export class Multisig {
     this.midenClient = midenClient;
     this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
     this.midenRpcEndpoint = requireMidenRpcEndpoint(midenRpcEndpoint);
-    this.transactionProver = getTransactionProver(midenClient);
     this.rawClientPromise = getRawMidenClient(midenClient, this.midenRpcEndpoint);
+    this.proverWorkflow = new ProverWorkflow(
+      this.midenClient,
+      proverConfig ?? resolveProverConfig(undefined, getTransactionProver(midenClient)),
+    );
+    this.rpcConfig = rpcConfig ?? resolveRpcConfig(undefined);
   }
 
   private getMidenRpcEndpoint(): string {
@@ -227,7 +246,11 @@ export class Multisig {
    */
   async getStoreAccount(): Promise<Account> {
     const webClient = await this.getRawClient();
-    return (await webClient.getAccount(AccountId.fromHex(this._accountId))) ?? this.account;
+    const stored = await retryRpcRead(
+      () => webClient.getAccount(AccountId.fromHex(this._accountId)),
+      this.rpcConfig,
+    );
+    return stored ?? this.account;
   }
 
   /**
@@ -352,7 +375,10 @@ export class Multisig {
     const state = await this.fetchState();
     const accountId = AccountId.fromHex(this._accountId);
     const webClient = await this.getRawClient();
-    const localAccount = await webClient.getAccount(accountId);
+    const localAccount = await retryRpcRead(
+      () => webClient.getAccount(accountId),
+      this.rpcConfig,
+    );
     let accountForConfigRefresh: Account | null = localAccount ?? null;
 
     const guardianCommitment = normalizeHexWord(state.commitment);
@@ -377,7 +403,10 @@ export class Multisig {
   async verifyStateCommitment(): Promise<AccountStateVerificationResult> {
     const accountId = AccountId.fromHex(this._accountId);
     const webClient = await this.getRawClient();
-    const localAccount = await webClient.getAccount(accountId);
+    const localAccount = await retryRpcRead(
+      () => webClient.getAccount(accountId),
+      this.rpcConfig,
+    );
 
     if (!localAccount) {
       throw new Error(
@@ -460,7 +489,10 @@ export class Multisig {
     const rpcClient = new RpcClient(new Endpoint(this.getMidenRpcEndpoint()));
 
     try {
-      const accountDetails = await rpcClient.getAccountDetails(accountId);
+      const accountDetails = await retryRpcRead(
+        () => rpcClient.getAccountDetails(accountId),
+        this.rpcConfig,
+      );
       // If the account is not found or its commitment is zero, means that the account is not deployed yet
       if (!accountDetails) {
         return null;
@@ -985,6 +1017,148 @@ export class Multisig {
   }
 
   /**
+   * Export a note created by this multisig account as serialized note-file
+   * bytes for out-of-band delivery (issue #356).
+   *
+   * A private note publishes only its commitment on chain, so the recipient
+   * can never learn its contents via sync; the sender must hand them the
+   * bytes produced here, which they load with {@link importNoteFromBytes}.
+   *
+   * The note must be an output note of this client (created by a transaction
+   * this client executed). When the note's on-chain inclusion proof is
+   * already known (after a post-commit sync) the full note with proof is
+   * exported; otherwise the note details are exported and the importer's
+   * client tracks the note until it commits on chain.
+   *
+   * @param noteId - ID of the note to export (hex string)
+   * @returns Serialized note file bytes
+   */
+  async exportNoteToBytes(noteId: string): Promise<Uint8Array> {
+    const webClient = await this.getRawClient();
+    const trimmedNoteId = noteId.trim();
+
+    let record;
+    try {
+      record = await webClient.getOutputNote(trimmedNoteId);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Output note ${trimmedNoteId} not found in the local store; only notes created by this client can be exported: ${detail}`,
+      );
+    }
+    if (!record) {
+      throw new Error(
+        `Output note ${trimmedNoteId} not found in the local store; only notes created by this client can be exported`,
+      );
+    }
+
+    const format = record.inclusionProof()
+      ? NoteExportFormat.Full
+      : NoteExportFormat.Details;
+    const noteFile = await webClient.exportNoteFile(trimmedNoteId, format);
+    return noteFile.serialize();
+  }
+
+  /**
+   * Export a note created by this multisig account as a note file downloaded
+   * by the browser (issue #356). Browser-only convenience over
+   * {@link exportNoteToBytes}; use that method directly in non-DOM
+   * environments.
+   *
+   * @param noteId - ID of the note to export (hex string)
+   * @param filename - Download filename; defaults to `note_<id>.mno`
+   */
+  async exportNoteToFile(noteId: string, filename?: string): Promise<void> {
+    if (typeof document === 'undefined') {
+      throw new Error('exportNoteToFile requires a browser environment; use exportNoteToBytes instead');
+    }
+
+    const trimmedNoteId = noteId.trim();
+    const noteBytes = await this.exportNoteToBytes(trimmedNoteId);
+
+    const blob = new Blob([noteBytes as BlobPart], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename ?? `note_${trimmedNoteId}.mno`;
+      anchor.click();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  /**
+   * Import a note file received out-of-band (issue #356) so the note can be
+   * consumed by this multisig account.
+   *
+   * Sync the Miden client with the network afterwards so the note's on-chain
+   * commitment is tracked and the note shows up in {@link getConsumableNotes};
+   * it can then be consumed via {@link createConsumeNotesProposal}.
+   *
+   * @param noteBytes - Serialized note file bytes produced by
+   *   {@link exportNoteToBytes}
+   * @returns The note ID when the file carries one, or the note's details
+   *   commitment for a details-only file
+   */
+  async importNoteFromBytes(noteBytes: Uint8Array): Promise<string> {
+    const webClient = await this.getRawClient();
+
+    let noteFile: NoteFile;
+    try {
+      noteFile = NoteFile.deserialize(noteBytes);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`failed to decode note file: ${detail}`);
+    }
+
+    return webClient.importNoteFile(noteFile);
+  }
+
+  /**
+   * Import a note file received out-of-band (issue #356) from a browser
+   * `File`/`Blob` (e.g. a file-input selection). See
+   * {@link importNoteFromBytes} for the returned identifier semantics.
+   */
+  async importNoteFromFile(file: Blob): Promise<string> {
+    const noteBytes = new Uint8Array(await file.arrayBuffer());
+    return this.importNoteFromBytes(noteBytes);
+  }
+
+  /**
+   * Compute the ID of the note a P2ID proposal will create when executed.
+   *
+   * The P2ID note is rebuilt deterministically from the proposal salt, so the
+   * ID is known ahead of execution. For a private P2ID this is the ID to pass
+   * to {@link exportNoteToBytes} after executing, so the note file can be delivered
+   * to the recipient out-of-band (issue #356).
+   *
+   * The note ID remains deterministic from the proposal metadata and salt.
+   */
+  async getP2idNoteId(proposal: Proposal): Promise<string> {
+    const metadata = proposal.metadata;
+    if (
+      metadata.proposalType !== 'p2id' ||
+      !metadata.recipientId ||
+      !metadata.faucetId ||
+      !metadata.amount ||
+      !metadata.saltHex
+    ) {
+      throw new Error('getP2idNoteId requires a P2ID proposal with recipient, faucet, amount, and salt metadata');
+    }
+
+    const note = buildP2idNoteFromMetadata(
+      this._accountId,
+      metadata.recipientId,
+      metadata.faucetId,
+      BigInt(metadata.amount),
+      parseP2idNoteType(metadata.noteType),
+      metadata.saltHex,
+    );
+    return note.id().toString();
+  }
+
+  /**
    * Sign a proposal.
    *
    * The proposalId is the tx_summary commitment hex, which is what gets signed.
@@ -1086,7 +1260,7 @@ export class Multisig {
     const { metadata, finalRequest, proposal } = await this.prepareProposalExecution(proposalId);
 
     const accountId = AccountId.fromHex(this._accountId);
-    await this.midenClient.transactions.submit(accountId, finalRequest);
+    await this.proverWorkflow.submit(accountId, finalRequest);
 
     if (metadata.proposalType === 'switch_guardian') {
       if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
@@ -1107,15 +1281,25 @@ export class Multisig {
           ...switchDelta,
           deltaPayload: switchDelta.deltaPayload.txSummary,
         });
-      } catch {
-        // best-effort; see above
+      } catch (error) {
+        // Best-effort — see above — but the failure must be visible: a
+        // silently lost push leaves the pre-switch GUARDIAN serving this
+        // account (split-brain, issue #305) with nothing to diagnose by.
+        console.warn(
+          'SwitchGuardian delta push to the pre-switch GUARDIAN failed; it ' +
+            'will keep serving this account until reconciliation',
+          error,
+        );
       }
 
       try {
         const webClient = await this.getRawClient();
-        await webClient.syncState();
+        await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
 
-        const updatedAccount = await webClient.getAccount(accountId);
+        const updatedAccount = await retryRpcRead(
+          () => webClient.getAccount(accountId),
+          this.rpcConfig,
+        );
         if (!updatedAccount) {
           throw new Error(
             `Updated account ${this._accountId} is missing from local client`
@@ -1145,7 +1329,7 @@ export class Multisig {
    * after `prepareCustomExecution` rebuilds its request with the returned advice.
    */
   async submitTransaction(request: TransactionRequest): Promise<void> {
-    await this.midenClient.transactions.submit(AccountId.fromHex(this._accountId), request);
+    await this.proverWorkflow.submit(AccountId.fromHex(this._accountId), request);
   }
 
   /**

@@ -14,7 +14,7 @@ fn main() {
     fs::create_dir_all(&rpc_out).expect("failed to create proto codegen directory");
 
     tonic_prost_build::configure()
-        .build_server(false)
+        .build_server(true)
         .out_dir(&rpc_out)
         .compile_fds_with_config(rpc_api_descriptor(), tonic_prost_build::Config::new())
         .expect("failed to compile Miden node RPC protos");

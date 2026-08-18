@@ -16,6 +16,7 @@ pub mod auth_request_payload;
 pub mod felt;
 pub mod hex;
 pub mod lookup_auth_message;
+pub mod retry;
 
 use crate::hex::FromHex;
 

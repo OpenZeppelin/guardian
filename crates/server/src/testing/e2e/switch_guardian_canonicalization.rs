@@ -213,12 +213,14 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     let auditor = CapturingAuditor::new();
     state.auditor = Arc::new(auditor.clone());
 
-    // Onboard the account on this (soon to be old) guardian.
+    // Onboard the account on this (soon to be old) guardian. /configure
+    // validates the declared cosigner set against the state's signer map
+    // (#102), so the full set is registered, not just the API signer.
     let api_pubkey_hex = cosigner_pubkeys[0].clone().into_hex();
-    let api_commitment_hex = format!(
-        "0x{}",
-        hex::encode(cosigner_pubkeys[0].to_commitment().to_bytes())
-    );
+    let all_commitments_hex: Vec<String> = cosigner_pubkeys
+        .iter()
+        .map(|pk| format!("0x{}", hex::encode(pk.to_commitment().to_bytes())))
+        .collect();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     configure_account(
@@ -226,7 +228,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         ConfigureAccountParams {
             account_id: account_id_hex.clone(),
             auth: Auth::MidenFalconRpo {
-                cosigner_commitments: vec![api_commitment_hex],
+                cosigner_commitments: all_commitments_hex.clone(),
             },
             network_config: NetworkConfig::miden_default(),
             initial_state: multisig_account.to_json(),
@@ -409,10 +411,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         ConfigureAccountParams {
             account_id: account_id_hex.clone(),
             auth: Auth::MidenFalconRpo {
-                cosigner_commitments: vec![format!(
-                    "0x{}",
-                    hex::encode(cosigner_pubkeys[0].to_commitment().to_bytes())
-                )],
+                cosigner_commitments: all_commitments_hex.clone(),
             },
             network_config: NetworkConfig::miden_default(),
             initial_state: executed_account.to_json(),

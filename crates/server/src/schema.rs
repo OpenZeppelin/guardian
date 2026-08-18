@@ -83,10 +83,22 @@ diesel::table! {
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         has_pending_candidate -> Bool,
-        last_auth_timestamp -> Nullable<Int8>,
         paused_at -> Nullable<Timestamptz>,
         paused_reason -> Nullable<Text>,
         released_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `account_auth_state` table.
+    ///
+    /// Per-account replay-protection record, kept apart from
+    /// `account_metadata` so the per-request CAS rewrites a ~40-byte
+    /// tuple instead of the full metadata row.
+    account_auth_state (account_id) {
+        #[max_length = 128]
+        account_id -> Varchar,
+        last_auth_timestamp -> Int8,
     }
 }
 
@@ -164,4 +176,12 @@ diesel::table! {
     }
 }
 
-diesel::allow_tables_to_appear_in_same_query!(states, deltas, delta_proposals, account_metadata,);
+diesel::joinable!(account_auth_state -> account_metadata (account_id));
+
+diesel::allow_tables_to_appear_in_same_query!(
+    states,
+    deltas,
+    delta_proposals,
+    account_metadata,
+    account_auth_state,
+);

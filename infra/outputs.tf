@@ -9,8 +9,17 @@ output "alb_url" {
 }
 
 output "custom_domain_url" {
-  description = "Custom domain URL when configured"
-  value       = local.domain_enabled ? "https://${local.service_fqdn}" : ""
+  description = "Canonical service URL: https when a certificate is configured, http when Terraform manages only the DNS record"
+  value = !local.domain_enabled ? "" : (
+    local.acm_certificate_arn != "" ? "https://${local.service_fqdn}" : (
+      local.route53_zone_id != "" || var.cloudflare_zone_id != "" ? "http://${local.service_fqdn}" : ""
+    )
+  )
+}
+
+output "alias_domain_url" {
+  description = "Migration-only legacy domain URL"
+  value       = local.alias_domain_enabled ? "https://${local.alias_service_fqdn}" : ""
 }
 
 output "grpc_endpoint" {
@@ -170,17 +179,17 @@ output "server_autoscaling_max_capacity" {
 }
 
 output "guardian_rate_burst_per_sec" {
-  description = "Effective Guardian HTTP burst rate limit"
+  description = "Effective Guardian burst rate limit (HTTP and gRPC)"
   value       = local.effective_guardian_rate_burst_per_sec
 }
 
 output "guardian_rate_limit_enabled" {
-  description = "Whether Guardian HTTP rate limiting is enabled"
+  description = "Whether Guardian rate limiting is enabled (HTTP and gRPC)"
   value       = local.effective_guardian_rate_limit_enabled
 }
 
 output "guardian_rate_per_min" {
-  description = "Effective Guardian HTTP sustained rate limit"
+  description = "Effective Guardian sustained rate limit (HTTP and gRPC)"
   value       = local.effective_guardian_rate_per_min
 }
 

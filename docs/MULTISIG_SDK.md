@@ -90,6 +90,174 @@ await multisig.executeProposal(proposal.id);
 console.log('Transfer executed!');
 ```
 
+### Prover endpoint and retry policy
+
+Both multisig SDKs retry only remote transaction proving. The default is two
+total proof attempts. In TypeScript, endpoint-less injected provers, including
+local and callback provers, run once. A custom remote URL overrides the Miden
+client's injected prover.
+
+```typescript
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
+  prover: {
+    url: 'https://prover.example',
+    retry: { maxAttempts: 4 },
+  },
+});
+```
+
+```rust
+use miden_multisig_client::{ProverConfig, ProverRetryPolicy};
+
+let prover = ProverConfig::new()
+    .with_url("https://prover.example")?
+    .with_retry_policy(ProverRetryPolicy::new(4));
+
+let client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::devnet())
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig-client")
+    .prover_config(prover)
+    .generate_key()
+    .build()
+    .await?;
+```
+
+URLs are validated during construction and must be absolute HTTP(S) URLs. A
+custom prover never falls back to a default endpoint. Retries cover transient
+proving conditions such as cancellation, deadlines, temporary unavailability,
+capacity exhaustion, HTTP 408/429/502/503/504, I/O timeout, connection reset,
+and broken pipe. Permanent or unrecognized failures return immediately.
+
+Only proving is retried by this policy: transaction execution, GUARDIAN
+coordination, Miden submission, and local application each run once. A larger
+attempt budget can recover from brief failures but does not add prover
+capacity. Idempotent Miden node reads have their own opt-in retry policy — see
+the next section.
+
+### Miden RPC retry policy
+
+Both multisig SDKs retry idempotent Miden node reads under an `rpc` policy
+that mirrors the prover configuration. The default is two total attempts —
+one classified, jittered retry — matching the prover policy's default; an
+explicit `maxAttempts` of 1 opts out. Transaction submission is **never
+retried**, under any configuration: a submission whose outcome is unknown
+could execute twice if re-sent.
+
+Coverage differs by language. In Rust, the policy wraps the node client
+itself, so every node read the SDK or the underlying Miden client issues —
+syncs, account, note, and block lookups — retries under it. The same policy
+also covers the private-note transport: note fetches and stream
+establishment retry, while **note sends are never retried in-call** (the
+client's relay outbox re-sends undelivered notes on later syncs, so an
+in-call resend could deliver twice). Configuring the transport endpoint
+itself is covered in [Note transport endpoint](#note-transport-endpoint).
+Connection failures retry only when the cause is transport-shaped; TLS,
+certificate, and invalid-endpoint problems fail immediately. In TypeScript,
+the policy wraps the reads the SDK issues directly: on-chain account lookups,
+state-commitment verification, and the guardian-switch node sync; syncs you
+perform on the injected Miden client are owned by your application. As part
+of this policy the Rust SDK also disables the Miden client library's internal
+transport-retry loop, which silently retransmitted rate-limited requests —
+**including submissions** — up to four extra times. This explicit policy is
+the only retry layer: reads get one retry by default, submissions never.
+
+```typescript
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
+  prover: { retry: { maxAttempts: 4 } },
+  rpc: { retry: { maxAttempts: 3 } },
+});
+```
+
+```rust
+use miden_multisig_client::{RpcConfig, RpcRetryPolicy};
+
+let rpc = RpcConfig::new()
+    .with_timeout_ms(15_000)?
+    .with_retry_policy(RpcRetryPolicy::new(3));
+
+let client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::devnet())
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig-client")
+    .rpc_config(rpc)
+    .generate_key()
+    .build()
+    .await?;
+```
+
+The classifier is shared with the prover policy (same transient/permanent
+partition and backoff), extended with the node's transport renderings: a
+rate-limit rejection (`Too Many Requests!`), and connection failures the node
+reports under an `Unknown` status (`i/o timeout`, `connection error`,
+`transport error`). Permanent failures — invalid arguments, not-found,
+authentication — return immediately without consuming the budget, and once
+the budget is exhausted the final upstream error is returned unchanged. A
+larger budget adds patience against a rate-limited or briefly unreachable
+node; it does not add node capacity.
+
+In Rust, the per-request gRPC deadline defaults to 10 seconds on every SDK
+node connection (presets, custom endpoints, and the direct commitment
+reads); `with_timeout_ms` replaces it uniformly.
+The TypeScript configuration intentionally has **no timeout**: the browser
+WASM RPC client cannot cancel an in-flight request, and a JavaScript-side
+timeout would abandon the call — whose side effects may still land — while
+reporting failure. Retry behavior itself is fixture-verified to be identical
+across both SDKs.
+
+The Guardian server exposes the same policy for its own node reads via
+`GUARDIAN_MIDEN_RPC_ENDPOINT`, `GUARDIAN_MIDEN_RPC_TIMEOUT_MS`, and
+`GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` — see
+[docs/CONFIGURATION.md](./CONFIGURATION.md).
+
+### Note transport endpoint
+
+Private notes are relayed through a note transport service that is separate
+from the node RPC. On the testnet and devnet presets both SDKs derive the
+transport endpoint automatically; a custom node endpoint has no derivable
+transport service, so it must be set explicitly — otherwise private-note
+relay is disabled.
+
+In Rust the endpoint lives on the builder, next to the node endpoint:
+
+```rust
+let client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::try_from("https://my-node.internal:57291")?)
+    .note_transport_endpoint("https://my-transport.internal")
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig-client")
+    .generate_key()
+    .build()
+    .await?;
+```
+
+In TypeScript the injected Miden client owns note relay, so the endpoint is
+set when constructing it, not on the `MultisigClient` configuration:
+
+```typescript
+import { MidenClient } from '@miden-sdk/miden-sdk';
+import { MultisigClient } from '@openzeppelin/miden-multisig-client';
+
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://my-node.internal:57291',
+  noteTransportUrl: 'https://my-transport.internal',
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://my-node.internal:57291',
+});
+```
+
+`noteTransportUrl` also accepts the `'testnet'` and `'devnet'` shorthands, so
+a custom node on a public network can reuse that network's public transport
+service. In both SDKs the transport shares the node RPC resilience policy
+described above.
+
 #### Rust
 
 ```rust
@@ -393,7 +561,35 @@ const privateProposal = await multisig.createP2idProposal(
 
 > **Warning:** a `private` P2ID note publishes only its hash on chain. The
 > recipient cannot discover the note by syncing; the full note details must
-> be shared with them out-of-band before they can consume it.
+> be shared with them out-of-band before they can consume it. Use
+> `exportNoteToBytes` / `importNoteFromBytes` (or the browser file variants
+> `exportNoteToFile` / `importNoteFromFile`) for that transfer (issue #356):
+
+```typescript
+// Sender: resolve the note ID BEFORE executing (it derives from the
+// pre-execution vault state), then export after execution.
+const noteId = await multisig.getP2idNoteId(privateProposal);
+// ...sign + execute the proposal...
+const noteFileBytes = await multisig.exportNoteToBytes(noteId);
+// Deliver `noteFileBytes` to the recipient out-of-band (file, message, ...).
+// Or, in a browser, trigger a download of the note file directly:
+await multisig.exportNoteToFile(noteId);
+
+// Recipient: import the bytes (or a File from an <input type="file">), then
+// sync so the note's on-chain commitment is tracked; it then appears in
+// getConsumableNotes() and can be consumed with createConsumeNotesProposal
+// as usual.
+const importedNoteId = await multisig.importNoteFromBytes(noteFileBytes);
+```
+
+> **Note:** every cosigner device that verifies or signs the consume-notes
+> proposal needs the note in its local store with the on-chain inclusion
+> proof — deliver the note file to each of them (import + sync), not just to
+> the proposer. A cosigner whose store lacks the authenticated note rebuilds
+> the transaction differently (the input-notes commitment distinguishes
+> authenticated from unauthenticated consumption) and rejects the proposal
+> with `metadata does not match tx_summary`. The sender's own device heals
+> itself: it already knows the full note, so a post-commit sync is enough.
 
 #### Consume Notes (Claim Received Funds)
 
@@ -405,6 +601,11 @@ const notes = await multisig.getConsumableNotes();
 const noteIds = notes.map(n => n.id);
 const proposal = await multisig.createConsumeNotesProposal(noteIds);
 ```
+
+A private note received out-of-band must first be loaded with
+`importNoteFromBytes(noteFileBytes)` or `importNoteFromFile(file)` (see the
+P2ID section above); after a sync it shows up in `getConsumableNotes()` like
+any public note.
 
 #### Add Signer
 
@@ -535,6 +736,11 @@ await multisig.executeProposal(signedProposal.id);
 | `listProposals()` | Get cached proposals |
 | `createP2idProposal(recipient, faucet, amount, nonce?, { noteType }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`) |
 | `createConsumeNotesProposal(noteIds, nonce?)` | Create note consumption proposal |
+| `getP2idNoteId(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |
+| `exportNoteToBytes(noteId)` | Export a created note as note-file bytes for out-of-band delivery |
+| `exportNoteToFile(noteId, filename?)` | Browser-only: download the note file |
+| `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
+| `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
 | `createAddSignerProposal(commitment, nonce?, threshold?)` | Create add signer proposal |
 | `createRemoveSignerProposal(commitment, nonce?, threshold?)` | Create remove signer proposal |
 | `createChangeThresholdProposal(threshold, nonce?)` | Create threshold change proposal |
@@ -666,8 +872,9 @@ responses, and per-account `get_state` failures are returned as errors.
 let tx = TransactionType::transfer(recipient_id, faucet_id, 1000);
 
 // P2ID Transfer with a private note (only the note hash is published on
-// chain; the recipient needs the note shared out-of-band). `NoteType` is
-// re-exported from `miden_protocol::note`.
+// chain; the recipient needs the note shared out-of-band — see
+// "Out-of-Band Note Transfer" below). `NoteType` is re-exported from
+// `miden_protocol::note`.
 let tx = TransactionType::transfer_with_note_type(
     recipient_id, faucet_id, 1000, NoteType::Private,
 );
@@ -777,6 +984,39 @@ for note in notes {
 }
 ```
 
+### Out-of-Band Note Transfer (Private Notes)
+
+A private P2ID note publishes only its commitment on chain, so the recipient's
+client can never learn the note contents via sync. The sender must export the
+note and deliver the file out-of-band (issue #356):
+
+```rust
+// Sender: resolve the note ID BEFORE executing (it derives from the
+// pre-execution vault state), then export after execution.
+let note_id = client.p2id_note_id(&proposal)?;
+client.execute_proposal(&proposal.id).await?;
+client.export_note_to_file(&note_id.to_hex(), Path::new("note.mno")).await?;
+// Deliver note.mno to the recipient out-of-band (file, message, ...).
+
+// Recipient: import the file, then sync so the note's on-chain commitment
+// is tracked; it then appears in list_consumable_notes() and can be
+// consumed with a regular consume-notes proposal.
+let imported_note_id = client.import_note_from_file(Path::new("note.mno")).await?;
+client.sync().await?;
+```
+
+`export_note_to_bytes` / `import_note_from_bytes` are the in-memory variants
+for programmatic delivery.
+
+Every cosigner device that verifies or signs the consume-notes proposal needs
+the note in its local store with the on-chain inclusion proof — deliver the
+note file to each of them (import + sync), not just to the proposer. A
+cosigner whose store lacks the authenticated note rebuilds the transaction
+differently (the input-notes commitment distinguishes authenticated from
+unauthenticated consumption) and rejects the proposal with `metadata does not
+match tx_summary`. The sender's own device heals itself: it already knows the
+full note, so a post-commit sync is enough.
+
 ### API Reference
 
 #### MultisigClient
@@ -807,6 +1047,11 @@ for note in notes {
 | `import_proposal(path)` | Import from file |
 | `list_consumable_notes()` | List available notes |
 | `list_consumable_notes_filtered(filter)` | Filter notes |
+| `p2id_note_id(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |
+| `export_note_to_file(note_id, path)` | Export a created note to a file for out-of-band delivery |
+| `export_note_to_bytes(note_id)` | Export a created note as note-file bytes |
+| `import_note_from_file(path)` | Import a note file received out-of-band |
+| `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
 
 #### MultisigAccount
 
@@ -1071,13 +1316,18 @@ Steps for publishing a new version of the SDK (Rust crates + TypeScript packages
 
 ```bash
 # Rust
-cargo test -p guardian-shared
-cargo test -p guardian-server --lib
+cargo test --locked \
+  -p guardian-shared \
+  -p guardian-client \
+  -p miden-confidential-contracts \
+  -p miden-multisig-client
 
 # TypeScript
 cd packages/guardian-client && npm test
 cd packages/guardian-evm-client && npm test
+cd packages/guardian-operator-client && npm test
 cd packages/miden-multisig-client && npm test
+cd packages/guardian-operator-client && npm test
 ```
 
 2. TypeScript packages build cleanly:
@@ -1085,10 +1335,22 @@ cd packages/miden-multisig-client && npm test
 ```bash
 cd packages/guardian-client && npm run build
 cd packages/guardian-evm-client && npm run build
+cd packages/guardian-operator-client && npm run build
 cd packages/miden-multisig-client && npm run build
+cd packages/guardian-operator-client && npm run build
 ```
 
 3. Version numbers are updated in all files (see below).
+
+4. The coordinated Rust publication archive passes:
+
+```bash
+cargo publish --dry-run --locked \
+  -p guardian-shared \
+  -p guardian-client \
+  -p miden-confidential-contracts \
+  -p miden-multisig-client
+```
 
 ### Version Bump
 
@@ -1102,27 +1364,54 @@ Update the version in these files:
 | `crates/miden-multisig-client/Cargo.toml` | `guardian-client`, `guardian-shared`, `miden-confidential-contracts` dep versions | - |
 | `packages/guardian-client/package.json` | `version` | - |
 | `packages/guardian-evm-client/package.json` | `version` | - |
+| `packages/guardian-operator-client/package.json` | `version` | - |
 | `packages/miden-multisig-client/package.json` | `version` + `@openzeppelin/guardian-client` dep version | - |
+| `packages/guardian-operator-client/package.json` | `version` | - |
 
 The `server`, `miden-rpc-client`, `miden-keystore`, and example crates have their own independent versions and are not published.
 
 ### Publishing Rust Crates
 
-Publish in dependency order (leaves first). Each crate must be available on crates.io before its dependents can be published.
+Rust crates are published by the
+[`Publish Rust Crates`](../.github/workflows/publish-crates.yml) workflow.
+Publishing a GitHub Release automatically selects all four crates, validates
+that the tag is `v` followed by their coordinated version, requests one
+`release` environment approval, and uses crates.io trusted publishing. Cargo
+receives all selected packages in one command and handles dependency-safe
+publication.
 
-```bash
-# 1. No internal deps
-cargo publish -p guardian-shared
+Configure a crates.io trusted publisher for each crate before the first
+automated publication:
 
-# 2. Depends on shared
-cargo publish -p guardian-client
-cargo publish -p miden-confidential-contracts
-
-# 3. Depends on shared + client + contracts
-cargo publish -p miden-multisig-client
+```text
+GitHub owner: OpenZeppelin
+Repository: guardian
+Workflow: publish-crates.yml
+Environment: release
 ```
 
-Wait for each step to finish before proceeding to the next (crates.io index needs to update).
+Use a manual dry run to validate one or more selected crates without requesting
+approval or credentials:
+
+```bash
+gh workflow run publish-crates.yml \
+  --ref main \
+  -f dry-run=true \
+  -f guardian-shared=true \
+  -f guardian-client=true \
+  -f miden-confidential-contracts=true \
+  -f miden-multisig-client=true
+```
+
+A manual run with `dry-run=false` publishes only the selected crates after one
+approval. If an unselected internal prerequisite is not already visible at the
+exact coordinated version, validation fails before publication.
+
+Publication is rerunnable. Exact versions already on crates.io are reported as
+already published and omitted from the Cargo command. If a publication is
+interrupted, rerun it; the preflight skips versions that reached crates.io and
+Cargo processes the remainder. Trusted-publishing failure fails closed; the
+workflow has no registry-token fallback.
 
 ### Publishing TypeScript Packages
 
@@ -1132,26 +1421,46 @@ Publish in dependency order:
 # 1. Build TypeScript packages
 cd packages/guardian-client && npm run build
 cd packages/guardian-evm-client && npm run build
+cd packages/guardian-operator-client && npm run build
 cd packages/miden-multisig-client && npm run build
+cd packages/guardian-operator-client && npm run build
 
 # 2. Publish base clients first (no internal deps)
 cd packages/guardian-client && npm publish --access public
 cd packages/guardian-evm-client && npm publish --access public
+cd packages/guardian-operator-client && npm publish --access public
 
 # 3. Publish miden-multisig-client (depends on guardian-client)
 cd packages/miden-multisig-client && npm publish --access public
+
+# 4. Publish operator-client (no internal dependencies)
+cd packages/guardian-operator-client && npm publish --access public
 ```
+
+Publishing a GitHub release runs the `Publish NPM Packages` workflow for all
+four packages. A manual workflow run can select any subset of the four package
+inputs; at least one package must be selected. The `dry-run` input applies only
+to that selected subset. All selected packages run serially in one protected
+`release` environment job, so the workflow requires one approval.
 
 ### Post-Release
 
-1. Tag the release:
+1. Create a draft GitHub Release for review:
 
 ```bash
-git tag v0.16.0
-git push origin v0.16.0
+gh release create v<version> --generate-notes --draft
 ```
 
-2. Create a GitHub release from the tag with release notes.
+2. Publish the draft when the coordinated Rust, TypeScript, and server-image
+   release workflows should start:
+
+```bash
+gh release edit v<version> --draft=false
+```
+
+3. Approve the `release` environment jobs that should publish. The Rust
+   workflow summary records the source SHA, coordinated version,
+   authentication mode, and ordered per-crate outcomes without credentials.
 
 ---
 

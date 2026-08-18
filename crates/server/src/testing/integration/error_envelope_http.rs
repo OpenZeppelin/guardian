@@ -88,7 +88,7 @@ async fn push_delta_proposal_error_uses_error_envelope() {
     });
 
     let request = Request::builder()
-        .uri("/push_delta_proposal")
+        .uri("/delta/proposal")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -120,7 +120,7 @@ async fn push_delta_error_uses_error_envelope() {
     let body = json!({ "account_id": "0xnope", "nonce": 1 });
 
     let request = Request::builder()
-        .uri("/push_delta")
+        .uri("/delta")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -142,7 +142,7 @@ async fn get_delta_error_uses_error_envelope() {
 
     let signer = TestSigner::new();
     let (_account_id, account_id_hex, _initial_state) = load_fixture_account();
-    let uri = format!("/get_delta?account_id={account_id_hex}&nonce=1");
+    let uri = format!("/delta?account_id={account_id_hex}&nonce=1");
 
     let request = Request::builder()
         .uri(uri)
@@ -166,7 +166,7 @@ async fn get_state_error_uses_error_envelope() {
 
     let signer = TestSigner::new();
     let (_account_id, account_id_hex, _initial_state) = load_fixture_account();
-    let uri = format!("/get_state?account_id={account_id_hex}");
+    let uri = format!("/state?account_id={account_id_hex}");
 
     let request = Request::builder()
         .uri(uri)
@@ -190,7 +190,7 @@ async fn get_delta_proposal_error_uses_error_envelope() {
 
     let signer = TestSigner::new();
     let (_account_id, account_id_hex, _initial_state) = load_fixture_account();
-    let uri = format!("/get_delta_proposal?account_id={account_id_hex}&commitment=0xmissing");
+    let uri = format!("/delta/proposal/single?account_id={account_id_hex}&commitment=0xmissing");
 
     let request = Request::builder()
         .uri(uri)
@@ -266,7 +266,7 @@ async fn push_delta_proposal_on_paused_account_returns_409_envelope() {
     });
     let (sig2, ts2) = signer.sign_json_payload(&account_id_hex, &proposal_body);
     let push_req = Request::builder()
-        .uri("/push_delta_proposal")
+        .uri("/delta/proposal")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -330,7 +330,7 @@ async fn get_delta_proposals_error_uses_error_envelope() {
 
     let signer = TestSigner::new();
     let (_account_id, account_id_hex, _initial_state) = load_fixture_account();
-    let uri = format!("/get_delta_proposals?account_id={account_id_hex}");
+    let uri = format!("/delta/proposal?account_id={account_id_hex}");
 
     let request = Request::builder()
         .uri(uri)
@@ -365,8 +365,8 @@ async fn sign_delta_proposal_error_uses_error_envelope() {
     });
 
     let request = Request::builder()
-        .uri("/sign_delta_proposal")
-        .method("POST")
+        .uri("/delta/proposal")
+        .method("PUT")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
         .header("x-signature", format!("0x{}", "ab".repeat(666)))

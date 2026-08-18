@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use crate::ack::AckRegistry;
 use crate::api::grpc::GuardianService;
+use crate::builder::handle::{HttpRouterConfig, build_http_router};
 use crate::dashboard::DashboardState;
 use crate::metadata::auth::Auth;
 use crate::metadata::filesystem::FilesystemMetadataStore;
+use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitStore};
 use crate::network::{NetworkClient, StateVerification};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
@@ -71,6 +73,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &self,
         account_id: &str,
         expected_commitment: &str,
+        _read_mode: crate::network::RpcReadMode,
     ) -> Result<StateVerification, String> {
         let mut commitments = self.initial_commitments.lock().expect("commitments lock");
         if let Some(on_chain_commitment) = commitments.get(account_id) {
@@ -257,203 +260,37 @@ pub fn create_miden_network_config() -> NetworkConfig {
     }
 }
 
+/// Router under test. Delegates to the production route table so tests
+/// exercise the paths, methods, and layer composition the deployed server
+/// actually serves. Layers are permissive by default; tests that assert on
+/// body-limit or rate-limit behavior override the relevant field:
+///
+/// ```ignore
+/// build_http_router(state, HttpRouterConfig {
+///     body_limit_config: Some(BodyLimitConfig { max_bytes: 100 }),
+///     ..test_router_config()
+/// })
+/// ```
 pub fn create_router(state: AppState) -> axum::Router {
-    use crate::api::http;
-    let dashboard_routes = axum::Router::new()
-        .route(
-            "/accounts",
-            axum::routing::get(crate::api::dashboard::list_operator_accounts),
-        )
-        .route(
-            "/accounts/{account_id}",
-            axum::routing::get(crate::api::dashboard::get_operator_account),
-        )
-        .route(
-            "/accounts/{account_id}/snapshot",
-            axum::routing::get(crate::api::dashboard::get_operator_account_snapshot),
-        )
-        .route(
-            "/accounts/{account_id}/deltas",
-            axum::routing::get(crate::api::dashboard_feeds::list_account_deltas_handler),
-        )
-        .route(
-            "/accounts/{account_id}/proposals",
-            axum::routing::get(crate::api::dashboard_feeds::list_account_proposals_handler),
-        )
-        .route(
-            "/info",
-            axum::routing::get(crate::api::dashboard::get_dashboard_info_handler),
-        )
-        .route(
-            "/deltas",
-            axum::routing::get(crate::api::dashboard_feeds::list_global_deltas_handler),
-        )
-        .route(
-            "/proposals",
-            axum::routing::get(crate::api::dashboard_feeds::list_global_proposals_handler),
-        )
-        // Feature 006-operator-authz: existing dashboard reads now
-        // require `{dashboard:read}`. Apply the same layering as
-        // production (`builder/handle.rs`): authz inside the session
-        // layer so session validation runs first.
-        .route_layer(axum::middleware::from_fn_with_state(
-            crate::dashboard::authz::AuthzState::new(
-                state.clone(),
-                &[crate::dashboard::permissions::Permission::DashboardRead],
-            ),
-            crate::dashboard::authz::enforce,
-        ))
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::dashboard::require_dashboard_session,
-        ));
+    build_http_router(state, test_router_config())
+}
 
-    // FR-034: /session sits outside the dashboard:read authz layer.
-    let session_router = axum::Router::new()
-        .route(
-            "/session",
-            axum::routing::get(crate::api::dashboard::get_dashboard_session_handler),
-        )
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::dashboard::require_dashboard_session,
-        ));
-    let dashboard_routes = dashboard_routes.merge(session_router);
-
-    // Feature 001-account-pausing: pause/unpause sit under the same
-    // session layer as the dashboard reads, but behind their own
-    // `accounts:pause` authz layer. Mirrors production wiring in
-    // `builder/handle.rs`.
-    let dashboard_routes = {
-        let accounts_pause_authz = crate::dashboard::authz::AuthzState::new(
-            state.clone(),
-            &[crate::dashboard::permissions::Permission::AccountsPause],
-        );
-        let pause_router = axum::Router::new()
-            .route(
-                "/accounts/{account_id}/pause",
-                axum::routing::post(crate::api::dashboard::pause_account_handler),
-            )
-            .route(
-                "/accounts/{account_id}/unpause",
-                axum::routing::post(crate::api::dashboard::unpause_account_handler),
-            )
-            .route_layer(axum::middleware::from_fn_with_state(
-                accounts_pause_authz,
-                crate::dashboard::authz::enforce,
-            ))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                crate::dashboard::require_dashboard_session,
-            ));
-        dashboard_routes.merge(pause_router)
-    };
-
-    // Feature 006-operator-authz: probe route wired in test builds when
-    // the `authz-test-probe` Cargo feature is enabled. Mirrors production
-    // wiring in `builder/handle.rs`.
-    #[cfg(feature = "authz-test-probe")]
-    let dashboard_routes = {
-        let accounts_pause_authz = crate::dashboard::authz::AuthzState::new(
-            state.clone(),
-            &[crate::dashboard::permissions::Permission::AccountsPause],
-        );
-        let probe_router = axum::Router::new()
-            .route(
-                crate::dashboard::probe::PROBE_PATH,
-                axum::routing::post(crate::dashboard::probe::handle),
-            )
-            .route_layer(axum::middleware::from_fn_with_state(
-                accounts_pause_authz,
-                crate::dashboard::authz::enforce,
-            ))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                crate::dashboard::require_dashboard_session,
-            ));
-        dashboard_routes.merge(probe_router)
-    };
-
-    let router = axum::Router::new()
-        .route("/configure", axum::routing::post(http::configure))
-        .route("/push_delta", axum::routing::post(http::push_delta))
-        .route("/get_delta", axum::routing::get(http::get_delta))
-        .route("/get_state", axum::routing::get(http::get_state))
-        .route("/state/lookup", axum::routing::get(http::lookup))
-        .route("/pubkey", axum::routing::get(http::get_pubkey))
-        .route("/status", axum::routing::get(http::status))
-        .route(
-            "/push_delta_proposal",
-            axum::routing::post(http::push_delta_proposal),
-        )
-        .route(
-            "/get_delta_proposals",
-            axum::routing::get(http::get_delta_proposals),
-        )
-        .route(
-            "/get_delta_proposal",
-            axum::routing::get(http::get_delta_proposal),
-        )
-        .route(
-            "/sign_delta_proposal",
-            axum::routing::post(http::sign_delta_proposal),
-        )
-        .route(
-            "/auth/challenge",
-            axum::routing::get(crate::api::dashboard::challenge_operator_login),
-        )
-        .route(
-            "/auth/verify",
-            axum::routing::post(crate::api::dashboard::verify_operator_login),
-        )
-        .route(
-            "/auth/logout",
-            axum::routing::post(crate::api::dashboard::logout_operator),
-        );
-
-    #[cfg(feature = "evm")]
-    let router = router
-        .route(
-            "/evm/auth/challenge",
-            axum::routing::get(crate::api::evm::challenge_evm_session),
-        )
-        .route(
-            "/evm/auth/verify",
-            axum::routing::post(crate::api::evm::verify_evm_session),
-        )
-        .route(
-            "/evm/auth/logout",
-            axum::routing::post(crate::api::evm::logout_evm_session),
-        )
-        .route(
-            "/evm/accounts",
-            axum::routing::post(crate::api::evm::register_evm_account),
-        )
-        .route(
-            "/evm/proposals",
-            axum::routing::post(crate::api::evm::create_evm_proposal)
-                .get(crate::api::evm::list_evm_proposals),
-        )
-        .route(
-            "/evm/proposals/{proposal_id}",
-            axum::routing::get(crate::api::evm::get_evm_proposal),
-        )
-        .route(
-            "/evm/proposals/{proposal_id}/approve",
-            axum::routing::post(crate::api::evm::approve_evm_proposal),
-        )
-        .route(
-            "/evm/proposals/{proposal_id}/executable",
-            axum::routing::get(crate::api::evm::get_executable_evm_proposal),
-        )
-        .route(
-            "/evm/proposals/{proposal_id}/cancel",
-            axum::routing::post(crate::api::evm::cancel_evm_proposal),
-        );
-
-    router
-        .nest("/dashboard", dashboard_routes)
-        .with_state(state)
+/// Permissive layer configuration: no CORS, rate limiting disabled, a body
+/// limit far above any fixture, and no metrics layer (tests never install a
+/// global recorder).
+pub(crate) fn test_router_config() -> HttpRouterConfig {
+    HttpRouterConfig {
+        cors_layer: None,
+        rate_limit_store: RateLimitStore::new(RateLimitConfig {
+            enabled: false,
+            burst_per_sec: u32::MAX,
+            per_min: u32::MAX,
+        }),
+        body_limit_config: Some(BodyLimitConfig {
+            max_bytes: 16 * 1024 * 1024,
+        }),
+        metrics_enabled: false,
+    }
 }
 
 pub fn load_fixture_account() -> (AccountId, String, serde_json::Value) {

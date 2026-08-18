@@ -36,7 +36,7 @@ let signer1: Word = /* your RPO Falcon commitment */ Word::default();
 let signer2: Word = Word::default();
 
 let mut client = MultisigClient::builder()
-    .miden_endpoint(Endpoint::new("http://localhost:57291"))
+    .miden_endpoint(Endpoint::try_from("http://localhost:57291")?)
     .guardian_endpoint("http://localhost:50051")
     // Directory where the underlying miden-client SQLite store will live
     .account_dir("/tmp/multisig")
@@ -49,6 +49,86 @@ let account = client.create_account(2, vec![signer1, signer2]).await?;
 println!("Account registered on GUARDIAN endpoint: {}", client.guardian_endpoint());
 # Ok(())
 # }
+```
+
+## Configuration
+
+Beyond the endpoints and the account directory, the builder carries three
+optional configuration surfaces. The cross-SDK reference, including the
+TypeScript equivalents, is
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md).
+
+### Miden node RPC (`rpc_config`)
+
+`RpcConfig` sets the per-request gRPC deadline and the retry budget for
+idempotent node reads. The policy wraps the node client itself, so every read
+this SDK or the underlying `miden-client` issues (syncs, account, note, and
+block lookups) is covered.
+
+```rust
+use miden_multisig_client::{RpcConfig, RpcRetryPolicy};
+
+let rpc_config = RpcConfig::new()
+    .with_timeout_ms(15_000)?
+    .with_retry_policy(RpcRetryPolicy::new(3));
+
+let mut client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::devnet())
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig")
+    .rpc_config(rpc_config)
+    .generate_key()
+    .build()
+    .await?;
+```
+
+The defaults are a 10-second deadline and two total attempts (one classified,
+jittered retry); `RpcRetryPolicy::new(1)` opts out. Rate limiting and
+transport-shaped connection failures retry. Permanent failures (invalid
+argument, not found, authentication, TLS or certificate problems, invalid
+endpoint) return immediately without consuming the budget, and once the
+budget is exhausted the final upstream error is returned unchanged.
+
+**Transaction submission is never retried** under any configuration: a
+submission whose outcome is unknown could execute twice if re-sent. The same
+policy covers the note transport, where fetches and stream establishment
+retry but note sends are never retried in-call (the client's relay outbox
+re-sends undelivered notes on later syncs).
+
+### Note transport endpoint (`note_transport_endpoint`)
+
+Private notes are relayed through a note transport service that is separate
+from the node RPC. The testnet and devnet presets derive the transport
+endpoint automatically; a custom node endpoint has no derivable transport
+service, so private-note relay stays disabled until this is set explicitly.
+
+```rust
+let mut client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::try_from("https://my-node.internal:57291")?)
+    .note_transport_endpoint("https://my-transport.internal")
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig")
+    .generate_key()
+    .build()
+    .await?;
+```
+
+### Remote prover (`prover_config`)
+
+`ProverConfig` overrides the remote prover endpoint and the proof retry
+policy. Without it, the devnet and testnet presets use their public provers
+and every other endpoint proves locally. A custom URL must be absolute
+HTTP(S) and never falls back to a default endpoint. Remote proving gets two
+total attempts by default and local proving is never retried; retries apply
+only to transient proof failures, so transaction execution, submission, local
+state application, and GUARDIAN calls each run once.
+
+```rust
+use miden_multisig_client::{ProverConfig, ProverRetryPolicy};
+
+let prover_config = ProverConfig::new()
+    .with_url("https://prover.example")?
+    .with_retry_policy(ProverRetryPolicy::new(4));
 ```
 
 ## Core Workflow Examples

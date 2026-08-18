@@ -137,6 +137,8 @@ locals {
   effective_rds_proxy_enabled                = var.rds_proxy_enabled != null ? var.rds_proxy_enabled : local.is_prod
   effective_rds_proxy_route_database_url     = local.effective_rds_proxy_enabled && (var.rds_proxy_route_database_url != null ? var.rds_proxy_route_database_url : true)
   effective_rds_max_allocated_storage        = var.rds_max_allocated_storage != null ? var.rds_max_allocated_storage : (local.is_prod ? max(local.effective_rds_allocated_storage, 200) : null)
+  effective_rds_deletion_protection          = var.rds_deletion_protection != null ? var.rds_deletion_protection : local.is_prod
+  effective_rds_skip_final_snapshot          = var.rds_skip_final_snapshot != null ? var.rds_skip_final_snapshot : !local.is_prod
   effective_guardian_rate_limit_enabled      = var.guardian_rate_limit_enabled != null ? var.guardian_rate_limit_enabled : true
   effective_guardian_rate_burst_per_sec      = var.guardian_rate_burst_per_sec != null ? var.guardian_rate_burst_per_sec : (local.is_prod ? 200 : 10)
   effective_guardian_rate_per_min            = var.guardian_rate_per_min != null ? var.guardian_rate_per_min : (local.is_prod ? 5000 : 60)
@@ -174,4 +176,10 @@ locals {
   domain_enabled      = var.domain_name != ""
   service_fqdn        = var.domain_name == "" ? "" : (var.subdomain != "" ? "${var.subdomain}.${var.domain_name}" : var.domain_name)
   acm_certificate_arn = local.domain_enabled ? var.acm_certificate_arn : ""
+
+  # Temporary legacy subdomain used during a hostname migration.
+  alias_domain_requested    = var.alias_subdomain != ""
+  alias_service_fqdn        = local.alias_domain_requested && var.domain_name != "" ? "${var.alias_subdomain}.${var.domain_name}" : ""
+  alias_domain_enabled      = local.alias_service_fqdn != "" && local.alias_service_fqdn != local.service_fqdn
+  alias_acm_certificate_arn = local.alias_domain_enabled ? (var.alias_acm_certificate_arn != "" ? var.alias_acm_certificate_arn : local.acm_certificate_arn) : ""
 }

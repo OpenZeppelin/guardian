@@ -1,10 +1,16 @@
 //! Export/import operations for MultisigClient.
 //!
 //! This module handles exporting proposals to files/strings and
-//! importing them back for offline sharing workflows.
+//! importing them back for offline sharing workflows, as well as
+//! exporting/importing note files for out-of-band note transfer
+//! (issue #356).
 
 use guardian_client::delta_status::Status;
 use guardian_shared::SignatureScheme;
+use miden_client::note::NoteFile;
+use miden_client::store::NoteExportType;
+use miden_protocol::note::NoteId;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -144,5 +150,191 @@ impl MultisigClient {
         self.verify_proposal_summary_binding(&proposal).await?;
 
         Ok(exported)
+    }
+
+    /// Exports a note created by this account to a file for out-of-band
+    /// delivery (issue #356).
+    ///
+    /// A private note publishes only its commitment on chain, so the recipient
+    /// can never learn its contents via sync; the sender must hand them the
+    /// note file produced here, which they load with
+    /// [`Self::import_note_from_file`].
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// client.export_note_to_file(&note_id_hex, Path::new("note.mno")).await?;
+    /// ```
+    pub async fn export_note_to_file(&self, note_id: &str, path: &std::path::Path) -> Result<()> {
+        let bytes = self.export_note_to_bytes(note_id).await?;
+        tokio::fs::write(path, bytes)
+            .await
+            .map_err(|e| MultisigError::InvalidConfig(format!("failed to write file: {}", e)))?;
+        Ok(())
+    }
+
+    /// Exports a note created by this account to serialized `NoteFile` bytes
+    /// for programmatic out-of-band delivery (issue #356).
+    ///
+    /// The note must be an output note of this client (i.e. created by a
+    /// transaction this client executed). When the note's on-chain inclusion
+    /// proof is already known (after a post-commit sync) the full note with
+    /// proof is exported; otherwise the note details are exported and the
+    /// importer's client tracks the note until it commits on chain.
+    pub async fn export_note_to_bytes(&self, note_id: &str) -> Result<Vec<u8>> {
+        let note_id = NoteId::try_from_hex(note_id.trim())
+            .map_err(|e| MultisigError::InvalidConfig(format!("invalid note id: {}", e)))?;
+
+        let record = self
+            .miden_client
+            .get_output_note(note_id)
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to get output note: {}", e)))?
+            .ok_or_else(|| {
+                MultisigError::MidenClient(format!(
+                    "output note {} not found in the local store; only notes created by \
+                     this client can be exported",
+                    note_id.to_hex()
+                ))
+            })?;
+
+        let export_type = if record.inclusion_proof().is_some() {
+            NoteExportType::NoteWithProof
+        } else {
+            NoteExportType::NoteDetails
+        };
+
+        let note_file = record.into_note_file(&export_type).map_err(|e| {
+            MultisigError::MidenClient(format!("failed to convert note for export: {}", e))
+        })?;
+
+        Ok(note_file.to_bytes())
+    }
+
+    /// Imports a note file received out-of-band (issue #356) so the note can
+    /// be consumed by this account.
+    ///
+    /// Returns the note ID when the file carries one (full note with proof or
+    /// ID-only file), or the note's details commitment for a details-only
+    /// file. Sync afterwards so the note's on-chain commitment is tracked and
+    /// the note shows up in [`Self::list_consumable_notes`].
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let note_id = client.import_note_from_file(Path::new("note.mno")).await?;
+    /// client.sync().await?;
+    /// ```
+    pub async fn import_note_from_file(&mut self, path: &std::path::Path) -> Result<String> {
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| MultisigError::InvalidConfig(format!("failed to read file: {}", e)))?;
+        self.import_note_from_bytes(&bytes).await
+    }
+
+    /// Imports a note from serialized `NoteFile` bytes (issue #356).
+    ///
+    /// See [`Self::import_note_from_file`] for the returned identifier
+    /// semantics.
+    pub async fn import_note_from_bytes(&mut self, bytes: &[u8]) -> Result<String> {
+        let note_file = NoteFile::read_from_bytes(bytes).map_err(|e| {
+            MultisigError::InvalidConfig(format!("failed to decode note file: {}", e))
+        })?;
+
+        let known_id = note_file_note_id(&note_file);
+
+        let commitments = self
+            .miden_client
+            .import_notes(std::slice::from_ref(&note_file))
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to import note: {}", e)))?;
+
+        match known_id {
+            Some(id) => Ok(id),
+            None => commitments
+                .first()
+                .map(|c| format!("0x{}", hex::encode(c.to_bytes())))
+                .ok_or_else(|| {
+                    MultisigError::MidenClient("note import reported no imported notes".to_string())
+                }),
+        }
+    }
+}
+
+/// Returns the note ID a note file resolves to, when it carries one. A
+/// details-only file has no metadata and therefore no note ID yet.
+fn note_file_note_id(note_file: &NoteFile) -> Option<String> {
+    match note_file {
+        NoteFile::NoteId(id) => Some(id.to_hex()),
+        NoteFile::Committed { note, .. } => Some(note.id().to_hex()),
+        NoteFile::ExpectedNote { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_client::note::NoteSyncHint;
+    use miden_protocol::Word;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::crypto::rand::RandomCoin;
+    use miden_protocol::note::{Note, NoteType};
+    use miden_standards::note::P2idNote;
+
+    use super::*;
+
+    fn build_test_note() -> Note {
+        let sender = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
+        let target = AccountId::from_hex("0x1b1b1b1a1b1b1b011b1b1b1b1b1b1b").unwrap();
+        let mut rng = RandomCoin::new(Word::default());
+        P2idNote::builder()
+            .sender(sender)
+            .target(target)
+            .asset(FungibleAsset::mock(1))
+            .note_type(NoteType::Private)
+            .generate_serial_number(&mut rng)
+            .build()
+            .unwrap()
+            .into()
+    }
+
+    #[test]
+    fn note_file_note_id_by_variant() {
+        let note = build_test_note();
+        let expected = note.id().to_hex();
+
+        // An ID-only file resolves to the note ID.
+        let id_file = NoteFile::NoteId(note.id());
+        assert_eq!(note_file_note_id(&id_file), Some(expected));
+
+        // A details-only file has no note ID yet.
+        let sync_hint = NoteSyncHint::new(BlockNumber::from(0u32), note.metadata().tag());
+        let details_file = NoteFile::ExpectedNote {
+            details: note.into(),
+            sync_hint,
+        };
+        assert_eq!(note_file_note_id(&details_file), None);
+    }
+
+    #[test]
+    fn note_file_roundtrips_through_bytes() {
+        let note = build_test_note();
+        let sync_hint = NoteSyncHint::new(BlockNumber::from(7u32), note.metadata().tag());
+        let file = NoteFile::ExpectedNote {
+            details: note.into(),
+            sync_hint,
+        };
+
+        let bytes = file.to_bytes();
+        let decoded = NoteFile::read_from_bytes(&bytes).unwrap();
+        match decoded {
+            NoteFile::ExpectedNote { sync_hint, .. } => {
+                assert_eq!(sync_hint.after_block_num(), BlockNumber::from(7u32));
+            }
+            _ => panic!("expected details variant"),
+        }
+
+        assert!(NoteFile::read_from_bytes(b"not a note file").is_err());
     }
 }

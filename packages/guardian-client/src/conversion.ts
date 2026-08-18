@@ -84,6 +84,8 @@ export function fromServerDeltaStatus(server: ServerDeltaStatus): DeltaStatus {
       return { status: 'candidate', timestamp: server.timestamp };
     case 'canonical':
       return { status: 'canonical', timestamp: server.timestamp };
+    case 'retained':
+      return { status: 'retained', timestamp: server.timestamp, reason: server.reason };
     case 'discarded':
       return { status: 'discarded', timestamp: server.timestamp, reason: server.reason };
   }
@@ -194,6 +196,8 @@ export function toServerDeltaStatus(status: DeltaStatus): ServerDeltaStatus {
       return { status: 'candidate', timestamp: status.timestamp };
     case 'canonical':
       return { status: 'canonical', timestamp: status.timestamp };
+    case 'retained':
+      return { status: 'retained', timestamp: status.timestamp, reason: status.reason };
     case 'discarded':
       return { status: 'discarded', timestamp: status.timestamp, reason: status.reason };
   }

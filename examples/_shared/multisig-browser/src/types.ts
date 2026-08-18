@@ -10,7 +10,12 @@ import type {
   SignatureScheme,
   Signer,
   VaultBalance,
+  ProverConfig,
+  RpcConfig,
 } from '@openzeppelin/miden-multisig-client';
+
+export type BrowserProverConfig = ProverConfig;
+export type BrowserRpcConfig = RpcConfig;
 
 export interface LocalSignerInfo {
   commitment: string;

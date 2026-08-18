@@ -5,7 +5,7 @@ use server::builder::{ServerBuilder, storage::StorageMetadataBuilder};
 use server::canonicalization::CanonicalizationConfig;
 use server::logging::LoggingConfig;
 use server::middleware::{BodyLimitConfig, CorsConfig, RateLimitConfig};
-use server::network::NetworkType;
+use server::network::{NetworkType, RpcSettings};
 use std::env;
 use std::path::PathBuf;
 
@@ -37,13 +37,18 @@ async fn main() {
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(network_type)
+        .with_rpc(RpcSettings::from_env(network_type).expect("Invalid RPC configuration"))
         .with_canonicalization(Some(
             CanonicalizationConfig::new(10, 48)
                 .with_submission_grace_period_seconds(600)
                 .with_fast_promotion_enabled_from_env()
                 .expect("Invalid fast promotion configuration")
                 .with_max_concurrent_accounts_from_env()
-                .expect("Invalid canonicalization concurrency configuration"),
+                .expect("Invalid canonicalization concurrency configuration")
+                .with_retained_ttl_seconds_from_env()
+                .expect("Invalid retained TTL configuration")
+                .with_reconcile_interval_seconds_from_env()
+                .expect("Invalid reconcile interval configuration"),
         ))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())

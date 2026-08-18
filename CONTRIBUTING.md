@@ -116,9 +116,10 @@ cd examples/demo && cargo run --release   # Rust TUI multisig flow
 # smoke-web / operator-smoke-web / evm-smoke-web have their own READMEs
 ```
 
-CI currently enforces the Rust workspace, formatting, and clippy jobs.
-Run the TypeScript package checks locally when you touch TS packages or
-browser examples.
+CI enforces tests and doctests for the core Rust workspace crates, excluding
+benchmark and example members, plus formatting, clippy, and the build and test
+scripts for all TypeScript packages. Run the matching checks locally before
+pushing when you touch a package or browser example.
 
 For UI / SDK changes you cannot fully verify with `cargo test` alone,
 run the matching smoke example end to end. The
@@ -162,6 +163,7 @@ If your change is user- or operator-visible, update the matching doc:
 | Published Docker image / publish workflow | [`docs/SERVER_AWS_DEPLOY.md`](./docs/SERVER_AWS_DEPLOY.md) ("Published Docker images"); image at `ghcr.io/openzeppelin/guardian` |
 | Wire contract changes | [`spec/api.md`](./spec/api.md), [`spec/processes.md`](./spec/processes.md) |
 | New SDK feature | [`docs/MULTISIG_SDK.md`](./docs/MULTISIG_SDK.md) where relevant |
+| New public API, builder option, or config field on a published crate or package | That crate's or package's own `README.md`, in the same PR. It is the crates.io / npm landing page, so `docs/` alone leaves it invisible to consumers. |
 
 Doc-only PRs are welcome and reviewed under the same process.
 

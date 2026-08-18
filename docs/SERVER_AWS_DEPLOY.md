@@ -4,7 +4,7 @@ This guide covers the current AWS deployment for Guardian. The AWS stack now use
 
 The deployment surface supports two stage profiles:
 - `DEPLOY_STAGE=dev` keeps the current low-cost, fixed-capacity behavior
-- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, and benchmark-oriented runtime defaults
+- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, RDS deletion protection with a final snapshot on destroy, and benchmark-oriented runtime defaults
 
 ## Published Docker images
 
@@ -494,6 +494,12 @@ You can override that with `TF_STATE_PATH` if needed.
 ./scripts/aws-deploy.sh cleanup
 ```
 
+In the prod stage the RDS instance has deletion protection on and takes a
+final snapshot (`<stack>-postgres-final`) on destroy, so a prod cleanup
+fails until you set `TF_VAR_rds_deletion_protection=false` and re-apply.
+Restoring from the final snapshot is covered in
+[`runbooks/backup-restore.md`](./runbooks/backup-restore.md).
+
 ECR repositories are not managed by Terraform:
 
 ```bash
@@ -524,7 +530,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name |
 | `alb_url` | Full ALB URL |
-| `custom_domain_url` | Custom domain URL when configured |
+| `custom_domain_url` | Canonical service URL: https with a certificate, http when Terraform manages only the DNS record |
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |

@@ -409,6 +409,9 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
         crate::delta_object::DeltaStatus::Canonical { timestamp } => {
             (Some(timestamp.clone()), Some(timestamp.clone()), None)
         }
+        // No legacy timestamp column carries retention; consumers of the
+        // typed status oneof see `retained_at` below.
+        crate::delta_object::DeltaStatus::Retained { .. } => (None, None, None),
         crate::delta_object::DeltaStatus::Discarded { timestamp, .. } => {
             (None, None, Some(timestamp.clone()))
         }
@@ -439,6 +442,7 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                     },
                 )),
                 discard_reason: String::new(),
+                retain_reason: String::new(),
             })
         }
         crate::delta_object::DeltaStatus::Candidate { timestamp, .. } => Some(DeltaStatusGrpc {
@@ -446,12 +450,27 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                 timestamp.clone(),
             )),
             discard_reason: String::new(),
+            retain_reason: String::new(),
         }),
         crate::delta_object::DeltaStatus::Canonical { timestamp } => Some(DeltaStatusGrpc {
             status: Some(guardian::delta_status::Status::CanonicalAt(
                 timestamp.clone(),
             )),
             discard_reason: String::new(),
+            retain_reason: String::new(),
+        }),
+        crate::delta_object::DeltaStatus::Retained { timestamp, reason } => Some(DeltaStatusGrpc {
+            status: Some(guardian::delta_status::Status::RetainedAt(
+                timestamp.clone(),
+            )),
+            discard_reason: String::new(),
+            retain_reason: match reason {
+                Some(crate::delta_object::RetainReason::RetryExhausted) => {
+                    "retry_exhausted".to_string()
+                }
+                Some(crate::delta_object::RetainReason::Diverged) => "diverged".to_string(),
+                None => String::new(),
+            },
         }),
         crate::delta_object::DeltaStatus::Discarded { timestamp, reason } => {
             Some(DeltaStatusGrpc {
@@ -464,6 +483,7 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                     }
                     None => String::new(),
                 },
+                retain_reason: String::new(),
             })
         }
     };
@@ -577,7 +597,6 @@ mod tests {
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,
@@ -702,7 +721,7 @@ mod tests {
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
 
-        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        // The flow reads metadata more than once; stack one get response per read.
         let _metadata = metadata
             .with_get(Ok(Some(create_account_metadata(
                 account_id.clone(),
@@ -912,7 +931,7 @@ mod tests {
         let signer = TestSigner::new();
         let commitment = signer.commitment_hex.clone();
 
-        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        // The flow reads metadata more than once; stack one get response per read.
         let _metadata = metadata
             .with_get(Ok(Some(create_account_metadata(
                 account_id.clone(),
@@ -965,7 +984,7 @@ mod tests {
         let signer = TestSigner::new();
         let commitment = signer.commitment_hex.clone();
 
-        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        // The flow reads metadata more than once; stack one get response per read.
         let _metadata = metadata
             .with_get(Ok(Some(create_account_metadata(
                 account_id.clone(),
@@ -1154,5 +1173,56 @@ mod tests {
         assert!(details["code"].is_string());
         assert!(details["message"].is_string());
         assert!(details["meta"]["retryable"].is_boolean());
+    }
+
+    #[test]
+    fn delta_to_proto_encodes_retained_status_and_reason() {
+        // The wire contract for issue #345: retained rows ride the typed
+        // status oneof (`retained_at` + `retain_reason`) and deliberately
+        // populate none of the legacy timestamp columns, so pre-retained
+        // consumers see an in-progress delta rather than a wrong terminal
+        // state.
+        let delta = DeltaObject {
+            account_id: "0xtest_account".to_string(),
+            nonce: 7,
+            prev_commitment: "0xprev".to_string(),
+            new_commitment: Some("0xnew".to_string()),
+            delta_payload: serde_json::json!({"test": "payload"}),
+            ack_sig: "0xsig".to_string(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::retained(
+                "2026-07-23T00:00:00Z".to_string(),
+                crate::delta_object::RetainReason::Diverged,
+            ),
+            metadata: None,
+        };
+
+        let proto = delta_to_proto(&delta);
+
+        let status = proto.status.expect("typed status present");
+        assert_eq!(
+            status.status,
+            Some(guardian::delta_status::Status::RetainedAt(
+                "2026-07-23T00:00:00Z".to_string()
+            ))
+        );
+        assert_eq!(status.retain_reason, "diverged");
+        assert_eq!(status.discard_reason, "");
+        assert_eq!(proto.candidate_at, "");
+        assert_eq!(proto.canonical_at, None);
+        assert_eq!(proto.discarded_at, None);
+
+        // A reasonless retained row encodes an empty reason string.
+        let mut reasonless = delta;
+        reasonless.status = DeltaStatus::Retained {
+            timestamp: "2026-07-23T00:00:00Z".to_string(),
+            reason: None,
+        };
+        let proto = delta_to_proto(&reasonless);
+        assert_eq!(
+            proto.status.expect("typed status present").retain_reason,
+            ""
+        );
     }
 }

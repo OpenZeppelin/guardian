@@ -49,17 +49,44 @@ Current coordinated SDK release line: `0.16.x`
 - `packages/miden-multisig-client/package-lock.json`
 - `docs/MULTISIG_SDK.md` if release examples or tag snippets need updating
 
-## Default Publish Sequence
+## Rust Publication Automation
 
-```bash
-cargo publish -p guardian-shared
-cargo publish -p guardian-client
-cargo publish -p miden-confidential-contracts
-cargo publish -p miden-multisig-client
+Stable workflow:
+
+```text
+.github/workflows/publish-crates.yml
 ```
+
+Published releases select all four Rust crates. Manual runs provide `dry-run`,
+and one boolean per crate. Pull requests changing the workflow run an
+all-crate dry run without credentials.
+
+The fixed selection and summary order is:
+
+1. `guardian-shared`
+2. `guardian-client`
+3. `miden-confidential-contracts`
+4. `miden-multisig-client`
+
+Cargo receives selected crates in one multi-package command and owns dependency
+ordering. Actual runs skip exact versions already visible on crates.io.
+
+Each crate's crates.io trusted publisher is bound to:
+
+```text
+GitHub owner: OpenZeppelin
+Repository: guardian
+Workflow: publish-crates.yml
+Environment: release
+```
+
+OIDC trusted publishing is the only publication authentication path.
+
+## TypeScript Publish Sequence
 
 ```bash
 cd packages/guardian-client && npm publish --access public
 cd packages/guardian-evm-client && npm publish --access public
 cd packages/miden-multisig-client && npm publish --access public
+cd packages/guardian-operator-client && npm publish --access public
 ```

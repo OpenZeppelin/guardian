@@ -42,10 +42,24 @@ Most startup failures are environment misconfiguration. Check in order:
    Replace the variable with `MidenLocal`, `MidenTestnet`, or
    `MidenDevnet` (short forms `local`/`testnet`/`devnet` work,
    case-insensitive).
-2. **`DATABASE_URL` missing under `--features postgres`.** The builder
+2. **Miden node unreachable or Miden RPC settings invalid.** The initial
+   node connection retries transient failures for ≈35 seconds (5 attempts
+   with backoff) before failing startup with
+   `Failed to create network client: failed to connect to the Miden RPC endpoint` —
+   a brief node blip at boot no longer kills the server, but a genuinely
+   down or wrong endpoint still does, as do TLS/certificate
+   misconfigurations, which fail immediately without retrying. An invalid
+   `GUARDIAN_MIDEN_RPC_ENDPOINT` (not an origin-only `http(s)` URL in the
+   form `scheme://host[:port]`) also fails immediately. Embedded credentials,
+   paths, queries, and fragments are rejected because tonic does not send them
+   as authentication. Note that
+   `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` never affects canonicalization: those
+   reads make one attempt per pass and transient failures are recovered by
+   the next scheduled pass. See [CONFIGURATION.md](./CONFIGURATION.md).
+3. **`DATABASE_URL` missing under `--features postgres`.** The builder
    panics with `"DATABASE_URL environment variable is required"`. Either
    set it or rebuild without the `postgres` feature.
-3. **Filesystem paths not writable.** Filesystem builds use
+4. **Filesystem paths not writable.** Filesystem builds use
    `GUARDIAN_STORAGE_PATH`, `GUARDIAN_METADATA_PATH`, and
    `GUARDIAN_KEYSTORE_PATH` when set, defaulting to
    `/var/guardian/storage`, `/var/guardian/metadata`, and
@@ -55,18 +69,18 @@ Most startup failures are environment misconfiguration. Check in order:
    Either set the env vars to a writable location or `mkdir -p`
    `/var/guardian/{storage,metadata,keystore}` with the right
    permissions.
-4. **Postgres migrations fail.** The Postgres path runs migrations at
+5. **Postgres migrations fail.** The Postgres path runs migrations at
    startup. If the DB user lacks `CREATE` permissions, startup fails.
    Grant `CREATE` on the schema or run migrations as a privileged user.
-5. **ACK secrets missing in prod.**
+6. **ACK secrets missing in prod.**
    `scripts/aws-deploy.sh deploy` refuses to apply if either ACK secret
    is missing. Run `DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys`
    first (see [Secrets runbook](./runbooks/secrets.md#bootstrap-first-prod-deploy)).
-6. **Operator allowlist source not set.** If you intend to use the
+7. **Operator allowlist source not set.** If you intend to use the
    dashboard, set `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` (prod) or
    `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` (local). Without either, the
    dashboard is unreachable.
-7. **Database TLS misconfigured.** With a verifying `sslmode`, startup fails
+8. **Database TLS misconfigured.** With a verifying `sslmode`, startup fails
    closed before migrations run. Map the error:
    - error naming `sslmode` (`allow`/`prefer` or an unknown value) → choose an
      explicit mode: `disable`, `require`, `verify-ca`, or `verify-full`.
@@ -79,6 +93,17 @@ Most startup failures are environment misconfiguration. Check in order:
      includes the Amazon Trust Services roots, not only the RDS CA roots.
    - works under `verify-ca` but fails under `verify-full` → hostname/SAN
      mismatch with the endpoint. See [Database TLS](./CONFIGURATION.md#database-tls).
+8. **Replay-protection state file missing (filesystem builds).** Startup
+   fails with `Replay-protection state file ... is missing` when
+   `.metadata/auth_state.json` has been deleted from a store whose
+   `accounts.json` was already migrated off legacy timestamps. Starting
+   anyway would reset replay protection and re-accept previously seen
+   request timestamps, so the server refuses instead. Restore
+   `auth_state.json` from backup together with the rest of the metadata
+   directory. If no backup exists, recreating the file with the literal
+   content `{}` lets the server start — that is an explicit operator
+   decision to accept a replay window as wide as the timestamp skew
+   allowance.
 
 ### Guardian public key changes unexpectedly
 
@@ -150,9 +175,11 @@ promotes it via `PushDelta`. If it sits too long:
   return `storage_error` on signing attempts. Check disk space (filesystem)
   or DB connectivity (Postgres).
 
-### Candidates are being discarded
+### Candidates are being retained or discarded
 
-Delta moves `candidate` → `discarded`. The cause is one of:
+Delta moves `candidate` → `retained` (default) or `candidate` →
+`discarded` (retention disabled, or a client abandon). The cause is one
+of:
 
 1. The corresponding Miden proof was never submitted.
 2. The proof was submitted but the on-chain commitment differs from the
@@ -163,8 +190,18 @@ Delta moves `candidate` → `discarded`. The cause is one of:
 4. The canonicalization grace period (default 10 minutes) elapsed before
    the proof landed.
 
-Recovery for the client: `GET /delta/since` → replay canonical chain →
-rebuild the transaction → resubmit.
+A `retained` delta is not final: the dedicated reconcile pass keeps
+probing the chain (backing off as the row ages) and promotes it
+automatically if the transaction ever shows up, for up to
+`retained_ttl_seconds` (default 24 h). The `status_reason` on the
+dashboard feed says which verdict parked it (`retry_exhausted` /
+`diverged`); a `diverged` row that later reconciles means the
+divergence verdict was spurious (e.g. a lagging RPC node).
+
+Recovery for the client: check the delta's status first — if it flipped
+to `canonical`, the transaction landed and there is nothing to redo.
+Otherwise `GET /delta/since` → replay canonical chain → rebuild the
+transaction → resubmit (this supersedes the retained row).
 
 Operator checks:
 - Canonicalization worker is running (look for `jobs::canonicalization`
@@ -173,9 +210,12 @@ Operator checks:
   isn't).
 - No `network_error` storms.
 - `guardian_canonicalization_candidates_total{outcome=...}` breaks down
-  what the worker decided per candidate (`diverged` and `discarded` are
-  the discard paths; `stale_base` means a promotion was rolled back
-  because the stored state moved mid-pass and will retry next tick).
+  what the worker decided per candidate (`retained` is the default
+  give-up path; `diverged` and `discarded` are the delete paths when
+  retention is disabled; `stale_base` means a promotion was rolled back
+  because the stored state moved mid-pass and will retry next tick;
+  `reconciled` / `reconcile_deferred` / `reconcile_expired` are the
+  reconcile pass resolving retained rows).
 - `guardian_canonicalization_candidate_age_seconds` growing without
   bound means candidates are not converging — check Miden RPC health
   and the discard outcomes above.
@@ -183,9 +223,26 @@ Operator checks:
   `guardian_canonicalization_fast_run_duration_seconds` expose failures and
   latency of the promotion-only pass without changing the full-pass gauges,
   age histogram, or fetched-row counter.
+- `guardian_canonicalization_reconcile_runs_total{outcome=...}` and
+  `guardian_canonicalization_reconcile_run_duration_seconds` do the same
+  for the recoverable-delta reconcile pass.
 - `RUST_LOG=server::jobs::canonicalization=debug` emits one
   `Fast-promotion pass completed` summary per fast tick, including empty passes,
   with page, candidate, account-batch, deadline, and cursor-progress fields.
+- Retention and reconciliation emit stable `event` / `reason` fields for
+  log-based triage (with `account_id`, `nonce`, and `age_seconds` /
+  `retention_reason` / `expires_at` where applicable):
+  - `event=candidate_retained reason=retry_exhausted|diverged`
+  - `event=reconcile_deferred reason=chain_at_stored_base|chain_probe_unavailable|end_state_not_on_chain|base_no_longer_applies|recomputed_commitment_mismatch|no_matching_recoverable_delta`
+  - `event=reconcile_skipped reason=obsolete_base`
+  - `event=reconcile_promoted`
+  - `event=reconcile_expired`
+  - `event=reconcile_superseded`
+  The `chain_at_stored_base` / `chain_probe_unavailable` deferrals are
+  logged (debug/info) but deliberately not counted in
+  `guardian_canonicalization_candidates_total` — a healthy steady state
+  probes every due account and finds the chain unmoved, and counting
+  that would dwarf every other outcome.
 - `guardian_canonicalization_commitment_mismatches_total` counting up
   means a client omitted `new_commitment` or claimed one that differs
   from the recomputed value. The full pass can promote using the value it
@@ -235,14 +292,44 @@ EVM proposal/session operations) return `409 GUARDIAN_ACCOUNT_PAUSED`
 
 ### Rate limits triggered
 
-`429` with `code: rate_limit_exceeded` and a `Retry-After` header.
+Over HTTP: `429` with `code: rate_limit_exceeded` and a `Retry-After`
+header. Over gRPC: `RESOURCE_EXHAUSTED` with a `retry-after` metadata key
+(seconds) and the same `rate_limit_exceeded` envelope in the status
+details. The sustained limit is keyed per IP alone, so heavy gRPC
+traffic (the Rust SDK and benchmark harness default) can exhaust the
+sustained allowance for HTTP calls from the same client, and vice versa.
+The burst limit is keyed per IP and endpoint, and HTTP paths never
+collide with gRPC method names, so burst buckets are not shared.
+The rejection counter `guardian_rate_limit_rejections_total` carries a
+`transport` label to tell the two surfaces apart. Rate-limit rejections
+happen before any handler runs, so retrying after the hint is always safe.
+
+ALB gRPC health checks (`/guardian.Guardian/GetPubkey`) are metered like
+any other traffic, keyed per ALB-node address. Their volume is far below
+any sane budget, but a global limit below `GUARDIAN_MAX_REPLICAS`
+partitions each replica's budget to zero and would fail health checks and
+cycle tasks; the prod builder refuses to start in that configuration, dev
+builds only warn.
+
+If clients report throttling at request rates well below the configured
+budget, check the `Request rate limited` lines' `client_ip` field. They
+are logged at `debug` (rejections are expected traffic, and their volume
+tracks the flood being shed), so enable them with
+`RUST_LOG=info,server::middleware::rate_limit=debug`.
+The proxy's address (or `unknown`) on every line means your ingress is
+not forwarding the client address, so all clients share one budget:
+common with unconfigured reverse proxies (nginx `grpc_pass` needs
+explicit `grpc_set_header` for forwarding headers), Kubernetes
+`externalTrafficPolicy: Cluster`, or L4 balancers without client-IP
+preservation. See
+[PRODUCTION.md](./PRODUCTION.md#running-behind-your-own-ingress-non-aws).
 
 Server knobs (set on the task, not per-account):
 
 | Variable | Default | Notes |
 |---|---|---|
 | `GUARDIAN_RATE_LIMIT_ENABLED` | `true` | Set `false` only in test environments. |
-| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (dev), `200` (prod) | Token-bucket burst. |
+| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (dev), `200` (prod) | Requests per one-second window. |
 | `GUARDIAN_RATE_PER_MIN` | `60` (dev), `5000` (prod) | Sustained rate. |
 | `GUARDIAN_MAX_REQUEST_BYTES` | `1048576` (1 MB) | Reject larger bodies. |
 
@@ -328,7 +415,7 @@ come from
 | `invalid_network_config` | 400 | `Configure` payload's network config is malformed. |
 | `invalid_cursor` | 400 | Pagination cursor doesn't decode. |
 | `invalid_limit` | 400 | Pagination limit out of range. |
-| `invalid_status_filter` | 400 | Status filter string isn't in `{candidate, canonical, discarded}`. |
+| `invalid_status_filter` | 400 | Status filter string isn't in `{candidate, canonical, retained, discarded}`. |
 | `unsupported_for_network` | 400 | Endpoint not available for the account's network. |
 | `unsupported_evm_chain` | 400 | EVM chain ID not in the configured allowlist. |
 | `invalid_evm_proposal` | 400 | EVM proposal payload validation failed. |
@@ -420,6 +507,9 @@ ECS Exec requires the task role's `ssmmessages:*` actions
   indicates Miden submission isn't happening.
 - **`discarded` delta rate** — small numbers are normal (race conditions);
   spikes mean RPC trouble or wrong network targeting.
+- **`retained` delta count** — a persistently non-zero gauge means
+  give-ups are outpacing reconciliation; check Miden RPC health and the
+  `reconcile_*` outcomes above.
 - **`rpc_unavailable` / `rpc_validation_failed` rates** — Miden node
   health.
 - **`storage_error` rate** — DB or filesystem trouble.

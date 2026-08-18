@@ -216,10 +216,12 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
     state.network_client = Arc::new(integration_client);
 
     let api_pubkey_hex = cosigner_pubkeys[0].clone().into_hex();
-    let api_commitment_hex = format!(
-        "0x{}",
-        hex::encode(cosigner_pubkeys[0].to_commitment().to_bytes())
-    );
+    // /configure validates the declared cosigner set against the state's
+    // signer map (#102), so the full set is registered.
+    let all_commitments_hex: Vec<String> = cosigner_pubkeys
+        .iter()
+        .map(|pk| format!("0x{}", hex::encode(pk.to_commitment().to_bytes())))
+        .collect();
 
     let mut setup = StrandedCandidateSetup {
         state,
@@ -238,7 +240,7 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
         ConfigureAccountParams {
             account_id: account_id_hex.clone(),
             auth: Auth::MidenFalconRpo {
-                cosigner_commitments: vec![api_commitment_hex],
+                cosigner_commitments: all_commitments_hex,
             },
             network_config: NetworkConfig::miden_default(),
             initial_state: multisig_account.to_json(),

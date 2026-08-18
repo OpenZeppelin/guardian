@@ -112,6 +112,8 @@ You are a contributor.
 - [Deploying to AWS ECS](./SERVER_AWS_DEPLOY.md)
 - [Secrets and key management](./runbooks/secrets.md)
 - [Enabling verified database TLS](./runbooks/enable-db-tls.md)
+- [Database backup and restore](./runbooks/backup-restore.md)
+- [Horizontal scaling](./runbooks/horizontal-scaling.md)
 - [Operator dashboard](./DASHBOARD.md)
 
 **SDKs**

@@ -28,10 +28,15 @@ Three decisions when running Guardian locally:
 - Docker if you will use `docker-compose.*.yml`.
 - A Miden node — required for almost every flow. Either point at a
   Miden Devnet endpoint or run one locally; configure via
-  `GUARDIAN_NETWORK_TYPE`. The node's Miden line must match the
-  workspace baseline (currently the 0.16 pre-release line; devnet
-  already runs the 0.16 node) — a mismatched node is rejected at the
-  RPC boundary (see
+  `GUARDIAN_NETWORK_TYPE`. A node on a non-default host or port (for
+  example a sidecar container) is reachable via
+  `GUARDIAN_MIDEN_RPC_ENDPOINT` without changing the network type; see
+  [CONFIGURATION.md](./CONFIGURATION.md) for that and the optional
+  `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` / `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS`
+  read-retry knobs. The node's Miden line must match the workspace
+  baseline (currently the 0.16 pre-release line; devnet already runs
+  the 0.16 node) — a mismatched node is rejected at the RPC boundary
+  (see
   [Troubleshooting](./TROUBLESHOOTING.md#client-and-node-disagree-about-the-network-version)).
 
 ## Environment file
@@ -171,7 +176,7 @@ The deploy script builds with `postgres,evm` when the EVM stack is requested
 ## Verifying the server is up
 
 ```bash
-curl http://localhost:3000/                   # liveness
+curl http://localhost:3000/                   # liveness (alias of /status)
 curl http://localhost:3000/pubkey             # ACK key commitment
 grpcurl -plaintext \
   -import-path crates/server/proto -proto guardian.proto \

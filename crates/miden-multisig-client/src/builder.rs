@@ -4,8 +4,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use miden_client::builder::ClientBuilder;
+use miden_client::grpc_support::{
+    DEFAULT_GRPC_TIMEOUT_MS, DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT,
+};
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::Endpoint;
+use miden_client::note_transport::grpc::GrpcNoteTransportClient;
+use miden_client::note_transport::{
+    NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_TESTNET_ENDPOINT, NoteTransportClient,
+};
+use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
@@ -15,16 +22,120 @@ use crate::MidenSdkClient;
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
+use crate::prover::{ProverConfig, ProverSelection, RetryingTransactionProver};
+use crate::rpc::{
+    RetryingNodeRpcClient, RpcConfig, RpcSelection, configured_note_transport_client,
+};
 
-fn configured_client_builder(endpoint: &Endpoint) -> ClientBuilder<FilesystemKeyStore> {
-    if endpoint == &Endpoint::devnet() {
+/// Always constructed with the inner miden-client retry loop disabled:
+/// that loop retransmits rate-limited submissions (`is_retryable` covers
+/// `ResourceExhausted`/`Unavailable`), which violates at-most-once
+/// submission. [`RetryingNodeRpcClient`] is the only retry layer, and it
+/// never retries submissions.
+///
+/// The default per-request deadline is the miden-client 10s default on
+/// every path — preset, custom endpoint, and direct commitment reads.
+pub(crate) fn configured_node_rpc_client(
+    endpoint: &Endpoint,
+    rpc_config: &RpcConfig,
+) -> Arc<dyn NodeRpcClient> {
+    let (timeout_ms, retry_policy) = match rpc_config.resolve(DEFAULT_GRPC_TIMEOUT_MS) {
+        RpcSelection::Passthrough => (DEFAULT_GRPC_TIMEOUT_MS, None),
+        RpcSelection::Configured {
+            timeout_ms,
+            retry_policy,
+        } => (timeout_ms, Some(retry_policy)),
+    };
+    let grpc: Arc<dyn NodeRpcClient> =
+        Arc::new(GrpcClient::new(endpoint, timeout_ms).with_max_retries(0));
+    match retry_policy {
+        Some(policy) if policy.max_attempts() > 1 => {
+            Arc::new(RetryingNodeRpcClient::new(grpc, &policy))
+        }
+        _ => grpc,
+    }
+}
+
+fn preset_note_transport_endpoint(endpoint: &Endpoint) -> Option<&'static str> {
+    if endpoint == &Endpoint::testnet() {
+        Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
+    } else if endpoint == &Endpoint::devnet() {
+        Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
+    } else {
+        None
+    }
+}
+
+/// An explicit endpoint always wires the transport; the preset endpoint is
+/// wired only when the RPC config is customized, so a passthrough build
+/// keeps the upstream miden-client transport defaults.
+fn resolved_note_transport_endpoint(
+    endpoint: &Endpoint,
+    note_transport_endpoint: Option<&str>,
+    selection: &RpcSelection,
+) -> Option<String> {
+    if let Some(url) = note_transport_endpoint {
+        return Some(url.to_string());
+    }
+    match selection {
+        RpcSelection::Passthrough => None,
+        RpcSelection::Configured { .. } => {
+            preset_note_transport_endpoint(endpoint).map(str::to_string)
+        }
+    }
+}
+
+fn configured_client_builder(
+    endpoint: &Endpoint,
+    note_transport_endpoint: Option<&str>,
+    prover_config: &ProverConfig,
+    rpc_config: &RpcConfig,
+) -> ClientBuilder<FilesystemKeyStore> {
+    let base = if endpoint == &Endpoint::devnet() {
         ClientBuilder::<FilesystemKeyStore>::for_devnet()
     } else if endpoint == &Endpoint::testnet() {
         ClientBuilder::<FilesystemKeyStore>::for_testnet()
     } else if endpoint == &Endpoint::localhost() {
         ClientBuilder::<FilesystemKeyStore>::for_localhost()
     } else {
-        ClientBuilder::<FilesystemKeyStore>::new().grpc_client(endpoint, Some(20_000))
+        ClientBuilder::<FilesystemKeyStore>::new()
+    };
+
+    let builder = base.rpc(configured_node_rpc_client(endpoint, rpc_config));
+
+    let selection = rpc_config.resolve(DEFAULT_GRPC_TIMEOUT_MS);
+    let builder =
+        match resolved_note_transport_endpoint(endpoint, note_transport_endpoint, &selection) {
+            Some(transport_endpoint) => {
+                let timeout_ms = match &selection {
+                    RpcSelection::Passthrough => DEFAULT_GRPC_TIMEOUT_MS,
+                    RpcSelection::Configured { timeout_ms, .. } => *timeout_ms,
+                };
+                let transport: Arc<dyn NoteTransportClient> =
+                    Arc::new(GrpcNoteTransportClient::new(transport_endpoint, timeout_ms));
+                builder.note_transport(configured_note_transport_client(transport, rpc_config))
+            }
+            None => builder,
+        };
+
+    let default_remote = if endpoint == &Endpoint::devnet() {
+        Some(DEVNET_PROVER_ENDPOINT)
+    } else if endpoint == &Endpoint::testnet() {
+        Some(TESTNET_PROVER_ENDPOINT)
+    } else {
+        None
+    };
+
+    match prover_config.resolve(default_remote) {
+        ProverSelection::Local => builder,
+        ProverSelection::Remote {
+            endpoint,
+            custom: _,
+            retry_policy,
+        } => builder.prover(Arc::new(RetryingTransactionProver::remote(
+            endpoint,
+            retry_policy,
+        ))),
     }
 }
 
@@ -40,15 +151,23 @@ fn configured_client_builder(endpoint: &Endpoint) -> ClientBuilder<FilesystemKey
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
 ///     .guardian_endpoint("http://localhost:50051")
 ///     .account_dir("/tmp/multisig-client")
+///     .prover_config(
+///         miden_multisig_client::ProverConfig::new()
+///             .with_url("https://prover.example")?
+///             .with_retry_policy(miden_multisig_client::ProverRetryPolicy::new(4)),
+///     )
 ///     .generate_key()
 ///     .build()
 ///     .await?;
 /// ```
 pub struct MultisigClientBuilder {
     miden_endpoint: Option<Endpoint>,
+    note_transport_endpoint: Option<String>,
     guardian_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
     key_manager: Option<Arc<dyn KeyManager>>,
+    prover_config: ProverConfig,
+    rpc_config: RpcConfig,
 }
 
 impl Default for MultisigClientBuilder {
@@ -62,9 +181,12 @@ impl MultisigClientBuilder {
     pub fn new() -> Self {
         Self {
             miden_endpoint: None,
+            note_transport_endpoint: None,
             guardian_endpoint: None,
             account_dir: None,
             key_manager: None,
+            prover_config: ProverConfig::new(),
+            rpc_config: RpcConfig::new(),
         }
     }
 
@@ -74,9 +196,32 @@ impl MultisigClientBuilder {
         self
     }
 
+    /// Sets the note transport service endpoint used for private note relay.
+    ///
+    /// Overrides the default derived from the Miden endpoint (the public
+    /// transport services for the testnet and devnet presets). A custom
+    /// Miden node endpoint has no derivable transport service, so this is
+    /// the only way to enable note transport there.
+    pub fn note_transport_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.note_transport_endpoint = Some(endpoint.into());
+        self
+    }
+
     /// Sets the GUARDIAN server endpoint.
     pub fn guardian_endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.guardian_endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Configures the remote transaction prover and its retry policy.
+    pub fn prover_config(mut self, prover_config: ProverConfig) -> Self {
+        self.prover_config = prover_config;
+        self
+    }
+
+    /// Configures the Miden node RPC timeout and idempotent-read retry policy.
+    pub fn rpc_config(mut self, rpc_config: RpcConfig) -> Self {
+        self.rpc_config = rpc_config;
         self
     }
 
@@ -124,6 +269,19 @@ impl MultisigClientBuilder {
             .miden_endpoint
             .ok_or_else(|| MultisigError::MissingConfig("miden_endpoint".to_string()))?;
 
+        let note_transport_endpoint = match self.note_transport_endpoint {
+            Some(endpoint) => {
+                let trimmed = endpoint.trim();
+                if trimmed.is_empty() {
+                    return Err(MultisigError::InvalidConfig(
+                        "note_transport_endpoint must not be empty".to_string(),
+                    ));
+                }
+                Some(trimmed.to_string())
+            }
+            None => None,
+        };
+
         let guardian_endpoint = self
             .guardian_endpoint
             .ok_or_else(|| MultisigError::MissingConfig("guardian_endpoint".to_string()))?;
@@ -139,7 +297,14 @@ impl MultisigClientBuilder {
             MultisigError::MidenClient(format!("failed to create account dir: {}", e))
         })?;
 
-        let miden_client = create_miden_client(&account_dir, &miden_endpoint).await?;
+        let miden_client = create_miden_client(
+            &account_dir,
+            &miden_endpoint,
+            note_transport_endpoint.as_deref(),
+            &self.prover_config,
+            &self.rpc_config,
+        )
+        .await?;
 
         Ok(MultisigClient::new(
             miden_client,
@@ -147,6 +312,9 @@ impl MultisigClientBuilder {
             guardian_endpoint,
             account_dir,
             miden_endpoint,
+            note_transport_endpoint,
+            self.prover_config,
+            self.rpc_config,
         ))
     }
 }
@@ -158,6 +326,9 @@ impl MultisigClientBuilder {
 pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
+    note_transport_endpoint: Option<&str>,
+    prover_config: &ProverConfig,
+    rpc_config: &RpcConfig,
 ) -> Result<MidenSdkClient> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -176,7 +347,7 @@ pub(crate) async fn create_miden_client(
     let rng_seed: [u32; 4] = rand::random();
     let rng = Box::new(RandomCoin::new(rng_seed.into()));
 
-    configured_client_builder(endpoint)
+    configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
         .store(store)
         .rng(rng)
         .tx_discard_delta(Some(20))
@@ -184,4 +355,130 @@ pub(crate) async fn create_miden_client(
         .build()
         .await
         .map_err(|e| MultisigError::MidenClient(format!("failed to create miden client: {}", e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rpc::RpcRetryPolicy;
+
+    fn custom_endpoint() -> Endpoint {
+        Endpoint::new("http".to_string(), "node".to_string(), Some(57291))
+    }
+
+    fn single_attempt_config() -> RpcConfig {
+        RpcConfig::new().with_retry_policy(RpcRetryPolicy::new(1))
+    }
+
+    fn selection(rpc_config: &RpcConfig) -> RpcSelection {
+        rpc_config.resolve(DEFAULT_GRPC_TIMEOUT_MS)
+    }
+
+    #[test]
+    fn note_transport_endpoints_exist_only_for_public_presets() {
+        assert_eq!(
+            preset_note_transport_endpoint(&Endpoint::testnet()),
+            Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
+        );
+        assert_eq!(
+            preset_note_transport_endpoint(&Endpoint::devnet()),
+            Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
+        );
+        assert_eq!(preset_note_transport_endpoint(&Endpoint::localhost()), None);
+        assert_eq!(preset_note_transport_endpoint(&custom_endpoint()), None);
+    }
+
+    #[test]
+    fn explicit_note_transport_endpoint_wires_regardless_of_rpc_config() {
+        assert_eq!(
+            resolved_note_transport_endpoint(
+                &custom_endpoint(),
+                Some("https://transport.internal"),
+                &selection(&single_attempt_config()),
+            ),
+            Some("https://transport.internal".to_string())
+        );
+        assert_eq!(
+            resolved_note_transport_endpoint(
+                &Endpoint::testnet(),
+                Some("https://transport.internal"),
+                &selection(&RpcConfig::new()),
+            ),
+            Some("https://transport.internal".to_string())
+        );
+    }
+
+    #[test]
+    fn preset_note_transport_wires_unless_rpc_config_is_passthrough() {
+        assert_eq!(
+            resolved_note_transport_endpoint(
+                &Endpoint::testnet(),
+                None,
+                &selection(&RpcConfig::new())
+            ),
+            Some(NOTE_TRANSPORT_TESTNET_ENDPOINT.to_string())
+        );
+        assert_eq!(
+            resolved_note_transport_endpoint(
+                &Endpoint::testnet(),
+                None,
+                &selection(&single_attempt_config())
+            ),
+            None
+        );
+        let timeout_only = single_attempt_config().with_timeout_ms(5_000).unwrap();
+        assert_eq!(
+            resolved_note_transport_endpoint(&Endpoint::testnet(), None, &selection(&timeout_only)),
+            Some(NOTE_TRANSPORT_TESTNET_ENDPOINT.to_string())
+        );
+    }
+
+    #[test]
+    fn custom_endpoint_without_override_has_no_note_transport() {
+        assert_eq!(
+            resolved_note_transport_endpoint(
+                &custom_endpoint(),
+                None,
+                &selection(&RpcConfig::new())
+            ),
+            None
+        );
+    }
+
+    /// Guards the `with_max_retries(0)` carve-out over a real gRPC wire: the
+    /// miden-client internal transport-retry loop retransmits rate-limited
+    /// requests — including submissions — up to four extra times per attempt
+    /// when enabled, so two wrapper attempts must reach the node as exactly
+    /// two requests.
+    #[tokio::test]
+    async fn the_inner_miden_client_retry_loop_stays_disabled_over_a_real_wire() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let node = miden_rpc_client::test_node::ScriptedNode::failing(
+            u32::MAX,
+            || tonic::Status::resource_exhausted("Too Many Requests!"),
+            calls.clone(),
+        );
+        let url = miden_rpc_client::test_node::serve(node).await;
+        let address = url
+            .strip_prefix("http://")
+            .expect("scripted node is plain http");
+        let (host, port) = address.rsplit_once(':').expect("endpoint carries a port");
+        let endpoint = Endpoint::new(
+            "http".to_string(),
+            host.to_string(),
+            Some(port.parse().expect("ephemeral port parses")),
+        );
+
+        let rpc_config = RpcConfig::new().with_retry_policy(RpcRetryPolicy::new(2));
+        let client = configured_node_rpc_client(&endpoint, &rpc_config);
+
+        client
+            .get_rpc_limits()
+            .await
+            .expect_err("the scripted node always rate-limits");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 }

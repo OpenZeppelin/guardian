@@ -18,6 +18,12 @@ pub enum AbandonRequestState {
     Pending,
     /// The abandon was already resolved; the account is released.
     Abandoned,
+    /// GUARDIAN had already stopped verifying the candidate and released
+    /// the account slot. Unlocked, but the on-chain outcome is still
+    /// uncertain: background reconciliation may promote the delta to
+    /// canonical until its retention TTL expires. Sync and check the
+    /// chain before replacing it.
+    Retained,
 }
 
 /// Resolution of an abandon request, as observed via the delta feed.
@@ -30,6 +36,13 @@ pub enum AbandonStatus {
     /// The abandon completed; the delta is discarded as client-abandoned
     /// and the account is released.
     Abandoned,
+    /// GUARDIAN stopped verifying and released the account slot, but the
+    /// on-chain outcome is still uncertain — "unlocked but unresolved",
+    /// never to be read as "the transaction did not land". Background
+    /// reconciliation may promote the delta to canonical until its
+    /// retention TTL expires; sync and check the chain before replacing
+    /// it.
+    Retained,
     /// The delta is missing or in a state no abandon flow produces.
     Unexpected,
 }
@@ -250,14 +263,28 @@ impl MultisigClient {
                 .await?;
             signature_advice.push(guardian_advice);
         } else {
-            let _ = self
+            // SwitchGuardian: push the delta to the pre-switch GUARDIAN so it
+            // canonicalizes there and the account is released (issue #305).
+            // Best-effort — an unreachable GUARDIAN must not block the switch —
+            // but the outcome must be observable: a silently lost push leaves
+            // the old GUARDIAN serving a released account (split-brain) with
+            // nothing in any log to diagnose it by.
+            if let Err(error) = self
                 .get_guardian_ack_signature(
                     &account,
                     proposal.nonce,
                     &proposal.tx_summary,
                     tx_summary_commitment,
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    "best-effort SwitchGuardian delta push to the pre-switch \
+                     GUARDIAN failed; it will keep serving this account until \
+                     reconciliation"
+                );
+            }
         }
 
         // Build the final transaction request with all signatures
@@ -616,6 +643,7 @@ impl MultisigClient {
 
         Ok(match response.state.as_str() {
             "abandoned" => AbandonRequestState::Abandoned,
+            "retained" => AbandonRequestState::Retained,
             _ => AbandonRequestState::Pending,
         })
     }
@@ -648,15 +676,25 @@ impl MultisigClient {
             return Ok(AbandonStatus::Unexpected);
         };
 
-        use guardian_client::delta_status::Status as ProtoStatus;
-        Ok(match status.status {
-            Some(ProtoStatus::CandidateAt(_)) => AbandonStatus::Waiting,
-            Some(ProtoStatus::CanonicalAt(_)) => AbandonStatus::Landed,
-            Some(ProtoStatus::DiscardedAt(_)) if status.discard_reason == "client_abandoned" => {
-                AbandonStatus::Abandoned
-            }
-            _ => AbandonStatus::Unexpected,
-        })
+        Ok(classify_abandon_status(&status))
+    }
+}
+
+/// Maps a delta's wire status onto the abandon lifecycle.
+fn classify_abandon_status(status: &guardian_client::DeltaStatus) -> AbandonStatus {
+    use guardian_client::delta_status::Status as ProtoStatus;
+    match status.status {
+        Some(ProtoStatus::CandidateAt(_)) => AbandonStatus::Waiting,
+        Some(ProtoStatus::CanonicalAt(_)) => AbandonStatus::Landed,
+        Some(ProtoStatus::DiscardedAt(_)) if status.discard_reason == "client_abandoned" => {
+            AbandonStatus::Abandoned
+        }
+        // A retained delta no longer holds the account's candidate slot,
+        // but its on-chain outcome is still uncertain: distinct from
+        // `Abandoned`, which would wrongly imply the transaction
+        // definitively did not land.
+        Some(ProtoStatus::RetainedAt(_)) => AbandonStatus::Retained,
+        _ => AbandonStatus::Unexpected,
     }
 }
 
@@ -699,6 +737,7 @@ mod tests {
     use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
     use miden_protocol::{Felt, Word, ZERO};
 
+    use super::{AbandonStatus, classify_abandon_status};
     use crate::error::{MultisigError, Result};
     use crate::proposal::Proposal;
 
@@ -806,5 +845,48 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn abandon_status_classifies_every_wire_status() {
+        use guardian_client::DeltaStatus;
+        use guardian_client::delta_status::Status as ProtoStatus;
+
+        let status = |status: Option<ProtoStatus>, discard_reason: &str| DeltaStatus {
+            status,
+            discard_reason: discard_reason.to_string(),
+            retain_reason: String::new(),
+        };
+
+        let ts = "2026-07-28T00:00:00Z".to_string();
+        assert_eq!(
+            classify_abandon_status(&status(Some(ProtoStatus::CandidateAt(ts.clone())), "")),
+            AbandonStatus::Waiting
+        );
+        assert_eq!(
+            classify_abandon_status(&status(Some(ProtoStatus::CanonicalAt(ts.clone())), "")),
+            AbandonStatus::Landed
+        );
+        assert_eq!(
+            classify_abandon_status(&status(
+                Some(ProtoStatus::DiscardedAt(ts.clone())),
+                "client_abandoned"
+            )),
+            AbandonStatus::Abandoned
+        );
+        // A retained delta has released the account but its outcome is
+        // still uncertain: "unlocked but unresolved", never `Abandoned`.
+        assert_eq!(
+            classify_abandon_status(&status(Some(ProtoStatus::RetainedAt(ts.clone())), "")),
+            AbandonStatus::Retained
+        );
+        assert_eq!(
+            classify_abandon_status(&status(Some(ProtoStatus::DiscardedAt(ts)), "")),
+            AbandonStatus::Unexpected
+        );
+        assert_eq!(
+            classify_abandon_status(&status(None, "")),
+            AbandonStatus::Unexpected
+        );
     }
 }

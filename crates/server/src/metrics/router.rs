@@ -186,7 +186,8 @@ mod tests {
         let handle = recorder.handle();
         metrics::with_local_recorder(&recorder, || {
             metrics::counter!(crate::metrics::names::RATE_LIMIT_REJECTIONS_TOTAL,
-                crate::metrics::names::LABEL_LIMIT_TYPE => "burst")
+                crate::metrics::names::LABEL_LIMIT_TYPE => "burst",
+                crate::metrics::names::LABEL_TRANSPORT => "http")
             .increment(3);
         });
 
@@ -197,7 +198,9 @@ mod tests {
             .unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(
-            text.contains("guardian_rate_limit_rejections_total{limit_type=\"burst\"} 3"),
+            text.contains(
+                "guardian_rate_limit_rejections_total{limit_type=\"burst\",transport=\"http\"} 3"
+            ),
             "missing counter in:\n{text}"
         );
     }

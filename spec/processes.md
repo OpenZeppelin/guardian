@@ -2,7 +2,7 @@
 
 ## Services overview
 
-- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and initial state. EVM accounts are not configured through this service.
+- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and initial state. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. EVM accounts are not configured through this service.
 - **push_delta**: verifies a Miden delta against the current state, computes the new commitment, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
@@ -28,10 +28,12 @@ sequenceDiagram
   S->>S: verify timestamp (within 300s skew window)
   S->>S: validate network_config for account_id
   S->>N: validate_credential(initial_state, credential)
+  S->>N: should_update_auth(initial_state)\n(extract signer map)
+  S->>S: reject unless auth.cosigner_commitments == extracted signer map\n(exact set and order)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_commitment(account_id, initial_state)
   S->>ST: submit_state(state_json, commitment)
-  S->>M: set(account_id, auth, network_config, timestamps, last_auth_timestamp)
+  S->>M: set(account_id, auth, network_config, timestamps)
   S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
 ```
 
@@ -226,12 +228,18 @@ sequenceDiagram
   (10m), check_interval_seconds = 10, fast_promotion_enabled = true,
   fast_promotion_interval_seconds = 3,
   fast_promotion_window_seconds = 30, max_retries = 48,
-  divergence_confirmations = 2, max_concurrent_accounts = 10.
+  divergence_confirmations = 2, max_concurrent_accounts = 10,
+  retained_ttl_seconds = 86400 (24h; 0 disables retention and restores
+  the historical delete-on-give-up behavior),
+  reconcile_interval_seconds = 60, reconcile_page_size = 100.
 - These values are configured in code, not through server env vars. The
   exceptions are `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED=false`,
-  which disables the promotion-only pass, and
+  which disables the promotion-only pass,
   `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS`, which overrides account
-  concurrency at startup.
+  concurrency at startup, `GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS`,
+  which overrides the retained TTL (`0` is the runtime kill switch for
+  retention), and `GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS`,
+  which overrides the reconcile pass cadence.
 
 ### Worker Behavior
 - A full pass runs every `check_interval_seconds` and owns all retry,
@@ -272,7 +280,12 @@ sequenceDiagram
     - Matches the candidate's `prev_commitment` (its transaction has not
       landed yet), or the comparison itself failed (RPC error): defer within
       `submission_grace_period_seconds`, then consume retry budget on each
-      full-pass tick and discard after `max_retries`.
+      full-pass tick. After `max_retries` the candidate is parked as
+      `retained` with reason `retry_exhausted` (issue #345) — not deleted —
+      the account's pending-candidate flag is cleared, and the matching
+      proposal is deleted (the delta row carries everything reconciliation
+      needs; a proposal left `pending` would be stranded forever the moment
+      a resubmission supersedes the retained row).
     - Matches the candidate's `prev_commitment` AND the candidate carries a
       client abandon intent (`abandon_requested_at`, recorded by
       `POST /delta/candidate/abandon`): count the observation toward the
@@ -285,13 +298,67 @@ sequenceDiagram
       and clear the pending-candidate flag. A divergent observation resets
       the abandon-confirmation streak; a landed transaction always wins
       and canonicalizes normally.
-    - Matches neither — the account advanced past the candidate's base
-      state, so the candidate can never verify: after
-      `divergence_confirmations` consecutive such observations (default 2,
-      to tolerate a single stale RPC read) discard immediately, bypassing
-      the grace period, delete the matching proposal, and clear the
-      account's pending-candidate flag so new proposals stop returning
-      `409 conflict_pending_delta`.
+    - Matches neither — the account appears to have advanced past the
+      candidate's base state: after `divergence_confirmations` consecutive
+      such observations (default 2, to tolerate a single stale RPC read),
+      bypass the grace period and park the candidate as `retained` with
+      reason `diverged` (issue #345), clearing the account's
+      pending-candidate flag so new proposals stop returning
+      `409 conflict_pending_delta`. Retention (rather than deletion)
+      matters because a diverged verdict is an observation, not proof —
+      a lagging RPC node can produce one for a transaction that landed.
+      With `retained_ttl_seconds = 0` the historical behavior applies:
+      delete the delta and its matching proposal.
+- Recoverable deltas — `retained` rows, plus
+  `discarded { client_abandoned }` rows no older than
+  `retained_ttl_seconds` (the abandon quarantine cannot fully rule out a
+  late-landing transaction; one that lands after the abandon finalizes
+  leaves stored state behind chain, and the preserved row holds
+  everything needed to recover) — are swept by a dedicated reconcile
+  pass, never by the full pass. It runs every
+  `reconcile_interval_seconds` (default 60), visits at most
+  `reconcile_page_size` accounts per pass under a rotation cursor
+  (a backlog larger than one page drains breadth-first across passes),
+  and stops admitting work at the next full-pass tick, so
+  reconciliation can never delay ordinary candidate processing. Per
+  visited account, in order:
+  - Skip the account entirely while it has an in-flight candidate
+    (reconciliation never runs under a pending candidate — promoting
+    would move the stored base out from under a signed proposal).
+  - Drop any retained delta older than `retained_ttl_seconds` before
+    any network work. Expired client-abandoned rows are merely dropped
+    from the scan — they are preserved history, never deleted.
+  - Back off aged rows: for its first 15 minutes a recoverable row is
+    reconsidered on every reconcile tick; after that the spacing doubles
+    per 15 minutes of age, capped at 10 minutes. The schedule is derived
+    purely from the row's age (no persisted cursor), so it survives
+    restarts and lease failover and every replica computes the same
+    answer.
+  - Retry proposal cleanup for retained rows whose matching proposal
+    could not be deleted at retain time.
+  - Probe the chain once against the stored state commitment. A match
+    (or an absent on-chain account) means nothing recoverable can have
+    landed — the pass stops there, with no state reconstruction at all.
+  - Only when the chain moved past the stored base: select the
+    recoverable row whose submission-computed `new_commitment` equals
+    the observed on-chain commitment (rows without a stored hint fall
+    back to reconstruct-and-compare), reconstruct that path from the
+    stored base — reconstruction remains mandatory, the hint alone never
+    promotes — and require the recomputed commitment to equal the
+    observed one before the same fenced promotion the candidate pass
+    uses (auto-recovering an account whose stored state fell behind the
+    chain). Anything else waits for a later tick — the TTL is the only
+    bound.
+  - A new candidate submission at a retained or client-abandoned delta's
+    nonce supersedes (deletes) that row inside the submission
+    transaction — without the abandoned-row supersede, the resubmission
+    the abandon endpoint exists to enable would be refused forever at
+    the nonce's unique constraint. Deltas are unique per
+    `(account_id, nonce)` and admission requires chaining from the
+    current canonical head, so same-nonce supersede is the only
+    replacement path; a retained row orphaned by an out-of-band base
+    move (e.g. `configure`) can never promote — the base gate rules it
+    out — and ages out through the TTL.
 
 EVM proposals are not processed by Miden canonicalization. They are stored in the EVM proposal store and deleted lazily when expired or when the configured EntryPoint nonce indicates finality.
 
@@ -344,7 +411,11 @@ sequenceDiagram
 ```
 
 ### State Machine
-- candidate -> canonical | discarded. Discarded deltas MUST NOT be returned by default APIs.
+- candidate -> canonical | retained | discarded; retained -> canonical
+  (reconciled) | superseded (deleted by a new submission at its nonce) |
+  dropped (TTL expiry); discarded{client_abandoned} -> canonical
+  (late-landing reconcile, within the TTL) | superseded (new submission
+  at its nonce). Discarded deltas MUST NOT be returned by default APIs.
 
 ### Failure Handling
 - Transient failures SHOULD be retried with backoff. Malformed candidates SHOULD be quarantined with logs/metrics.

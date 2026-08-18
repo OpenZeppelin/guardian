@@ -71,6 +71,9 @@ import {
   DEFAULT_GUARDIAN_ENDPOINT,
   DEFAULT_MIDEN_DB_NAME,
   DEFAULT_MIDEN_RPC_URL,
+  DEFAULT_PROVER_MAX_ATTEMPTS,
+  DEFAULT_RPC_MAX_ATTEMPTS,
+  DEFAULT_PROVER_URL,
 } from './config';
 
 export interface SessionConfig {
@@ -155,6 +158,12 @@ export interface SmokeApi {
   executeCustomProposal(input: ExecuteCustomProposalInput): Promise<BrowserSessionSnapshot>;
   signProposal(input: { proposalId: string }): Promise<Array<ReturnType<typeof serializeProposal>>>;
   executeProposal(input: { proposalId: string }): Promise<BrowserSessionSnapshot>;
+  getP2idNoteId(input: { proposalId: string }): Promise<{ noteId: string }>;
+  exportNote(input: { noteId: string }): Promise<{ noteId: string; noteFileBase64: string }>;
+  importNote(input: { noteFileBase64: string }): Promise<{
+    noteId: string;
+    status: BrowserSessionSnapshot;
+  }>;
   exportProposal(input: { proposalId: string }): Promise<{ json: string }>;
   signProposalOffline(input: SignProposalOfflineInput): Promise<{
     proposalId: string;
@@ -240,6 +249,24 @@ async function waitForCondition(
     }
     await sleep(intervalMs);
   }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    chunks.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)));
+  }
+  return btoa(chunks.join(''));
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 async function syncBrowserClientState(client: MidenClient): Promise<void> {
@@ -653,6 +680,11 @@ export function useSmokeHarness(): {
                 nextClient,
                 nextConfig.guardianEndpoint,
                 nextConfig.midenRpcEndpoint,
+                {
+                  url: DEFAULT_PROVER_URL,
+                  retry: { maxAttempts: DEFAULT_PROVER_MAX_ATTEMPTS },
+                },
+                { retry: { maxAttempts: DEFAULT_RPC_MAX_ATTEMPTS } },
               );
               const nextSigners = applySignatureScheme(
                 await initializeLocalSigners(),
@@ -1249,6 +1281,77 @@ export function useSmokeHarness(): {
     [multisigRef, withCommand],
   );
 
+  const getP2idNoteId = useCallback(
+    async ({ proposalId }: { proposalId: string }): Promise<{ noteId: string }> =>
+      withCommand('getP2idNoteId', async () => {
+        requireSessionReady();
+        const currentMultisig = multisigRef.current;
+        if (!currentMultisig) {
+          throw new Error('No multisig account is loaded');
+        }
+
+        const normalized = proposalId.trim().toLowerCase().replace(/^0x/, '');
+        const proposal = proposalsRef.current.find(
+          (candidate) => candidate.id.toLowerCase().replace(/^0x/, '') === normalized,
+        );
+        if (!proposal) {
+          throw new Error(`Proposal not found: ${proposalId}`);
+        }
+
+        return { noteId: await currentMultisig.getP2idNoteId(proposal) };
+      }),
+    [multisigRef, proposalsRef, withCommand],
+  );
+
+  const exportNote = useCallback(
+    async ({
+      noteId,
+    }: {
+      noteId: string;
+    }): Promise<{ noteId: string; noteFileBase64: string }> =>
+      withCommand('exportNote', async () => {
+        requireSessionReady();
+        const currentMultisig = multisigRef.current;
+        if (!currentMultisig) {
+          throw new Error('No multisig account is loaded');
+        }
+
+        const trimmedNoteId = noteId.trim();
+        const noteFileBytes = await currentMultisig.exportNoteToBytes(trimmedNoteId);
+        return { noteId: trimmedNoteId, noteFileBase64: bytesToBase64(noteFileBytes) };
+      }),
+    [multisigRef, withCommand],
+  );
+
+  const importNote = useCallback(
+    async ({
+      noteFileBase64,
+    }: {
+      noteFileBase64: string;
+    }): Promise<{ noteId: string; status: BrowserSessionSnapshot }> =>
+      withCommand('importNote', async () => {
+        requireSessionReady();
+        const currentMultisig = multisigRef.current;
+        if (!currentMultisig) {
+          throw new Error('No multisig account is loaded');
+        }
+
+        const noteId = await currentMultisig.importNoteFromBytes(base64ToBytes(noteFileBase64.trim()));
+        const refreshed = await refreshMultisigState(currentMultisig);
+        return {
+          noteId,
+          status: buildCurrentSnapshot({
+            guardianState: refreshed.state,
+            detectedConfig: refreshed.config,
+            proposals: refreshed.proposals,
+            consumableNotes: refreshed.notes,
+            lastError: null,
+          }),
+        };
+      }),
+    [buildCurrentSnapshot, multisigRef, refreshMultisigState, withCommand],
+  );
+
   const signProposalOffline = useCallback(
     async (
       input: SignProposalOfflineInput,
@@ -1375,6 +1478,9 @@ export function useSmokeHarness(): {
     executeCustomProposal,
     signProposal,
     executeProposal,
+    getP2idNoteId,
+    exportNote,
+    importNote,
     exportProposal,
     signProposalOffline,
     importProposal,

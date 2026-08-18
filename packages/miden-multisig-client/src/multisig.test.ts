@@ -8,10 +8,11 @@ import {
   executeForSummary,
 } from './transaction.js';
 
-const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig } = vi.hoisted(() => ({
+const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig, mockNoteFileDeserialize } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
   mockDetectConfig: vi.fn(),
+  mockNoteFileDeserialize: vi.fn(),
 }));
 
 // Mock the Miden SDK
@@ -25,6 +26,14 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   NoteType: {
     Private: 0,
     Public: 1,
+  },
+  NoteExportFormat: {
+    Id: 0,
+    Full: 1,
+    Details: 2,
+  },
+  NoteFile: {
+    deserialize: mockNoteFileDeserialize,
   },
   TransactionSummary: {
     deserialize: vi.fn().mockReturnValue({
@@ -91,6 +100,9 @@ vi.mock('./transaction.js', () => ({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
   }),
+  buildP2idNoteFromMetadata: vi.fn().mockReturnValue({
+    id: () => ({ toString: () => '0x' + 'ab'.repeat(32) }),
+  }),
   // Mirrors the real implementations against the mocked NoteType values
   // (Private = 0, Public = 1).
   parseP2idNoteType: vi.fn((value?: string) => {
@@ -156,7 +168,8 @@ describe('Multisig', () => {
   function createTestMultisig(
     config: ConstructorParameters<typeof Multisig>[1],
     signer: Signer = mockSigner,
-    accountId?: string
+    accountId?: string,
+    proverConfig?: ConstructorParameters<typeof Multisig>[7],
   ): Multisig {
     return new Multisig(
       mockAccount,
@@ -165,7 +178,8 @@ describe('Multisig', () => {
       signer,
       mockWebClient,
       accountId,
-      MIDEN_RPC_ENDPOINT
+      MIDEN_RPC_ENDPOINT,
+      proverConfig,
     );
   }
 
@@ -225,13 +239,38 @@ describe('Multisig', () => {
       submitNewTransaction: vi.fn(),
       submitNewTransactionWithProver: vi.fn(),
       transactions: {
-        submit: vi.fn(),
+        executeRequest: vi.fn(),
       },
       getConsumableNotes: vi.fn().mockResolvedValue([]),
       syncState: vi.fn(),
       getAccount: vi.fn().mockResolvedValue(null),
       newAccount: vi.fn(),
     };
+    mockWebClient.transactions.executeRequest.mockImplementation(
+      async (accountId: unknown, request: unknown) => {
+        const result = await mockWebClient.executeTransaction(accountId, request);
+        return {
+          result,
+          prove: async (options?: { prover?: unknown }) => {
+            const proof = options?.prover === undefined
+              ? await mockWebClient.proveTransaction(result)
+              : await mockWebClient.proveTransaction(result, options.prover);
+            return {
+              proof,
+              result,
+              submit: async () => {
+                const blockNumber = await mockWebClient.submitProvenTransaction(proof, result);
+                return {
+                  blockNumber,
+                  result,
+                  apply: () => mockWebClient.applyTransaction(result, blockNumber),
+                };
+              },
+            };
+          },
+        };
+      },
+    );
   });
 
   describe('constructor', () => {
@@ -1395,6 +1434,154 @@ describe('Multisig', () => {
     });
   });
 
+  describe('exportNoteToBytes / importNoteFromBytes (issue #356)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + '1'.repeat(64)],
+      guardianCommitment: '0x' + '3'.repeat(64),
+    };
+
+    it('exports the full note with proof when the inclusion proof is known', async () => {
+      const noteFile = { serialize: () => new Uint8Array([9, 9, 9]) };
+      mockWebClient.getOutputNote = vi.fn().mockResolvedValue({
+        inclusionProof: () => ({}),
+      });
+      mockWebClient.exportNoteFile = vi.fn().mockResolvedValue(noteFile);
+
+      const multisig = createTestMultisig(config);
+      const bytes = await multisig.exportNoteToBytes('0x' + 'ab'.repeat(32));
+
+      expect(bytes).toEqual(new Uint8Array([9, 9, 9]));
+      // NoteExportFormat.Full = 1 in the SDK mock
+      expect(mockWebClient.exportNoteFile).toHaveBeenCalledWith('0x' + 'ab'.repeat(32), 1);
+    });
+
+    it('falls back to a details-only export before the note commits on chain', async () => {
+      const noteFile = { serialize: () => new Uint8Array([7]) };
+      mockWebClient.getOutputNote = vi.fn().mockResolvedValue({
+        inclusionProof: () => undefined,
+      });
+      mockWebClient.exportNoteFile = vi.fn().mockResolvedValue(noteFile);
+
+      const multisig = createTestMultisig(config);
+      await multisig.exportNoteToBytes(' 0x' + 'ab'.repeat(32) + ' ');
+
+      // NoteExportFormat.Details = 2 in the SDK mock; the id is trimmed
+      expect(mockWebClient.exportNoteFile).toHaveBeenCalledWith('0x' + 'ab'.repeat(32), 2);
+    });
+
+    it('rejects exporting a note the local store does not know', async () => {
+      mockWebClient.getOutputNote = vi.fn().mockRejectedValue(new Error('no such note'));
+      mockWebClient.exportNoteFile = vi.fn();
+
+      const multisig = createTestMultisig(config);
+      await expect(multisig.exportNoteToBytes('0x' + 'ab'.repeat(32))).rejects.toThrow(
+        /not found in the local store/,
+      );
+      expect(mockWebClient.exportNoteFile).not.toHaveBeenCalled();
+    });
+
+    it('rejects exporting when the store resolves no record', async () => {
+      mockWebClient.getOutputNote = vi.fn().mockResolvedValue(undefined);
+      mockWebClient.exportNoteFile = vi.fn();
+
+      const multisig = createTestMultisig(config);
+      await expect(multisig.exportNoteToBytes('0x' + 'ab'.repeat(32))).rejects.toThrow(
+        /not found in the local store/,
+      );
+      expect(mockWebClient.exportNoteFile).not.toHaveBeenCalled();
+    });
+
+    it('imports note file bytes and returns the resolved identifier', async () => {
+      const decoded = { marker: 'note-file' };
+      mockNoteFileDeserialize.mockReturnValue(decoded);
+      mockWebClient.importNoteFile = vi.fn().mockResolvedValue('0x' + 'cd'.repeat(32));
+
+      const multisig = createTestMultisig(config);
+      const noteId = await multisig.importNoteFromBytes(new Uint8Array([1, 2, 3]));
+
+      expect(mockNoteFileDeserialize).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
+      expect(mockWebClient.importNoteFile).toHaveBeenCalledWith(decoded);
+      expect(noteId).toBe('0x' + 'cd'.repeat(32));
+    });
+
+    it('rejects bytes that do not decode as a note file', async () => {
+      mockNoteFileDeserialize.mockImplementation(() => {
+        throw new Error('bad bytes');
+      });
+      mockWebClient.importNoteFile = vi.fn();
+
+      const multisig = createTestMultisig(config);
+      await expect(multisig.importNoteFromBytes(new Uint8Array([0]))).rejects.toThrow(
+        /failed to decode note file: bad bytes/,
+      );
+      expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('exportNoteToFile / importNoteFromFile (issue #356)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + '1'.repeat(64)],
+      guardianCommitment: '0x' + '3'.repeat(64),
+    };
+
+    it('rejects exportNoteToFile outside a browser environment', async () => {
+      const multisig = createTestMultisig(config);
+      await expect(multisig.exportNoteToFile('0x' + 'ab'.repeat(32))).rejects.toThrow(
+        /requires a browser environment/,
+      );
+    });
+
+    it('imports from a File/Blob by delegating to importNoteFromBytes', async () => {
+      const decoded = { marker: 'note-file' };
+      mockNoteFileDeserialize.mockReturnValue(decoded);
+      mockWebClient.importNoteFile = vi.fn().mockResolvedValue('0x' + 'cd'.repeat(32));
+
+      const multisig = createTestMultisig(config);
+      const noteId = await multisig.importNoteFromFile(new Blob([new Uint8Array([1, 2, 3])]));
+
+      expect(mockNoteFileDeserialize).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
+      expect(noteId).toBe('0x' + 'cd'.repeat(32));
+    });
+  });
+
+  describe('getP2idNoteId (issue #356)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + '1'.repeat(64)],
+      guardianCommitment: '0x' + '3'.repeat(64),
+    };
+
+    it('computes the deterministic note ID from p2id proposal metadata', async () => {
+      const multisig = createTestMultisig(config);
+      const proposal = {
+        metadata: {
+          proposalType: 'p2id',
+          recipientId: '0x' + 'b'.repeat(30),
+          faucetId: '0x' + 'c'.repeat(30),
+          amount: '100',
+          saltHex: '0x' + 'd'.repeat(64),
+          noteType: 'private',
+        },
+      } as any;
+
+      const noteId = await multisig.getP2idNoteId(proposal);
+      expect(noteId).toBe('0x' + 'ab'.repeat(32));
+    });
+
+    it('rejects non-p2id proposals', async () => {
+      const multisig = createTestMultisig(config);
+      const proposal = {
+        metadata: { proposalType: 'consume_notes' },
+      } as any;
+
+      await expect(multisig.getP2idNoteId(proposal)).rejects.toThrow(
+        /requires a P2ID proposal/,
+      );
+    });
+  });
+
   describe('createChangeThresholdProposal', () => {
     it('passes the signer scheme to update-signers requests', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
@@ -2103,12 +2290,13 @@ describe('Multisig', () => {
         ok: false,
         status: 404,
         statusText: 'Not Found',
+        headers: new Headers(),
         // Feature 009: only a conforming { code, message, meta } envelope is
         // folded into the error message; raw text bodies are dropped.
         text: async () =>
           JSON.stringify({
             code: 'proposal_not_found',
-            message: 'Proposal not found for the requested commitment',
+            message: 'Proposal not found',
             meta: { retryable: false },
           }),
       });
@@ -2968,7 +3156,11 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
       };
 
-      const multisig = createTestMultisig(config, ecdsaSigner);
+      const multisig = createTestMultisig(config, ecdsaSigner, undefined, {
+        kind: 'remote',
+        maxAttempts: 2,
+        createProver: () => ({} as never),
+      });
       const proposalId = '0x' + 'c'.repeat(64);
       const cosignerPubkey = '0x' + '3'.repeat(66);
       const ackPubkey = '0x' + '4'.repeat(66);
@@ -3033,10 +3225,21 @@ describe('Multisig', () => {
           ack_scheme: 'ecdsa',
         }),
       });
-      mockWebClient.transactions.submit.mockResolvedValueOnce({});
-
-      await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
-      expect(mockWebClient.transactions.submit).toHaveBeenCalledTimes(1);
+      mockWebClient.proveTransaction
+        .mockRejectedValueOnce(Object.assign(new Error('unavailable'), { code: 'Unavailable' }))
+        .mockResolvedValueOnce({});
+      vi.useFakeTimers();
+      try {
+        const execution = multisig.executeProposal(proposalId);
+        await vi.runAllTimersAsync();
+        await expect(execution).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(2);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
 
       expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
         1,
@@ -3148,9 +3351,11 @@ describe('Multisig', () => {
           ack_scheme: 'ecdsa',
         }),
       });
-      mockWebClient.transactions.submit.mockResolvedValueOnce({});
-
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
 
       expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
         1,
@@ -3257,10 +3462,11 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
       });
-      mockWebClient.transactions.submit.mockResolvedValueOnce({});
-
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
-      expect(mockWebClient.transactions.submit).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
     });
 
     it('should still switch GUARDIAN when the pre-switch canonicalization push fails', async () => {
@@ -3308,10 +3514,11 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
       });
-      mockWebClient.transactions.submit.mockResolvedValueOnce({});
-
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
-      expect(mockWebClient.transactions.submit).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
     });
 
     it('should reject switch_guardian execution when endpoint commitment mismatches', async () => {
@@ -3447,6 +3654,45 @@ describe('Multisig', () => {
       await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
         'Duplicate advice-map key detected',
       );
+    });
+  });
+
+  describe('submitTransaction', () => {
+    it('uses the configured total proof-attempt budget without repeating other stages', async () => {
+      const multisig = createTestMultisig(
+        {
+          threshold: 1,
+          signerCommitments: ['0x' + 'a'.repeat(64)],
+          guardianCommitment: '0x' + 'c'.repeat(64),
+        },
+        mockSigner,
+        undefined,
+        {
+          kind: 'remote',
+          maxAttempts: 4,
+          createProver: () => ({} as never),
+        },
+      );
+      const transient = Object.assign(new Error('unavailable'), { code: 'Unavailable' });
+      mockWebClient.proveTransaction
+        .mockRejectedValueOnce(transient)
+        .mockRejectedValueOnce(transient)
+        .mockRejectedValueOnce(transient)
+        .mockResolvedValueOnce({});
+
+      vi.useFakeTimers();
+      try {
+        const submission = multisig.submitTransaction({} as never);
+        await vi.runAllTimersAsync();
+        await submission;
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(4);
+      expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
     });
   });
 

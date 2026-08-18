@@ -87,19 +87,31 @@ variable "postgres_password" {
 }
 
 variable "domain_name" {
-  description = "Root domain name for the HTTPS endpoint (e.g., openzeppelin.com)"
+  description = "Root domain name for the canonical HTTPS endpoint (e.g., example.com)"
   type        = string
   default     = "openzeppelin.com"
 }
 
 variable "subdomain" {
-  description = "Subdomain for the service (e.g., guardian -> guardian.openzeppelin.com). Empty uses the root domain."
+  description = "Subdomain for the canonical service hostname (e.g., guardian -> guardian.example.com). Empty uses the root domain."
   type        = string
   default     = "guardian"
 }
 
 variable "acm_certificate_arn" {
-  description = "ACM certificate ARN for the service domain (e.g., guardian-stg.openzeppelin.com)"
+  description = "ACM certificate ARN for the canonical service hostname"
+  type        = string
+  default     = ""
+}
+
+variable "alias_subdomain" {
+  description = "Migration-only legacy subdomain under domain_name pointing to the same ALB. Terraform manages its DNS record only when a DNS provider is configured; external DNS is supported. Leave empty for normal deployments."
+  type        = string
+  default     = ""
+}
+
+variable "alias_acm_certificate_arn" {
+  description = "Migration-only ACM certificate ARN for the legacy hostname. When empty, acm_certificate_arn is reused and must cover both names."
   type        = string
   default     = ""
 }
@@ -261,15 +273,21 @@ variable "rds_backup_retention_days" {
 }
 
 variable "rds_deletion_protection" {
-  description = "Whether to enable deletion protection for RDS"
+  description = "Optional override for RDS deletion protection; defaults to true in prod, false otherwise"
   type        = bool
-  default     = false
+  default     = null
 }
 
 variable "rds_skip_final_snapshot" {
-  description = "Whether to skip the final snapshot when destroying RDS"
+  description = "Optional override for skipping the final snapshot when destroying RDS; defaults to false in prod, true otherwise"
   type        = bool
-  default     = true
+  default     = null
+}
+
+variable "rds_multi_az" {
+  description = "Whether the RDS instance runs as a Multi-AZ deployment with a standby replica"
+  type        = bool
+  default     = false
 }
 
 variable "rds_publicly_accessible" {
@@ -291,13 +309,13 @@ variable "rds_proxy_route_database_url" {
 }
 
 variable "guardian_rate_burst_per_sec" {
-  description = "Optional override for the Guardian HTTP burst rate limit"
+  description = "Optional override for the Guardian burst rate limit (HTTP and gRPC)"
   type        = number
   default     = null
 }
 
 variable "guardian_rate_per_min" {
-  description = "Optional override for the Guardian HTTP sustained rate limit"
+  description = "Optional override for the Guardian sustained rate limit (HTTP and gRPC)"
   type        = number
   default     = null
 }
@@ -386,7 +404,7 @@ variable "server_deployment_maximum_percent" {
 }
 
 variable "guardian_rate_limit_enabled" {
-  description = "Optional override to enable or disable Guardian HTTP rate limiting"
+  description = "Optional override to enable or disable Guardian rate limiting (HTTP and gRPC)"
   type        = bool
   default     = null
 }

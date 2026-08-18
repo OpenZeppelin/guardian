@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GuardianHttpClient, GuardianHttpError } from './http.js';
 import type { Signer, ConfigureResponse, StateObject, DeltaObject, DeltaProposalResponse } from './types.js';
@@ -60,6 +61,7 @@ describe('GuardianHttpClient', () => {
     it('should throw GuardianHttpError on non-ok response', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 500,
         statusText: 'Internal Server Error',
         text: async () => 'Server error message',
@@ -77,6 +79,7 @@ describe('GuardianHttpClient', () => {
     it('exposes code and released_at from a GUARDIAN_ACCOUNT_RELEASED envelope', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 409,
         statusText: 'Conflict',
         text: async () =>
@@ -98,6 +101,7 @@ describe('GuardianHttpClient', () => {
     it('exposes code without releasedAt for other envelope errors', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 404,
         statusText: 'Not Found',
         text: async () =>
@@ -152,6 +156,7 @@ describe('GuardianHttpClient', () => {
     it('should throw GuardianHttpError on non-ok response', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 503,
         statusText: 'Service Unavailable',
         text: async () => 'down',
@@ -497,6 +502,7 @@ describe('GuardianHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 409,
         statusText: 'Conflict',
         text: async () =>
@@ -521,6 +527,7 @@ describe('GuardianHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 404,
         statusText: 'Not Found',
         text: async () =>
@@ -569,6 +576,24 @@ describe('GuardianHttpClient', () => {
       expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('landed');
     });
 
+    it('classifies a retained delta as retained, not abandoned (issue #345)', async () => {
+      // The Guardian gave up verifying and released the account, but the
+      // on-chain outcome is still uncertain: 'retained' means "unlocked
+      // but unresolved" — reporting it as 'abandoned' would wrongly
+      // imply the transaction definitively did not land.
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          serverDelta({
+            status: 'retained',
+            timestamp: '2026-07-14T12:00:00Z',
+            reason: 'retry_exhausted',
+          }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('retained');
+    });
+
     it('classifies a client-abandoned discard as abandoned', async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
@@ -594,6 +619,7 @@ describe('GuardianHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 404,
         statusText: 'Not Found',
         text: async () =>
@@ -934,6 +960,7 @@ describe('GuardianHttpClient', () => {
       client.setSigner(signer);
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 401,
         statusText: 'Unauthorized',
         text: async () => '{"code":"authentication_failed","error":"..."}',
@@ -996,6 +1023,35 @@ describe('GuardianHttpError', () => {
     expect(plain.meta).toBeUndefined();
   });
 
+  describe('retry classification (shared fixture)', () => {
+    interface FixtureCase {
+      name: string;
+      body: Record<string, unknown> | null;
+      http: { status: number; retryAfterHeader?: string };
+      expected: { retryable: boolean; retryAfterSecs: number | null };
+    }
+
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL('../../../fixtures/guardian-client/rate-limit-policy.json', import.meta.url),
+        'utf-8'
+      )
+    ) as { cases: FixtureCase[] };
+
+    it.each(fixture.cases.map((c) => [c.name, c] as const))('%s', (_name, c) => {
+      const body = c.body === null ? 'plain failure' : JSON.stringify(c.body);
+      const error = new GuardianHttpError(
+        c.http.status,
+        'error',
+        body,
+        c.http.retryAfterHeader ?? null
+      );
+
+      expect(error.isRetryable()).toBe(c.expected.retryable);
+      expect(error.retryAfterSecs()).toBe(c.expected.retryAfterSecs ?? undefined);
+    });
+  });
+
   describe('error envelope contract (account-paused path)', () => {
     let client: GuardianHttpClient;
     beforeEach(() => {
@@ -1022,6 +1078,7 @@ describe('GuardianHttpError', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 409,
         statusText: 'Conflict',
         text: async () => JSON.stringify(envelope),
@@ -1070,6 +1127,7 @@ describe('GuardianHttpError', () => {
       // and the final attempt throws the typed error.
       mockFetch.mockResolvedValue({
         ok: false,
+        headers: new Headers(),
         status: 401,
         statusText: 'Unauthorized',
         text: async () => JSON.stringify(envelope),

@@ -6,10 +6,13 @@
 use miden_client::note::NoteConsumptionStatus;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
+use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteId;
+use miden_standards::note::P2idNote;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
+use crate::proposal::{Proposal, TransactionType};
 
 /// A wrapper type for a consumable note with simplified information.
 #[derive(Debug, Clone)]
@@ -102,7 +105,7 @@ impl MultisigClient {
             .get_consumable_notes(Some(account_id))
             .await
             .map_err(|e| {
-                MultisigError::MidenClient(format!("failed to get consumable notes: {}", e))
+                MultisigError::miden_client_with_context("failed to get consumable notes", e)
             })?;
 
         // Convert to our wrapper type, filtering for notes consumable
@@ -142,7 +145,7 @@ impl MultisigClient {
             .miden_client
             .get_consumable_notes(Some(account_id))
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to get notes: {}", e)))?;
+            .map_err(|e| MultisigError::miden_client_with_context("failed to get notes", e))?;
 
         let result = notes
             .into_iter()
@@ -171,7 +174,7 @@ impl MultisigClient {
             .miden_client
             .get_consumable_notes(Some(account_id))
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to get notes: {}", e)))?;
+            .map_err(|e| MultisigError::miden_client_with_context("failed to get notes", e))?;
 
         let result = notes
             .into_iter()
@@ -234,6 +237,53 @@ impl MultisigClient {
             .collect();
 
         Ok(filtered)
+    }
+
+    /// Computes the ID of the note a P2ID proposal will create when executed.
+    ///
+    /// The P2ID note is rebuilt deterministically from the proposal salt, so
+    /// the ID is known ahead of execution. For a private P2ID this is the ID
+    /// to pass to `export_note_to_file` after executing, so the note file can be
+    /// delivered to the recipient out-of-band (issue #356).
+    ///
+    /// Call this before executing the proposal: the asset is derived from the
+    /// current vault state, which execution itself changes.
+    pub fn p2id_note_id(&self, proposal: &Proposal) -> Result<NoteId> {
+        let account = self.require_account()?;
+        let TransactionType::P2ID {
+            recipient,
+            faucet_id,
+            amount,
+            note_type,
+        } = &proposal.transaction_type
+        else {
+            return Err(MultisigError::UnsupportedTransactionType(
+                "p2id_note_id requires a P2ID proposal".to_string(),
+            ));
+        };
+
+        if proposal.metadata.salt_hex.is_none() {
+            return Err(MultisigError::InvalidConfig(
+                "p2id_note_id requires proposal metadata with a salt".to_string(),
+            ));
+        }
+        let salt = proposal.metadata.salt()?;
+        let asset = crate::execution::build_transfer_asset(*faucet_id, *amount)?;
+
+        let mut rng = RandomCoin::new(salt);
+        let note: miden_protocol::note::Note = P2idNote::builder()
+            .sender(account.id())
+            .target(*recipient)
+            .asset(asset)
+            .note_type(*note_type)
+            .generate_serial_number(&mut rng)
+            .build()
+            .map_err(|e| {
+                MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
+            })?
+            .into();
+
+        Ok(note.id())
     }
 }
 

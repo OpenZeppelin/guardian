@@ -88,6 +88,30 @@ function buildP2idNote(
   return new Note(noteAssets, noteMetadata, noteRecipient);
 }
 
+/**
+ * Rebuilds the P2ID note a proposal creates, from its metadata fields. The
+ * note is deterministic in the salt, so the resulting ID matches the note the
+ * proposal produces on execution (issue #356). Since Miden 0.16, the asset
+ * callback flag is encoded in the faucet account ID.
+ */
+export function buildP2idNoteFromMetadata(
+  senderId: string,
+  recipientId: string,
+  faucetId: string,
+  amount: bigint,
+  noteType: NoteType,
+  saltHex: string,
+): Note {
+  const sender = AccountId.fromHex(senderId);
+  const recipient = AccountId.fromHex(recipientId);
+  const faucet = AccountId.fromHex(faucetId);
+
+  const asset = new FungibleAsset(faucet, amount);
+  const noteAssets = new NoteAssets([asset]);
+
+  return buildP2idNote(sender, recipient, noteAssets, noteType, saltHex);
+}
+
 export function buildP2idTransactionRequest(
   senderId: string,
   recipientId: string,
@@ -95,19 +119,13 @@ export function buildP2idTransactionRequest(
   amount: bigint,
   options: P2idTransactionOptions = {},
 ): { request: TransactionRequest; salt: Word } {
-  const sender = AccountId.fromHex(senderId);
-  const recipient = AccountId.fromHex(recipientId);
-  const faucet = AccountId.fromHex(faucetId);
-
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
-  const asset = new FungibleAsset(faucet, amount);
-  const noteAssets = new NoteAssets([asset]);
-
-  const note = buildP2idNote(
-    sender,
-    recipient,
-    noteAssets,
+  const note = buildP2idNoteFromMetadata(
+    senderId,
+    recipientId,
+    faucetId,
+    amount,
     options.noteType ?? NoteType.Public,
     authSaltHex,
   );

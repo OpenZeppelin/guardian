@@ -497,7 +497,29 @@ async fn action_execute_proposal(
         return Err("Invalid selection".to_string());
     }
 
-    let proposal_id = proposals[idx - 1].id.clone();
+    let proposal = proposals[idx - 1].clone();
+    let proposal_id = proposal.id.clone();
+
+    // A private P2ID note must be handed to the recipient out-of-band (issue
+    // #356). Its ID is deterministic from the proposal salt but derives from
+    // the pre-execution vault state, so compute it before executing.
+    let private_note_id = match &proposal.transaction_type {
+        TransactionType::P2ID {
+            note_type: NoteType::Private,
+            ..
+        } => match state.get_client()?.p2id_note_id(&proposal) {
+            Ok(id) => Some(id.to_hex()),
+            Err(e) => {
+                print_info(&format!(
+                    "  Note: could not precompute the private note id ({}); \
+                     the note can still be exported later via the SDK.",
+                    e
+                ));
+                None
+            }
+        },
+        _ => None,
+    };
 
     print_waiting("Executing proposal");
 
@@ -534,6 +556,10 @@ async fn action_execute_proposal(
                 print_success("State synced successfully");
             }
 
+            if let Some(note_id) = private_note_id {
+                offer_private_note_export(state, editor, &note_id).await;
+            }
+
             Ok(())
         }
         Err(e) => {
@@ -544,6 +570,89 @@ async fn action_execute_proposal(
             Err(e)
         }
     }
+}
+
+/// Offer to export a just-created private P2ID note to a file for
+/// out-of-band delivery to the recipient (issue #356).
+///
+/// Export failure is reported but never bubbled: the transaction already
+/// executed, and the note can still be exported later via the SDK.
+async fn offer_private_note_export(
+    state: &SessionState,
+    editor: &mut DefaultEditor,
+    note_id: &str,
+) {
+    print_info("\nThis proposal created a PRIVATE note: only its commitment is on chain,");
+    print_info("so the recipient must receive the note file out-of-band to consume it.");
+    print_info(&format!("Note ID: {}", note_id));
+
+    let confirm = match prompt_input(editor, "Export the note file now? [Y/n]: ") {
+        Ok(choice) => choice,
+        Err(e) => {
+            print_error(&e);
+            return;
+        }
+    };
+    if !confirm.is_empty() && confirm.to_lowercase() != "y" {
+        print_info("Skipped. The note can be exported later with the SDK's export_note_to_file.");
+        return;
+    }
+
+    let default_path = format!("note_{}.mno", shorten_hex(note_id).replace("...", "_"));
+    let path = match prompt_input(editor, &format!("File path [{}]: ", default_path)) {
+        Ok(input) if input.is_empty() => default_path,
+        Ok(input) => input,
+        Err(e) => {
+            print_error(&e);
+            return;
+        }
+    };
+
+    let export_result = match state.get_client() {
+        Ok(client) => client.export_note_to_file(note_id, Path::new(&path)).await,
+        Err(e) => {
+            print_error(&e);
+            return;
+        }
+    };
+
+    match export_result {
+        Ok(()) => {
+            print_success(&format!("Note exported to: {}", path));
+            print_info("Share this file with the recipient; they import it in the");
+            print_info("consume-notes flow before proposing consumption.");
+        }
+        Err(e) => print_error(&format!("Failed to export note: {}", e)),
+    }
+}
+
+/// Import a note file received out-of-band (issue #356) and sync so the note
+/// becomes consumable.
+async fn import_note_file(
+    state: &mut SessionState,
+    editor: &mut DefaultEditor,
+) -> Result<(), String> {
+    let path = prompt_input(editor, "Note file path: ")?;
+    if path.is_empty() {
+        return Err("File path is required".to_string());
+    }
+
+    print_waiting("Importing note file");
+    let client = state.get_client_mut()?;
+    let note_id = client
+        .import_note_from_file(Path::new(&path))
+        .await
+        .map_err(|e| format!("Failed to import note: {}", e))?;
+
+    print_success(&format!("Note imported: {}", shorten_hex(&note_id)));
+
+    print_waiting("Syncing so the note's on-chain commitment is tracked");
+    client
+        .sync()
+        .await
+        .map_err(|e| format!("Failed to sync after import: {}", e))?;
+
+    Ok(())
 }
 
 // =============================================================================
@@ -1261,63 +1370,77 @@ async fn prompt_consume_notes(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
 ) -> Result<TransactionType, String> {
-    let client = state.get_client_mut()?;
-
-    print_waiting("Fetching consumable notes...");
-    let mut notes = client
-        .list_consumable_notes()
-        .await
-        .map_err(|e| format!("Failed to list notes: {}", e))?;
-
-    if notes.is_empty() {
-        print_info("No consumable notes in local cache.");
-        let confirm = prompt_input(editor, "Sync account now and retry? [y/N]: ")?;
-        if confirm.to_lowercase() != "y" {
-            return Err("No consumable notes available".to_string());
-        }
-
-        print_waiting("Syncing account state from network...");
-        client
-            .sync()
-            .await
-            .map_err(|e| format!("Failed to sync: {}", e))?;
-
-        print_waiting("Fetching consumable notes (local cache)...");
-        notes = client
+    let (notes, selection) = loop {
+        print_waiting("Fetching consumable notes...");
+        let notes = state
+            .get_client_mut()?
             .list_consumable_notes()
             .await
             .map_err(|e| format!("Failed to list notes: {}", e))?;
 
         if notes.is_empty() {
-            return Err("No consumable notes available".to_string());
-        }
-    }
+            print_info("No consumable notes in local cache.");
+            println!("  [1] Sync account and retry");
+            println!("  [2] Import a note file received out-of-band (private notes)");
+            println!("  [b] Cancel");
 
-    println!("\nConsumable notes:");
-    for (idx, note) in notes.iter().enumerate() {
-        println!("  [{}] {}", idx + 1, shorten_hex(&note.id.to_hex()));
-
-        for asset in &note.assets {
-            match asset {
-                Asset::Fungible(f) => {
-                    println!(
-                        "      - {} tokens (faucet: {})",
-                        f.amount(),
-                        shorten_hex(&f.faucet_id().to_hex())
-                    );
+            let choice = prompt_input(editor, "\nChoice: ")?;
+            match choice.to_lowercase().as_str() {
+                "1" => {
+                    print_waiting("Syncing account state from network...");
+                    state
+                        .get_client_mut()?
+                        .sync()
+                        .await
+                        .map_err(|e| format!("Failed to sync: {}", e))?;
                 }
-                Asset::NonFungible(nft) => {
-                    println!(
-                        "      - NFT (faucet: {})",
-                        shorten_hex(&nft.faucet_id().to_hex())
-                    );
+                "2" => {
+                    if let Err(e) = import_note_file(state, editor).await {
+                        print_error(&e);
+                    }
+                }
+                "b" => return Err("Cancelled".to_string()),
+                _ => print_error("Invalid choice"),
+            }
+            continue;
+        }
+
+        println!("\nConsumable notes:");
+        for (idx, note) in notes.iter().enumerate() {
+            println!("  [{}] {}", idx + 1, shorten_hex(&note.id.to_hex()));
+
+            for asset in &note.assets {
+                match asset {
+                    Asset::Fungible(f) => {
+                        println!(
+                            "      - {} tokens (faucet: {})",
+                            f.amount(),
+                            shorten_hex(&f.faucet_id().to_hex())
+                        );
+                    }
+                    Asset::NonFungible(nft) => {
+                        println!(
+                            "      - NFT (faucet: {})",
+                            shorten_hex(&nft.faucet_id().to_hex())
+                        );
+                    }
                 }
             }
         }
-    }
 
-    print_info("\nEnter note numbers to consume (comma-separated, e.g., 1,2,3):");
-    let selection = prompt_input(editor, "  Notes: ")?;
+        print_info("\nEnter note numbers to consume (comma-separated, e.g., 1,2,3),");
+        print_info("or 'i' to import a note file received out-of-band (private notes):");
+        let selection = prompt_input(editor, "  Notes: ")?;
+
+        if selection.trim().eq_ignore_ascii_case("i") {
+            if let Err(e) = import_note_file(state, editor).await {
+                print_error(&e);
+            }
+            continue;
+        }
+
+        break (notes, selection);
+    };
 
     let indices: Vec<usize> = selection
         .split(',')

@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-client"
-version = "0.16.0"
+version = "0.16.2"
 dependencies = [
  "chrono",
  "guardian-shared",
@@ -3471,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-server"
-version = "0.16.0"
+version = "0.16.2"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -3561,8 +3561,9 @@ dependencies = [
 
 [[package]]
 name = "guardian-shared"
-version = "0.16.0"
+version = "0.16.2"
 dependencies = [
+ "async-trait",
  "base64",
  "hex",
  "miden-protocol",
@@ -3571,6 +3572,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
+ "tokio",
  "utoipa",
 ]
 
@@ -4840,7 +4842,7 @@ dependencies = [
 
 [[package]]
 name = "miden-confidential-contracts"
-version = "0.16.0"
+version = "0.16.2"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -5097,9 +5099,10 @@ dependencies = [
 
 [[package]]
 name = "miden-multisig-client"
-version = "0.16.0"
+version = "0.16.2"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "futures",
  "guardian-client",
@@ -5109,6 +5112,7 @@ dependencies = [
  "miden-client-sqlite-store",
  "miden-confidential-contracts",
  "miden-protocol",
+ "miden-rpc-client",
  "miden-standards",
  "miden-tx",
  "rand 0.10.2",
@@ -5117,7 +5121,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tonic",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -5257,12 +5263,16 @@ dependencies = [
 
 [[package]]
 name = "miden-rpc-client"
-version = "0.1.0"
+version = "0.16.2"
 dependencies = [
+ "async-trait",
+ "guardian-shared",
  "hex",
  "miden-node-proto-build",
  "miden-protocol",
  "prost",
+ "rand 0.10.2",
+ "thiserror 2.0.19",
  "tokio",
  "tonic",
  "tonic-prost",

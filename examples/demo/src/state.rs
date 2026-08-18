@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use miden_client::rpc::Endpoint;
-use miden_multisig_client::{ExportedProposal, MultisigClient, SignatureScheme};
+use miden_multisig_client::{
+    ExportedProposal, MultisigClient, ProverConfig, RpcConfig, SignatureScheme,
+};
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use miden_protocol::note::NoteType;
@@ -56,8 +58,11 @@ impl SessionState {
     pub async fn initialize_client(
         &mut self,
         miden_endpoint: Endpoint,
+        note_transport_url: Option<String>,
         guardian_endpoint: &str,
         signature_scheme: SignatureScheme,
+        prover_config: ProverConfig,
+        rpc_config: RpcConfig,
     ) -> Result<(), String> {
         // Store endpoints for potential reinitialization
         self.miden_endpoint = Some(miden_endpoint.clone());
@@ -69,7 +74,14 @@ impl SessionState {
         let builder = MultisigClient::builder()
             .miden_endpoint(miden_endpoint)
             .guardian_endpoint(guardian_endpoint)
+            .prover_config(prover_config)
+            .rpc_config(rpc_config)
             .account_dir(account_dir);
+
+        let builder = match note_transport_url {
+            Some(url) => builder.note_transport_endpoint(url),
+            None => builder,
+        };
 
         let mut client = match self.signature_scheme {
             SignatureScheme::Falcon => builder.generate_key(),

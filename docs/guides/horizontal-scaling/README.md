@@ -91,9 +91,22 @@ directly on `:50052` (A) and `:50053` (B).
 | Operator/EVM sessions | `auth_sessions` | Log in on A, your cookie works on B; logout is honored fleet-wide. |
 | Login challenges | `auth_challenges` | A challenge is single-use even if issued on A and verified on B. |
 | Canonicalization lease | `worker_leases` | Exactly one replica promotes candidates; the others stand by. |
+| Replay protection | `account_auth_state` | A request timestamp accepted on A cannot be replayed to B; each per-account timestamp is usable exactly once fleet-wide. |
 
 Coordination is **backend-derived**: it is on because the backend is Postgres.
 No environment variable enables or disables it.
+
+**Upgrading across schema migrations**: migrations run automatically at
+startup, and the first replica to boot a new binary migrates the shared
+database for the whole fleet. Migrations that move authentication state lock
+the affected table for their transaction, so replay timestamps accepted by
+old replicas are never lost mid-migration — old-binary writes either land
+before the migration's snapshot or fail on the schema change. A replica still
+running the previous binary therefore fails closed — its queries name columns
+the migration removed, so it serves errors instead of authenticating against
+stale state — until it is replaced. Plan rolling deploys accordingly: old
+replicas may error (never misbehave) during the window between the first
+new-binary boot and the last replica replacement.
 
 One shared thing lives **outside** Postgres: the ACK signing keys. Both
 replicas mount the same `./ack-keys` files and load them via
