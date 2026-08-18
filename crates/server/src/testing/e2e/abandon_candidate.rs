@@ -173,15 +173,14 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
         "@transaction_script\npub proc main\n    push.{new_guardian_commitment}\n    push.{new_guardian_scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
     );
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(AuthGuardedMultisig::code())
+        .with_dynamically_linked_package(AuthGuardedMultisig::code())
         .expect("library links")
         .compile_tx_script(&tx_script_code)
         .expect("tx script compiles");
     let salt = Word::from([Felt::new_unchecked(7); 4]);
 
     let abort_summary = match mock_chain
-        .build_tx_context(multisig_account.id(), &[], &[])
-        .expect("tx context builds")
+        .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script)
         .auth_args(salt)

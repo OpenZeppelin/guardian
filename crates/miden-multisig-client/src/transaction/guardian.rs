@@ -29,7 +29,7 @@ pub fn build_update_guardian_script(
     );
 
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(AuthGuardedMultisig::code())
+        .with_dynamically_linked_package(AuthGuardedMultisig::code())
         .map_err(|e| MultisigError::TransactionExecution(format!("failed to link library: {}", e)))?
         .compile_tx_script(&tx_script_code)
         .map_err(|e| {

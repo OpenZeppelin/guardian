@@ -158,6 +158,14 @@ impl rpc::api_server::Api for ScriptedNode {
         Err(tonic::Status::unimplemented("scripted node"))
     }
 
+    async fn get_transaction_encryption_key(
+        &self,
+        _: tonic::Request<()>,
+    ) -> std::result::Result<tonic::Response<transaction::TransactionEncryptionKey>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented("scripted node"))
+    }
+
     async fn submit_proven_tx(
         &self,
         _: tonic::Request<transaction::ProvenTransaction>,

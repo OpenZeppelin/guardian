@@ -41,7 +41,7 @@ Record the returned commitment — you'll paste it into the demo's "GUARDIAN com
    [dependencies]
    miden-multisig-client = "0.16.0"
    guardian-client       = "0.16.0"
-   miden-client          = "=0.16.0-alpha.1"
+   miden-client          = "=0.16.0-rc.1"
    tokio                 = { version = "1", features = ["full"] }
    ```
 3. Port or copy the exact menu/action code from `examples/demo/src/` into that scratch project. Keep the prompts identical so the workflows in `references/workflow-matrix.md` still apply verbatim.

@@ -27,14 +27,14 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-alpha.1
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.2
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
 miden-multisig-client = "0.16.0"
-miden-client = "=0.16.0-alpha.1"
+miden-client = "=0.16.0-rc.1"
 ```
 
 ### 5-Minute Example
@@ -1240,7 +1240,7 @@ console.log('Notes consumed, funds now in vault');
 
 | SDK Version | miden-client | miden-sdk (npm) | Notes |
 |-------------|--------------|-----------------|-------|
-| 0.16.x | =0.16.0-alpha.1 | 0.16.0-alpha.1 (exact) | Miden 0.16 pre-release protocol in both SDKs; breaking: upstream `miden-standards` guarded-multisig contract replaces the local MASM, `guardianEnabled` removed, all procedure roots changed; releases wait for upstream 0.16 to stabilize; Para wallet packages still on 0.15 via npm overrides |
+| 0.16.x | =0.16.0-rc.1 | 0.16.0-rc.2 (exact) | Miden 0.16 rc protocol in both SDKs; breaking: upstream `miden-standards` guarded-multisig contract replaces the local MASM, `guardianEnabled` removed, all procedure roots changed; the transaction summary now binds the reference block, expiration delta and seven user params (the auth-arg salt occupies the trailing four) instead of a dedicated salt word, so summary commitments and delta payloads from the alpha line do not carry over; releases wait for upstream 0.16 to stabilize; Para wallet packages still on 0.15 via npm overrides |
 | 0.15.x | 0.15.0 | ^0.15.0 | Miden 0.15 protocol; v1 account IDs, bech32m addresses |
 | 0.14.x | 0.14.x | ^0.14.0 | Devnet default, MidenClient public API |
 | 0.13.x | 0.13.0 | ^0.13.0 | ECDSA support, wallet signers |
@@ -1256,8 +1256,8 @@ Accounts are built from the audited upstream `AuthGuardedMultisig` component, pi
 exactly in both SDKs so a TypeScript-built account is byte-identical to a Rust-built
 one:
 
-- **Rust**: `miden-standards = "=0.16.0-alpha.4"` (workspace `Cargo.toml`)
-- **TypeScript**: `@miden-sdk/miden-sdk 0.16.0-alpha.1`, whose bundled WASM embeds the
+- **Rust**: `miden-standards = "=0.16.0-rc.4"` (workspace `Cargo.toml`)
+- **TypeScript**: `@miden-sdk/miden-sdk 0.16.0-rc.2`, whose bundled WASM embeds the
   matching upstream `miden-standards` guarded-multisig component
 
 The pins are deliberate and must move together: nothing at build time verifies the
@@ -1291,7 +1291,7 @@ supported contract version.
 
 | SDK release | miden-standards (contract) | Operates accounts created with |
 |---|---|---|
-| next (0.16.x, unreleased) | 0.16.0-alpha.4 | miden-standards 0.16.0-alpha.4 contracts only |
+| next (0.16.x, unreleased) | 0.16.0-rc.4 | miden-standards 0.16.0-rc.4 contracts only |
 | ≤ 0.15.x | — (local Guardian MASM) | pre-upstream accounts (wiped by the 0.15 cutover) |
 
 Both SDKs **enforce** this at runtime rather than trusting the table: before any

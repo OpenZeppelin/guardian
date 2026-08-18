@@ -138,7 +138,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         "@transaction_script\npub proc main\n    push.{new_guardian_commitment}\n    push.{new_guardian_scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
     );
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(AuthGuardedMultisig::code())
+        .with_dynamically_linked_package(AuthGuardedMultisig::code())
         .expect("library links")
         .compile_tx_script(&tx_script_code)
         .expect("tx script compiles");
@@ -147,8 +147,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     // No-signature execution: the TransactionSummary the wallet pushes to the
     // pre-switch guardian as the delta payload.
     let abort_summary = match mock_chain
-        .build_tx_context(multisig_account.id(), &[], &[])
-        .expect("tx context builds")
+        .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script.clone())
         .auth_args(salt)
@@ -182,8 +181,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
 
     // Real signed execution: the authoritative on-chain result.
     let executed_tx = mock_chain
-        .build_tx_context(multisig_account.id(), &[], &[])
-        .expect("tx context builds")
+        .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script)
         .add_signature(cosigner_pubkeys[0].clone().into(), msg, sig_1)

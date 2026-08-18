@@ -503,7 +503,9 @@ mod tests {
     use miden_protocol::account::AccountId;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word};
 
     use super::MultisigClient;
@@ -523,6 +525,8 @@ mod tests {
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
             Word::default(),
+            0,
+            TransactionSummaryUserParams::new([Felt::ZERO; 7]),
         )
         .to_json()
     }

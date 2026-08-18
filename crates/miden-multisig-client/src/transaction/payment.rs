@@ -3,7 +3,7 @@
 //! Functions for building P2ID (pay-to-id) and other payment transactions.
 
 use miden_client::account::Account;
-use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
+use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 use miden_protocol::account::{AccountCodeInterface, AccountId};
 use miden_protocol::asset::Asset;
 use miden_protocol::crypto::rand::RandomCoin;
@@ -51,18 +51,14 @@ where
         MultisigError::TransactionExecution(format!("failed to build account interface: {}", e))
     })?;
 
-    let send_script: TransactionScript =
-        SendNotesTransactionScript::new(&interface, &[note.clone().into()])
-            .map_err(|e| {
-                MultisigError::TransactionExecution(format!(
-                    "failed to build P2ID send script: {}",
-                    e
-                ))
-            })?
-            .into();
+    let send_notes_script = SendNotesTransactionScript::new(&interface, &[note.clone().into()])
+        .map_err(|e| {
+            MultisigError::TransactionExecution(format!("failed to build P2ID send script: {}", e))
+        })?;
 
     let request = TransactionRequestBuilder::new()
-        .custom_script(send_script)
+        .custom_script(send_notes_script.tx_script().clone())
+        .script_arg(send_notes_script.tx_script_args())
         .expected_output_recipients(vec![note.recipient().clone()])
         .extend_advice_map(signature_advice)
         .auth_arg(salt)
@@ -82,7 +78,7 @@ mod tests {
     use miden_protocol::account::{AccountId, AccountType};
     use miden_protocol::asset::{AssetAmount, TokenSymbol};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_standards::account::auth::{Approver, AuthSingleSigAcl, AuthSingleSigAclConfig};
+    use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::account::faucets::{
         FungibleFaucet, TokenName, create_singlesig_user_fungible_faucet,
     };
@@ -108,16 +104,10 @@ mod tests {
             .max_supply(AssetAmount::from(1_000_000u32))
             .build()
             .unwrap();
-        let auth_component = AuthSingleSigAcl::new(
-            Approver::new(
-                secret_key.public_key().to_commitment().into(),
-                AuthScheme::Falcon512Poseidon2,
-            ),
-            AuthSingleSigAclConfig::new(std::collections::BTreeSet::from([
-                FungibleFaucet::receive_and_burn_root(),
-            ]))
-            .unwrap(),
-        );
+        let auth_component = AuthSingleSig::new(Approver::new(
+            secret_key.public_key().to_commitment().into(),
+            AuthScheme::Falcon512Poseidon2,
+        ));
         let policy_manager = TokenPolicyManager::builder()
             .active_mint_policy(MintPolicy::allow_all())
             .active_burn_policy(BurnPolicy::allow_all())
@@ -172,16 +162,10 @@ mod tests {
             .max_supply(AssetAmount::from(1_000_000u32))
             .build()
             .unwrap();
-        let auth_component = AuthSingleSigAcl::new(
-            Approver::new(
-                secret_key.public_key().to_commitment().into(),
-                AuthScheme::Falcon512Poseidon2,
-            ),
-            AuthSingleSigAclConfig::new(std::collections::BTreeSet::from([
-                FungibleFaucet::receive_and_burn_root(),
-            ]))
-            .unwrap(),
-        );
+        let auth_component = AuthSingleSig::new(Approver::new(
+            secret_key.public_key().to_commitment().into(),
+            AuthScheme::Falcon512Poseidon2,
+        ));
         let policy_manager = TokenPolicyManager::builder()
             .active_mint_policy(MintPolicy::allow_all())
             .active_burn_policy(BurnPolicy::allow_all())

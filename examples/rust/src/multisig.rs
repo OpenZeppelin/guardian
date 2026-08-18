@@ -13,7 +13,7 @@ use miden_confidential_contracts::multisig_guardian::{
 };
 use miden_protocol::account::auth::Signature;
 use miden_protocol::account::AccountId;
-use miden_protocol::assembly::Library;
+use miden_protocol::assembly::Package;
 use miden_protocol::{Felt, Hasher};
 use miden_standards::StandardsLib;
 
@@ -133,7 +133,7 @@ pub fn build_multisig_config_advice(
 
 #[allow(dead_code)]
 pub fn build_update_signers_script() -> Result<TransactionScript, String> {
-    let multisig_library: Library = StandardsLib::default().into();
+    let multisig_library: Package = StandardsLib::default().into();
 
     let tx_script_code = "
         use miden::standards::auth::multisig
@@ -143,7 +143,7 @@ pub fn build_update_signers_script() -> Result<TransactionScript, String> {
     ";
 
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(multisig_library)
+        .with_dynamically_linked_package(multisig_library)
         .map_err(|err| format!("Failed to link multisig library: {err}"))?
         .compile_tx_script(tx_script_code)
         .map_err(|err| format!("Failed to compile transaction script: {err}"))?;
@@ -185,7 +185,7 @@ pub fn build_signature_advice_entry(
     signature: &Signature,
 ) -> (Word, Vec<Felt>) {
     let key = Hasher::merge(&[pubkey_commitment, message]);
-    let values = signature.to_prepared_signature(message);
+    let values = signature.to_encoded_signature(message);
     (key, values)
 }
 

@@ -9,8 +9,8 @@
     "@getpara/react-sdk-lite": "2.17.0",
     "@getpara/solana-wallet-connectors": "2.17.0",
     "@miden-sdk/miden-para": "0.15.1",
-    "@miden-sdk/miden-sdk": "0.16.0-alpha.1",
-    "@miden-sdk/react": "0.16.0-alpha.1",
+    "@miden-sdk/miden-sdk": "0.16.0-rc.2",
+    "@miden-sdk/react": "0.16.0-rc.2",
     "@miden-sdk/use-miden-para-react": "0.15.1",
     "@openzeppelin/guardian-client": "file:../../../packages/guardian-client",
     "@openzeppelin/miden-multisig-client": "file:../../../packages/miden-multisig-client",
@@ -22,12 +22,12 @@
   },
   "overrides": {
     "@miden-sdk/miden-para": {
-      "@miden-sdk/miden-sdk": "0.16.0-alpha.1",
-      "@miden-sdk/react": "0.16.0-alpha.1"
+      "@miden-sdk/miden-sdk": "0.16.0-rc.2",
+      "@miden-sdk/react": "0.16.0-rc.2"
     },
     "@miden-sdk/use-miden-para-react": {
-      "@miden-sdk/miden-sdk": "0.16.0-alpha.1",
-      "@miden-sdk/react": "0.16.0-alpha.1"
+      "@miden-sdk/miden-sdk": "0.16.0-rc.2",
+      "@miden-sdk/react": "0.16.0-rc.2"
     }
   }
 }

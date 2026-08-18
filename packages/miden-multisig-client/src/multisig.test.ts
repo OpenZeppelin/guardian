@@ -40,9 +40,7 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       toCommitment: () => ({
         toHex: () => '0x' + 'c'.repeat(64),
       }),
-      salt: () => ({
-        toHex: () => '0x' + 'd'.repeat(64),
-      }),
+      userParams: () => [0, 0, 0, 1, 2, 3, 4],
       serialize: () => new Uint8Array([1, 2, 3]),
     }),
   },
@@ -78,6 +76,9 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
 // Mock transaction module
 vi.mock('./transaction.js', () => ({
   executeForSummary: vi.fn(),
+  summarySalt: vi.fn(() => ({
+    toHex: () => '0x' + 'd'.repeat(64),
+  })),
   buildUpdateSignersTransactionRequest: vi.fn().mockResolvedValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },

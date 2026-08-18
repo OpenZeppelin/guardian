@@ -117,7 +117,7 @@ mod tests {
         use miden_protocol::transaction::TransactionKernel;
 
         const EXPECTED_KERNEL_COMMITMENT: &str =
-            "0x60e15da40818dc87d8a04daee51e98ff4d6af6b2a24819a56abacefc09adb730";
+            "0xeb141480ed70ab3d2bf3bb1ec8e84358c41ca11045aecbbd95881c5a2f95ca43";
 
         let actual = word_to_hex(&TransactionKernel.to_commitment());
         assert_eq!(

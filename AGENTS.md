@@ -230,7 +230,8 @@ When docs are not updated after a visible behavior change, note why in the final
 ## 11) Versioning Policy
 
 - Keep crate/package versions aligned with the active Miden dependency line.
-- Current baseline is the Miden `0.16` pre-release line (exact-pinned alphas) across the Rust workspace and `packages/miden-multisig-client`. Changes must remain compatible with that line unless migration is explicit.
+- Current baseline is the Miden `0.16` pre-release line (exact-pinned pre-releases, currently the `rc` series) across the Rust workspace and `packages/miden-multisig-client`. Changes must remain compatible with that line unless migration is explicit.
+- Pre-release pins are exact and must move together across both SDKs. The pin pair is authoritative: `@miden-sdk/miden-sdk` bundles a WASM built against specific `miden-protocol`/`miden-standards` versions, and only a matching pair produces identical transaction-summary commitments and auth procedure roots. Read the bundled versions with `strings packages/miden-multisig-client/node_modules/@miden-sdk/miden-sdk/dist/st/assets/miden_client_web.wasm | grep -oE "miden-[a-z-]+-[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?" | sort -u` and pin the Rust workspace to exactly those. Ranges are never acceptable here: semver ranges exclude pre-releases, so `0.16.x` resolves to no published version.
 - If a change requires moving to a new Miden line, treat it as a coordinated release task:
   1. Update workspace/dependency constraints.
   2. Update both multisig SDKs and both base clients as needed.

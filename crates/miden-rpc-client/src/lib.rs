@@ -300,7 +300,7 @@ impl MidenRpcClient {
     ) -> Result<(), RpcClientError> {
         let request = transaction::ProvenTransaction {
             transaction: proven_tx_bytes,
-            transaction_inputs: None,
+            sealed_transaction_inputs: None,
         };
 
         self.client

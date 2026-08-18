@@ -85,7 +85,7 @@ impl SignatureScheme {
 
         let values = match (self, signature) {
             (Self::Falcon, AccountSignature::Falcon512Poseidon2(_)) => {
-                signature.to_prepared_signature(message)
+                signature.to_encoded_signature(message)
             }
             (Self::Falcon, _) => {
                 return Err("expected Falcon signature for falcon scheme".to_string());
@@ -104,7 +104,7 @@ impl SignatureScheme {
                     ));
                 }
                 AccountSignature::EcdsaK256Keccak(ecdsa_signature.clone())
-                    .to_prepared_signature(message)
+                    .to_encoded_signature(message)
             }
             (Self::Ecdsa, _) => {
                 return Err("expected ECDSA signature for ecdsa scheme".to_string());
@@ -306,7 +306,7 @@ mod tests {
         let public_key_commitment =
             PublicKeyCommitment::from(secret_key.public_key().to_commitment());
         let account = AccountBuilder::new([0xff; 32])
-            .with_auth_component(AuthSingleSig::new(Approver::new(
+            .with_component(AuthSingleSig::new(Approver::new(
                 public_key_commitment,
                 AuthScheme::Falcon512Poseidon2,
             )))

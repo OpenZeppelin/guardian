@@ -13,7 +13,9 @@ mod fixtures {
     };
     use miden_protocol::account::{StorageMapKey, StorageSlotName};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word as MidenWord, ZERO};
     use std::fs;
 
@@ -193,6 +195,8 @@ mod fixtures {
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         );
 
         let mut account_state: Account =
@@ -299,6 +303,8 @@ mod fixtures {
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         );
 
         let prev_commitment_2 = current_commitment;
@@ -380,6 +386,8 @@ mod fixtures {
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         );
 
         let prev_commitment_3 = current_commitment;

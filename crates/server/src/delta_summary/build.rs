@@ -245,7 +245,9 @@ mod tests {
         use miden_protocol::crypto::rand::RandomCoin;
         use miden_protocol::note::NoteType;
         use miden_protocol::transaction::InputNote;
-        use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+        use miden_protocol::transaction::{
+            InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+        };
         use miden_protocol::{Felt, Word, ZERO};
         use miden_standards::note::P2idNote;
 
@@ -283,6 +285,8 @@ mod tests {
             InputNotes::new(vec![InputNote::unauthenticated(note)]).expect("inputs"),
             RawOutputNotes::new(Vec::new()).expect("outputs"),
             Word::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         );
         let delta_payload = summary.to_json();
         let proposal_payload = synthetic_proposal_payload(json!({

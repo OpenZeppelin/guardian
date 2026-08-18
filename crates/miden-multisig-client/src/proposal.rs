@@ -821,7 +821,7 @@ mod tests {
     use super::*;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes};
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
 
     fn create_test_tx_summary() -> TransactionSummary {
         // Use a minimal valid account ID
@@ -840,6 +840,8 @@ mod tests {
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
             Word::default(),
+            0,
+            TransactionSummaryUserParams::new([Felt::ZERO; 7]),
         )
     }
 

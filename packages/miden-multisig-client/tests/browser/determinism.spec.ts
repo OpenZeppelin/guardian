@@ -2,9 +2,9 @@ import { expect, test } from '@playwright/test';
 
 // Cross-SDK parity gate. The Rust upstream builder pins these values in
 // `crates/contracts/src/multisig_guardian.rs::test_browser_deterministic_account_matches_rust_builder`.
-const EXPECTED_ID = '0xe3c3a6ae3a996ec149a75ee89b2e7c';
+const EXPECTED_ID = '0xade67f7701e9e9c12493c6206bc46e';
 const EXPECTED_COMMITMENT =
-  '0x63f135e5f0777e66f18e079888c5fcea40428e59427596aed53de0a84b1c1bf4';
+  '0x0efd2d9b391c608de6814b57339894f448e3b2645609976b531bfa9c7ada3ca5';
 // Storage commitment of the Rust account (7 slots, no schema-commitment slot). TS reproduces
 // this exactly once it uses buildWithoutSchemaCommitment() — proving the storage layout matches.
 const EXPECTED_STORAGE_COMMITMENT =
@@ -63,8 +63,8 @@ test('TS account reproduces the Rust storage layout and override-target procedur
   }
 });
 
-// `@miden-sdk/miden-sdk` 0.16.0-alpha.1 bundles the upstream `miden-standards` guarded-multisig
-// component matching the Rust pin (`miden-standards = "=0.16.0-alpha.4"`), so
+// `@miden-sdk/miden-sdk` 0.16.0-rc.2 bundles the upstream `miden-standards` guarded-multisig
+// component matching the Rust pin (`miden-standards = "=0.16.0-rc.4"`), so
 // `auth_tx_guarded_multisig` compiles to the same MAST and a TS-built account is byte-identical to
 // the Rust/server account.
 test(

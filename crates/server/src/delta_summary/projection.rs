@@ -147,10 +147,18 @@ fn classify_note_tag(note: &Note) -> NoteTag {
         Some(StandardNote::PSWAP) => NoteTag::Pswap,
         Some(StandardNote::MINT) => NoteTag::Mint,
         Some(StandardNote::BURN) => NoteTag::Burn,
-        Some(StandardNote::FAUCET_POLICY_ACTION)
-        | Some(StandardNote::PAUSE_ACTION)
-        | Some(StandardNote::OWNER_ACTION)
-        | Some(StandardNote::RBAC_ACTION) => NoteTag::Custom,
+        Some(StandardNote::CONSTANT_FEE_POLICY_CONFIG)
+        | Some(StandardNote::FAUCET_POLICY_CONFIG)
+        | Some(StandardNote::FAUCET_METADATA_CONFIG)
+        | Some(StandardNote::MIN_BURN_AMOUNT_CONFIG)
+        | Some(StandardNote::ALLOWLIST_CONFIG)
+        | Some(StandardNote::BLOCKLIST_CONFIG)
+        | Some(StandardNote::PAUSE_CONFIG)
+        | Some(StandardNote::OWNER_CONFIG)
+        | Some(StandardNote::RBAC_CONFIG)
+        | Some(StandardNote::NETWORK_ACCOUNT_CONFIG)
+        | Some(StandardNote::FEE_SPONSORSHIP)
+        | Some(StandardNote::TX_FEE) => NoteTag::Custom,
         None => NoteTag::Custom,
     }
 }
@@ -326,7 +334,9 @@ mod tests {
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::NoteType;
     use miden_protocol::transaction::InputNote;
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::P2idNote;
 
@@ -366,6 +376,8 @@ mod tests {
             InputNotes::new(vec![input]).expect("input notes"),
             RawOutputNotes::new(Vec::new()).expect("output notes"),
             Word::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         )
     }
 

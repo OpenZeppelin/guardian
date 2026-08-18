@@ -52,7 +52,8 @@ impl AuthRequestMessage {
     }
 
     pub fn to_word(&self) -> Word {
-        let account_id_felts: [Felt; 2] = self.account_id.into();
+        let account_id_felts: [Felt; 2] =
+            [self.account_id.prefix().as_felt(), self.account_id.suffix()];
         let timestamp_felt = crate::felt::felt_from_u64_reduced(self.timestamp as u64);
         let payload_elements = self.payload.as_elements();
         let message_elements = vec![

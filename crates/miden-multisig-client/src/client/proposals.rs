@@ -734,7 +734,9 @@ mod tests {
     use miden_protocol::account::AccountId;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word, ZERO};
 
     use super::{AbandonStatus, classify_abandon_status};
@@ -756,7 +758,17 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new_unchecked(seed), ZERO, ZERO, ZERO]),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([
+                ZERO,
+                ZERO,
+                ZERO,
+                Felt::new_unchecked(seed),
+                ZERO,
+                ZERO,
+                ZERO,
+            ]),
         )
     }
 

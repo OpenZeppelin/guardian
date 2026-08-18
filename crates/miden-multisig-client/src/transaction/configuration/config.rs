@@ -3,7 +3,7 @@
 use guardian_shared::SignatureScheme;
 use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
-use miden_protocol::assembly::Library;
+use miden_protocol::assembly::Package;
 use miden_protocol::{Felt, Hasher, Word};
 use miden_standards::StandardsLib;
 
@@ -54,7 +54,7 @@ pub fn build_multisig_config_advice(
 /// The guarded-multisig library is scheme-agnostic: each signer's scheme lives in
 /// account storage, so the script is identical for Falcon and ECDSA accounts.
 pub fn build_update_signers_script() -> Result<TransactionScript> {
-    let standards_lib: Library = StandardsLib::default().into();
+    let standards_lib: Package = StandardsLib::default().into();
 
     let tx_script_code = "
         use miden::standards::auth::multisig
@@ -65,7 +65,7 @@ pub fn build_update_signers_script() -> Result<TransactionScript> {
     ";
 
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(standards_lib)
+        .with_dynamically_linked_package(standards_lib)
         .map_err(|e| MultisigError::TransactionExecution(format!("failed to link library: {}", e)))?
         .compile_tx_script(tx_script_code)
         .map_err(|e| {
@@ -108,7 +108,7 @@ pub fn build_update_procedure_threshold_script(
     procedure: ProcedureName,
     threshold: u32,
 ) -> Result<TransactionScript> {
-    let standards_lib: Library = StandardsLib::default().into();
+    let standards_lib: Package = StandardsLib::default().into();
 
     let procedure_root = procedure.root();
     let tx_script_code = format!(
@@ -126,7 +126,7 @@ pub fn build_update_procedure_threshold_script(
     );
 
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(standards_lib)
+        .with_dynamically_linked_package(standards_lib)
         .map_err(|e| MultisigError::TransactionExecution(format!("failed to link library: {}", e)))?
         .compile_tx_script(&tx_script_code)
         .map_err(|e| {

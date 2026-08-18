@@ -350,16 +350,23 @@ impl NetworkClient for MidenNetworkClient {
             format!("Failed to create aggregated output notes: {e}")
         })?;
 
-        // Use the salt from the last TransactionSummary
-        // TODO: Maybe we should use a 0 salt to prevent confusions.
-        let salt = tx_summaries.last().unwrap().salt();
+        // Carry the reference block, expiration delta and user params (which hold the
+        // auth-arg salt) from the last TransactionSummary, matching the pre-existing
+        // salt convention.
+        // TODO: Maybe we should use zeroed user params to prevent confusions.
+        let last = tx_summaries.last().unwrap();
+        let block_commitment = last.block_commitment();
+        let expiration_delta = last.expiration_delta();
+        let user_params = last.user_params();
 
         // Create the merged TransactionSummary
         let merged_tx_summary = TransactionSummary::new(
             merged_account_delta,
             aggregated_input_notes,
             aggregated_output_notes,
-            salt,
+            block_commitment,
+            expiration_delta,
+            user_params,
         );
 
         Ok(merged_tx_summary.to_json())
@@ -512,6 +519,8 @@ fn merge_account_deltas(
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
+    use miden_protocol::transaction::TransactionSummaryUserParams;
+
     use super::*;
 
     #[test]
@@ -698,7 +707,7 @@ mod tests {
         let account = AccountBuilder::new([0xAB; 32])
             .account_type(AccountType::Public)
             .with_component(BasicWallet)
-            .with_auth_component(NoAuth)
+            .with_component(NoAuth)
             .build()
             .expect("Failed to build account");
 
@@ -726,6 +735,8 @@ mod tests {
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::default(),
+            0,
+            TransactionSummaryUserParams::new([Felt::ZERO; 7]),
         );
 
         let delta_payload = tx_summary.to_json();

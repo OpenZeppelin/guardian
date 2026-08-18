@@ -326,6 +326,9 @@ mod tests {
                 (ProcedureName::SendAsset.root(), 1),
                 (ProcedureName::UpdateSigners.root(), 3),
                 (ProcedureName::UpdateGuardian.root(), 1),
+                // miden-standards rc.4 rejects an override above the threshold guarding
+                // set_procedure_threshold, since a smaller quorum could strip it.
+                (ProcedureName::UpdateProcedureThreshold.root(), 3),
             ]);
 
         let account = MultisigGuardianBuilder::new(config)
@@ -379,7 +382,7 @@ mod tests {
         use miden_standards::account::wallets::BasicWallet;
 
         let account = AccountBuilder::new([3u8; 32])
-            .with_auth_component(NoAuth)
+            .with_component(NoAuth)
             .with_component(BasicWallet)
             .build_existing()
             .expect("account builds");

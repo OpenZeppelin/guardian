@@ -39,6 +39,7 @@ import {
 } from '@miden-sdk/miden-sdk';
 import {
   executeForSummary,
+  summarySalt,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -1590,7 +1591,7 @@ export class Multisig {
 
     const txSummaryBytes = base64ToUint8Array(txSummaryBase64);
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
-    const saltHex = txSummary.salt().toHex();
+    const saltHex = summarySalt(txSummary).toHex();
     const txCommitmentHex = txSummary.toCommitment().toHex();
     const normalizedTxCommitmentHex = normalizeHexWord(txCommitmentHex);
     const normalizedSignerCommitments = new Set(
@@ -1889,7 +1890,7 @@ export class Multisig {
     const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
     const salt = proposal.metadata.saltHex
       ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
-      : summary.salt();
+      : summarySalt(summary);
 
     const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
     const webClient = await this.getRawClient();

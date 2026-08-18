@@ -17,13 +17,16 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-alpha.1
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.2
 ```
 
 > **Miden version note**: this package targets the Miden 0.16 pre-release
-> line (`@miden-sdk/miden-sdk 0.16.0-alpha.1`, exact-pinned while alphas
-> churn), matching the Rust workspace. Package releases wait for upstream
-> 0.16 to stabilize.
+> line (`@miden-sdk/miden-sdk 0.16.0-rc.2`), matching the Rust workspace.
+> The peer version is exact on purpose and cannot be given as a range: no
+> stable `0.16.0` is published, so a `0.16.x`/`^0.16.0` range resolves to
+> nothing, and the transaction-summary layout and procedure roots are only
+> byte-compatible within one pre-release pair. Package releases wait for
+> upstream 0.16 to stabilize.
 
 ## Setup
 
@@ -329,6 +332,22 @@ The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches the
 commitment the cosigners signed.
+
+If a recipe was not retained, recover the salt from the proposal's transaction
+summary with `summarySalt`:
+
+```typescript
+import { summarySalt } from '@openzeppelin/miden-multisig-client';
+import { TransactionSummary } from '@miden-sdk/miden-sdk';
+
+const salt = summarySalt(TransactionSummary.deserialize(bytes));
+```
+
+On the Miden 0.16 pre-release line a summary no longer carries a dedicated salt
+word: it binds seven user-defined elements, and the guarded-multisig auth
+component zeroes the leading three and passes the auth-arg salt as the trailing
+four. `summarySalt` reads that convention, so prefer it over indexing
+`userParams()` by hand.
 
 > **Rust ↔ TS parity:** both SDKs expose the same producer surface —
 > `createCustomProposal` / `propose_custom_transaction`, `prepareCustomExecution` /

@@ -121,7 +121,7 @@ impl MultisigGuardianBuilder {
     pub fn build(self) -> Result<Account> {
         let (seed, account_type, component) = self.into_parts()?;
         AccountBuilder::new(seed)
-            .with_auth_component(component)
+            .with_component(component)
             .with_component(BasicWallet)
             .account_type(account_type)
             .build()
@@ -133,7 +133,7 @@ impl MultisigGuardianBuilder {
     pub fn build_existing(self) -> Result<Account> {
         let (seed, account_type, component) = self.into_parts()?;
         AccountBuilder::new(seed)
-            .with_auth_component(component)
+            .with_component(component)
             .with_component(BasicWallet)
             .account_type(account_type)
             .build_existing()
@@ -409,10 +409,10 @@ mod tests {
         // Cross-SDK parity: the TypeScript builder must derive these same identity
         // values from the same pinned miden-standards version; regenerate both if
         // the pin changes.
-        assert_eq!(account.id().to_hex(), "0xe3c3a6ae3a996ec149a75ee89b2e7c");
+        assert_eq!(account.id().to_hex(), "0xade67f7701e9e9c12493c6206bc46e");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0x63f135e5f0777e66f18e079888c5fcea40428e59427596aed53de0a84b1c1bf4"
+            "0x0efd2d9b391c608de6814b57339894f448e3b2645609976b531bfa9c7ada3ca5"
         );
     }
 }
