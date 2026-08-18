@@ -420,6 +420,21 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
     ))
 }
 
+/// Alias of `GET /status` mounted at the site root. Health checks and
+/// load balancers that probe `/` get the same machine-readable status
+/// body, with the identical response shape and no authentication.
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "client",
+    responses(
+        (status = 200, description = "Alias of `GET /status`: server liveness, version, and environment", body = crate::services::StatusResponse),
+    )
+)]
+pub async fn status_root(state: State<AppState>) -> Json<crate::services::StatusResponse> {
+    status(state).await
+}
+
 /// Return the Guardian acknowledgement (ACK) public key / commitment
 /// for the requested signature scheme (`falcon` default, or `ecdsa`).
 #[utoipa::path(
@@ -720,34 +735,34 @@ mod tests {
         (state, storage, network, metadata)
     }
 
-    #[tokio::test]
-    async fn status_route_returns_ok_without_auth() {
+    async fn get_json(state: AppState, uri: &str) -> serde_json::Value {
         use crate::testing::helpers::create_router;
         use axum::body::{Body, to_bytes};
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
 
-        let (state, ..) = create_test_state();
-        let app = create_router(state);
-
-        let res = app
+        let res = create_router(state)
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/status")
+                    .uri(uri)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
-            .expect("status request should succeed");
-
-        assert_eq!(res.status(), StatusCode::OK);
+            .expect("request should succeed");
+        assert_eq!(res.status(), StatusCode::OK, "{uri} should return 200");
 
         let bytes = to_bytes(res.into_body(), usize::MAX)
             .await
-            .expect("status body should read");
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("status body should be JSON");
+            .expect("body should read");
+        serde_json::from_slice(&bytes).expect("body should be JSON")
+    }
+
+    #[tokio::test]
+    async fn status_route_returns_ok_without_auth() {
+        let (state, ..) = create_test_state();
+        let json = get_json(state, "/status").await;
 
         assert_eq!(json["status"], "ok");
         assert!(json["version"].is_string());
@@ -757,6 +772,23 @@ mod tests {
         // Must not leak any dashboard/inventory fields.
         assert!(json.get("total_account_count").is_none());
         assert!(json.get("accounts_by_auth_method").is_none());
+    }
+
+    #[tokio::test]
+    async fn root_route_returns_the_status_body_without_auth() {
+        let (state, ..) = create_test_state();
+        let mut root = get_json(state.clone(), "/").await;
+        let mut status = get_json(state, "/status").await;
+
+        assert_eq!(root["status"], "ok");
+        // `uptime_seconds` is derived from the wall clock, so the two
+        // requests can straddle a second boundary. Every other field is
+        // identical by construction.
+        assert!(root["uptime_seconds"].is_number());
+        assert!(status["uptime_seconds"].is_number());
+        root.as_object_mut().unwrap().remove("uptime_seconds");
+        status.as_object_mut().unwrap().remove("uptime_seconds");
+        assert_eq!(root, status, "GET / must mirror GET /status");
     }
 
     fn create_account_metadata(

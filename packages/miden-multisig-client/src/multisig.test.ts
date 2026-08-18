@@ -2298,7 +2298,7 @@ describe('Multisig', () => {
         // folded into the error message; raw text bodies are dropped.
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_PROPOSAL_NOT_FOUND',
+            code: 'proposal_not_found',
             message: 'Proposal not found',
             meta: { retryable: false },
           }),

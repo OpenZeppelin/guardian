@@ -242,7 +242,7 @@ describe('MultisigClient', () => {
         headers: new Headers(),
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_ACCOUNT_NOT_FOUND',
+            code: 'account_not_found',
             message: 'Account not found',
             meta: { retryable: false },
           }),
