@@ -204,7 +204,7 @@ mod tests {
     #[tokio::test]
     async fn postgres_write_failure_emits_log_fallback() {
         let pool = build_postgres_pool_lazy(
-            "postgresql://127.0.0.1:1/__guardian_fault_injection_test__",
+            "postgresql://127.0.0.1:1/__guardian_fault_injection_test__?connect_timeout=1",
             1,
         )
         .expect("lazy pool builds even with bad URL");
@@ -219,18 +219,10 @@ mod tests {
             .with_ansi(false)
             .finish();
 
-        // tokio-spawned work inherits the calling task's subscriber
-        // context when we set it as the default for the duration of
-        // the spawn. Use `with_default` to scope.
         let _registry_pin = crate::testing::log_capture::dispatcher_registry_pin();
-        tracing::subscriber::with_default(subscriber, || {
-            // Spawn + await synchronously inside the scope so all
-            // tracing events from the spawned task land in `writer`.
-            futures::executor::block_on(async {
-                let handle = auditor.record_with_handle(sample_event());
-                handle.await.expect("spawned task should not panic");
-            });
-        });
+        let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+        let handle = auditor.record_with_handle(sample_event());
+        handle.await.expect("spawned task should not panic");
 
         let captured = writer.contents();
         // The fallback path emits two events: the db_error breadcrumb

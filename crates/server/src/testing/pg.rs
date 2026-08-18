@@ -258,7 +258,7 @@ fn endpoint(url: &Url) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres {
     use super::{database_name, ensure_database_exists, is_test_database_name, maintenance_url};
     use url::Url;
 

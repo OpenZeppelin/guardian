@@ -247,10 +247,10 @@ jobs:
           DATABASE_URL: postgres://guardian:guardian@localhost:5432/guardian_test
         run: ./scripts/test-postgres.sh
 
-      # The script runs only ignored database-backed tests. Run the remaining
-      # Postgres-feature tests here, reusing the binary compiled above.
-      - name: Run Postgres feature tests
-        run: cargo test -p guardian-server --lib --features postgres
+      # Cover tests compiled only with the Postgres feature without rerunning
+      # the full default-feature suite already exercised by the coverage job.
+      - name: Run Postgres feature unit tests
+        run: cargo test -p guardian-server --lib --features postgres -- postgres
 
   npm-test:
     name: TypeScript Package Tests

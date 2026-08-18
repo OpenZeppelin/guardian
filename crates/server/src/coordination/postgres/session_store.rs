@@ -150,8 +150,11 @@ mod tests {
 
     #[tokio::test]
     async fn get_fails_closed_when_store_unreachable() {
-        let pool = build_postgres_pool_lazy("postgresql://127.0.0.1:1/__guardian_coord_fault__", 1)
-            .expect("lazy pool builds even with an unreachable address");
+        let pool = build_postgres_pool_lazy(
+            "postgresql://127.0.0.1:1/__guardian_coord_fault__?connect_timeout=1",
+            1,
+        )
+        .expect("lazy pool builds even with an unreachable address");
         let store = PgSessionStore::new(pool, Realm::Operator);
         assert!(
             store.get(&[7u8; 32], Utc::now()).await.is_err(),

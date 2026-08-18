@@ -149,8 +149,11 @@ mod tests {
 
     #[tokio::test]
     async fn try_acquire_fails_closed_when_unreachable() {
-        let pool = build_postgres_pool_lazy("postgresql://127.0.0.1:1/__guardian_lease_fault__", 1)
-            .expect("lazy pool builds even with an unreachable address");
+        let pool = build_postgres_pool_lazy(
+            "postgresql://127.0.0.1:1/__guardian_lease_fault__?connect_timeout=1",
+            1,
+        )
+        .expect("lazy pool builds even with an unreachable address");
         let elector = PgLeaseElector::new(pool, "canonicalization", "replica-a");
         assert!(
             elector.try_acquire(Duration::from_secs(30)).await.is_err(),
