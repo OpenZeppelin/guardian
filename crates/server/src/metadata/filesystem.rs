@@ -4,6 +4,7 @@ use crate::metadata::{
 use crate::services::account_status::{AccountStatus, PauseTransition};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -220,8 +221,8 @@ fn expand_account_scoped_auth_state(
     if repair_missing_legacy_floors {
         for (account_id, timestamp) in signer_floors {
             let legacy_key = auth_state_key(&account_id, LEGACY_ACCOUNT_AUTH_FLOOR);
-            if !expanded.contains_key(&legacy_key) {
-                expanded.insert(legacy_key, timestamp);
+            if let Entry::Vacant(entry) = expanded.entry(legacy_key) {
+                entry.insert(timestamp);
                 changed = true;
             }
         }
