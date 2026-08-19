@@ -138,14 +138,9 @@ impl SessionStore for PgSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::postgres::{build_postgres_pool_lazy, run_migrations};
+    use crate::storage::postgres::build_postgres_pool_lazy;
+    use crate::testing::pg::test_database_url;
     use chrono::Duration;
-
-    fn database_url() -> Option<String> {
-        std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-    }
 
     fn unique_key(now: DateTime<Utc>) -> SessionKey {
         let mut key = [0u8; 32];
@@ -155,8 +150,11 @@ mod tests {
 
     #[tokio::test]
     async fn get_fails_closed_when_store_unreachable() {
-        let pool = build_postgres_pool_lazy("postgresql://127.0.0.1:1/__guardian_coord_fault__", 1)
-            .expect("lazy pool builds even with an unreachable address");
+        let pool = build_postgres_pool_lazy(
+            "postgresql://127.0.0.1:1/__guardian_coord_fault__?connect_timeout=1",
+            1,
+        )
+        .expect("lazy pool builds even with an unreachable address");
         let store = PgSessionStore::new(pool, Realm::Operator);
         assert!(
             store.get(&[7u8; 32], Utc::now()).await.is_err(),
@@ -165,10 +163,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn session_visible_across_replicas_and_revoke_propagates() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
-        run_migrations(&url).await.expect("migrations apply");
+        let url = test_database_url().await;
         let replica_a = PgSessionStore::new(
             build_postgres_pool_lazy(&url, 2).expect("pool a"),
             Realm::Operator,
