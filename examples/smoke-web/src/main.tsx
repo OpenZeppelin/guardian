@@ -16,6 +16,7 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       <ParaProvider
         paraClientConfig={{ apiKey: PARA_API_KEY, env: paraEnvironment }}
         config={{ appName: 'Miden Multisig Smoke' }}
+        externalWalletConfig={{ wallets: [] }}
       >
         <App />
       </ParaProvider>
