@@ -50,9 +50,10 @@ Most startup failures are environment misconfiguration. Check in order:
    permissions.
 5. **Postgres migrations fail.** The Postgres path runs migrations at
    startup. If the DB user lacks `CREATE` permissions, startup fails.
-   Grant `CREATE` on the schema or run migrations as a privileged user. Before
-   upgrading an account-scoped replay-state database to per-signer state, run
-   the [replay-state preflight](#preflight-the-per-signer-replay-state-migration).
+   Grant `CREATE` on the schema or run migrations as a privileged user.
+   For a migration that times out, crash-loops the task, or breaks
+   authentication mid-deploy, see [Postgres migrations block startup or fail
+   mid-deploy](#postgres-migrations-block-startup-or-fail-mid-deploy).
 6. **ACK secrets missing in prod.**
    `scripts/aws-deploy.sh deploy` refuses to apply if either ACK secret
    is missing. Run `DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys`
@@ -88,60 +89,70 @@ Most startup failures are environment misconfiguration. Check in order:
    per-signer migration. A newly added signer whose first request
    timestamp is at or below that floor is rejected once; the next
    strictly later timestamp succeeds. If no backup exists, recreating
-   `auth_state.json` with the literal content `{}` lets the server start
-   — that is an explicit operator decision to accept a replay window as
+   `auth_state.json` with the literal content `{}` lets the server start.
+   That is an explicit operator decision to accept a replay window as
    wide as the timestamp skew allowance. If startup instead reports
    replay state with no matching account metadata, restore
    `accounts.json` and `auth_state.json` from the same backup; Guardian
    will not rewrite or discard the unmatched floors.
 
-### Preflight the per-signer replay-state migration
+### Postgres migrations block startup or fail mid-deploy
 
-Before deploying the migration that expands `account_auth_state` by signer,
-run this read-only query against the pre-upgrade database. Keep its canonical
-commitment patterns aligned with `Auth::is_canonical_signer_commitment` in
-`crates/server/src/metadata/auth/mod.rs` and the migration SQL:
+Migrations run at server startup, before the connection pools are built.
+Each migration runs in a single transaction, so a failure never leaves a
+half-applied schema: the task exits, the orchestrator restarts it, and it
+retries from the same point.
+
+**Check which migrations are applied.** Compare the database against the
+migration directory (`crates/server/migrations/`, whose directory-name
+timestamps are the versions):
 
 ```sql
-WITH auth_sets AS (
-    SELECT s.account_id,
-           COALESCE(
-               m.auth -> 'MidenFalconRpo' -> 'cosigner_commitments',
-               m.auth -> 'MidenEcdsa' -> 'cosigner_commitments',
-               m.auth -> 'EvmEcdsa' -> 'signers'
-           ) AS commitments,
-           CASE WHEN m.auth ? 'EvmEcdsa'
-                THEN '^0x[0-9a-f]{40}$'
-                ELSE '^0x[0-9a-f]{64}$'
-           END AS commitment_pattern,
-           (m.auth ? 'MidenFalconRpo')::integer
-             + (m.auth ? 'MidenEcdsa')::integer
-             + (m.auth ? 'EvmEcdsa')::integer AS variant_count
-      FROM account_auth_state s
-      LEFT JOIN account_metadata m ON m.account_id = s.account_id
-)
-SELECT account_id
-  FROM auth_sets
- WHERE variant_count IS NULL
-    OR variant_count <> 1
-    OR CASE
-           WHEN jsonb_typeof(commitments) = 'array' THEN
-               jsonb_array_length(commitments) = 0
-               OR EXISTS (
-                   SELECT 1
-                     FROM jsonb_array_elements(commitments) signer(value)
-                    WHERE jsonb_typeof(signer.value) <> 'string'
-                       OR NOT ((signer.value #>> '{}') ~ commitment_pattern)
-               )
-           ELSE TRUE
-       END;
+SELECT version FROM __diesel_schema_migrations ORDER BY version DESC LIMIT 5;
 ```
 
-An empty result is clean. Returned accounts have missing or inert signer
-metadata that should be repaired before deployment. The migration does not
-delete their replay state: it retains the old account-level floor, so a signer
-authorized after repair cannot replay an older request. Do not delete
-`account_auth_state` rows as remediation.
+**`Timed out after 60s waiting for the migration advisory lock`.** Only one
+replica migrates at a time, serialised by a Postgres advisory lock. This
+message means another replica held it for the whole wait, or a session died
+mid-migration without releasing it. Find the holder:
+
+```sql
+SELECT a.pid, a.state, now() - a.xact_start AS age, left(a.query, 120) AS query
+  FROM pg_locks l
+  JOIN pg_stat_activity a USING (pid)
+ WHERE l.locktype = 'advisory';
+```
+
+The lock is released when its session ends, so a restart of the stuck replica
+clears it. Do not unlock it manually while another replica is still migrating.
+
+**`Failed to run migrations: ... canceling statement due to lock timeout`.**
+Migrations that rewrite a hot table take an explicit table lock with a 5s
+`lock_timeout`, so they fail fast rather than queueing every later writer
+behind them. A concurrent long-running transaction on the locked table is the
+usual cause:
+
+```sql
+SELECT pid, now() - xact_start AS age, state, left(query, 120) AS query
+  FROM pg_stat_activity
+ WHERE xact_start IS NOT NULL
+   AND now() - xact_start > interval '5 seconds'
+ ORDER BY age DESC;
+```
+
+A restart normally succeeds. Repeated failures mean a persistent long
+transaction, not a broken migration.
+
+**Authenticated requests fail on some replicas during a deploy.** A migration
+that changes a table the *previous* binary writes is not backward compatible,
+and the deployment keeps old tasks serving until the new one is healthy
+(`deployment_minimum_healthy_percent = 100`). Between the migration committing
+and the old tasks draining, requests routed to an old task fail. This is
+deliberate: failing closed beats writing state the new schema cannot represent.
+It is expected for `2026-07-31-000001_account_auth_state` and
+`2026-08-13-000001_auth_state_per_signer`. To eliminate the window rather than
+ride it out, stop the old tasks before the new one migrates, which trades the
+partial errors for brief full downtime.
 
 ### Guardian public key changes unexpectedly
 
@@ -209,8 +220,8 @@ not succeed until the underlying cause (clock, key, payload) changes.
 
 **Mixed server/client rollout:** SDK clients retry only
 `authentication_replay`; they never retry `authentication_failed`. A replay CAS
-reported under the older authentication code—or received by a client without
-replay-specific retry handling—can therefore surface as a terminal 401 until
+reported under the older authentication code, or received by a client without
+replay-specific retry handling, can therefore surface as a terminal 401 until
 both sides use the same error contract.
 
 The same server upgrade changes HTTP `/configure` failures from a
