@@ -570,6 +570,53 @@ mod tests {
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
+    /// Re-applies the newest migration if the reverting test does not reach its
+    /// own re-apply, so a panic mid-revert cannot leave the shared test schema
+    /// one migration behind for the rest of the run. `Drop` reports a failed
+    /// re-apply instead of panicking: unwinding out of `Drop` during another
+    /// panic aborts the whole test binary.
+    struct RevertedMigration {
+        url: String,
+        reapplied: bool,
+    }
+
+    impl RevertedMigration {
+        fn new(url: String) -> Self {
+            Self {
+                url,
+                reapplied: false,
+            }
+        }
+
+        fn defuse(mut self) {
+            self.reapplied = true;
+        }
+    }
+
+    impl Drop for RevertedMigration {
+        fn drop(&mut self) {
+            if self.reapplied {
+                return;
+            }
+            use diesel::Connection;
+            use diesel_migrations::MigrationHarness;
+            let outcome = diesel::PgConnection::establish(&self.url)
+                .map_err(|error| error.to_string())
+                .and_then(|mut conn| {
+                    conn.run_pending_migrations(crate::storage::postgres::MIGRATIONS)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                });
+            match outcome {
+                Ok(()) => {}
+                Err(error) => eprintln!(
+                    "failed to re-apply the reverted migration ({error}); the test schema is one \
+                     migration behind and the remaining Postgres tests will fail"
+                ),
+            }
+        }
+    }
+
     async fn insert_account_row(store: &PostgresMetadataStore, account_id: &str) {
         let mut conn = store.pool.get().await.expect("conn");
         diesel::sql_query(
@@ -721,6 +768,7 @@ mod tests {
         let _guard = pg_serial_lock().lock().await;
 
         let account_id = format!("0xbackfill{}", Utc::now().timestamp_micros());
+        let reverted = RevertedMigration::new(url.clone());
         {
             let url = url.clone();
             let account_id = account_id.clone();
@@ -748,6 +796,7 @@ mod tests {
         }
 
         run_migrations(&url).await.expect("migration reapplies");
+        reverted.defuse();
 
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         assert_eq!(

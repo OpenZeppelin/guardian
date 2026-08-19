@@ -241,9 +241,9 @@ mod tests {
         );
     }
 
-    /// The Postgres append-only trigger `admin_actions_no_update` must block
-    /// UPDATE and DELETE on a persisted row. Run via
-    /// `./scripts/test-postgres.sh`.
+    /// FR-026 / SC-009: the Postgres append-only trigger
+    /// `admin_actions_no_update` must block UPDATE and DELETE on a persisted
+    /// row. Run via `./scripts/test-postgres.sh`.
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn postgres_trigger_blocks_update_and_delete() {
