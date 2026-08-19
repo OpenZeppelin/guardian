@@ -204,7 +204,7 @@ mod tests {
     #[tokio::test]
     async fn postgres_write_failure_emits_log_fallback() {
         let pool = build_postgres_pool_lazy(
-            "postgresql://127.0.0.1:1/__guardian_fault_injection_test__",
+            "postgresql://127.0.0.1:1/__guardian_fault_injection_test__?connect_timeout=1",
             1,
         )
         .expect("lazy pool builds even with bad URL");
@@ -219,18 +219,10 @@ mod tests {
             .with_ansi(false)
             .finish();
 
-        // tokio-spawned work inherits the calling task's subscriber
-        // context when we set it as the default for the duration of
-        // the spawn. Use `with_default` to scope.
         let _registry_pin = crate::testing::log_capture::dispatcher_registry_pin();
-        tracing::subscriber::with_default(subscriber, || {
-            // Spawn + await synchronously inside the scope so all
-            // tracing events from the spawned task land in `writer`.
-            futures::executor::block_on(async {
-                let handle = auditor.record_with_handle(sample_event());
-                handle.await.expect("spawned task should not panic");
-            });
-        });
+        let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+        let handle = auditor.record_with_handle(sample_event());
+        handle.await.expect("spawned task should not panic");
 
         let captured = writer.contents();
         // The fallback path emits two events: the db_error breadcrumb
@@ -249,27 +241,19 @@ mod tests {
         );
     }
 
-    /// T040 (FR-026 / SC-009): the Postgres append-only trigger
-    /// `admin_actions_no_update` MUST block UPDATE and DELETE on a
-    /// persisted row. Marked `#[ignore]` because it requires a live
-    /// Postgres reachable at `DATABASE_URL` with the migration
-    /// applied — run via `cargo test -p guardian-server --lib
-    /// --features authz-test-probe -- --ignored postgres_trigger`.
+    /// FR-026 / SC-009: the Postgres append-only trigger
+    /// `admin_actions_no_update` must block UPDATE and DELETE on a persisted
+    /// row. Run via `./scripts/test-postgres.sh`.
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn postgres_trigger_blocks_update_and_delete() {
         use diesel::ExpressionMethods;
         use diesel::QueryDsl;
         use diesel_async::RunQueryDsl;
 
-        let database_url = crate::secret::CredentialUrl::new(
-            std::env::var("DATABASE_URL")
-                .expect("DATABASE_URL must be set; this test is marked #[ignore] by default"),
-        );
+        let database_url =
+            crate::secret::CredentialUrl::new(crate::testing::pg::test_database_url().await);
         let raw_url = database_url.expose_secret();
-        crate::storage::postgres::run_migrations(raw_url)
-            .await
-            .expect("migrations run");
         let pool = build_postgres_pool_lazy(raw_url, 1).expect("pool builds");
         // Sanity: prove the pool is reachable; if not, abort early
         // with a clear error rather than a confusing trigger failure.

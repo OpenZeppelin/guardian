@@ -586,72 +586,77 @@ mod tests {
     }
 
     #[cfg(feature = "postgres")]
-    #[tokio::test]
-    async fn test_build_without_database_url_fails() {
-        let builder = StorageMetadataBuilder::new();
+    mod postgres {
+        use super::*;
 
-        let result = builder.build().await;
-        assert!(result.is_err());
-        assert_eq!(
-            result.err().unwrap(),
-            "DATABASE_URL environment variable is required"
-        );
-    }
+        static POOL_SIZE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    #[cfg(feature = "postgres")]
-    #[tokio::test]
-    async fn test_build_with_empty_database_url_fails() {
-        let builder =
-            StorageMetadataBuilder::new().database_url(Some(CredentialUrl::new(String::new())));
+        #[tokio::test]
+        async fn test_build_without_database_url_fails() {
+            let builder = StorageMetadataBuilder::new();
 
-        let result = builder.build().await;
-        assert!(result.is_err());
-        assert_eq!(
-            result.err().unwrap(),
-            "DATABASE_URL environment variable is required"
-        );
-    }
-
-    #[cfg(feature = "postgres")]
-    #[test]
-    fn test_resolve_pool_size_uses_default_when_env_missing() {
-        unsafe {
-            std::env::remove_var(ENV_DB_POOL_MAX_SIZE);
+            let result = builder.build().await;
+            assert!(result.is_err());
+            assert_eq!(
+                result.err().unwrap(),
+                "DATABASE_URL environment variable is required"
+            );
         }
-        let result = resolve_pool_size(None, ENV_DB_POOL_MAX_SIZE, 16).unwrap();
-        assert_eq!(result, 16);
-    }
 
-    #[cfg(feature = "postgres")]
-    #[test]
-    fn test_resolve_pool_size_uses_explicit_value() {
-        let result = resolve_pool_size(Some(24), ENV_DB_POOL_MAX_SIZE, 16).unwrap();
-        assert_eq!(result, 24);
-    }
+        #[tokio::test]
+        async fn test_build_with_empty_database_url_fails() {
+            let builder =
+                StorageMetadataBuilder::new().database_url(Some(CredentialUrl::new(String::new())));
 
-    #[cfg(feature = "postgres")]
-    #[test]
-    fn test_resolve_pool_size_reads_env_override() {
-        unsafe {
-            std::env::set_var(ENV_DB_POOL_MAX_SIZE, "32");
+            let result = builder.build().await;
+            assert!(result.is_err());
+            assert_eq!(
+                result.err().unwrap(),
+                "DATABASE_URL environment variable is required"
+            );
         }
-        let result = resolve_pool_size(None, ENV_DB_POOL_MAX_SIZE, 16).unwrap();
-        unsafe {
-            std::env::remove_var(ENV_DB_POOL_MAX_SIZE);
-        }
-        assert_eq!(result, 32);
-    }
 
-    #[cfg(feature = "postgres")]
-    #[test]
-    fn test_resolve_pool_size_rejects_invalid_env_override() {
-        unsafe {
-            std::env::set_var(ENV_DB_POOL_MAX_SIZE, "nope");
+        #[test]
+        fn test_resolve_pool_size_uses_default_when_env_missing() {
+            let _lock = POOL_SIZE_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            // SAFETY: serialized by POOL_SIZE_ENV_LOCK; this variable is private to this module.
+            unsafe { std::env::remove_var(ENV_DB_POOL_MAX_SIZE) };
+            let result = resolve_pool_size(None, ENV_DB_POOL_MAX_SIZE, 16).unwrap();
+            assert_eq!(result, 16);
         }
-        let result = resolve_pool_size(None, ENV_DB_POOL_MAX_SIZE, 16);
-        unsafe {
-            std::env::remove_var(ENV_DB_POOL_MAX_SIZE);
+
+        #[test]
+        fn test_resolve_pool_size_uses_explicit_value() {
+            let result = resolve_pool_size(Some(24), ENV_DB_POOL_MAX_SIZE, 16).unwrap();
+            assert_eq!(result, 24);
         }
-        assert!(result.is_err());
+
+        #[test]
+        fn test_resolve_pool_size_reads_env_override() {
+            let _lock = POOL_SIZE_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            // SAFETY: serialized by POOL_SIZE_ENV_LOCK; this variable is private to this module.
+            unsafe { std::env::set_var(ENV_DB_POOL_MAX_SIZE, "32") };
+            let result = resolve_pool_size(None, ENV_DB_POOL_MAX_SIZE, 16).unwrap();
+            // SAFETY: serialized by POOL_SIZE_ENV_LOCK; this variable is private to this module.
+            unsafe { std::env::remove_var(ENV_DB_POOL_MAX_SIZE) };
+            assert_eq!(result, 32);
+        }
+
+        #[test]
+        fn test_resolve_pool_size_rejects_invalid_env_override() {
+            let _lock = POOL_SIZE_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            // SAFETY: serialized by POOL_SIZE_ENV_LOCK; this variable is private to this module.
+            unsafe { std::env::set_var(ENV_DB_POOL_MAX_SIZE, "nope") };
+            let result = resolve_pool_size(None, ENV_DB_POOL_MAX_SIZE, 16);
+            // SAFETY: serialized by POOL_SIZE_ENV_LOCK; this variable is private to this module.
+            unsafe { std::env::remove_var(ENV_DB_POOL_MAX_SIZE) };
+            assert!(result.is_err());
+        }
     }
 }
