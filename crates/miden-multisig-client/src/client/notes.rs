@@ -268,20 +268,20 @@ impl MultisigClient {
             ));
         }
         let salt = proposal.metadata.salt()?;
-        let asset = crate::execution::build_transfer_asset(account.inner(), *faucet_id, *amount)?;
+        let asset = crate::execution::build_transfer_asset(*faucet_id, *amount)?;
 
         let mut rng = RandomCoin::new(salt);
-        let note = P2idNote::create(
-            account.id(),
-            *recipient,
-            vec![asset.into()],
-            *note_type,
-            Default::default(),
-            &mut rng,
-        )
-        .map_err(|e| {
-            MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
-        })?;
+        let note: miden_protocol::note::Note = P2idNote::builder()
+            .sender(account.id())
+            .target(*recipient)
+            .asset(asset)
+            .note_type(*note_type)
+            .generate_serial_number(&mut rng)
+            .build()
+            .map_err(|e| {
+                MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
+            })?
+            .into();
 
         Ok(note.id())
     }

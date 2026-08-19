@@ -218,7 +218,6 @@ export class MultisigClient {
       threshold: detected.threshold,
       signerCommitments: detected.signerCommitments,
       guardianCommitment: detected.guardianCommitment ?? '',
-      guardianEnabled: detected.guardianEnabled,
       procedureThresholds: Array.from(detected.procedureThresholds.entries()).map(
         ([procedure, threshold]) => ({ procedure, threshold })
       ),

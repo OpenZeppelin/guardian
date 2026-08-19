@@ -95,6 +95,7 @@ pub fn fresh_account_id_hex(seed_byte: u8) -> String {
         [seed_byte; 15],
         miden_protocol::account::AccountIdVersion::Version1,
         miden_protocol::account::AccountType::Private,
+        miden_protocol::account::AssetCallbackFlag::Disabled,
     )
     .to_hex()
 }

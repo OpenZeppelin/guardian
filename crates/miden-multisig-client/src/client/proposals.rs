@@ -541,6 +541,7 @@ impl MultisigClient {
         self.sync().await?;
 
         let account = self.require_account()?.clone();
+        warn_on_override_dilution(&account, &transaction_type);
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         ProposalBuilder::new(transaction_type)
@@ -697,13 +698,45 @@ fn classify_abandon_status(status: &guardian_client::DeltaStatus) -> AbandonStat
     }
 }
 
+/// Warns when a signer-set-growing transaction would dilute per-procedure
+/// threshold overrides. Overrides are absolute signature counts and the
+/// on-chain update never re-scales them, so growth silently lowers every
+/// override's effective signing ratio; the fix is raising the override via
+/// `update_procedure_threshold` alongside the growth.
+fn warn_on_override_dilution(
+    account: &crate::account::MultisigAccount,
+    transaction_type: &TransactionType,
+) {
+    let current = account.cosigner_commitments().len() as u32;
+    let Some(target) = transaction_type.target_signer_count(current) else {
+        return;
+    };
+    let Ok(diluted) = account.overrides_diluted_by_signer_growth(target) else {
+        return;
+    };
+    for (procedure, threshold) in diluted {
+        tracing::warn!(
+            %procedure,
+            threshold,
+            current_signers = current,
+            target_signers = target,
+            "growing the signer set dilutes this procedure threshold override \
+             ({threshold}-of-{current} becomes {threshold}-of-{target}); consider raising it \
+             via update_procedure_threshold alongside the signer update"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use guardian_client::DeltaObject;
     use guardian_shared::ToJson;
     use miden_protocol::account::AccountId;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word, ZERO};
 
     use super::{AbandonStatus, classify_abandon_status};
@@ -714,8 +747,9 @@ mod tests {
         let account_id = AccountId::from_hex(account_id).expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("valid delta");
@@ -724,7 +758,17 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new_unchecked(seed), ZERO, ZERO, ZERO]),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([
+                ZERO,
+                ZERO,
+                ZERO,
+                Felt::new_unchecked(seed),
+                ZERO,
+                ZERO,
+                ZERO,
+            ]),
         )
     }
 

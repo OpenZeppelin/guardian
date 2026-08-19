@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@miden-sdk/miden-sdk": "0.15.7",
+    "@miden-sdk/miden-sdk": "0.16.0-rc.2",
     "@openzeppelin/guardian-operator-client": "file:../../packages/guardian-operator-client",
     "buffer": "^6.0.3",
     "events": "^3.3.0",

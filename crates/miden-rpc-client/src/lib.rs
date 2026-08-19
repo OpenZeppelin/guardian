@@ -1,4 +1,4 @@
-//! Minimal Miden RPC client using miden-node-proto crate
+//! Minimal Miden RPC client over bindings generated from miden-node-proto-build
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +12,11 @@ use tonic::{
     transport::{Channel, ClientTlsConfig},
 };
 
-pub use miden_node_proto::generated::{account, blockchain, note, primitives, rpc, transaction};
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/rpc_generated.rs"));
+}
+
+pub use generated::{account, blockchain, note, primitives, rpc, transaction};
 pub use rpc::api_client::ApiClient;
 
 #[cfg(any(test, feature = "scripted-node"))]
@@ -296,7 +300,7 @@ impl MidenRpcClient {
     ) -> Result<(), RpcClientError> {
         let request = transaction::ProvenTransaction {
             transaction: proven_tx_bytes,
-            transaction_inputs: None,
+            sealed_transaction_inputs: None,
         };
 
         self.client

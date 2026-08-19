@@ -33,7 +33,11 @@ Three decisions when running Guardian locally:
   `GUARDIAN_MIDEN_RPC_ENDPOINT` without changing the network type; see
   [CONFIGURATION.md](./CONFIGURATION.md) for that and the optional
   `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` / `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS`
-  read-retry knobs.
+  read-retry knobs. The node's Miden line must match the workspace
+  baseline (currently the 0.16 pre-release line; devnet already runs
+  the 0.16 node) — a mismatched node is rejected at the RPC boundary
+  (see
+  [Troubleshooting](./TROUBLESHOOTING.md#client-and-node-disagree-about-the-network-version)).
 
 ## Environment file
 

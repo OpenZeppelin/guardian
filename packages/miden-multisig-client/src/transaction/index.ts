@@ -1,4 +1,4 @@
-export { executeForSummary } from './summary.js';
+export { executeForSummary, summarySalt } from './summary.js';
 export { buildUpdateSignersTransactionRequest } from './updateSigners.js';
 export { buildUpdateProcedureThresholdTransactionRequest } from './updateProcedureThreshold.js';
 export { buildUpdateGuardianTransactionRequest } from './updateGuardian.js';

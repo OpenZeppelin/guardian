@@ -54,7 +54,7 @@ pub async fn execute_for_summary(
 /// Generates a random salt word.
 pub fn generate_salt() -> Word {
     let mut bytes = [0u8; 32];
-    rand::Rng::fill(&mut rand::rng(), &mut bytes);
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut bytes);
 
     let mut felts = [Felt::ZERO; 4];
     for (i, chunk) in bytes.chunks(8).enumerate() {
@@ -98,17 +98,26 @@ mod tests {
         );
     }
 
-    /// Guards against silent transaction-kernel drift: the kernel commitment depends on transitive
-    /// hashing crates (notably Plonky3 `p3-*`), so a stale `Cargo.lock` yields a kernel the node
-    /// rejects with "value for key ... not present in the advice map". This constant must equal the
-    /// live network's "Proof Commitment"; if the test fails after a dependency bump, realign the
-    /// crates (`cargo update`) and update the constant together.
+    /// Guards against silent transaction-kernel drift.
+    ///
+    /// The transaction kernel is re-assembled from `miden-protocol`'s MASM at build
+    /// time, and its commitment is derived from hashes computed by transitive crates
+    /// (notably the Plonky3 `p3-*` family, pulled in via `miden-crypto`). If a stale
+    /// or mismatched `Cargo.lock` resolves those crates to a version different from the
+    /// network's, the client computes a kernel the node doesn't recognise, and every
+    /// transaction aborts in the prologue with "value for key ... not present in the
+    /// advice map" (the missing key being the network's kernel commitment).
+    ///
+    /// This value must equal the live network's "Proof Commitment" (kernel commitment).
+    /// If this test fails after a dependency bump, the kernel has drifted: align the
+    /// kernel-affecting crates (run `cargo update`) until it matches the network again,
+    /// then update this constant in the same change.
     #[test]
     fn transaction_kernel_commitment_matches_network() {
         use miden_protocol::transaction::TransactionKernel;
 
         const EXPECTED_KERNEL_COMMITMENT: &str =
-            "0x8cd42f3f2c023c2632ceb982f3d3cf2952f5a1655915c9525a04b510c53fbd20";
+            "0xeb141480ed70ab3d2bf3bb1ec8e84358c41ca11045aecbbd95881c5a2f95ca43";
 
         let actual = word_to_hex(&TransactionKernel.to_commitment());
         assert_eq!(

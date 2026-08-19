@@ -205,7 +205,6 @@ export async function createMultisigAccount(
     threshold,
     signerCommitments,
     guardianCommitment,
-    guardianEnabled: true,
     procedureThresholds,
     storageMode: 'private',
     signatureScheme,
@@ -404,17 +403,15 @@ export interface CustomProposalRecipe {
   saltHex: string;
 }
 
-async function buildRequestFromRecipe(
-  multisig: Multisig,
+function buildRequestFromRecipe(
   recipe: CustomProposalRecipe,
   signatureAdviceMap?: AdviceMap,
-): Promise<TransactionRequest> {
+): TransactionRequest {
   return buildP2idTransactionRequest(
     recipe.senderId,
     recipe.recipientId,
     recipe.faucetId,
     BigInt(recipe.amount),
-    await multisig.getStoreAccount(),
     { salt: Word.fromHex(recipe.saltHex), signatureAdviceMap },
   ).request;
 }
@@ -432,7 +429,6 @@ export async function createCustomP2idProposal(
     recipientId,
     faucetId,
     amount,
-    await multisig.getStoreAccount(),
   );
 
   const created = await createProposalResult(multisig, () =>
@@ -455,10 +451,10 @@ export async function prepareAndSubmitCustomProposal(
   multisig: Multisig,
   recipe: CustomProposalRecipe,
 ): Promise<void> {
-  const bindingRequestBytes = (await buildRequestFromRecipe(multisig, recipe)).serialize();
+  const bindingRequestBytes = buildRequestFromRecipe(recipe).serialize();
   const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequestBytes);
 
-  const finalRequest = await buildRequestFromRecipe(multisig, recipe, advice);
+  const finalRequest = buildRequestFromRecipe(recipe, advice);
 
   try {
     await multisig.submitTransaction(finalRequest);

@@ -368,7 +368,7 @@ impl ProposalBuilder {
         let required_signatures =
             account.effective_threshold_for_procedure(ProcedureName::SendAsset)? as usize;
 
-        let asset = build_transfer_asset(account.inner(), faucet_id, amount)?;
+        let asset = build_transfer_asset(faucet_id, amount)?;
 
         // Generate salt for replay protection
         let salt = generate_salt();
@@ -574,6 +574,7 @@ impl ProposalBuilder {
         // Build the GUARDIAN update transaction request (no signatures for proposal)
         let tx_request = build_update_guardian_transaction_request(
             new_guardian_pubkey,
+            key_manager.scheme(),
             salt,
             std::iter::empty(),
         )?;
@@ -654,12 +655,11 @@ impl ProposalBuilder {
             as usize;
 
         let salt = generate_salt();
-        let (tx_request, _) = build_update_procedure_threshold_transaction_request(
+        let tx_request = build_update_procedure_threshold_transaction_request(
             procedure,
             new_threshold,
             salt,
             std::iter::empty(),
-            key_manager.scheme(),
         )?;
         let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
@@ -715,8 +715,11 @@ impl ProposalBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, ZERO};
 
     fn test_proposal() -> Proposal {
@@ -724,8 +727,9 @@ mod tests {
             AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("valid delta");
@@ -733,7 +737,17 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new_unchecked(9), ZERO, ZERO, ZERO]),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([
+                ZERO,
+                ZERO,
+                ZERO,
+                Felt::new_unchecked(9),
+                ZERO,
+                ZERO,
+                ZERO,
+            ]),
         );
 
         Proposal::new(

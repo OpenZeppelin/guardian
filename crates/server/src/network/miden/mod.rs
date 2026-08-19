@@ -1,18 +1,24 @@
 pub mod account_inspector;
 
 use crate::metadata::auth::{Auth, Credentials};
-use crate::network::miden::account_inspector::{MidenAccountInspector, OZ_GUARDIAN_PUBLIC_KEY};
+use crate::network::miden::account_inspector::{
+    MidenAccountInspector, guardian_public_key_slot_name,
+};
 use crate::network::{
     MidenRpcSettings, NetworkClient, NetworkType, RpcReadMode, StateVerification,
 };
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
 use miden_protocol::Word;
-use miden_protocol::account::{Account, AccountId, StorageMapKey, StorageSlotName};
+use miden_protocol::account::{
+    Account, AccountId, AccountStoragePatch, StorageMapKey, StorageMapPatch,
+    StorageMapPatchEntries, StorageSlotPatch,
+};
 use miden_protocol::transaction::{
     InputNote, InputNotes, RawOutputNote, RawOutputNotes, TransactionSummary,
 };
 use miden_rpc_client::MidenRpcClient;
+use miden_standards::account::auth::AuthGuardedMultisig;
 
 /// Miden network client for fetching on-chain account data
 pub struct MidenNetworkClient {
@@ -44,15 +50,9 @@ impl MidenNetworkClient {
     }
 
     /// Builds a client without contacting the network or loading TLS roots, for
-    /// tests that exercise the pure serialization/delta paths
-    /// (`get_state_commitment`, `validate_guardian_commitment`, `apply_delta`,
-    /// `extract_guardian_commitment`) which never issue an RPC.
-    ///
-    /// The cfg matches this helper's exact consumers so `-D dead_code`
-    /// holds under every feature combination CI lints: the unit tests
-    /// below (test builds without `integration`/`e2e`) and the e2e
-    /// guardian-switch test (test builds with `e2e`). Non-test builds
-    /// never compile it.
+    /// unit tests that exercise the pure serialization/delta paths
+    /// (`get_state_commitment`, `validate_guardian_commitment`, `apply_delta`)
+    /// which never issue an RPC.
     #[cfg(all(test, any(feature = "e2e", not(feature = "integration"))))]
     pub(crate) fn lazy_for_test(network: NetworkType) -> Self {
         let client = MidenRpcClient::lazy_unconnected(network.rpc_endpoint())
@@ -215,109 +215,31 @@ impl NetworkClient for MidenNetworkClient {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let account_delta = tx_summary.account_delta();
 
-        // Check if this is a full state delta (new account deployment) or partial delta (update)
-        let guardian_enabled_pre_tx;
-        let mut account = if account_delta.is_full_state() {
-            // For new accounts, convert the full state delta directly to an Account
+        let is_full_state = account_delta.is_full_state();
+        let base_account = if is_full_state {
             tracing::debug!(
                 account_id = %account_delta.id().to_hex(),
                 "Processing full state delta for new account deployment"
             );
-            // The pre-tx selector for a first transaction comes from the stored initial
-            // state (registered via `/configure`), not from the delta: a first-tx abort
-            // summary captures the selector mid-script exactly like the partial path
-            // (OFF during a `SwitchGuardian`), while the guardian-verified execution
-            // re-enables it on-chain. Without this, a first-tx SwitchGuardian
-            // reconstructs with the selector OFF, its commitment never matches the
-            // chain, and the candidate is condemned as diverged instead of
-            // canonicalizing — so release-on-switch (#305) never fires. An unparseable
-            // prev state falls back to `false`, preserving the delta's own selector —
-            // but that fallback silently reintroduces exactly this divergence for
-            // guardian accounts, and a configured account always has a parseable
-            // initial state, so the warn below is silent in healthy operation and
-            // loud precisely when it matters.
-            guardian_enabled_pre_tx = match Account::from_json(prev_state_json) {
-                Ok(prev) => MidenAccountInspector::new(&prev).has_guardian_auth(),
-                Err(e) => {
-                    tracing::warn!(
-                        account_id = %account_delta.id().to_hex(),
-                        error = %e,
-                        "Unparseable prev state while reconstructing a full-state \
-                         delta; assuming guardian-disabled — a first-tx \
-                         SwitchGuardian will reconstruct diverged"
-                    );
-                    false
-                }
-            };
-            Account::try_from(account_delta).map_err(|e| {
-                tracing::error!(
-                    account_id = %account_delta.id().to_hex(),
-                    error = %e,
-                    "Failed to convert full state delta to account"
-                );
-                format!("Failed to convert full state delta to account: {e}")
-            })?
+            guardian_shared::account_delta::account_from_full_delta_with_storage_patch(
+                account_delta,
+                AccountStoragePatch::new(),
+            )?
         } else {
-            // For existing accounts, apply the partial delta
-            let mut account = Account::from_json(prev_state_json)?;
-            // Capture whether GUARDIAN was enabled *before* this tx, while the prior state is
-            // still intact. `enable_guardian` runs only on a guardian-verified tx, so only then is
-            // the selector guaranteed ON on-chain afterwards; see the re-enable gate below.
-            guardian_enabled_pre_tx = MidenAccountInspector::new(&account).has_guardian_auth();
-            account.apply_delta(account_delta).map_err(|e| {
-                tracing::error!(
-                    account_id = %account.id().to_hex(),
-                    error = %e,
-                    "Failed to apply delta to account"
-                );
-                format!("Failed to apply delta to account: {e}")
-            })?;
-            account
+            Account::from_json(prev_state_json)?
         };
 
-        let inspector = MidenAccountInspector::new(&account);
-        // Gate on multisig, not GUARDIAN: the replay-protection map is populated by the multisig
-        // auth regardless of GUARDIAN state, and a SwitchGuardian clears the GUARDIAN selector, so
-        // a GUARDIAN-gated check would skip the adjustment and omit the executed-transactions entry
-        // the chain recorded.
-        let is_multisig = inspector.has_multisig_auth();
-
-        if guardian_enabled_pre_tx {
-            // A guardian-verified tx always ends with `enable_guardian`, so the on-chain selector
-            // is ON afterwards even when the delta (an abort summary) captured it OFF mid-script
-            // during a SwitchGuardian; re-enable here to match the on-chain commitment. Gated on
-            // the selector being ON *before* the tx: `enable_guardian` runs only when guardian auth
-            // was required, so a guardian-disabled account never reaches it and must keep its OFF
-            // selector through reconstruction. The full-state (deployment) path derives the
-            // pre-tx selector from the stored initial state, since its delta captures the
-            // mid-script selector just like a partial abort summary. Parity is
-            // pinned by `test_switch_guardian_server_reconstruction_matches_execution`
-            // (crates/contracts/tests/auth/multisig.rs) for the enabled case,
-            // `test_apply_delta_guardian_disabled_keeps_selector_off` for the disabled case,
-            // and `test_apply_delta_first_tx_switch_reenables_selector` for the first-tx case.
-            const GUARDIAN_SELECTOR_SLOT_NAME: &str = "openzeppelin::guardian::selector";
-            const GUARDIAN_ON: [u32; 4] = [1, 0, 0, 0];
-
-            let slot_name = StorageSlotName::new(GUARDIAN_SELECTOR_SLOT_NAME)
-                .map_err(|e| format!("Failed to create storage slot name: {e}"))?;
-
-            account
-                .storage_mut()
-                .set_item(&slot_name, Word::from(GUARDIAN_ON))
-                .map_err(|e| {
-                    tracing::error!(
-                        account_id = %account.id().to_hex(),
-                        error = %e,
-                        "Failed to re-enable GUARDIAN selector"
-                    );
-                    format!("Failed to re-enable GUARDIAN selector: {e}")
-                })?;
-
-            tracing::debug!(
-                account_id = %account.id().to_hex(),
-                "Re-enabled GUARDIAN selector to mirror enable_guardian"
-            );
+        let mut preview_account = base_account.clone();
+        if !is_full_state {
+            guardian_shared::account_delta::apply_account_delta(
+                &mut preview_account,
+                account_delta,
+            )?;
         }
+        // Gate the replay-protection adjustment on the structural multisig component, not the
+        // guardian key's value (which a delta could zero); see `has_multisig_auth`.
+        let is_multisig = MidenAccountInspector::new(&preview_account).has_multisig_auth();
+        let mut storage_entries = Vec::new();
 
         if is_multisig {
             // Miden multisigs include a map of executed transactions to prevent replay attacks.
@@ -327,33 +249,44 @@ impl NetworkClient for MidenNetworkClient {
             // We need to artificially add the transaction to the mapping
             // to ensure the commitment generated by the new state matches with the commitment
             // generated on-chain when the transaction is executed.
-            const EXECUTED_TXS_SLOT_NAME: &str = "openzeppelin::multisig::executed_transactions";
             const IS_EXECUTED_FLAG: [u32; 4] = [1, 0, 0, 0];
 
             let tx_commitment = tx_summary.to_commitment();
             let flag_word = Word::from(IS_EXECUTED_FLAG);
 
-            let slot_name = StorageSlotName::new(EXECUTED_TXS_SLOT_NAME)
-                .map_err(|e| format!("Failed to create storage slot name: {e}"))?;
+            let slot_name = AuthGuardedMultisig::executed_transactions_slot().clone();
 
-            account
-                .storage_mut()
-                .set_map_item(&slot_name, StorageMapKey::new(tx_commitment), flag_word)
-                .map_err(|e| {
-                    tracing::error!(
-                        account_id = %account.id().to_hex(),
-                        error = %e,
-                        "Failed to apply replay protection storage update"
-                    );
-                    format!("Failed to apply replay protection storage update: {e}")
-                })?;
+            let entries =
+                StorageMapPatchEntries::from_iter([(StorageMapKey::new(tx_commitment), flag_word)]);
+            storage_entries.push((
+                slot_name,
+                StorageSlotPatch::Map(StorageMapPatch::Update { entries }),
+            ));
 
             tracing::debug!(
-                account_id = %account.id().to_hex(),
+                account_id = %base_account.id().to_hex(),
                 tx_commitment = %format!("0x{}", hex::encode(tx_commitment.as_bytes())),
                 "Applied replay protection adjustment for multisig account"
             );
         }
+
+        let additional_storage = AccountStoragePatch::from_entries(storage_entries)
+            .map_err(|error| format!("Failed to build storage adjustment patch: {error}"))?;
+
+        let account = if is_full_state {
+            guardian_shared::account_delta::account_from_full_delta_with_storage_patch(
+                account_delta,
+                additional_storage,
+            )?
+        } else {
+            let mut account = base_account;
+            guardian_shared::account_delta::apply_account_delta_with_storage_patch(
+                &mut account,
+                account_delta,
+                additional_storage,
+            )?;
+            account
+        };
 
         let new_commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
         let new_state_json = account.to_json();
@@ -390,15 +323,15 @@ impl NetworkClient for MidenNetworkClient {
         for tx_summary in tx_summaries.iter().skip(1) {
             all_input_notes.extend(tx_summary.input_notes().iter().cloned());
             all_output_notes.extend(tx_summary.output_notes().iter().cloned());
-            merged_account_delta
-                .merge(tx_summary.account_delta().clone())
-                .map_err(|e| {
-                    tracing::error!(
-                        error = %e,
-                        "Failed to merge account deltas"
-                    );
-                    format!("Failed to merge account deltas: {e}")
-                })?;
+            merged_account_delta =
+                merge_account_deltas(merged_account_delta, tx_summary.account_delta().clone())
+                    .map_err(|e| {
+                        tracing::error!(
+                            error = %e,
+                            "Failed to merge account deltas"
+                        );
+                        format!("Failed to merge account deltas: {e}")
+                    })?;
         }
 
         // Create aggregated InputNotes and OutputNotes
@@ -417,16 +350,23 @@ impl NetworkClient for MidenNetworkClient {
             format!("Failed to create aggregated output notes: {e}")
         })?;
 
-        // Use the salt from the last TransactionSummary
-        // TODO: Maybe we should use a 0 salt to prevent confusions.
-        let salt = tx_summaries.last().unwrap().salt();
+        // Carry the reference block, expiration delta and user params (which hold the
+        // auth-arg salt) from the last TransactionSummary, matching the pre-existing
+        // salt convention.
+        // TODO: Maybe we should use zeroed user params to prevent confusions.
+        let last = tx_summaries.last().unwrap();
+        let block_commitment = last.block_commitment();
+        let expiration_delta = last.expiration_delta();
+        let user_params = last.user_params();
 
         // Create the merged TransactionSummary
         let merged_tx_summary = TransactionSummary::new(
             merged_account_delta,
             aggregated_input_notes,
             aggregated_output_notes,
-            salt,
+            block_commitment,
+            expiration_delta,
+            user_params,
         );
 
         Ok(merged_tx_summary.to_json())
@@ -496,15 +436,16 @@ impl NetworkClient for MidenNetworkClient {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
 
+        let guardian_slot = guardian_public_key_slot_name();
         let actual_guardian_commitment = inspector
             .extract_guardian_public_key()
-            .ok_or_else(|| format!("Missing required slot '{OZ_GUARDIAN_PUBLIC_KEY}'"))?;
+            .ok_or_else(|| format!("Missing required slot '{guardian_slot}'"))?;
 
         if actual_guardian_commitment == expected_guardian_commitment {
             Ok(())
         } else {
             Err(format!(
-                "Slot '{OZ_GUARDIAN_PUBLIC_KEY}' mismatch: expected {expected_guardian_commitment}, got {actual_guardian_commitment}"
+                "Slot '{guardian_slot}' mismatch: expected {expected_guardian_commitment}, got {actual_guardian_commitment}"
             ))
         }
     }
@@ -536,8 +477,50 @@ impl NetworkClient for MidenNetworkClient {
     }
 }
 
+/// Merges two relative account deltas into one, replacing the upstream
+/// `AccountDelta::merge` removed in Miden 0.16: storage patches merge
+/// natively, vault deltas accumulate asset-by-asset, and nonce deltas add.
+/// Only the first delta in a merge sequence may carry account code.
+fn merge_account_deltas(
+    base: miden_protocol::account::AccountDelta,
+    next: miden_protocol::account::AccountDelta,
+) -> Result<miden_protocol::account::AccountDelta, String> {
+    let account_id = base.id();
+    let (mut storage, mut vault, code, nonce_delta) = base.into_parts();
+    let (next_storage, next_vault, next_code, next_nonce_delta) = next.into_parts();
+
+    if next_code.is_some() {
+        return Err("unexpected full-state delta after the first delta in a merge".to_string());
+    }
+
+    storage
+        .merge(next_storage)
+        .map_err(|e| format!("failed to merge storage patches: {e}"))?;
+    for asset in next_vault.added_assets() {
+        vault
+            .add_asset(asset)
+            .map_err(|e| format!("failed to merge added asset: {e}"))?;
+    }
+    for asset in next_vault.removed_assets() {
+        vault
+            .remove_asset(asset)
+            .map_err(|e| format!("failed to merge removed asset: {e}"))?;
+    }
+
+    miden_protocol::account::AccountDelta::new(
+        account_id,
+        storage,
+        vault,
+        code,
+        nonce_delta + next_nonce_delta,
+    )
+    .map_err(|e| format!("failed to build merged delta: {e}"))
+}
+
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
+    use miden_protocol::transaction::TransactionSummaryUserParams;
+
     use super::*;
 
     #[test]
@@ -665,8 +648,8 @@ mod tests {
         assert!(
             result
                 .unwrap_err()
-                .contains("openzeppelin::guardian::public_key"),
-            "Error should mention required OpenZeppelin slot name"
+                .contains(guardian_public_key_slot_name()),
+            "Error should mention the required guardian pub_key slot name"
         );
     }
 
@@ -711,7 +694,7 @@ mod tests {
     async fn test_apply_delta_full_state() {
         use miden_protocol::Felt;
         use miden_protocol::account::AccountDelta;
-        use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
+        use miden_protocol::account::delta::AccountVaultDelta;
         use miden_protocol::account::{AccountBuilder, AccountType};
         use miden_standards::account::auth::NoAuth;
         use miden_standards::account::wallets::BasicWallet;
@@ -724,7 +707,7 @@ mod tests {
         let account = AccountBuilder::new([0xAB; 32])
             .account_type(AccountType::Public)
             .with_component(BasicWallet)
-            .with_auth_component(NoAuth)
+            .with_component(NoAuth)
             .build()
             .expect("Failed to build account");
 
@@ -733,12 +716,12 @@ mod tests {
         // A full state delta has code attached, which distinguishes it from a partial update
         let full_state_delta = AccountDelta::new(
             account.id(),
-            AccountStorageDelta::default(),
+            miden_protocol::account::AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            Felt::new_unchecked(1), // nonce delta
+            Some(account.code().clone()),
+            Felt::new_unchecked(1),
         )
-        .expect("Failed to create delta")
-        .with_code(Some(account.code().clone()));
+        .expect("Failed to create delta");
 
         // Verify this is indeed a full state delta
         assert!(
@@ -752,6 +735,8 @@ mod tests {
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::default(),
+            0,
+            TransactionSummaryUserParams::new([Felt::ZERO; 7]),
         );
 
         let delta_payload = tx_summary.to_json();
@@ -781,188 +766,6 @@ mod tests {
             new_commitment.len(),
             66,
             "Commitment should be 32 bytes (64 hex chars + 0x prefix)"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_apply_delta_guardian_disabled_keeps_selector_off() {
-        use miden_protocol::Felt;
-        use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
-        use miden_protocol::account::{
-            AccountCode, AccountDelta, AccountId, AccountIdVersion, AccountStorage, AccountType,
-            StorageSlot, StorageSlotName,
-        };
-        use miden_protocol::asset::AssetVault;
-
-        const GUARDIAN_SELECTOR_SLOT_NAME: &str = "openzeppelin::guardian::selector";
-        let guardian_off = Word::from([0u32, 0, 0, 0]);
-
-        let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::lazy_for_test(network);
-
-        // A guardian account deployed with `guardian_enabled = false`: the selector slot exists
-        // but reads OFF. Reconstruction must leave it OFF — forcing it ON would diverge from the
-        // on-chain commitment, since a guardian-disabled tx never runs `enable_guardian`.
-        let selector_name =
-            StorageSlotName::new(GUARDIAN_SELECTOR_SLOT_NAME).expect("valid slot name");
-        let storage = AccountStorage::new(vec![StorageSlot::with_value(
-            selector_name.clone(),
-            guardian_off,
-        )])
-        .expect("valid storage");
-        let account_id =
-            AccountId::dummy([7u8; 15], AccountIdVersion::Version1, AccountType::Private);
-        let prev_account = Account::new_existing(
-            account_id,
-            AssetVault::new(&[]).expect("empty vault"),
-            storage,
-            AccountCode::mock(),
-            Felt::new_unchecked(1),
-        );
-        let prev_state_json = prev_account.to_json();
-
-        // A partial (non-full-state) delta: a bare nonce bump that does not touch the selector.
-        let partial_delta = AccountDelta::new(
-            prev_account.id(),
-            AccountStorageDelta::default(),
-            AccountVaultDelta::default(),
-            Felt::new_unchecked(1),
-        )
-        .expect("valid delta");
-        assert!(
-            !partial_delta.is_full_state(),
-            "delta must be partial so the pre-tx selector gate applies"
-        );
-        let tx_summary = TransactionSummary::new(
-            partial_delta,
-            InputNotes::new(Vec::new()).expect("empty input notes"),
-            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::default(),
-        );
-        let delta_payload = tx_summary.to_json();
-
-        let (new_state_json, _new_commitment) = client
-            .apply_delta(&prev_state_json, &delta_payload)
-            .expect("apply_delta should succeed");
-
-        let reconstructed =
-            Account::from_json(&new_state_json).expect("valid reconstructed account");
-        let selector = reconstructed
-            .storage()
-            .get_item(&selector_name)
-            .expect("selector slot present");
-        assert_eq!(
-            selector, guardian_off,
-            "guardian-disabled account must keep its OFF selector after reconstruction"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_apply_delta_first_tx_switch_reenables_selector() {
-        use miden_protocol::Felt;
-        use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
-        use miden_protocol::account::{
-            AccountCode, AccountDelta, AccountId, AccountIdVersion, AccountStorage, AccountType,
-            StorageSlot, StorageSlotName,
-        };
-        use miden_protocol::asset::AssetVault;
-
-        const GUARDIAN_SELECTOR_SLOT_NAME: &str = "openzeppelin::guardian::selector";
-        let guardian_on = Word::from([1u32, 0, 0, 0]);
-        let guardian_off = Word::from([0u32, 0, 0, 0]);
-
-        let network = NetworkType::MidenTestnet;
-        let client = MidenNetworkClient::lazy_for_test(network);
-
-        let selector_name =
-            StorageSlotName::new(GUARDIAN_SELECTOR_SLOT_NAME).expect("valid slot name");
-        let account_id =
-            AccountId::dummy([8u8; 15], AccountIdVersion::Version1, AccountType::Private);
-
-        // The stored initial state (registered via `/configure`): guardian enabled.
-        let prev_storage = AccountStorage::new(vec![StorageSlot::with_value(
-            selector_name.clone(),
-            guardian_on,
-        )])
-        .expect("valid storage");
-        let prev_account = Account::new_existing(
-            account_id,
-            AssetVault::new(&[]).expect("empty vault"),
-            prev_storage,
-            AccountCode::mock(),
-            Felt::new_unchecked(1),
-        );
-        let prev_state_json = prev_account.to_json();
-
-        // A first-transaction SwitchGuardian abort summary: a FULL-STATE delta whose
-        // storage captured the selector OFF mid-script. On-chain the guardian-verified
-        // execution ends with `enable_guardian`, so reconstruction must end selector ON.
-        let mut storage_delta = AccountStorageDelta::new();
-        storage_delta
-            .set_item(selector_name.clone(), guardian_off)
-            .expect("set selector in delta");
-        let full_state_delta = AccountDelta::new(
-            account_id,
-            storage_delta,
-            AccountVaultDelta::default(),
-            Felt::new_unchecked(1),
-        )
-        .expect("valid delta")
-        .with_code(Some(AccountCode::mock()));
-        assert!(
-            full_state_delta.is_full_state(),
-            "delta must be full-state so the first-tx path is exercised"
-        );
-        let tx_summary = TransactionSummary::new(
-            full_state_delta,
-            InputNotes::new(Vec::new()).expect("empty input notes"),
-            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::default(),
-        );
-        let delta_payload = tx_summary.to_json();
-
-        let (new_state_json, _new_commitment) = client
-            .apply_delta(&prev_state_json, &delta_payload)
-            .expect("apply_delta should succeed");
-
-        let reconstructed =
-            Account::from_json(&new_state_json).expect("valid reconstructed account");
-        let selector = reconstructed
-            .storage()
-            .get_item(&selector_name)
-            .expect("selector slot present");
-        assert_eq!(
-            selector, guardian_on,
-            "first-tx reconstruction must re-enable the selector when the stored \
-             initial state had guardian enabled (issue #305 first-tx switch)"
-        );
-
-        // Control: when the stored initial state has guardian DISABLED, the delta's
-        // own selector must be preserved — no forcing.
-        let off_storage = AccountStorage::new(vec![StorageSlot::with_value(
-            selector_name.clone(),
-            guardian_off,
-        )])
-        .expect("valid storage");
-        let off_prev = Account::new_existing(
-            account_id,
-            AssetVault::new(&[]).expect("empty vault"),
-            off_storage,
-            AccountCode::mock(),
-            Felt::new_unchecked(1),
-        );
-        let (off_state_json, _) = client
-            .apply_delta(&off_prev.to_json(), &delta_payload)
-            .expect("apply_delta should succeed");
-        let off_reconstructed =
-            Account::from_json(&off_state_json).expect("valid reconstructed account");
-        assert_eq!(
-            off_reconstructed
-                .storage()
-                .get_item(&selector_name)
-                .expect("selector slot present"),
-            guardian_off,
-            "guardian-disabled initial state must keep the delta's OFF selector"
         );
     }
 }
