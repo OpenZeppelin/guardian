@@ -2,6 +2,9 @@
 // installed here.
 //
 // @getpara/react-sdk-lite lazily imports each connector on mount, so without this stub Vite cannot
-// resolve the specifiers and the build fails. Throwing is what the SDK's own try/catch treats as an
-// uninstalled connector: it falls through to its stub context and children render unchanged.
-throw new Error('Optional @getpara wallet connectors are not installed (external wallets unsupported here).');
+// resolve the specifiers and the build fails. The stub is deliberately empty rather than throwing:
+// `inlineDynamicImports` hoists it into the single chunk as eager top-level code, so a throw would
+// fire uncaught on page load instead of being caught by the SDK. The SDK guards every access on the
+// imported namespace, so an empty namespace leaves the connector unregistered and children render
+// unchanged.
+export {};

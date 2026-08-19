@@ -13,7 +13,6 @@
     "@openzeppelin/miden-multisig-client": "file:../../../packages/miden-multisig-client",
     "buffer": "^6.0.3",
     "events": "^3.3.0",
-    "process": "^0.11.10",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
