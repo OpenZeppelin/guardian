@@ -173,7 +173,7 @@ pub async fn sign_delta_proposal(
             crate::metrics::labels::ProposalEvent::Signed.as_str()
     )
     .increment(1);
-    tracing::debug!("Delta proposal signature stored");
+    tracing::info!("Delta proposal signed");
 
     Ok(SignDeltaProposalResult {
         delta: delta_proposal.clone(),

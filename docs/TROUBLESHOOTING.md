@@ -381,7 +381,17 @@ come from
 
 The server emits `tracing` logs — `text` by default, `json` when `GUARDIAN_LOG_FORMAT=json` (see [`CONFIGURATION.md`](./CONFIGURATION.md#logging)). `text` uses ANSI colors only when stdout is a TTY; `json` emits flattened JSON with span context for CloudWatch Logs Insights.
 
-Hot-path service handlers emit request events at `debug` — enable them with `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug`. Their request-context spans remain enabled at `info` without emitting lifecycle lines, so warn/error events retain fields such as account ID and nonce at the default filter. The per-read `Commitment mismatch during state verification` (`network::miden`) is also `debug`; persistent divergence is surfaced by the canonicalization processor's streak-gated WARN (confirmed divergence), not the per-read log.
+Hot-path service handlers emit request events at `debug` — enable them with `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug`. At the default `info` filter each request emits one span-close line instead, carrying the span's fields (account ID, nonce, commitment, signer/match counts) and `time.busy` / `time.idle`:
+
+```
+2026-08-19T11:53:31.172132Z  INFO push_delta_proposal{account_id="0x1234…" nonce=7 commitment="0xabcd…" signer_count=2}: server::services::push_delta_proposal: close time.busy=4.1ms time.idle=112µs
+```
+
+That line is emitted whether the request succeeded or failed. This matters because the centralized error lines (`guardian error (HTTP 5xx)`, `guardian error (gRPC internal)`) are emitted from the `GuardianError` → response conversion, which runs after the service span has closed: they carry `code` and `detail` only, and the immediately preceding close line is what identifies the account. Low-volume domain milestones (`Account configured`, `Delta proposal created`, `Delta proposal signed`) keep their own `info` line.
+
+`resolve_account` is a nested helper rather than a request boundary, so its span is `debug` and it contributes no close line at `info`.
+
+The per-read `Commitment mismatch during state verification` (`network::miden`) is also `debug`; persistent divergence is surfaced by the canonicalization processor's streak-gated WARN (confirmed divergence), not the per-read log.
 
 Useful filters:
 

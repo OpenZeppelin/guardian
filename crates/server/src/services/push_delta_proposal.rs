@@ -193,6 +193,15 @@ pub async fn push_delta_proposal(
         });
     }
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
+    if !cosigner_sigs.is_empty() {
+        tracing::debug!(
+            signer_ids = ?cosigner_sigs
+                .iter()
+                .map(|sig| sig.signer_id.as_str())
+                .collect::<Vec<_>>(),
+            "Batch-attached cosigner signatures"
+        );
+    }
     // Create delta object with Pending status including any provided signatures
     let timestamp = state.clock.now_rfc3339();
     let delta_proposal = DeltaObject {
@@ -224,7 +233,7 @@ pub async fn push_delta_proposal(
             crate::metrics::labels::ProposalEvent::Created.as_str()
     )
     .increment(1);
-    tracing::debug!("Delta proposal stored");
+    tracing::info!("Delta proposal created");
 
     Ok(PushDeltaProposalResult {
         delta: delta_proposal.clone(),

@@ -99,7 +99,7 @@ impl std::fmt::Debug for ResolvedAccount {
 }
 
 #[tracing::instrument(
-    level = "info",
+    level = "debug",
     skip(state, creds),
     fields(account_id = %account_id)
 )]

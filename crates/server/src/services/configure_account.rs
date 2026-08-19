@@ -275,6 +275,8 @@ pub async fn configure_account(
         .increment(1);
     }
 
+    tracing::info!(reconfiguration = existing.is_some(), "Account configured");
+
     Ok(ConfigureAccountResult {
         account_id: params.account_id,
         ack_pubkey: state.ack.pubkey(&scheme),

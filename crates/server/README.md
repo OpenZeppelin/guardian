@@ -22,7 +22,7 @@ let builder = ServerBuilder::new()
 - `GUARDIAN_ENV` - Runtime environment (`prod` uses Secrets Manager-backed ack bootstrap, anything else uses filesystem ack keys)
 - `GUARDIAN_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/guardian/keystore`)
 - `AWS_REGION` - AWS region used to fetch production ack keys from Secrets Manager
-- `RUST_LOG` - Logging level (default: `info`; hot-path request events require `debug`, e.g. `RUST_LOG=server=debug`)
+- `RUST_LOG` - Logging level (default: `info`; hot-path request events require `debug`, e.g. `RUST_LOG=server=debug`. `info` still emits one span-close line per request)
 - `GUARDIAN_LOG_FORMAT` - Log format (`text` default local, `json` for CloudWatch Logs Insights, `compact` single-line; trim + case-insensitive, unknown falls back to `text` with a stderr warn)
 
 #### Rate Limiting
@@ -225,14 +225,14 @@ ServerBuilder::new()
 ServerBuilder::new()
     .with_logging(LoggingConfig::new(Level::INFO).with_format(LogFormat::Json))
 
-// Env-driven (reads GUARDIAN_LOG_FORMAT)
+// Env-driven (only Default reads GUARDIAN_LOG_FORMAT; new() is always text)
 ServerBuilder::new()
     .with_logging(LoggingConfig::default())
 ```
 
 Env vars (see [docs/CONFIGURATION.md](../../docs/CONFIGURATION.md#logging)):
 
-- `RUST_LOG` — filter (default `info`). Hot-path request events are `debug`, while their context spans remain available to warn/error events at `info`, e.g. `RUST_LOG=server=debug`.
+- `RUST_LOG` — filter (default `info`). Hot-path request events are `debug`, e.g. `RUST_LOG=server=debug`. At `info` each request emits one span-close line with the span's fields and `time.busy` / `time.idle`, on the success and the error path alike.
 - `GUARDIAN_LOG_FORMAT` — `text` (ANSI when TTY), `json` (flattened JSON for CloudWatch), `compact`. Trimmed, case-insensitive; unknown → `text` with a stderr warn. Default `text` locally; ECS task defaults to `json`.
 
 Via env:
