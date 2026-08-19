@@ -114,9 +114,9 @@ sequenceDiagram
   ALB-->>C: response
 ```
 
-Health checks: the HTTP target group probes `GET /` ([`alb.tf:33`](../../infra/alb.tf#L33));
+Health checks: the HTTP target group probes `GET /` ([`alb.tf:59`](../../infra/alb.tf#L59));
 the gRPC target group probes `/guardian.Guardian/GetPubkey` with matcher `0`
-([`alb.tf:55`](../../infra/alb.tf#L55)).
+([`alb.tf:81`](../../infra/alb.tf#L81)).
 
 ## Resource inventory
 
@@ -129,11 +129,11 @@ Mapping AWS resources to the Terraform files that own them:
 | ECS task definition | [`ecs.tf:32`](../../infra/ecs.tf#L32) | One container, ports `3000` + `50051`, env + secret env from Secrets Manager. |
 | ECS autoscaling target + policies | [`ecs_autoscaling.tf`](../../infra/ecs_autoscaling.tf) | CPU + memory target-tracking, only created when `effective_server_autoscaling_enabled`. |
 | ALB | [`alb.tf:2`](../../infra/alb.tf#L2) | Internet-facing, at least two subnets enforced as precondition. |
-| HTTP target group (`:3000`) | [`alb.tf:20`](../../infra/alb.tf#L20) | Health check `GET /`. |
-| gRPC target group (`:50051`) | [`alb.tf:39`](../../infra/alb.tf#L39) | Created only when an ACM cert is present. |
-| HTTP listener `:80` | [`alb.tf:61`](../../infra/alb.tf#L61) | Forwards when no cert, redirects to HTTPS when cert is present. |
-| HTTPS listener `:443` | [`alb.tf:95`](../../infra/alb.tf#L95) | TLS 1.3-1.2 policy; default action → HTTP target group. |
-| gRPC listener rule | [`alb.tf:110`](../../infra/alb.tf#L110) | Path `/guardian.Guardian/*` → gRPC target group, priority `10`. |
+| HTTP target group (`:3000`) | [`alb.tf:46`](../../infra/alb.tf#L46) | Health check `GET /`. |
+| gRPC target group (`:50051`) | [`alb.tf:65`](../../infra/alb.tf#L65) | Created only when an ACM cert is present. |
+| HTTP listener `:80` | [`alb.tf:87`](../../infra/alb.tf#L87) | Forwards when no cert, redirects to HTTPS when cert is present. |
+| HTTPS listener `:443` | [`alb.tf:121`](../../infra/alb.tf#L121) | TLS 1.3-1.2 policy; default action → HTTP target group. A migration can temporarily attach a second certificate through [`alb.tf:138`](../../infra/alb.tf#L138). |
+| gRPC listener rule | [`alb.tf:151`](../../infra/alb.tf#L151) | Path `/guardian.Guardian/*` → gRPC target group, priority `10`. |
 | RDS Postgres instance | [`rds.tf:20`](../../infra/rds.tf#L20) | Storage encrypted, backups retained per `rds_backup_retention_days`; prod defaults enable deletion protection and a final snapshot on destroy. |
 | RDS subnet group | [`rds.tf:8`](../../infra/rds.tf#L8) | Requires ≥2 subnets. |
 | `DATABASE_URL` secret | [`rds.tf:45`](../../infra/rds.tf#L45) | Always created; consumed by the server task. |
@@ -152,8 +152,8 @@ Mapping AWS resources to the Terraform files that own them:
 | Operator pubkeys policy | [`iam.tf:93`](../../infra/iam.tf#L93) | Created if user supplies an existing ARN or a managed list. |
 | RDS Proxy role | [`iam.tf:136`](../../infra/iam.tf#L136) | Reads the proxy's credentials secret. |
 | CloudWatch log groups | [`logs.tf`](../../infra/logs.tf) | `server` group and `cluster` (ECS Exec) group. |
-| Route 53 alias | [`dns.tf:12`](../../infra/dns.tf#L12) | Created when `route53_zone_id` is set. |
-| Cloudflare CNAME | [`dns.tf:27`](../../infra/dns.tf#L27) | Created when `cloudflare_zone_id` is set; can be proxied. |
+| Route 53 alias | [`dns.tf:12`](../../infra/dns.tf#L12) | Created when `route53_zone_id` is set; hostname migrations may temporarily add a second record. |
+| Cloudflare CNAME | [`dns.tf:27`](../../infra/dns.tf#L27) | Created when `cloudflare_zone_id` is set; can be proxied, with the same temporary migration support. |
 | Variables / locals | [`variables.tf`](../../infra/variables.tf), [`data.tf`](../../infra/data.tf) | `local.is_prod`, `effective_*` locals derive the stage profile. |
 
 ECR is **not** managed by Terraform — it is created and pushed to by

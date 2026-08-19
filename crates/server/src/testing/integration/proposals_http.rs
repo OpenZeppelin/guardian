@@ -61,7 +61,7 @@ async fn test_push_delta_proposal_success() {
     let (signature_hex_2, timestamp_2) = signer.sign_json_payload(&account_id_hex, &proposal_body);
 
     let push_proposal_request = Request::builder()
-        .uri("/push_delta_proposal")
+        .uri("/delta/proposal")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -118,10 +118,7 @@ async fn test_get_delta_proposals_empty() {
     let query_payload = json!({ "account_id": account_id_hex.clone() });
     let (signature_hex_2, timestamp_2) = signer.sign_json_payload(&account_id_hex, &query_payload);
     let get_proposals_request = Request::builder()
-        .uri(format!(
-            "/get_delta_proposals?account_id={}",
-            account_id_hex
-        ))
+        .uri(format!("/delta/proposal?account_id={}", account_id_hex))
         .method("GET")
         .header("x-pubkey", &signer.pubkey_hex)
         .header("x-signature", &signature_hex_2)
@@ -186,7 +183,7 @@ async fn test_get_delta_proposals_with_proposals() {
     let (signature_hex_2, timestamp_2) = signer.sign_json_payload(&account_id_hex, &proposal_body);
 
     let push_proposal_request = Request::builder()
-        .uri("/push_delta_proposal")
+        .uri("/delta/proposal")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -202,10 +199,7 @@ async fn test_get_delta_proposals_with_proposals() {
     let query_payload = json!({ "account_id": account_id_hex.clone() });
     let (signature_hex_3, timestamp_3) = signer.sign_json_payload(&account_id_hex, &query_payload);
     let get_proposals_request = Request::builder()
-        .uri(format!(
-            "/get_delta_proposals?account_id={}",
-            account_id_hex
-        ))
+        .uri(format!("/delta/proposal?account_id={}", account_id_hex))
         .method("GET")
         .header("x-pubkey", &signer.pubkey_hex)
         .header("x-signature", &signature_hex_3)
@@ -264,7 +258,7 @@ async fn test_get_delta_proposal_by_commitment() {
     let (signature_hex_2, timestamp_2) = signer.sign_json_payload(&account_id_hex, &proposal_body);
 
     let push_proposal_request = Request::builder()
-        .uri("/push_delta_proposal")
+        .uri("/delta/proposal")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -289,7 +283,7 @@ async fn test_get_delta_proposal_by_commitment() {
     let (signature_hex_3, timestamp_3) = signer.sign_json_payload(&account_id_hex, &query_payload);
     let get_proposal_request = Request::builder()
         .uri(format!(
-            "/get_delta_proposal?account_id={}&commitment={}",
+            "/delta/proposal/single?account_id={}&commitment={}",
             account_id_hex, commitment
         ))
         .method("GET")
@@ -353,8 +347,8 @@ async fn test_sign_delta_proposal_not_found() {
         signer.sign_json_payload(&account_id_hex, &sign_body);
 
     let sign_proposal_request = Request::builder()
-        .uri("/sign_delta_proposal")
-        .method("POST")
+        .uri("/delta/proposal")
+        .method("PUT")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
         .header("x-signature", &signer_signature_2)
@@ -426,7 +420,7 @@ async fn test_push_delta_proposal_unauthorized() {
         unauthorized_signer.sign_json_payload(&account_id_hex, &proposal_body);
 
     let push_proposal_request = Request::builder()
-        .uri("/push_delta_proposal")
+        .uri("/delta/proposal")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &unauthorized_signer.pubkey_hex)

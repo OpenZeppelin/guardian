@@ -239,12 +239,18 @@ describe('MultisigClient', () => {
         ok: false,
         status: 404,
         statusText: 'Not Found',
-        text: async () => 'Account not found',
+        headers: new Headers(),
+        text: async () =>
+          JSON.stringify({
+            code: 'account_not_found',
+            message: 'Account not found',
+            meta: { retryable: false },
+          }),
       });
 
       await expect(
         client.load('0xnonexistent', mockSigner)
-      ).rejects.toThrow();
+      ).rejects.toThrow('Account not found');
     });
 
     it('should allow registerOnGuardian after load without explicit initial state', async () => {

@@ -2293,11 +2293,12 @@ describe('Multisig', () => {
         ok: false,
         status: 404,
         statusText: 'Not Found',
+        headers: new Headers(),
         // Feature 009: only a conforming { code, message, meta } envelope is
         // folded into the error message; raw text bodies are dropped.
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_PROPOSAL_NOT_FOUND',
+            code: 'proposal_not_found',
             message: 'Proposal not found',
             meta: { retryable: false },
           }),

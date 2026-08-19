@@ -26,7 +26,7 @@ the runtime env vars in this document.
 |---|---|---|---|
 | `DATABASE_URL` | _required_ | `postgres` | Postgres connection string. Server panics at startup if unset under `--features postgres`. TLS verification is controlled by the standard `sslmode`/`sslrootcert` parameters — see [Database TLS](#database-tls). |
 | `GUARDIAN_STORAGE_PATH` | `/var/guardian/storage` | filesystem | Path for state + delta blobs. |
-| `GUARDIAN_METADATA_PATH` | `/var/guardian/metadata` | filesystem | Path for accounts, auth credentials, network config. |
+| `GUARDIAN_METADATA_PATH` | `/var/guardian/metadata` | filesystem | Path for accounts, auth credentials, network config. Holds `.metadata/accounts.json` (account records) and `.metadata/auth_state.json` (replay-protection timestamps). Back up and restore the two files together: the server refuses to start if `auth_state.json` is missing while migrated accounts exist, because empty replay state would re-accept previously seen requests (see [Troubleshooting](./TROUBLESHOOTING.md#server-fails-to-start)). |
 | `GUARDIAN_KEYSTORE_PATH` | `/var/guardian/keystore` | any | Local Falcon/ECDSA key files (ACK signers and per-account creds). |
 | `GUARDIAN_DB_POOL_MAX_SIZE` | `16` (code default); `32` set by the prod Terraform profile | `postgres` | Storage backend pool size. |
 | `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | matches storage | `postgres` | Metadata backend pool size; usually leave equal. |
@@ -144,7 +144,7 @@ Application-layer encryption of the sensitive stored payloads (account state,
 delta and proposal payloads). It is **opt-in by key-source presence** — configure
 a key and the server encrypts; configure none and it stores plaintext exactly as
 before. Routing/index fields (account id, nonce, commitments, status, timestamps)
-always stay plaintext. See the [storage-encryption quickstart](../speckit/features/001-storage-encryption/quickstart.md).
+always stay plaintext.
 
 **Which variable do I set?** Choose **one key source** — the dev key for local
 work, or the Secrets Manager secret for production. You never set both (doing so
@@ -218,10 +218,10 @@ multi-stack deployments get scoped IDs.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GUARDIAN_RATE_LIMIT_ENABLED` | `true` | Master kill-switch for HTTP rate limiting. Set `false` only in test environments. |
-| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (code default); `200` set by the prod Terraform profile | Token-bucket burst. |
-| `GUARDIAN_RATE_PER_MIN` | `60` (code default); `5000` set by the prod Terraform profile | Sustained rate. |
-| `GUARDIAN_MAX_REPLICAS` | `1` (code default); greater of desired count and autoscaling max when enabled, or desired count otherwise, set by Terraform | Per-replica rate-limit divisor used by global HTTP and dashboard per-commitment limits. Each replica enforces `global / GUARDIAN_MAX_REPLICAS`, keeping the aggregate at or below the configured limit through steady-state autoscaling. During a rolling deployment the temporary aggregate may rise by up to `deployment_maximum_percent / 100` (2× by default). Drives rate-limiting only — coordination mode is backend-derived. Running below the steady-state maximum over-throttles; HTTP keep-alive can pin a client to one replica. An override is clamped up to steady-state capacity by Terraform. Must be a positive integer when set: an invalid value **fails startup in prod** and is treated as `1` with a warning elsewhere. See [`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md). |
+| `GUARDIAN_RATE_LIMIT_ENABLED` | `true` | Master kill-switch for rate limiting on **both** transports (HTTP and gRPC; there is no per-transport toggle). Set `false` only in test environments. Client identity for keying comes from the ingress (rightmost `X-Forwarded-For` entry, then `X-Real-IP`, then the socket peer); deployments not behind the reference ALB must forward the client address on both listeners, strip any client-supplied `X-Forwarded-For` if they identify callers with `X-Real-IP`, and restrict direct access to the server ports; see [PRODUCTION.md](./PRODUCTION.md#running-behind-your-own-ingress-non-aws). |
+| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (code default); `200` set by the prod Terraform profile | Requests allowed in any one-second window, keyed per IP **and** endpoint, where the endpoint is the HTTP path or the gRPC method. Both transports are metered from one store, but because their endpoint names differ, a burst bucket is never shared across transports. |
+| `GUARDIAN_RATE_PER_MIN` | `60` (code default); `5000` set by the prod Terraform profile | Sustained rate, keyed per IP only, so HTTP and gRPC calls from one client draw on the same allowance. This is the cross-transport limit: deployments sized for HTTP-only traffic should re-check it, since gRPC traffic (the Rust SDK's default transport) counts against it since the transport-bypass fix. |
+| `GUARDIAN_MAX_REPLICAS` | `1` (code default); greater of desired count and autoscaling max when enabled, or desired count otherwise, set by Terraform | Per-replica rate-limit divisor used by global HTTP+gRPC and dashboard per-commitment limits. Each replica enforces `global / GUARDIAN_MAX_REPLICAS`, keeping the aggregate at or below the configured limit through steady-state autoscaling. During a rolling deployment the temporary aggregate may rise by up to `deployment_maximum_percent / 100` (2× by default). Drives rate-limiting only — coordination mode is backend-derived. Running below the steady-state maximum over-throttles; HTTP keep-alive can pin a client to one replica. An override is clamped up to steady-state capacity by Terraform. Must be a positive integer when set: an invalid value **fails startup in prod** and is treated as `1` with a warning elsewhere. See [`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md). |
 | `GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC` | `6` | Fleet-wide dashboard challenge and verification burst budget for one operator commitment. Divided by `GUARDIAN_MAX_REPLICAS` and clamped to at least 1 per replica. A custom value below the divisor can therefore exceed its nominal fleet-wide budget. |
 | `GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN` | `30` | Fleet-wide dashboard challenge and verification sustained budget for one operator commitment. Divided by `GUARDIAN_MAX_REPLICAS` and clamped to at least 1 per replica. A custom value below the divisor can therefore exceed its nominal fleet-wide budget. |
 | `GUARDIAN_MAX_REQUEST_BYTES` | `1048576` (1 MB) | Reject request bodies larger than this. |
@@ -318,11 +318,15 @@ turns them into Terraform variables or build-time choices.
 | `DEPLOY_STAGE` | `dev` | `dev` or `prod`; selects stage profile (autoscaling, RDS Proxy, etc.). |
 | `CPU_ARCHITECTURE` | `X86_64` | `X86_64` or `ARM64`. Picks the Docker buildx platform and the ECS task arch. |
 | `AWS_REGION` | _required_ | All AWS API calls. |
+| `DOMAIN_NAME` | `openzeppelin.com` | Root domain for the canonical public hostname. |
 | `SUBDOMAIN` | `guardian` | Host portion of the public hostname. |
+| `ACM_CERTIFICATE_ARN` | _unset_ | ACM certificate for HTTPS on the canonical hostname. |
 | `ROUTE53_ZONE_ID` | _unset_ | Optional Route 53 hosted zone for an alias record. |
 | `CLOUDFLARE_ZONE_ID` | _unset_ | Optional Cloudflare zone for CNAME management. |
-| `CLOUDFLARE_API_TOKEN` | _unset_ | Required iff `CLOUDFLARE_ZONE_ID` is set. |
-| `CLOUDFLARE_PROXIED` | `false` | Whether the Cloudflare CNAME should be proxied. |
+| `CLOUDFLARE_API_TOKEN` | _unset_ | Required when either primary or secondary Cloudflare DNS management is enabled. |
+| `CLOUDFLARE_PROXIED` | `true` | Whether the Cloudflare CNAME should be proxied. |
+| `ALIAS_SUBDOMAIN` | _unset_ | Migration-only legacy subdomain under `DOMAIN_NAME`; leave unset for normal deployments. DNS may be Terraform-managed or external. |
+| `ALIAS_ACM_CERTIFICATE_ARN` | `ACM_CERTIFICATE_ARN` | Migration-only distinct certificate for the legacy hostname, attached through SNI when needed. |
 | `GUARDIAN_ACK_FALCON_SECRET_NAME` | _unset_ → `${STACK_NAME}/server/ack-falcon-secret-key` | Deploy-side override for the Falcon ACK secret. Passed into Terraform as `guardian_ack_falcon_secret_name` and set on the ECS task as the runtime `GUARDIAN_ACK_FALCON_SECRET_ID`. |
 | `GUARDIAN_ACK_ECDSA_SECRET_NAME` | _unset_ → `${STACK_NAME}/server/ack-ecdsa-secret-key` | Deploy-side override for the ECDSA ACK secret. Same flow as the Falcon entry above. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON` | _unset_ | Inline JSON array of operator pubkeys; Terraform creates the secret from this. Mutually exclusive with `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN`. |

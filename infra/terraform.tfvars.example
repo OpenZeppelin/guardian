@@ -65,8 +65,14 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # rds_skip_final_snapshot = false
 # rds_multi_az = true
 
-# Optional: Route 53 hosted zone ID (auto-lookup by domain name)
+# Optional: Route 53 hosted zone ID
 # route53_zone_id = "Z1234567890ABC"
+
+# One-time hostname migration only; see ../docs/runbooks/guardian-domain-migration.md.
+# Leave alias_subdomain empty for normal deployments.
+# subdomain = "guardian-new"
+# alias_subdomain = "guardian-old"
+# alias_acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 # Optional: Restrict ALB ingress (defaults to 0.0.0.0/0)
 # alb_ingress_cidrs = ["203.0.113.0/24"]
@@ -78,7 +84,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # server_cpu    = 512
 # server_memory = 1024
 
-# Optional: HTTP rate limiting and DB pool overrides
+# Optional: rate limiting (HTTP and gRPC) and DB pool overrides
 # guardian_rate_limit_enabled = false
 # guardian_rate_burst_per_sec = 200
 # guardian_rate_per_min = 5000

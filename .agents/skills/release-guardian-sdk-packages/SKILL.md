@@ -1,6 +1,6 @@
 ---
 name: release-guardian-sdk-packages
-description: Version, validate, dry-run, and publish the repository's Rust and TypeScript Guardian SDK packages to crates.io and npm. Use when Codex needs to choose the next coordinated release version, update release manifests and lockfiles, run targeted checks, prepare or execute publish commands in dependency order, and minimize the user's work to registry login or final irreversible publish confirmation.
+description: Version, validate, dry-run, and publish the repository's Rust and TypeScript Guardian SDK packages to crates.io and npm. Use when Codex needs to choose the next coordinated release version, update release manifests and lockfiles, run targeted checks, prepare the Rust publication workflow or npm commands, and minimize the user's work to approval or final irreversible publish confirmation.
 ---
 
 # Release Guardian SDK Packages
@@ -38,7 +38,7 @@ Do as much of the release prep as possible without user intervention:
 - use the target version provided by the user
 - update manifests and lockfiles
 - run targeted tests, builds, and dry-runs
-- give the user the exact remaining auth or publish commands
+- give the user the exact remaining workflow, approval, auth, or publish commands
 
 Before changing versions or preparing publishes:
 
@@ -52,7 +52,15 @@ If the user does not provide a version:
 - propose the next valid version on the active line
 - stop for confirmation unless the user explicitly asked Codex to choose the next version automatically
 
-Unless the user explicitly asks Codex to perform the real publish and credentials are already valid, stop before irreversible `cargo publish` or `npm publish` steps.
+Unless the user explicitly asks Codex to perform the real publish and required
+trust/authentication is already valid, stop before an irreversible Rust
+workflow dispatch, published GitHub Release, or `npm publish` step.
+
+Normal Rust publication is performed by
+`.github/workflows/publish-crates.yml`, not by a maintainer running
+`cargo publish` locally. Stop before dispatching a non-dry-run workflow or
+publishing a GitHub Release unless the user explicitly approves that
+irreversible action.
 
 ## Version Policy
 
@@ -142,10 +150,11 @@ README before publishing. Report any package deliberately left unchanged.
 Then run publish dry-runs:
 
 ```bash
-cargo publish -p guardian-shared --dry-run
-cargo publish -p guardian-client --dry-run
-cargo publish -p miden-confidential-contracts --dry-run
-cargo publish -p miden-multisig-client --dry-run
+cargo publish --dry-run --locked \
+  -p guardian-shared \
+  -p guardian-client \
+  -p miden-confidential-contracts \
+  -p miden-multisig-client
 ```
 
 ```bash
@@ -177,16 +186,39 @@ If the branch already exists:
 git checkout release/v<version>
 ```
 
-## Publish Order
+## Rust Publication Workflow
 
-Rust crates must be published in dependency order:
+The stable workflow filename is `.github/workflows/publish-crates.yml`.
+crates.io must have one trusted-publisher entry per Rust crate with:
+
+```text
+GitHub owner: OpenZeppelin
+Repository: guardian
+Workflow: publish-crates.yml
+Environment: release
+```
+
+Published releases force-select all four crates and use OIDC trusted
+publishing. Manual runs expose `dry-run` and one boolean per crate. Pull
+requests changing the workflow force an all-crate credential-free dry run.
+
+Cargo receives the selected packages in the fixed display order below and
+publishes dependency-safe topological batches:
 
 1. `guardian-shared`
 2. `guardian-client`
 3. `miden-confidential-contracts`
 4. `miden-multisig-client`
 
-Wait for crates.io indexing between dependent publishes.
+Exact versions already on crates.io are skipped. The selected packages are
+passed to one native multi-package Cargo command, which owns dependency
+ordering and index polling. A partial repair may select a dependent only when
+its unselected prerequisites are already available at the coordinated version.
+
+Trusted-publishing failure must fail closed. The workflow has no long-lived
+registry-token fallback.
+
+## TypeScript Publish Order
 
 TypeScript packages must be published in dependency order:
 
@@ -200,19 +232,25 @@ TypeScript packages must be published in dependency order:
 The user should usually only need to handle:
 
 - moving to or confirming the release branch
-- `cargo login <CRATES_IO_TOKEN>` or equivalent registry auth check
 - `npm whoami` or `npm login`
-- any final publish confirmation the user wants to own
+- confirming a Rust workflow dry run
+- approving any non-dry-run Rust workflow or published GitHub Release
 - cutting the GitHub Release (`gh release create`), which also triggers the server image build
 
-When auth is missing or unverified, give a short ordered command sequence. Prefer:
+For a normal Rust release, do not request `cargo login` or a local crates.io
+token. Verify the four external trusted-publisher entries and use:
 
 ```bash
-cargo login <CRATES_IO_TOKEN>
-npm whoami || npm login
+gh workflow run publish-crates.yml \
+  --ref <release-ref> \
+  -f dry-run=true \
+  -f guardian-shared=true \
+  -f guardian-client=true \
+  -f miden-confidential-contracts=true \
+  -f miden-multisig-client=true
 ```
 
-If the user has already authenticated, continue with the automated prep and only surface the exact real publish commands that remain.
+Continue TypeScript authentication checks with `npm whoami || npm login`.
 
 ## Post-Release
 
@@ -242,9 +280,10 @@ To skip the review step and publish immediately, omit `--draft`:
 gh release create v<version> --generate-notes
 ```
 
-Publishing a GitHub Release auto-triggers the **Docker Publish** workflow, which
-builds and pushes the Guardian server image for that tag. The build waits for
-required-reviewer approval on the `release` environment before it pushes:
+Publishing a GitHub Release auto-triggers the **Publish Rust Crates**,
+**Publish NPM Packages**, and **Docker Publish** workflows. Each retains its own
+approval and result flow. The Docker build waits for required-reviewer approval
+on the `release` environment before it pushes:
 
 - approve the run when the release should also ship a server image
 - decline it for SDK-only releases (the SDK and server share the same `vX.Y.Z`
@@ -267,6 +306,7 @@ Default to a short release handoff:
 - expected release branch
 - files updated
 - checks and dry-runs completed
-- exact remaining commands for branch, auth, publish, and tagging
+- exact remaining commands for branch, workflow dispatch, approval, npm auth,
+  publish, and tagging
 
 If the user asks to publish, separate dry-run commands from real publish commands and keep the final sequence copy-pasteable.

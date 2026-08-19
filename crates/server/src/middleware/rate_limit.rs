@@ -1,18 +1,20 @@
-//! Rate limiting middleware for HTTP endpoints
+//! Rate limiting shared by the HTTP and gRPC transports.
 //!
 //! Applies IP-based rate limiting with optional account/signer enhancement.
-//! Uses two windows: burst (per second) and sustained (per minute).
+//! Uses two windows: burst (per second) and sustained (per minute). One
+//! [`RateLimitStore`] backs both transport layers so they draw from a
+//! single budget.
 
 use axum::{
     body::Body,
     http::{Request, Response},
     response::IntoResponse,
 };
+use futures::future::Either;
 use std::{
     collections::HashMap,
     env,
-    future::Future,
-    pin::Pin,
+    future::{Ready, ready},
     sync::{Arc, RwLock},
     task::{Context, Poll},
     time::{Duration, Instant},
@@ -215,25 +217,11 @@ impl RateLimitStore {
 
         let now = Instant::now();
         let mut entries = self.entries.write().unwrap();
-        let entry = entries
-            .entry(key.to_string())
-            .or_insert_with(RateLimitEntry::new);
-
-        // Check and reset burst window (1 second)
-        if now.duration_since(entry.burst_window_start) >= Duration::from_secs(1) {
-            entry.burst_count = 0;
-            entry.burst_window_start = now;
+        if burst_allows(entry_mut(&mut entries, key), self.config.burst_per_sec, now) {
+            Ok(())
+        } else {
+            Err(RateLimitType::Burst)
         }
-
-        // Check burst limit first (more restrictive short-term)
-        if entry.burst_count >= self.config.burst_per_sec {
-            return Err(RateLimitType::Burst);
-        }
-
-        // Increment counters
-        entry.burst_count += 1;
-
-        Ok(())
     }
 
     /// Check if a request should be rate limited for sustained window
@@ -243,23 +231,76 @@ impl RateLimitStore {
 
         let now = Instant::now();
         let mut entries = self.entries.write().unwrap();
-        let entry = entries
-            .entry(key.to_string())
-            .or_insert_with(RateLimitEntry::new);
+        if sustained_allows(entry_mut(&mut entries, key), self.config.per_min, now) {
+            Ok(())
+        } else {
+            Err(RateLimitType::Sustained)
+        }
+    }
 
-        // Check and reset sustained window (1 minute)
-        if now.duration_since(entry.sustained_window_start) >= Duration::from_secs(60) {
-            entry.sustained_count = 0;
-            entry.sustained_window_start = now;
+    /// Run the full admission check for one request under a single lock
+    /// acquisition: burst keys first, then sustained keys, with
+    /// `x-pubkey`/`account_id` enhanced keying. `endpoint` scopes the
+    /// burst keys; each transport layer derives its own (raw path on
+    /// HTTP, normalized proto method on gRPC). When rate limiting is
+    /// disabled this returns without deriving keys or touching the
+    /// entry map.
+    ///
+    /// Each loop consumes the base key before consulting the narrower
+    /// enhanced key, so a request rejected on the enhanced key has
+    /// already spent a slot in the per-IP bucket. That is deliberate:
+    /// the coarse budget is the DoS floor and must count every request
+    /// that reaches it, including ones a per-signer budget then refuses.
+    pub fn check_request<B>(
+        &self,
+        req: &Request<B>,
+        endpoint: &str,
+    ) -> Result<(), RateLimitRejection> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        self.maybe_cleanup();
+
+        let client_ip = extract_client_ip(req);
+        let enhanced_key = extract_enhanced_key(req);
+
+        let burst_key = format!("ip:{client_ip}|endpoint:{endpoint}");
+        let sustained_key = format!("ip:{client_ip}");
+        let enhanced_burst_key = enhanced_key.as_ref().map(|e| format!("{burst_key}|{e}"));
+        let enhanced_sustained_key = enhanced_key
+            .as_ref()
+            .map(|e| format!("{sustained_key}|{e}"));
+
+        let now = Instant::now();
+        let mut entries = self.entries.write().unwrap();
+
+        for key in [Some(&burst_key), enhanced_burst_key.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if !burst_allows(entry_mut(&mut entries, key), self.config.burst_per_sec, now) {
+                return Err(RateLimitRejection {
+                    limit_type: RateLimitType::Burst,
+                    key: key.clone(),
+                    client_ip,
+                    endpoint: endpoint.to_string(),
+                });
+            }
         }
 
-        // Check sustained limit
-        if entry.sustained_count >= self.config.per_min {
-            return Err(RateLimitType::Sustained);
+        for key in [Some(&sustained_key), enhanced_sustained_key.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if !sustained_allows(entry_mut(&mut entries, key), self.config.per_min, now) {
+                return Err(RateLimitRejection {
+                    limit_type: RateLimitType::Sustained,
+                    key: key.clone(),
+                    client_ip,
+                    endpoint: endpoint.to_string(),
+                });
+            }
         }
-
-        // Increment counters
-        entry.sustained_count += 1;
 
         Ok(())
     }
@@ -287,6 +328,42 @@ impl RateLimitStore {
     }
 }
 
+/// Fetch-or-create without the owned-key allocation `HashMap::entry`
+/// forces on every lookup; the steady state is an existing entry.
+fn entry_mut<'a>(
+    entries: &'a mut HashMap<String, RateLimitEntry>,
+    key: &str,
+) -> &'a mut RateLimitEntry {
+    if !entries.contains_key(key) {
+        entries.insert(key.to_string(), RateLimitEntry::new());
+    }
+    entries.get_mut(key).expect("entry was just ensured")
+}
+
+fn burst_allows(entry: &mut RateLimitEntry, limit: u32, now: Instant) -> bool {
+    if now.duration_since(entry.burst_window_start) >= Duration::from_secs(1) {
+        entry.burst_count = 0;
+        entry.burst_window_start = now;
+    }
+    if entry.burst_count >= limit {
+        return false;
+    }
+    entry.burst_count += 1;
+    true
+}
+
+fn sustained_allows(entry: &mut RateLimitEntry, limit: u32, now: Instant) -> bool {
+    if now.duration_since(entry.sustained_window_start) >= Duration::from_secs(60) {
+        entry.sustained_count = 0;
+        entry.sustained_window_start = now;
+    }
+    if entry.sustained_count >= limit {
+        return false;
+    }
+    entry.sustained_count += 1;
+    true
+}
+
 /// Type of rate limit exceeded
 #[derive(Debug, Clone, Copy)]
 pub enum RateLimitType {
@@ -303,29 +380,70 @@ impl RateLimitType {
             Self::Sustained => "sustained",
         }
     }
+
+    pub fn retry_after_secs(&self) -> u32 {
+        match self {
+            Self::Burst => 1,
+            Self::Sustained => 60,
+        }
+    }
 }
 
-/// Tower layer for rate limiting
+/// One over-budget refusal, carrying everything the rejecting transport
+/// needs: the counter labels, the throttle log fields, and the error.
+#[derive(Debug)]
+pub struct RateLimitRejection {
+    limit_type: RateLimitType,
+    key: String,
+    client_ip: String,
+    endpoint: String,
+}
+
+impl RateLimitRejection {
+    /// Record the rejection (counter + throttle log) and convert it into
+    /// the wire error, so no call site can emit the error without the
+    /// observability.
+    ///
+    /// The counter is the always-on signal; the per-rejection line is
+    /// `debug` because refusals are expected behavior and their volume
+    /// scales with the flood the limiter exists to shed. Raise it with
+    /// `RUST_LOG=server::middleware::rate_limit=debug` when a keying
+    /// question needs the per-caller detail the counter cannot carry.
+    pub fn into_error(self, transport: &'static str) -> crate::error::GuardianError {
+        metrics::counter!(
+            crate::metrics::names::RATE_LIMIT_REJECTIONS_TOTAL,
+            crate::metrics::names::LABEL_LIMIT_TYPE => self.limit_type.as_str(),
+            crate::metrics::names::LABEL_TRANSPORT => transport
+        )
+        .increment(1);
+
+        tracing::debug!(
+            client_ip = %self.client_ip,
+            rate_limit_key = %self.key,
+            limit_type = self.limit_type.as_str(),
+            transport,
+            endpoint = %self.endpoint,
+            "Request rate limited"
+        );
+
+        crate::error::GuardianError::RateLimitExceeded {
+            retry_after_secs: self.limit_type.retry_after_secs(),
+            scope: self.limit_type.as_str().to_string(),
+        }
+    }
+}
+
+/// Tower layer applying a [`RateLimitStore`] to the axum router. The
+/// store is passed in, not built here, so HTTP and gRPC share one
+/// budget.
 #[derive(Debug, Clone)]
 pub struct RateLimitLayer {
     store: RateLimitStore,
 }
 
 impl RateLimitLayer {
-    pub fn new(config: RateLimitConfig) -> Self {
-        tracing::info!(
-            enabled = config.enabled,
-            burst_per_sec = config.burst_per_sec,
-            per_min = config.per_min,
-            "Rate limiter initialized"
-        );
-        Self {
-            store: RateLimitStore::new(config),
-        }
-    }
-
-    pub fn from_env() -> Self {
-        Self::new(RateLimitConfig::from_env())
+    pub fn new(store: RateLimitStore) -> Self {
+        Self { store }
     }
 }
 
@@ -349,93 +467,23 @@ pub struct RateLimitService<S> {
 
 impl<S> Service<Request<Body>> for RateLimitService<S>
 where
-    S: Service<Request<Body>, Response = Response<Body>> + Clone + Send + 'static,
-    S::Future: Send + 'static,
+    S: Service<Request<Body>, Response = Response<Body>>,
 {
     type Response = Response<Body>;
     type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = Either<S::Future, Ready<Result<Response<Body>, S::Error>>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let store = self.store.clone();
-        let mut inner = self.inner.clone();
-
-        Box::pin(async move {
-            if !store.config.enabled {
-                return inner.call(req).await;
-            }
-
-            // Extract client IP
-            let client_ip = extract_client_ip(&req);
-
-            // Extract optional account/signer for enhanced keying
-            let enhanced_key = extract_enhanced_key(&req);
-            let endpoint = req.uri().path().to_string();
-
-            let mut burst_keys = vec![format!("ip:{}|endpoint:{}", client_ip, endpoint)];
-            let mut sustained_keys = vec![format!("ip:{}", client_ip)];
-
-            if let Some(extra) = enhanced_key.as_ref() {
-                burst_keys.push(format!("ip:{}|endpoint:{}|{}", client_ip, endpoint, extra));
-                sustained_keys.push(format!("ip:{}|{}", client_ip, extra));
-            }
-
-            let mut limited: Option<(RateLimitType, String)> = None;
-
-            for key in &burst_keys {
-                if let Err(limit_type) = store.check_burst(key) {
-                    limited = Some((limit_type, key.clone()));
-                    break;
-                }
-            }
-
-            if limited.is_none() {
-                for key in &sustained_keys {
-                    if let Err(limit_type) = store.check_sustained(key) {
-                        limited = Some((limit_type, key.clone()));
-                        break;
-                    }
-                }
-            }
-
-            match limited {
-                None => inner.call(req).await,
-                Some((limit_type, key)) => {
-                    metrics::counter!(
-                        crate::metrics::names::RATE_LIMIT_REJECTIONS_TOTAL,
-                        crate::metrics::names::LABEL_LIMIT_TYPE => limit_type.as_str()
-                    )
-                    .increment(1);
-
-                    let retry_after = match limit_type {
-                        RateLimitType::Burst => 1,
-                        RateLimitType::Sustained => 60,
-                    };
-
-                    // Log the throttled request
-                    tracing::warn!(
-                        client_ip = %client_ip,
-                        rate_limit_key = %key,
-                        limit_type = limit_type.as_str(),
-                        endpoint = %endpoint,
-                        "Request rate limited"
-                    );
-
-                    // Reuse the canonical error object (feature 009): this
-                    // yields `{ code, message, meta }` plus the `Retry-After`
-                    // header, identical to every other Guardian error body.
-                    Ok(crate::error::GuardianError::RateLimitExceeded {
-                        retry_after_secs: retry_after,
-                        scope: limit_type.as_str().to_string(),
-                    }
-                    .into_response())
-                }
-            }
-        })
+        match self.store.check_request(&req, req.uri().path()) {
+            Ok(()) => Either::Left(self.inner.call(req)),
+            Err(rejection) => Either::Right(ready(Ok(rejection
+                .into_error(crate::metrics::names::TRANSPORT_HTTP)
+                .into_response()))),
+        }
     }
 }
 
@@ -785,23 +833,7 @@ mod tests {
 
     #[test]
     fn test_rate_limit_layer_new() {
-        let config = RateLimitConfig::new(10, 60);
-        let layer = RateLimitLayer::new(config);
-        // Verify layer is created (store is private, but we can check it works)
-        assert!(format!("{:?}", layer).contains("RateLimitLayer"));
-    }
-
-    #[test]
-    fn test_rate_limit_layer_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
-        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
-        unsafe {
-            env::remove_var(ENV_RATE_LIMIT_ENABLED);
-            env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");
-            env::remove_var("GUARDIAN_RATE_PER_MIN");
-        }
-
-        let layer = RateLimitLayer::from_env();
+        let layer = RateLimitLayer::new(RateLimitStore::new(RateLimitConfig::new(10, 60)));
         assert!(format!("{:?}", layer).contains("RateLimitLayer"));
     }
 
@@ -817,17 +849,29 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_client_ip_from_x_forwarded_for_multiple_values() {
+    fn test_extract_client_ip_x_forwarded_for_uses_rightmost_entry() {
         let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
 
-        // Multiple IPs - should take the first (original client)
         req.headers_mut().insert(
             "x-forwarded-for",
             HeaderValue::from_static("10.0.0.1, 192.168.1.1, 172.16.0.1"),
         );
 
         let ip = extract_client_ip(&req);
-        assert_eq!(ip, "10.0.0.1");
+        assert_eq!(ip, "172.16.0.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_spoofed_prefix_does_not_change_key() {
+        let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("6.6.6.6, 203.0.113.50"),
+        );
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "203.0.113.50");
     }
 
     #[test]
@@ -836,11 +880,55 @@ mod tests {
 
         req.headers_mut().insert(
             "x-forwarded-for",
-            HeaderValue::from_static("  203.0.113.50  , 70.41.3.18"),
+            HeaderValue::from_static("  203.0.113.50  , 70.41.3.18  "),
+        );
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "70.41.3.18");
+    }
+
+    #[test]
+    fn test_extract_client_ip_multiple_headers_uses_last_entry_of_last_header() {
+        // Multiple X-Forwarded-For header lines are equivalent to their
+        // in-order comma-joined concatenation, so the rightmost entry of
+        // the concatenation is the last entry of the last line.
+        let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+
+        req.headers_mut()
+            .append("x-forwarded-for", HeaderValue::from_static("6.6.6.6"));
+        req.headers_mut().append(
+            "x-forwarded-for",
+            HeaderValue::from_static("7.7.7.7, 203.0.113.50"),
         );
 
         let ip = extract_client_ip(&req);
         assert_eq!(ip, "203.0.113.50");
+    }
+
+    #[test]
+    fn test_extract_client_ip_unparseable_rightmost_entry_ignores_header() {
+        let mut req = request_with_peer_ip("10.10.10.10".parse().unwrap());
+
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.50, not-an-ip"),
+        );
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "10.10.10.10");
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_tonic_connect_info() {
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        req.extensions_mut()
+            .insert(tonic::transport::server::TcpConnectInfo {
+                local_addr: None,
+                remote_addr: Some(SocketAddr::new("198.51.100.7".parse().unwrap(), 4444)),
+            });
+
+        let ip = extract_client_ip(&req);
+        assert_eq!(ip, "198.51.100.7");
     }
 
     #[test]
