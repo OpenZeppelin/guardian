@@ -298,7 +298,10 @@ export async function createAddSignerProposal(
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () => {
     const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
-    return multisig.createAddSignerProposal(commitment, proposalNonce(multisig), newThreshold);
+    return multisig.createAddSignerProposal(commitment, {
+      nonce: proposalNonce(multisig),
+      newThreshold,
+    });
   });
 }
 
@@ -311,11 +314,10 @@ export async function createRemoveSignerProposal(
   newThreshold?: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createRemoveSignerProposal(
-      signerToRemove,
-      proposalNonce(multisig),
+    multisig.createRemoveSignerProposal(signerToRemove, {
+      nonce: proposalNonce(multisig),
       newThreshold,
-    ));
+    }));
 }
 
 /**
@@ -326,7 +328,7 @@ export async function createChangeThresholdProposal(
   newThreshold: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createChangeThresholdProposal(newThreshold, proposalNonce(multisig)));
+    multisig.createChangeThresholdProposal(newThreshold, { nonce: proposalNonce(multisig) }));
 }
 
 export async function createUpdateProcedureThresholdProposal(
@@ -338,7 +340,7 @@ export async function createUpdateProcedureThresholdProposal(
     multisig.createUpdateProcedureThresholdProposal(
       procedure,
       threshold,
-      proposalNonce(multisig),
+      { nonce: proposalNonce(multisig) },
     ));
 }
 
@@ -350,7 +352,7 @@ export async function createConsumeNotesProposal(
   noteIds: string[],
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createConsumeNotesProposal(noteIds, proposalNonce(multisig)));
+    multisig.createConsumeNotesProposal(noteIds, { nonce: proposalNonce(multisig) }));
 }
 
 /**
@@ -362,15 +364,14 @@ export async function createP2idProposal(
   faucetId: string,
   amount: bigint,
   noteType?: NoteType,
+  heights?: { reclaimHeight?: number; timelockHeight?: number },
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createP2idProposal(
-      recipientId,
-      faucetId,
-      amount,
-      proposalNonce(multisig),
-      { noteType },
-    ));
+    multisig.createP2idProposal(recipientId, faucetId, amount, {
+      ...heights,
+      nonce: proposalNonce(multisig),
+      noteType,
+    }));
 }
 
 /**
@@ -388,7 +389,7 @@ export async function createSwitchGuardianProposal(
       multisig.createSwitchGuardianProposal(
         newGuardianEndpoint,
         newGuardianPubkey,
-        proposalNonce(multisig),
+        { nonce: proposalNonce(multisig) },
       ),
     async (currentMultisig) => listVisibleProposals(currentMultisig),
   );

@@ -9,6 +9,8 @@ const {
   mockRandomWord,
   mockWordFromHex,
   noteMetadataCalls,
+  noteRecipientCalls,
+  noteStorageCalls,
   saltFelts,
 } = vi.hoisted(() => {
   const saltFelts = [
@@ -26,6 +28,8 @@ const {
     })),
     mockFungibleAssetConstructor: vi.fn(),
     noteMetadataCalls: [] as unknown[][],
+    noteRecipientCalls: [] as unknown[][],
+    noteStorageCalls: [] as unknown[][],
     mockHashElements: vi.fn().mockReturnValue({ toString: () => 'serial' }),
     mockNormalizeHexWord: vi.fn((hex: string) => hex),
     mockRandomWord: vi.fn().mockReturnValue({
@@ -71,7 +75,9 @@ vi.mock('@miden-sdk/miden-sdk', () => {
   }
 
   class NoteStorage {
-    constructor(_inputs: FeltArray) {}
+    constructor(inputs: FeltArray) {
+      noteStorageCalls.push([inputs]);
+    }
   }
 
   class NoteMetadata {
@@ -86,10 +92,12 @@ vi.mock('@miden-sdk/miden-sdk', () => {
 
   class NoteRecipient {
     constructor(
-      _serialNum: unknown,
-      _noteScript: unknown,
-      _noteInputs: unknown,
-    ) {}
+      serialNum: unknown,
+      noteScript: unknown,
+      noteInputs: unknown,
+    ) {
+      noteRecipientCalls.push([serialNum, noteScript, noteInputs]);
+    }
   }
 
   class Note {
@@ -152,6 +160,7 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     NoteStorage,
     NoteScript: {
       p2id: vi.fn(() => ({ kind: 'p2id-script' })),
+      p2ide: vi.fn(() => ({ kind: 'p2ide-script' })),
     },
     NoteTag: {
       withAccountTarget: vi.fn(() => ({ kind: 'tag' })),
@@ -207,6 +216,8 @@ describe('buildP2idTransactionRequest', () => {
     mockRandomWord.mockClear();
     mockWordFromHex.mockClear();
     noteMetadataCalls.length = 0;
+    noteRecipientCalls.length = 0;
+    noteStorageCalls.length = 0;
   });
 
   it('derives serial number from salt felts plus four zero felts', () => {
@@ -260,6 +271,91 @@ describe('buildP2idTransactionRequest', () => {
 
     expect(noteMetadataCalls).toHaveLength(1);
     expect(noteMetadataCalls[0][1]).toBe(NoteType.Private);
+  });
+
+  it('builds a plain P2ID note without heights: p2id script, 2 storage items', () => {
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      FAUCET_ID,
+      10n,
+      mockAccount,
+    );
+
+    expect(noteRecipientCalls).toHaveLength(1);
+    expect(noteRecipientCalls[0][1]).toEqual({ kind: 'p2id-script' });
+    const [storageInputs] = noteStorageCalls[0] as [{ values: unknown[] }];
+    expect(storageInputs.values).toEqual([2, 1]);
+  });
+
+  it('builds a P2IDE note when reclaimHeight is set (issue #366)', () => {
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      FAUCET_ID,
+      10n,
+      mockAccount,
+      { reclaimHeight: 12345 },
+    );
+
+    expect(noteRecipientCalls).toHaveLength(1);
+    expect(noteRecipientCalls[0][1]).toEqual({ kind: 'p2ide-script' });
+
+    // P2IDE storage layout: [suffix, prefix, reclaim, timelock], 0 = unset.
+    const [storageInputs] = noteStorageCalls[0] as [{ values: unknown[] }];
+    expect(storageInputs.values).toHaveLength(4);
+    expect(storageInputs.values.slice(0, 2)).toEqual([2, 1]);
+    expect((storageInputs.values[2] as { value: bigint }).value).toBe(12345n);
+    expect((storageInputs.values[3] as { value: bigint }).value).toBe(0n);
+  });
+
+  it('builds a P2IDE note when only timelockHeight is set (issue #366)', () => {
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      FAUCET_ID,
+      10n,
+      mockAccount,
+      { timelockHeight: 777 },
+    );
+
+    expect(noteRecipientCalls[0][1]).toEqual({ kind: 'p2ide-script' });
+    const [storageInputs] = noteStorageCalls[0] as [{ values: unknown[] }];
+    expect((storageInputs.values[2] as { value: bigint }).value).toBe(0n);
+    expect((storageInputs.values[3] as { value: bigint }).value).toBe(777n);
+  });
+
+  it('carries both heights into the P2IDE storage (issue #366)', () => {
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      FAUCET_ID,
+      10n,
+      mockAccount,
+      { reclaimHeight: 500, timelockHeight: 400 },
+    );
+
+    const [storageInputs] = noteStorageCalls[0] as [{ values: unknown[] }];
+    expect((storageInputs.values[2] as { value: bigint }).value).toBe(500n);
+    expect((storageInputs.values[3] as { value: bigint }).value).toBe(400n);
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -5],
+    ['fractional', 1.5],
+    ['above u32::MAX', 0x1_0000_0000],
+  ])('rejects a %s height instead of building a divergent note (issue #366)', (_label, height) => {
+    expect(() =>
+      buildP2idTransactionRequest(
+        '0x7bfb0f38b0fafa103f86a805594170',
+        '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+        FAUCET_ID,
+        10n,
+        mockAccount,
+        { reclaimHeight: height },
+      ),
+    ).toThrow(/unsupported reclaimHeight/);
   });
 });
 

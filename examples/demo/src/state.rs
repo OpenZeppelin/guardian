@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
-    ExportedProposal, MultisigClient, ProverConfig, RpcConfig, SignatureScheme,
+    ExportedProposal, MultisigClient, P2ideHeights, ProverConfig, RpcConfig, SignatureScheme,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -19,6 +19,8 @@ pub struct CustomProposalRecipe {
     pub faucet_id: AccountId,
     pub amount: u64,
     pub note_type: NoteType,
+    /// P2IDE heights (issue #366); the default => plain P2ID note.
+    pub heights: P2ideHeights,
     pub salt: Word,
 }
 

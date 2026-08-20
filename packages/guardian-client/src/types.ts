@@ -105,6 +105,10 @@ export interface ProposalMetadata {
   amount?: string;
   /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
   noteType?: string;
+  /** P2IDE reclaim block height (issue #366). Presence of either height means a P2IDE note. */
+  reclaimHeight?: number;
+  /** P2IDE timelock block height (issue #366). */
+  timelockHeight?: number;
 }
 
 export interface DeltaObject {
