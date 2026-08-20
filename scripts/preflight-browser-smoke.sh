@@ -19,12 +19,20 @@
 #   ./scripts/preflight-browser-smoke.sh          # report, fix, verify
 #   ./scripts/preflight-browser-smoke.sh --check   # report only, never write
 #
-# Exit codes: 0 = clean (or all issues fixed), 1 = drift remains / fix failed.
+# Exit codes: 0 = clean (or all issues fixed), 1 = drift remains / fix failed,
+#             2 = usage error.
 
 set -uo pipefail
 
 CHECK_ONLY=0
-[[ "${1:-}" == "--check" ]] && CHECK_ONLY=1
+case "$#" in
+  0) ;;
+  1) case "$1" in
+       --check) CHECK_ONLY=1 ;;
+       *) echo "error: expected --check or no arguments" >&2; exit 2 ;;
+     esac ;;
+  *) echo "error: expected --check or no arguments" >&2; exit 2 ;;
+esac
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
   echo "error: not inside a git repository" >&2
@@ -95,10 +103,10 @@ dist_staleness() {
   [[ "$n" -gt 0 ]] && echo "$n src file(s) newer than dist"
 }
 
-SDK_DRIFT=(); STALE=(); ISSUES=0
+SDK_DRIFT=(); LOCK_ERRORS=(); STALE=(); ISSUES=0
 
 scan() {
-  SDK_DRIFT=(); STALE=()
+  SDK_DRIFT=(); LOCK_ERRORS=(); STALE=()
 
   printf '\n%s[1/4]%s @miden-sdk/miden-sdk: installed vs lockfile pin\n' "$YEL" "$OFF"
   for w in "${SDK_WORKSPACES[@]}"; do
@@ -106,11 +114,16 @@ scan() {
     local dec ins loc
     dec="$(declared_sdk "$w")"; [[ -n "$dec" ]] || continue
     ins="$(installed_sdk "$w")"; loc="$(locked_sdk "$w")"
+    if [[ -z "$loc" ]]; then
+      bad "$w" "lockfile pin missing"
+      note "declared $dec -> run npm install to update package-lock.json"
+      LOCK_ERRORS+=("$w"); continue
+    fi
     if [[ -z "$ins" ]]; then
       bad "$w" "not installed"; note "declared $dec -> run npm install"
       SDK_DRIFT+=("$w"); continue
     fi
-    if [[ -n "$loc" && "$ins" != "$loc" ]]; then
+    if [[ "$ins" != "$loc" ]]; then
       bad "$w" "MISMATCH"
       note "declared $dec | lockfile $loc | installed $ins"
       note "out-of-range install from another branch -> npm ci"
@@ -133,7 +146,7 @@ scan() {
     fi
   done
 
-  ISSUES=$(( ${#SDK_DRIFT[@]} + ${#STALE[@]} ))
+  ISSUES=$(( ${#SDK_DRIFT[@]} + ${#LOCK_ERRORS[@]} + ${#STALE[@]} ))
 }
 
 scan
@@ -150,6 +163,13 @@ if [[ "$CHECK_ONLY" -eq 1 ]]; then
   printf '\n%s[3/4]%s rebuild: skipped (--check)\n' "$YEL" "$OFF"
   printf '%s[4/4]%s vite caches: skipped (--check)\n' "$YEL" "$OFF"
   printf '\n%sPREFLIGHT FAILED%s  %d issue(s); re-run without --check to fix\n\n' "$RED" "$OFF" "$FOUND"
+  exit 1
+fi
+
+if [[ ${#SDK_DRIFT[@]} -eq 0 && ${#STALE[@]} -eq 0 ]]; then
+  printf '\n%s[3/4]%s rebuild: skipped (lockfile pin missing; npm ci cannot create it)\n' "$YEL" "$OFF"
+  printf '%s[4/4]%s vite caches: left alone\n' "$YEL" "$OFF"
+  printf '\n%sPREFLIGHT FAILED%s  %d issue(s); add the missing lockfile pin(s) then re-run\n\n' "$RED" "$OFF" "$FOUND"
   exit 1
 fi
 

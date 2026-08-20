@@ -54,7 +54,7 @@ Treat workspace-path smoke-web runs and deployed-npm scratch-project runs as dif
 
 The signature is a MASM assembler error at account creation, most often:
 
-```
+```text
 Failed to compile account component: invalid syntax
 ```
 
