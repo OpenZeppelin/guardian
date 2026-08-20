@@ -171,6 +171,36 @@ several accounts, and the helper surfaces all of them rather than silently
 picking one. The returned list is empty (not an error) when no account
 authorizes the queried commitment.
 
+### Recover Notes From Pending Proposals
+
+After key-based recovery the local Miden store starts empty. v2
+`consume_notes` proposals embed the serialized notes they consume, and the
+standalone `importNotesFromProposals` helper turns those embedded bytes back
+into store records: it fetches each note's on-chain inclusion proof and
+imports the note individually, so it works for private notes too.
+
+```typescript
+import { importNotesFromProposals } from '@openzeppelin/miden-multisig-client';
+
+const proposals = await multisig.syncProposals();
+const outcomes = await importNotesFromProposals(midenClient, proposals, {
+  midenRpcEndpoint: 'https://rpc.testnet.miden.io',
+});
+await multisig.syncState(); // verifies the imported notes
+```
+
+Each unique embedded note gets its own `NoteImportOutcome` (`imported`,
+`already-present`, `already-consumed`, `not-committed`, `invalid`, or
+`failed`); duplicates across proposals fold into one outcome, a malformed or
+failing note never blocks the others, and the helper never throws for
+per-note problems. Notes not yet on chain are recorded as expected (their
+tag is tracked so a later sync picks them up) and reported retryable.
+
+Proposals are opportunistic recovery material, not a backup: v1 proposals
+carry no note bytes, proposals disappear once canonicalized, and embedded
+note bytes are visible to the Guardian operator (existing v2 behavior, not a
+new exposure).
+
 ### Fetch Account State
 
 ```typescript
