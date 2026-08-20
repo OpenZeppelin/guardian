@@ -632,4 +632,82 @@ mod tests {
                 .is_some()
         );
     }
+
+    // ---------------------------------------------------------------------
+    // live smoke (real testnet transport) — run explicitly:
+    //   cargo test -p miden-multisig-client --lib live_testnet -- --ignored
+    // ---------------------------------------------------------------------
+
+    async fn live_client(dir: &Path, with_transport: bool) -> MultisigClient {
+        use miden_client::note_transport::NOTE_TRANSPORT_TESTNET_ENDPOINT;
+
+        let mut builder = MultisigClient::builder()
+            .miden_endpoint(Endpoint::testnet())
+            .guardian_endpoint("http://localhost:1")
+            .account_dir(dir)
+            .generate_key();
+        if with_transport {
+            builder = builder.note_transport_endpoint(NOTE_TRANSPORT_TESTNET_ENDPOINT);
+        }
+        builder.build().await.expect("live client builds")
+    }
+
+    /// The full device-loss round trip over the real testnet transport (the
+    /// scenario spike #412 validated): relay a private note, recover it into
+    /// a fresh store via the drain, and check idempotence plus the
+    /// disabled-transport report. Network-dependent, hence ignored in CI.
+    #[tokio::test]
+    #[ignore = "requires network access to the Miden testnet"]
+    async fn live_testnet_transport_drain_round_trip() {
+        use miden_protocol::address::Address;
+
+        let dir = tempfile::tempdir().unwrap();
+        let account = test_wallet(9);
+
+        // "Old device": relay a private note addressed at the account.
+        // Transport delivery needs no on-chain transaction.
+        let mut sender = live_client(&dir.path().join("sender"), true).await;
+        sender
+            .miden_client
+            .send_private_note(private_note_for(&account, 77), &Address::new(account.id()))
+            .await
+            .expect("transport send succeeds");
+
+        // "New device": fresh store; pulling the account tracks its tag.
+        let mut recovered = live_client(&dir.path().join("recovered"), true).await;
+        recovered
+            .add_or_update_account(&account, false)
+            .await
+            .unwrap();
+
+        let report = recovered.drain_private_note_backlog().await.unwrap();
+        assert_eq!(report.status, TransportRecoveryStatus::Completed);
+        assert!(
+            report.imported >= 1,
+            "the relayed note must be recovered, got {report:?}"
+        );
+
+        let report = recovered.drain_private_note_backlog().await.unwrap();
+        assert_eq!(report.status, TransportRecoveryStatus::Completed);
+        assert_eq!(report.imported, 0, "re-drain must be idempotent");
+
+        // A custom node endpoint derives no transport service (the testnet
+        // preset keeps the upstream default transport), so the drain reports
+        // Unavailable without touching the network.
+        let mut no_transport = MultisigClient::builder()
+            .miden_endpoint(Endpoint::new(
+                "http".to_string(),
+                "node".to_string(),
+                Some(1),
+            ))
+            .guardian_endpoint("http://localhost:1")
+            .account_dir(dir.path().join("no-transport"))
+            .generate_key()
+            .build()
+            .await
+            .expect("custom-endpoint client builds");
+        let report = no_transport.drain_private_note_backlog().await.unwrap();
+        assert_eq!(report.status, TransportRecoveryStatus::Unavailable);
+        assert!(!report.retryable);
+    }
 }
