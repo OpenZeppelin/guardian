@@ -464,7 +464,7 @@ export class GuardianHttpClient {
    * the feed is exhausted. Read-only: served while the account is
    * paused. Only transactions pushed through Guardian appear.
    */
-  async getTransactionHistory(accountId: string, options: HistoryOptions = {}): Promise<HistoryPage> {
+  async getDeltaHistory(accountId: string, options: HistoryOptions = {}): Promise<HistoryPage> {
     // Signed payload and query string must carry the same values: the
     // server signs the canonical JSON of its query struct, where limit
     // stays a string and omitted parameters are omitted keys.
@@ -476,7 +476,7 @@ export class GuardianHttpClient {
       requestPayload.cursor = options.cursor;
     }
     const params = new URLSearchParams(requestPayload);
-    const response = await this.fetchAuthenticated(`/transactions?${params}`, {
+    const response = await this.fetchAuthenticated(`/delta/history?${params}`, {
       method: 'GET',
     }, accountId, requestPayload);
     const server = (await response.json()) as ServerHistoryPage;

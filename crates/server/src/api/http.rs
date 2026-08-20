@@ -3,8 +3,8 @@ use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
-    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams,
-    GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams, GetTransactionHistoryParams,
+    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaHistoryParams, GetDeltaParams,
+    GetDeltaProposalParams, GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams,
     LookupAccountParams, PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
@@ -294,7 +294,7 @@ pub async fn get_delta_since(
 /// summaries. Read-only: served while the account is paused.
 #[utoipa::path(
     get,
-    path = "/transactions",
+    path = "/delta/history",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(HistoryQuery),
@@ -305,7 +305,7 @@ pub async fn get_delta_since(
         (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
-pub async fn get_transaction_history(
+pub async fn get_delta_history(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Query(query): Query<HistoryQuery>,
@@ -320,14 +320,14 @@ pub async fn get_transaction_history(
         crate::dashboard::cursor::CursorKind::AccountHistory,
     )?;
 
-    let params = GetTransactionHistoryParams {
+    let params = GetDeltaHistoryParams {
         account_id: query.account_id,
         limit,
         cursor,
         credentials: request_payload.apply_to(credentials),
     };
 
-    let response = services::get_transaction_history(&state, params).await?;
+    let response = services::get_delta_history(&state, params).await?;
     Ok(Json(response))
 }
 

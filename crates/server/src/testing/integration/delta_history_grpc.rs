@@ -1,7 +1,7 @@
-//! gRPC integration tests for `GetTransactionHistory` (issue #413).
+//! gRPC integration tests for `GetDeltaHistory` (issue #413).
 
 use crate::api::grpc::guardian::guardian_server::Guardian;
-use crate::api::grpc::guardian::{ConfigureRequest, GetTransactionHistoryRequest};
+use crate::api::grpc::guardian::{ConfigureRequest, GetDeltaHistoryRequest};
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::testing::helpers::{
     TestSigner, create_grpc_service, create_miden_falcon_rpo_auth, create_miden_network_config,
@@ -72,13 +72,13 @@ async fn test_grpc_history_paginates_newest_first() {
     }
 
     // Page 1 (limit 2): nonces 3, 2 and a resume cursor.
-    let request = GetTransactionHistoryRequest {
+    let request = GetDeltaHistoryRequest {
         account_id: account_id_hex.clone(),
         limit: Some(2),
         cursor: None,
     };
     let response = service
-        .get_transaction_history(create_signed_request_with_auth(
+        .get_delta_history(create_signed_request_with_auth(
             request,
             &account_id_hex,
             &signer,
@@ -102,13 +102,13 @@ async fn test_grpc_history_paginates_newest_first() {
     let cursor = response.next_cursor.expect("page 1 cursor");
 
     // Page 2: nonce 1 only, end of feed.
-    let request = GetTransactionHistoryRequest {
+    let request = GetDeltaHistoryRequest {
         account_id: account_id_hex.clone(),
         limit: Some(2),
         cursor: Some(cursor),
     };
     let response = service
-        .get_transaction_history(create_signed_request_with_auth(
+        .get_delta_history(create_signed_request_with_auth(
             request,
             &account_id_hex,
             &signer,
@@ -128,13 +128,13 @@ async fn test_grpc_history_paginates_newest_first() {
 async fn test_grpc_history_rejects_invalid_limit() {
     let (_state, service, signer, account_id_hex) = configured_service().await;
 
-    let request = GetTransactionHistoryRequest {
+    let request = GetDeltaHistoryRequest {
         account_id: account_id_hex.clone(),
         limit: Some(501),
         cursor: None,
     };
     let status = service
-        .get_transaction_history(create_signed_request_with_auth(
+        .get_delta_history(create_signed_request_with_auth(
             request,
             &account_id_hex,
             &signer,
@@ -149,13 +149,13 @@ async fn test_grpc_history_rejects_unauthorized_cosigner() {
     let (_state, service, _signer, account_id_hex) = configured_service().await;
 
     let intruder = TestSigner::new();
-    let request = GetTransactionHistoryRequest {
+    let request = GetDeltaHistoryRequest {
         account_id: account_id_hex.clone(),
         limit: None,
         cursor: None,
     };
     let status = service
-        .get_transaction_history(create_signed_request_with_auth(
+        .get_delta_history(create_signed_request_with_auth(
             request,
             &account_id_hex,
             &intruder,

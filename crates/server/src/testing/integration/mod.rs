@@ -4,9 +4,9 @@
 mod auth_grpc;
 mod auth_http;
 mod body_limit_http;
+mod delta_history_grpc;
+mod delta_history_http;
 mod error_envelope_http;
-mod history_grpc;
-mod history_http;
 mod lookup_grpc;
 mod lookup_helpers;
 mod lookup_http;

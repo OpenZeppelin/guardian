@@ -1175,8 +1175,8 @@ export class Multisig {
    * transactions pushed through GUARDIAN appear — history of
    * transactions executed elsewhere is not visible to it.
    */
-  async transactionHistory(options: HistoryOptions = {}): Promise<HistoryPage> {
-    return this.guardian.getTransactionHistory(this._accountId, options);
+  async deltaHistory(options: HistoryOptions = {}): Promise<HistoryPage> {
+    return this.guardian.getDeltaHistory(this._accountId, options);
   }
 
   async signProposal(proposalId: string): Promise<Proposal> {

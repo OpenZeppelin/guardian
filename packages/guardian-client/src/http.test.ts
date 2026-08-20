@@ -894,9 +894,9 @@ describe('GuardianHttpClient', () => {
     });
   });
 
-  // --- getTransactionHistory (issue #413) -----
+  // --- getDeltaHistory (issue #413) -----
 
-  describe('getTransactionHistory', () => {
+  describe('getDeltaHistory', () => {
     const accountId = '0x' + 'a'.repeat(30);
 
     const serverPage = {
@@ -937,7 +937,7 @@ describe('GuardianHttpClient', () => {
         json: async () => serverPage,
       });
 
-      const result = await client.getTransactionHistory(accountId, { limit: 2 });
+      const result = await client.getDeltaHistory(accountId, { limit: 2 });
 
       expect(result.nextCursor).toBe('opaque-cursor');
       expect(result.entries).toHaveLength(2);
@@ -957,7 +957,7 @@ describe('GuardianHttpClient', () => {
       ]);
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `http://localhost:3000/transactions?account_id=${accountId}&limit=2`,
+        `http://localhost:3000/delta/history?account_id=${accountId}&limit=2`,
         expect.objectContaining({
           method: 'GET',
           headers: expect.objectContaining({
@@ -974,12 +974,12 @@ describe('GuardianHttpClient', () => {
         json: async () => ({ items: [], next_cursor: null }),
       });
 
-      const result = await client.getTransactionHistory(accountId);
+      const result = await client.getDeltaHistory(accountId);
 
       expect(result.entries).toEqual([]);
       expect(result.nextCursor).toBeUndefined();
       expect(mockFetch).toHaveBeenCalledWith(
-        `http://localhost:3000/transactions?account_id=${accountId}`,
+        `http://localhost:3000/delta/history?account_id=${accountId}`,
         expect.anything()
       );
       // The signed payload must byte-match the server's canonical JSON
@@ -1001,10 +1001,10 @@ describe('GuardianHttpClient', () => {
         json: async () => ({ items: [], next_cursor: null }),
       });
 
-      await client.getTransactionHistory(accountId, { limit: 10, cursor: 'abc123' });
+      await client.getDeltaHistory(accountId, { limit: 10, cursor: 'abc123' });
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `http://localhost:3000/transactions?account_id=${accountId}&limit=10&cursor=abc123`,
+        `http://localhost:3000/delta/history?account_id=${accountId}&limit=10&cursor=abc123`,
         expect.anything()
       );
       const signRequest = mockSigner.signRequest as ReturnType<typeof vi.fn>;

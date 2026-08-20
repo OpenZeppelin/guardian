@@ -392,6 +392,112 @@
         ]
       }
     },
+    "/delta/history": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Paginated canonical transaction history for an account (issue\n#413), newest-first by nonce, with decoded input/output note\nsummaries. Read-only: served while the account is paused.",
+        "operationId": "get_delta_history",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size in `[1, 500]`; defaults to 50 when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque `next_cursor` from a previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of canonical history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedResult_HistoryEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
     "/delta/proposal": {
       "get": {
         "tags": [
@@ -1072,112 +1178,6 @@
             }
           }
         }
-      }
-    },
-    "/transactions": {
-      "get": {
-        "tags": [
-          "client"
-        ],
-        "summary": "Paginated canonical transaction history for an account (issue\n#413), newest-first by nonce, with decoded input/output note\nsummaries. Read-only: served while the account is paused.",
-        "operationId": "get_transaction_history",
-        "parameters": [
-          {
-            "name": "account_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Page size in `[1, 500]`; defaults to 50 when omitted.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "description": "Opaque `next_cursor` from a previous page.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "One page of canonical history",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PagedResult_HistoryEntry"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid limit or cursor",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Account not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the configured size limit",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "x-pubkey": [],
-            "x-signature": [],
-            "x-timestamp": []
-          }
-        ]
       }
     }
   },

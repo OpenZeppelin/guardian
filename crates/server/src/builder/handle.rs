@@ -24,8 +24,8 @@ use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
-    abandon_candidate, configure, get_delta, get_delta_proposal, get_delta_proposals,
-    get_delta_since, get_pubkey, get_state, get_transaction_history, lookup, push_delta,
+    abandon_candidate, configure, get_delta, get_delta_history, get_delta_proposal,
+    get_delta_proposals, get_delta_since, get_pubkey, get_state, lookup, push_delta,
     push_delta_proposal, sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
@@ -351,7 +351,7 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         .route("/delta", post(push_delta))
         .route("/delta", get(get_delta))
         .route("/delta/since", get(get_delta_since))
-        .route("/transactions", get(get_transaction_history))
+        .route("/delta/history", get(get_delta_history))
         .route("/delta/proposal", post(push_delta_proposal))
         .route("/delta/proposal", get(get_delta_proposals))
         .route("/delta/proposal/single", get(get_delta_proposal))
@@ -480,7 +480,7 @@ mod tests {
             ("POST", "/delta"),
             ("GET", "/delta"),
             ("GET", "/delta/since"),
-            ("GET", "/transactions"),
+            ("GET", "/delta/history"),
             ("POST", "/delta/proposal"),
             ("GET", "/delta/proposal"),
             ("PUT", "/delta/proposal"),

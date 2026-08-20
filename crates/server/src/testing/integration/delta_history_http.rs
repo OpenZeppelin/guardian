@@ -1,4 +1,4 @@
-//! HTTP integration tests for `GET /transactions` (issue #413): the
+//! HTTP integration tests for `GET /delta/history` (issue #413): the
 //! client-facing paginated canonical transaction history feed.
 
 use crate::delta_object::{DeltaObject, DeltaStatus};
@@ -88,8 +88,8 @@ fn canonical_at(nonce: u64) -> DeltaStatus {
     }
 }
 
-/// Signed GET /transactions call; returns (status, parsed body).
-async fn get_transaction_history(
+/// Signed GET /delta/history call; returns (status, parsed body).
+async fn get_delta_history(
     app: &axum::Router,
     signer: &TestSigner,
     account_id: &str,
@@ -111,7 +111,7 @@ async fn get_transaction_history(
     let (signature_hex, timestamp) = signer.sign_json_payload(account_id, &payload);
 
     let request = Request::builder()
-        .uri(format!("/transactions?{query}"))
+        .uri(format!("/delta/history?{query}"))
         .method("GET")
         .header("x-pubkey", &signer.pubkey_hex)
         .header("x-signature", &signature_hex)
@@ -171,8 +171,7 @@ async fn test_history_pagination_returns_canonical_only_newest_first() {
     .await;
 
     // Page 1 (limit 2): nonces 5, 4 and a resume cursor.
-    let (status, page1) =
-        get_transaction_history(&app, &signer, &account_id_hex, Some("2"), None).await;
+    let (status, page1) = get_delta_history(&app, &signer, &account_id_hex, Some("2"), None).await;
     assert_eq!(status, StatusCode::OK, "page 1: {page1}");
     let items = page1["items"].as_array().unwrap();
     assert_eq!(items.len(), 2);
@@ -191,7 +190,7 @@ async fn test_history_pagination_returns_canonical_only_newest_first() {
 
     // Page 2: nonces 3, 2.
     let (status, page2) =
-        get_transaction_history(&app, &signer, &account_id_hex, Some("2"), Some(cursor1)).await;
+        get_delta_history(&app, &signer, &account_id_hex, Some("2"), Some(cursor1)).await;
     assert_eq!(status, StatusCode::OK, "page 2: {page2}");
     let items = page2["items"].as_array().unwrap();
     assert_eq!(items.len(), 2);
@@ -202,7 +201,7 @@ async fn test_history_pagination_returns_canonical_only_newest_first() {
     // Page 3: nonce 1 only (candidate 6 / discarded 7 filtered out),
     // decoded from the real fixture summary with no warnings.
     let (status, page3) =
-        get_transaction_history(&app, &signer, &account_id_hex, Some("2"), Some(cursor2)).await;
+        get_delta_history(&app, &signer, &account_id_hex, Some("2"), Some(cursor2)).await;
     assert_eq!(status, StatusCode::OK, "page 3: {page3}");
     let items = page3["items"].as_array().unwrap();
     assert_eq!(items.len(), 1);
@@ -222,7 +221,7 @@ async fn test_history_default_limit_and_empty_account() {
     let (_state, app, signer, account_id_hex) = configured_account().await;
 
     // No deltas at all: empty page, no cursor.
-    let (status, body) = get_transaction_history(&app, &signer, &account_id_hex, None, None).await;
+    let (status, body) = get_delta_history(&app, &signer, &account_id_hex, None, None).await;
     assert_eq!(status, StatusCode::OK, "empty history: {body}");
     assert_eq!(body["items"], json!([]));
     assert_eq!(body["next_cursor"], json!(null));
@@ -232,18 +231,16 @@ async fn test_history_default_limit_and_empty_account() {
 async fn test_history_rejects_invalid_limit_and_cursor() {
     let (_state, app, signer, account_id_hex) = configured_account().await;
 
-    let (status, body) =
-        get_transaction_history(&app, &signer, &account_id_hex, Some("0"), None).await;
+    let (status, body) = get_delta_history(&app, &signer, &account_id_hex, Some("0"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], json!("invalid_limit"), "{body}");
+
+    let (status, body) = get_delta_history(&app, &signer, &account_id_hex, Some("501"), None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["code"], json!("invalid_limit"), "{body}");
 
     let (status, body) =
-        get_transaction_history(&app, &signer, &account_id_hex, Some("501"), None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["code"], json!("invalid_limit"), "{body}");
-
-    let (status, body) =
-        get_transaction_history(&app, &signer, &account_id_hex, None, Some("not-a-cursor")).await;
+        get_delta_history(&app, &signer, &account_id_hex, None, Some("not-a-cursor")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["code"], json!("invalid_cursor"), "{body}");
 }
@@ -254,8 +251,7 @@ async fn test_history_requires_valid_cosigner_auth() {
 
     // A signer whose commitment is not in the account's auth set.
     let intruder = TestSigner::new();
-    let (status, body) =
-        get_transaction_history(&app, &intruder, &account_id_hex, None, None).await;
+    let (status, body) = get_delta_history(&app, &intruder, &account_id_hex, None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 }
 
@@ -269,7 +265,7 @@ async fn test_history_unknown_account_is_404() {
     let last = unknown.pop().expect("non-empty account id");
     unknown.push(if last == '0' { '1' } else { '0' });
 
-    let (status, body) = get_transaction_history(&app, &signer, &unknown, None, None).await;
+    let (status, body) = get_delta_history(&app, &signer, &unknown, None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
@@ -285,7 +281,7 @@ async fn test_history_served_while_account_paused() {
         .await
         .expect("pause account");
 
-    let (status, body) = get_transaction_history(&app, &signer, &account_id_hex, None, None).await;
+    let (status, body) = get_delta_history(&app, &signer, &account_id_hex, None, None).await;
     assert_eq!(status, StatusCode::OK, "paused reads must work: {body}");
     assert_eq!(body["items"].as_array().unwrap().len(), 1);
 }

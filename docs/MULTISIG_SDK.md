@@ -540,7 +540,7 @@ one implicitly.
 ### Transaction History
 
 Guardian retains the account's full canonical transaction history, so a
-wallet can render it after recovery. `transactionHistory()` returns one page at a
+wallet can render it after recovery. `deltaHistory()` returns one page at a
 time, newest-first by nonce, with input/output note summaries decoded
 server-side (note ID, P2ID/P2IDE/swap/mint/burn classification, assets,
 sender/recipient where the note script exposes them).
@@ -548,7 +548,7 @@ sender/recipient where the note script exposes them).
 ```typescript
 let cursor: string | undefined;
 do {
-  const page = await multisig.transactionHistory({ limit: 50, cursor });
+  const page = await multisig.deltaHistory({ limit: 50, cursor });
   for (const entry of page.entries) {
     console.log(`nonce ${entry.nonce} at ${entry.timestamp}`);
     for (const note of entry.outputNotes) {
@@ -741,7 +741,7 @@ await multisig.executeProposal(signedProposal.id);
 | `syncProposals()` | Sync proposals from GUARDIAN |
 | `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
-| `transactionHistory({ limit?, cursor? }?)` | One page of canonical transaction history, newest-first, with decoded note summaries |
+| `deltaHistory({ limit?, cursor? }?)` | One page of canonical transaction history, newest-first, with decoded note summaries |
 | `listProposals()` | Get cached proposals |
 | `createP2idProposal(recipient, faucet, amount, nonce?, { noteType }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`) |
 | `createConsumeNotesProposal(noteIds, nonce?)` | Create note consumption proposal |
@@ -878,14 +878,14 @@ responses, and per-account `get_state` failures are returned as errors.
 ### Transaction History
 
 Guardian retains the account's full canonical transaction history, so a
-wallet can render it after recovery. `transaction_history()` returns one
+wallet can render it after recovery. `delta_history()` returns one
 `HistoryPage` at a time, newest-first by nonce, with input/output note
 summaries decoded server-side.
 
 ```rust
 let mut cursor: Option<String> = None;
 loop {
-    let page = client.transaction_history(Some(50), cursor.take()).await?;
+    let page = client.delta_history(Some(50), cursor.take()).await?;
     for entry in &page.entries {
         println!("nonce {} at {}", entry.nonce, entry.timestamp);
         for note in &entry.output_notes {
@@ -1083,7 +1083,7 @@ full note, so a post-commit sync is enough.
 | `execute_proposal(id)` | Execute ready proposal |
 | `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
-| `transaction_history(limit, cursor)` | One page of canonical transaction history, newest-first, with decoded note summaries |
+| `delta_history(limit, cursor)` | One page of canonical transaction history, newest-first, with decoded note summaries |
 | `create_proposal_offline(tx)` | Create offline proposal |
 | `sign_imported_proposal(exported)` | Sign offline proposal |
 | `execute_imported_proposal(exported)` | Execute offline proposal |

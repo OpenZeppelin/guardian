@@ -24,7 +24,7 @@ use crate::state::AppState;
 use crate::storage::AccountDeltaCursor;
 
 #[derive(Debug, Clone)]
-pub struct GetTransactionHistoryParams {
+pub struct GetDeltaHistoryParams {
     pub account_id: String,
     pub limit: u32,
     pub cursor: Option<Cursor>,
@@ -100,9 +100,9 @@ impl HistoryEntry {
     skip(state, params),
     fields(account_id = %params.account_id, limit = params.limit)
 )]
-pub async fn get_transaction_history(
+pub async fn get_delta_history(
     state: &AppState,
-    params: GetTransactionHistoryParams,
+    params: GetDeltaHistoryParams,
 ) -> Result<PagedResult<HistoryEntry>> {
     // An AccountHistory cursor carries `last_nonce` plus the account
     // it was minted for. A kind-valid cursor without a resume position
@@ -237,15 +237,13 @@ mod tests {
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         };
 
-        let params = GetTransactionHistoryParams {
+        let params = GetDeltaHistoryParams {
             account_id: "0xacc".to_string(),
             limit: 50,
             cursor: Some(Cursor::account_deltas(5)),
             credentials: Credentials::signature(String::new(), String::new(), 0),
         };
-        let err = get_transaction_history(&state, params.clone())
-            .await
-            .unwrap_err();
+        let err = get_delta_history(&state, params.clone()).await.unwrap_err();
         assert!(matches!(err, GuardianError::InvalidCursor(_)));
 
         // Kind-valid cursor without a resume position must be rejected,
@@ -257,9 +255,9 @@ mod tests {
             last_updated_at: None,
             last_commitment: None,
         };
-        let err = get_transaction_history(
+        let err = get_delta_history(
             &state,
-            GetTransactionHistoryParams {
+            GetDeltaHistoryParams {
                 cursor: Some(empty),
                 ..params.clone()
             },
@@ -270,9 +268,9 @@ mod tests {
 
         // A cursor minted for another account must not resume this one.
         let foreign = Cursor::account_history(5, "0xother".to_string());
-        let err = get_transaction_history(
+        let err = get_delta_history(
             &state,
-            GetTransactionHistoryParams {
+            GetDeltaHistoryParams {
                 cursor: Some(foreign),
                 ..params
             },

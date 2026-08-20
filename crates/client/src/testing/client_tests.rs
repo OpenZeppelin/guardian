@@ -4,8 +4,8 @@ use crate::testing::mocks::{
 };
 use crate::{
     AccountRef, AuthConfig, ClientError, ConfigureResponse, FalconKeyStore,
-    GetAccountByKeyCommitmentResponse, GetDeltaProposalResponse, GetDeltaProposalsResponse,
-    GetDeltaResponse, GetDeltaSinceResponse, GetStateResponse, GetTransactionHistoryResponse,
+    GetAccountByKeyCommitmentResponse, GetDeltaHistoryResponse, GetDeltaProposalResponse,
+    GetDeltaProposalsResponse, GetDeltaResponse, GetDeltaSinceResponse, GetStateResponse,
     GuardianClient, HistoryEntry, HistoryNote, HistoryNoteAsset, PushDeltaProposalResponse,
     PushDeltaResponse, SignDeltaProposalResponse, Signer,
 };
@@ -428,9 +428,9 @@ async fn test_get_delta_since_success() {
 }
 
 #[tokio::test]
-async fn test_get_transaction_history_success() {
-    let service = MockGuardianService::default().with_get_transaction_history(Ok(
-        GetTransactionHistoryResponse {
+async fn test_get_delta_history_success() {
+    let service =
+        MockGuardianService::default().with_get_delta_history(Ok(GetDeltaHistoryResponse {
             success: true,
             message: String::new(),
             entries: vec![HistoryEntry {
@@ -452,10 +452,9 @@ async fn test_get_transaction_history_success() {
                 decode_warnings: vec![],
             }],
             next_cursor: Some("cursor-token".to_string()),
-        },
-    ));
+        }));
 
-    let requests = service.get_transaction_history_requests_handle();
+    let requests = service.get_delta_history_requests_handle();
     let endpoint = start_mock_server(service).await.unwrap();
     let signer = create_test_signer();
     let mut client = GuardianClient::connect(endpoint)
@@ -466,9 +465,9 @@ async fn test_get_transaction_history_success() {
     let account_id = create_test_account_id();
 
     let response = client
-        .get_transaction_history(&account_id, Some(10), Some("prev-cursor".to_string()))
+        .get_delta_history(&account_id, Some(10), Some("prev-cursor".to_string()))
         .await
-        .expect("get_transaction_history should succeed");
+        .expect("get_delta_history should succeed");
     assert!(response.success);
     assert_eq!(response.entries.len(), 1);
     assert_eq!(response.entries[0].nonce, 3);

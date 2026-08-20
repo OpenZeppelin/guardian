@@ -5,13 +5,12 @@ use crate::proto::guardian_client::GuardianClient as GuardianGrpcClient;
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AuthConfig, ConfigureRequest,
     ConfigureResponse, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
-    GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
-    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
-    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
-    GetTransactionHistoryRequest, GetTransactionHistoryResponse,
-    ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
-    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
-    SignDeltaProposalResponse,
+    GetDeltaHistoryRequest, GetDeltaHistoryResponse, GetDeltaProposalRequest,
+    GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
+    GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
+    GetStateRequest, GetStateResponse, ProposalSignature as ProtoProposalSignature,
+    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
+    SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use chrono::Utc;
 use guardian_shared::ProposalSignature as JsonProposalSignature;
@@ -310,13 +309,13 @@ impl GuardianClient {
     /// `None`); `cursor` is the opaque `next_cursor` from a previous
     /// page (`None` for the first page). A `None` `next_cursor` on the
     /// response means the feed is exhausted.
-    pub async fn get_transaction_history(
+    pub async fn get_delta_history(
         &mut self,
         account_id: &AccountId,
         limit: Option<u32>,
         cursor: Option<String>,
-    ) -> ClientResult<GetTransactionHistoryResponse> {
-        let message = GetTransactionHistoryRequest {
+    ) -> ClientResult<GetDeltaHistoryResponse> {
+        let message = GetDeltaHistoryRequest {
             account_id: account_id.to_string(),
             limit,
             cursor,
@@ -324,7 +323,7 @@ impl GuardianClient {
 
         let inner = self
             .send_with_replay_retry(account_id, message, async |client, request| {
-                client.get_transaction_history(request).await
+                client.get_delta_history(request).await
             })
             .await?;
 

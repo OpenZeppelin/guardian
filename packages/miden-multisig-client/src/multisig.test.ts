@@ -372,9 +372,9 @@ describe('Multisig', () => {
         ],
         nextCursor: 'cursor-token',
       };
-      const spy = vi.spyOn(guardian, 'getTransactionHistory').mockResolvedValue(page);
+      const spy = vi.spyOn(guardian, 'getDeltaHistory').mockResolvedValue(page);
 
-      const result = await multisig.transactionHistory({ limit: 5, cursor: 'prev' });
+      const result = await multisig.deltaHistory({ limit: 5, cursor: 'prev' });
 
       expect(result).toBe(page);
       expect(spy).toHaveBeenCalledWith('0x' + 'a'.repeat(30), { limit: 5, cursor: 'prev' });
