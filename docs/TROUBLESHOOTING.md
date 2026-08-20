@@ -420,17 +420,38 @@ come from
 
 ## Logging and observability
 
-The server emits structured JSON logs via `tracing`. Useful filters:
+The server emits `tracing` logs — `text` by default, `json` when `GUARDIAN_LOG_FORMAT=json` (see [`CONFIGURATION.md`](./CONFIGURATION.md#logging)). `text` uses ANSI colors only when stdout is a TTY; `json` emits flattened JSON with span context for CloudWatch Logs Insights.
+
+Hot-path service handlers emit request events at `debug` — enable them with `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug`. At the default `info` filter each request emits one span-close line instead, carrying the span's fields (account ID, nonce, commitment, signer/match counts) and `time.busy` / `time.idle`:
+
+```
+2026-08-19T11:53:31.172132Z  INFO push_delta_proposal{account_id="0x1234…" nonce=7 commitment="0xabcd…" signer_count=2}: server::services::push_delta_proposal: close time.busy=4.1ms time.idle=112µs
+```
+
+That line is emitted whether the request succeeded or failed. This matters because the centralized error lines (`guardian error (HTTP 5xx)`, `guardian error (gRPC internal)`) are emitted from the `GuardianError` → response conversion, which runs after the service span has closed: they carry `code` and `detail` only, and the immediately preceding close line is what identifies the account. Low-volume domain milestones (`Account configured`, `Delta proposal created`, `Delta proposal signed`) keep their own `info` line.
+
+`resolve_account` is a nested helper rather than a request boundary, so its span is `debug` and it contributes no close line at `info`.
+
+The per-read `Commitment mismatch during state verification` (`network::miden`) is also `debug`; persistent divergence is surfaced by the canonicalization processor's streak-gated WARN (confirmed divergence), not the per-read log.
+
+Useful filters:
 
 ```bash
-# Watch canonicalization worker decisions
+# Watch canonicalization worker decisions (including confirmed divergence WARN)
 RUST_LOG=server::jobs::canonicalization=debug
+
+# Watch per-request debug events
+RUST_LOG=server=debug
+RUST_LOG=server::services=debug
 
 # Watch auth verifier rejections
 RUST_LOG=server::middleware::auth=debug,server::metadata::auth=debug
 
 # Watch dashboard authz
 RUST_LOG=server::dashboard=debug
+
+# JSON output for CloudWatch
+GUARDIAN_LOG_FORMAT=json RUST_LOG=info cargo run -p guardian-server
 ```
 
 ### Startup configuration banner

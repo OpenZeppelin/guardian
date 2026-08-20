@@ -59,6 +59,7 @@ fn validate_commitment_list(commitments: &[String]) -> Result<()> {
 
 /// Configure a new account
 #[tracing::instrument(
+    level = "info",
     skip(state, params),
     fields(account_id = %params.account_id)
 )]
@@ -66,7 +67,7 @@ pub async fn configure_account(
     state: &AppState,
     params: ConfigureAccountParams,
 ) -> Result<ConfigureAccountResult> {
-    tracing::info!(account_id = %params.account_id, "Configuring account");
+    tracing::debug!("Configuring account");
 
     let network_config = params
         .network_config
@@ -272,6 +273,8 @@ pub async fn configure_account(
         )
         .increment(1);
     }
+
+    tracing::info!(reconfiguration = existing.is_some(), "Account configured");
 
     Ok(ConfigureAccountResult {
         account_id: params.account_id,
