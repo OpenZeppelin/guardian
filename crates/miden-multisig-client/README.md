@@ -199,9 +199,10 @@ let report = client.drain_private_note_backlog().await?;
 
 Transport problems are reported in the result, never returned as errors:
 `Unavailable` means no transport endpoint is configured or the transport
-could not be reached; `Failed` with `retryable: true` keeps any partial
-progress and rerunning the drain continues it. The drain is idempotent and
-never regresses the stored transport cursor.
+could not be reached before anything was imported; `Failed` with
+`retryable: true` keeps any partial progress and rerunning the drain
+continues it. The drain is idempotent and never regresses the stored
+transport cursor.
 
 Transport recovery is **not a backup**: it is bounded by the transport
 service's retention. Senders may deliver private notes out-of-band without

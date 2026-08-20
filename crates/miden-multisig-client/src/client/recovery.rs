@@ -6,14 +6,12 @@
 //! The primitives here rescan sources that normal forward sync would skip
 //! (issue #414, sub-issue of #357).
 
-use std::collections::BTreeSet;
-
 use miden_client::ClientError;
 use miden_client::note_transport::NoteTransportError;
-use miden_protocol::note::NoteDetailsCommitment;
 
 use super::MultisigClient;
 use crate::error::{Result, error_chain};
+use crate::rpc::{is_transient_note_transport_error, is_transient_rpc_error};
 
 /// Outcome class of a private-note transport backlog drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,8 +20,10 @@ pub enum TransportRecoveryStatus {
     /// holds for the tracked tags is now in the local store.
     Completed,
     /// The transport could not be consulted at all: it is disabled for this
-    /// client (no endpoint configured) or unreachable. Nothing was scanned;
-    /// the rest of a recovery flow should proceed without transport notes.
+    /// client (no endpoint configured) or unreachable before anything was
+    /// imported (`imported` is always 0 — a connection lost mid-drain after
+    /// partial progress reports `Failed` instead). The rest of a recovery
+    /// flow should proceed without transport notes.
     Unavailable,
     /// The drain started but did not finish; the backlog may be partially
     /// imported. `retryable` distinguishes transient failures (rerun the
@@ -83,12 +83,15 @@ impl MultisigClient {
             });
         }
 
-        let before = self.input_note_commitments().await?;
+        let before = self.input_note_count().await?;
         let drain_result = self.miden_client.fetch_all_private_notes().await;
         // Count even when the drain failed: each fetched batch is imported as
         // it arrives, so notes recovered before the failure stay in the store.
-        let after = self.input_note_commitments().await?;
-        let imported = after.difference(&before).count();
+        // A drain never removes records (and `&mut self` excludes concurrent
+        // client operations), so the length delta is the count of newly
+        // imported records.
+        let after = self.input_note_count().await?;
+        let imported = after.saturating_sub(before);
 
         match drain_result {
             Ok(()) => Ok(TransportRecoveryReport {
@@ -97,8 +100,25 @@ impl MultisigClient {
                 retryable: false,
                 reason: None,
             }),
+            // A broken local store is an environment failure, not a transport
+            // outcome: the whole recovery flow needs to know, so it
+            // propagates instead of being folded into the report.
+            Err(err @ ClientError::StoreError(_)) => {
+                Err(crate::error::MultisigError::miden_client_with_context(
+                    "local store failed during the transport drain",
+                    err,
+                ))
+            }
             Err(err) => {
                 let (status, retryable) = classify_drain_failure(&err);
+                // `Unavailable` promises "nothing was imported"; a connection
+                // lost mid-drain after partial progress is an interrupted
+                // drain, so report it as a retryable failure instead.
+                let status = if imported > 0 && status == TransportRecoveryStatus::Unavailable {
+                    TransportRecoveryStatus::Failed
+                } else {
+                    status
+                };
                 Ok(TransportRecoveryReport {
                     status,
                     imported,
@@ -109,10 +129,8 @@ impl MultisigClient {
         }
     }
 
-    /// Details commitments of every input note currently in the local store.
-    /// Keyed by details commitment because transport-imported records start
-    /// without metadata (`Expected` state) and so may not have a note ID yet.
-    async fn input_note_commitments(&mut self) -> Result<BTreeSet<NoteDetailsCommitment>> {
+    /// Number of input note records currently in the local store.
+    async fn input_note_count(&mut self) -> Result<usize> {
         let records = self
             .miden_client
             .get_input_notes(miden_client::store::NoteFilter::All)
@@ -123,10 +141,7 @@ impl MultisigClient {
                     e,
                 )
             })?;
-        Ok(records
-            .iter()
-            .map(|record| record.details_commitment())
-            .collect())
+        Ok(records.len())
     }
 }
 
@@ -134,31 +149,42 @@ impl MultisigClient {
 /// `(status, retryable)`.
 fn classify_drain_failure(err: &ClientError) -> (TransportRecoveryStatus, bool) {
     match err {
+        // The match is deliberately exhaustive so a new upstream variant is a
+        // compile error here rather than a silently wrong classification.
         ClientError::NoteTransportError(transport_err) => match transport_err {
             // No transport configured — retrying cannot help until the client
             // is rebuilt with an endpoint.
             NoteTransportError::Disabled => (TransportRecoveryStatus::Unavailable, false),
-            // The transport exists but could not be reached — same class as
-            // disabled for a recovery flow (nothing was scanned), but worth
-            // retrying once connectivity returns.
-            NoteTransportError::Connection(_) | NoteTransportError::Network(_) => {
-                (TransportRecoveryStatus::Unavailable, true)
-            }
+            // `Connection` wraps endpoint parsing, TLS configuration, and
+            // actual connect failures indiscriminately; the shared classifier
+            // inspects the cause chain to tell a retry-worthy dropped
+            // connection from a permanently misconfigured endpoint.
+            NoteTransportError::Connection(_) => (
+                TransportRecoveryStatus::Unavailable,
+                is_transient_note_transport_error(transport_err),
+            ),
+            // The transport answered with an error — worth retrying once the
+            // service recovers.
+            NoteTransportError::Network(_) => (TransportRecoveryStatus::Unavailable, true),
             // The upstream convergence guard tripped (the server cursor kept
-            // advancing for 1000 iterations without an empty batch). The
-            // backlog is partially imported; a rerun continues making
-            // progress because imports are idempotent.
+            // advancing for 1000 iterations without an empty batch) — a
+            // server-side bug, not an honest backlog. Retryable in the sense
+            // that a rerun is safe (imports are idempotent) and succeeds once
+            // the server recovers; while the server misbehaves, each rerun
+            // repeats the same full scan and trips the same guard.
             NoteTransportError::PaginationDidNotTerminate(_) => {
                 (TransportRecoveryStatus::Failed, true)
             }
-            // Undecodable payloads and any future variants: a rerun would hit
-            // the same bytes again.
-            _ => (TransportRecoveryStatus::Failed, false),
+            // Undecodable payloads: a rerun would hit the same bytes again.
+            NoteTransportError::Deserialization(_) => (TransportRecoveryStatus::Failed, false),
         },
         // Each fetched batch is imported through the node (inclusion-proof
-        // lookup), so a node RPC failure mid-drain is transient-connectivity
-        // shaped: the transport itself was fine, retry later.
-        ClientError::RpcError(_) => (TransportRecoveryStatus::Failed, true),
+        // lookup), so a node RPC failure interrupts the drain mid-way; the
+        // shared gRPC classifier decides whether a rerun can help.
+        ClientError::RpcError(rpc_err) => (
+            TransportRecoveryStatus::Failed,
+            is_transient_rpc_error(rpc_err),
+        ),
         _ => (TransportRecoveryStatus::Failed, false),
     }
 }
@@ -222,6 +248,19 @@ mod tests {
         assert!(retryable);
     }
 
+    /// `Connection` also wraps endpoint-parse/TLS misconfiguration; the
+    /// shared cause-chain classifier marks those permanent so a recovery
+    /// flow does not loop retrying a client that can never connect.
+    #[test]
+    fn misconfigured_transport_endpoint_is_unavailable_and_not_retryable() {
+        let connection = NoteTransportError::Connection(Box::new(std::io::Error::other(
+            "invalid uri: missing scheme",
+        )));
+        let (status, retryable) = classify_drain_failure(&transport_error(connection));
+        assert_eq!(status, TransportRecoveryStatus::Unavailable);
+        assert!(!retryable);
+    }
+
     #[test]
     fn pagination_convergence_guard_is_a_retryable_failure() {
         let (status, retryable) = classify_drain_failure(&transport_error(
@@ -243,6 +282,23 @@ mod tests {
         let (status, retryable) = classify_drain_failure(&err);
         assert_eq!(status, TransportRecoveryStatus::Failed);
         assert!(retryable);
+    }
+
+    /// The shared gRPC classifier decides retryability for node failures:
+    /// a permanent status (bad request, wrong node version) must not tell
+    /// callers to rerun the drain.
+    #[test]
+    fn permanent_node_rpc_failure_mid_drain_is_not_retryable() {
+        let err: ClientError = miden_client::rpc::RpcError::RequestError {
+            endpoint: miden_client::rpc::RpcEndpoint::SyncChainMmr,
+            error_kind: miden_client::rpc::GrpcError::InvalidArgument,
+            endpoint_error: None,
+            source: None,
+        }
+        .into();
+        let (status, retryable) = classify_drain_failure(&err);
+        assert_eq!(status, TransportRecoveryStatus::Failed);
+        assert!(!retryable);
     }
 
     #[test]
@@ -321,10 +377,9 @@ mod tests {
             .expect("test wallet builds")
     }
 
-    /// A private P2ID note addressed at `target`, in the transport wire form:
-    /// `(header, serialized NoteDetails)`.
-    fn private_note_for(target: &Account) -> Note {
-        let mut rng = RandomCoin::new(Word::default());
+    /// A distinct (per `seed`) private P2ID note addressed at `target`.
+    fn private_note_for(target: &Account, seed: u32) -> Note {
+        let mut rng = RandomCoin::new(Word::from(&[seed, 0, 0, 0]));
         P2idNote::create(
             target.id(),
             target.id(),
@@ -368,7 +423,7 @@ mod tests {
         // its standard note tag is tracked.
         let account = test_wallet(1);
         client.add_or_update_account(&account, false).await.unwrap();
-        add_to_transport(&node, private_note_for(&account));
+        add_to_transport(&node, private_note_for(&account, 1));
 
         let report = client.drain_private_note_backlog().await.unwrap();
         assert_eq!(report.status, TransportRecoveryStatus::Completed);
@@ -391,7 +446,7 @@ mod tests {
 
         // A note is waiting on the transport, but no account is in the store,
         // so no tag is tracked.
-        add_to_transport(&node, private_note_for(&test_wallet(2)));
+        add_to_transport(&node, private_note_for(&test_wallet(2), 1));
 
         let report = client.drain_private_note_backlog().await.unwrap();
         assert_eq!(report.status, TransportRecoveryStatus::Completed);
@@ -408,7 +463,7 @@ mod tests {
 
         let account = test_wallet(3);
         client.add_or_update_account(&account, false).await.unwrap();
-        add_to_transport(&node, private_note_for(&account));
+        add_to_transport(&node, private_note_for(&account, 1));
 
         // Simulate a store whose cursor another account's sync has already
         // advanced far past this backlog. The store encodes the cursor as raw
@@ -438,6 +493,95 @@ mod tests {
             .unwrap()
             .expect("cursor setting exists");
         assert_eq!(u64::from_be_bytes(stored), advanced);
+    }
+
+    /// Transport that serves a limited number of successful fetches, then
+    /// fails with a connection-shaped error — a connection dropped mid-drain.
+    struct InterruptibleTransport {
+        inner: MockNoteTransportApi,
+        fetches_before_failure: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl NoteTransportClient for InterruptibleTransport {
+        async fn send_note(
+            &self,
+            header: miden_protocol::note::NoteHeader,
+            details: Vec<u8>,
+        ) -> std::result::Result<(), NoteTransportError> {
+            self.inner.send_note(header, details);
+            Ok(())
+        }
+
+        async fn fetch_notes(
+            &self,
+            tags: &[NoteTag],
+            cursor: miden_client::note_transport::NoteTransportCursor,
+        ) -> std::result::Result<
+            (
+                Vec<miden_client::note_transport::NoteInfo>,
+                miden_client::note_transport::NoteTransportCursor,
+            ),
+            NoteTransportError,
+        > {
+            let allowed = self
+                .fetches_before_failure
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |n| n.checked_sub(1),
+                )
+                .is_ok();
+            if !allowed {
+                return Err(NoteTransportError::Network(
+                    "connection dropped mid-drain".to_string(),
+                ));
+            }
+            Ok(self.inner.fetch_notes(tags, cursor))
+        }
+
+        async fn stream_notes(
+            &self,
+            _tag: NoteTag,
+            _cursor: miden_client::note_transport::NoteTransportCursor,
+        ) -> std::result::Result<
+            Box<dyn miden_client::note_transport::NoteStream>,
+            NoteTransportError,
+        > {
+            Ok(Box::new(
+                miden_client::testing::note_transport::DummyNoteStream {},
+            ))
+        }
+    }
+
+    /// A connection lost mid-drain after partial progress must not report
+    /// `Unavailable` ("nothing was imported"): it is an interrupted,
+    /// retryable drain and the partial count is kept.
+    #[tokio::test]
+    async fn interrupted_drain_with_partial_progress_reports_a_retryable_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        // Cap each response at one note so the two-note backlog needs two
+        // fetches; the transport dies after the first.
+        let node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
+        let api: Arc<dyn NoteTransportClient> = Arc::new(InterruptibleTransport {
+            inner: MockNoteTransportApi::new(node.clone()),
+            fetches_before_failure: std::sync::atomic::AtomicUsize::new(1),
+        });
+        let mut client = offline_client(dir.path(), Some(api)).await;
+
+        let account = test_wallet(6);
+        client.add_or_update_account(&account, false).await.unwrap();
+        add_to_transport(&node, private_note_for(&account, 1));
+        // Distinct cursor values require distinct insertion timestamps.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        add_to_transport(&node, private_note_for(&account, 2));
+
+        let report = client.drain_private_note_backlog().await.unwrap();
+
+        assert_eq!(report.status, TransportRecoveryStatus::Failed);
+        assert!(report.retryable);
+        assert_eq!(report.imported, 1);
+        assert!(report.reason.unwrap().contains("connection dropped"));
     }
 
     // ---------------------------------------------------------------------

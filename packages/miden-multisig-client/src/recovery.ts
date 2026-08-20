@@ -9,7 +9,7 @@
  */
 
 import type { MidenClient } from '@miden-sdk/miden-sdk';
-import { isLikelyNetworkError } from './connectivity.js';
+import { errorMessage, isLikelyNetworkError } from './connectivity.js';
 
 /**
  * Outcome class of a private-note transport backlog drain:
@@ -17,8 +17,10 @@ import { isLikelyNetworkError } from './connectivity.js';
  *   transport still holds for the tracked tags is now in the local store.
  * - `unavailable` — the transport could not be consulted at all: it is
  *   disabled for the injected `MidenClient` (no `noteTransportUrl`
- *   configured) or unreachable. Nothing was scanned; the rest of a recovery
- *   flow should proceed without transport notes.
+ *   configured) or unreachable before anything was imported (`imported` is
+ *   always 0 — a connection lost mid-drain after partial progress reports
+ *   `failed` instead). The rest of a recovery flow should proceed without
+ *   transport notes.
  * - `failed` — the drain started but did not finish; the backlog may be
  *   partially imported. `retryable` distinguishes transient failures (rerun
  *   the drain) from permanent ones.
@@ -56,48 +58,62 @@ export interface TransportRecoveryReport {
  * `connectivity.ts`). These fragments come from miden-client's
  * `NoteTransportError` `Display` impls.
  */
-const TRANSPORT_DISABLED_FRAGMENT = 'note transport is disabled';
-const PAGINATION_GUARD_FRAGMENT = 'did not converge';
+/** Exported for the drift-guard test, which pins them against the shipped WASM binary. */
+export const TRANSPORT_DISABLED_FRAGMENT = 'note transport is disabled';
+/** Exported for the drift-guard test, which pins them against the shipped WASM binary. */
+export const PAGINATION_GUARD_FRAGMENT = 'did not converge';
 
-function classifyDrainFailure(err: unknown): {
+interface DrainFailure {
   status: TransportRecoveryStatus;
   retryable: boolean;
-} {
-  const message = (err as { message?: string } | null | undefined)?.message ?? String(err ?? '');
-  const lower = message.toLowerCase();
+  reason: string;
+  /**
+   * `false` when the failure proves nothing was fetched (disabled transport
+   * throws before any scan), so the store does not need re-counting.
+   */
+  scanned: boolean;
+}
+
+function classifyDrainFailure(err: unknown): DrainFailure {
+  const reason = errorMessage(err);
+  const lower = reason.toLowerCase();
   // No transport configured — retrying cannot help until the MidenClient is
-  // rebuilt with a `noteTransportUrl`.
+  // rebuilt with a `noteTransportUrl`. Thrown before anything is fetched.
   if (lower.includes(TRANSPORT_DISABLED_FRAGMENT)) {
-    return { status: 'unavailable', retryable: false };
+    return { status: 'unavailable', retryable: false, reason, scanned: false };
   }
   // The upstream convergence guard tripped (the server cursor kept advancing
-  // for 1000 iterations without an empty batch). The backlog is partially
-  // imported; a rerun continues making progress because imports are
-  // idempotent.
+  // for 1000 iterations without an empty batch) — a server-side bug, not an
+  // honest backlog. Retryable in the sense that a rerun is safe (imports are
+  // idempotent) and succeeds once the server recovers.
   if (lower.includes(PAGINATION_GUARD_FRAGMENT)) {
-    return { status: 'failed', retryable: true };
+    return { status: 'failed', retryable: true, reason, scanned: true };
   }
-  // The transport exists but could not be reached — same class as disabled
-  // for a recovery flow (nothing was scanned), but worth retrying once
-  // connectivity returns.
+  // Connectivity-shaped wording: the transport (or the node, mid-import —
+  // the message text cannot tell them apart) could not be reached; worth
+  // retrying once connectivity returns.
   if (isLikelyNetworkError(err)) {
-    return { status: 'unavailable', retryable: true };
+    return { status: 'unavailable', retryable: true, reason, scanned: true };
   }
-  return { status: 'failed', retryable: false };
+  return { status: 'failed', retryable: false, reason, scanned: true };
 }
 
 /**
  * Rescans the full private-note transport backlog for every tracked note tag
  * and imports what it finds, regardless of the stored transport cursor
- * (issue #414). Mirrors `MultisigClient::drain_private_note_backlog` in the
- * Rust SDK.
+ * (issue #414). Counterpart of `MultisigClient::drain_private_note_backlog`
+ * in the Rust SDK; note that the WASM boundary exposes only error message
+ * text, so failure classification here is message-based and cannot always
+ * distinguish a node connectivity failure mid-import from a transport
+ * connectivity failure — both classes are reported retryable.
  *
- * Use after account recovery: a fresh store has no transport cursor, and in
- * a shared store another account's sync may have advanced the cursor past
- * this account's notes. The drain is idempotent, tag-scoped (the recovered
- * account must already be in the store so its note tag is tracked —
- * `MultisigClient.load` does this), and never regresses an already-advanced
- * cursor.
+ * Use after account recovery, passing the **same** `MidenClient` instance
+ * that was injected into `MultisigClient`: a fresh store has no transport
+ * cursor, and in a shared store another account's sync may have advanced the
+ * cursor past this account's notes. The drain is idempotent, tag-scoped (the
+ * recovered account must already be in the store so its note tag is tracked
+ * — `MultisigClient.load` does this), and never regresses an
+ * already-advanced cursor.
  *
  * Transport recovery is bounded by the transport service's retention:
  * senders may bypass the transport entirely and relayed blobs are pruned
@@ -110,29 +126,30 @@ export async function drainPrivateNoteBacklog(
   midenClient: MidenClient,
 ): Promise<TransportRecoveryReport> {
   const before = (await midenClient.notes.list()).length;
+  // Records are never removed by a drain, so the length delta is the count
+  // of newly imported records. Caveat: it is a store delta — notes imported
+  // by concurrent activity on the same store (a background sync, another
+  // tab) during the drain are attributed to it.
+  const importedSince = async (): Promise<number> =>
+    Math.max((await midenClient.notes.list()).length - before, 0);
 
-  let failed = false;
-  let failure: unknown;
   try {
     await midenClient.notes.fetchPrivate({ mode: 'all' });
   } catch (err) {
-    failed = true;
-    failure = err;
+    const { status, retryable, reason, scanned } = classifyDrainFailure(err);
+    // Count even when the drain failed: each fetched batch is imported as it
+    // arrives, so notes recovered before the failure stay in the store. A
+    // disabled transport throws before fetching anything, so skip the
+    // re-count entirely.
+    const imported = scanned ? await importedSince() : 0;
+    if (status === 'unavailable' && imported > 0) {
+      // `unavailable` promises "nothing was imported"; a connection lost
+      // mid-drain after partial progress is an interrupted drain, so report
+      // it as a retryable failure instead.
+      return { status: 'failed', imported, retryable: true, reason };
+    }
+    return { status, imported, retryable, reason };
   }
 
-  // Count even when the drain failed: each fetched batch is imported as it
-  // arrives, so notes recovered before the failure stay in the store.
-  // Records are never removed by a drain, so the length delta is the count
-  // of newly imported records.
-  const after = (await midenClient.notes.list()).length;
-  const imported = Math.max(after - before, 0);
-
-  if (!failed) {
-    return { status: 'completed', imported, retryable: false };
-  }
-
-  const { status, retryable } = classifyDrainFailure(failure);
-  const message =
-    (failure as { message?: string } | null | undefined)?.message ?? String(failure ?? '');
-  return { status, imported, retryable, reason: message };
+  return { status: 'completed', imported: await importedSince(), retryable: false };
 }

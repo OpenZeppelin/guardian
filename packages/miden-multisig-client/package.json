@@ -24,7 +24,9 @@
   "files": [
     "dist",
     "src",
-    "masm"
+    "masm",
+    "!dist/testing",
+    "!src/testing"
   ],
   "scripts": {
     "generate:masm": "node ./scripts/generate-masm.mjs",

@@ -185,6 +185,7 @@ account is what tracks its tag.
 import { drainPrivateNoteBacklog } from '@openzeppelin/miden-multisig-client';
 
 const multisig = await client.load(accountId, signer);
+// Pass the SAME MidenClient instance that was injected into MultisigClient.
 const report = await drainPrivateNoteBacklog(midenClient);
 // report.status: 'completed' | 'unavailable' | 'failed'
 // report.imported: number of newly imported note records
@@ -192,9 +193,10 @@ const report = await drainPrivateNoteBacklog(midenClient);
 
 Transport problems are reported in the result, never thrown: `unavailable`
 means the injected `MidenClient` has no `noteTransportUrl` configured or the
-transport could not be reached; `failed` with `retryable: true` keeps any
-partial progress and rerunning the drain continues it. The drain is
-idempotent and never regresses the stored transport cursor.
+transport could not be reached before anything was imported; `failed` with
+`retryable: true` keeps any partial progress and rerunning the drain
+continues it. The drain is idempotent and never regresses the stored
+transport cursor.
 
 Transport recovery is **not a backup**: it is bounded by the transport
 service's retention. Senders may deliver private notes out-of-band without

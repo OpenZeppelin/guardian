@@ -456,9 +456,12 @@ impl MultisigClient {
 
     /// Adds an account to miden-client if it doesn't exist, or updates it if it does.
     ///
-    /// `overwrite` is forwarded to miden-client's `add_account` on the
-    /// insert path (its parameter of the same name); the update path always
-    /// overwrites.
+    /// `overwrite` is forwarded to miden-client's `add_account` (its
+    /// parameter of the same name), but is currently inert: upstream only
+    /// consults it for already-tracked accounts, and the existence pre-check
+    /// here routes those through the update path, which always overwrites.
+    /// This helper never surfaces upstream's `overwrite: false` protection
+    /// (`AccountAlreadyTracked`).
     pub(crate) async fn add_or_update_account(
         &mut self,
         account: &Account,

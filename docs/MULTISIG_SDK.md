@@ -588,6 +588,8 @@ import { drainPrivateNoteBacklog } from '@openzeppelin/miden-multisig-client';
 // and load() inserting the account is what tracks its tag.
 const multisig = await client.load(accountId, signer);
 
+// Pass the SAME MidenClient instance that was injected into MultisigClient —
+// a different instance has a different store, without the tracked tag.
 const report = await drainPrivateNoteBacklog(midenClient);
 if (report.status === 'completed') {
   console.log(`Recovered ${report.imported} private note(s) from the transport`);
@@ -602,7 +604,10 @@ if (report.status === 'completed') {
 ```
 
 The drain is idempotent and never regresses the stored transport cursor, so
-it is safe to run repeatedly and to combine with normal sync.
+it is safe to run repeatedly and to combine with normal sync. `unavailable`
+always means nothing was imported; a drain interrupted mid-way (connection
+lost after some batches landed) reports `failed` with the partial count
+kept, and rerunning continues it.
 
 **Not a backup:** transport recovery is bounded by the transport service's
 retention. Senders may deliver private notes out-of-band without using the
@@ -1014,8 +1019,11 @@ match report.status {
 ```
 
 The drain is idempotent and never regresses the stored transport cursor, so
-it is safe to run repeatedly and to combine with normal sync. An `Err` from
-the method means the local store itself failed, not the transport.
+it is safe to run repeatedly and to combine with normal sync. `Unavailable`
+always means nothing was imported; a drain interrupted mid-way (connection
+lost after some batches landed) reports `Failed` with the partial count
+kept, and rerunning continues it. An `Err` from the method means the local
+store itself failed, not the transport.
 
 **Not a backup:** transport recovery is bounded by the transport service's
 retention. Senders may deliver private notes out-of-band without using the

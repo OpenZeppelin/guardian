@@ -9,28 +9,32 @@ import { drainPrivateNoteBacklog } from './recovery.js';
  * tests (further down) run against the real WASM mock client.
  */
 function stubClient(options: {
-  listLengths: number[];
+  /** Note count before the drain (first `notes.list()` call). */
+  before: number;
+  /** Note count after the drain (subsequent `notes.list()` calls). */
+  after: number;
   fetchPrivate: (opts?: { mode?: string }) => Promise<void>;
-}): { client: MidenClient; fetchPrivate: ReturnType<typeof vi.fn> } {
+}): {
+  client: MidenClient;
+  fetchPrivate: ReturnType<typeof vi.fn>;
+  list: ReturnType<typeof vi.fn>;
+} {
   let call = 0;
   const fetchPrivate = vi.fn(options.fetchPrivate);
-  const client = {
-    notes: {
-      list: vi.fn(async () => {
-        const length = options.listLengths[Math.min(call, options.listLengths.length - 1)];
-        call += 1;
-        return new Array(length).fill({});
-      }),
-      fetchPrivate,
-    },
-  } as unknown as MidenClient;
-  return { client, fetchPrivate };
+  const list = vi.fn(async () => {
+    const length = call === 0 ? options.before : options.after;
+    call += 1;
+    return new Array(length).fill({});
+  });
+  const client = { notes: { list, fetchPrivate } } as unknown as MidenClient;
+  return { client, fetchPrivate, list };
 }
 
 describe('drainPrivateNoteBacklog', () => {
   it('reports completed with the count of newly imported records', async () => {
     const { client, fetchPrivate } = stubClient({
-      listLengths: [1, 3],
+      before: 1,
+      after: 3,
       fetchPrivate: async () => {},
     });
 
@@ -42,7 +46,8 @@ describe('drainPrivateNoteBacklog', () => {
 
   it('reports a disabled transport as unavailable, not retryable, without throwing', async () => {
     const { client } = stubClient({
-      listLengths: [0, 0],
+      before: 0,
+      after: 0,
       fetchPrivate: async () => {
         throw new Error(
           'note transport is disabled; enable it in the client configuration to send or receive notes via P2P',
@@ -58,9 +63,44 @@ describe('drainPrivateNoteBacklog', () => {
     expect(report.reason).toContain('note transport is disabled');
   });
 
+  it('skips the post-drain store re-count when the transport is disabled', async () => {
+    const { client, list } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {
+        throw new Error('note transport is disabled');
+      },
+    });
+
+    await drainPrivateNoteBacklog(client);
+
+    // A disabled transport throws before fetching anything, so only the
+    // initial count runs.
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('escalates a connection lost mid-drain with partial progress to a retryable failure', async () => {
+    const { client } = stubClient({
+      before: 0,
+      after: 3,
+      fetchPrivate: async () => {
+        throw new TypeError('Failed to fetch');
+      },
+    });
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    // `unavailable` promises "nothing was imported"; with partial progress
+    // the honest class is an interrupted, retryable drain.
+    expect(report.status).toBe('failed');
+    expect(report.retryable).toBe(true);
+    expect(report.imported).toBe(3);
+  });
+
   it('reports an unreachable transport as unavailable and retryable', async () => {
     const { client } = stubClient({
-      listLengths: [0, 0],
+      before: 0,
+      after: 0,
       fetchPrivate: async () => {
         throw new TypeError('Failed to fetch');
       },
@@ -74,7 +114,8 @@ describe('drainPrivateNoteBacklog', () => {
 
   it('reports the pagination convergence guard as a retryable failure, keeping the partial count', async () => {
     const { client } = stubClient({
-      listLengths: [0, 5],
+      before: 0,
+      after: 5,
       fetchPrivate: async () => {
         throw new Error(
           'fetch_all_private_notes did not converge after 1000 iterations — the server cursor is advancing but never returns an empty batch',
@@ -92,7 +133,8 @@ describe('drainPrivateNoteBacklog', () => {
 
   it('reports unrecognized errors as a permanent failure', async () => {
     const { client } = stubClient({
-      listLengths: [0, 0],
+      before: 0,
+      after: 0,
       fetchPrivate: async () => {
         throw new Error('deserialization error: invalid note details');
       },
@@ -107,7 +149,8 @@ describe('drainPrivateNoteBacklog', () => {
 
   it('classifies non-Error throws without crashing', async () => {
     const { client } = stubClient({
-      listLengths: [0, 0],
+      before: 0,
+      after: 0,
       fetchPrivate: async () => {
         // eslint-disable-next-line @typescript-eslint/only-throw-error
         throw 'note transport is disabled';
