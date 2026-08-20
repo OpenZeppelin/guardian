@@ -18,6 +18,7 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       <ParaProvider
         paraClientConfig={{ apiKey: PARA_API_KEY, env: paraEnv }}
         config={{ appName: 'Miden Multisig' }}
+        externalWalletConfig={{ wallets: [] }}
       >
         <App />
         <Toaster position="bottom-right" />
