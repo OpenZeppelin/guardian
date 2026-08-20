@@ -90,9 +90,12 @@ Code in:
 
 Run:
 ```bash
+./scripts/preflight-browser-smoke.sh
 cd examples/smoke-web && npm run typecheck && npm run build
 cd examples/web && npm run build
 ```
+
+The preflight is required after any branch switch: these apps alias the SDK packages to `packages/*/dist/index.js`, and `dist/` is gitignored, so a build left over from another protocol line survives the checkout and fails only at MASM compile time.
 
 Manual canary:
 - use `smoke-test-ts-multisig-sdk`

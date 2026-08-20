@@ -29,7 +29,7 @@ If the commitment does not round-trip into `status().multisig.guardianPubkey` af
 
 ## Testing Deployed SDKs
 
-`examples/smoke-web/package.json` pins `@openzeppelin/miden-multisig-client` and `@openzeppelin/guardian-client` to `file:../../packages/...`, so `npm run dev` smokes the **workspace source**, not the npm release. When the user asks to smoke "the deployed SDK" or "the released version":
+`examples/smoke-web/package.json` pins `@openzeppelin/miden-multisig-client` and `@openzeppelin/guardian-client` to `file:../../packages/...`, and `vite.config.ts` additionally aliases both to `packages/<name>/dist/index.js`. So `npm run dev` smokes the **workspace build output**, not the npm release and not `src/`. When the user asks to smoke "the deployed SDK" or "the released version":
 
 1. Create a scratch Vite (or equivalent) project outside the workspace (e.g. `/tmp/guardian-ts-smoke-<version>`).
 2. Declare the published packages pinned to the release under test:
@@ -47,6 +47,24 @@ If the commitment does not round-trip into `status().multisig.guardianPubkey` af
 5. Point the scratch harness at the chosen Deployment Target and run the workflow.
 
 Treat workspace-path smoke-web runs and deployed-npm scratch-project runs as different smoke targets. Never collapse them in the report.
+
+## Stale Build Output
+
+`packages/*/dist` is gitignored, so `git checkout` never touches it. A dist built on another protocol line (for example a `miden-0.16` branch) keeps being served on a 0.15 branch until something rebuilds it, and the apps load `dist`, not `src`. Nothing in a source-level check can see this.
+
+The signature is a MASM assembler error at account creation, most often:
+
+```text
+Failed to compile account component: invalid syntax
+```
+
+That means the MASM baked into the stale `dist` is a different dialect from the `@miden-sdk/miden-sdk` WASM assembler the app loaded. Cross-line MASM differences to look for: the `openzeppelin::auth::*` namespace versus `miden::standards::auth::*`, and `pub use multisig::name` versus `pub use {name} from module`.
+
+The same applies to `node_modules`: another branch can leave an out-of-range `@miden-sdk/miden-sdk` installed that the workspace's own lockfile does not pin. Compare installed against the lockfile, not against the `package.json` range, because a caret range hides it.
+
+`./scripts/preflight-browser-smoke.sh` detects and repairs both. Rebuild with `npm run clean && npm run build`, never a bare `build`: export names differ across lines, so `tsc` alone leaves orphaned files from the previous build. Restart any running dev server afterwards, and clear `examples/*/node_modules/.vite`.
+
+Do not report this class of failure as an SDK or contract bug until the preflight passes.
 
 ## Browser Automation
 
@@ -71,29 +89,34 @@ When reporting, capture the concrete tool invocation path used (Chrome MCP vs Cl
    - `examples/_shared/multisig-browser/src/multisigApi.ts`
    - `examples/_shared/multisig-browser/src/initClient.ts`
    - `examples/smoke-web/src/App.tsx`
-2. Run targeted TypeScript validation before manual smoke:
+2. Run the browser preflight before anything else. It is mandatory after any branch switch:
+   ```bash
+   ./scripts/preflight-browser-smoke.sh
+   ```
+   It reports, fixes, then re-verifies two things source-level checks cannot see: a workspace whose installed `@miden-sdk/miden-sdk` does not match its own lockfile pin, and a `packages/*/dist` older than its `src`. Use `--check` to report without writing. See Stale Build Output below for why this class of failure is silent.
+3. Run targeted TypeScript validation before manual smoke:
    ```bash
    cd packages/miden-multisig-client && npm test
    cd examples/smoke-web && npm run typecheck && npm run build
    cd examples/web && npm run build
    ```
-3. Start one GUARDIAN server from the repo root:
+4. Start one GUARDIAN server from the repo root:
    ```bash
    cargo run -p guardian-server --bin server
    ```
-4. Start the smoke harness:
+5. Start the smoke harness:
    ```bash
    cd examples/smoke-web && npm run dev
    ```
-5. Open the smoke harness in separate real browsers or fully isolated browser profiles. Do not rely on same-profile parallel tabs. Prefer Chrome + Brave or Chrome + Firefox when driving concurrent cosigners.
-6. Let the page-load bootstrap settle first. If `await window.smoke.status()` is not `ready`, or you need to override the default endpoints or signer settings, initialize the session with `window.smoke.initSession(...)`.
-7. Default to local signers and Falcon unless the prompt explicitly asks for ECDSA, Para, or Miden Wallet.
-8. Record each browser's signer commitment from `await window.smoke.status()` before account creation.
-9. Create the multisig in one browser by passing the other browsers' commitments to `createAccount`.
-10. Load and sync the account in the other browsers with `loadAccount` and `sync`.
-11. Choose the smallest workflow from `references/workflow-matrix.md`.
-12. Record the exact browser/profile labels, endpoints, signer source, signature scheme, workflow, observed result, and timing data.
-13. Compare the recorded timings with `references/timing-baseline.md`.
+6. Open the smoke harness in separate real browsers or fully isolated browser profiles. Do not rely on same-profile parallel tabs. Prefer Chrome + Brave or Chrome + Firefox when driving concurrent cosigners.
+7. Let the page-load bootstrap settle first. If `await window.smoke.status()` is not `ready`, or you need to override the default endpoints or signer settings, initialize the session with `window.smoke.initSession(...)`.
+8. Default to local signers and Falcon unless the prompt explicitly asks for ECDSA, Para, or Miden Wallet.
+9. Record each browser's signer commitment from `await window.smoke.status()` before account creation.
+10. Create the multisig in one browser by passing the other browsers' commitments to `createAccount`.
+11. Load and sync the account in the other browsers with `loadAccount` and `sync`.
+12. Choose the smallest workflow from `references/workflow-matrix.md`.
+13. Record the exact browser/profile labels, endpoints, signer source, signature scheme, workflow, observed result, and timing data.
+14. Compare the recorded timings with `references/timing-baseline.md`.
 
 ## Baseline Harness
 

@@ -6,13 +6,16 @@ Map the changed area to the smallest browser smoke workflow that still proves th
 
 ## Environment
 
-Run validation first:
+Run the preflight first, then validation:
 
 ```bash
+./scripts/preflight-browser-smoke.sh
 cd packages/miden-multisig-client && npm test
 cd examples/smoke-web && npm run typecheck && npm run build
 cd examples/web && npm run build
 ```
+
+The preflight is mandatory after any branch switch. The apps load `packages/*/dist`, which is gitignored and survives checkouts; see Stale Build Output in `SKILL.md`.
 
 Primary smoke server commands:
 
