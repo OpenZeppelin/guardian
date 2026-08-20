@@ -88,6 +88,15 @@ export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
 export type { ConnectivityCategory, UserFacingError } from './connectivity.js';
 
+// Recovery primitives (issue #415).
+export { importNotesFromProposals } from './recovery.js';
+export type {
+  ImportNotesFromProposalsOptions,
+  NoteImportOutcome,
+  NoteImportSource,
+  NoteImportStatus,
+} from './recovery.js';
+
 export {
   FalconSigner,
   EcdsaSigner,
