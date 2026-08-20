@@ -7,10 +7,11 @@ use crate::proto::{
     ConfigureResponse, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
     GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
     GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
-    GetDeltaSinceResponse, GetHistoryRequest, GetHistoryResponse, GetPubkeyRequest,
-    GetStateRequest, GetStateResponse, ProposalSignature as ProtoProposalSignature,
-    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
-    SignDeltaProposalRequest, SignDeltaProposalResponse,
+    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
+    GetTransactionHistoryRequest, GetTransactionHistoryResponse,
+    ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
+    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
+    SignDeltaProposalResponse,
 };
 use chrono::Utc;
 use guardian_shared::ProposalSignature as JsonProposalSignature;
@@ -266,13 +267,13 @@ impl GuardianClient {
     /// `None`); `cursor` is the opaque `next_cursor` from a previous
     /// page (`None` for the first page). A `None` `next_cursor` on the
     /// response means the feed is exhausted.
-    pub async fn get_history(
+    pub async fn get_transaction_history(
         &mut self,
         account_id: &AccountId,
         limit: Option<u32>,
         cursor: Option<String>,
-    ) -> ClientResult<GetHistoryResponse> {
-        let mut request = tonic::Request::new(GetHistoryRequest {
+    ) -> ClientResult<GetTransactionHistoryResponse> {
+        let mut request = tonic::Request::new(GetTransactionHistoryRequest {
             account_id: account_id.to_string(),
             limit,
             cursor,
@@ -280,7 +281,7 @@ impl GuardianClient {
 
         self.add_auth_metadata(&mut request, account_id)?;
 
-        let response = self.client.get_history(request).await?;
+        let response = self.client.get_transaction_history(request).await?;
         let inner = response.into_inner();
 
         if !inner.success {

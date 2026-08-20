@@ -5,9 +5,9 @@ use crate::testing::mocks::{
 use crate::{
     AccountRef, AuthConfig, ClientError, ConfigureResponse, FalconKeyStore,
     GetAccountByKeyCommitmentResponse, GetDeltaProposalResponse, GetDeltaProposalsResponse,
-    GetDeltaResponse, GetDeltaSinceResponse, GetHistoryResponse, GetStateResponse, GuardianClient,
-    HistoryEntry, HistoryNote, HistoryNoteAsset, PushDeltaProposalResponse, PushDeltaResponse,
-    SignDeltaProposalResponse, Signer,
+    GetDeltaResponse, GetDeltaSinceResponse, GetStateResponse, GetTransactionHistoryResponse,
+    GuardianClient, HistoryEntry, HistoryNote, HistoryNoteAsset, PushDeltaProposalResponse,
+    PushDeltaResponse, SignDeltaProposalResponse, Signer,
 };
 use guardian_shared::ProposalSignature as JsonProposalSignature;
 use miden_protocol::account::AccountId;
@@ -417,30 +417,32 @@ async fn test_get_delta_since_success() {
 }
 
 #[tokio::test]
-async fn test_get_history_success() {
-    let service = MockGuardianService::default().with_get_history(Ok(GetHistoryResponse {
-        success: true,
-        message: String::new(),
-        entries: vec![HistoryEntry {
-            nonce: 3,
-            timestamp: "2026-08-01T12:00:03Z".to_string(),
-            new_commitment: Some("0xnew0003".to_string()),
-            input_notes: vec![],
-            output_notes: vec![HistoryNote {
-                note_id: "0xnote".to_string(),
-                tag: "p2id".to_string(),
-                assets: vec![HistoryNoteAsset {
-                    asset_id: "0xfaucet".to_string(),
-                    kind: "fungible".to_string(),
-                    amount: Some("100".to_string()),
+async fn test_get_transaction_history_success() {
+    let service = MockGuardianService::default().with_get_transaction_history(Ok(
+        GetTransactionHistoryResponse {
+            success: true,
+            message: String::new(),
+            entries: vec![HistoryEntry {
+                nonce: 3,
+                timestamp: "2026-08-01T12:00:03Z".to_string(),
+                new_commitment: Some("0xnew0003".to_string()),
+                input_notes: vec![],
+                output_notes: vec![HistoryNote {
+                    note_id: "0xnote".to_string(),
+                    tag: "p2id".to_string(),
+                    assets: vec![HistoryNoteAsset {
+                        asset_id: "0xfaucet".to_string(),
+                        kind: "fungible".to_string(),
+                        amount: Some("100".to_string()),
+                    }],
+                    sender: None,
+                    recipient: Some("0xrecipient".to_string()),
                 }],
-                sender: None,
-                recipient: Some("0xrecipient".to_string()),
+                decode_warnings: vec![],
             }],
-            decode_warnings: vec![],
-        }],
-        next_cursor: Some("cursor-token".to_string()),
-    }));
+            next_cursor: Some("cursor-token".to_string()),
+        },
+    ));
 
     let endpoint = start_mock_server(service).await.unwrap();
     let signer = create_test_signer();
@@ -452,9 +454,9 @@ async fn test_get_history_success() {
     let account_id = create_test_account_id();
 
     let response = client
-        .get_history(&account_id, Some(10), None)
+        .get_transaction_history(&account_id, Some(10), None)
         .await
-        .expect("get_history should succeed");
+        .expect("get_transaction_history should succeed");
     assert!(response.success);
     assert_eq!(response.entries.len(), 1);
     assert_eq!(response.entries[0].nonce, 3);

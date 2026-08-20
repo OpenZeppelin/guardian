@@ -76,7 +76,7 @@ export {
   normalizeGuardianErrorCode,
 } from '@openzeppelin/guardian-client';
 export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
-// Canonical transaction history (issue #413), surfaced via Multisig.history.
+// Canonical transaction history (issue #413), surfaced via Multisig.transactionHistory.
 export type {
   HistoryDecodeWarning,
   HistoryEntry,

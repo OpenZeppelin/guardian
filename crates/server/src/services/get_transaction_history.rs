@@ -24,7 +24,7 @@ use crate::state::AppState;
 use crate::storage::AccountDeltaCursor;
 
 #[derive(Debug, Clone)]
-pub struct GetHistoryParams {
+pub struct GetTransactionHistoryParams {
     pub account_id: String,
     pub limit: u32,
     pub cursor: Option<Cursor>,
@@ -100,9 +100,9 @@ impl HistoryEntry {
     skip(state, params),
     fields(account_id = %params.account_id, limit = params.limit)
 )]
-pub async fn get_history(
+pub async fn get_transaction_history(
     state: &AppState,
-    params: GetHistoryParams,
+    params: GetTransactionHistoryParams,
 ) -> Result<PagedResult<HistoryEntry>> {
     // `last_nonce` is the only payload an AccountHistory cursor
     // carries; a kind-valid cursor without it must be rejected rather
@@ -234,13 +234,15 @@ mod tests {
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         };
 
-        let params = GetHistoryParams {
+        let params = GetTransactionHistoryParams {
             account_id: "0xacc".to_string(),
             limit: 50,
             cursor: Some(Cursor::account_deltas(5)),
             credentials: Credentials::signature(String::new(), String::new(), 0),
         };
-        let err = get_history(&state, params.clone()).await.unwrap_err();
+        let err = get_transaction_history(&state, params.clone())
+            .await
+            .unwrap_err();
         assert!(matches!(err, GuardianError::InvalidCursor(_)));
 
         // Kind-valid cursor without a resume position must be rejected,
@@ -252,9 +254,9 @@ mod tests {
             last_updated_at: None,
             last_commitment: None,
         };
-        let err = get_history(
+        let err = get_transaction_history(
             &state,
-            GetHistoryParams {
+            GetTransactionHistoryParams {
                 cursor: Some(empty),
                 ..params
             },

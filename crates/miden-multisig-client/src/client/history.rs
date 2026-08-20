@@ -1,7 +1,7 @@
 //! Canonical transaction history (issue #413).
 //!
-//! Thin typed layer over GUARDIAN's `GetHistory` RPC so callers do not
-//! handle proto types directly. Mirrors `Multisig.history` in the TS
+//! Thin typed layer over GUARDIAN's `GetTransactionHistory` RPC so callers do not
+//! handle proto types directly. Mirrors `Multisig.transactionHistory` in the TS
 //! SDK: one page per call, newest-first by nonce, resumable via the
 //! opaque cursor.
 
@@ -111,7 +111,7 @@ impl MultisigClient {
     /// `None`); `cursor` resumes from a previous page's `next_cursor`
     /// (`None` for the first page). Only transactions pushed through
     /// GUARDIAN appear — it never sees transactions executed elsewhere.
-    pub async fn history(
+    pub async fn transaction_history(
         &mut self,
         limit: Option<u32>,
         cursor: Option<String>,
@@ -120,7 +120,7 @@ impl MultisigClient {
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let response = guardian_client
-            .get_history(&account_id, limit, cursor)
+            .get_transaction_history(&account_id, limit, cursor)
             .await
             .map_err(|e| MultisigError::GuardianServer(format!("failed to get history: {}", e)))?;
 

@@ -2,8 +2,8 @@ use crate::delta_object::{DeltaObject, ProposalSignature};
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials, ExtractCredentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams, GetHistoryParams,
-    GetStateParams, LookupAccountParams, PushDeltaParams,
+    self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams, GetStateParams,
+    GetTransactionHistoryParams, LookupAccountParams, PushDeltaParams,
 };
 use crate::state::AppState;
 use guardian_shared::SignatureScheme;
@@ -172,10 +172,10 @@ impl Guardian for GuardianService {
         }
     }
 
-    async fn get_history(
+    async fn get_transaction_history(
         &self,
-        request: Request<GetHistoryRequest>,
-    ) -> Result<Response<GetHistoryResponse>, Status> {
+        request: Request<GetTransactionHistoryRequest>,
+    ) -> Result<Response<GetTransactionHistoryResponse>, Status> {
         let auth = authenticated_request(&request)?;
 
         let req = request.into_inner();
@@ -188,7 +188,7 @@ impl Guardian for GuardianService {
         )
         .map_err(Status::from)?;
 
-        let params = GetHistoryParams {
+        let params = GetTransactionHistoryParams {
             account_id: req.account_id,
             limit,
             cursor,
@@ -196,8 +196,8 @@ impl Guardian for GuardianService {
         };
 
         // Call service layer
-        match services::get_history(&self.app_state, params).await {
-            Ok(page) => Ok(Response::new(GetHistoryResponse {
+        match services::get_transaction_history(&self.app_state, params).await {
+            Ok(page) => Ok(Response::new(GetTransactionHistoryResponse {
                 success: true,
                 message: "History retrieved successfully".to_string(),
                 entries: page.items.into_iter().map(history_entry_to_proto).collect(),

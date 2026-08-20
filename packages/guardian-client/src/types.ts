@@ -302,7 +302,7 @@ export interface HistoryPage {
   nextCursor?: string;
 }
 
-/** Options for `getHistory`. */
+/** Options for `getTransactionHistory`. */
 export interface HistoryOptions {
   /** Page size in `[1, 500]`; server default 50 when omitted. */
   limit?: number;

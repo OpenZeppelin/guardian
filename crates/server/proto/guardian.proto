@@ -46,7 +46,7 @@ service Guardian {
 
   // Per-account canonical transaction history (issue #413), paginated
   // newest-first by nonce with decoded input/output note summaries.
-  rpc GetHistory(GetHistoryRequest) returns (GetHistoryResponse);
+  rpc GetTransactionHistory(GetTransactionHistoryRequest) returns (GetTransactionHistoryResponse);
 }
 
 // Auth configuration - one of the auth types
@@ -345,7 +345,7 @@ message AbandonDeltaCandidateResponse {
 
 // History request (issue #413). `limit` defaults to 50, max 500;
 // `cursor` is the opaque `next_cursor` from a previous page.
-message GetHistoryRequest {
+message GetTransactionHistoryRequest {
   string account_id = 1;
   optional uint32 limit = 2;
   optional string cursor = 3;
@@ -392,7 +392,7 @@ message HistoryEntry {
   repeated HistoryDecodeWarning decode_warnings = 6;
 }
 
-message GetHistoryResponse {
+message GetTransactionHistoryResponse {
   bool success = 1;
   string message = 2;
   repeated HistoryEntry entries = 3;

@@ -459,7 +459,7 @@ const KNOWN_GRPC_METHODS: &[(&str, &str)] = &[
     ("guardian.Guardian", "SignDeltaProposal"),
     ("guardian.Guardian", "AbandonDeltaCandidate"),
     ("guardian.Guardian", "GetAccountByKeyCommitment"),
-    ("guardian.Guardian", "GetHistory"),
+    ("guardian.Guardian", "GetTransactionHistory"),
     // Served alongside Guardian via tonic-reflection (v1 and v1alpha).
     (
         "grpc.reflection.v1.ServerReflection",

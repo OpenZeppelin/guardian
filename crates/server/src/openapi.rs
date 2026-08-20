@@ -190,7 +190,7 @@ impl Modify for CommonResponsesAddon {
         crate::api::http::push_delta,
         crate::api::http::get_delta,
         crate::api::http::get_delta_since,
-        crate::api::http::get_history,
+        crate::api::http::get_transaction_history,
         crate::api::http::get_state,
         crate::api::http::lookup,
         crate::api::http::get_pubkey,
