@@ -15,6 +15,7 @@ export const GUARDIAN_ERROR_CODES = [
   'account_paused',
   'account_released',
   'authentication_failed',
+  'authentication_replay',
   'authorization_failed',
   'candidate_landed',
   'commitment_mismatch',

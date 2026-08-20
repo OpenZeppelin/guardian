@@ -9,14 +9,7 @@ export default defineConfig({
       'react',
       'react-dom',
       '@tanstack/react-query',
-      'wagmi',
-      '@wagmi/core',
       'viem',
-      'graz',
-      '@cosmjs/stargate',
-      '@solana/wallet-adapter-base',
-      '@solana/wallet-adapter-react',
-      '@solana-mobile/wallet-adapter-mobile',
       '@miden-sdk/react',
       '@miden-sdk/miden-sdk',
     ],
@@ -24,6 +17,10 @@ export default defineConfig({
       {
         find: /^@getpara\/aa-.*$/,
         replacement: path.resolve(__dirname, 'getpara-aa-stub.mjs'),
+      },
+      {
+        find: /^@getpara\/(evm|solana|cosmos)-wallet-connectors$/,
+        replacement: path.resolve(__dirname, 'getpara-wallet-connectors-stub.mjs'),
       },
       { find: '@', replacement: path.resolve(__dirname, './src') },
       {

@@ -51,14 +51,15 @@ pub struct LookupAccountResult {
 }
 
 #[tracing::instrument(
+    level = "info",
     skip(state, params),
-    fields(key_commitment = %params.key_commitment)
+    fields(key_commitment = %params.key_commitment, match_count = tracing::field::Empty)
 )]
 pub async fn lookup_account(
     state: &AppState,
     params: LookupAccountParams,
 ) -> Result<LookupAccountResult> {
-    tracing::info!(key_commitment = %params.key_commitment, "Looking up accounts by key commitment");
+    tracing::debug!("Looking up accounts by key commitment");
 
     let normalized_commitment = normalize_commitment_hex(&params.key_commitment)?;
     let key_commitment_word = Word::from_hex(&normalized_commitment)
@@ -119,12 +120,8 @@ pub async fn lookup_account(
                 "Failed to look up accounts by cosigner commitment: {e}"
             ))
         })?;
-
-    tracing::info!(
-        key_commitment = %normalized_commitment,
-        match_count = accounts.len(),
-        "Lookup completed"
-    );
+    tracing::Span::current().record("match_count", accounts.len());
+    tracing::debug!("Lookup completed");
 
     Ok(LookupAccountResult { accounts })
 }

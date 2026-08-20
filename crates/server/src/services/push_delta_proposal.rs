@@ -5,7 +5,6 @@ use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::{normalize_payload, resolve_account};
 use guardian_shared::DeltaSignature;
-use tracing::info;
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
 const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
@@ -31,10 +30,23 @@ pub struct PushDeltaProposalResult {
     pub commitment: String,
 }
 
+#[tracing::instrument(
+    level = "info",
+    skip(state, params),
+    fields(
+        account_id = %params.account_id,
+        nonce = params.nonce,
+        proposer_id = tracing::field::Empty,
+        commitment = tracing::field::Empty,
+        signer_count = tracing::field::Empty
+    )
+)]
 pub async fn push_delta_proposal(
     state: &AppState,
     params: PushDeltaProposalParams,
 ) -> Result<PushDeltaProposalResult> {
+    tracing::debug!("Pushing delta proposal");
+
     if crate::metadata::network::is_evm_account_id(&params.account_id)
         || params
             .delta_payload
@@ -149,6 +161,7 @@ pub async fn push_delta_proposal(
             .delta_proposal_id(&account_id, nonce, tx_summary)
             .map_err(GuardianError::InvalidDelta)?
     };
+    tracing::Span::current().record("commitment", tracing::field::display(&commitment));
 
     // Extract proposer ID from credentials
     let proposer_id = match &credentials {
@@ -163,6 +176,7 @@ pub async fn push_delta_proposal(
                 ))
             })?,
     };
+    tracing::Span::current().record("proposer_id", tracing::field::display(&proposer_id));
 
     // Parse cosigner signatures from the payload and add timestamp
     let signature_timestamp = state.clock.now_rfc3339();
@@ -178,18 +192,16 @@ pub async fn push_delta_proposal(
             signer_id: parsed.signer_id,
         });
     }
-    let cosigner_ids: Vec<String> = cosigner_sigs
-        .iter()
-        .map(|sig| sig.signer_id.clone())
-        .collect();
-    info!(
-        account_id = %account_id,
-        nonce,
-        proposer_id = %proposer_id,
-        signer_ids = ?cosigner_ids,
-        "push_delta_proposal received"
-    );
-
+    tracing::Span::current().record("signer_count", cosigner_sigs.len());
+    if !cosigner_sigs.is_empty() {
+        tracing::debug!(
+            signer_ids = ?cosigner_sigs
+                .iter()
+                .map(|sig| sig.signer_id.as_str())
+                .collect::<Vec<_>>(),
+            "Batch-attached cosigner signatures"
+        );
+    }
     // Create delta object with Pending status including any provided signatures
     let timestamp = state.clock.now_rfc3339();
     let delta_proposal = DeltaObject {
@@ -215,23 +227,13 @@ pub async fn push_delta_proposal(
         .submit_delta_proposal(&commitment, &delta_proposal)
         .await
         .map_err(GuardianError::StorageError)?;
-    let stored_signer_count = match &delta_proposal.status {
-        DeltaStatus::Pending { cosigner_sigs, .. } => cosigner_sigs.len(),
-        _ => 0,
-    };
-    info!(
-        account_id = %account_id,
-        nonce,
-        commitment = %commitment,
-        signer_count = stored_signer_count,
-        "push_delta_proposal stored"
-    );
     metrics::counter!(
         crate::metrics::names::PROPOSALS_TOTAL,
         crate::metrics::names::LABEL_EVENT =>
             crate::metrics::labels::ProposalEvent::Created.as_str()
     )
     .increment(1);
+    tracing::info!("Delta proposal created");
 
     Ok(PushDeltaProposalResult {
         delta: delta_proposal.clone(),

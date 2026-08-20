@@ -13,8 +13,32 @@
 
 - The signed payload includes a Unix timestamp in milliseconds.
 - The server enforces a maximum clock skew window of **300,000 milliseconds** (5 minutes).
-- The server tracks `last_auth_timestamp` per account; requests with a timestamp less than or equal to the last accepted timestamp are rejected.
-- `last_auth_timestamp` is updated atomically when authentication succeeds.
+- The server tracks `last_auth_timestamp` per `(account, signer commitment)`; a request whose timestamp is not strictly greater than the last accepted timestamp from the same signer is rejected with the dedicated stable code `authentication_replay` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: true`). Independent authorized signers never contend on one timestamp, while a replayed request from the same signer always loses: every accepted request advances that signer's own record.
+- All other authentication failures (clock skew, invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
+- `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds.
+- `POST /configure` enforces the same timestamp skew and replay CAS. A first-time
+  configuration seeds the verified signer's floor once the account metadata row
+  exists; reconfiguration consumes the timestamp before changing stored state.
+  The first-time seed is deliberately post-write because replay state has a
+  foreign key to account metadata. A crash in that narrow interval can leave the
+  new account without a floor, allowing any captured, still-fresh request signed
+  by that signer to initialize the floor and execute. Replaying the configure
+  itself only idempotently re-submits the same state, but the bounded first-write
+  window applies to other signed routes too. Concurrent first configurations are
+  not serialized across different signers; callers must not use `/configure` as
+  a general concurrent state-update mechanism.
+- Migrated stores retain the former account-scoped value as a lower bound for
+  signers first seen later, preventing a removed signer from regaining a replay
+  window when it is authorized again.
+- Clients generate strictly increasing timestamps per instance (`max(now_ms, previous + 1)`) and retry only `authentication_replay`, bounded, with a fresh timestamp, recomputed digest, and fresh signature over the identical payload on each attempt. Terminal authentication failures are never retried.
+- During a mixed server/client rollout, a replay CAS reported under the older
+  authentication code—or received by a client without replay-specific retry
+  handling—can surface as a terminal 401. Current clients retry only
+  `authentication_replay` and never retry `authentication_failed`.
+- HTTP `/configure` failures use the standard API error envelope
+  (`{ code, message, meta }`), not `ConfigureResponse` with `success: false`.
+  Direct HTTP consumers that inspect the old error body must migrate with the
+  server rollout. The shared protobuf response fields remain for gRPC.
 
 ### Miden Request Signing
 
@@ -384,6 +408,7 @@ Stable error codes include:
 - `commitment_mismatch`
 - `invalid_commitment`
 - `authentication_failed`
+- `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))
 - `authorization_failed`
 - `invalid_input`
 - `storage_error`

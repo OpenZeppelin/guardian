@@ -3,11 +3,51 @@ use crate::testing::helpers::{
 };
 
 use axum::{
-    body::Body,
+    body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
 use serde_json::json;
 use tower::{Service, ServiceExt};
+
+#[tokio::test]
+async fn test_configure_replay_uses_standard_error_envelope() {
+    let state = create_test_app_state().await;
+    let app = create_router(state);
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
+    let signer = TestSigner::new();
+    let configure_body = json!({
+        "account_id": account_id_hex.clone(),
+        "auth": {
+            "MidenFalconRpo": {
+                "cosigner_commitments": [signer.commitment_hex]
+            }
+        },
+        "initial_state": initial_state
+    });
+    let body = serde_json::to_string(&configure_body).unwrap();
+    let (signature, timestamp) = signer.sign_json_payload(&account_id_hex, &configure_body);
+
+    for expected_status in [StatusCode::OK, StatusCode::UNAUTHORIZED] {
+        let request = Request::builder()
+            .uri("/configure")
+            .method("POST")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-pubkey", &signer.pubkey_hex)
+            .header("x-signature", &signature)
+            .header("x-timestamp", timestamp.to_string())
+            .body(Body::from(body.clone()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected_status);
+        if expected_status == StatusCode::UNAUTHORIZED {
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(envelope["code"], "authentication_replay");
+            assert_eq!(envelope["meta"]["retryable"], true);
+            assert!(envelope.get("success").is_none());
+        }
+    }
+}
 
 #[tokio::test]
 async fn test_configure_and_push_delta_with_auth() {

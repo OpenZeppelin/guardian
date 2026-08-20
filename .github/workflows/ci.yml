@@ -307,6 +307,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # miden-multisig-client depends on @openzeppelin/guardian-client;
+      # `npm ci` resolves the published registry version, which lags the
+      # in-repo package whenever a PR changes both (the default for server
+      # contract changes per AGENTS.md). Build the sibling package and
+      # overlay it into node_modules so the job tests the pair that will
+      # actually ship together.
+      - name: Use in-repo guardian-client
+        if: matrix.package == 'miden-multisig-client'
+        working-directory: packages/guardian-client
+        run: |
+          npm ci
+          npm run build
+          rm -rf ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
+          cp -r dist ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
+          cp package.json ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/package.json
+
       - name: Build
         run: npm run build
 

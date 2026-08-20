@@ -166,68 +166,29 @@ pub struct ConfigureResponse {
     request_body = ConfigureRequest,
     responses(
         (status = 200, description = "Account configured", body = ConfigureResponse),
-        (status = 400, description = "Invalid request", body = ConfigureResponse),
+        (status = 400, description = "Invalid request", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn configure(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<ConfigureRequest>,
-) -> (StatusCode, Json<ConfigureResponse>) {
-    let request_payload = match request_payload_from_serializable(&payload) {
-        Ok(request_payload) => request_payload,
-        Err(e) => {
-            // Log the raw detail; return only the user-safe message + stable
-            // code (feature 009-human-readable-errors).
-            let err = GuardianError::InvalidInput(e);
-            tracing::debug!(code = err.code(), detail = %err, "configure request invalid");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ConfigureResponse {
-                    success: false,
-                    message: err.user_message().to_string(),
-                    ack_pubkey: None,
-                    ack_commitment: None,
-                    code: Some(err.code()),
-                }),
-            );
-        }
-    };
+) -> Result<Json<ConfigureResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
 
     let mut params = ConfigureAccountParams::from(payload);
     params.credential = request_payload.apply_to(credentials);
 
-    match services::configure_account(&state, params).await {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(ConfigureResponse {
-                success: true,
-                message: format!("Account '{}' configured successfully", response.account_id),
-                ack_pubkey: Some(response.ack_pubkey),
-                ack_commitment: Some(response.ack_commitment),
-                code: None,
-            }),
-        ),
-        Err(e) => {
-            // The diagnostic Display string is logged, not returned; the wire
-            // carries only the user-safe message + stable code (feature 009).
-            if e.http_status().is_server_error() {
-                tracing::error!(code = e.code(), detail = %e, "configure failed (5xx)");
-            } else {
-                tracing::debug!(code = e.code(), detail = %e, "configure rejected (4xx)");
-            }
-            (
-                e.http_status(),
-                Json(ConfigureResponse {
-                    success: false,
-                    message: e.user_message().to_string(),
-                    ack_pubkey: None,
-                    ack_commitment: None,
-                    code: Some(e.code()),
-                }),
-            )
-        }
-    }
+    let response = services::configure_account(&state, params).await?;
+    Ok(Json(ConfigureResponse {
+        success: true,
+        message: format!("Account '{}' configured successfully", response.account_id),
+        ack_pubkey: Some(response.ack_pubkey),
+        ack_commitment: Some(response.ack_commitment),
+        code: None,
+    }))
 }
 
 /// Push a signed state delta for a single-key account. The request
@@ -241,7 +202,7 @@ pub async fn configure(
     responses(
         (status = 200, description = "Delta accepted", body = DeltaObject),
         (status = 400, description = "Invalid delta payload", body = crate::openapi::ApiErrorResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Conflicting pending delta/proposal", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -274,7 +235,7 @@ pub async fn push_delta(
     params(DeltaQuery),
     responses(
         (status = 200, description = "Delta found", body = DeltaObject),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Delta not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -306,7 +267,7 @@ pub async fn get_delta(
     params(DeltaQuery),
     responses(
         (status = 200, description = "Merged delta", body = DeltaObject),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "No deltas found", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -379,7 +340,7 @@ pub async fn get_transaction_history(
     params(StateQuery),
     responses(
         (status = 200, description = "Current account state", body = StateObject),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "State not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -412,7 +373,7 @@ pub async fn get_state(
     responses(
         (status = 200, description = "Accounts whose authorization set contains the commitment", body = LookupResponse),
         (status = 400, description = "Malformed key commitment", body = crate::openapi::ApiErrorResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -532,7 +493,7 @@ pub async fn get_pubkey(
     responses(
         (status = 200, description = "Proposal created", body = DeltaProposalResponse),
         (status = 400, description = "Invalid proposal payload", body = crate::openapi::ApiErrorResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Conflicting / too many pending proposals", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -583,7 +544,7 @@ pub async fn push_delta_proposal(
     request_body = AbandonCandidateRequest,
     responses(
         (status = 202, description = "Abandon intent accepted (or already resolved)", body = AbandonCandidateResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "No candidate delta at this nonce", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Candidate already landed on-chain, or account paused/released", body = crate::openapi::ApiErrorResponse),
     )
@@ -623,7 +584,7 @@ pub async fn abandon_candidate(
     params(ProposalQuery),
     responses(
         (status = 200, description = "Pending proposals", body = ProposalsResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn get_delta_proposals(
@@ -654,7 +615,7 @@ pub async fn get_delta_proposals(
     params(ProposalItemQuery),
     responses(
         (status = 200, description = "Proposal found", body = DeltaObject),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -687,7 +648,7 @@ pub async fn get_delta_proposal(
     responses(
         (status = 200, description = "Signature accepted", body = DeltaObject),
         (status = 400, description = "Invalid signature", body = crate::openapi::ApiErrorResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Proposal already signed by this signer", body = crate::openapi::ApiErrorResponse),
     )
@@ -961,10 +922,9 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &request);
-        let (status, Json(response)) =
-            configure(State(state), AuthHeader(credentials), Json(request)).await;
-
-        assert_eq!(status, StatusCode::OK);
+        let Json(response) = configure(State(state), AuthHeader(credentials), Json(request))
+            .await
+            .expect("configure succeeds");
         assert!(response.success);
         assert!(response.ack_pubkey.is_some());
         assert!(response.message.contains("configured successfully"));
