@@ -76,6 +76,16 @@ export {
   normalizeGuardianErrorCode,
 } from '@openzeppelin/guardian-client';
 export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
+// Canonical transaction history (issue #413), surfaced via Multisig.history.
+export type {
+  HistoryDecodeWarning,
+  HistoryEntry,
+  HistoryNote,
+  HistoryNoteAsset,
+  HistoryNoteTag,
+  HistoryOptions,
+  HistoryPage,
+} from '@openzeppelin/guardian-client';
 
 // Codeless transport-failure classification (feature 009, User Story 3).
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';

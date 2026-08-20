@@ -757,6 +757,17 @@ pub trait StorageBackend: Send + Sync {
         cursor: Option<AccountDeltaCursor>,
     ) -> Result<Vec<DeltaObject>, String>;
 
+    /// Per-account canonical transaction history paginated newest-first
+    /// by `nonce DESC` (issue #413). Client-facing counterpart of
+    /// [`Self::list_account_deltas_paged`] restricted to `canonical`
+    /// rows — the confirmed history a wallet renders after recovery.
+    async fn list_canonical_deltas_paged(
+        &self,
+        account_id: &str,
+        limit: u32,
+        cursor: Option<AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String>;
+
     /// Per-account in-flight proposal queue paginated newest-first by
     /// `(nonce DESC, commitment DESC)`. Returns only `Pending` rows
     /// from the `delta_proposals` table. Each result carries the

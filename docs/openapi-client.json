@@ -806,6 +806,112 @@
         ]
       }
     },
+    "/history": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Paginated canonical transaction history for an account (issue\n#413), newest-first by nonce, with decoded input/output note\nsummaries. Read-only: served while the account is paused.",
+        "operationId": "get_history",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size in `[1, 500]`; defaults to 50 when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque `next_cursor` from a previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of canonical history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedResult_HistoryEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
     "/pubkey": {
       "get": {
         "tags": [
@@ -1413,6 +1519,88 @@
           "custom"
         ]
       },
+      "DecodeSection": {
+        "type": "string",
+        "enum": [
+          "tx_summary",
+          "metadata",
+          "input_notes",
+          "output_notes",
+          "vault",
+          "storage"
+        ]
+      },
+      "DecodeWarning": {
+        "type": "object",
+        "required": [
+          "section",
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "section": {
+            "$ref": "#/components/schemas/DecodeSection"
+          }
+        }
+      },
+      "DecodedAsset": {
+        "type": "object",
+        "required": [
+          "asset_id",
+          "kind"
+        ],
+        "properties": {
+          "amount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "asset_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AssetKind"
+          }
+        }
+      },
+      "DecodedNote": {
+        "type": "object",
+        "description": "Detail-view types used by the per-delta endpoint; not built by the\nlisting path.",
+        "required": [
+          "note_id",
+          "tag",
+          "assets"
+        ],
+        "properties": {
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedAsset"
+            }
+          },
+          "note_id": {
+            "type": "string"
+          },
+          "recipient": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sender": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tag": {
+            "$ref": "#/components/schemas/NoteTag"
+          }
+        }
+      },
       "DeltaMetadata": {
         "type": "object",
         "description": "Persisted activity metadata for a canonical delta. Stored as JSONB\nin the `deltas.metadata` column. `None` for EVM deltas and any\nhistorical row never reprocessed by [`build_metadata`].",
@@ -1712,6 +1900,53 @@
           "client_abandoned"
         ]
       },
+      "HistoryEntry": {
+        "type": "object",
+        "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
+        "required": [
+          "nonce",
+          "timestamp",
+          "input_notes",
+          "output_notes"
+        ],
+        "properties": {
+          "decode_warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodeWarning"
+            },
+            "description": "Why the note sections are empty when they are: the persisted\npayload could not be decoded (e.g. rows predating the current\nsummary format). The entry itself is still returned rather than\nfailing the page."
+          },
+          "input_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedNote"
+            }
+          },
+          "new_commitment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Account commitment after this transaction; lets a wallet\ncorrelate history entries with recovered state. `null` when the\nstored row predates commitment recording."
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedNote"
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "RFC 3339 UTC timestamp at which the delta became canonical."
+          }
+        }
+      },
       "LookupAccount": {
         "type": "object",
         "description": "Single match in a lookup response. Wraps `account_id` so the response shape\ncan be extended in a forward-compatible way (e.g. adding role tags or\nper-account metadata) without breaking existing clients.",
@@ -1808,6 +2043,82 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "NoteTag": {
+        "type": "string",
+        "enum": [
+          "p2id",
+          "p2ide",
+          "pswap",
+          "mint",
+          "burn",
+          "custom"
+        ]
+      },
+      "PagedResult_HistoryEntry": {
+        "type": "object",
+        "description": "Standard cursor-pagination envelope returned by every paginated\nendpoint. `next_cursor` is `None` at end of list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
+              "required": [
+                "nonce",
+                "timestamp",
+                "input_notes",
+                "output_notes"
+              ],
+              "properties": {
+                "decode_warnings": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DecodeWarning"
+                  },
+                  "description": "Why the note sections are empty when they are: the persisted\npayload could not be decoded (e.g. rows predating the current\nsummary format). The entry itself is still returned rather than\nfailing the page."
+                },
+                "input_notes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DecodedNote"
+                  }
+                },
+                "new_commitment": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Account commitment after this transaction; lets a wallet\ncorrelate history entries with recovered state. `null` when the\nstored row predates commitment recording."
+                },
+                "nonce": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "output_notes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DecodedNote"
+                  }
+                },
+                "timestamp": {
+                  "type": "string",
+                  "description": "RFC 3339 UTC timestamp at which the delta became canonical."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

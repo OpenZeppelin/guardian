@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { GuardianHttpClient, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -1164,6 +1164,19 @@ export class Multisig {
    */
   async abandonStatus(nonce: number): Promise<AbandonStatus> {
     return this.guardian.abandonStatus(this._accountId, nonce);
+  }
+
+  /**
+   * Fetch one page of this account's canonical transaction history
+   * from GUARDIAN (issue #413), newest-first by nonce, with decoded
+   * input/output note summaries. Pass `options.cursor` from a previous
+   * page's `nextCursor` to resume; an absent `nextCursor` means the
+   * feed is exhausted. Served while the account is paused. Only
+   * transactions pushed through GUARDIAN appear — history of
+   * transactions executed elsewhere is not visible to it.
+   */
+  async history(options: HistoryOptions = {}): Promise<HistoryPage> {
+    return this.guardian.getHistory(this._accountId, options);
   }
 
   async signProposal(proposalId: string): Promise<Proposal> {

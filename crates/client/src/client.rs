@@ -7,10 +7,10 @@ use crate::proto::{
     ConfigureResponse, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
     GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
     GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
-    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
-    ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
-    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
-    SignDeltaProposalResponse,
+    GetDeltaSinceResponse, GetHistoryRequest, GetHistoryResponse, GetPubkeyRequest,
+    GetStateRequest, GetStateResponse, ProposalSignature as ProtoProposalSignature,
+    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
+    SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use chrono::Utc;
 use guardian_shared::ProposalSignature as JsonProposalSignature;
@@ -36,6 +36,12 @@ pub struct GuardianClient {
     client: GuardianGrpcClient<Channel>,
     auth: Option<Auth>,
     signer: Option<Arc<dyn Signer>>,
+    /// Last auth timestamp issued by this client. Guardian's replay
+    /// protection requires strictly increasing per-account timestamps,
+    /// so back-to-back requests (e.g. a history pagination loop) must
+    /// never reuse a millisecond. Mirrors `nextTimestamp()` in the TS
+    /// client.
+    last_auth_timestamp: std::sync::atomic::AtomicI64,
 }
 
 impl GuardianClient {
@@ -50,7 +56,19 @@ impl GuardianClient {
             client,
             auth: None,
             signer: None,
+            last_auth_timestamp: std::sync::atomic::AtomicI64::new(0),
         })
+    }
+
+    /// Current time in ms, bumped past the previous issued timestamp
+    /// when two requests land in the same millisecond.
+    fn next_auth_timestamp(&self) -> i64 {
+        use std::sync::atomic::Ordering;
+        let now = Utc::now().timestamp_millis();
+        let last = self.last_auth_timestamp.load(Ordering::Relaxed);
+        let timestamp = if now <= last { last + 1 } else { now };
+        self.last_auth_timestamp.store(timestamp, Ordering::Relaxed);
+        timestamp
     }
 
     /// Configures scheme-aware authentication for authenticated GUARDIAN requests.
@@ -87,7 +105,7 @@ impl GuardianClient {
         account_id: &AccountId,
     ) -> ClientResult<()> {
         let request_payload = AuthRequestPayload::from_protobuf_message(request.get_ref());
-        let timestamp = Utc::now().timestamp_millis();
+        let timestamp = self.next_auth_timestamp();
 
         let (pubkey_hex, signature_hex) = if let Some(auth) = &self.auth {
             let pubkey_hex = auth.public_key_hex();
@@ -118,7 +136,7 @@ impl GuardianClient {
         request: &mut tonic::Request<T>,
         key_commitment: Word,
     ) -> ClientResult<()> {
-        let timestamp = Utc::now().timestamp_millis();
+        let timestamp = self.next_auth_timestamp();
         let digest = LookupAuthMessage::new(timestamp, key_commitment).to_word();
 
         let (pubkey_hex, signature_hex) = if let Some(auth) = &self.auth {
@@ -231,6 +249,38 @@ impl GuardianClient {
         self.add_auth_metadata(&mut request, account_id)?;
 
         let response = self.client.get_delta_since(request).await?;
+        let inner = response.into_inner();
+
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+
+        Ok(inner)
+    }
+
+    /// Retrieves one page of the account's canonical transaction history
+    /// (issue #413), newest-first by nonce, with decoded input/output
+    /// note summaries.
+    ///
+    /// `limit` is the page size in `[1, 500]` (server default 50 when
+    /// `None`); `cursor` is the opaque `next_cursor` from a previous
+    /// page (`None` for the first page). A `None` `next_cursor` on the
+    /// response means the feed is exhausted.
+    pub async fn get_history(
+        &mut self,
+        account_id: &AccountId,
+        limit: Option<u32>,
+        cursor: Option<String>,
+    ) -> ClientResult<GetHistoryResponse> {
+        let mut request = tonic::Request::new(GetHistoryRequest {
+            account_id: account_id.to_string(),
+            limit,
+            cursor,
+        });
+
+        self.add_auth_metadata(&mut request, account_id)?;
+
+        let response = self.client.get_history(request).await?;
         let inner = response.into_inner();
 
         if !inner.success {

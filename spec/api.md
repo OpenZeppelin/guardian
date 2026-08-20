@@ -279,6 +279,7 @@ component schemas.
 | client | `POST /delta` | signed headers | Push a signed single-key delta |
 | client | `GET /delta` | signed headers | Fetch the delta at a nonce |
 | client | `GET /delta/since` | signed headers | Merged delta since a nonce |
+| client | `GET /history` | signed headers | Paginated canonical transaction history with decoded note summaries |
 | client | `GET /state` | signed headers | Latest canonical state |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
 | client | `GET /pubkey` | public | ACK public key / commitment |
@@ -325,14 +326,25 @@ is built with the `evm` feature.
 
 Semantics not captured by the OpenAPI shapes:
 
-- **Pagination.** Paginated dashboard endpoints return
-  `{ items, next_cursor }`; `limit` defaults to 50 and is capped at 500
-  (`invalid_limit` outside `[1, 500]`). Cursors are opaque and signed;
-  tampered/stale cursors return `invalid_cursor`. Per-account feeds key
-  the cursor on immutable fields (`nonce`, `(nonce, commitment)`) and are
-  fully stable; cross-account feeds order by `status_timestamp` /
+- **Pagination.** Paginated endpoints (the dashboard feeds and the
+  client `GET /history`) return `{ items, next_cursor }`; `limit`
+  defaults to 50 and is capped at 500 (`invalid_limit` outside
+  `[1, 500]`). Cursors are opaque and signed, scoped to the issuing
+  endpoint; tampered/stale/cross-endpoint cursors return
+  `invalid_cursor`. Per-account feeds key the cursor on immutable
+  fields (`nonce`, `(nonce, commitment)`) and are fully stable;
+  cross-account feeds order by `status_timestamp` /
   `originating_timestamp` and MAY skip or repeat an entry whose timestamp
   is bumped mid-traversal (FR-005).
+- **`GET /history`.** Canonical deltas only, newest-first by nonce, with
+  input/output note summaries decoded server-side from the stored
+  `TransactionSummary`. An entry whose payload cannot be decoded is
+  still returned, with empty note sections and a `decode_warnings`
+  item. Read-only: served while the account is paused. Only
+  transactions pushed through Guardian appear — history of
+  transactions the account executed elsewhere is not visible to it.
+  EVM-configured accounts are rejected with `unsupported_for_network`,
+  like the other Miden delta APIs.
 - **`/state/lookup`.** An empty `accounts` list is a successful response,
   not a 404 — distinguishing "no account" from "wrong key" would leak
   account presence to non-key-holders. Authentication is proof-of-possession
@@ -420,6 +432,7 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `GetDeltaProposal(GetDeltaProposalRequest) -> GetDeltaProposalResponse`
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
+- `GetHistory(GetHistoryRequest) -> GetHistoryResponse`
 
 Every gRPC method is rate limited from the same store as the HTTP surface;
 see [Rate Limiting](#rate-limiting) for the keying rules and the rejection

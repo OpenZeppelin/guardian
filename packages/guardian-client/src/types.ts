@@ -244,3 +244,68 @@ export interface LookupAccount {
 export interface LookupResponse {
   accounts: LookupAccount[];
 }
+
+/** Note classification decoded from the on-chain note script. */
+export type HistoryNoteTag = 'p2id' | 'p2ide' | 'pswap' | 'mint' | 'burn' | 'custom';
+
+/**
+ * One decoded asset inside a history note. `amount` is a base-10
+ * string for fungible assets, absent for non-fungible ones.
+ */
+export interface HistoryNoteAsset {
+  assetId: string;
+  kind: 'fungible' | 'non_fungible';
+  amount?: string;
+}
+
+/**
+ * One decoded note attached to a history entry. `sender` / `recipient`
+ * are account IDs when the note script exposes them.
+ */
+export interface HistoryNote {
+  noteId: string;
+  tag: HistoryNoteTag;
+  assets: HistoryNoteAsset[];
+  sender?: string;
+  recipient?: string;
+}
+
+/**
+ * Why a history entry's note sections are empty: the persisted payload
+ * could not be decoded server-side (schema drift). The entry itself is
+ * still returned.
+ */
+export interface HistoryDecodeWarning {
+  section: string;
+  reason: string;
+}
+
+/** One canonical transaction in an account's history (issue #413). */
+export interface HistoryEntry {
+  nonce: number;
+  /** RFC 3339 UTC timestamp at which the delta became canonical. */
+  timestamp: string;
+  /**
+   * Account commitment after this transaction; `undefined` when the
+   * stored row predates commitment recording.
+   */
+  newCommitment?: string;
+  inputNotes: HistoryNote[];
+  outputNotes: HistoryNote[];
+  decodeWarnings: HistoryDecodeWarning[];
+}
+
+/** One page of canonical transaction history, newest-first by nonce. */
+export interface HistoryPage {
+  entries: HistoryEntry[];
+  /** Opaque resume token; `undefined` when the feed is exhausted. */
+  nextCursor?: string;
+}
+
+/** Options for `getHistory`. */
+export interface HistoryOptions {
+  /** Page size in `[1, 500]`; server default 50 when omitted. */
+  limit?: number;
+  /** Opaque `nextCursor` from a previous page. */
+  cursor?: string;
+}

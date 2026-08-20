@@ -349,6 +349,20 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn list_canonical_deltas_paged(
+        &self,
+        account_id: &str,
+        limit: u32,
+        cursor: Option<AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        timed(
+            "list_canonical_deltas_paged",
+            self.inner
+                .list_canonical_deltas_paged(account_id, limit, cursor),
+        )
+        .await
+    }
+
     async fn list_account_proposals_paged(
         &self,
         account_id: &str,

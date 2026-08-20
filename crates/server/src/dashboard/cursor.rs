@@ -84,6 +84,11 @@ pub enum CursorKind {
     AccountProposals,
     GlobalDeltas,
     GlobalProposals,
+    /// Client-facing per-account canonical history feed (issue #413).
+    /// Same `last_nonce` payload as `AccountDeltas`, kept as its own
+    /// kind so dashboard and client cursors cannot be replayed across
+    /// surfaces.
+    AccountHistory,
 }
 
 /// Decoded cursor payload. Different kinds use different fields:
@@ -168,6 +173,18 @@ impl Cursor {
             last_nonce: Some(last_nonce),
             last_account_id: Some(last_account_id),
             last_updated_at: Some(last_status_timestamp),
+            last_commitment: None,
+        }
+    }
+
+    /// Build an `AccountHistory` cursor (client canonical history,
+    /// issue #413).
+    pub fn account_history(last_nonce: i64) -> Self {
+        Self {
+            kind: CursorKind::AccountHistory,
+            last_nonce: Some(last_nonce),
+            last_account_id: None,
+            last_updated_at: None,
             last_commitment: None,
         }
     }

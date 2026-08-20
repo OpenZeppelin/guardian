@@ -1996,6 +1996,38 @@ impl StorageBackend for PostgresService {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    async fn list_canonical_deltas_paged(
+        &self,
+        account_id: &str,
+        limit: u32,
+        cursor: Option<AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let mut query = deltas::table
+            .filter(deltas::account_id.eq(account_id))
+            .filter(deltas::status_kind.eq("canonical"))
+            .into_boxed();
+
+        if let Some(c) = cursor {
+            query = query.filter(deltas::nonce.lt(c.last_nonce));
+        }
+
+        let rows: Vec<DeltaRow> = query
+            .order(deltas::nonce.desc())
+            .limit(limit as i64)
+            .select(DeltaRow::as_select())
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to list canonical deltas: {e}"))?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     async fn list_account_proposals_paged(
         &self,
         account_id: &str,

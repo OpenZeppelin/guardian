@@ -43,6 +43,10 @@ service Guardian {
   // against the queried commitment, using the lookup-bound signing primitive
   // (LookupAuthMessage) — distinct from the per-account request-signing format.
   rpc GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) returns (GetAccountByKeyCommitmentResponse);
+
+  // Per-account canonical transaction history (issue #413), paginated
+  // newest-first by nonce with decoded input/output note summaries.
+  rpc GetHistory(GetHistoryRequest) returns (GetHistoryResponse);
 }
 
 // Auth configuration - one of the auth types
@@ -337,4 +341,62 @@ message AbandonDeltaCandidateResponse {
   // return the original timestamp; empty once resolved.
   string abandon_requested_at = 6;
   string error_code = 7;
+}
+
+// History request (issue #413). `limit` defaults to 50, max 500;
+// `cursor` is the opaque `next_cursor` from a previous page.
+message GetHistoryRequest {
+  string account_id = 1;
+  optional uint32 limit = 2;
+  optional string cursor = 3;
+}
+
+// One decoded asset inside a history note summary. `kind` is the
+// stable wire label ("fungible" / "non_fungible"); `amount` is a
+// base-10 string for fungible assets, absent for non-fungible ones.
+message HistoryNoteAsset {
+  string asset_id = 1;
+  string kind = 2;
+  optional string amount = 3;
+}
+
+// One decoded note attached to a history entry. `tag` is the stable
+// wire label ("p2id" / "p2ide" / "pswap" / "mint" / "burn" / "custom").
+// `sender` / `recipient` are account IDs when the note script exposes
+// them, absent otherwise.
+message HistoryNote {
+  string note_id = 1;
+  string tag = 2;
+  repeated HistoryNoteAsset assets = 3;
+  optional string sender = 4;
+  optional string recipient = 5;
+}
+
+// Why a history entry's note sections are empty: the persisted payload
+// could not be decoded (e.g. rows predating the current summary
+// format). `section` is the
+// stable wire label of the section that failed ("tx_summary").
+message HistoryDecodeWarning {
+  string section = 1;
+  string reason = 2;
+}
+
+// One canonical transaction in an account's history.
+message HistoryEntry {
+  uint64 nonce = 1;
+  // RFC 3339 UTC timestamp at which the delta became canonical.
+  string timestamp = 2;
+  optional string new_commitment = 3;
+  repeated HistoryNote input_notes = 4;
+  repeated HistoryNote output_notes = 5;
+  repeated HistoryDecodeWarning decode_warnings = 6;
+}
+
+message GetHistoryResponse {
+  bool success = 1;
+  string message = 2;
+  repeated HistoryEntry entries = 3;
+  // Opaque resume token; absent when no further pages exist.
+  optional string next_cursor = 4;
+  string error_code = 5;
 }

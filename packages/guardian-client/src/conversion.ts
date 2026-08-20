@@ -6,6 +6,9 @@ import type {
   DeltaProposalRequest,
   DeltaStatus,
   ExecutionDelta,
+  HistoryEntry,
+  HistoryNote,
+  HistoryPage,
   LookupResponse,
   ProposalSignature,
   ProposalMetadata,
@@ -20,6 +23,9 @@ import type {
   ServerDeltaProposalRequest,
   ServerDeltaStatus,
   ServerExecutionDelta,
+  ServerHistoryEntry,
+  ServerHistoryNote,
+  ServerHistoryPage,
   ServerLookupResponse,
   ServerProposalSignature,
   ServerProposalMetadata,
@@ -264,5 +270,37 @@ export function toServerExecutionDelta(delta: ExecutionDelta): ServerExecutionDe
     delta_payload: delta.deltaPayload,
     ack_sig: delta.ackSig,
     status: toServerDeltaStatus(delta.status),
+  };
+}
+
+function fromServerHistoryNote(server: ServerHistoryNote): HistoryNote {
+  return {
+    noteId: server.note_id,
+    tag: server.tag,
+    assets: server.assets.map((asset) => ({
+      assetId: asset.asset_id,
+      kind: asset.kind,
+      amount: asset.amount,
+    })),
+    sender: server.sender,
+    recipient: server.recipient,
+  };
+}
+
+export function fromServerHistoryEntry(server: ServerHistoryEntry): HistoryEntry {
+  return {
+    nonce: server.nonce,
+    timestamp: server.timestamp,
+    newCommitment: server.new_commitment ?? undefined,
+    inputNotes: server.input_notes.map(fromServerHistoryNote),
+    outputNotes: server.output_notes.map(fromServerHistoryNote),
+    decodeWarnings: server.decode_warnings ?? [],
+  };
+}
+
+export function fromServerHistoryPage(server: ServerHistoryPage): HistoryPage {
+  return {
+    entries: server.items.map(fromServerHistoryEntry),
+    nextCursor: server.next_cursor ?? undefined,
   };
 }

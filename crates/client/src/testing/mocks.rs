@@ -4,9 +4,10 @@ use crate::proto::{
     ConfigureResponse, DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
     GetAccountByKeyCommitmentResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
     GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
-    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
-    GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest,
-    PushDeltaResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
+    GetDeltaSinceRequest, GetDeltaSinceResponse, GetHistoryRequest, GetHistoryResponse,
+    GetPubkeyRequest, GetStateRequest, GetStateResponse, PushDeltaProposalRequest,
+    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
+    SignDeltaProposalResponse,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -24,6 +25,7 @@ pub struct MockGuardianService {
     push_delta_response: Arc<StdMutex<Option<Result<PushDeltaResponse, Status>>>>,
     get_delta_response: Arc<StdMutex<Option<Result<GetDeltaResponse, Status>>>>,
     get_delta_since_response: Arc<StdMutex<Option<Result<GetDeltaSinceResponse, Status>>>>,
+    get_history_response: Arc<StdMutex<Option<Result<GetHistoryResponse, Status>>>>,
     get_state_response: Arc<StdMutex<Option<Result<GetStateResponse, Status>>>>,
     get_account_by_key_commitment_response:
         Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
@@ -39,6 +41,11 @@ impl MockGuardianService {
 
     pub fn with_configure(self, response: Result<ConfigureResponse, Status>) -> Self {
         *self.configure_response.lock().unwrap() = Some(response);
+        self
+    }
+
+    pub fn with_get_history(self, response: Result<GetHistoryResponse, Status>) -> Self {
+        *self.get_history_response.lock().unwrap() = Some(response);
         self
     }
 
@@ -314,6 +321,27 @@ impl Guardian for MockGuardianService {
                     success: true,
                     message: String::new(),
                     merged_delta: Some(create_mock_delta()),
+                })
+            });
+
+        response.map(Response::new)
+    }
+
+    async fn get_history(
+        &self,
+        _request: Request<GetHistoryRequest>,
+    ) -> Result<Response<GetHistoryResponse>, Status> {
+        let response = self
+            .get_history_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| {
+                Ok(GetHistoryResponse {
+                    success: true,
+                    message: String::new(),
+                    entries: Vec::new(),
+                    next_cursor: None,
                 })
             });
 

@@ -34,4 +34,11 @@ export type {
   SignProposalRequest,
   LookupAccount,
   LookupResponse,
+  HistoryDecodeWarning,
+  HistoryEntry,
+  HistoryNote,
+  HistoryNoteAsset,
+  HistoryNoteTag,
+  HistoryOptions,
+  HistoryPage,
 } from './types.js';

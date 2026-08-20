@@ -350,6 +350,37 @@ describe('Multisig', () => {
     });
   });
 
+  describe('history (issue #413)', () => {
+    it('delegates to the guardian client with the account id and options', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      const page = {
+        entries: [
+          {
+            nonce: 3,
+            timestamp: '2026-08-01T12:00:03Z',
+            newCommitment: '0x' + 'b'.repeat(64),
+            inputNotes: [],
+            outputNotes: [],
+            decodeWarnings: [],
+          },
+        ],
+        nextCursor: 'cursor-token',
+      };
+      const spy = vi.spyOn(guardian, 'getHistory').mockResolvedValue(page);
+
+      const result = await multisig.history({ limit: 5, cursor: 'prev' });
+
+      expect(result).toBe(page);
+      expect(spy).toHaveBeenCalledWith('0x' + 'a'.repeat(30), { limit: 5, cursor: 'prev' });
+    });
+  });
+
   describe('signerCommitment', () => {
     it('should return signer commitment', () => {
       const config = {

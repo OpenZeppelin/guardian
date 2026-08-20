@@ -90,6 +90,17 @@ pub enum AssetKind {
     NonFungible,
 }
 
+impl AssetKind {
+    /// Stable lower-snake-case wire label, identical to the serde
+    /// serialization. The gRPC transport carries asset kinds as strings.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AssetKind::Fungible => "fungible",
+            AssetKind::NonFungible => "non_fungible",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CounterpartySummary {
     pub account_id: String,
@@ -189,6 +200,21 @@ pub enum NoteTag {
     Custom,
 }
 
+impl NoteTag {
+    /// Stable lower-snake-case wire label, identical to the serde
+    /// serialization. The gRPC transport carries note tags as strings.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NoteTag::P2id => "p2id",
+            NoteTag::P2ide => "p2ide",
+            NoteTag::Pswap => "pswap",
+            NoteTag::Mint => "mint",
+            NoteTag::Burn => "burn",
+            NoteTag::Custom => "custom",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DecodedAsset {
     pub asset_id: String,
@@ -248,4 +274,54 @@ pub enum DecodeSection {
     OutputNotes,
     Vault,
     Storage,
+}
+
+impl DecodeSection {
+    /// Stable lower-snake-case wire label, identical to the serde
+    /// serialization. The gRPC transport carries sections as strings.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DecodeSection::TxSummary => "tx_summary",
+            DecodeSection::Metadata => "metadata",
+            DecodeSection::InputNotes => "input_notes",
+            DecodeSection::OutputNotes => "output_notes",
+            DecodeSection::Vault => "vault",
+            DecodeSection::Storage => "storage",
+        }
+    }
+}
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod tests {
+    use super::*;
+
+    /// The hand-written `as_str` labels are the gRPC wire vocabulary;
+    /// they must never drift from the serde (HTTP/JSON) labels the
+    /// same enums emit. A new variant must update both in lockstep.
+    #[test]
+    fn wire_labels_match_serde_serialization() {
+        use NoteTag::*;
+        for tag in [P2id, P2ide, Pswap, Mint, Burn, Custom] {
+            assert_eq!(
+                serde_json::to_value(tag).unwrap(),
+                serde_json::Value::String(tag.as_str().to_string()),
+                "NoteTag::{tag:?}"
+            );
+        }
+        for kind in [AssetKind::Fungible, AssetKind::NonFungible] {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                serde_json::Value::String(kind.as_str().to_string()),
+                "AssetKind::{kind:?}"
+            );
+        }
+        use DecodeSection::*;
+        for section in [TxSummary, Metadata, InputNotes, OutputNotes, Vault, Storage] {
+            assert_eq!(
+                serde_json::to_value(section).unwrap(),
+                serde_json::Value::String(section.as_str().to_string()),
+                "DecodeSection::{section:?}"
+            );
+        }
+    }
 }

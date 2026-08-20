@@ -537,6 +537,39 @@ support it. Multiple matches are valid: the same key commitment may authorize
 more than one account, and the method returns all matches instead of choosing
 one implicitly.
 
+### Transaction History
+
+Guardian retains the account's full canonical transaction history, so a
+wallet can render it after recovery. `history()` returns one page at a
+time, newest-first by nonce, with input/output note summaries decoded
+server-side (note ID, P2ID/P2IDE/swap/mint/burn classification, assets,
+sender/recipient where the note script exposes them).
+
+```typescript
+let cursor: string | undefined;
+do {
+  const page = await multisig.history({ limit: 50, cursor });
+  for (const entry of page.entries) {
+    console.log(`nonce ${entry.nonce} at ${entry.timestamp}`);
+    for (const note of entry.outputNotes) {
+      console.log(`  sent ${note.tag} note ${note.noteId}`);
+    }
+    if (entry.decodeWarnings.length > 0) {
+      // Payload predates the current summary format; sections are empty.
+    }
+  }
+  cursor = page.nextCursor;
+} while (cursor !== undefined);
+```
+
+`limit` accepts 1–500 (default 50). Only canonical (confirmed)
+transactions appear — pending proposals live on `syncProposals()`. The
+feed is served even while the account is paused. Guardian only ever
+sees transactions pushed through it, so history of transactions the
+account executed elsewhere is not included. Output notes whose full
+details are not in the stored summary (e.g. private notes carried as
+partial notes) appear with `tag: 'custom'` and no recipient.
+
 ### Proposal Operations
 
 #### P2ID Transfer (Send Funds)
@@ -708,6 +741,7 @@ await multisig.executeProposal(signedProposal.id);
 | `syncProposals()` | Sync proposals from GUARDIAN |
 | `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
+| `history({ limit?, cursor? }?)` | One page of canonical transaction history, newest-first, with decoded note summaries |
 | `listProposals()` | Get cached proposals |
 | `createP2idProposal(recipient, faucet, amount, nonce?, { noteType }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`) |
 | `createConsumeNotesProposal(noteIds, nonce?)` | Create note consumption proposal |
@@ -840,6 +874,39 @@ for entry in recovered {
 An empty list means the key is valid but this Guardian has no account metadata
 that authorizes its commitment. Authentication failures, malformed lookup
 responses, and per-account `get_state` failures are returned as errors.
+
+### Transaction History
+
+Guardian retains the account's full canonical transaction history, so a
+wallet can render it after recovery. `history()` returns one
+`HistoryPage` at a time, newest-first by nonce, with input/output note
+summaries decoded server-side.
+
+```rust
+let mut cursor: Option<String> = None;
+loop {
+    let page = client.history(Some(50), cursor.take()).await?;
+    for entry in &page.entries {
+        println!("nonce {} at {}", entry.nonce, entry.timestamp);
+        for note in &entry.output_notes {
+            println!("  sent {} note {}", note.tag, note.note_id);
+        }
+    }
+    match page.next_cursor {
+        Some(next) => cursor = Some(next),
+        None => break,
+    }
+}
+```
+
+`limit` accepts 1–500 (server default 50 when `None`). Only canonical
+(confirmed) transactions appear — pending proposals live on
+`list_proposals()`. The feed is served even while the account is
+paused. Guardian only ever sees transactions pushed through it, so
+history of transactions the account executed elsewhere is not included.
+Output notes whose full details are not in the stored summary (e.g.
+private notes carried as partial notes) appear with tag `custom` and no
+recipient.
 
 ### Transaction Types
 
@@ -1016,6 +1083,7 @@ full note, so a post-commit sync is enough.
 | `execute_proposal(id)` | Execute ready proposal |
 | `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
+| `history(limit, cursor)` | One page of canonical transaction history, newest-first, with decoded note summaries |
 | `create_proposal_offline(tx)` | Create offline proposal |
 | `sign_imported_proposal(exported)` | Sign offline proposal |
 | `execute_imported_proposal(exported)` | Execute offline proposal |

@@ -848,6 +848,123 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  // --- getHistory (issue #413) -----
+
+  describe('getHistory', () => {
+    const accountId = '0x' + 'a'.repeat(30);
+
+    const serverPage = {
+      items: [
+        {
+          nonce: 5,
+          timestamp: '2026-08-01T12:00:05Z',
+          new_commitment: '0x' + 'c'.repeat(64),
+          input_notes: [],
+          output_notes: [
+            {
+              note_id: '0x' + 'd'.repeat(64),
+              tag: 'p2id',
+              assets: [
+                { asset_id: '0x' + 'e'.repeat(30), kind: 'fungible', amount: '100' },
+              ],
+              sender: accountId,
+              recipient: '0x' + 'f'.repeat(30),
+            },
+          ],
+        },
+        {
+          nonce: 4,
+          timestamp: '2026-08-01T12:00:04Z',
+          new_commitment: null,
+          input_notes: [],
+          output_notes: [],
+          decode_warnings: [{ section: 'tx_summary', reason: 'malformed_tx_summary' }],
+        },
+      ],
+      next_cursor: 'opaque-cursor',
+    };
+
+    it('returns a camelCase page and maps notes and warnings', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => serverPage,
+      });
+
+      const result = await client.getHistory(accountId, { limit: 2 });
+
+      expect(result.nextCursor).toBe('opaque-cursor');
+      expect(result.entries).toHaveLength(2);
+      expect(result.entries[0].nonce).toBe(5);
+      expect(result.entries[0].newCommitment).toBe('0x' + 'c'.repeat(64));
+      expect(result.entries[0].decodeWarnings).toEqual([]);
+      expect(result.entries[0].outputNotes[0]).toEqual({
+        noteId: '0x' + 'd'.repeat(64),
+        tag: 'p2id',
+        assets: [{ assetId: '0x' + 'e'.repeat(30), kind: 'fungible', amount: '100' }],
+        sender: accountId,
+        recipient: '0x' + 'f'.repeat(30),
+      });
+      expect(result.entries[1].newCommitment).toBeUndefined();
+      expect(result.entries[1].decodeWarnings).toEqual([
+        { section: 'tx_summary', reason: 'malformed_tx_summary' },
+      ]);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `http://localhost:3000/history?account_id=${accountId}&limit=2`,
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            'x-pubkey': mockSigner.publicKey,
+          }),
+        })
+      );
+    });
+
+    it('signs the same key set it sends: omitted options stay omitted', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ items: [], next_cursor: null }),
+      });
+
+      const result = await client.getHistory(accountId);
+
+      expect(result.entries).toEqual([]);
+      expect(result.nextCursor).toBeUndefined();
+      expect(mockFetch).toHaveBeenCalledWith(
+        `http://localhost:3000/history?account_id=${accountId}`,
+        expect.anything()
+      );
+      // The signed payload must byte-match the server's canonical JSON
+      // of its query struct: only account_id when limit/cursor are
+      // omitted, and limit as a string when present.
+      const signRequest = mockSigner.signRequest as ReturnType<typeof vi.fn>;
+      const authPayload = signRequest.mock.calls.at(-1)![2];
+      expect(authPayload.toCanonicalJson()).toBe(JSON.stringify({ account_id: accountId }));
+    });
+
+    it('passes the cursor through query and signed payload', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ items: [], next_cursor: null }),
+      });
+
+      await client.getHistory(accountId, { limit: 10, cursor: 'abc123' });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `http://localhost:3000/history?account_id=${accountId}&limit=10&cursor=abc123`,
+        expect.anything()
+      );
+      const signRequest = mockSigner.signRequest as ReturnType<typeof vi.fn>;
+      const authPayload = signRequest.mock.calls.at(-1)![2];
+      expect(authPayload.toCanonicalJson()).toBe(
+        JSON.stringify({ account_id: accountId, cursor: 'abc123', limit: '10' })
+      );
+    });
+  });
+
   // --- lookupAccountByKeyCommitment -----
 
   describe('lookupAccountByKeyCommitment', () => {

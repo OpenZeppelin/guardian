@@ -12,10 +12,12 @@
 
 mod account;
 mod helpers;
+mod history;
 mod io;
 mod notes;
 mod offline;
 mod proposals;
+pub use history::{HistoryDecodeWarning, HistoryEntry, HistoryNote, HistoryNoteAsset, HistoryPage};
 pub use proposals::{AbandonRequestState, AbandonStatus};
 
 use std::path::PathBuf;
