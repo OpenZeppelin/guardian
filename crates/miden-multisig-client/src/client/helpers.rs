@@ -455,10 +455,14 @@ impl MultisigClient {
     }
 
     /// Adds an account to miden-client if it doesn't exist, or updates it if it does.
+    ///
+    /// `overwrite` is forwarded to miden-client's `add_account` on the
+    /// insert path (its parameter of the same name); the update path always
+    /// overwrites.
     pub(crate) async fn add_or_update_account(
         &mut self,
         account: &Account,
-        imported: bool,
+        overwrite: bool,
     ) -> Result<()> {
         let account_id = account.id();
 
@@ -482,7 +486,7 @@ impl MultisigClient {
                 })?;
         } else {
             self.miden_client
-                .add_account(account, imported)
+                .add_account(account, overwrite)
                 .await
                 .map_err(|e| {
                     MultisigError::MidenClient(format!(

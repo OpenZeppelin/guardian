@@ -7,6 +7,7 @@
 //! - `proposals` - Proposal workflow (list, sign, execute, propose)
 //! - `offline` - Offline proposal operations
 //! - `notes` - Note filtering and listing
+//! - `recovery` - Recovery primitives (transport backlog drain)
 //! - `io` - Export/import functionality
 //! - `helpers` - Internal GUARDIAN client helpers
 
@@ -17,11 +18,13 @@ mod io;
 mod notes;
 mod offline;
 mod proposals;
+mod recovery;
 pub use delta_history::{
     HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
 };
 pub use proposals::{AbandonRequestState, AbandonStatus};
+pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
 
 use std::path::PathBuf;
 use std::sync::Arc;

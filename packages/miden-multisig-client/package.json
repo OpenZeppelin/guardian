@@ -42,6 +42,7 @@
     "@openzeppelin/guardian-client": "^0.16.2"
   },
   "devDependencies": {
+    "fake-indexeddb": "^6.2.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },

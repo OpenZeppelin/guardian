@@ -179,6 +179,35 @@ client.sign_proposal(&to_sign.id).await?;
 client.execute_proposal(&proposal.id).await?;
 ```
 
+### Draining the Private-Note Transport Backlog
+
+After recovery on a fresh device the local store has no note-transport
+cursor — and in a store shared with other accounts, sync may have advanced
+the cursor past private notes addressed to the newly recovered account.
+`drain_private_note_backlog` rescans the full transport backlog for every
+tracked note tag, regardless of the stored cursor. Run it after
+`pull_account`: the drain only sees tags tracked in the store, and
+`pull_account` inserting the account is what tracks its tag.
+
+```rust
+client.pull_account(account_id).await?;
+
+let report = client.drain_private_note_backlog().await?;
+// report.status: Completed | Unavailable | Failed
+// report.imported: number of newly imported note records
+```
+
+Transport problems are reported in the result, never returned as errors:
+`Unavailable` means no transport endpoint is configured or the transport
+could not be reached; `Failed` with `retryable: true` keeps any partial
+progress and rerunning the drain continues it. The drain is idempotent and
+never regresses the stored transport cursor.
+
+Transport recovery is **not a backup**: it is bounded by the transport
+service's retention. Senders may deliver private notes out-of-band without
+using the transport, and relayed blobs are pruned after the retention
+window.
+
 ### Recovering From a Dead Transaction (Abandon)
 
 If `execute_proposal` dies after guardian approval (RPC submit failure,
