@@ -32,8 +32,15 @@ sequenceDiagram
   S->>S: reject unless auth.cosigner_commitments == extracted signer map\n(exact set and order)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_commitment(account_id, initial_state)
+  alt existing account
+    S->>M: update last_auth_timestamp (verified signer, CAS)
+  end
   S->>ST: submit_state(state_json, commitment)
   S->>M: set(account_id, auth, network_config, timestamps)
+  alt first-time account
+    Note over S,M: metadata must exist first because replay state references it by FK
+    S->>M: seed last_auth_timestamp (verified signer, CAS)
+  end
   S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
 ```
 
@@ -48,8 +55,8 @@ sequenceDiagram
   participant N as Network
   C->>S: POST /delta {delta, credentials}
   S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
-  S->>S: check timestamp > last_auth_timestamp
-  S->>M: update last_auth_timestamp
+  S->>S: check timestamp > last_auth_timestamp (per signer)
+  S->>M: update last_auth_timestamp (per signer, CAS)
   alt EVM account
     S-->>C: error unsupported_for_network
   else Miden account
@@ -82,8 +89,8 @@ sequenceDiagram
   participant ST as Storage
   C->>S: GET /state?account_id=... {credentials}
   S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
-  S->>S: check timestamp > last_auth_timestamp
-  S->>M: update last_auth_timestamp
+  S->>S: check timestamp > last_auth_timestamp (per signer)
+  S->>M: update last_auth_timestamp (per signer, CAS)
   S->>ST: pull_state(account_id)
   S-->>C: 200 {state}
 ```
@@ -98,8 +105,8 @@ sequenceDiagram
   participant ST as Storage
   C->>S: GET /delta?account_id=...&nonce=... {credentials}
   S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
-  S->>S: check timestamp > last_auth_timestamp
-  S->>M: update last_auth_timestamp
+  S->>S: check timestamp > last_auth_timestamp (per signer)
+  S->>M: update last_auth_timestamp (per signer, CAS)
   S->>ST: pull_delta(account_id, nonce)
   S-->>C: 200 {delta}
 ```
@@ -115,8 +122,8 @@ sequenceDiagram
   participant N as Network
   C->>S: GET /delta/since?account_id=...&nonce=... {credentials}
   S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
-  S->>S: check timestamp > last_auth_timestamp
-  S->>M: update last_auth_timestamp
+  S->>S: check timestamp > last_auth_timestamp (per signer)
+  S->>M: update last_auth_timestamp (per signer, CAS)
   S->>ST: pull_deltas_after(account_id, nonce)
   S->>S: filter -> only canonical
   S->>N: merge_deltas(delta_payloads) -> merged_payload
@@ -135,8 +142,8 @@ sequenceDiagram
   participant N as Network
   C->>S: POST /delta/proposal {account_id, nonce, delta_payload}
   S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
-  S->>S: check timestamp > last_auth_timestamp
-  S->>M: update last_auth_timestamp
+  S->>S: check timestamp > last_auth_timestamp (per signer)
+  S->>M: update last_auth_timestamp (per signer, CAS)
   S->>ST: pull_state(account_id)
   S->>N: verify_delta(prev_commitment, state_json, tx_summary)
   S->>N: delta_proposal_id(account_id, nonce, tx_summary)
@@ -154,8 +161,8 @@ sequenceDiagram
   participant ST as Storage
   C->>S: PUT /delta/proposal {account_id, commitment, signature}
   S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
-  S->>S: check timestamp > last_auth_timestamp
-  S->>M: update last_auth_timestamp
+  S->>S: check timestamp > last_auth_timestamp (per signer)
+  S->>M: update last_auth_timestamp (per signer, CAS)
   S->>ST: pull_delta_proposal(account_id, commitment)
   S->>S: ensure status.pending & signer not recorded
   S->>S: derive signer commitment from x-pubkey
@@ -210,8 +217,8 @@ sequenceDiagram
   participant ST as Storage
   C->>S: GET /delta/proposal?account_id=... {credentials}
   S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
-  S->>S: check timestamp > last_auth_timestamp
-  S->>M: update last_auth_timestamp
+  S->>S: check timestamp > last_auth_timestamp (per signer)
+  S->>M: update last_auth_timestamp (per signer, CAS)
   S->>ST: pull_all_delta_proposals(account_id)
   S->>S: filter(status.pending) & sort_by_nonce
   S-->>C: 200 {proposals}

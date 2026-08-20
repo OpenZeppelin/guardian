@@ -1,4 +1,7 @@
-use crate::metadata::{AccountListCursor, AccountMetadata, Auth, MetadataStore, NetworkConfig};
+use crate::metadata::{
+    AccountListCursor, AccountMetadata, Auth, LEGACY_ACCOUNT_AUTH_FLOOR, MetadataStore,
+    NetworkConfig,
+};
 use crate::schema::account_metadata;
 use crate::services::account_status::{AccountStatus, PauseTransition};
 use crate::storage::postgres::build_postgres_pool;
@@ -261,6 +264,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,
+        signer_commitment: &str,
         new_timestamp: i64,
     ) -> Result<bool, String> {
         let mut conn = self
@@ -270,14 +274,23 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
         let rows_updated = diesel::sql_query(
-            "INSERT INTO account_auth_state (account_id, last_auth_timestamp) \
-             VALUES ($1, $2) \
-             ON CONFLICT (account_id) DO UPDATE \
+            "INSERT INTO account_auth_state (account_id, signer_commitment, last_auth_timestamp) \
+             SELECT $1, $2, $3 \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 \
+                   FROM account_auth_state legacy \
+                  WHERE legacy.account_id = $1 \
+                    AND legacy.signer_commitment = $4 \
+                    AND legacy.last_auth_timestamp >= $3 \
+             ) \
+             ON CONFLICT (account_id, signer_commitment) DO UPDATE \
              SET last_auth_timestamp = EXCLUDED.last_auth_timestamp \
              WHERE account_auth_state.last_auth_timestamp < EXCLUDED.last_auth_timestamp",
         )
         .bind::<Text, _>(account_id)
+        .bind::<Text, _>(signer_commitment)
         .bind::<diesel::sql_types::BigInt, _>(new_timestamp)
+        .bind::<Text, _>(LEGACY_ACCOUNT_AUTH_FLOOR)
         .execute(&mut conn)
         .await
         .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
@@ -570,6 +583,36 @@ mod tests {
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
+    fn insert_legacy_auth_state(
+        conn: &mut diesel::PgConnection,
+        account_id: &str,
+        auth: serde_json::Value,
+        last_auth_timestamp: i64,
+    ) {
+        diesel::RunQueryDsl::execute(
+            diesel::sql_query(
+                "INSERT INTO account_metadata \
+                 (account_id, auth, network_config, created_at, updated_at, \
+                  has_pending_candidate) \
+                 VALUES ($1, $2, '{}'::jsonb, now(), now(), false)",
+            )
+            .bind::<Text, _>(account_id)
+            .bind::<diesel::sql_types::Jsonb, _>(auth),
+            conn,
+        )
+        .expect("insert legacy metadata row");
+        diesel::RunQueryDsl::execute(
+            diesel::sql_query(
+                "INSERT INTO account_auth_state (account_id, last_auth_timestamp) \
+                 VALUES ($1, $2)",
+            )
+            .bind::<Text, _>(account_id)
+            .bind::<diesel::sql_types::BigInt, _>(last_auth_timestamp),
+            conn,
+        )
+        .expect("insert account-scoped replay row");
+    }
+
     /// Re-applies the newest migration if the reverting test does not reach its
     /// own re-apply, so a panic mid-revert cannot leave the shared test schema
     /// one migration behind for the rest of the run. `Drop` reports a failed
@@ -622,7 +665,11 @@ mod tests {
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
-             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+             VALUES ($1, \
+                     '{\"MidenFalconRpo\":{\"cosigner_commitments\":[\
+                        \"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\
+                        \"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]}}'::jsonb, \
+                     '{}'::jsonb, now(), now(), false)",
         )
         .bind::<Text, _>(account_id)
         .execute(&mut conn)
@@ -630,10 +677,15 @@ mod tests {
         .expect("insert metadata");
     }
 
-    async fn stored_auth_timestamp(store: &PostgresMetadataStore, account_id: &str) -> i64 {
+    async fn stored_auth_timestamp(
+        store: &PostgresMetadataStore,
+        account_id: &str,
+        signer_commitment: &str,
+    ) -> i64 {
         let mut conn = store.pool.get().await.expect("conn");
         account_auth_state::table
             .filter(account_auth_state::account_id.eq(account_id))
+            .filter(account_auth_state::signer_commitment.eq(signer_commitment))
             .select(account_auth_state::last_auth_timestamp)
             .first(&mut conn)
             .await
@@ -662,7 +714,7 @@ mod tests {
         let before = metadata_updated_at(&store, &account_id).await;
         assert!(
             store
-                .update_last_auth_timestamp_cas(&account_id, 100)
+                .update_last_auth_timestamp_cas(&account_id, "0xaa", 100)
                 .await
                 .unwrap()
         );
@@ -684,37 +736,76 @@ mod tests {
 
         assert!(
             store
-                .update_last_auth_timestamp_cas(&account_id, 100)
+                .update_last_auth_timestamp_cas(&account_id, "0xaa", 100)
                 .await
                 .unwrap(),
             "first timestamp creates the record"
         );
         assert!(
             !store
-                .update_last_auth_timestamp_cas(&account_id, 100)
+                .update_last_auth_timestamp_cas(&account_id, "0xaa", 100)
                 .await
                 .unwrap(),
             "equal timestamp is a replay"
         );
         assert!(
             !store
-                .update_last_auth_timestamp_cas(&account_id, 99)
+                .update_last_auth_timestamp_cas(&account_id, "0xaa", 99)
                 .await
                 .unwrap(),
             "older timestamp is a replay"
         );
         assert_eq!(
-            stored_auth_timestamp(&store, &account_id).await,
+            stored_auth_timestamp(&store, &account_id, "0xaa").await,
             100,
             "rejected timestamps must not change the stored value"
         );
         assert!(
             store
-                .update_last_auth_timestamp_cas(&account_id, 101)
+                .update_last_auth_timestamp_cas(&account_id, "0xaa", 101)
                 .await
                 .unwrap()
         );
-        assert_eq!(stored_auth_timestamp(&store, &account_id).await, 101);
+        assert_eq!(
+            stored_auth_timestamp(&store, &account_id, "0xaa").await,
+            101
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn cas_is_scoped_per_signer_commitment() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xsigner{}", Utc::now().timestamp_micros());
+        insert_account_row(&store, &account_id).await;
+
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(&account_id, "0xaa", 100)
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(&account_id, "0xbb", 50)
+                .await
+                .unwrap(),
+            "another signer's newer timestamp must not lock this signer out"
+        );
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas(&account_id, "0xbb", 50)
+                .await
+                .unwrap(),
+            "a replay from the same signer must still be rejected"
+        );
+        assert_eq!(
+            stored_auth_timestamp(&store, &account_id, "0xaa").await,
+            100
+        );
+        assert_eq!(stored_auth_timestamp(&store, &account_id, "0xbb").await, 50);
     }
 
     #[tokio::test]
@@ -726,7 +817,7 @@ mod tests {
         let account_id = format!("0xghost{}", Utc::now().timestamp_micros());
 
         store
-            .update_last_auth_timestamp_cas(&account_id, 100)
+            .update_last_auth_timestamp_cas(&account_id, "0xaa", 100)
             .await
             .expect_err("unknown account must violate the foreign key, not record state");
     }
@@ -747,7 +838,7 @@ mod tests {
                 let account_id = account_id.clone();
                 tokio::spawn(async move {
                     store
-                        .update_last_auth_timestamp_cas(&account_id, timestamp)
+                        .update_last_auth_timestamp_cas(&account_id, "0xaa", timestamp)
                         .await
                 })
             });
@@ -763,33 +854,61 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; reverts and re-applies the newest migration; run ./scripts/test-postgres.sh"]
-    async fn migration_backfills_legacy_timestamps_into_account_auth_state() {
+    async fn migration_expands_account_scoped_replay_state_to_per_signer() {
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
 
-        let account_id = format!("0xbackfill{}", Utc::now().timestamp_micros());
+        let suffix = Utc::now().timestamp_micros();
+        let falcon_account_id = format!("0xfalconbackfill{suffix}");
+        let ecdsa_account_id = format!("0xecdsa_backfill{suffix}");
+        let evm_account_id = format!("evm:1:0x{suffix:040x}");
+        let falcon_signer_a = format!("0x{}", "aa".repeat(32));
+        let falcon_signer_b = format!("0x{}", "bb".repeat(32));
+        let ecdsa_signer = format!("0x{}", "cc".repeat(32));
+        let evm_signer = format!("0x{}", "dd".repeat(20));
         let reverted = RevertedMigration::new(url.clone());
         {
             let url = url.clone();
-            let account_id = account_id.clone();
+            let falcon_account_id = falcon_account_id.clone();
+            let ecdsa_account_id = ecdsa_account_id.clone();
+            let evm_account_id = evm_account_id.clone();
+            let falcon_signer_a = falcon_signer_a.clone();
+            let falcon_signer_b = falcon_signer_b.clone();
+            let ecdsa_signer = ecdsa_signer.clone();
+            let evm_signer = evm_signer.clone();
             tokio::task::spawn_blocking(move || {
                 use diesel::Connection;
                 use diesel_migrations::MigrationHarness;
                 let mut conn =
                     diesel::PgConnection::establish(&url).expect("sync connection for revert");
                 conn.revert_last_migration(crate::storage::postgres::MIGRATIONS)
-                    .expect("revert newest migration");
-                diesel::RunQueryDsl::execute(
-                    diesel::sql_query(
-                        "INSERT INTO account_metadata \
-                         (account_id, auth, network_config, created_at, updated_at, \
-                          has_pending_candidate, last_auth_timestamp) \
-                         VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false, 4242)",
-                    )
-                    .bind::<Text, _>(&account_id),
+                    .expect("revert per-signer migration");
+                insert_legacy_auth_state(
                     &mut conn,
-                )
-                .expect("insert legacy row");
+                    &falcon_account_id,
+                    serde_json::json!({
+                        "MidenFalconRpo": {
+                            "cosigner_commitments": [falcon_signer_a, falcon_signer_b]
+                        }
+                    }),
+                    4242,
+                );
+                insert_legacy_auth_state(
+                    &mut conn,
+                    &ecdsa_account_id,
+                    serde_json::json!({
+                        "MidenEcdsa": { "cosigner_commitments": [ecdsa_signer] }
+                    }),
+                    3131,
+                );
+                insert_legacy_auth_state(
+                    &mut conn,
+                    &evm_account_id,
+                    serde_json::json!({
+                        "EvmEcdsa": { "signers": [evm_signer] }
+                    }),
+                    2020,
+                );
             })
             .await
             .expect("blocking revert task");
@@ -800,23 +919,134 @@ mod tests {
 
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         assert_eq!(
-            stored_auth_timestamp(&store, &account_id).await,
+            stored_auth_timestamp(&store, &falcon_account_id, &falcon_signer_a).await,
             4242,
-            "legacy timestamp must be backfilled"
+            "the account-scoped floor must be expanded to each authorized signer"
+        );
+        assert_eq!(
+            stored_auth_timestamp(&store, &falcon_account_id, &falcon_signer_b).await,
+            4242
+        );
+        assert_eq!(
+            stored_auth_timestamp(&store, &ecdsa_account_id, &ecdsa_signer).await,
+            3131,
+            "Miden ECDSA replay state must use the same expansion"
+        );
+        assert_eq!(
+            stored_auth_timestamp(&store, &evm_account_id, &evm_signer).await,
+            2020,
+            "EVM signer sets live under a different JSON key and address width"
+        );
+        assert_eq!(
+            stored_auth_timestamp(&store, &falcon_account_id, LEGACY_ACCOUNT_AUTH_FLOOR,).await,
+            4242,
+            "the account-level floor protects signers absent during migration"
         );
         assert!(
             !store
-                .update_last_auth_timestamp_cas(&account_id, 4242)
+                .update_last_auth_timestamp_cas(&falcon_account_id, &falcon_signer_a, 4242)
                 .await
                 .unwrap(),
-            "backfilled timestamp must be enforced"
+            "expanded timestamp must be enforced"
         );
         assert!(
             store
-                .update_last_auth_timestamp_cas(&account_id, 4243)
+                .update_last_auth_timestamp_cas(&falcon_account_id, &falcon_signer_a, 4243)
                 .await
                 .unwrap()
         );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(&falcon_account_id, &falcon_signer_b, 4243)
+                .await
+                .unwrap(),
+            "signers must not contend after the expansion"
+        );
+        let signer_added_after_migration = format!("0x{}", "ee".repeat(32));
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas(
+                    &falcon_account_id,
+                    &signer_added_after_migration,
+                    4242,
+                )
+                .await
+                .unwrap(),
+            "a signer absent during migration must inherit the account floor"
+        );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(
+                    &falcon_account_id,
+                    &signer_added_after_migration,
+                    4243,
+                )
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; reverts and re-applies the newest migration; run ./scripts/test-postgres.sh"]
+    async fn migration_preserves_floor_for_non_canonical_signer_metadata() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let reverted = RevertedMigration::new(url.clone());
+
+        let suffix = Utc::now().timestamp_micros();
+        let coerced_object_account_id = format!("0xcoercedbackfill{suffix}");
+        let short_commitment_account_id = format!("0xshortbackfill{suffix}");
+        let empty_signers_account_id = format!("0xemptybackfill{suffix}");
+        let malformed_accounts = [
+            (
+                coerced_object_account_id.clone(),
+                serde_json::json!({
+                    "MidenFalconRpo": { "cosigner_commitments": [{ "invalid": true }] }
+                }),
+            ),
+            (
+                short_commitment_account_id.clone(),
+                serde_json::json!({
+                    "MidenFalconRpo": {
+                        "cosigner_commitments": [format!("0x{}", "aa".repeat(20))]
+                    }
+                }),
+            ),
+            (
+                empty_signers_account_id.clone(),
+                serde_json::json!({ "EvmEcdsa": { "signers": [] } }),
+            ),
+        ];
+        {
+            let url = url.clone();
+            let malformed_accounts = malformed_accounts.clone();
+            tokio::task::spawn_blocking(move || {
+                use diesel::Connection;
+                use diesel_migrations::MigrationHarness;
+                let mut conn =
+                    diesel::PgConnection::establish(&url).expect("sync connection for revert");
+                conn.revert_last_migration(crate::storage::postgres::MIGRATIONS)
+                    .expect("revert per-signer migration");
+                for (account_id, auth) in &malformed_accounts {
+                    insert_legacy_auth_state(&mut conn, account_id, auth.clone(), 4242);
+                }
+            })
+            .await
+            .expect("blocking revert task");
+        }
+
+        run_migrations(&url)
+            .await
+            .expect("the legacy account floor makes inert signer metadata safe to migrate");
+        reverted.defuse();
+
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        for (account_id, _) in &malformed_accounts {
+            assert_eq!(
+                stored_auth_timestamp(&store, account_id, LEGACY_ACCOUNT_AUTH_FLOOR).await,
+                4242
+            );
+        }
     }
 
     async fn flag(store: &PostgresMetadataStore, account_id: &str) -> bool {

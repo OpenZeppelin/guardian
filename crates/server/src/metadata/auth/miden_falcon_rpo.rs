@@ -6,6 +6,9 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 
 /// Verify a Falcon RPO signature for a request with timestamp.
 ///
+/// Returns the verified signer's public-key commitment (hex), which callers
+/// use to scope replay-protection state per signer.
+///
 /// # Arguments
 /// * `account_id` - The account ID (hex-encoded)
 /// * `timestamp` - Unix timestamp included in the signed payload
@@ -18,7 +21,7 @@ pub fn verify_request_signature(
     authorized_commitments: &[String],
     signature: &str,
     request_payload: &AuthRequestPayload,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let message = account_id_timestamp_to_digest(account_id, timestamp, request_payload)?;
     let sig = parse_signature(signature)?;
 
@@ -45,7 +48,7 @@ pub fn verify_request_signature(
 
     // Verify the signature cryptographically
     if public_key.verify(message, &sig) {
-        Ok(())
+        Ok(sig_commitment_hex)
     } else {
         tracing::error!(
             account_id = %account_id,

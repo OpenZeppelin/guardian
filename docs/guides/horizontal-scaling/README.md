@@ -91,7 +91,7 @@ directly on `:50052` (A) and `:50053` (B).
 | Operator/EVM sessions | `auth_sessions` | Log in on A, your cookie works on B; logout is honored fleet-wide. |
 | Login challenges | `auth_challenges` | A challenge is single-use even if issued on A and verified on B. |
 | Canonicalization lease | `worker_leases` | Exactly one replica promotes candidates; the others stand by. |
-| Replay protection | `account_auth_state` | A request timestamp accepted on A cannot be replayed to B; each per-account timestamp is usable exactly once fleet-wide. |
+| Replay protection | `account_auth_state` | A request timestamp accepted on A cannot be replayed to B; each per-account-and-signer timestamp is usable exactly once fleet-wide. A retained migration floor also protects signers first authorized after an account-scoped upgrade. |
 
 Coordination is **backend-derived**: it is on because the backend is Postgres.
 No environment variable enables or disables it.
