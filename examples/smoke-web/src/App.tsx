@@ -243,7 +243,6 @@ export default function App() {
                 }
               >
                 <option value="local">Local</option>
-                <option value="para">Para</option>
                 <option value="miden-wallet">Miden Wallet</option>
               </select>
             </label>
@@ -277,7 +276,6 @@ export default function App() {
           </div>
           <div className="actions">
             <button onClick={handleInitSession}>Reinitialize session</button>
-            <button onClick={() => runAction(async () => api.connectPara())}>Connect Para</button>
             <button onClick={() => runAction(async () => api.connectMidenWallet())}>
               Connect Miden Wallet
             </button>
@@ -343,10 +341,6 @@ export default function App() {
             <div>
               <span className="label">Local ECDSA commitment</span>
               <strong>{snapshot.localSigners?.ecdsaCommitment ?? 'n/a'}</strong>
-            </div>
-            <div>
-              <span className="label">Para</span>
-              <strong>{snapshot.para.connected ? snapshot.para.commitment : 'Disconnected'}</strong>
             </div>
             <div>
               <span className="label">Miden Wallet</span>

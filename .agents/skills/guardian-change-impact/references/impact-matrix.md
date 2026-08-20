@@ -111,7 +111,7 @@ Validation:
 ## Browser Signer Or Example Integration
 
 Trigger:
-- Para or Miden Wallet integration
+- Miden Wallet integration
 - browser-only workflows
 - shared example adapters
 

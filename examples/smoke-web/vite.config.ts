@@ -9,19 +9,9 @@ export default defineConfig({
       'react',
       'react-dom',
       '@tanstack/react-query',
-      'viem',
-      '@miden-sdk/react',
       '@miden-sdk/miden-sdk',
     ],
     alias: [
-      {
-        find: /^@getpara\/aa-.*$/,
-        replacement: path.resolve(__dirname, 'getpara-aa-stub.mjs'),
-      },
-      {
-        find: /^@getpara\/(evm|solana|cosmos)-wallet-connectors$/,
-        replacement: path.resolve(__dirname, 'getpara-wallet-connectors-stub.mjs'),
-      },
       { find: '@', replacement: path.resolve(__dirname, './src') },
       {
         find: '@multisig-browser',

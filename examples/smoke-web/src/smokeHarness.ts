@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
-import { useModal } from '@getpara/react-sdk-lite';
 import { MidenWalletAdapter } from '@demox-labs/miden-wallet-adapter-miden';
 import { NoteType } from '@miden-sdk/miden-sdk';
 import type { MidenClient } from '@miden-sdk/miden-sdk';
@@ -44,7 +43,6 @@ import {
   registerOnGuardianWithState,
   resolveLocalSigner,
   resolveMidenWalletSigner,
-  resolveParaSigner,
   serializeConsumableNote,
   serializeDetectedMultisigConfig,
   serializeExternalWalletState,
@@ -54,7 +52,6 @@ import {
   signProposalOffline as signOfflineProposal,
   syncAll,
   useMidenWallet,
-  useParaSession,
   verifyStateCommitment,
   type BrowserSessionSnapshot,
   type CustomProposalRecipe,
@@ -127,7 +124,6 @@ export interface SignProposalOfflineInput {
 
 export interface SmokeApi {
   initSession(input: InitSessionInput): Promise<BrowserSessionSnapshot>;
-  connectPara(): Promise<BrowserSessionSnapshot>;
   connectMidenWallet(): Promise<BrowserSessionSnapshot>;
   status(): Promise<BrowserSessionSnapshot>;
   createAccount(input: CreateAccountInput): Promise<BrowserSessionSnapshot>;
@@ -187,7 +183,6 @@ interface SnapshotState {
   bootError: string | null;
   guardianPubkey: string | null;
   localSigners: SignerInfo | null;
-  paraSession: ExternalWalletState;
   midenWalletSession: ExternalWalletState;
   multisig: Multisig | null;
   guardianState: AccountState | null;
@@ -315,7 +310,6 @@ function buildSnapshot(state: SnapshotState): BrowserSessionSnapshot {
     signatureScheme: state.sessionConfig.signatureScheme,
     guardianPubkey: state.guardianPubkey,
     localSigners: state.localSigners ? serializeSignerInfo(state.localSigners) : null,
-    para: serializeExternalWalletState(state.paraSession),
     midenWallet: serializeExternalWalletState(state.midenWalletSession),
     multisig: state.multisig
       ? {
@@ -406,12 +400,6 @@ export function useSmokeHarness(): {
   const [midenWalletAdapter] = useState(
     () => new MidenWalletAdapter({ appName: DEFAULT_APP_NAME }),
   );
-  const { openModal } = useModal();
-  const {
-    session: paraSession,
-    paraClient,
-    walletId: paraWalletId,
-  } = useParaSession(sessionConfig.midenRpcEndpoint);
   const {
     session: midenWalletSession,
     connect: connectMidenWallet,
@@ -419,12 +407,7 @@ export function useSmokeHarness(): {
     signBytes,
     connectError: midenWalletConnectError,
   } = useMidenWallet(midenWalletAdapter);
-  const paraSessionRef = useRef(paraSession);
   const midenWalletSessionRef = useRef(midenWalletSession);
-
-  useEffect(() => {
-    paraSessionRef.current = paraSession;
-  }, [paraSession]);
 
   useEffect(() => {
     midenWalletSessionRef.current = midenWalletSession;
@@ -465,7 +448,6 @@ export function useSmokeHarness(): {
         bootError: bootErrorRef.current,
         guardianPubkey: guardianPubkeyRef.current,
         localSigners: localSignersRef.current,
-        paraSession: paraSessionRef.current,
         midenWalletSession: midenWalletSessionRef.current,
         multisig: multisigRef.current,
         guardianState: guardianStateRef.current,
@@ -489,7 +471,6 @@ export function useSmokeHarness(): {
       midenWalletSessionRef,
       multisigClientRef,
       multisigRef,
-      paraSessionRef,
       proposalsRef,
       sessionConfigRef,
       webClientRef,
@@ -537,25 +518,7 @@ export function useSmokeHarness(): {
       source: WalletSource = sessionConfigRef.current.signerSource,
       signatureScheme: SignatureScheme = sessionConfigRef.current.signatureScheme,
     ): ResolvedSigner => {
-      const currentParaSession = paraSessionRef.current;
       const currentMidenWalletSession = midenWalletSessionRef.current;
-
-      if (source === 'para') {
-        if (!paraClient || !currentParaSession.commitment || !currentParaSession.publicKey) {
-          throw new Error('Para wallet is not connected');
-        }
-
-        if (!paraWalletId) {
-          throw new Error('Para wallet did not expose a wallet id');
-        }
-
-        return resolveParaSigner({
-          paraClient,
-          walletId: paraWalletId,
-          commitment: currentParaSession.commitment,
-          publicKey: currentParaSession.publicKey,
-        });
-      }
 
       if (source === 'miden-wallet') {
         if (
@@ -583,9 +546,6 @@ export function useSmokeHarness(): {
     [
       localSignersRef,
       midenWalletSessionRef,
-      paraClient,
-      paraSessionRef,
-      paraWalletId,
       sessionConfigRef,
       signBytes,
     ],
@@ -782,30 +742,6 @@ export function useSmokeHarness(): {
     async (input: InitSessionInput): Promise<BrowserSessionSnapshot> =>
       bootSession(normalizeSessionInput(input), 'initSession'),
     [bootSession],
-  );
-
-  const connectParaSession = useCallback(
-    async (): Promise<BrowserSessionSnapshot> =>
-      withCommand('connectPara', async () => {
-        if (!paraSessionRef.current.connected) {
-          openModal();
-          await waitForCondition(() => paraSessionRef.current.connected);
-        }
-
-        const nextConfig: SessionConfig = {
-          ...sessionConfigRef.current,
-          signerSource: 'para',
-          signatureScheme: 'ecdsa',
-        };
-        setSessionConfig(nextConfig);
-
-        return buildCurrentSnapshot({
-          sessionConfig: nextConfig,
-          paraSession: paraSessionRef.current,
-          lastError: null,
-        });
-      }),
-    [buildCurrentSnapshot, openModal, sessionConfigRef, withCommand],
   );
 
   const connectMidenWalletSession = useCallback(
@@ -1462,7 +1398,6 @@ export function useSmokeHarness(): {
 
   const api: SmokeApi = {
     initSession,
-    connectPara: connectParaSession,
     connectMidenWallet: connectMidenWalletSession,
     status,
     createAccount,
