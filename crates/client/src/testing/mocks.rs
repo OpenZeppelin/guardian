@@ -27,6 +27,8 @@ pub struct MockGuardianService {
     get_delta_since_response: Arc<StdMutex<Option<Result<GetDeltaSinceResponse, Status>>>>,
     get_transaction_history_response:
         Arc<StdMutex<Option<Result<GetTransactionHistoryResponse, Status>>>>,
+    get_transaction_history_requests:
+        Arc<StdMutex<Vec<(GetTransactionHistoryRequest, i64, String)>>>,
     get_state_responses: Arc<StdMutex<Vec<Result<GetStateResponse, Status>>>>,
     get_state_auth_headers: Arc<StdMutex<Vec<(i64, String)>>>,
     get_account_by_key_commitment_response:
@@ -114,6 +116,16 @@ impl MockGuardianService {
     /// into `start_mock_server` to observe per-attempt auth metadata.
     pub fn get_state_auth_headers_handle(&self) -> Arc<StdMutex<Vec<(i64, String)>>> {
         self.get_state_auth_headers.clone()
+    }
+
+    /// Requests seen by `get_transaction_history`, each with the
+    /// `x-timestamp` and `x-signature` metadata it carried, so tests
+    /// can assert the outgoing message and auth instead of only the
+    /// response mapping.
+    pub fn get_transaction_history_requests_handle(
+        &self,
+    ) -> Arc<StdMutex<Vec<(GetTransactionHistoryRequest, i64, String)>>> {
+        self.get_transaction_history_requests.clone()
     }
 
     pub fn with_get_account_by_key_commitment(
@@ -344,8 +356,26 @@ impl Guardian for MockGuardianService {
 
     async fn get_transaction_history(
         &self,
-        _request: Request<GetTransactionHistoryRequest>,
+        request: Request<GetTransactionHistoryRequest>,
     ) -> Result<Response<GetTransactionHistoryResponse>, Status> {
+        let timestamp = request
+            .metadata()
+            .get("x-timestamp")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default();
+        let signature = request
+            .metadata()
+            .get("x-signature")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        self.get_transaction_history_requests.lock().unwrap().push((
+            request.get_ref().clone(),
+            timestamp,
+            signature,
+        ));
+
         let response = self
             .get_transaction_history_response
             .lock()

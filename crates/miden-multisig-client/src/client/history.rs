@@ -63,43 +63,51 @@ pub struct HistoryDecodeWarning {
     pub reason: String,
 }
 
-fn note_from_proto(note: ProtoHistoryNote) -> HistoryNote {
-    HistoryNote {
-        note_id: note.note_id,
-        tag: note.tag,
-        assets: note
-            .assets
-            .into_iter()
-            .map(|asset| HistoryNoteAsset {
-                asset_id: asset.asset_id,
-                kind: asset.kind,
-                amount: asset.amount,
-            })
-            .collect(),
-        sender: note.sender,
-        recipient: note.recipient,
+impl HistoryNote {
+    fn from_proto(note: ProtoHistoryNote) -> Self {
+        Self {
+            note_id: note.note_id,
+            tag: note.tag,
+            assets: note
+                .assets
+                .into_iter()
+                .map(|asset| HistoryNoteAsset {
+                    asset_id: asset.asset_id,
+                    kind: asset.kind,
+                    amount: asset.amount,
+                })
+                .collect(),
+            sender: note.sender,
+            recipient: note.recipient,
+        }
     }
 }
 
-fn entry_from_proto(entry: ProtoHistoryEntry) -> HistoryEntry {
-    HistoryEntry {
-        nonce: entry.nonce,
-        timestamp: entry.timestamp,
-        new_commitment: entry.new_commitment,
-        input_notes: entry.input_notes.into_iter().map(note_from_proto).collect(),
-        output_notes: entry
-            .output_notes
-            .into_iter()
-            .map(note_from_proto)
-            .collect(),
-        decode_warnings: entry
-            .decode_warnings
-            .into_iter()
-            .map(|warning| HistoryDecodeWarning {
-                section: warning.section,
-                reason: warning.reason,
-            })
-            .collect(),
+impl HistoryEntry {
+    fn from_proto(entry: ProtoHistoryEntry) -> Self {
+        Self {
+            nonce: entry.nonce,
+            timestamp: entry.timestamp,
+            new_commitment: entry.new_commitment,
+            input_notes: entry
+                .input_notes
+                .into_iter()
+                .map(HistoryNote::from_proto)
+                .collect(),
+            output_notes: entry
+                .output_notes
+                .into_iter()
+                .map(HistoryNote::from_proto)
+                .collect(),
+            decode_warnings: entry
+                .decode_warnings
+                .into_iter()
+                .map(|warning| HistoryDecodeWarning {
+                    section: warning.section,
+                    reason: warning.reason,
+                })
+                .collect(),
+        }
     }
 }
 
@@ -125,8 +133,68 @@ impl MultisigClient {
             .map_err(|e| MultisigError::GuardianServer(format!("failed to get history: {}", e)))?;
 
         Ok(HistoryPage {
-            entries: response.entries.into_iter().map(entry_from_proto).collect(),
+            entries: response
+                .entries
+                .into_iter()
+                .map(HistoryEntry::from_proto)
+                .collect(),
             next_cursor: response.next_cursor,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use guardian_client::{HistoryDecodeWarning as ProtoWarning, HistoryNoteAsset as ProtoAsset};
+
+    #[test]
+    fn entry_from_proto_maps_every_field() {
+        let entry = HistoryEntry::from_proto(ProtoHistoryEntry {
+            nonce: 7,
+            timestamp: "2026-08-19T12:00:07Z".to_string(),
+            new_commitment: Some("0xnew".to_string()),
+            input_notes: vec![ProtoHistoryNote {
+                note_id: "0xin".to_string(),
+                tag: "custom".to_string(),
+                assets: vec![],
+                sender: None,
+                recipient: None,
+            }],
+            output_notes: vec![ProtoHistoryNote {
+                note_id: "0xout".to_string(),
+                tag: "p2id".to_string(),
+                assets: vec![ProtoAsset {
+                    asset_id: "0xfaucet".to_string(),
+                    kind: "fungible".to_string(),
+                    amount: Some("100".to_string()),
+                }],
+                sender: Some("0xsender".to_string()),
+                recipient: Some("0xrecipient".to_string()),
+            }],
+            decode_warnings: vec![ProtoWarning {
+                section: "tx_summary".to_string(),
+                reason: "malformed_tx_summary".to_string(),
+            }],
+        });
+
+        assert_eq!(entry.nonce, 7);
+        assert_eq!(entry.timestamp, "2026-08-19T12:00:07Z");
+        assert_eq!(entry.new_commitment.as_deref(), Some("0xnew"));
+        assert_eq!(entry.input_notes.len(), 1);
+        assert_eq!(entry.input_notes[0].note_id, "0xin");
+        assert_eq!(entry.input_notes[0].tag, "custom");
+        assert!(entry.input_notes[0].sender.is_none());
+        let out = &entry.output_notes[0];
+        assert_eq!(out.note_id, "0xout");
+        assert_eq!(out.tag, "p2id");
+        assert_eq!(out.assets[0].asset_id, "0xfaucet");
+        assert_eq!(out.assets[0].kind, "fungible");
+        assert_eq!(out.assets[0].amount.as_deref(), Some("100"));
+        assert_eq!(out.sender.as_deref(), Some("0xsender"));
+        assert_eq!(out.recipient.as_deref(), Some("0xrecipient"));
+        assert_eq!(entry.decode_warnings.len(), 1);
+        assert_eq!(entry.decode_warnings[0].section, "tx_summary");
+        assert_eq!(entry.decode_warnings[0].reason, "malformed_tx_summary");
     }
 }

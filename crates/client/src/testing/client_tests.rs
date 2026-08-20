@@ -455,6 +455,7 @@ async fn test_get_transaction_history_success() {
         },
     ));
 
+    let requests = service.get_transaction_history_requests_handle();
     let endpoint = start_mock_server(service).await.unwrap();
     let signer = create_test_signer();
     let mut client = GuardianClient::connect(endpoint)
@@ -465,7 +466,7 @@ async fn test_get_transaction_history_success() {
     let account_id = create_test_account_id();
 
     let response = client
-        .get_transaction_history(&account_id, Some(10), None)
+        .get_transaction_history(&account_id, Some(10), Some("prev-cursor".to_string()))
         .await
         .expect("get_transaction_history should succeed");
     assert!(response.success);
@@ -473,6 +474,20 @@ async fn test_get_transaction_history_success() {
     assert_eq!(response.entries[0].nonce, 3);
     assert_eq!(response.entries[0].output_notes[0].tag, "p2id");
     assert_eq!(response.next_cursor.as_deref(), Some("cursor-token"));
+
+    // The mock records what actually went over the wire: the request
+    // message and its auth metadata, not just the mapped response.
+    let recorded = requests.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    let (request, timestamp, signature) = &recorded[0];
+    assert_eq!(request.account_id, account_id.to_string());
+    assert_eq!(request.limit, Some(10));
+    assert_eq!(request.cursor.as_deref(), Some("prev-cursor"));
+    assert!(*timestamp > 0, "auth timestamp metadata must be attached");
+    assert!(
+        signature.starts_with("0x") && signature.len() > 2,
+        "auth signature metadata must be attached"
+    );
 }
 
 #[tokio::test]

@@ -4745,7 +4745,7 @@
       },
       "DecodedNote": {
         "type": "object",
-        "description": "Detail-view types used by the per-delta endpoint; not built by the\nlisting path.",
+        "description": "Decoded note summary shared by the dashboard per-delta detail\nendpoint and the client transaction-history feed\n(`HistoryEntry.input_notes` / `output_notes`); not built by the\ndashboard listing path.",
         "required": [
           "note_id",
           "tag",

@@ -986,7 +986,11 @@ describe('GuardianHttpClient', () => {
       // of its query struct: only account_id when limit/cursor are
       // omitted, and limit as a string when present.
       const signRequest = mockSigner.signRequest as ReturnType<typeof vi.fn>;
-      const authPayload = signRequest.mock.calls.at(-1)![2];
+      const lastCall = signRequest.mock.calls.at(-1);
+      if (lastCall === undefined) {
+        throw new Error('Expected signRequest to be called');
+      }
+      const authPayload = lastCall[2];
       expect(authPayload.toCanonicalJson()).toBe(JSON.stringify({ account_id: accountId }));
     });
 
@@ -1004,7 +1008,11 @@ describe('GuardianHttpClient', () => {
         expect.anything()
       );
       const signRequest = mockSigner.signRequest as ReturnType<typeof vi.fn>;
-      const authPayload = signRequest.mock.calls.at(-1)![2];
+      const lastCall = signRequest.mock.calls.at(-1);
+      if (lastCall === undefined) {
+        throw new Error('Expected signRequest to be called');
+      }
+      const authPayload = lastCall[2];
       expect(authPayload.toCanonicalJson()).toBe(
         JSON.stringify({ account_id: accountId, cursor: 'abc123', limit: '10' })
       );

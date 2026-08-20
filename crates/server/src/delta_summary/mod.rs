@@ -176,8 +176,10 @@ pub struct ProposalMetadata {
     pub target_procedure: Option<String>,
 }
 
-/// Detail-view types used by the per-delta endpoint; not built by the
-/// listing path.
+/// Decoded note summary shared by the dashboard per-delta detail
+/// endpoint and the client transaction-history feed
+/// (`HistoryEntry.input_notes` / `output_notes`); not built by the
+/// dashboard listing path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DecodedNote {
     pub note_id: String,

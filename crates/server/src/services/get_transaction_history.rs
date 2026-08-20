@@ -104,15 +104,18 @@ pub async fn get_transaction_history(
     state: &AppState,
     params: GetTransactionHistoryParams,
 ) -> Result<PagedResult<HistoryEntry>> {
-    // `last_nonce` is the only payload an AccountHistory cursor
-    // carries; a kind-valid cursor without it must be rejected rather
-    // than silently restarting from page 1 (a resume loop would then
-    // re-read the first page forever).
+    // An AccountHistory cursor carries `last_nonce` plus the account
+    // it was minted for. A kind-valid cursor without a resume position
+    // must be rejected rather than silently restarting from page 1 (a
+    // resume loop would then re-read the first page forever), and a
+    // cursor minted for a different account must not be replayed here.
     if let Some(c) = params.cursor.as_ref()
-        && (c.kind != CursorKind::AccountHistory || c.last_nonce.is_none())
+        && (c.kind != CursorKind::AccountHistory
+            || c.last_nonce.is_none()
+            || c.last_account_id.as_deref() != Some(params.account_id.as_str()))
     {
         return Err(GuardianError::InvalidCursor(
-            "expected AccountHistory cursor with a resume position".to_string(),
+            "expected AccountHistory cursor minted for this account".to_string(),
         ));
     }
 
@@ -152,7 +155,7 @@ pub async fn get_transaction_history(
 
     let next_cursor = if has_more {
         entries.last().map(|last| {
-            let next = Cursor::account_history(last.nonce as i64);
+            let next = Cursor::account_history(last.nonce as i64, params.account_id.clone());
             cursor::encode(&next, state.dashboard.cursor_secret())
         })
     } else {
@@ -250,7 +253,7 @@ mod tests {
         let empty = Cursor {
             kind: CursorKind::AccountHistory,
             last_nonce: None,
-            last_account_id: None,
+            last_account_id: Some("0xacc".to_string()),
             last_updated_at: None,
             last_commitment: None,
         };
@@ -258,6 +261,19 @@ mod tests {
             &state,
             GetTransactionHistoryParams {
                 cursor: Some(empty),
+                ..params.clone()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GuardianError::InvalidCursor(_)));
+
+        // A cursor minted for another account must not resume this one.
+        let foreign = Cursor::account_history(5, "0xother".to_string());
+        let err = get_transaction_history(
+            &state,
+            GetTransactionHistoryParams {
+                cursor: Some(foreign),
                 ..params
             },
         )
