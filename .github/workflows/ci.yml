@@ -264,9 +264,6 @@ jobs:
           - guardian-evm-client
           - guardian-operator-client
           - miden-multisig-client
-    defaults:
-      run:
-        working-directory: packages/${{ matrix.package }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
@@ -283,7 +280,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: packages/${{ matrix.package }}/package-lock.json
+          cache-dependency-path: packages/package-lock.json
 
       # The procedure-roots test shells out to
       # `cargo run --example procedure_roots -p miden-multisig-client`,
@@ -305,13 +302,37 @@ jobs:
             ${{ runner.os }}-cargo-npm-multisig-
 
       - name: Install dependencies
+        working-directory: packages
         run: npm ci
 
+      - name: Assert guardian-client is a workspace link
+        if: matrix.package == 'miden-multisig-client'
+        working-directory: packages
+        run: |
+          node <<'EOF'
+          const lock = require("./package-lock.json");
+          const entry = lock.packages["node_modules/@openzeppelin/guardian-client"];
+          if (!entry || entry.link !== true || entry.resolved !== "guardian-client") {
+            console.error(
+              "@openzeppelin/guardian-client must resolve to the workspace package, got",
+              entry,
+            );
+            process.exit(1);
+          }
+          EOF
+
+      - name: Build workspace dependencies
+        if: matrix.package == 'miden-multisig-client'
+        working-directory: packages
+        run: npm run build -w @openzeppelin/guardian-client
+
       - name: Build
-        run: npm run build
+        working-directory: packages
+        run: npm run build -w @openzeppelin/${{ matrix.package }}
 
       - name: Run tests
-        run: npm test
+        working-directory: packages
+        run: npm test -w @openzeppelin/${{ matrix.package }}
 
   clippy:
     name: Clippy

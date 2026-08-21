@@ -130,6 +130,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Build, test, and publish
+        working-directory: packages
         env:
           PACKAGES: ${{ needs.prepare.outputs.packages }}
           DRY_RUN: ${{ inputs['dry-run'] }}
@@ -159,30 +160,57 @@ jobs:
             local result=$3
             local next_index=$4
             summarize "${package_name}" "${package_version}" "${result}"
-            local remaining remaining_dir
+            local remaining
             for remaining in "${packages[@]:${next_index}}"; do
-              remaining_dir="packages/${remaining}"
-              summarize "$(jq -r '.name' "${remaining_dir}/package.json")" "$(jq -r '.version' "${remaining_dir}/package.json")" "⏭️ Not attempted"
+              summarize "$(jq -r '.name' "${remaining}/package.json")" "$(jq -r '.version' "${remaining}/package.json")" "⏭️ Not attempted"
             done
             exit 1
           }
 
+          if ! npm ci; then
+            abort "$(jq -r '.name' "${packages[0]}/package.json")" "$(jq -r '.version' "${packages[0]}/package.json")" "❌ Dependency installation failed" 1
+          fi
+
+          wait_for_npm() {
+            local package_name=$1
+            local package_version=$2
+            local attempts=0
+            local max_attempts=30
+            while (( attempts < max_attempts )); do
+              if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+                echo "${package_name}@${package_version} is visible on npm."
+                return 0
+              fi
+              attempts=$((attempts + 1))
+              echo "Waiting for ${package_name}@${package_version} on npm (${attempts}/${max_attempts})..."
+              sleep 10
+            done
+            echo "::error::Timed out waiting for ${package_name}@${package_version} on npm"
+            return 1
+          }
+
+          guardian_client_name="@openzeppelin/guardian-client"
+          guardian_client_range=$(jq -r '.dependencies["@openzeppelin/guardian-client"]' miden-multisig-client/package.json)
+
           for index in "${!packages[@]}"; do
             package="${packages[${index}]}"
-            package_dir="packages/${package}"
+            package_dir="${package}"
+            workspace_name="@openzeppelin/${package}"
             package_name=$(jq -r '.name' "${package_dir}/package.json")
             package_version=$(jq -r '.version' "${package_dir}/package.json")
             next_index=$((index + 1))
 
-            if ! (cd "${package_dir}" && npm ci); then
-              abort "${package_name}" "${package_version}" "❌ Dependency installation failed" "${next_index}"
+            if [[ "${package}" == "miden-multisig-client" ]]; then
+              if ! npm run build -w @openzeppelin/guardian-client; then
+                abort "${package_name}" "${package_version}" "❌ Workspace dependency build failed" "${next_index}"
+              fi
             fi
 
-            if ! (cd "${package_dir}" && npm run build); then
+            if ! npm run build -w "${workspace_name}"; then
               abort "${package_name}" "${package_version}" "❌ Build failed" "${next_index}"
             fi
 
-            if ! (cd "${package_dir}" && npm test); then
+            if ! npm test -w "${workspace_name}"; then
               abort "${package_name}" "${package_version}" "❌ Tests failed" "${next_index}"
             fi
 
@@ -190,14 +218,24 @@ jobs:
               echo "⚠️ ${package_name}@${package_version} is already published, skipping."
               summarize "${package_name}" "${package_version}" "⏭️ Already published"
             elif [[ "${DRY_RUN}" == "true" ]]; then
-              if (cd "${package_dir}" && npm publish --provenance --access public --dry-run); then
+              if npm publish -w "${workspace_name}" --provenance --access public --dry-run; then
                 summarize "${package_name}" "${package_version}" "✅ Dry run succeeded"
               else
                 abort "${package_name}" "${package_version}" "❌ Dry run failed" "${next_index}"
               fi
-            elif (cd "${package_dir}" && npm publish --provenance --access public); then
-              summarize "${package_name}" "${package_version}" "✅ Published"
             else
-              abort "${package_name}" "${package_version}" "❌ Publish failed" "${next_index}"
+              if [[ "${package}" == "miden-multisig-client" ]]; then
+                if [[ -z "${guardian_client_range}" || "${guardian_client_range}" == "null" ]]; then
+                  abort "${package_name}" "${package_version}" "❌ Missing ${guardian_client_name} dependency" "${next_index}"
+                fi
+                if ! wait_for_npm "${guardian_client_name}" "${guardian_client_range}"; then
+                  abort "${package_name}" "${package_version}" "❌ Timed out waiting for ${guardian_client_name}@${guardian_client_range} on npm" "${next_index}"
+                fi
+              fi
+              if npm publish -w "${workspace_name}" --provenance --access public; then
+                summarize "${package_name}" "${package_version}" "✅ Published"
+              else
+                abort "${package_name}" "${package_version}" "❌ Publish failed" "${next_index}"
+              fi
             fi
           done

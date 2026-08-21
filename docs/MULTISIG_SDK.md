@@ -1281,21 +1281,23 @@ cargo test --locked \
   -p miden-multisig-client
 
 # TypeScript
-cd packages/guardian-client && npm test
-cd packages/guardian-evm-client && npm test
-cd packages/guardian-operator-client && npm test
-cd packages/miden-multisig-client && npm test
-cd packages/guardian-operator-client && npm test
+cd packages
+npm ci
+npm test -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/guardian-evm-client
+npm test -w @openzeppelin/guardian-operator-client
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
 ```
 
 2. TypeScript packages build cleanly:
 
 ```bash
-cd packages/guardian-client && npm run build
-cd packages/guardian-evm-client && npm run build
-cd packages/guardian-operator-client && npm run build
-cd packages/miden-multisig-client && npm run build
-cd packages/guardian-operator-client && npm run build
+cd packages
+npm run build -w @openzeppelin/guardian-client
+npm run build -w @openzeppelin/guardian-evm-client
+npm run build -w @openzeppelin/guardian-operator-client
+npm run build -w @openzeppelin/miden-multisig-client
 ```
 
 3. Version numbers are updated in all files (see below).
@@ -1324,9 +1326,18 @@ Update the version in these files:
 | `packages/guardian-evm-client/package.json` | `version` | - |
 | `packages/guardian-operator-client/package.json` | `version` | - |
 | `packages/miden-multisig-client/package.json` | `version` + `@openzeppelin/guardian-client` dep version | - |
-| `packages/guardian-operator-client/package.json` | `version` | - |
+| `packages/package-lock.json` | workspace lockfile | refresh with `npm install` in `packages/` |
 
 The `server`, `miden-rpc-client`, `miden-keystore`, and example crates have their own independent versions and are not published.
+
+After bumping TypeScript versions, refresh the workspace lockfile:
+
+```bash
+cd packages
+npm install
+```
+
+The lockfile records a workspace link for `@openzeppelin/guardian-client`, not an npm tarball, so it does not need the new client version to exist on the registry.
 
 ### Publishing Rust Crates
 
@@ -1373,26 +1384,25 @@ workflow has no registry-token fallback.
 
 ### Publishing TypeScript Packages
 
-Publish in dependency order:
+Packages live in the `packages/` npm workspace. Install once from that directory, then publish in dependency order. `miden-multisig-client` links the in-repo `@openzeppelin/guardian-client`; the published `package.json` still carries the `^` version range for consumers.
 
 ```bash
+cd packages
+npm ci
+
 # 1. Build TypeScript packages
-cd packages/guardian-client && npm run build
-cd packages/guardian-evm-client && npm run build
-cd packages/guardian-operator-client && npm run build
-cd packages/miden-multisig-client && npm run build
-cd packages/guardian-operator-client && npm run build
+npm run build -w @openzeppelin/guardian-client
+npm run build -w @openzeppelin/guardian-evm-client
+npm run build -w @openzeppelin/guardian-operator-client
+npm run build -w @openzeppelin/miden-multisig-client
 
 # 2. Publish base clients first (no internal deps)
-cd packages/guardian-client && npm publish --access public
-cd packages/guardian-evm-client && npm publish --access public
-cd packages/guardian-operator-client && npm publish --access public
+npm publish -w @openzeppelin/guardian-client --access public
+npm publish -w @openzeppelin/guardian-evm-client --access public
+npm publish -w @openzeppelin/guardian-operator-client --access public
 
 # 3. Publish miden-multisig-client (depends on guardian-client)
-cd packages/miden-multisig-client && npm publish --access public
-
-# 4. Publish operator-client (no internal dependencies)
-cd packages/guardian-operator-client && npm publish --access public
+npm publish -w @openzeppelin/miden-multisig-client --access public
 ```
 
 Publishing a GitHub release runs the `Publish NPM Packages` workflow for all

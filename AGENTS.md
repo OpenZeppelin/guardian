@@ -160,11 +160,16 @@ cargo test -p guardian-server --features e2e
 
 ### TypeScript
 
+TypeScript packages live in an npm workspace under `packages/`. Install once from that directory, then test with `-w`. `miden-multisig-client` links the in-repo `@openzeppelin/guardian-client`; build that package first.
+
 ```bash
-cd packages/guardian-client && npm test
-cd packages/guardian-operator-client && npm test
-cd packages/guardian-evm-client && npm test
-cd packages/miden-multisig-client && npm test
+cd packages
+npm ci
+npm test -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/guardian-operator-client
+npm test -w @openzeppelin/guardian-evm-client
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
 ```
 
 ### Examples (smoke/integration)

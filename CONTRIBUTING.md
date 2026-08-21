@@ -109,11 +109,14 @@ cargo test -p guardian-server --features e2e
 POSTGRES_PASSWORD=guardian docker compose -f docker-compose.postgres.yml up -d postgres
 ./scripts/test-postgres.sh
 
-# TypeScript (per package)
-cd packages/guardian-client && npm install && npm test
-cd packages/miden-multisig-client && npm install && npm test
-cd packages/guardian-evm-client && npm install && npm test
-cd packages/guardian-operator-client && npm install && npm test
+# TypeScript (packages/ npm workspace; build guardian-client before miden-multisig-client)
+cd packages
+npm ci
+npm test -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/guardian-evm-client
+npm test -w @openzeppelin/guardian-operator-client
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
 
 # Examples (manual)
 cd examples/demo && cargo run --release   # Rust TUI multisig flow

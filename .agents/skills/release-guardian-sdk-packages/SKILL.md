@@ -14,13 +14,10 @@ Read the current source of truth at the start of every release task:
 - `crates/contracts/Cargo.toml`
 - `crates/miden-multisig-client/Cargo.toml`
 - `packages/guardian-client/package.json`
-- `packages/guardian-client/package-lock.json`
 - `packages/guardian-evm-client/package.json`
-- `packages/guardian-evm-client/package-lock.json`
 - `packages/miden-multisig-client/package.json`
-- `packages/miden-multisig-client/package-lock.json`
 - `packages/guardian-operator-client/package.json`
-- `packages/guardian-operator-client/package-lock.json`
+- `packages/package-lock.json`
 - `references/release-surface.md`
 
 Trust these sources in this order:
@@ -101,16 +98,14 @@ For a coordinated release, update all of these:
 - `packages/miden-multisig-client/package.json` `@openzeppelin/guardian-client` dependency range
 - `packages/guardian-operator-client/package.json` `version`
 
-After editing TypeScript versions, refresh lockfiles from the package directories:
+After editing TypeScript versions, refresh the workspace lockfile:
 
 ```bash
-cd packages/guardian-client && npm install --package-lock-only
-cd packages/guardian-evm-client && npm install --package-lock-only
-cd packages/miden-multisig-client && npm install --package-lock-only
-cd packages/guardian-operator-client && npm install --package-lock-only
+cd packages
+npm install
 ```
 
-Inspect the resulting lockfile diff. Keep the refresh focused on version and dependency metadata.
+Inspect the resulting lockfile diff. Keep the refresh focused on version and dependency metadata. `@openzeppelin/guardian-client` must remain a workspace link (`resolved: "guardian-client"`, `link: true`), not a registry tarball.
 
 ## Validation
 
@@ -124,14 +119,16 @@ cargo test -p miden-multisig-client
 ```
 
 ```bash
-cd packages/guardian-client && npm test
-cd packages/guardian-client && npm run build
-cd packages/guardian-evm-client && npm test
-cd packages/guardian-evm-client && npm run build
-cd packages/miden-multisig-client && npm test
-cd packages/miden-multisig-client && npm run build
-cd packages/guardian-operator-client && npm test
-cd packages/guardian-operator-client && npm run build
+cd packages
+npm ci
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/guardian-client
+npm run build -w @openzeppelin/guardian-evm-client
+npm test -w @openzeppelin/guardian-evm-client
+npm run build -w @openzeppelin/miden-multisig-client
+npm test -w @openzeppelin/miden-multisig-client
+npm run build -w @openzeppelin/guardian-operator-client
+npm test -w @openzeppelin/guardian-operator-client
 ```
 
 Then check that each publishable README still matches its shipped surface.
@@ -158,10 +155,11 @@ cargo publish --dry-run --locked \
 ```
 
 ```bash
-cd packages/guardian-client && npm publish --access public --dry-run
-cd packages/guardian-evm-client && npm publish --access public --dry-run
-cd packages/miden-multisig-client && npm publish --access public --dry-run
-cd packages/guardian-operator-client && npm publish --access public --dry-run
+cd packages
+npm publish -w @openzeppelin/guardian-client --access public --dry-run
+npm publish -w @openzeppelin/guardian-evm-client --access public --dry-run
+npm publish -w @openzeppelin/miden-multisig-client --access public --dry-run
+npm publish -w @openzeppelin/guardian-operator-client --access public --dry-run
 ```
 
 If a dry-run or test fails, stop there and report the failing step, package, and minimal next action.
