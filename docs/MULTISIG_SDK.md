@@ -572,6 +572,49 @@ account executed elsewhere is not included. Output notes whose full
 details are not in the stored summary (e.g. private notes carried as
 partial notes) appear with `tag: 'custom'` and no recipient.
 
+### Draining the Private-Note Transport Backlog
+
+After recovery on a fresh device the local store has no note-transport
+cursor — and in a store shared with other accounts, sync may have advanced
+the cursor past private notes addressed to the newly recovered account.
+Normal sync then never revisits them. `drainPrivateNoteBacklog` rescans the
+full transport backlog for every tracked note tag, regardless of the stored
+cursor (issue #414):
+
+```typescript
+import { drainPrivateNoteBacklog } from '@openzeppelin/miden-multisig-client';
+
+// Run after load(): the drain only sees note tags tracked in the store,
+// and load() inserting the account is what tracks its tag.
+const multisig = await client.load(accountId, signer);
+
+// Pass the SAME MidenClient instance that was injected into MultisigClient —
+// a different instance has a different store, without the tracked tag.
+const report = await drainPrivateNoteBacklog(midenClient);
+if (report.status === 'completed') {
+  console.log(`Recovered ${report.imported} private note(s) from the transport`);
+} else if (report.status === 'unavailable') {
+  // Transport disabled or unreachable — reported, never thrown, so the rest
+  // of the recovery flow proceeds without transport notes.
+  console.warn('Note transport unavailable:', report.reason);
+} else if (report.retryable) {
+  // 'failed' with retryable: partial progress is kept (already-imported
+  // batches stay imported); rerunning the drain continues where it got to.
+}
+```
+
+The drain is idempotent and never regresses the stored transport cursor, so
+it is safe to run repeatedly and to combine with normal sync. `unavailable`
+always means nothing was imported; a drain interrupted mid-way (connection
+lost after some batches landed) reports `failed` with the partial count
+kept, and rerunning continues it.
+
+**Not a backup:** transport recovery is bounded by the transport service's
+retention. Senders may deliver private notes out-of-band without using the
+transport, and relayed blobs are pruned after the retention window. Notes
+outside both are recoverable only from their sender (see the note
+export/import helpers).
+
 ### Proposal Operations
 
 Every `create*Proposal` method takes a single trailing options object (issue
@@ -751,6 +794,12 @@ await multisig.executeProposal(signedProposal.id);
 | `load(accountId, signer)` | Load existing account from GUARDIAN |
 | `recoverByKey(signer)` | Discover accounts that authorize the signer's key and fetch each current state |
 | `guardianClient` | Access to underlying GUARDIAN HTTP client |
+
+Standalone functions:
+
+| Function | Description |
+|----------|-------------|
+| `drainPrivateNoteBacklog(midenClient)` | Rescan the full private-note transport backlog for tracked tags after recovery; returns a `TransportRecoveryReport` (`completed` / `unavailable` / `failed`) instead of throwing on transport problems |
 
 #### Multisig
 
@@ -935,6 +984,53 @@ Output notes whose full details are not in the stored summary (e.g.
 private notes carried as partial notes) appear with tag `custom` and no
 recipient.
 
+### Draining the Private-Note Transport Backlog
+
+After recovery on a fresh device the local store has no note-transport
+cursor — and in a store shared with other accounts, sync may have advanced
+the cursor past private notes addressed to the newly recovered account.
+Normal sync then never revisits them. `drain_private_note_backlog` rescans
+the full transport backlog for every tracked note tag, regardless of the
+stored cursor (issue #414):
+
+```rust
+use miden_multisig_client::TransportRecoveryStatus;
+
+// Run after pull_account(): the drain only sees note tags tracked in the
+// store, and pull_account() inserting the account is what tracks its tag.
+client.pull_account(account_id).await?;
+
+let report = client.drain_private_note_backlog().await?;
+match report.status {
+    TransportRecoveryStatus::Completed => {
+        println!("Recovered {} private note(s) from the transport", report.imported);
+    }
+    TransportRecoveryStatus::Unavailable => {
+        // Transport disabled or unreachable — reported, never returned as an
+        // error, so the rest of the recovery flow proceeds without it.
+        eprintln!("Note transport unavailable: {:?}", report.reason);
+    }
+    TransportRecoveryStatus::Failed if report.retryable => {
+        // Partial progress is kept (already-imported batches stay imported);
+        // rerunning the drain continues where it got to.
+    }
+    TransportRecoveryStatus::Failed => {}
+}
+```
+
+The drain is idempotent and never regresses the stored transport cursor, so
+it is safe to run repeatedly and to combine with normal sync. `Unavailable`
+always means nothing was imported; a drain interrupted mid-way (connection
+lost after some batches landed) reports `Failed` with the partial count
+kept, and rerunning continues it. An `Err` from the method means the local
+store itself failed, not the transport.
+
+**Not a backup:** transport recovery is bounded by the transport service's
+retention. Senders may deliver private notes out-of-band without using the
+transport, and relayed blobs are pruned after the retention window. Notes
+outside both are recoverable only from their sender (see
+`import_note_from_file`).
+
 ### Transaction Types
 
 ```rust
@@ -1115,6 +1211,7 @@ full note, so a post-commit sync is enough.
 | `user_commitment()` | Get user's key commitment |
 | `user_commitment_hex()` | Get commitment as hex |
 | `recover_by_key()` | Discover accounts that authorize the configured signer and fetch each current state |
+| `drain_private_note_backlog()` | Rescan the full private-note transport backlog for tracked tags after recovery; returns a `TransportRecoveryReport` (`Completed` / `Unavailable` / `Failed`) instead of erroring on transport problems |
 | `propose_transaction(tx)` | Create and submit proposal |
 | `propose_with_fallback(tx)` | Online or offline proposal |
 | `list_proposals()` | List pending proposals |

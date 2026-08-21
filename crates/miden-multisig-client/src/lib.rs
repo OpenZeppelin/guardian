@@ -67,7 +67,7 @@ pub use client::{
     ConsumableNote, HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry,
     HistoryEntryStatus, HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility,
     HistoryPage, MultisigClient, NoteFilter, ProposalResult, RecoveredAccount,
-    StateVerificationResult,
+    StateVerificationResult, TransportRecoveryReport, TransportRecoveryStatus,
 };
 
 // Procedures

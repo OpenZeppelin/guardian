@@ -171,6 +171,38 @@ several accounts, and the helper surfaces all of them rather than silently
 picking one. The returned list is empty (not an error) when no account
 authorizes the queried commitment.
 
+### Drain The Private-Note Transport Backlog
+
+After recovery on a fresh device the local store has no note-transport
+cursor — and in a store shared with other accounts, sync may have advanced
+the cursor past private notes addressed to the newly recovered account.
+`drainPrivateNoteBacklog` rescans the full transport backlog for every
+tracked note tag, regardless of the stored cursor. Run it after `load()`:
+the drain only sees tags tracked in the store, and `load()` inserting the
+account is what tracks its tag.
+
+```typescript
+import { drainPrivateNoteBacklog } from '@openzeppelin/miden-multisig-client';
+
+const multisig = await client.load(accountId, signer);
+// Pass the SAME MidenClient instance that was injected into MultisigClient.
+const report = await drainPrivateNoteBacklog(midenClient);
+// report.status: 'completed' | 'unavailable' | 'failed'
+// report.imported: number of newly imported note records
+```
+
+Transport problems are reported in the result, never thrown: `unavailable`
+means the injected `MidenClient` has no `noteTransportUrl` configured or the
+transport could not be reached before anything was imported; `failed` with
+`retryable: true` keeps any partial progress and rerunning the drain
+continues it. The drain is idempotent and never regresses the stored
+transport cursor.
+
+Transport recovery is **not a backup**: it is bounded by the transport
+service's retention. Senders may deliver private notes out-of-band without
+using the transport, and relayed blobs are pruned after the retention
+window.
+
 ### Fetch Account State
 
 ```typescript

@@ -49,6 +49,11 @@ export {
   type MultisigClientConfig,
   type RecoveredAccount,
 } from './client.js';
+export {
+  drainPrivateNoteBacklog,
+  type TransportRecoveryReport,
+  type TransportRecoveryStatus,
+} from './recovery.js';
 export type { ProverConfig, ProverRetryPolicy } from './prover/config.js';
 export type { RpcConfig, RpcRetryPolicy } from './rpc/config.js';
 export { lookupAuthDigest } from './lookupAuth.js';
