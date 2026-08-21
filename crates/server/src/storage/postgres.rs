@@ -2896,8 +2896,14 @@ mod tests {
             delta.status = DeltaStatus::canonical(now.clone());
             service.submit_delta(&delta).await.expect("canonical");
         }
+        // Backdate the candidate far outside any "recent" window: the
+        // suite shares one database and the recent-candidate scan is
+        // global, so a fresh candidate here would leak into concurrent
+        // tests that page that scan (e.g.
+        // pull_candidate_deltas_filters_in_the_store).
         let mut candidate = create_test_delta(&account_id, 6);
-        candidate.status = DeltaStatus::candidate(now.clone());
+        candidate.status =
+            DeltaStatus::candidate((chrono::Utc::now() - chrono::TimeDelta::hours(1)).to_rfc3339());
         service.submit_delta(&candidate).await.expect("candidate");
         let mut discarded = create_test_delta(&account_id, 7);
         discarded.status = DeltaStatus::Discarded {
@@ -2928,6 +2934,20 @@ mod tests {
             vec![2, 1],
             "cursor resumes strictly below last_nonce",
         );
+
+        // Suite hygiene: the database is shared across tests in this
+        // run, so remove this test's rows once assertions pass.
+        let mut conn = service.pool.get().await.expect("cleanup conn");
+        diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup deltas");
+        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup metadata");
     }
 
     #[tokio::test]
