@@ -99,7 +99,9 @@ pub struct NoteImportOutcome {
     /// Whether retrying the import later can change the status (transient
     /// RPC failures, notes not yet committed).
     pub retryable: bool,
-    /// Human-readable detail for non-imported statuses.
+    /// Human-readable detail for non-success statuses — or, on an `Imported`
+    /// outcome, a warning that the post-import consumed-state check failed
+    /// and a sync should confirm the note's status.
     pub reason: Option<String>,
 }
 
@@ -400,6 +402,7 @@ impl MultisigClient {
 #[cfg(test)]
 mod tests {
     use miden_protocol::account::AccountId;
+    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::NoteType;
     use miden_protocol::{Felt, Word};
@@ -502,6 +505,97 @@ mod tests {
         assert!(outcomes.is_empty());
         let ids: Vec<_> = decoded.iter().map(Note::id).collect();
         assert_eq!(ids, vec![shared.id(), other.id()]);
+    }
+
+    fn v2_proposal(id: &str, notes: Vec<SerializedNote>) -> Proposal {
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
+        let delta = AccountDelta::new(
+            account_id,
+            AccountStorageDelta::default(),
+            AccountVaultDelta::default(),
+            miden_protocol::Felt::ZERO,
+        )
+        .unwrap();
+        let tx_summary = miden_protocol::transaction::TransactionSummary::new(
+            delta,
+            miden_protocol::transaction::InputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::transaction::RawOutputNotes::new(Vec::new()).unwrap(),
+            Word::default(),
+        );
+        Proposal {
+            id: id.to_string(),
+            nonce: 1,
+            transaction_type: crate::proposal::TransactionType::ConsumeNotes {
+                note_ids: vec![],
+                metadata_version: Some(crate::proposal::CONSUME_NOTES_METADATA_VERSION_V2),
+                notes: notes.clone(),
+            },
+            status: crate::proposal::ProposalStatus::Pending,
+            tx_summary,
+            signatures: vec![],
+            metadata: v2_metadata(notes),
+        }
+    }
+
+    /// Exercises the public method end to end against an unreachable node:
+    /// decoding, deduplication, and invalid isolation must all happen before
+    /// any network access, and the proof-fetch failure must surface as
+    /// per-note retryable outcomes instead of aborting the batch. (The
+    /// success-path branches are covered by the TS unit twin and were
+    /// validated live against testnet; the in-repo scripted node cannot yet
+    /// serve successful note responses.)
+    #[tokio::test]
+    async fn unreachable_node_reports_per_note_failures_without_aborting() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut client = crate::MultisigClient::builder()
+            .miden_endpoint(miden_client::rpc::Endpoint::try_from("http://127.0.0.1:1").unwrap())
+            .guardian_endpoint("http://127.0.0.1:1")
+            .account_dir(dir.path())
+            .generate_key()
+            .build()
+            .await
+            .unwrap();
+
+        let note = build_test_note(1);
+        let proposals = vec![
+            v2_proposal(
+                "p-1",
+                vec![
+                    SerializedNote::from_note(&note),
+                    SerializedNote::from_base64("!!! corrupt !!!".to_string()),
+                ],
+            ),
+            // Duplicate embedding of the same note -> deduplicated.
+            v2_proposal("p-2", vec![SerializedNote::from_note(&note)]),
+        ];
+
+        let outcomes = client.import_notes_from_proposals(&proposals).await;
+
+        assert_eq!(outcomes.len(), 2, "dedup folds the duplicate embedding");
+        let invalid = outcomes
+            .iter()
+            .find(|o| o.status == NoteImportStatus::Invalid)
+            .expect("malformed note reported");
+        assert_eq!(invalid.identifier, "proposal p-1 notes[1]");
+        assert!(!invalid.retryable);
+
+        let failed = outcomes
+            .iter()
+            .find(|o| o.identifier == note.id().to_hex())
+            .expect("decodable note reported");
+        assert_eq!(failed.status, NoteImportStatus::Failed);
+        assert!(
+            failed.retryable,
+            "connection failure must classify retryable"
+        );
+        assert!(
+            failed
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("failed to fetch inclusion proofs"),
+            "failure must point at the proof fetch"
+        );
     }
 
     #[test]

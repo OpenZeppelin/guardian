@@ -15,6 +15,7 @@ import {
   InputNote,
   type InputNoteRecord,
   Note,
+  type NoteAssets,
   NoteDetails,
   NoteFile,
   NoteFilter,
@@ -71,7 +72,9 @@ export interface NoteImportOutcome {
   /** Whether retrying the import later can change the status (transient RPC
    * failures, notes not yet committed). Absent means not retryable. */
   retryable?: boolean;
-  /** Human-readable detail for non-imported statuses. */
+  /** Human-readable detail for non-success statuses — or, on an `imported`
+   * outcome, a warning that the post-import consumed-state check failed and a
+   * sync should confirm the note's status. */
   reason?: string;
 }
 
@@ -92,10 +95,25 @@ interface DecodedCandidate {
   idHex: string;
   /** Metadata-independent identifier: metadata-less store records (details
    * imports in expected state, chain-consumed history) expose neither a note
-   * ID nor a nullifier, so records are matched by recipient digest. */
-  recipientDigestHex: string;
+   * ID nor a nullifier, so records are matched by their details — recipient
+   * digest plus asset fingerprint, together equivalent to the details
+   * commitment (recipient alone is not collision-safe: two distinct notes
+   * can share a recipient while carrying different assets). */
+  detailsKey: string;
   /** Decimal string of the note's tag, for `addTag`. */
   tagString: string;
+}
+
+/** Collision-safe key over full note details: recipient digest + canonical
+ * asset list. Mirrors what the details commitment covers, which the WASM
+ * record surface does not expose directly. */
+function detailsKeyOf(recipientDigestHex: string, assets: NoteAssets): string {
+  const fingerprint = assets
+    .fungibleAssets()
+    .map((asset) => `${normalizeHexWord(asset.faucetId().toString())}:${asset.amount()}`)
+    .sort()
+    .join(',');
+  return `${recipientDigestHex}|${fingerprint}`;
 }
 
 function recordKeys(record: InputNoteRecord): string[] {
@@ -104,7 +122,10 @@ function recordKeys(record: InputNoteRecord): string[] {
   if (recordId) {
     keys.push(normalizeHexWord(recordId.toString()));
   }
-  keys.push(normalizeHexWord(record.details().recipient().digest().toHex()));
+  const details = record.details();
+  keys.push(
+    detailsKeyOf(normalizeHexWord(details.recipient().digest().toHex()), details.assets()),
+  );
   return keys;
 }
 
@@ -173,7 +194,10 @@ export async function importNotesFromProposals(
         candidate = {
           note,
           idHex: normalizeHexWord(note.id().toString()),
-          recipientDigestHex: normalizeHexWord(note.recipient().digest().toHex()),
+          detailsKey: detailsKeyOf(
+            normalizeHexWord(note.recipient().digest().toHex()),
+            note.assets(),
+          ),
           tagString: String(note.metadata().tag().asU32()),
         };
       } catch (error) {
@@ -227,7 +251,7 @@ export async function importNotesFromProposals(
   // Skip notes the store already tracks.
   const pending: DecodedCandidate[] = [];
   for (const candidate of decoded) {
-    const record = existing.get(candidate.idHex) ?? existing.get(candidate.recipientDigestHex);
+    const record = existing.get(candidate.idHex) ?? existing.get(candidate.detailsKey);
     if (record) {
       outcomes.push({
         identifier: candidate.idHex,
@@ -273,7 +297,7 @@ export async function importNotesFromProposals(
 
   // Provisionally `imported` outcomes, re-classified in one batched
   // consumed-state check below.
-  const imported: Array<{ index: number; recipientDigestHex: string }> = [];
+  const imported: Array<{ index: number; detailsKey: string }> = [];
 
   for (const candidate of pending) {
     const proof = proofs.get(candidate.idHex);
@@ -281,7 +305,7 @@ export async function importNotesFromProposals(
       try {
         const inputNote = InputNote.authenticated(candidate.note, proof);
         await webClient.importNoteFile(NoteFile.fromInputNote(inputNote));
-        imported.push({ index: outcomes.length, recipientDigestHex: candidate.recipientDigestHex });
+        imported.push({ index: outcomes.length, detailsKey: candidate.detailsKey });
         outcomes.push({
           identifier: candidate.idHex,
           source: 'proposal',
@@ -334,12 +358,16 @@ export async function importNotesFromProposals(
         new NoteFilter(NoteFilterTypes.Consumed),
       );
       const consumed = new Set(
-        consumedRecords.map((record) =>
-          normalizeHexWord(record.details().recipient().digest().toHex()),
-        ),
+        consumedRecords.map((record) => {
+          const details = record.details();
+          return detailsKeyOf(
+            normalizeHexWord(details.recipient().digest().toHex()),
+            details.assets(),
+          );
+        }),
       );
       for (const entry of imported) {
-        if (consumed.has(entry.recipientDigestHex)) {
+        if (consumed.has(entry.detailsKey)) {
           outcomes[entry.index] = {
             ...outcomes[entry.index],
             status: 'already-consumed',
