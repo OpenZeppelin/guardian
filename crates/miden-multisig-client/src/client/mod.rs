@@ -9,6 +9,7 @@
 //! - `notes` - Note filtering and listing
 //! - `recovery` - Recovery primitives (transport backlog drain)
 //! - `io` - Export/import functionality
+//! - `recovery` - Recovery primitives (proposal-embedded note import)
 //! - `helpers` - Internal GUARDIAN client helpers
 
 mod account;
@@ -24,7 +25,10 @@ pub use delta_history::{
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
 };
 pub use proposals::{AbandonRequestState, AbandonStatus};
-pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
+pub use recovery::{
+    NoteImportOutcome, NoteImportSource, NoteImportStatus, TransportRecoveryReport,
+    TransportRecoveryStatus,
+};
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -292,6 +292,35 @@ let filter = NoteFilter::by_faucet_min_amount(faucet, 5_000);
 let spendable = client.list_consumable_notes_filtered(filter).await?;
 ```
 
+### Recovering Notes From Pending Proposals
+
+After key-based recovery the local Miden store starts empty. v2
+`consume_notes` proposals embed the serialized notes they consume, and
+`import_notes_from_proposals` turns those embedded bytes back into store
+records: it fetches each note's on-chain inclusion proof and imports the
+note individually, so it works for private notes too.
+
+```rust
+let proposals = client.list_proposals().await?;
+let outcomes = client.import_notes_from_proposals(&proposals).await;
+for outcome in &outcomes {
+    println!("{}: {} {:?}", outcome.identifier, outcome.status, outcome.reason);
+}
+client.sync().await?; // verifies the imported notes
+```
+
+Each unique embedded note gets its own `NoteImportOutcome` (`Imported`,
+`AlreadyPresent`, `AlreadyConsumed`, `NotCommitted`, `Invalid`, or `Failed`);
+duplicates across proposals fold into one outcome, and a malformed or
+failing note never blocks the others, which is why the method returns a
+plain `Vec` instead of `Result`. Notes not yet on chain are recorded in
+`Expected` state (their tag is tracked so a later sync picks them up) and
+reported retryable.
+
+Proposals are opportunistic recovery material, not a backup: v1 proposals
+carry no note bytes, proposals disappear once canonicalized, and embedded
+note bytes are visible to the GUARDIAN operator (existing v2 behavior, not a
+new exposure).
 
 ### Custom Proposal Types
 
