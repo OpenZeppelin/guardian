@@ -8,6 +8,7 @@ export {
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
   type P2idTransactionOptions,
+  type P2ideHeightOptions,
 } from './transaction/p2id.js';
 export {
   buildUpdateGuardianTransactionRequest,

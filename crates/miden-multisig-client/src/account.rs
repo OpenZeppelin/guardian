@@ -340,6 +340,7 @@ mod tests {
                     faucet_id: account_id,
                     amount: 10,
                     note_type: miden_protocol::note::NoteType::Public,
+                    heights: Default::default(),
                 })
                 .expect("threshold"),
             1

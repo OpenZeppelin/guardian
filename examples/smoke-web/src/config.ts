@@ -21,8 +21,3 @@ export const DEFAULT_RPC_MAX_ATTEMPTS = parseMaxAttempts(
   1,
   2,
 );
-
-export const PARA_API_KEY = import.meta.env.VITE_PARA_API_KEY ?? '';
-export const PARA_ENVIRONMENT = (import.meta.env.VITE_PARA_ENVIRONMENT ?? 'development') as
-  | 'development'
-  | 'production';

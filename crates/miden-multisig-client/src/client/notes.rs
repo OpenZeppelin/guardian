@@ -6,9 +6,10 @@
 use miden_client::note::NoteConsumptionStatus;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteId;
-use miden_standards::note::P2idNote;
+use miden_standards::note::{P2idNote, P2ideNote, P2ideNoteStorage};
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -255,6 +256,7 @@ impl MultisigClient {
             faucet_id,
             amount,
             note_type,
+            heights,
         } = &proposal.transaction_type
         else {
             return Err(MultisigError::UnsupportedTransactionType(
@@ -271,17 +273,37 @@ impl MultisigClient {
         let asset = crate::execution::build_transfer_asset(account.inner(), *faucet_id, *amount)?;
 
         let mut rng = RandomCoin::new(salt);
-        let note = P2idNote::create(
-            account.id(),
-            *recipient,
-            vec![asset.into()],
-            *note_type,
-            Default::default(),
-            &mut rng,
-        )
-        .map_err(|e| {
-            MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
-        })?;
+        let is_p2ide = heights.is_p2ide();
+        let note = if is_p2ide {
+            let storage = P2ideNoteStorage::new(
+                *recipient,
+                heights.reclaim.map(|h| BlockNumber::from(h.get())),
+                heights.timelock.map(|h| BlockNumber::from(h.get())),
+            );
+            P2ideNote::create(
+                account.id(),
+                storage,
+                vec![asset.into()],
+                *note_type,
+                Default::default(),
+                &mut rng,
+            )
+            .map_err(|e| {
+                MultisigError::TransactionExecution(format!("failed to build P2IDE note: {}", e))
+            })?
+        } else {
+            P2idNote::create(
+                account.id(),
+                *recipient,
+                vec![asset.into()],
+                *note_type,
+                Default::default(),
+                &mut rng,
+            )
+            .map_err(|e| {
+                MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
+            })?
+        };
 
         Ok(note.id())
     }

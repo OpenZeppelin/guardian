@@ -12,7 +12,7 @@ This app is the browser analogue of the Rust CLI smoke surface:
 
 - Use one browser or browser profile per cosigner session.
 - Same-browser concurrent tabs are out of scope because the current browser client path does not expose safe per-session IndexedDB isolation.
-- Para and Miden Wallet parity is preserved through React providers, but the primary interface is still `window.smoke`.
+- Miden Wallet parity is reached through `window.smoke.connectMidenWallet()`; no wallet provider wraps the app, and `window.smoke` stays the primary interface.
 
 ## Setup
 
@@ -26,8 +26,9 @@ npm run dev
 Optional env vars:
 
 ```bash
-VITE_PARA_API_KEY=...
-VITE_PARA_ENVIRONMENT=development
+VITE_PROVER_URL=...
+VITE_PROVER_MAX_ATTEMPTS=2
+VITE_RPC_MAX_ATTEMPTS=2
 ```
 
 The page follows the `examples/web` lifecycle:
@@ -41,7 +42,6 @@ The page follows the `examples/web` lifecycle:
 The app exposes `window.smoke` with JSON-safe methods:
 
 - `initSession({ guardianEndpoint, midenRpcEndpoint, signerSource, signatureScheme, browserLabel })`
-- `connectPara()`
 - `connectMidenWallet()`
 - `status()`
 - `createAccount({ threshold, otherCommitments, guardianCommitment, procedureThresholds })`
@@ -122,7 +122,7 @@ explicitly to drive execution from a fresh session.
 
 Use this harness for manual smoke flows that need:
 - local Falcon and ECDSA signers
-- Para or Miden Wallet connectivity checks
+- Miden Wallet connectivity checks
 - create/load/register/sync/state verification
 - proposal create/sign/execute loops
 - custom (producer-API) propose/sign/prepare/submit loops

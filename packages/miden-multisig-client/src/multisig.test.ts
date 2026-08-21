@@ -1387,7 +1387,7 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1);
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 1 });
 
       expect(proposal.metadata.description).toBe('Send 100 of asset 0xfaucet... to 0xrecipien...');
     });
@@ -1442,7 +1442,8 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1, {
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, {
+        nonce: 1,
         noteType: NoteType.Private,
       });
 
@@ -1466,6 +1467,131 @@ describe('Multisig', () => {
 
       expect(proposal.metadata.proposalType).toBe('p2id');
       expect((proposal.metadata as { noteType?: string }).noteType).toBe('private');
+    });
+
+    it('threads P2IDE reclaim/timelock heights into the request and wire metadata (issue #366)', async () => {
+      const { executeForSummary, buildP2idTransactionRequest } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'p2id',
+            recipient_id: '0xrecipient',
+            faucet_id: '0xfaucet',
+            amount: '100',
+            reclaim_height: 12345,
+            timelock_height: 700,
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, {
+        nonce: 1,
+        reclaimHeight: 12345,
+        timelockHeight: 700,
+      });
+
+      // Propose path builds the P2IDE note from the heights...
+      const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
+      expect(lastCall[5]).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
+
+      // ...and the pushed wire metadata carries the heights so cosigners
+      // rebuild the same P2IDE note at verification/execution.
+      const pushBody = JSON.parse(mockFetch.mock.calls.at(-1)![1].body as string);
+      expect(pushBody.delta_payload.metadata.reclaim_height).toBe(12345);
+      expect(pushBody.delta_payload.metadata.timelock_height).toBe(700);
+
+      expect(proposal.metadata.proposalType).toBe('p2id');
+      expect(proposal.metadata).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
+    });
+
+    it('omits the heights from wire metadata for a plain P2ID send (pre-#366 shape)', async () => {
+      const { executeForSummary } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const mockDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'p2id',
+            recipient_id: '0xrecipient',
+            faucet_id: '0xfaucet',
+            amount: '100',
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: mockDelta,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 1 });
+
+      const pushBody = JSON.parse(mockFetch.mock.calls.at(-1)![1].body as string);
+      expect('reclaim_height' in pushBody.delta_payload.metadata).toBe(false);
+      expect('timelock_height' in pushBody.delta_payload.metadata).toBe(false);
     });
   });
 
@@ -1669,7 +1795,7 @@ describe('Multisig', () => {
       });
 
       const multisig = createTestMultisig(config, ecdsaSigner);
-      await multisig.createChangeThresholdProposal(2, 1);
+      await multisig.createChangeThresholdProposal(2, { nonce: 1 });
 
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
@@ -1677,6 +1803,143 @@ describe('Multisig', () => {
         config.signerCommitments,
         { signatureScheme: 'ecdsa' },
       );
+    });
+  });
+
+  describe('createAddSignerProposal / createRemoveSignerProposal', () => {
+    const config = {
+      threshold: 2,
+      signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64), '0x' + 'd'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    const mockPushResponse = (proposalType: string) => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: {
+              tx_summary: { data: 'AQID' },
+              signatures: [],
+              metadata: { proposal_type: proposalType, description: '' },
+            },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+    };
+
+    beforeEach(() => {
+      vi.mocked(executeForSummary).mockResolvedValue({
+        toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as any);
+    });
+
+    it('add: passes newThreshold from the options bag and appends the commitment', async () => {
+      mockPushResponse('add_signer');
+      const newCommitment = '0x' + 'e'.repeat(64);
+
+      const multisig = createTestMultisig(config);
+      await multisig.createAddSignerProposal(newCommitment, { nonce: 1, newThreshold: 3 });
+
+      expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
+        mockWebClient,
+        3,
+        [...config.signerCommitments, newCommitment],
+        { signatureScheme: mockSigner.scheme },
+      );
+    });
+
+    it('add: defaults to the current threshold when newThreshold is omitted', async () => {
+      mockPushResponse('add_signer');
+
+      const multisig = createTestMultisig(config);
+      await multisig.createAddSignerProposal('0x' + 'e'.repeat(64), { nonce: 1 });
+
+      expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
+        mockWebClient,
+        config.threshold,
+        expect.any(Array),
+        { signatureScheme: mockSigner.scheme },
+      );
+    });
+
+    it('remove: passes newThreshold from the options bag and drops the commitment', async () => {
+      mockPushResponse('remove_signer');
+
+      const multisig = createTestMultisig(config);
+      await multisig.createRemoveSignerProposal('0x' + 'd'.repeat(64), { nonce: 1, newThreshold: 1 });
+
+      expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
+        mockWebClient,
+        1,
+        [config.signerCommitments[0], config.signerCommitments[1]],
+        { signatureScheme: mockSigner.scheme },
+      );
+    });
+
+    it('remove: defaults to min(current threshold, remaining signers) when newThreshold is omitted', async () => {
+      mockPushResponse('remove_signer');
+
+      const multisig = createTestMultisig(config);
+      await multisig.createRemoveSignerProposal('0x' + 'd'.repeat(64), { nonce: 1 });
+
+      expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
+        mockWebClient,
+        2,
+        expect.any(Array),
+        { signatureScheme: mockSigner.scheme },
+      );
+    });
+  });
+
+  describe('legacy positional-caller guard (issue #387)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it('rejects a legacy positional nonce where the options bag is expected', async () => {
+      const multisig = createTestMultisig(config);
+
+      await expect(
+        multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, 1 as any),
+      ).rejects.toThrow(/issue #387/);
+      await expect(
+        multisig.createConsumeNotesProposal(['0x1'], 1 as any),
+      ).rejects.toThrow(/issue #387/);
+      await expect(
+        multisig.createAddSignerProposal('0x' + 'e'.repeat(64), 1 as any),
+      ).rejects.toThrow(/issue #387/);
+      await expect(
+        multisig.createCustomProposal(new Uint8Array([1]), 'label', 1 as any),
+      ).rejects.toThrow(/issue #387/);
+    });
+
+    it('rejects a legacy trailing argument after the options slot', async () => {
+      const multisig = createTestMultisig(config);
+
+      // Pre-#387 pattern: createP2idProposal(r, f, amount, nonceHole, { noteType })
+      await expect(
+        (multisig.createP2idProposal as any)('0xrecipient', '0xfaucet', 100n, undefined, {
+          noteType: 'private',
+        }),
+      ).rejects.toThrow(/issue #387/);
+      // Pre-#387 pattern: createAddSignerProposal(commitment, nonceHole, newThreshold)
+      await expect(
+        (multisig.createAddSignerProposal as any)('0x' + 'e'.repeat(64), undefined, 3),
+      ).rejects.toThrow(/issue #387/);
     });
   });
 
@@ -1858,7 +2121,7 @@ describe('Multisig', () => {
         }),
       });
 
-      const proposal = await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, 1);
+      const proposal = await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, { nonce: 1 });
 
       expect(buildUpdateProcedureThresholdTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
@@ -1926,7 +2189,7 @@ describe('Multisig', () => {
         }),
       });
 
-      await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, 1);
+      await multisig.createUpdateProcedureThresholdProposal('send_asset', 1, { nonce: 1 });
 
       expect(buildUpdateProcedureThresholdTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,

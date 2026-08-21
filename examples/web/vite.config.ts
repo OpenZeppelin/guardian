@@ -8,10 +8,6 @@ export default defineConfig({
   resolve: {
     dedupe: ['@miden-sdk/miden-sdk'],
     alias: [
-      {
-        find: /^@getpara\/(evm|solana|cosmos)-wallet-connectors$/,
-        replacement: path.resolve(__dirname, 'getpara-wallet-connectors-stub.mjs'),
-      },
       { find: '@', replacement: path.resolve(__dirname, './src') },
       {
         find: '@openzeppelin/guardian-client',
