@@ -175,7 +175,108 @@ describe('drainPrivateNoteBacklog', () => {
 
     await expect(drainPrivateNoteBacklog(client)).rejects.toThrow('store is corrupted');
   });
+
+  it('rethrows a WASM storage error raised inside the drain', async () => {
+    const { client } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {
+        throw new Error('failed fetching all private notes: storage error: Indexdb error');
+      },
+    });
+
+    await expect(drainPrivateNoteBacklog(client)).rejects.toThrow('storage error');
+  });
+
+  it('rethrows an IndexedDB transaction abort raised inside the drain', async () => {
+    const abort = new Error('Transaction aborted');
+    abort.name = 'AbortError';
+    const { client } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {
+        throw abort;
+      },
+    });
+
+    await expect(drainPrivateNoteBacklog(client)).rejects.toThrow('Transaction aborted');
+  });
+
+  it('keeps a generic request abort as a transport report, not a store failure', async () => {
+    const abort = new Error('The operation was aborted');
+    abort.name = 'AbortError';
+    const { client } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {
+        throw abort;
+      },
+    });
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    expect(report.status).toBe('unavailable');
+    expect(report.retryable).toBe(true);
+  });
+
+  it('classifies throws with a non-string message without crashing', async () => {
+    const { client } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
+        throw { message: 42 };
+      },
+    });
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    expect(report.status).toBe('failed');
+    expect(report.retryable).toBe(false);
+    expect(report.reason).toBe('42');
+  });
 });
+
+/**
+ * Raw access to the WASM store's note-transport cursor. The public
+ * `settings` API runs values through the JS<->WASM serde codec, which is NOT
+ * the store's raw encoding (seeding through it corrupts the cursor), so the
+ * cursor tests read/write the IndexedDB row directly. Schema coupling, kept
+ * minimal: store `settings`, keyPath `key`, `value` holds the raw big-endian
+ * u64 bytes — the same representation the Rust cursor test pins.
+ */
+const CURSOR_KEY = 'note_transport_cursor';
+
+async function withSettingsStore<T>(
+  mode: IDBTransactionMode,
+  operation: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T> {
+  const db: IDBDatabase = await new Promise((resolve, reject) => {
+    const request = indexedDB.open('mock_client_db');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = operation(db.transaction('settings', mode).objectStore('settings'));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function seedRawCursor(bytes: Uint8Array): Promise<void> {
+  await withSettingsStore('readwrite', (store) => store.put({ key: CURSOR_KEY, value: bytes }));
+}
+
+async function readRawCursor(): Promise<Uint8Array | undefined> {
+  const row = await withSettingsStore<{ value?: Uint8Array } | undefined>('readonly', (store) =>
+    store.get(CURSOR_KEY),
+  );
+  return row?.value;
+}
 
 /**
  * Behavioral tests against the real WASM mock client: the full device-loss
@@ -203,17 +304,26 @@ describe('drainPrivateNoteBacklog (wasm mock client)', () => {
     const transportState = await deviceA.serializeMockNoteTransportNode();
 
     // Device B ("new device after loss"): fresh store sharing the same
-    // transport backlog. Loading the recovered account tracks its note tag
-    // (the load/tag invariant the drain depends on).
+    // transport backlog. Inserting the recovered account tracks its note tag
+    // (the store invariant the drain depends on).
     freshDevice();
     const deviceB = await MidenClient.createMock({ serializedNoteTransport: transportState });
     expect(await deviceB.notes.list()).toHaveLength(0);
     await deviceB.accounts.insert({ account: Account.deserialize(accountBytes), overwrite: true });
 
+    // Simulate a store whose cursor another account's sync already advanced
+    // far past this backlog.
+    const advancedCursor = new Uint8Array(8).fill(0xff);
+    await seedRawCursor(advancedCursor);
+
     const first = await drainPrivateNoteBacklog(deviceB);
     expect(first.status).toBe('completed');
     expect(first.imported).toBe(1);
     expect(first.retryable).toBe(false);
+
+    // The drain ignored the advanced cursor for scanning (the note above was
+    // still recovered) and did not regress it afterward.
+    expect(await readRawCursor()).toEqual(advancedCursor);
 
     // Idempotence: draining again re-fetches the same backlog but imports
     // nothing new.
@@ -234,7 +344,7 @@ describe('drainPrivateNoteBacklog (wasm mock client)', () => {
     expect(blind.imported).toBe(0);
   }, 120_000);
 
-  it('tracks the standard note tag when a recovered account is inserted (load path)', async () => {
+  it('tracks the standard note tag when a recovered account is inserted', async () => {
     const { MidenClient, Account, NoteTag, AccountId } = await import('@miden-sdk/miden-sdk');
 
     freshDevice();

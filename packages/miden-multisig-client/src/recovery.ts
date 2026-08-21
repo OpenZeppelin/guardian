@@ -62,6 +62,43 @@ export interface TransportRecoveryReport {
 export const TRANSPORT_DISABLED_FRAGMENT = 'note transport is disabled';
 /** Exported for the drift-guard test, which pins them against the shipped WASM binary. */
 export const PAGINATION_GUARD_FRAGMENT = 'did not converge';
+/**
+ * `ClientError::StoreError`'s Display prefix in the WASM error chain.
+ * Exported for the drift-guard test, which pins it against the shipped WASM
+ * binary.
+ */
+export const STORE_ERROR_FRAGMENT = 'storage error';
+
+/**
+ * IndexedDB/Dexie error names that mean the local store itself failed —
+ * these must reject (matching the Rust `StoreError` branch), never be folded
+ * into a transport report.
+ */
+const STORE_ERROR_NAMES = ['QuotaExceededError', 'DatabaseClosedError', 'ReadOnlyError', 'TransactionInactiveError'];
+
+/**
+ * Does this failure mean the local store is broken (as opposed to a
+ * transport/node problem)? Kept deliberately narrow: `AbortError` counts
+ * only when its message points at an IndexedDB transaction/database abort —
+ * network requests also abort, and those stay transport-classified.
+ */
+function isLocalStoreError(err: unknown): boolean {
+  const message = errorMessage(err);
+  const lower = message.toLowerCase();
+  if (lower.includes(STORE_ERROR_FRAGMENT)) return true;
+  const name =
+    typeof err === 'object' && err !== null && 'name' in err && typeof err.name === 'string'
+      ? err.name
+      : undefined;
+  if (name !== undefined && STORE_ERROR_NAMES.includes(name)) return true;
+  // The WASM bridge may stringify the underlying store error into the
+  // message rather than preserving the name.
+  if (STORE_ERROR_NAMES.some((storeName) => message.includes(storeName))) return true;
+  if (name === 'AbortError' && (lower.includes('transaction') || lower.includes('database'))) {
+    return true;
+  }
+  return false;
+}
 
 interface DrainFailure {
   status: TransportRecoveryStatus;
@@ -136,6 +173,13 @@ export async function drainPrivateNoteBacklog(
   try {
     await midenClient.notes.fetchPrivate({ mode: 'all' });
   } catch (err) {
+    // A broken local store is an environment failure, not a transport
+    // outcome: the whole recovery flow needs to know, so it propagates
+    // (matching the Rust `StoreError` branch) instead of being folded into
+    // the report.
+    if (isLocalStoreError(err)) {
+      throw err;
+    }
     const { status, retryable, reason, scanned } = classifyDrainFailure(err);
     // Count even when the drain failed: each fetched batch is imported as it
     // arrives, so notes recovered before the failure stay in the store. A

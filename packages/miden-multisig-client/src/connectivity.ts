@@ -43,7 +43,9 @@ function isDefinitelyOffline(): boolean {
 
 /** Best-effort human-readable message from an unknown thrown value. */
 export function errorMessage(err: unknown): string {
-  return (err as { message?: string } | null | undefined)?.message ?? String(err ?? '');
+  const message =
+    typeof err === 'object' && err !== null && 'message' in err ? err.message : undefined;
+  return typeof message === 'string' ? message : String(message ?? err ?? '');
 }
 
 /** Classify a codeless transport failure into a {@link ConnectivityCategory}. */
