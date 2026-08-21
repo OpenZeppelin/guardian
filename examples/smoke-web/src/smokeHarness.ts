@@ -334,11 +334,27 @@ function buildSnapshot(state: SnapshotState): BrowserSessionSnapshot {
   };
 }
 
+const WALLET_SOURCES = ['local', 'miden-wallet'] as const satisfies readonly WalletSource[];
+
+function requireWalletSource(source: WalletSource | undefined): WalletSource {
+  if (source === undefined) {
+    return 'local';
+  }
+
+  if (!WALLET_SOURCES.includes(source)) {
+    throw new Error(
+      `Unsupported signerSource ${JSON.stringify(source)}; expected one of ${WALLET_SOURCES.join(', ')}`,
+    );
+  }
+
+  return source;
+}
+
 function normalizeSessionInput(input: InitSessionInput): SessionConfig {
   return {
     guardianEndpoint: input.guardianEndpoint?.trim() || DEFAULT_GUARDIAN_ENDPOINT,
     midenRpcEndpoint: input.midenRpcEndpoint?.trim() || DEFAULT_MIDEN_RPC_URL,
-    signerSource: input.signerSource ?? 'local',
+    signerSource: requireWalletSource(input.signerSource),
     signatureScheme: input.signatureScheme ?? 'falcon',
     browserLabel: input.browserLabel?.trim() ?? DEFAULT_BROWSER_LABEL,
   };
@@ -520,28 +536,31 @@ export function useSmokeHarness(): {
     ): ResolvedSigner => {
       const currentMidenWalletSession = midenWalletSessionRef.current;
 
-      if (source === 'miden-wallet') {
-        if (
-          !currentMidenWalletSession.commitment ||
-          !currentMidenWalletSession.publicKey ||
-          !currentMidenWalletSession.scheme
-        ) {
-          throw new Error('Miden Wallet is not connected');
+      switch (requireWalletSource(source)) {
+        case 'miden-wallet': {
+          if (
+            !currentMidenWalletSession.commitment ||
+            !currentMidenWalletSession.publicKey ||
+            !currentMidenWalletSession.scheme
+          ) {
+            throw new Error('Miden Wallet is not connected');
+          }
+
+          return resolveMidenWalletSigner({
+            wallet: { signBytes },
+            commitment: currentMidenWalletSession.commitment,
+            publicKey: currentMidenWalletSession.publicKey,
+            scheme: currentMidenWalletSession.scheme,
+          });
         }
+        case 'local': {
+          if (!localSignersRef.current) {
+            throw new Error('Local signers are not initialized');
+          }
 
-        return resolveMidenWalletSigner({
-          wallet: { signBytes },
-          commitment: currentMidenWalletSession.commitment,
-          publicKey: currentMidenWalletSession.publicKey,
-          scheme: currentMidenWalletSession.scheme,
-        });
+          return resolveLocalSigner(localSignersRef.current, signatureScheme);
+        }
       }
-
-      if (!localSignersRef.current) {
-        throw new Error('Local signers are not initialized');
-      }
-
-      return resolveLocalSigner(localSignersRef.current, signatureScheme);
     },
     [
       localSignersRef,
