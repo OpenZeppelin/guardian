@@ -195,7 +195,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use miden_client::note::NoteFile;
 use miden_client::rpc::RpcError;
 use miden_client::rpc::domain::note::FetchedNote;
-use miden_client::store::NoteFilter as StoreNoteFilter;
+use miden_client::store::{InputNoteRecord, NoteFilter as StoreNoteFilter};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{
@@ -328,8 +328,10 @@ pub struct PublicBackfillReport {
     /// node's pagination cap). Empty when the whole range was scanned. Notes
     /// committed in these ranges may be missing from `outcomes`.
     pub uncovered: Vec<BlockRange>,
-    /// Whether rerunning the backfill can plausibly cover the `uncovered`
-    /// ranges. Always `false` when `uncovered` is empty.
+    /// Whether rerunning the backfill can plausibly improve the result:
+    /// cover `uncovered` ranges, or retry outcomes whose own `retryable`
+    /// flag is set. Always `false` when the scan fully covered the range and
+    /// no outcome is retryable.
     pub retryable: bool,
     /// Human-readable cause when the scan did not cover the whole range.
     pub reason: Option<String>,
@@ -429,21 +431,10 @@ impl MultisigClient {
             return outcomes;
         }
 
-        // Look up existing records by details commitment, not note ID: records
-        // the store keeps without metadata (a note details import in Expected
-        // state, or a note observed as consumed on chain) have no note ID, and
-        // an ID lookup would keep re-importing them forever.
         let commitments: Vec<NoteDetailsCommitment> =
             decoded.iter().map(Note::details_commitment).collect();
-        let existing = match self
-            .miden_client
-            .get_input_notes(StoreNoteFilter::DetailsCommitments(commitments))
-            .await
-        {
-            Ok(records) => records
-                .into_iter()
-                .map(|record| (record.details_commitment(), record))
-                .collect::<BTreeMap<_, _>>(),
+        let existing = match self.existing_records_by_commitment(commitments).await {
+            Ok(existing) => existing,
             Err(e) => {
                 let reason = format!("failed to read local store: {}", e);
                 for note in &decoded {
@@ -519,30 +510,13 @@ impl MultisigClient {
             let outcome = match proofs.remove(&note.id()) {
                 Some(proof) => {
                     let details_commitment = note.details_commitment();
-                    let file = NoteFile::NoteWithProof(note, proof);
-                    match self
-                        .miden_client
-                        .import_notes(std::slice::from_ref(&file))
-                        .await
-                    {
-                        Ok(_) => {
-                            imported.push((outcomes.len(), details_commitment));
-                            NoteImportOutcome {
-                                identifier,
-                                source: NoteImportSource::Proposal,
-                                status: NoteImportStatus::Imported,
-                                retryable: false,
-                                reason: None,
-                            }
-                        }
-                        Err(e) => NoteImportOutcome {
-                            identifier,
-                            source: NoteImportSource::Proposal,
-                            status: NoteImportStatus::Failed,
-                            retryable: import_error_retryable(&e),
-                            reason: Some(format!("failed to import note: {}", e)),
-                        },
+                    let (outcome, was_imported) = self
+                        .import_note_with_proof(NoteImportSource::Proposal, note, proof)
+                        .await;
+                    if was_imported {
+                        imported.push((outcomes.len(), details_commitment));
                     }
+                    outcome
                 }
                 None => {
                     // The tag makes the resulting `Expected` record reachable
@@ -640,6 +614,65 @@ impl MultisigClient {
             }
         }
     }
+
+    /// Looks up existing store records for the given notes, keyed by details
+    /// commitment rather than note ID: records the store keeps without
+    /// metadata (a note details import in `Expected` state, or a note
+    /// observed as consumed on chain) have no note ID, and an ID lookup
+    /// would keep re-importing them forever.
+    async fn existing_records_by_commitment(
+        &mut self,
+        commitments: Vec<NoteDetailsCommitment>,
+    ) -> std::result::Result<BTreeMap<NoteDetailsCommitment, InputNoteRecord>, ClientError> {
+        Ok(self
+            .miden_client
+            .get_input_notes(StoreNoteFilter::DetailsCommitments(commitments))
+            .await?
+            .into_iter()
+            .map(|record| (record.details_commitment(), record))
+            .collect())
+    }
+
+    /// Imports one note with its inclusion proof and classifies the result.
+    /// Upstream `import_notes` batches are atomic, which is why callers
+    /// import individually — one bad note must not sink the rest. Returns
+    /// the outcome and whether the import succeeded (input for the batched
+    /// consumed-state re-check).
+    async fn import_note_with_proof(
+        &mut self,
+        source: NoteImportSource,
+        note: Note,
+        proof: NoteInclusionProof,
+    ) -> (NoteImportOutcome, bool) {
+        let identifier = note.id().to_hex();
+        let file = NoteFile::NoteWithProof(note, proof);
+        match self
+            .miden_client
+            .import_notes(std::slice::from_ref(&file))
+            .await
+        {
+            Ok(_) => (
+                NoteImportOutcome {
+                    identifier,
+                    source,
+                    status: NoteImportStatus::Imported,
+                    retryable: false,
+                    reason: None,
+                },
+                true,
+            ),
+            Err(e) => (
+                NoteImportOutcome {
+                    identifier,
+                    source,
+                    status: NoteImportStatus::Failed,
+                    retryable: import_error_retryable(&e),
+                    reason: Some(format!("failed to import note: {}", e)),
+                },
+                false,
+            ),
+        }
+    }
 }
 
 /// Upper bound on `SyncNotes` requests per backfill. Splitting around the
@@ -647,9 +680,6 @@ impl MultisigClient {
 /// when nearly every sub-range is dense enough to trip the cap; exhausting it
 /// reports the remaining ranges as uncovered instead of scanning forever.
 const MAX_SCAN_REQUESTS: usize = 128;
-
-/// Notes per `GetNotesById` request when fetching discovered note bodies.
-const NOTE_FETCH_CHUNK: usize = 100;
 
 impl MultisigClient {
     /// Scans a historical block range for public notes addressed at
@@ -767,42 +797,57 @@ impl MultisigClient {
             ));
         }
 
-        let discovered_count = discovered.len();
-        let mut public_ids: Vec<NoteId> = Vec::new();
-        let mut skipped_private = 0usize;
-        for (id, committed) in &discovered {
-            if committed.note_type() == NoteType::Public {
-                public_ids.push(*id);
-            } else {
-                skipped_private += 1;
-            }
-        }
+        let public_ids: Vec<NoteId> = discovered
+            .iter()
+            .filter(|(_, committed)| committed.note_type() == NoteType::Public)
+            .map(|(id, _)| *id)
+            .collect();
+        let skipped_private = discovered.len() - public_ids.len();
 
         let mut outcomes: Vec<NoteImportOutcome> = Vec::new();
 
-        // One batched body fetch per chunk; the node returns full bodies for
-        // public notes, so the scan's ID + proof is all this path needs.
-        let mut bodies: BTreeMap<NoteId, (Note, NoteInclusionProof)> = BTreeMap::new();
-        let mut fetch_failed: HashSet<NoteId> = HashSet::new();
-        for chunk in public_ids.chunks(NOTE_FETCH_CHUNK) {
-            match rpc.get_notes_by_id(chunk).await {
+        // One batched body fetch — the upstream client chunks internally by
+        // the node's negotiated note-ids limit. The node returns full bodies
+        // for public notes, so the scan's ID + proof is all this path needs.
+        let mut pending: Vec<(Note, NoteInclusionProof)> = Vec::new();
+        if !public_ids.is_empty() {
+            match rpc.get_notes_by_id(&public_ids).await {
                 Ok(fetched) => {
-                    for note in fetched {
-                        if let FetchedNote::Public(note, proof) = note {
-                            bodies.insert(note.id(), (note, proof));
+                    let mut bodies: BTreeMap<NoteId, (Note, NoteInclusionProof)> = fetched
+                        .into_iter()
+                        .filter_map(|fetched| match fetched {
+                            FetchedNote::Public(note, proof) => Some((note.id(), (note, proof))),
+                            FetchedNote::Private(..) => None,
+                        })
+                        .collect();
+                    for id in &public_ids {
+                        match bodies.remove(id) {
+                            Some(entry) => pending.push(entry),
+                            // Discovered as public by the scan but returned
+                            // without a body — not expected for a committed
+                            // public note.
+                            None => outcomes.push(NoteImportOutcome {
+                                identifier: id.to_hex(),
+                                source: NoteImportSource::Backfill,
+                                status: NoteImportStatus::Failed,
+                                retryable: true,
+                                reason: Some(
+                                    "the node did not return a body for this public note"
+                                        .to_string(),
+                                ),
+                            }),
                         }
                     }
                 }
                 Err(e) => {
-                    let chunk_retryable = is_transient_rpc_error(&e);
+                    let fetch_retryable = is_transient_rpc_error(&e);
                     let reason = format!("failed to fetch note bodies: {e}");
-                    for id in chunk {
-                        fetch_failed.insert(*id);
+                    for id in &public_ids {
                         outcomes.push(NoteImportOutcome {
                             identifier: id.to_hex(),
                             source: NoteImportSource::Backfill,
                             status: NoteImportStatus::Failed,
-                            retryable: chunk_retryable,
+                            retryable: fetch_retryable,
                             reason: Some(reason.clone()),
                         });
                     }
@@ -810,35 +855,11 @@ impl MultisigClient {
             }
         }
 
-        let mut pending: Vec<(Note, NoteInclusionProof)> = Vec::new();
-        for id in &public_ids {
-            match bodies.remove(id) {
-                Some(entry) => pending.push(entry),
-                // Discovered as public by the scan but returned without a
-                // body — not expected for a committed public note.
-                None if !fetch_failed.contains(id) => outcomes.push(NoteImportOutcome {
-                    identifier: id.to_hex(),
-                    source: NoteImportSource::Backfill,
-                    status: NoteImportStatus::Failed,
-                    retryable: true,
-                    reason: Some("the node did not return a body for this public note".to_string()),
-                }),
-                None => {}
-            }
-        }
-
-        // Look up existing records by details commitment, not note ID (see
-        // `import_notes_from_proposals`): metadata-less records would keep
-        // re-importing forever under an ID lookup.
         let commitments: Vec<NoteDetailsCommitment> = pending
             .iter()
             .map(|(note, _)| note.details_commitment())
             .collect();
-        match self
-            .miden_client
-            .get_input_notes(StoreNoteFilter::DetailsCommitments(commitments))
-            .await
-        {
+        match self.existing_records_by_commitment(commitments).await {
             Err(e) => {
                 let reason = format!("failed to read local store: {}", e);
                 for (note, _) in &pending {
@@ -851,26 +872,28 @@ impl MultisigClient {
                     });
                 }
             }
-            Ok(records) => {
-                let existing: BTreeMap<_, _> = records
-                    .into_iter()
-                    .map(|record| (record.details_commitment(), record))
-                    .collect();
-
+            Ok(existing) => {
                 // Provisionally `Imported` outcomes, re-classified in one
                 // batched consumed-state check below.
                 let mut imported: Vec<(usize, NoteDetailsCommitment)> = Vec::new();
                 for (note, proof) in pending {
-                    let identifier = note.id().to_hex();
                     let commitment = note.details_commitment();
-                    if let Some(record) = existing.get(&commitment) {
+                    // Unlike the proposal import, a proof-less (`Expected`)
+                    // record is NOT skipped here: this primitive exists
+                    // because forward sync will never revisit the note's
+                    // block, so the freshly fetched proof is applied to
+                    // upgrade the record in place (upstream import handles
+                    // existing records).
+                    if let Some(record) = existing.get(&commitment)
+                        && (record.is_consumed() || record.inclusion_proof().is_some())
+                    {
                         let status = if record.is_consumed() {
                             NoteImportStatus::AlreadyConsumed
                         } else {
                             NoteImportStatus::AlreadyPresent
                         };
                         outcomes.push(NoteImportOutcome {
-                            identifier,
+                            identifier: note.id().to_hex(),
                             source: NoteImportSource::Backfill,
                             status,
                             retryable: false,
@@ -878,32 +901,12 @@ impl MultisigClient {
                         });
                         continue;
                     }
-                    // Upstream `import_notes` batches are atomic, so one bad
-                    // note must not sink the rest — import individually.
-                    let file = NoteFile::NoteWithProof(note, proof);
-                    let outcome = match self
-                        .miden_client
-                        .import_notes(std::slice::from_ref(&file))
-                        .await
-                    {
-                        Ok(_) => {
-                            imported.push((outcomes.len(), commitment));
-                            NoteImportOutcome {
-                                identifier,
-                                source: NoteImportSource::Backfill,
-                                status: NoteImportStatus::Imported,
-                                retryable: false,
-                                reason: None,
-                            }
-                        }
-                        Err(e) => NoteImportOutcome {
-                            identifier,
-                            source: NoteImportSource::Backfill,
-                            status: NoteImportStatus::Failed,
-                            retryable: import_error_retryable(&e),
-                            reason: Some(format!("failed to import note: {}", e)),
-                        },
-                    };
+                    let (outcome, was_imported) = self
+                        .import_note_with_proof(NoteImportSource::Backfill, note, proof)
+                        .await;
+                    if was_imported {
+                        imported.push((outcomes.len(), commitment));
+                    }
                     outcomes.push(outcome);
                 }
 
@@ -921,10 +924,14 @@ impl MultisigClient {
                 n - 3
             )),
         };
+        // Rerunning can help when scan ranges were left uncovered OR when any
+        // per-note outcome is itself retryable — surface both at report level
+        // so orchestration keyed on the report alone reruns when it should.
+        let retryable = retryable || outcomes.iter().any(|outcome| outcome.retryable);
         Ok(PublicBackfillReport {
             scanned_from: from,
             scanned_to: to,
-            discovered: discovered_count,
+            discovered: discovered.len(),
             skipped_private,
             outcomes,
             uncovered,
@@ -1845,6 +1852,95 @@ mod tests {
             .collect();
         assert!(imported.contains(&own.id().to_hex()));
         assert!(imported.contains(&colliding.id().to_hex()));
+    }
+
+    /// A proof-less `Expected` record (e.g. left by a proposal import that
+    /// ran while the note was uncommitted) whose note committed behind the
+    /// cursor must be upgraded with the freshly fetched proof — not skipped
+    /// as already-present, because forward sync will never revisit its block
+    /// and the note would stay non-consumable forever.
+    #[tokio::test]
+    async fn backfill_upgrades_a_proofless_expected_record_with_the_fetched_proof() {
+        use miden_client::store::Store;
+        use miden_client::store::input_note_states::ExpectedNoteState;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = test_wallet(19);
+        let note = public_note_for(&target, 5);
+        let api = chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
+
+        // Built inline instead of via `offline_client_with_node` to keep a
+        // handle on the store for seeding the proof-less record.
+        let store = Arc::new(
+            SqliteStore::new(dir.path().join("store.sqlite3"))
+                .await
+                .unwrap(),
+        );
+        let keystore_dir = dir.path().join("keys");
+        std::fs::create_dir_all(&keystore_dir).unwrap();
+        let miden_client = ClientBuilder::<FilesystemKeyStore>::new()
+            .rpc(api.clone())
+            .store(store.clone())
+            .filesystem_keystore(keystore_dir)
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let mut client = MultisigClient::new(
+            miden_client,
+            Arc::new(GuardianKeyStore::generate()),
+            "http://localhost:1".to_string(),
+            dir.path().to_path_buf(),
+            Endpoint::localhost(),
+            None,
+            ProverConfig::new(),
+            RpcConfig::new(),
+        );
+        client.set_node_rpc_client(api.clone());
+
+        client.miden_client.sync_state().await.unwrap();
+        client.add_or_update_account(&target, false).await.unwrap();
+
+        // Seed the proof-less Expected record directly — a details import
+        // through the client would immediately proof-back it because this
+        // node already knows the note; the record models a proposal import
+        // that ran while the node did not.
+        let metadata = *note.metadata();
+        let record = InputNoteRecord::new(
+            note.clone().into(),
+            note.attachments().clone(),
+            None,
+            ExpectedNoteState {
+                metadata: Some(metadata),
+                after_block_num: BlockNumber::from(0u32),
+                tag: Some(metadata.tag()),
+            }
+            .into(),
+        );
+        store.upsert_input_notes(&[record]).await.unwrap();
+
+        let report = client
+            .backfill_public_notes_by_tag(target.id(), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(report.outcomes.len(), 1);
+        assert_eq!(
+            report.outcomes[0].status,
+            NoteImportStatus::Imported,
+            "{report:?}"
+        );
+
+        let records = client
+            .miden_client
+            .get_input_notes(miden_client::store::NoteFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0].inclusion_proof().is_some(),
+            "the record must now be proof-backed"
+        );
     }
 
     /// Node stub that reports the upstream pagination cap for any range wider

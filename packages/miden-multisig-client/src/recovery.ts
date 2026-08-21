@@ -11,6 +11,7 @@
 
 import {
   AccountId,
+  type CommittedNote,
   Endpoint,
   InputNote,
   type InputNoteRecord,
@@ -21,7 +22,6 @@ import {
   NoteFile,
   NoteFilter,
   NoteFilterTypes,
-  type NoteId,
   type NoteInclusionProof,
   NoteTag,
   NoteType,
@@ -418,20 +418,9 @@ export async function importNotesFromProposals(
     return outcomes;
   }
 
-  // Look up existing records by note ID *and* recipient digest: records the
-  // store keeps without metadata (a note details import in expected state, or
-  // a note observed as consumed on chain) expose neither a note ID nor a
-  // nullifier, and an ID-only lookup would keep re-importing them forever.
-  // (The WASM NoteFilter has no details-commitment variant, unlike the Rust
-  // SDK, so this scans the store once and keys records both ways.)
-  const existing = new Map<string, InputNoteRecord>();
+  let existing: Map<string, InputNoteRecord>;
   try {
-    const records = await webClient.getInputNotes(new NoteFilter(NoteFilterTypes.All));
-    for (const record of records) {
-      for (const key of recordKeys(record)) {
-        existing.set(key, record);
-      }
-    }
+    existing = await collectExistingRecords(webClient);
   } catch (error) {
     const reason = `failed to read local store: ${errorDetail(error)}`;
     for (const candidate of decoded) {
@@ -499,24 +488,17 @@ export async function importNotesFromProposals(
   for (const candidate of pending) {
     const proof = proofs.get(candidate.idHex);
     if (proof) {
-      try {
-        const inputNote = InputNote.authenticated(candidate.note, proof);
-        await webClient.importNoteFile(NoteFile.fromInputNote(inputNote));
+      const { outcome, wasImported } = await importNoteWithProof(
+        webClient,
+        'proposal',
+        candidate.idHex,
+        candidate.note,
+        proof,
+      );
+      if (wasImported) {
         imported.push({ index: outcomes.length, detailsKey: candidate.detailsKey });
-        outcomes.push({
-          identifier: candidate.idHex,
-          source: 'proposal',
-          status: 'imported',
-        });
-      } catch (error) {
-        outcomes.push({
-          identifier: candidate.idHex,
-          source: 'proposal',
-          status: 'failed',
-          retryable: isTransientRpcError(error),
-          reason: `failed to import note: ${errorDetail(error)}`,
-        });
       }
+      outcomes.push(outcome);
     } else {
       try {
         // Track the tag FIRST so the resulting expected record can never
@@ -603,6 +585,62 @@ async function reclassifyConsumedImports(
 }
 
 /**
+ * Scans the store once and keys every record by note ID *and* details key:
+ * records the store keeps without metadata (a note details import in
+ * expected state, or a note observed as consumed on chain) expose neither a
+ * note ID nor a nullifier, and an ID-only lookup would keep re-importing
+ * them forever. (The WASM NoteFilter has no details-commitment variant,
+ * unlike the Rust SDK, so the store is scanned once and keyed both ways.)
+ */
+async function collectExistingRecords(
+  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+): Promise<Map<string, InputNoteRecord>> {
+  const existing = new Map<string, InputNoteRecord>();
+  const records = await webClient.getInputNotes(new NoteFilter(NoteFilterTypes.All));
+  for (const record of records) {
+    for (const key of recordKeys(record)) {
+      existing.set(key, record);
+    }
+  }
+  return existing;
+}
+
+/**
+ * Imports one note with its inclusion proof and classifies the result.
+ * Upstream note-import batches are atomic, which is why callers import
+ * individually — one bad note must not sink the rest. Returns the outcome
+ * and whether the import succeeded (input for the batched consumed-state
+ * re-check).
+ */
+async function importNoteWithProof(
+  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+  source: NoteImportSource,
+  idHex: string,
+  note: Note,
+  proof: NoteInclusionProof,
+): Promise<{ outcome: NoteImportOutcome; wasImported: boolean }> {
+  try {
+    const inputNote = InputNote.authenticated(note, proof);
+    await webClient.importNoteFile(NoteFile.fromInputNote(inputNote));
+    return {
+      outcome: { identifier: idHex, source, status: 'imported' },
+      wasImported: true,
+    };
+  } catch (error) {
+    return {
+      outcome: {
+        identifier: idHex,
+        source,
+        status: 'failed',
+        retryable: isTransientRpcError(error),
+        reason: `failed to import note: ${errorDetail(error)}`,
+      },
+      wasImported: false,
+    };
+  }
+}
+
+/**
  * `RpcError::PaginationError`'s Display prefix in the WASM error chain: the
  * node caps internal pagination per `syncNotes` request, and the scan splits
  * the range client-side when it trips. Exported for the drift-guard test,
@@ -618,8 +656,15 @@ export const RPC_PAGINATION_FRAGMENT = 'rpc pagination error';
  */
 const MAX_SCAN_REQUESTS = 128;
 
-/** Notes per `getNotesById` request when fetching discovered note bodies. */
-const NOTE_FETCH_CHUNK = 100;
+/** Block numbers are u32 on chain; out-of-range JS numbers would silently
+ * wrap modulo 2^32 at the WASM boundary and scan the wrong range. */
+const MAX_BLOCK_NUMBER = 4_294_967_295;
+
+function requireBlockNumber(name: string, value: number): void {
+  if (!Number.isInteger(value) || value < 0 || value > MAX_BLOCK_NUMBER) {
+    throw new Error(`${name} must be an integer in [0, ${MAX_BLOCK_NUMBER}], got ${value}`);
+  }
+}
 
 /** A contiguous block range, inclusive on both ends. */
 export interface BlockRange {
@@ -654,8 +699,10 @@ export interface PublicBackfillReport {
    * pagination cap). Empty when the whole range was scanned. Notes committed
    * in these ranges may be missing from `outcomes`. */
   uncovered: BlockRange[];
-  /** Whether rerunning the backfill can plausibly cover the `uncovered`
-   * ranges. Always `false` when `uncovered` is empty. */
+  /** Whether rerunning the backfill can plausibly improve the result: cover
+   * `uncovered` ranges, or retry outcomes whose own `retryable` flag is set.
+   * Always `false` when the scan fully covered the range and no outcome is
+   * retryable. */
   retryable: boolean;
   /** Human-readable cause when the scan did not cover the whole range. */
   reason?: string;
@@ -705,7 +752,8 @@ export interface BackfillPublicNotesOptions {
  * be covered are reported in {@link PublicBackfillReport.uncovered} rather
  * than failing the recovery flow. This function throws only when the scan
  * range itself cannot be established (chain-tip lookup failed, an invalid
- * account ID, or `fromBlock > toBlock`).
+ * account ID, a block bound that is not a u32 integer, or
+ * `fromBlock > toBlock`).
  *
  * @example
  * ```typescript
@@ -729,8 +777,10 @@ export async function backfillPublicNotesByTag(
   AccountId.fromHex(options.accountId);
 
   const from = options.fromBlock ?? 0;
+  requireBlockNumber('fromBlock', from);
   let to: number;
   if (options.toBlock !== undefined) {
+    requireBlockNumber('toBlock', options.toBlock);
     to = options.toBlock;
   } else {
     try {
@@ -751,7 +801,7 @@ export async function backfillPublicNotesByTag(
   // consumed by the bridge, so the tag is rebuilt per request.
   const scanTag = (): NoteTag => NoteTag.withAccountTarget(AccountId.fromHex(options.accountId));
   const queue: Array<[number, number]> = [[from, to]];
-  const discovered = new Map<string, { noteId: NoteId; noteType: NoteType }>();
+  const discovered = new Map<string, CommittedNote>();
   const uncovered: BlockRange[] = [];
   const scanReasons: string[] = [];
   let retryable = false;
@@ -771,7 +821,9 @@ export async function backfillPublicNotesByTag(
       for (const committed of info.notes()) {
         const idHex = normalizeHexWord(committed.noteId().toString());
         if (!discovered.has(idHex)) {
-          discovered.set(idHex, { noteId: committed.noteId(), noteType: committed.noteType() });
+          // The wrapper is kept (not a one-shot accessor result) so fresh
+          // NoteId handles can be minted per body-fetch attempt below.
+          discovered.set(idHex, committed);
         }
       }
     } catch (error) {
@@ -796,15 +848,13 @@ export async function backfillPublicNotesByTag(
     );
   }
 
-  const publicIds: Array<{ idHex: string; noteId: NoteId }> = [];
-  let skippedPrivate = 0;
-  for (const [idHex, entry] of discovered) {
-    if (entry.noteType === NoteType.Public) {
-      publicIds.push({ idHex, noteId: entry.noteId });
-    } else {
-      skippedPrivate += 1;
+  const publicNotes: Array<{ idHex: string; committed: CommittedNote }> = [];
+  for (const [idHex, committed] of discovered) {
+    if (committed.noteType() === NoteType.Public) {
+      publicNotes.push({ idHex, committed });
     }
   }
+  const skippedPrivate = discovered.size - publicNotes.length;
 
   const outcomes: NoteImportOutcome[] = [];
   const buildReport = (): PublicBackfillReport => {
@@ -822,45 +872,13 @@ export async function backfillPublicNotesByTag(
       skippedPrivate,
       outcomes,
       uncovered,
-      retryable,
+      // Rerunning can help when scan ranges were left uncovered OR when any
+      // per-note outcome is itself retryable — surface both at report level
+      // so orchestration keyed on the report alone reruns when it should.
+      retryable: retryable || outcomes.some((outcome) => outcome.retryable === true),
       ...(reason === undefined ? {} : { reason }),
     };
   };
-
-  // One batched body fetch per chunk; the node returns full bodies for
-  // public notes, so the scan's ID + proof is all this path needs.
-  const bodies = new Map<string, { note: Note; proof: NoteInclusionProof }>();
-  const fetchFailed = new Set<string>();
-  for (let start = 0; start < publicIds.length; start += NOTE_FETCH_CHUNK) {
-    const chunk = publicIds.slice(start, start + NOTE_FETCH_CHUNK);
-    try {
-      const fetchedNotes = await retryRpcRead(
-        () => rpcClient.getNotesById(chunk.map((candidate) => candidate.noteId)),
-        rpcConfig,
-      );
-      for (const fetched of fetchedNotes) {
-        if (fetched.note) {
-          bodies.set(normalizeHexWord(fetched.noteId.toString()), {
-            note: fetched.note,
-            proof: fetched.inclusionProof,
-          });
-        }
-      }
-    } catch (error) {
-      const chunkRetryable = isTransientRpcError(error);
-      const reason = `failed to fetch note bodies: ${errorDetail(error)}`;
-      for (const candidate of chunk) {
-        fetchFailed.add(candidate.idHex);
-        outcomes.push({
-          identifier: candidate.idHex,
-          source: 'backfill',
-          status: 'failed',
-          retryable: chunkRetryable,
-          reason,
-        });
-      }
-    }
-  }
 
   interface BackfillCandidate {
     idHex: string;
@@ -869,28 +887,63 @@ export async function backfillPublicNotesByTag(
     detailsKey: string;
   }
   const pending: BackfillCandidate[] = [];
-  for (const { idHex } of publicIds) {
-    const body = bodies.get(idHex);
-    if (body) {
-      pending.push({
-        idHex,
-        note: body.note,
-        proof: body.proof,
-        detailsKey: detailsKeyOf(
-          normalizeHexWord(body.note.recipient().digest().toHex()),
-          body.note.assets(),
-        ),
-      });
-    } else if (!fetchFailed.has(idHex)) {
-      // Discovered as public by the scan but returned without a body — not
-      // expected for a committed public note.
-      outcomes.push({
-        identifier: idHex,
-        source: 'backfill',
-        status: 'failed',
-        retryable: true,
-        reason: 'the node did not return a body for this public note',
-      });
+  if (publicNotes.length > 0) {
+    try {
+      // One batched body fetch — the upstream client chunks internally by
+      // the node's negotiated note-ids limit, and the node returns full
+      // bodies for public notes, so the scan's ID + proof is all this path
+      // needs. The WASM bridge consumes call arguments, so fresh NoteId
+      // handles are minted from the kept wrappers on every retry attempt.
+      const fetchedNotes = await retryRpcRead(
+        () =>
+          rpcClient.getNotesById(publicNotes.map((candidate) => candidate.committed.noteId())),
+        rpcConfig,
+      );
+      const bodies = new Map<string, { note: Note; proof: NoteInclusionProof }>();
+      for (const fetched of fetchedNotes) {
+        if (fetched.note) {
+          bodies.set(normalizeHexWord(fetched.noteId.toString()), {
+            note: fetched.note,
+            proof: fetched.inclusionProof,
+          });
+        }
+      }
+      for (const { idHex } of publicNotes) {
+        const body = bodies.get(idHex);
+        if (body) {
+          pending.push({
+            idHex,
+            note: body.note,
+            proof: body.proof,
+            detailsKey: detailsKeyOf(
+              normalizeHexWord(body.note.recipient().digest().toHex()),
+              body.note.assets(),
+            ),
+          });
+        } else {
+          // Discovered as public by the scan but returned without a body —
+          // not expected for a committed public note.
+          outcomes.push({
+            identifier: idHex,
+            source: 'backfill',
+            status: 'failed',
+            retryable: true,
+            reason: 'the node did not return a body for this public note',
+          });
+        }
+      }
+    } catch (error) {
+      const fetchRetryable = isTransientRpcError(error);
+      const reason = `failed to fetch note bodies: ${errorDetail(error)}`;
+      for (const { idHex } of publicNotes) {
+        outcomes.push({
+          identifier: idHex,
+          source: 'backfill',
+          status: 'failed',
+          retryable: fetchRetryable,
+          reason,
+        });
+      }
     }
   }
 
@@ -898,17 +951,9 @@ export async function backfillPublicNotesByTag(
     return buildReport();
   }
 
-  // Look up existing records by note ID *and* details key (see
-  // `importNotesFromProposals`): metadata-less records would keep
-  // re-importing forever under an ID-only lookup.
-  const existing = new Map<string, InputNoteRecord>();
+  let existing: Map<string, InputNoteRecord>;
   try {
-    const records = await webClient.getInputNotes(new NoteFilter(NoteFilterTypes.All));
-    for (const record of records) {
-      for (const key of recordKeys(record)) {
-        existing.set(key, record);
-      }
-    }
+    existing = await collectExistingRecords(webClient);
   } catch (error) {
     const reason = `failed to read local store: ${errorDetail(error)}`;
     for (const candidate of pending) {
@@ -927,7 +972,12 @@ export async function backfillPublicNotesByTag(
   const imported: Array<{ index: number; detailsKey: string }> = [];
   for (const candidate of pending) {
     const record = existing.get(candidate.idHex) ?? existing.get(candidate.detailsKey);
-    if (record) {
+    // Unlike the proposal import, a proof-less (expected) record is NOT
+    // skipped here: this primitive exists because forward sync will never
+    // revisit the note's block, so the freshly fetched proof is applied to
+    // upgrade the record in place (the WASM import handles existing
+    // records).
+    if (record && (record.isConsumed() || record.inclusionProof() !== undefined)) {
       outcomes.push({
         identifier: candidate.idHex,
         source: 'backfill',
@@ -935,26 +985,17 @@ export async function backfillPublicNotesByTag(
       });
       continue;
     }
-    // Upstream note-import batches are atomic, so one bad note must not sink
-    // the rest — import individually.
-    try {
-      const inputNote = InputNote.authenticated(candidate.note, candidate.proof);
-      await webClient.importNoteFile(NoteFile.fromInputNote(inputNote));
+    const { outcome, wasImported } = await importNoteWithProof(
+      webClient,
+      'backfill',
+      candidate.idHex,
+      candidate.note,
+      candidate.proof,
+    );
+    if (wasImported) {
       imported.push({ index: outcomes.length, detailsKey: candidate.detailsKey });
-      outcomes.push({
-        identifier: candidate.idHex,
-        source: 'backfill',
-        status: 'imported',
-      });
-    } catch (error) {
-      outcomes.push({
-        identifier: candidate.idHex,
-        source: 'backfill',
-        status: 'failed',
-        retryable: isTransientRpcError(error),
-        reason: `failed to import note: ${errorDetail(error)}`,
-      });
     }
+    outcomes.push(outcome);
   }
 
   await reclassifyConsumedImports(webClient, imported, outcomes);

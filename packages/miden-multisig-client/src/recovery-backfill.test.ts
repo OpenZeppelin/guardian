@@ -107,8 +107,14 @@ function makeFetchedNote(idHex: string, options: { withBody?: boolean } = {}) {
 
 /** A store record as returned by `getInputNotes`; `idHex: undefined` models a
  * metadata-less record (details import or consumed-external) matched by its
- * details instead. */
-function makeRecord(options: { idHex?: string; detailsOf?: string; consumed?: boolean }) {
+ * details instead, and `proofBacked: false` models an expected record that
+ * never received its inclusion proof. */
+function makeRecord(options: {
+  idHex?: string;
+  detailsOf?: string;
+  consumed?: boolean;
+  proofBacked?: boolean;
+}) {
   const detailsSource = options.detailsOf ?? `0x${'ab'.repeat(32)}`;
   const assets = noteAssets(detailsSource);
   return {
@@ -118,6 +124,8 @@ function makeRecord(options: { idHex?: string; detailsOf?: string; consumed?: bo
       assets: () => assets,
     }),
     isConsumed: () => options.consumed ?? false,
+    inclusionProof: () =>
+      (options.proofBacked ?? true) ? `stored-proof:${detailsSource}` : undefined,
   };
 }
 
@@ -232,6 +240,44 @@ describe('backfillPublicNotesByTag', () => {
     expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
   });
 
+  it('upgrades a proof-less expected record with the fetched proof instead of skipping it', async () => {
+    mockSyncNotes.mockResolvedValue(syncInfoWith(makeCommitted(NOTE_ID_1, 1)));
+    mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
+    // An expected record without a proof (e.g. left by a proposal import
+    // that ran while the note was uncommitted): forward sync will never
+    // revisit the note's block, so the backfill must apply the proof.
+    storeRecords = [makeRecord({ detailsOf: NOTE_ID_1, proofBacked: false })];
+
+    const report = await run();
+
+    expect(report.outcomes).toEqual([
+      { identifier: NOTE_ID_1, source: 'backfill', status: 'imported' },
+    ]);
+    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds fresh NoteId handles for each body-fetch retry attempt', async () => {
+    mockSyncNotes.mockResolvedValue(syncInfoWith(makeCommitted(NOTE_ID_1, 1)));
+    // First attempt fails transiently; the retry must succeed — which it can
+    // only do if the closure minted fresh NoteId handles (the WASM bridge
+    // consumes call arguments, so reusing them would poison the retry).
+    mockGetNotesById
+      .mockRejectedValueOnce(TRANSIENT_ERROR())
+      .mockResolvedValueOnce([makeFetchedNote(NOTE_ID_1)]);
+
+    const report = await run();
+
+    expect(report.outcomes).toEqual([
+      { identifier: NOTE_ID_1, source: 'backfill', status: 'imported' },
+    ]);
+    expect(mockGetNotesById).toHaveBeenCalledTimes(2);
+    const firstAttemptIds = mockGetNotesById.mock.calls[0][0];
+    const secondAttemptIds = mockGetNotesById.mock.calls[1][0];
+    expect(firstAttemptIds).toHaveLength(1);
+    expect(secondAttemptIds).toHaveLength(1);
+    expect(secondAttemptIds[0]).not.toBe(firstAttemptIds[0]);
+  });
+
   it('reclassifies an import the chain had already nullified as already-consumed', async () => {
     mockSyncNotes.mockResolvedValue(syncInfoWith(makeCommitted(NOTE_ID_1, 1)));
     mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
@@ -320,6 +366,9 @@ describe('backfillPublicNotesByTag', () => {
         reason: expect.stringContaining('failed to fetch note bodies'),
       },
     ]);
+    // Retryable outcomes surface at report level too, so orchestration keyed
+    // on the report alone knows a rerun can help.
+    expect(report.retryable).toBe(true);
     expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
   });
 
