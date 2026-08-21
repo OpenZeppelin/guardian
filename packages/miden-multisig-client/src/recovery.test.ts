@@ -67,26 +67,45 @@ function tagFor(idHex: string): number {
   return parseInt(idHex.slice(2, 6), 16);
 }
 
+/** Deterministic fake fungible-asset list keyed by a note id. */
+function noteAssets(idHex: string) {
+  const faucetHex = `0xfa${idHex.slice(4, 34)}`;
+  return {
+    fungibleAssets: () => [
+      { faucetId: () => ({ toString: () => faucetHex }), amount: () => 100n },
+    ],
+  };
+}
+
 function makeNote(idHex: string) {
+  const assets = noteAssets(idHex);
   return {
     id: () => ({ toString: () => idHex }),
     recipient: () => ({ digest: () => ({ toHex: () => recipientDigestFor(idHex) }) }),
     metadata: () => ({ tag: () => ({ asU32: () => tagFor(idHex) }) }),
-    assets: () => `assets:${idHex}`,
+    assets: () => assets,
   };
 }
 
 /** A store record as returned by `getInputNotes`. `idHex: undefined` models a
  * metadata-less record (expected-state details import or consumed-external),
- * which still exposes its details (and thus its recipient digest). */
+ * which still exposes its details (recipient digest + assets). `detailsOf`
+ * names the note whose details the record shares; `assetsOf` overrides the
+ * asset half to model recipient-digest collisions between distinct notes. */
 function makeRecord(options: {
   idHex?: string;
-  recipientDigestHex: string;
+  detailsOf?: string;
+  assetsOf?: string;
   consumed?: boolean;
 }) {
+  const detailsSource = options.detailsOf ?? `0x${'ab'.repeat(32)}`;
+  const assets = noteAssets(options.assetsOf ?? detailsSource);
   return {
     id: () => (options.idHex ? { toString: () => options.idHex } : undefined),
-    details: () => ({ recipient: () => ({ digest: () => ({ toHex: () => options.recipientDigestHex }) }) }),
+    details: () => ({
+      recipient: () => ({ digest: () => ({ toHex: () => recipientDigestFor(detailsSource) }) }),
+      assets: () => assets,
+    }),
     isConsumed: () => options.consumed ?? false,
   };
 }
@@ -213,7 +232,7 @@ describe('importNotesFromProposals', () => {
       details: { assets: string; recipient: { digest: () => { toHex: () => string } } };
     };
     expect(detailsFile.kind).toBe('details');
-    expect(detailsFile.details.assets).toBe(`assets:${NOTE_ID_1}`);
+    expect(detailsFile.details.assets).toBe(noteRegistry.get('note-1')!.assets());
     expect(detailsFile.details.recipient.digest().toHex()).toBe(recipientDigestFor(NOTE_ID_1));
   });
 
@@ -238,10 +257,10 @@ describe('importNotesFromProposals', () => {
   it('classifies notes the store already tracks, including metadata-less records', async () => {
     storeRecords = [
       // Normal record, matched by note ID.
-      makeRecord({ idHex: NOTE_ID_1, recipientDigestHex: `0x${'ee'.repeat(32)}` }),
+      makeRecord({ idHex: NOTE_ID_1 }),
       // Metadata-less record (no note ID — e.g. consumed-external or an
       // expected-state details import), matched by recipient digest.
-      makeRecord({ recipientDigestHex: recipientDigestFor(NOTE_ID_2), consumed: true }),
+      makeRecord({ detailsOf: NOTE_ID_2, consumed: true }),
     ];
     mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_3)]);
 
@@ -258,13 +277,41 @@ describe('importNotesFromProposals', () => {
     expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
   });
 
+  it('does not mistake a same-recipient record with different assets for the candidate', async () => {
+    // Two distinct notes can share a recipient while carrying different
+    // assets — recipient digest alone is not collision-safe, so the record
+    // must NOT match and the candidate must still be recovered.
+    storeRecords = [makeRecord({ detailsOf: NOTE_ID_1, assetsOf: NOTE_ID_2, consumed: true })];
+    mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
+
+    const outcomes = await run([makeProposal('p-1', [noteBase64('note-1')])]);
+
+    expect(outcomes).toEqual([
+      { identifier: NOTE_ID_1, source: 'proposal', status: 'imported' },
+    ]);
+    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not relabel an import as consumed for a same-recipient record with different assets', async () => {
+    mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
+    // An unrelated consumed note sharing the recipient but not the assets
+    // must not flip the fresh import to already-consumed.
+    consumedRecords = [makeRecord({ detailsOf: NOTE_ID_1, assetsOf: NOTE_ID_2, consumed: true })];
+
+    const outcomes = await run([makeProposal('p-1', [noteBase64('note-1')])]);
+
+    expect(outcomes).toEqual([
+      { identifier: NOTE_ID_1, source: 'proposal', status: 'imported' },
+    ]);
+  });
+
   it('reports a chain-consumed note as already-consumed after importing its history', async () => {
     mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
     // The upstream import stores a chain-nullified note as a metadata-less
     // consumed record; the batched post-import check sees it by recipient
     // digest.
     consumedRecords = [
-      makeRecord({ recipientDigestHex: recipientDigestFor(NOTE_ID_1), consumed: true }),
+      makeRecord({ detailsOf: NOTE_ID_1, consumed: true }),
     ];
 
     const outcomes = await run([makeProposal('p-1', [noteBase64('note-1')])]);
