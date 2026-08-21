@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
 import { toast } from 'sonner';
-import { useModal } from '@getpara/react-sdk-lite';
 import { MidenWalletAdapter } from '@demox-labs/miden-wallet-adapter-miden';
 
 import {
@@ -34,7 +33,6 @@ import {
   loadMultisigAccount,
   resolveLocalSigner,
   resolveMidenWalletSigner,
-  resolveParaSigner,
   registerOnGuardian,
   switchMultisigGuardian,
   fetchAccountState,
@@ -60,7 +58,6 @@ import {
   RPC_MAX_ATTEMPTS,
   PROVER_URL,
 } from '@/config';
-import { useParaSession } from '@/hooks/useParaSession';
 import { useMidenWallet } from '@/hooks/useMidenWallet';
 import type { SignerInfo } from '@/types';
 import type { WalletSource } from '@/wallets/types';
@@ -79,19 +76,8 @@ const CREATE_PROPOSAL_PENDING_WARNING =
 const EXECUTE_PROPOSAL_PENDING_WARNING =
   'A previous transaction is still being processed on-chain. Please wait for it to be confirmed before executing proposals.';
 
-function preferredWalletSource(
-  paraConnected: boolean,
-  midenWalletConnected: boolean,
-): WalletSource {
-  if (midenWalletConnected) {
-    return 'miden-wallet';
-  }
-
-  if (paraConnected) {
-    return 'para';
-  }
-
-  return 'local';
+function preferredWalletSource(midenWalletConnected: boolean): WalletSource {
+  return midenWalletConnected ? 'miden-wallet' : 'local';
 }
 
 function localCommitmentForScheme(
@@ -110,13 +96,8 @@ function localCommitmentForScheme(
 function activeWalletSchemeForSource(
   walletSource: WalletSource,
   signer: SignerInfo | null,
-  paraScheme: SignatureScheme | null,
   midenWalletScheme: SignatureScheme | null,
 ): SignatureScheme | null {
-  if (walletSource === 'para') {
-    return paraScheme ?? 'ecdsa';
-  }
-
   if (walletSource === 'miden-wallet') {
     return midenWalletScheme;
   }
@@ -127,13 +108,8 @@ function activeWalletSchemeForSource(
 function activeWalletCommitmentForSource(
   walletSource: WalletSource,
   signer: SignerInfo | null,
-  paraCommitment: string | null,
   midenWalletCommitment: string | null,
 ): string | null {
-  if (walletSource === 'para') {
-    return paraCommitment;
-  }
-
   if (walletSource === 'miden-wallet') {
     return midenWalletCommitment;
   }
@@ -185,7 +161,6 @@ export default function App() {
   const falconCommitment = signer?.falcon.commitment ?? null;
   const ecdsaCommitment = signer?.ecdsa.commitment ?? null;
   const activeScheme = signer?.activeScheme ?? null;
-  const { session: paraSession, paraClient, walletId: paraWalletId } = useParaSession();
   const [midenWalletAdapter] = useState(
     () => new MidenWalletAdapter({ appName: 'Miden Multisig' }),
   );
@@ -196,22 +171,16 @@ export default function App() {
     signBytes,
     connectError: midenWalletConnectError,
   } = useMidenWallet(midenWalletAdapter);
-  const { openModal } = useModal();
-  const preferredSource = preferredWalletSource(
-    paraSession.connected,
-    midenWalletSession.connected,
-  );
+  const preferredSource = preferredWalletSource(midenWalletSession.connected);
 
   const activeWalletCommitment = activeWalletCommitmentForSource(
     walletSource,
     signer,
-    paraSession.commitment,
     midenWalletSession.commitment,
   );
   const activeWalletScheme = activeWalletSchemeForSource(
     walletSource,
     signer,
-    paraSession.scheme,
     midenWalletSession.scheme,
   );
 
@@ -221,27 +190,9 @@ export default function App() {
       signatureScheme: SignatureScheme = activeWalletSchemeForSource(
         source,
         signer,
-        paraSession.scheme,
         midenWalletSession.scheme,
       ) ?? 'falcon',
     ) => {
-      if (source === 'para') {
-        if (!paraClient || !paraSession.commitment || !paraSession.publicKey) {
-          throw new Error('Para wallet is not connected');
-        }
-
-        if (!paraWalletId) {
-          throw new Error('Para wallet did not expose a wallet id');
-        }
-
-        return resolveParaSigner({
-          paraClient,
-          walletId: paraWalletId,
-          commitment: paraSession.commitment,
-          publicKey: paraSession.publicKey,
-        });
-      }
-
       if (source === 'miden-wallet') {
         if (!midenWalletSession.commitment || !midenWalletSession.publicKey || !midenWalletSession.scheme) {
           throw new Error('Miden Wallet is not connected');
@@ -265,11 +216,6 @@ export default function App() {
       midenWalletSession.commitment,
       midenWalletSession.publicKey,
       midenWalletSession.scheme,
-      paraClient,
-      paraSession.commitment,
-      paraSession.publicKey,
-      paraSession.scheme,
-      paraWalletId,
       signBytes,
       signer,
     ],
@@ -449,19 +395,8 @@ export default function App() {
 
     if (!midenWalletSession.connected && walletSource === 'miden-wallet') {
       setWalletSource(preferredSource);
-      return;
     }
-
-    if (!paraSession.connected && walletSource === 'para') {
-      setWalletSource(preferredSource);
-    }
-  }, [
-    midenWalletSession.connected,
-    multisig,
-    paraSession.connected,
-    preferredSource,
-    walletSource,
-  ]);
+  }, [midenWalletSession.connected, multisig, preferredSource, walletSource]);
 
   const handleConnectMidenWallet = useCallback(async () => {
     try {
@@ -906,8 +841,6 @@ export default function App() {
         onReconnect={(url) => connectToGuardian(url)}
         walletSource={walletSource}
         onWalletSourceChange={handleWalletSourceChange}
-        paraConnected={paraSession.connected}
-        paraCommitment={paraSession.commitment}
         midenWalletConnected={midenWalletSession.connected}
         midenWalletCommitment={midenWalletSession.commitment}
         onConnectMidenWallet={() => {
@@ -916,7 +849,6 @@ export default function App() {
         onDisconnectMidenWallet={() => {
           void handleDisconnectMidenWallet();
         }}
-        onOpenParaModal={() => openModal()}
       />
 
       <main className="flex-1">

@@ -12,7 +12,6 @@ import {
   FalconSigner,
   MidenWalletSigner,
   MultisigClient as MultisigClientClass,
-  ParaSigner,
   type AccountState,
   type ConsumableNote,
   type DetectedMultisigConfig,
@@ -26,13 +25,6 @@ import {
   type WalletSigningContext,
 } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo, ResolvedSigner } from './types';
-
-interface ParaSignerOptions {
-  paraClient: { signMessage(params: { walletId: string; messageBase64: string }): Promise<unknown> };
-  walletId: string;
-  commitment: string;
-  publicKey: string;
-}
 
 interface MidenWalletSignerOptions {
   wallet: WalletSigningContext;
@@ -59,20 +51,6 @@ export function resolveLocalSigner(
     signatureScheme,
     signerInstance: new FalconSigner(signer.falcon.secretKey),
     walletSource: 'local',
-  };
-}
-
-export function resolveParaSigner({
-  paraClient,
-  walletId,
-  commitment,
-  publicKey,
-}: ParaSignerOptions): ResolvedSigner {
-  return {
-    commitment,
-    signatureScheme: 'ecdsa',
-    signerInstance: new ParaSigner(paraClient, walletId, commitment, publicKey),
-    walletSource: 'para',
   };
 }
 

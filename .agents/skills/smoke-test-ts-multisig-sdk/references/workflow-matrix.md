@@ -33,7 +33,7 @@ Default startup choices:
   - Local dev or Staging: `https://rpc.devnet.miden.io`
   - Production: `https://rpc.testnet.miden.io`
 - signer source: `local`
-- signature scheme: Falcon unless the task specifically targets ECDSA, Para, or Miden Wallet
+- signature scheme: Falcon unless the task specifically targets ECDSA or Miden Wallet
 
 If `3002` is occupied by another local app, start `examples/smoke-web` on a free port and use that exact URL consistently in every browser and automation command.
 
@@ -49,7 +49,7 @@ await window.smoke.initSession({
 });
 ```
 
-Record commitments from `await window.smoke.status()`. For local signers, use `status.localSigners.falconCommitment` or `status.localSigners.ecdsaCommitment`. For Para or Miden Wallet, use `status.para.commitment` or `status.midenWallet.commitment`.
+Record commitments from `await window.smoke.status()`. For local signers, use `status.localSigners.falconCommitment` or `status.localSigners.ecdsaCommitment`. For Miden Wallet, use `status.midenWallet.commitment`.
 
 Use `await window.smoke.events()` as the primary timing source for command durations. Record extra manual timings for wallet modal latency, faucet confirmation, and canonicalization lag.
 
@@ -348,37 +348,13 @@ Canary checks:
 - if execute is attempted before the proposal is fully signed, report that as test-sequencing failure rather than SDK failure
 - if execute succeeds but post-switch sync still depends on the dead GUARDIAN, mark the canary failed
 
-## `para-connectivity`
-
-Use when:
-
-- Para integration changed
-- ECDSA external signer resolution changed
-- the prompt explicitly asks for Para validation
-
-Steps:
-
-1. Initialize the session in a clean browser.
-2. Run:
-   ```js
-   await window.smoke.connectPara();
-   const status = await window.smoke.status();
-   ```
-3. Verify `status.signerSource === 'para'`, `status.signatureScheme === 'ecdsa'`, and `status.para.connected === true`.
-4. If the changed code path affects signing, create or load a small multisig and run at least one sign operation with Para.
-
-Expect:
-
-- connection succeeds through the Para modal flow
-- commitment and public key are visible in `status().para`
-- any requested signing path succeeds with Para as the active signer source
-
 ## `miden-wallet-connectivity`
 
 Use when:
 
 - Miden Wallet integration changed
 - wallet extension detection or external signing changed
+- ECDSA external signer resolution changed
 - the prompt explicitly asks for wallet validation
 
 Steps:
@@ -390,12 +366,14 @@ Steps:
    const status = await window.smoke.status();
    ```
 3. Verify `status.signerSource === 'miden-wallet'` and `status.midenWallet.connected === true`.
-4. If the changed code path affects signing, create or load a small multisig and run at least one sign operation through the wallet.
+4. If the trigger was `ECDSA external signer resolution changed`, also verify `status.midenWallet.scheme === 'ecdsa'`; a Falcon-only wallet run does not exercise external ECDSA resolution and does not satisfy that trigger.
+5. If the changed code path affects signing, create or load a small multisig and run at least one sign operation through the wallet.
 
 Expect:
 
 - wallet connection succeeds
 - commitment, public key, and scheme are visible in `status().midenWallet`
+- for an ECDSA resolution trigger, `status.midenWallet.scheme` is `ecdsa`
 - any requested signing path succeeds with the wallet as the active signer source
 
 ## `state-verification`

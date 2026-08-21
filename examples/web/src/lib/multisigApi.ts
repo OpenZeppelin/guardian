@@ -12,7 +12,6 @@ import {
   MultisigClient as MultisigClientClass,
   FalconSigner,
   EcdsaSigner,
-  ParaSigner,
   MidenWalletSigner,
   type WalletSigningContext,
   AccountInspector,
@@ -28,13 +27,6 @@ type ResolvedSigner = {
   signerInstance: Signer;
   walletSource: WalletSource;
 };
-
-interface ParaSignerOptions {
-  paraClient: { signMessage(params: { walletId: string; messageBase64: string }): Promise<unknown> };
-  walletId: string;
-  commitment: string;
-  publicKey: string;
-}
 
 interface MidenWalletSignerOptions {
   wallet: WalletSigningContext;
@@ -61,20 +53,6 @@ export function resolveLocalSigner(
     signatureScheme,
     signerInstance: new FalconSigner(signer.falcon.secretKey),
     walletSource: 'local',
-  };
-}
-
-export function resolveParaSigner({
-  paraClient,
-  walletId,
-  commitment,
-  publicKey,
-}: ParaSignerOptions): ResolvedSigner {
-  return {
-    commitment,
-    signatureScheme: 'ecdsa',
-    signerInstance: new ParaSigner(paraClient, walletId, commitment, publicKey),
-    walletSource: 'para',
   };
 }
 
