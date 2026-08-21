@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { describe, it, expect } from 'vitest';
 import {
   PAGINATION_GUARD_FRAGMENT,
+  RPC_PAGINATION_FRAGMENT,
   STORE_ERROR_FRAGMENT,
   TRANSPORT_DISABLED_FRAGMENT,
 } from '../src/recovery.js';
@@ -30,5 +31,6 @@ describe('recovery classification fragments', () => {
     expect(binaryText).toContain(TRANSPORT_DISABLED_FRAGMENT);
     expect(binaryText).toContain(PAGINATION_GUARD_FRAGMENT);
     expect(binaryText).toContain(STORE_ERROR_FRAGMENT);
+    expect(binaryText).toContain(RPC_PAGINATION_FRAGMENT);
   });
 });

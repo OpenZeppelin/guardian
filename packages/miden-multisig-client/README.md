@@ -233,6 +233,43 @@ carry no note bytes, proposals disappear once canonicalized, and embedded
 note bytes are visible to the Guardian operator (existing v2 behavior, not a
 new exposure).
 
+### Backfill Historical Public Notes By Tag
+
+Normal forward sync starts from the store's **global** cursor, so in a store
+shared with other accounts the cursor may already be past blocks containing
+a recovered account's notes. `backfillPublicNotesByTag` scans a historical
+block range (genesis to tip by default) for public notes addressed at the
+account's standard note tag and imports them with their on-chain inclusion
+proofs — without ever touching the global sync height. The scan's cost grows
+with the number of matching notes, not the range length, so a full
+genesis-to-tip scan is fast on an ordinary account.
+
+```typescript
+import { backfillPublicNotesByTag } from '@openzeppelin/miden-multisig-client';
+
+const multisig = await client.load(accountId, signer);
+const report = await backfillPublicNotesByTag(midenClient, {
+  accountId: multisig.accountId,
+  midenRpcEndpoint: 'https://rpc.testnet.miden.io',
+});
+// report.discovered, report.skippedPrivate, report.outcomes (per public note)
+await multisig.syncState(); // verifies the imported notes
+```
+
+Each unique public note gets its own `NoteImportOutcome` (source
+`'backfill'`), with the same statuses and duplicate tolerance as the
+proposal import. Tags are best-effort filters: notes sent with unrelated
+custom tags are outside this scan's guarantee, and unrelated notes whose tag
+collides with the account's are imported harmlessly. Private matches are
+counted as `skippedPrivate` — the chain holds no body for them; recover
+those with the transport drain or the proposal import instead.
+
+Scan problems are reported, never thrown: a range dense enough to trip the
+node's pagination cap is split client-side and rescanned, and any sub-range
+that still cannot be covered lands in `report.uncovered` with
+`retryable`/`reason` set, so a partial scan never aborts the rest of a
+recovery flow.
+
 ### Fetch Account State
 
 ```typescript

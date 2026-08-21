@@ -322,6 +322,45 @@ carry no note bytes, proposals disappear once canonicalized, and embedded
 note bytes are visible to the GUARDIAN operator (existing v2 behavior, not a
 new exposure).
 
+### Backfilling Historical Public Notes By Tag
+
+Normal forward sync starts from the store's **global** cursor, so in a store
+shared with other accounts the cursor may already be past blocks containing
+a recovered account's notes. `backfill_public_notes_by_tag` scans a
+historical block range (genesis to tip by default) for public notes
+addressed at the account's standard note tag and imports them with their
+on-chain inclusion proofs — without ever touching the global sync height.
+The scan's cost grows with the number of matching notes, not the range
+length, so a full genesis-to-tip scan is fast on an ordinary account.
+
+```rust
+let report = client
+    .backfill_public_notes_by_tag(account_id, None, None)
+    .await?;
+println!(
+    "discovered {} ({} private skipped), {} public outcomes",
+    report.discovered,
+    report.skipped_private,
+    report.outcomes.len()
+);
+client.sync().await?; // verifies the imported notes
+```
+
+Each unique public note gets its own `NoteImportOutcome` (source
+`Backfill`), with the same statuses and duplicate tolerance as the proposal
+import. Tags are best-effort filters: notes sent with unrelated custom tags
+are outside this scan's guarantee, and unrelated notes whose tag collides
+with the account's are imported harmlessly. Private matches are counted as
+`skipped_private` — the chain holds no body for them; recover those with the
+transport drain or the proposal import instead.
+
+Scan problems are reported, not returned as errors: a range dense enough to
+trip the node's pagination cap is split client-side and rescanned, and any
+sub-range that still cannot be covered lands in `report.uncovered` with
+`retryable`/`reason` set, so a partial scan never aborts the rest of a
+recovery flow. An `Err` means only that the scan range could not be
+established (chain-tip lookup failed or the range is inverted).
+
 ### Custom Proposal Types
 
 GUARDIAN accepts any non-empty `proposal_type`, so an integration can propose a

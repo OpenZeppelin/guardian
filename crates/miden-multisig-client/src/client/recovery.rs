@@ -190,13 +190,19 @@ fn classify_drain_failure(err: &ClientError) -> (TransportRecoveryStatus, bool) 
     }
 }
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use miden_client::note::NoteFile;
+use miden_client::rpc::RpcError;
+use miden_client::rpc::domain::note::FetchedNote;
 use miden_client::store::NoteFilter as StoreNoteFilter;
+use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{Note, NoteDetailsCommitment, NoteId, NoteInclusionProof};
+use miden_protocol::note::{
+    Note, NoteDetailsCommitment, NoteId, NoteInclusionProof, NoteTag, NoteType,
+};
 
+use crate::error::MultisigError;
 use crate::proposal::{Proposal, ProposalMetadata};
 
 /// Where a recovered note's bytes came from.
@@ -204,6 +210,9 @@ use crate::proposal::{Proposal, ProposalMetadata};
 pub enum NoteImportSource {
     /// Embedded in a v2 `consume_notes` proposal (`consume_notes_notes`).
     Proposal,
+    /// Discovered on chain by a tag-scoped historical scan
+    /// ([`MultisigClient::backfill_public_notes_by_tag`]).
+    Backfill,
 }
 
 impl NoteImportSource {
@@ -211,6 +220,7 @@ impl NoteImportSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Proposal => "proposal",
+            Self::Backfill => "backfill",
         }
     }
 }
@@ -282,6 +292,46 @@ pub struct NoteImportOutcome {
     /// Human-readable detail for non-success statuses — or, on an `Imported`
     /// outcome, a warning that the post-import consumed-state check failed
     /// and a sync should confirm the note's status.
+    pub reason: Option<String>,
+}
+
+/// A contiguous block range, inclusive on both ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockRange {
+    /// First block of the range.
+    pub from: u32,
+    /// Last block of the range.
+    pub to: u32,
+}
+
+/// Result of [`MultisigClient::backfill_public_notes_by_tag`].
+///
+/// Scan problems are reported here rather than returned as errors so a
+/// partially failing scan never aborts the rest of a recovery flow: notes
+/// discovered in the covered ranges are imported regardless.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicBackfillReport {
+    /// First block of the requested scan range.
+    pub scanned_from: u32,
+    /// Last block of the requested scan range.
+    pub scanned_to: u32,
+    /// Unique tag-matching notes the scan discovered, of every visibility.
+    pub discovered: usize,
+    /// Unique non-public matches skipped: the chain does not hold their
+    /// bodies, so they cannot be rebuilt from a scan. Private notes are
+    /// covered by the transport drain and proposal-import primitives instead.
+    pub skipped_private: usize,
+    /// One outcome per unique public note discovered.
+    pub outcomes: Vec<NoteImportOutcome>,
+    /// Sub-ranges of `[scanned_from, scanned_to]` the scan could not cover
+    /// (RPC failures, or the scan budget ran out while splitting around the
+    /// node's pagination cap). Empty when the whole range was scanned. Notes
+    /// committed in these ranges may be missing from `outcomes`.
+    pub uncovered: Vec<BlockRange>,
+    /// Whether rerunning the backfill can plausibly cover the `uncovered`
+    /// ranges. Always `false` when `uncovered` is empty.
+    pub retryable: bool,
+    /// Human-readable cause when the scan did not cover the whole range.
     pub reason: Option<String>,
 }
 
@@ -533,49 +583,354 @@ impl MultisigClient {
             outcomes.push(outcome);
         }
 
-        // A note the chain already nullified is stored as consumption history,
-        // not as a consumable note — report that honestly instead of
-        // `Imported`. One batched store read covers every imported note.
-        if !imported.is_empty() {
-            let check = self
-                .miden_client
-                .get_input_notes(StoreNoteFilter::DetailsCommitments(
-                    imported.iter().map(|(_, commitment)| *commitment).collect(),
-                ))
-                .await;
-            match check {
-                Ok(records) => {
-                    let consumed: BTreeSet<NoteDetailsCommitment> = records
-                        .iter()
-                        .filter(|record| record.is_consumed())
-                        .map(|record| record.details_commitment())
-                        .collect();
-                    for (index, commitment) in &imported {
-                        if consumed.contains(commitment) {
-                            outcomes[*index].status = NoteImportStatus::AlreadyConsumed;
-                            outcomes[*index].reason = Some(
-                                "note was already consumed on chain; recorded as consumption \
-                                 history"
-                                    .to_string(),
-                            );
+        self.reclassify_consumed_imports(&imported, &mut outcomes)
+            .await;
+
+        outcomes
+    }
+
+    /// Re-classifies provisionally `Imported` outcomes whose note the chain
+    /// had already nullified: upstream stores those as consumption history,
+    /// not as consumable notes — report that honestly instead of `Imported`.
+    /// One batched store read covers every imported note. A failed check
+    /// downgrades nothing; it flags the outcome's classification as
+    /// unconfirmed instead.
+    async fn reclassify_consumed_imports(
+        &mut self,
+        imported: &[(usize, NoteDetailsCommitment)],
+        outcomes: &mut [NoteImportOutcome],
+    ) {
+        if imported.is_empty() {
+            return;
+        }
+        let check = self
+            .miden_client
+            .get_input_notes(StoreNoteFilter::DetailsCommitments(
+                imported.iter().map(|(_, commitment)| *commitment).collect(),
+            ))
+            .await;
+        match check {
+            Ok(records) => {
+                let consumed: BTreeSet<NoteDetailsCommitment> = records
+                    .iter()
+                    .filter(|record| record.is_consumed())
+                    .map(|record| record.details_commitment())
+                    .collect();
+                for (index, commitment) in imported {
+                    if consumed.contains(commitment) {
+                        outcomes[*index].status = NoteImportStatus::AlreadyConsumed;
+                        outcomes[*index].reason = Some(
+                            "note was already consumed on chain; recorded as consumption \
+                             history"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                // The imports themselves succeeded; stay `Imported` but
+                // flag that the consumed-state classification is unknown.
+                for (index, _) in imported {
+                    outcomes[*index].reason = Some(format!(
+                        "imported, but the consumed-state check failed ({}); run sync to \
+                         confirm the note's status",
+                        e
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Upper bound on `SyncNotes` requests per backfill. Splitting around the
+/// node's pagination cap halves ranges, so the budget is only approachable
+/// when nearly every sub-range is dense enough to trip the cap; exhausting it
+/// reports the remaining ranges as uncovered instead of scanning forever.
+const MAX_SCAN_REQUESTS: usize = 128;
+
+/// Notes per `GetNotesById` request when fetching discovered note bodies.
+const NOTE_FETCH_CHUNK: usize = 100;
+
+impl MultisigClient {
+    /// Scans a historical block range for public notes addressed at
+    /// `account_id`'s standard note tag and imports what it finds with their
+    /// on-chain inclusion proofs (issue #416).
+    ///
+    /// Use after account recovery: normal forward sync starts from the
+    /// store's **global** cursor, so in a shared dirty store the cursor may
+    /// already be past blocks containing the recovered account's notes, and a
+    /// fresh store would need to replay the whole chain state to see them.
+    /// The scan is tag-scoped and its cost grows with the number of matching
+    /// notes, not the range length (spike #412), which makes genesis an
+    /// acceptable default lower bound. The global sync height is never
+    /// touched — run normal sync afterwards to verify the imported notes.
+    /// The store must have synced at least once (recovery via
+    /// [`MultisigClient::pull_account`] does this): importing a proof into a
+    /// store that has never seen the chain fails, and such failures surface
+    /// as `Failed` outcomes.
+    ///
+    /// `from_block` defaults to genesis and `to_block` to the current chain
+    /// tip. Notes are discovered by tag only — a best-effort filter: notes
+    /// sent with unrelated custom tags are outside this scan's guarantee, and
+    /// unrelated notes whose tag collides with the account's are imported
+    /// harmlessly (they simply never become consumable). Only public notes
+    /// can be rebuilt from chain data; private matches are counted as
+    /// `skipped_private` and are covered by the transport drain and
+    /// proposal-import primitives instead.
+    ///
+    /// A range dense enough to trip the node's internal pagination cap is
+    /// split client-side and rescanned as narrower requests; ranges that
+    /// still cannot be covered are reported in
+    /// [`PublicBackfillReport::uncovered`] rather than failing the recovery
+    /// flow. An `Err` from this method means the scan range itself could not
+    /// be established (chain-tip lookup failed, or `from_block > to_block`).
+    pub async fn backfill_public_notes_by_tag(
+        &mut self,
+        account_id: AccountId,
+        from_block: Option<BlockNumber>,
+        to_block: Option<BlockNumber>,
+    ) -> Result<PublicBackfillReport> {
+        let rpc = self.node_rpc_client();
+
+        let from = from_block.unwrap_or(BlockNumber::from(0u32)).as_u32();
+        let to = match to_block {
+            Some(to) => to.as_u32(),
+            None => rpc
+                .get_block_header_by_number(None, false)
+                .await
+                .map_err(|e| {
+                    MultisigError::miden_rpc_with_context(
+                        "failed to resolve the chain tip for the backfill scan",
+                        e,
+                    )
+                })?
+                .0
+                .block_num()
+                .as_u32(),
+        };
+        if from > to {
+            return Err(MultisigError::InvalidConfig(format!(
+                "backfill range is inverted: from_block {from} > to_block {to}"
+            )));
+        }
+
+        let tag = NoteTag::with_account_target(account_id);
+        let tags: BTreeSet<NoteTag> = std::iter::once(tag).collect();
+
+        // Work queue of inclusive sub-ranges, split in half whenever the node
+        // reports its pagination cap for one of them.
+        let mut queue: VecDeque<(u32, u32)> = VecDeque::from([(from, to)]);
+        let mut discovered = BTreeMap::new();
+        let mut uncovered: Vec<BlockRange> = Vec::new();
+        let mut scan_reasons: Vec<String> = Vec::new();
+        let mut retryable = false;
+        let mut requests = 0usize;
+        let mut budget_exhausted = false;
+
+        while let Some((lo, hi)) = queue.pop_front() {
+            if requests >= MAX_SCAN_REQUESTS {
+                budget_exhausted = true;
+                uncovered.push(BlockRange { from: lo, to: hi });
+                continue;
+            }
+            requests += 1;
+            match rpc
+                .sync_notes(BlockNumber::from(lo), BlockNumber::from(hi), &tags)
+                .await
+            {
+                Ok(blocks) => {
+                    for block in blocks {
+                        discovered.extend(block.notes);
+                    }
+                }
+                // The node caps internal pagination per request rather than
+                // truncating; a single-block range cannot be split further
+                // (and cannot realistically hold that many pages), so only
+                // splittable ranges take this branch.
+                Err(RpcError::PaginationError(_)) if lo < hi => {
+                    let mid = lo + (hi - lo) / 2;
+                    queue.push_front((mid + 1, hi));
+                    queue.push_front((lo, mid));
+                }
+                Err(e) => {
+                    retryable |= is_transient_rpc_error(&e);
+                    scan_reasons.push(format!("blocks [{lo}, {hi}]: {e}"));
+                    uncovered.push(BlockRange { from: lo, to: hi });
+                }
+            }
+        }
+        if budget_exhausted {
+            retryable = true;
+            scan_reasons.push(format!(
+                "scan budget of {MAX_SCAN_REQUESTS} requests exhausted while splitting around \
+                 the node's pagination cap; rerun the backfill over the uncovered ranges"
+            ));
+        }
+
+        let discovered_count = discovered.len();
+        let mut public_ids: Vec<NoteId> = Vec::new();
+        let mut skipped_private = 0usize;
+        for (id, committed) in &discovered {
+            if committed.note_type() == NoteType::Public {
+                public_ids.push(*id);
+            } else {
+                skipped_private += 1;
+            }
+        }
+
+        let mut outcomes: Vec<NoteImportOutcome> = Vec::new();
+
+        // One batched body fetch per chunk; the node returns full bodies for
+        // public notes, so the scan's ID + proof is all this path needs.
+        let mut bodies: BTreeMap<NoteId, (Note, NoteInclusionProof)> = BTreeMap::new();
+        let mut fetch_failed: HashSet<NoteId> = HashSet::new();
+        for chunk in public_ids.chunks(NOTE_FETCH_CHUNK) {
+            match rpc.get_notes_by_id(chunk).await {
+                Ok(fetched) => {
+                    for note in fetched {
+                        if let FetchedNote::Public(note, proof) = note {
+                            bodies.insert(note.id(), (note, proof));
                         }
                     }
                 }
                 Err(e) => {
-                    // The imports themselves succeeded; stay `Imported` but
-                    // flag that the consumed-state classification is unknown.
-                    for (index, _) in &imported {
-                        outcomes[*index].reason = Some(format!(
-                            "imported, but the consumed-state check failed ({}); run sync to \
-                             confirm the note's status",
-                            e
-                        ));
+                    let chunk_retryable = is_transient_rpc_error(&e);
+                    let reason = format!("failed to fetch note bodies: {e}");
+                    for id in chunk {
+                        fetch_failed.insert(*id);
+                        outcomes.push(NoteImportOutcome {
+                            identifier: id.to_hex(),
+                            source: NoteImportSource::Backfill,
+                            status: NoteImportStatus::Failed,
+                            retryable: chunk_retryable,
+                            reason: Some(reason.clone()),
+                        });
                     }
                 }
             }
         }
 
-        outcomes
+        let mut pending: Vec<(Note, NoteInclusionProof)> = Vec::new();
+        for id in &public_ids {
+            match bodies.remove(id) {
+                Some(entry) => pending.push(entry),
+                // Discovered as public by the scan but returned without a
+                // body — not expected for a committed public note.
+                None if !fetch_failed.contains(id) => outcomes.push(NoteImportOutcome {
+                    identifier: id.to_hex(),
+                    source: NoteImportSource::Backfill,
+                    status: NoteImportStatus::Failed,
+                    retryable: true,
+                    reason: Some("the node did not return a body for this public note".to_string()),
+                }),
+                None => {}
+            }
+        }
+
+        // Look up existing records by details commitment, not note ID (see
+        // `import_notes_from_proposals`): metadata-less records would keep
+        // re-importing forever under an ID lookup.
+        let commitments: Vec<NoteDetailsCommitment> = pending
+            .iter()
+            .map(|(note, _)| note.details_commitment())
+            .collect();
+        match self
+            .miden_client
+            .get_input_notes(StoreNoteFilter::DetailsCommitments(commitments))
+            .await
+        {
+            Err(e) => {
+                let reason = format!("failed to read local store: {}", e);
+                for (note, _) in &pending {
+                    outcomes.push(NoteImportOutcome {
+                        identifier: note.id().to_hex(),
+                        source: NoteImportSource::Backfill,
+                        status: NoteImportStatus::Failed,
+                        retryable: false,
+                        reason: Some(reason.clone()),
+                    });
+                }
+            }
+            Ok(records) => {
+                let existing: BTreeMap<_, _> = records
+                    .into_iter()
+                    .map(|record| (record.details_commitment(), record))
+                    .collect();
+
+                // Provisionally `Imported` outcomes, re-classified in one
+                // batched consumed-state check below.
+                let mut imported: Vec<(usize, NoteDetailsCommitment)> = Vec::new();
+                for (note, proof) in pending {
+                    let identifier = note.id().to_hex();
+                    let commitment = note.details_commitment();
+                    if let Some(record) = existing.get(&commitment) {
+                        let status = if record.is_consumed() {
+                            NoteImportStatus::AlreadyConsumed
+                        } else {
+                            NoteImportStatus::AlreadyPresent
+                        };
+                        outcomes.push(NoteImportOutcome {
+                            identifier,
+                            source: NoteImportSource::Backfill,
+                            status,
+                            retryable: false,
+                            reason: None,
+                        });
+                        continue;
+                    }
+                    // Upstream `import_notes` batches are atomic, so one bad
+                    // note must not sink the rest — import individually.
+                    let file = NoteFile::NoteWithProof(note, proof);
+                    let outcome = match self
+                        .miden_client
+                        .import_notes(std::slice::from_ref(&file))
+                        .await
+                    {
+                        Ok(_) => {
+                            imported.push((outcomes.len(), commitment));
+                            NoteImportOutcome {
+                                identifier,
+                                source: NoteImportSource::Backfill,
+                                status: NoteImportStatus::Imported,
+                                retryable: false,
+                                reason: None,
+                            }
+                        }
+                        Err(e) => NoteImportOutcome {
+                            identifier,
+                            source: NoteImportSource::Backfill,
+                            status: NoteImportStatus::Failed,
+                            retryable: import_error_retryable(&e),
+                            reason: Some(format!("failed to import note: {}", e)),
+                        },
+                    };
+                    outcomes.push(outcome);
+                }
+
+                self.reclassify_consumed_imports(&imported, &mut outcomes)
+                    .await;
+            }
+        }
+
+        let reason = match scan_reasons.len() {
+            0 => None,
+            n if n <= 3 => Some(scan_reasons.join("; ")),
+            n => Some(format!(
+                "{}; …and {} more",
+                scan_reasons[..3].join("; "),
+                n - 3
+            )),
+        };
+        Ok(PublicBackfillReport {
+            scanned_from: from,
+            scanned_to: to,
+            discovered: discovered_count,
+            skipped_private,
+            outcomes,
+            uncovered,
+            retryable,
+            reason,
+        })
     }
 }
 
@@ -592,11 +947,11 @@ mod tests {
     use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
     use miden_client::{ClientError, Serializable};
     use miden_client_sqlite_store::SqliteStore;
-    use miden_protocol::{Felt, Word};
     use miden_protocol::account::Account;
     use miden_protocol::account::auth::AuthSecretKey;
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteDetails, NoteTag, NoteType};
+    use miden_protocol::{Felt, Word};
     use miden_standards::account::auth::AuthSingleSig;
     use miden_standards::note::P2idNote;
     use miden_tx::utils::sync::RwLock;
@@ -708,6 +1063,17 @@ mod tests {
         dir: &Path,
         transport: Option<Arc<dyn NoteTransportClient>>,
     ) -> MultisigClient {
+        offline_client_with_node(dir, transport, Arc::new(MockRpcApi::default())).await
+    }
+
+    /// Like [`offline_client`], with the given node API injected into both
+    /// the inner Miden client and the multisig client's direct node channel,
+    /// so node-backed primitives and store syncs see the same mock chain.
+    async fn offline_client_with_node(
+        dir: &Path,
+        transport: Option<Arc<dyn NoteTransportClient>>,
+        node: Arc<dyn miden_client::rpc::NodeRpcClient>,
+    ) -> MultisigClient {
         let store = SqliteStore::new(dir.join("store.sqlite3"))
             .await
             .expect("sqlite store opens");
@@ -715,7 +1081,7 @@ mod tests {
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
 
         let mut builder = ClientBuilder::<FilesystemKeyStore>::new()
-            .rpc(Arc::new(MockRpcApi::default()))
+            .rpc(node.clone())
             .store(Arc::new(store))
             .filesystem_keystore(keystore_dir)
             .expect("keystore opens");
@@ -724,7 +1090,7 @@ mod tests {
         }
         let miden_client = builder.build().await.expect("miden client builds");
 
-        MultisigClient::new(
+        let mut client = MultisigClient::new(
             miden_client,
             Arc::new(GuardianKeyStore::generate()),
             "http://localhost:1".to_string(),
@@ -733,7 +1099,9 @@ mod tests {
             None,
             ProverConfig::new(),
             RpcConfig::new(),
-        )
+        );
+        client.set_node_rpc_client(node);
+        client
     }
 
     fn mock_transport() -> (
@@ -1105,9 +1473,9 @@ mod tests {
     // proposal-embedded note import (#415)
     // ---------------------------------------------------------------------
 
+    use crate::proposal::SerializedNote;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use crate::proposal::SerializedNote;
 
     fn build_test_note(seed: u64) -> Note {
         let sender = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
@@ -1299,6 +1667,7 @@ mod tests {
     #[test]
     fn status_and_source_render_stable_strings() {
         assert_eq!(NoteImportSource::Proposal.to_string(), "proposal");
+        assert_eq!(NoteImportSource::Backfill.to_string(), "backfill");
         let expected = [
             (NoteImportStatus::Imported, "imported"),
             (NoteImportStatus::AlreadyPresent, "already-present"),
@@ -1310,5 +1679,508 @@ mod tests {
         for (status, s) in expected {
             assert_eq!(status.to_string(), s);
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // historical public-note backfill by tag (#416)
+    // ---------------------------------------------------------------------
+
+    use miden_client::testing::{MockChain, NoteBuilder};
+    use miden_protocol::transaction::RawOutputNote;
+    use rand::SeedableRng;
+
+    /// A mock chain holding the given output notes in its first
+    /// post-genesis block, with the tip advanced a few blocks past it — the
+    /// note-bearing block sits strictly below the tip.
+    fn chain_with_notes(notes: Vec<RawOutputNote>) -> Arc<MockRpcApi> {
+        let mut builder = MockChain::builder();
+        for note in notes {
+            builder.add_output_note(note);
+        }
+        let api = Arc::new(MockRpcApi::new(builder.build().expect("mock chain builds")));
+        api.advance_blocks(4);
+        api
+    }
+
+    fn public_note_for(target: &Account, seed: u32) -> Note {
+        let mut rng = RandomCoin::new(Word::from(&[seed, 0, 0, 0]));
+        P2idNote::create(
+            test_wallet(200).id(),
+            target.id(),
+            vec![],
+            NoteType::Public,
+            Default::default(),
+            &mut rng,
+        )
+        .expect("p2id note builds")
+    }
+
+    /// The dirty-store scenario from #416: tag coverage starts at `H`, a
+    /// note commits at `B`, and the store's global cursor is already at `T`
+    /// with `H < B <= T` (another account's sync advanced it before this
+    /// account existed in the store). The backfill must discover the note at
+    /// `B` without rewinding `T`.
+    #[tokio::test]
+    async fn backfill_recovers_a_note_behind_the_global_cursor_without_rewinding_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = test_wallet(11);
+        let note = public_note_for(&target, 1);
+        let api = chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
+        let mut client = offline_client_with_node(dir.path(), None, api.clone()).await;
+
+        // Advance the store's global cursor to the tip before the recovered
+        // account (and therefore its tag) exists in this store: the note's
+        // block is now behind the cursor and forward sync will never revisit
+        // it.
+        client.miden_client.sync_state().await.unwrap();
+        let cursor = client.miden_client.get_sync_height().await.unwrap();
+        assert!(
+            note.metadata().tag() == NoteTag::with_account_target(target.id()),
+            "p2id notes carry the standard account-target tag"
+        );
+        client.add_or_update_account(&target, false).await.unwrap();
+        assert!(
+            client
+                .miden_client
+                .get_input_notes(miden_client::store::NoteFilter::All)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the dirty store must start without the note"
+        );
+
+        let report = client
+            .backfill_public_notes_by_tag(target.id(), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(report.scanned_from, 0);
+        assert_eq!(report.scanned_to, cursor.as_u32());
+        assert_eq!(report.discovered, 1);
+        assert_eq!(report.skipped_private, 0);
+        assert!(report.uncovered.is_empty());
+        assert!(!report.retryable);
+        assert_eq!(report.reason, None);
+        assert_eq!(report.outcomes.len(), 1);
+        assert_eq!(report.outcomes[0].status, NoteImportStatus::Imported);
+        assert_eq!(report.outcomes[0].source, NoteImportSource::Backfill);
+        assert_eq!(report.outcomes[0].identifier, note.id().to_hex());
+
+        // The note is in the store, and the global cursor did not move.
+        let records = client
+            .miden_client
+            .get_input_notes(miden_client::store::NoteFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            client.miden_client.get_sync_height().await.unwrap(),
+            cursor,
+            "the backfill must never mutate the global sync height"
+        );
+
+        // Rerunning tolerates the duplicate discovery: the note is reported
+        // as already present, not re-imported.
+        let report = client
+            .backfill_public_notes_by_tag(target.id(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(report.outcomes.len(), 1);
+        assert_eq!(report.outcomes[0].status, NoteImportStatus::AlreadyPresent);
+        let records = client
+            .miden_client
+            .get_input_notes(miden_client::store::NoteFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+    }
+
+    /// Tags are best-effort filters: an unrelated note sharing the tag is
+    /// imported harmlessly, and private matches are counted but skipped —
+    /// the chain does not hold their bodies.
+    #[tokio::test]
+    async fn backfill_tolerates_tag_collisions_and_skips_private_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = test_wallet(13);
+        let tag = NoteTag::with_account_target(target.id());
+
+        let own = public_note_for(&target, 2);
+        let colliding =
+            NoteBuilder::new(test_wallet(201).id(), rand::rngs::StdRng::seed_from_u64(7))
+                .tag(tag.as_u32())
+                .note_type(NoteType::Public)
+                .build()
+                .expect("colliding note builds");
+        let private = private_note_for(&target, 3);
+        let api = chain_with_notes(vec![
+            RawOutputNote::Full(own.clone()),
+            RawOutputNote::Full(colliding.clone()),
+            RawOutputNote::Full(private),
+        ]);
+        let mut client = offline_client_with_node(dir.path(), None, api.clone()).await;
+        // Imports need the store to know the chain; a recovered store has
+        // synced at least once by the time recovery primitives run.
+        client.miden_client.sync_state().await.unwrap();
+        client.add_or_update_account(&target, false).await.unwrap();
+
+        let report = client
+            .backfill_public_notes_by_tag(target.id(), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(report.discovered, 3);
+        assert_eq!(report.skipped_private, 1);
+        assert_eq!(report.outcomes.len(), 2);
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .all(|o| o.status == NoteImportStatus::Imported),
+            "{report:?}"
+        );
+        let imported: BTreeSet<String> = report
+            .outcomes
+            .iter()
+            .map(|o| o.identifier.clone())
+            .collect();
+        assert!(imported.contains(&own.id().to_hex()));
+        assert!(imported.contains(&colliding.id().to_hex()));
+    }
+
+    /// Node stub that reports the upstream pagination cap for any range wider
+    /// than `max_span` blocks and otherwise delegates to the mock chain, so
+    /// the client-side range-splitting fallback can be driven offline.
+    struct PaginationCappedNode {
+        inner: Arc<MockRpcApi>,
+        max_span: u32,
+        scan_requests: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl miden_client::rpc::NodeRpcClient for PaginationCappedNode {
+        async fn sync_notes(
+            &self,
+            block_from: miden_protocol::block::BlockNumber,
+            block_to: miden_protocol::block::BlockNumber,
+            note_tags: &std::collections::BTreeSet<NoteTag>,
+        ) -> std::result::Result<Vec<miden_client::rpc::domain::note::NoteSyncBlock>, RpcError>
+        {
+            self.scan_requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if block_to.as_u32() - block_from.as_u32() + 1 > self.max_span {
+                return Err(RpcError::PaginationError(
+                    "too many pagination iterations, possible infinite loop".to_string(),
+                ));
+            }
+            self.inner.sync_notes(block_from, block_to, note_tags).await
+        }
+
+        async fn get_notes_by_id(
+            &self,
+            note_ids: &[NoteId],
+        ) -> std::result::Result<Vec<miden_client::rpc::domain::note::FetchedNote>, RpcError>
+        {
+            self.inner.get_notes_by_id(note_ids).await
+        }
+
+        async fn get_block_header_by_number(
+            &self,
+            block_num: Option<miden_protocol::block::BlockNumber>,
+            include_mmr_proof: bool,
+        ) -> std::result::Result<
+            (
+                miden_protocol::block::BlockHeader,
+                Option<miden_protocol::crypto::merkle::mmr::MmrProof>,
+            ),
+            RpcError,
+        > {
+            self.inner
+                .get_block_header_by_number(block_num, include_mmr_proof)
+                .await
+        }
+
+        // Note import consults nullifiers and chain data internally; delegate.
+        async fn sync_nullifiers(
+            &self,
+            prefix: &[u16],
+            block_from: miden_protocol::block::BlockNumber,
+            block_to: miden_protocol::block::BlockNumber,
+        ) -> std::result::Result<Vec<miden_client::rpc::domain::nullifier::NullifierUpdate>, RpcError>
+        {
+            self.inner
+                .sync_nullifiers(prefix, block_from, block_to)
+                .await
+        }
+
+        async fn sync_chain_mmr(
+            &self,
+            current_block_height: miden_protocol::block::BlockNumber,
+            upper_bound: miden_client::rpc::domain::sync::SyncTarget,
+        ) -> std::result::Result<miden_client::rpc::domain::sync::ChainMmrInfo, RpcError> {
+            self.inner
+                .sync_chain_mmr(current_block_height, upper_bound)
+                .await
+        }
+
+        async fn get_block_by_number(
+            &self,
+            block_num: miden_protocol::block::BlockNumber,
+            include_proof: bool,
+        ) -> std::result::Result<miden_protocol::block::ProvenBlock, RpcError> {
+            self.inner
+                .get_block_by_number(block_num, include_proof)
+                .await
+        }
+
+        fn has_genesis_commitment(&self) -> Option<miden_protocol::Word> {
+            self.inner.has_genesis_commitment()
+        }
+
+        fn has_rpc_limits(&self) -> Option<miden_client::rpc::domain::limits::RpcLimits> {
+            self.inner.has_rpc_limits()
+        }
+
+        // Nothing below is exercised by the backfill tests.
+        async fn set_genesis_commitment(
+            &self,
+            _commitment: miden_protocol::Word,
+        ) -> std::result::Result<(), RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn submit_proven_transaction(
+            &self,
+            _proven_transaction: miden_protocol::transaction::ProvenTransaction,
+            _transaction_inputs: miden_protocol::transaction::TransactionInputs,
+        ) -> std::result::Result<miden_protocol::block::BlockNumber, RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn submit_proven_batch(
+            &self,
+            _proven_batch: miden_protocol::batch::ProvenBatch,
+            _proposed_batch: miden_protocol::batch::ProposedBatch,
+            _transaction_inputs: Vec<miden_protocol::transaction::TransactionInputs>,
+        ) -> std::result::Result<miden_protocol::block::BlockNumber, RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn get_account(
+            &self,
+            _account_id: miden_protocol::account::AccountId,
+            _request: miden_client::rpc::domain::account::GetAccountRequest,
+        ) -> std::result::Result<
+            (
+                miden_protocol::block::BlockNumber,
+                miden_client::rpc::domain::account::AccountProof,
+            ),
+            RpcError,
+        > {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn get_note_script_by_root(
+            &self,
+            _root: miden_protocol::Word,
+        ) -> std::result::Result<Option<miden_protocol::note::NoteScript>, RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn sync_storage_maps(
+            &self,
+            _block_from: miden_protocol::block::BlockNumber,
+            _block_to: miden_protocol::block::BlockNumber,
+            _account_id: miden_protocol::account::AccountId,
+        ) -> std::result::Result<miden_client::rpc::domain::storage_map::StorageMapInfo, RpcError>
+        {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn sync_account_vault(
+            &self,
+            _block_from: miden_protocol::block::BlockNumber,
+            _block_to: miden_protocol::block::BlockNumber,
+            _account_id: miden_protocol::account::AccountId,
+        ) -> std::result::Result<miden_client::rpc::domain::account_vault::AccountVaultInfo, RpcError>
+        {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn sync_transactions(
+            &self,
+            _block_from: miden_protocol::block::BlockNumber,
+            _block_to: miden_protocol::block::BlockNumber,
+            _account_ids: Vec<miden_protocol::account::AccountId>,
+        ) -> std::result::Result<
+            Vec<miden_client::rpc::domain::transaction::TransactionRecord>,
+            RpcError,
+        > {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn get_network_id(
+            &self,
+        ) -> std::result::Result<miden_protocol::address::NetworkId, RpcError> {
+            self.inner.get_network_id().await
+        }
+
+        async fn get_rpc_limits(
+            &self,
+        ) -> std::result::Result<miden_client::rpc::domain::limits::RpcLimits, RpcError> {
+            self.inner.get_rpc_limits().await
+        }
+
+        async fn set_rpc_limits(&self, limits: miden_client::rpc::domain::limits::RpcLimits) {
+            self.inner.set_rpc_limits(limits).await;
+        }
+
+        async fn get_status_unversioned(
+            &self,
+        ) -> std::result::Result<miden_client::rpc::RpcStatusInfo, RpcError> {
+            self.inner.get_status_unversioned().await
+        }
+
+        async fn get_network_note_status(
+            &self,
+            _note_id: NoteId,
+        ) -> std::result::Result<miden_client::rpc::NetworkNoteStatusInfo, RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+    }
+
+    /// The pagination-cap fallback: a range dense enough to trip the node's
+    /// cap is split client-side until the sub-ranges fit, and the note is
+    /// still recovered with nothing left uncovered.
+    #[tokio::test]
+    async fn backfill_splits_the_range_around_the_pagination_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = test_wallet(15);
+        let note = public_note_for(&target, 4);
+        let api = chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
+        let capped = Arc::new(PaginationCappedNode {
+            inner: api.clone(),
+            max_span: 2,
+            scan_requests: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut client = offline_client_with_node(dir.path(), None, api.clone()).await;
+        // Imports need the store to know the chain; a recovered store has
+        // synced at least once by the time recovery primitives run. Only the
+        // backfill's direct node channel gets the pagination-capped stub.
+        client.miden_client.sync_state().await.unwrap();
+        client.add_or_update_account(&target, false).await.unwrap();
+        client.set_node_rpc_client(capped.clone());
+
+        let report = client
+            .backfill_public_notes_by_tag(target.id(), None, None)
+            .await
+            .unwrap();
+
+        assert!(report.uncovered.is_empty());
+        assert!(!report.retryable);
+        assert_eq!(report.reason, None);
+        assert_eq!(report.discovered, 1);
+        assert_eq!(report.outcomes.len(), 1);
+        assert_eq!(
+            report.outcomes[0].status,
+            NoteImportStatus::Imported,
+            "{report:?}"
+        );
+        assert!(
+            capped
+                .scan_requests
+                .load(std::sync::atomic::Ordering::SeqCst)
+                > 1,
+            "the range must have been rescanned as narrower requests"
+        );
+    }
+
+    /// A pagination failure that persists down to single-block ranges cannot
+    /// be split further: the blocks are reported uncovered instead of
+    /// failing the recovery flow.
+    #[tokio::test]
+    async fn backfill_reports_unsplittable_pagination_failures_as_uncovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = test_wallet(16);
+        let inner = chain_with_notes(vec![]);
+        let capped = Arc::new(PaginationCappedNode {
+            inner,
+            max_span: 0,
+            scan_requests: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut client = offline_client_with_node(dir.path(), None, capped.clone()).await;
+
+        let report = client
+            .backfill_public_notes_by_tag(
+                target.id(),
+                Some(BlockNumber::from(0u32)),
+                Some(BlockNumber::from(3u32)),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.discovered, 0);
+        assert!(report.outcomes.is_empty());
+        assert_eq!(
+            report.uncovered,
+            vec![
+                BlockRange { from: 0, to: 0 },
+                BlockRange { from: 1, to: 1 },
+                BlockRange { from: 2, to: 2 },
+                BlockRange { from: 3, to: 3 },
+            ]
+        );
+        assert!(report.reason.is_some());
+    }
+
+    /// An unreachable node: with an explicit range the scan failure is
+    /// reported (whole range uncovered, retryable), and without one the
+    /// method errors because the chain tip cannot be resolved.
+    #[tokio::test]
+    async fn backfill_against_an_unreachable_node_reports_or_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut client = crate::MultisigClient::builder()
+            .miden_endpoint(miden_client::rpc::Endpoint::try_from("http://127.0.0.1:1").unwrap())
+            .guardian_endpoint("http://127.0.0.1:1")
+            .account_dir(dir.path())
+            .generate_key()
+            .build()
+            .await
+            .unwrap();
+        let target = test_wallet(17);
+
+        let report = client
+            .backfill_public_notes_by_tag(target.id(), None, Some(BlockNumber::from(9u32)))
+            .await
+            .unwrap();
+        assert_eq!(report.scanned_from, 0);
+        assert_eq!(report.scanned_to, 9);
+        assert_eq!(report.discovered, 0);
+        assert!(report.outcomes.is_empty());
+        assert_eq!(report.uncovered, vec![BlockRange { from: 0, to: 9 }]);
+        assert!(report.retryable, "a connection failure must be retryable");
+        assert!(report.reason.is_some());
+
+        let err = client
+            .backfill_public_notes_by_tag(target.id(), None, None)
+            .await
+            .expect_err("tip resolution failure must error");
+        assert!(err.to_string().contains("chain tip"));
+    }
+
+    #[tokio::test]
+    async fn backfill_rejects_an_inverted_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut client = offline_client(dir.path(), None).await;
+        let target = test_wallet(18);
+
+        let err = client
+            .backfill_public_notes_by_tag(
+                target.id(),
+                Some(BlockNumber::from(5u32)),
+                Some(BlockNumber::from(1u32)),
+            )
+            .await
+            .expect_err("inverted range must error");
+        assert!(err.to_string().contains("inverted"));
     }
 }

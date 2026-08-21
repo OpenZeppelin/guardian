@@ -7,9 +7,8 @@
 //! - `proposals` - Proposal workflow (list, sign, execute, propose)
 //! - `offline` - Offline proposal operations
 //! - `notes` - Note filtering and listing
-//! - `recovery` - Recovery primitives (transport backlog drain)
+//! - `recovery` - Recovery primitives (transport backlog drain, proposal-embedded note import, public-note backfill)
 //! - `io` - Export/import functionality
-//! - `recovery` - Recovery primitives (proposal-embedded note import)
 //! - `helpers` - Internal GUARDIAN client helpers
 
 mod account;
@@ -26,8 +25,8 @@ pub use delta_history::{
 };
 pub use proposals::{AbandonRequestState, AbandonStatus};
 pub use recovery::{
-    NoteImportOutcome, NoteImportSource, NoteImportStatus, TransportRecoveryReport,
-    TransportRecoveryStatus,
+    BlockRange, NoteImportOutcome, NoteImportSource, NoteImportStatus, PublicBackfillReport,
+    TransportRecoveryReport, TransportRecoveryStatus,
 };
 
 use std::path::PathBuf;
@@ -155,6 +154,16 @@ impl MultisigClient {
 
     pub(crate) fn node_rpc_client(&self) -> Arc<dyn miden_client::rpc::NodeRpcClient> {
         Arc::clone(&self.node_rpc_client)
+    }
+
+    /// Swaps the node RPC client for a mock, so offline tests can drive the
+    /// success paths of node-backed primitives.
+    #[cfg(test)]
+    pub(crate) fn set_node_rpc_client(
+        &mut self,
+        client: Arc<dyn miden_client::rpc::NodeRpcClient>,
+    ) {
+        self.node_rpc_client = client;
     }
 
     /// Returns the GUARDIAN endpoint.

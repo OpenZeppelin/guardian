@@ -10,6 +10,7 @@
  */
 
 import {
+  AccountId,
   Endpoint,
   InputNote,
   type InputNoteRecord,
@@ -20,7 +21,10 @@ import {
   NoteFile,
   NoteFilter,
   NoteFilterTypes,
+  type NoteId,
   type NoteInclusionProof,
+  NoteTag,
+  NoteType,
   RpcClient,
 } from '@miden-sdk/miden-sdk';
 
@@ -221,7 +225,12 @@ export async function drainPrivateNoteBacklog(
 }
 
 /** Where a recovered note's bytes came from. */
-export type NoteImportSource = 'proposal';
+export type NoteImportSource =
+  /** Embedded in a v2 `consume_notes` proposal. */
+  | 'proposal'
+  /** Discovered on chain by a tag-scoped historical scan
+   * ({@link backfillPublicNotesByTag}). */
+  | 'backfill';
 
 /** Per-note result of a recovery import attempt. */
 export type NoteImportStatus =
@@ -537,45 +546,418 @@ export async function importNotesFromProposals(
     }
   }
 
-  // A note the chain already nullified is stored as consumption history, not
-  // as a consumable note — report that honestly instead of `imported`. One
-  // batched store read covers every imported note.
-  if (imported.length > 0) {
+  await reclassifyConsumedImports(webClient, imported, outcomes);
+
+  return outcomes;
+}
+
+/**
+ * Re-classifies provisionally `imported` outcomes whose note the chain had
+ * already nullified: upstream stores those as consumption history, not as
+ * consumable notes — report that honestly instead of `imported`. One batched
+ * store read covers every imported note. A failed check downgrades nothing;
+ * it flags the outcome's classification as unconfirmed instead.
+ */
+async function reclassifyConsumedImports(
+  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+  imported: Array<{ index: number; detailsKey: string }>,
+  outcomes: NoteImportOutcome[],
+): Promise<void> {
+  if (imported.length === 0) {
+    return;
+  }
+  try {
+    const consumedRecords = await webClient.getInputNotes(
+      new NoteFilter(NoteFilterTypes.Consumed),
+    );
+    const consumed = new Set(
+      consumedRecords.map((record) => {
+        const details = record.details();
+        return detailsKeyOf(
+          normalizeHexWord(details.recipient().digest().toHex()),
+          details.assets(),
+        );
+      }),
+    );
+    for (const entry of imported) {
+      if (consumed.has(entry.detailsKey)) {
+        outcomes[entry.index] = {
+          ...outcomes[entry.index],
+          status: 'already-consumed',
+          reason: 'note was already consumed on chain; recorded as consumption history',
+        };
+      }
+    }
+  } catch (error) {
+    // The imports themselves succeeded; stay `imported` but flag that the
+    // consumed-state classification is unknown.
+    for (const entry of imported) {
+      outcomes[entry.index] = {
+        ...outcomes[entry.index],
+        reason: `imported, but the consumed-state check failed (${errorDetail(
+          error,
+        )}); run sync to confirm the note's status`,
+      };
+    }
+  }
+}
+
+/**
+ * `RpcError::PaginationError`'s Display prefix in the WASM error chain: the
+ * node caps internal pagination per `syncNotes` request, and the scan splits
+ * the range client-side when it trips. Exported for the drift-guard test,
+ * which pins it against the shipped WASM binary.
+ */
+export const RPC_PAGINATION_FRAGMENT = 'rpc pagination error';
+
+/**
+ * Upper bound on `syncNotes` requests per backfill. Splitting around the
+ * node's pagination cap halves ranges, so the budget is only approachable
+ * when nearly every sub-range is dense enough to trip the cap; exhausting it
+ * reports the remaining ranges as uncovered instead of scanning forever.
+ */
+const MAX_SCAN_REQUESTS = 128;
+
+/** Notes per `getNotesById` request when fetching discovered note bodies. */
+const NOTE_FETCH_CHUNK = 100;
+
+/** A contiguous block range, inclusive on both ends. */
+export interface BlockRange {
+  /** First block of the range. */
+  from: number;
+  /** Last block of the range. */
+  to: number;
+}
+
+/**
+ * Result of {@link backfillPublicNotesByTag}.
+ *
+ * Scan problems are reported here rather than thrown so a partially failing
+ * scan never aborts the rest of a recovery flow: notes discovered in the
+ * covered ranges are imported regardless.
+ */
+export interface PublicBackfillReport {
+  /** First block of the requested scan range. */
+  scannedFrom: number;
+  /** Last block of the requested scan range. */
+  scannedTo: number;
+  /** Unique tag-matching notes the scan discovered, of every visibility. */
+  discovered: number;
+  /** Unique non-public matches skipped: the chain does not hold their
+   * bodies, so they cannot be rebuilt from a scan. Private notes are covered
+   * by the transport drain and proposal-import primitives instead. */
+  skippedPrivate: number;
+  /** One outcome per unique public note discovered. */
+  outcomes: NoteImportOutcome[];
+  /** Sub-ranges of `[scannedFrom, scannedTo]` the scan could not cover (RPC
+   * failures, or the scan budget ran out while splitting around the node's
+   * pagination cap). Empty when the whole range was scanned. Notes committed
+   * in these ranges may be missing from `outcomes`. */
+  uncovered: BlockRange[];
+  /** Whether rerunning the backfill can plausibly cover the `uncovered`
+   * ranges. Always `false` when `uncovered` is empty. */
+  retryable: boolean;
+  /** Human-readable cause when the scan did not cover the whole range. */
+  reason?: string;
+}
+
+export interface BackfillPublicNotesOptions {
+  /** Hex ID of the account whose standard note tag should be scanned. */
+  accountId: string;
+  /** Miden node RPC endpoint used for the scan and body fetches. Must point
+   * at the same network as the injected Miden client. */
+  midenRpcEndpoint: string;
+  /** First block of the scan range (default: genesis). */
+  fromBlock?: number;
+  /** Last block of the scan range (default: the current chain tip). */
+  toBlock?: number;
+  /** Node RPC read-retry configuration (defaults match the rest of the SDK). */
+  rpc?: RpcConfig;
+}
+
+/**
+ * Scans a historical block range for public notes addressed at an account's
+ * standard note tag and imports what it finds with their on-chain inclusion
+ * proofs (issue #416). Counterpart of
+ * `MultisigClient::backfill_public_notes_by_tag` in the Rust SDK.
+ *
+ * Use after account recovery: normal forward sync starts from the store's
+ * **global** cursor, so in a shared dirty store the cursor may already be
+ * past blocks containing the recovered account's notes, and a fresh store
+ * would need to replay the whole chain state to see them. The scan is
+ * tag-scoped and its cost grows with the number of matching notes, not the
+ * range length (spike #412), which makes genesis an acceptable default lower
+ * bound. The global sync height is never touched — run normal sync
+ * afterwards to verify the imported notes. The store must have synced at
+ * least once (`MultisigClient.load` does this): importing a proof into a
+ * store that has never seen the chain fails, and such failures surface as
+ * `failed` outcomes.
+ *
+ * Notes are discovered by tag only — a best-effort filter: notes sent with
+ * unrelated custom tags are outside this scan's guarantee, and unrelated
+ * notes whose tag collides with the account's are imported harmlessly (they
+ * simply never become consumable). Only public notes can be rebuilt from
+ * chain data; private matches are counted as `skippedPrivate` and are
+ * covered by the transport drain and proposal-import primitives instead.
+ *
+ * A range dense enough to trip the node's internal pagination cap is split
+ * client-side and rescanned as narrower requests; ranges that still cannot
+ * be covered are reported in {@link PublicBackfillReport.uncovered} rather
+ * than failing the recovery flow. This function throws only when the scan
+ * range itself cannot be established (chain-tip lookup failed, an invalid
+ * account ID, or `fromBlock > toBlock`).
+ *
+ * @example
+ * ```typescript
+ * const report = await backfillPublicNotesByTag(midenClient, {
+ *   accountId: multisig.accountId,
+ *   midenRpcEndpoint: 'https://rpc.testnet.miden.io',
+ * });
+ * console.log(report.discovered, 'discovered,', report.outcomes.length, 'public');
+ * await multisig.syncState(); // verifies the imported notes
+ * ```
+ */
+export async function backfillPublicNotesByTag(
+  midenClient: RawClientSource,
+  options: BackfillPublicNotesOptions,
+): Promise<PublicBackfillReport> {
+  const midenRpcEndpoint = requireMidenRpcEndpoint(options.midenRpcEndpoint);
+  const rpcConfig = resolveRpcConfig(options.rpc);
+  const webClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
+  const rpcClient = new RpcClient(new Endpoint(midenRpcEndpoint));
+  // Parse eagerly so a malformed account ID throws before any network work.
+  AccountId.fromHex(options.accountId);
+
+  const from = options.fromBlock ?? 0;
+  let to: number;
+  if (options.toBlock !== undefined) {
+    to = options.toBlock;
+  } else {
     try {
-      const consumedRecords = await webClient.getInputNotes(
-        new NoteFilter(NoteFilterTypes.Consumed),
+      const tip = await retryRpcRead(() => rpcClient.getBlockHeaderByNumber(), rpcConfig);
+      to = tip.blockNum();
+    } catch (error) {
+      throw new Error(
+        `failed to resolve the chain tip for the backfill scan: ${errorDetail(error)}`,
       );
-      const consumed = new Set(
-        consumedRecords.map((record) => {
-          const details = record.details();
-          return detailsKeyOf(
-            normalizeHexWord(details.recipient().digest().toHex()),
-            details.assets(),
-          );
-        }),
-      );
-      for (const entry of imported) {
-        if (consumed.has(entry.detailsKey)) {
-          outcomes[entry.index] = {
-            ...outcomes[entry.index],
-            status: 'already-consumed',
-            reason: 'note was already consumed on chain; recorded as consumption history',
-          };
+    }
+  }
+  if (from > to) {
+    throw new Error(`backfill range is inverted: fromBlock ${from} > toBlock ${to}`);
+  }
+
+  // Work queue of inclusive sub-ranges, split in half whenever the node
+  // reports its pagination cap for one of them. WASM call arguments are
+  // consumed by the bridge, so the tag is rebuilt per request.
+  const scanTag = (): NoteTag => NoteTag.withAccountTarget(AccountId.fromHex(options.accountId));
+  const queue: Array<[number, number]> = [[from, to]];
+  const discovered = new Map<string, { noteId: NoteId; noteType: NoteType }>();
+  const uncovered: BlockRange[] = [];
+  const scanReasons: string[] = [];
+  let retryable = false;
+  let requests = 0;
+  let budgetExhausted = false;
+
+  while (queue.length > 0) {
+    const [lo, hi] = queue.shift() as [number, number];
+    if (requests >= MAX_SCAN_REQUESTS) {
+      budgetExhausted = true;
+      uncovered.push({ from: lo, to: hi });
+      continue;
+    }
+    requests += 1;
+    try {
+      const info = await retryRpcRead(() => rpcClient.syncNotes(lo, hi, [scanTag()]), rpcConfig);
+      for (const committed of info.notes()) {
+        const idHex = normalizeHexWord(committed.noteId().toString());
+        if (!discovered.has(idHex)) {
+          discovered.set(idHex, { noteId: committed.noteId(), noteType: committed.noteType() });
         }
       }
     } catch (error) {
-      // The imports themselves succeeded; stay `imported` but flag that the
-      // consumed-state classification is unknown.
-      for (const entry of imported) {
-        outcomes[entry.index] = {
-          ...outcomes[entry.index],
-          reason: `imported, but the consumed-state check failed (${errorDetail(
-            error,
-          )}); run sync to confirm the note's status`,
-        };
+      // The node caps internal pagination per request rather than
+      // truncating; a single-block range cannot be split further (and
+      // cannot realistically hold that many pages), so only splittable
+      // ranges take this branch.
+      if (errorMessage(error).toLowerCase().includes(RPC_PAGINATION_FRAGMENT) && lo < hi) {
+        const mid = lo + Math.floor((hi - lo) / 2);
+        queue.unshift([lo, mid], [mid + 1, hi]);
+        continue;
+      }
+      retryable ||= isTransientRpcError(error);
+      scanReasons.push(`blocks [${lo}, ${hi}]: ${errorDetail(error)}`);
+      uncovered.push({ from: lo, to: hi });
+    }
+  }
+  if (budgetExhausted) {
+    retryable = true;
+    scanReasons.push(
+      `scan budget of ${MAX_SCAN_REQUESTS} requests exhausted while splitting around the node's pagination cap; rerun the backfill over the uncovered ranges`,
+    );
+  }
+
+  const publicIds: Array<{ idHex: string; noteId: NoteId }> = [];
+  let skippedPrivate = 0;
+  for (const [idHex, entry] of discovered) {
+    if (entry.noteType === NoteType.Public) {
+      publicIds.push({ idHex, noteId: entry.noteId });
+    } else {
+      skippedPrivate += 1;
+    }
+  }
+
+  const outcomes: NoteImportOutcome[] = [];
+  const buildReport = (): PublicBackfillReport => {
+    let reason: string | undefined;
+    if (scanReasons.length > 0) {
+      reason =
+        scanReasons.length <= 3
+          ? scanReasons.join('; ')
+          : `${scanReasons.slice(0, 3).join('; ')}; …and ${scanReasons.length - 3} more`;
+    }
+    return {
+      scannedFrom: from,
+      scannedTo: to,
+      discovered: discovered.size,
+      skippedPrivate,
+      outcomes,
+      uncovered,
+      retryable,
+      ...(reason === undefined ? {} : { reason }),
+    };
+  };
+
+  // One batched body fetch per chunk; the node returns full bodies for
+  // public notes, so the scan's ID + proof is all this path needs.
+  const bodies = new Map<string, { note: Note; proof: NoteInclusionProof }>();
+  const fetchFailed = new Set<string>();
+  for (let start = 0; start < publicIds.length; start += NOTE_FETCH_CHUNK) {
+    const chunk = publicIds.slice(start, start + NOTE_FETCH_CHUNK);
+    try {
+      const fetchedNotes = await retryRpcRead(
+        () => rpcClient.getNotesById(chunk.map((candidate) => candidate.noteId)),
+        rpcConfig,
+      );
+      for (const fetched of fetchedNotes) {
+        if (fetched.note) {
+          bodies.set(normalizeHexWord(fetched.noteId.toString()), {
+            note: fetched.note,
+            proof: fetched.inclusionProof,
+          });
+        }
+      }
+    } catch (error) {
+      const chunkRetryable = isTransientRpcError(error);
+      const reason = `failed to fetch note bodies: ${errorDetail(error)}`;
+      for (const candidate of chunk) {
+        fetchFailed.add(candidate.idHex);
+        outcomes.push({
+          identifier: candidate.idHex,
+          source: 'backfill',
+          status: 'failed',
+          retryable: chunkRetryable,
+          reason,
+        });
       }
     }
   }
 
-  return outcomes;
+  interface BackfillCandidate {
+    idHex: string;
+    note: Note;
+    proof: NoteInclusionProof;
+    detailsKey: string;
+  }
+  const pending: BackfillCandidate[] = [];
+  for (const { idHex } of publicIds) {
+    const body = bodies.get(idHex);
+    if (body) {
+      pending.push({
+        idHex,
+        note: body.note,
+        proof: body.proof,
+        detailsKey: detailsKeyOf(
+          normalizeHexWord(body.note.recipient().digest().toHex()),
+          body.note.assets(),
+        ),
+      });
+    } else if (!fetchFailed.has(idHex)) {
+      // Discovered as public by the scan but returned without a body — not
+      // expected for a committed public note.
+      outcomes.push({
+        identifier: idHex,
+        source: 'backfill',
+        status: 'failed',
+        retryable: true,
+        reason: 'the node did not return a body for this public note',
+      });
+    }
+  }
+
+  if (pending.length === 0) {
+    return buildReport();
+  }
+
+  // Look up existing records by note ID *and* details key (see
+  // `importNotesFromProposals`): metadata-less records would keep
+  // re-importing forever under an ID-only lookup.
+  const existing = new Map<string, InputNoteRecord>();
+  try {
+    const records = await webClient.getInputNotes(new NoteFilter(NoteFilterTypes.All));
+    for (const record of records) {
+      for (const key of recordKeys(record)) {
+        existing.set(key, record);
+      }
+    }
+  } catch (error) {
+    const reason = `failed to read local store: ${errorDetail(error)}`;
+    for (const candidate of pending) {
+      outcomes.push({
+        identifier: candidate.idHex,
+        source: 'backfill',
+        status: 'failed',
+        reason,
+      });
+    }
+    return buildReport();
+  }
+
+  // Provisionally `imported` outcomes, re-classified in one batched
+  // consumed-state check below.
+  const imported: Array<{ index: number; detailsKey: string }> = [];
+  for (const candidate of pending) {
+    const record = existing.get(candidate.idHex) ?? existing.get(candidate.detailsKey);
+    if (record) {
+      outcomes.push({
+        identifier: candidate.idHex,
+        source: 'backfill',
+        status: record.isConsumed() ? 'already-consumed' : 'already-present',
+      });
+      continue;
+    }
+    // Upstream note-import batches are atomic, so one bad note must not sink
+    // the rest — import individually.
+    try {
+      const inputNote = InputNote.authenticated(candidate.note, candidate.proof);
+      await webClient.importNoteFile(NoteFile.fromInputNote(inputNote));
+      imported.push({ index: outcomes.length, detailsKey: candidate.detailsKey });
+      outcomes.push({
+        identifier: candidate.idHex,
+        source: 'backfill',
+        status: 'imported',
+      });
+    } catch (error) {
+      outcomes.push({
+        identifier: candidate.idHex,
+        source: 'backfill',
+        status: 'failed',
+        retryable: isTransientRpcError(error),
+        reason: `failed to import note: ${errorDetail(error)}`,
+      });
+    }
+  }
+
+  await reclassifyConsumedImports(webClient, imported, outcomes);
+
+  return buildReport();
 }

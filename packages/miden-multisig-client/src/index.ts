@@ -105,13 +105,16 @@ export type {
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
 export type { ConnectivityCategory, UserFacingError } from './connectivity.js';
 
-// Recovery primitives (issue #415).
-export { importNotesFromProposals } from './recovery.js';
+// Recovery primitives (issues #415, #416).
+export { backfillPublicNotesByTag, importNotesFromProposals } from './recovery.js';
 export type {
+  BackfillPublicNotesOptions,
+  BlockRange,
   ImportNotesFromProposalsOptions,
   NoteImportOutcome,
   NoteImportSource,
   NoteImportStatus,
+  PublicBackfillReport,
 } from './recovery.js';
 
 export {
