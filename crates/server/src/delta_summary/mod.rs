@@ -177,18 +177,42 @@ pub struct ProposalMetadata {
 }
 
 /// Decoded note summary shared by the dashboard per-delta detail
-/// endpoint and the client transaction-history feed
+/// endpoint and the client delta-history feed
 /// (`HistoryEntry.input_notes` / `output_notes`); not built by the
 /// dashboard listing path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DecodedNote {
     pub note_id: String,
     pub tag: NoteTag,
+    /// On-chain visibility from the note metadata: `public` notes are
+    /// fully shared with the network, `private` notes publish only
+    /// their hash.
+    pub note_type: NoteVisibility,
     pub assets: Vec<DecodedAsset>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient: Option<String>,
+}
+
+/// On-chain note visibility, decoded from `NoteMetadata::note_type()`.
+/// Wire labels match issue #322's `metadata.note_type` vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteVisibility {
+    Public,
+    Private,
+}
+
+impl NoteVisibility {
+    /// Stable lower-snake-case wire label, identical to the serde
+    /// serialization. The gRPC transport carries visibility as strings.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NoteVisibility::Public => "public",
+            NoteVisibility::Private => "private",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
@@ -315,6 +339,13 @@ mod tests {
                 serde_json::to_value(kind).unwrap(),
                 serde_json::Value::String(kind.as_str().to_string()),
                 "AssetKind::{kind:?}"
+            );
+        }
+        for visibility in [NoteVisibility::Public, NoteVisibility::Private] {
+            assert_eq!(
+                serde_json::to_value(visibility).unwrap(),
+                serde_json::Value::String(visibility.as_str().to_string()),
+                "NoteVisibility::{visibility:?}"
             );
         }
         use DecodeSection::*;

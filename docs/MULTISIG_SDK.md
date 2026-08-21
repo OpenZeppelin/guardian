@@ -537,13 +537,15 @@ support it. Multiple matches are valid: the same key commitment may authorize
 more than one account, and the method returns all matches instead of choosing
 one implicitly.
 
-### Transaction History
+### Delta History
 
-Guardian retains the account's full canonical transaction history, so a
-wallet can render it after recovery. `deltaHistory()` returns one page at a
-time, newest-first by nonce, with input/output note summaries decoded
-server-side (note ID, P2ID/P2IDE/swap/mint/burn classification, assets,
-sender/recipient where the note script exposes them).
+Guardian retains the account's canonical delta history, allowing a wallet to
+render its history after recovery. `deltaHistory()` returns one
+page at a time, newest-first by nonce, with server-decoded input and output
+note summaries: note ID, P2ID/P2IDE/swap/mint/burn classification, note
+visibility (`noteType`), assets, and sender or recipient when exposed by the
+note script. Every entry carries `status: 'canonical'` today; the set widens
+if the feed gains a status filter.
 
 ```typescript
 let cursor: string | undefined;
@@ -741,7 +743,7 @@ await multisig.executeProposal(signedProposal.id);
 | `syncProposals()` | Sync proposals from GUARDIAN |
 | `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
-| `deltaHistory({ limit?, cursor? }?)` | One page of canonical transaction history, newest-first, with decoded note summaries |
+| `deltaHistory({ limit?, cursor? }?)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `listProposals()` | Get cached proposals |
 | `createP2idProposal(recipient, faucet, amount, nonce?, { noteType }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`) |
 | `createConsumeNotesProposal(noteIds, nonce?)` | Create note consumption proposal |
@@ -875,12 +877,14 @@ An empty list means the key is valid but this Guardian has no account metadata
 that authorizes its commitment. Authentication failures, malformed lookup
 responses, and per-account `get_state` failures are returned as errors.
 
-### Transaction History
+### Delta History
 
-Guardian retains the account's full canonical transaction history, so a
-wallet can render it after recovery. `delta_history()` returns one
-`HistoryPage` at a time, newest-first by nonce, with input/output note
-summaries decoded server-side.
+Guardian retains the account's canonical delta history, allowing a wallet to
+render its history after recovery. `delta_history()` returns one
+`HistoryPage` at a time, newest-first by nonce, with server-decoded input and
+output note summaries (typed tags, visibility, assets, counterparties). Every
+entry carries `HistoryEntryStatus::Canonical` today; the set widens if the
+feed gains a status filter.
 
 ```rust
 let mut cursor: Option<String> = None;
@@ -889,7 +893,7 @@ loop {
     for entry in &page.entries {
         println!("nonce {} at {}", entry.nonce, entry.timestamp);
         for note in &entry.output_notes {
-            println!("  sent {} note {}", note.tag, note.note_id);
+            println!("  sent {} note {}", note.tag.as_str(), note.note_id);
         }
     }
     match page.next_cursor {
@@ -1083,7 +1087,7 @@ full note, so a post-commit sync is enough.
 | `execute_proposal(id)` | Execute ready proposal |
 | `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
-| `delta_history(limit, cursor)` | One page of canonical transaction history, newest-first, with decoded note summaries |
+| `delta_history(limit, cursor)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `create_proposal_offline(tx)` | Create offline proposal |
 | `sign_imported_proposal(exported)` | Sign offline proposal |
 | `execute_imported_proposal(exported)` | Execute offline proposal |

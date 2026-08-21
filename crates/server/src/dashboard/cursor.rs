@@ -89,7 +89,7 @@ pub enum CursorKind {
     /// cursor was minted for), and is its own kind so dashboard and
     /// client cursors cannot be replayed across surfaces — nor a
     /// history cursor across accounts.
-    AccountHistory,
+    AccountDeltaHistory,
 }
 
 /// Decoded cursor payload. Different kinds use different fields:
@@ -178,12 +178,12 @@ impl Cursor {
         }
     }
 
-    /// Build an `AccountHistory` cursor (client canonical history,
+    /// Build an `AccountDeltaHistory` cursor (client canonical history,
     /// issue #413). Binds the minting account so a cursor issued for
     /// one account is rejected when replayed against another.
-    pub fn account_history(last_nonce: i64, account_id: String) -> Self {
+    pub fn account_delta_history(last_nonce: i64, account_id: String) -> Self {
         Self {
-            kind: CursorKind::AccountHistory,
+            kind: CursorKind::AccountDeltaHistory,
             last_nonce: Some(last_nonce),
             last_account_id: Some(account_id),
             last_updated_at: None,

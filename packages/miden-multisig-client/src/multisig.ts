@@ -1167,7 +1167,7 @@ export class Multisig {
   }
 
   /**
-   * Fetch one page of this account's canonical transaction history
+   * Fetch one page of this account's canonical delta history
    * from GUARDIAN (issue #413), newest-first by nonce, with decoded
    * input/output note summaries. Pass `options.cursor` from a previous
    * page's `nextCursor` to resume; an absent `nextCursor` means the

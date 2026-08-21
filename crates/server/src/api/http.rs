@@ -289,7 +289,7 @@ pub async fn get_delta_since(
     Ok(Json(response.merged_delta))
 }
 
-/// Paginated canonical transaction history for an account (issue
+/// Paginated canonical delta history for an account (issue
 /// #413), newest-first by nonce, with decoded input/output note
 /// summaries. Read-only: served while the account is paused.
 #[utoipa::path(
@@ -300,7 +300,7 @@ pub async fn get_delta_since(
     params(HistoryQuery),
     responses(
         (status = 200, description = "One page of canonical history", body = crate::services::PagedResult<crate::services::HistoryEntry>),
-        (status = 400, description = "Invalid limit or cursor", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Invalid limit or cursor, or account on an unsupported network (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
     )
@@ -317,7 +317,7 @@ pub async fn get_delta_history(
     let cursor = services::parse_cursor(
         query.cursor.as_deref(),
         state.dashboard.cursor_secret(),
-        crate::dashboard::cursor::CursorKind::AccountHistory,
+        crate::dashboard::cursor::CursorKind::AccountDeltaHistory,
     )?;
 
     let params = GetDeltaHistoryParams {

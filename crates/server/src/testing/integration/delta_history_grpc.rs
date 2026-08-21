@@ -91,6 +91,7 @@ async fn test_grpc_history_paginates_newest_first() {
         response.entries.iter().map(|e| e.nonce).collect::<Vec<_>>(),
         vec![3, 2]
     );
+    assert_eq!(response.entries[0].status, "canonical");
     assert_eq!(response.entries[0].timestamp, "2026-08-01T12:00:03Z");
     assert_eq!(
         response.entries[0].new_commitment.as_deref(),

@@ -903,6 +903,7 @@ describe('GuardianHttpClient', () => {
       items: [
         {
           nonce: 5,
+          status: 'canonical',
           timestamp: '2026-08-01T12:00:05Z',
           new_commitment: '0x' + 'c'.repeat(64),
           input_notes: [],
@@ -910,6 +911,7 @@ describe('GuardianHttpClient', () => {
             {
               note_id: '0x' + 'd'.repeat(64),
               tag: 'p2id',
+              note_type: 'public',
               assets: [
                 { asset_id: '0x' + 'e'.repeat(30), kind: 'fungible', amount: '100' },
               ],
@@ -920,6 +922,7 @@ describe('GuardianHttpClient', () => {
         },
         {
           nonce: 4,
+          status: 'canonical',
           timestamp: '2026-08-01T12:00:04Z',
           new_commitment: null,
           input_notes: [],
@@ -944,9 +947,11 @@ describe('GuardianHttpClient', () => {
       expect(result.entries[0].nonce).toBe(5);
       expect(result.entries[0].newCommitment).toBe('0x' + 'c'.repeat(64));
       expect(result.entries[0].decodeWarnings).toEqual([]);
+      expect(result.entries[0].status).toBe('canonical');
       expect(result.entries[0].outputNotes[0]).toEqual({
         noteId: '0x' + 'd'.repeat(64),
         tag: 'p2id',
+        noteType: 'public',
         assets: [{ assetId: '0x' + 'e'.repeat(30), kind: 'fungible', amount: '100' }],
         sender: accountId,
         recipient: '0x' + 'f'.repeat(30),

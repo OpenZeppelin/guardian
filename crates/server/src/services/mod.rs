@@ -70,7 +70,9 @@ pub use dashboard_pagination::{
     DEFAULT_LIMIT, MAX_LIMIT, PagedResult, parse_cursor, parse_limit, validate_limit,
 };
 pub use get_delta::{GetDeltaParams, GetDeltaResult, get_delta};
-pub use get_delta_history::{GetDeltaHistoryParams, HistoryEntry, get_delta_history};
+pub use get_delta_history::{
+    GetDeltaHistoryParams, HistoryEntry, HistoryEntryStatus, get_delta_history,
+};
 pub use get_delta_proposal::{GetDeltaProposalParams, GetDeltaProposalResult, get_delta_proposal};
 pub use get_delta_proposals::{
     GetDeltaProposalsParams, GetDeltaProposalsResult, get_delta_proposals,

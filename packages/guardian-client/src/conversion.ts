@@ -277,6 +277,7 @@ function fromServerHistoryNote(server: ServerHistoryNote): HistoryNote {
   return {
     noteId: server.note_id,
     tag: server.tag,
+    noteType: server.note_type,
     assets: server.assets.map((asset) => ({
       assetId: asset.asset_id,
       kind: asset.kind,
@@ -290,6 +291,7 @@ function fromServerHistoryNote(server: ServerHistoryNote): HistoryNote {
 export function fromServerHistoryEntry(server: ServerHistoryEntry): HistoryEntry {
   return {
     nonce: server.nonce,
+    status: server.status,
     timestamp: server.timestamp,
     newCommitment: server.new_commitment ?? undefined,
     inputNotes: server.input_notes.map(fromServerHistoryNote),

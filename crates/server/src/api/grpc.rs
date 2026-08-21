@@ -184,7 +184,7 @@ impl Guardian for GuardianService {
         let cursor = services::parse_cursor(
             req.cursor.as_deref(),
             self.app_state.dashboard.cursor_secret(),
-            crate::dashboard::cursor::CursorKind::AccountHistory,
+            crate::dashboard::cursor::CursorKind::AccountDeltaHistory,
         )
         .map_err(Status::from)?;
 
@@ -442,6 +442,7 @@ fn history_entry_to_proto(entry: services::HistoryEntry) -> HistoryEntry {
     let note_to_proto = |note: crate::delta_summary::DecodedNote| HistoryNote {
         note_id: note.note_id,
         tag: note.tag.as_str().to_string(),
+        note_type: note.note_type.as_str().to_string(),
         assets: note
             .assets
             .into_iter()
@@ -456,6 +457,7 @@ fn history_entry_to_proto(entry: services::HistoryEntry) -> HistoryEntry {
     };
     HistoryEntry {
         nonce: entry.nonce,
+        status: entry.status.as_str().to_string(),
         timestamp: entry.timestamp,
         new_commitment: entry.new_commitment,
         input_notes: entry.input_notes.into_iter().map(note_to_proto).collect(),

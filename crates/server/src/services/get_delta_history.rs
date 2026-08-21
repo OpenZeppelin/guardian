@@ -1,4 +1,4 @@
-//! Client-facing per-account transaction history (issue #413).
+//! Client-facing per-account delta history (issue #413).
 //!
 //! Exposes the canonical delta history Guardian already retains as a
 //! paginated, cosigner-authenticated feed with decoded input/output
@@ -36,6 +36,10 @@ pub struct GetDeltaHistoryParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct HistoryEntry {
     pub nonce: u64,
+    /// Delta lifecycle status. Always `canonical` today; carried
+    /// explicitly so a future `status=` filter can surface other
+    /// lifecycle statuses without changing the entry shape.
+    pub status: HistoryEntryStatus,
     /// RFC 3339 UTC timestamp at which the delta became canonical.
     pub timestamp: String,
     /// Account commitment after this transaction; lets a wallet
@@ -50,6 +54,24 @@ pub struct HistoryEntry {
     /// failing the page.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub decode_warnings: Vec<DecodeWarning>,
+}
+
+/// Lifecycle status of a history entry. Only `canonical` is emitted
+/// today; the closed set widens when the feed gains a status filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryEntryStatus {
+    Canonical,
+}
+
+impl HistoryEntryStatus {
+    /// Stable lower-snake-case wire label, identical to the serde
+    /// serialization. The gRPC transport carries the status as a string.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HistoryEntryStatus::Canonical => "canonical",
+        }
+    }
 }
 
 impl HistoryEntry {
@@ -76,6 +98,7 @@ impl HistoryEntry {
             };
         Self {
             nonce: delta.nonce,
+            status: HistoryEntryStatus::Canonical,
             timestamp: delta.status.timestamp().to_string(),
             new_commitment: delta.new_commitment.clone(),
             input_notes,
@@ -85,14 +108,14 @@ impl HistoryEntry {
     }
 }
 
-/// List the canonical transaction history for an account, paginated
+/// List the canonical delta history for an account, paginated
 /// newest-first by `nonce DESC`.
 ///
 /// Errors:
 ///   - [`GuardianError::AccountNotFound`] / `AuthenticationFailed` /
 ///     `UnsupportedForNetwork` from [`resolve_account`].
 ///   - [`GuardianError::InvalidCursor`] when the cursor is not an
-///     `AccountHistory` cursor (parse failures surface at the
+///     `AccountDeltaHistory` cursor (parse failures surface at the
 ///     transport layer).
 ///   - [`GuardianError::StorageError`] when the delta rows cannot be
 ///     loaded.
@@ -104,18 +127,18 @@ pub async fn get_delta_history(
     state: &AppState,
     params: GetDeltaHistoryParams,
 ) -> Result<PagedResult<HistoryEntry>> {
-    // An AccountHistory cursor carries `last_nonce` plus the account
+    // An AccountDeltaHistory cursor carries `last_nonce` plus the account
     // it was minted for. A kind-valid cursor without a resume position
     // must be rejected rather than silently restarting from page 1 (a
     // resume loop would then re-read the first page forever), and a
     // cursor minted for a different account must not be replayed here.
     if let Some(c) = params.cursor.as_ref()
-        && (c.kind != CursorKind::AccountHistory
+        && (c.kind != CursorKind::AccountDeltaHistory
             || c.last_nonce.is_none()
             || c.last_account_id.as_deref() != Some(params.account_id.as_str()))
     {
         return Err(GuardianError::InvalidCursor(
-            "expected AccountHistory cursor minted for this account".to_string(),
+            "expected AccountDeltaHistory cursor minted for this account".to_string(),
         ));
     }
 
@@ -155,7 +178,7 @@ pub async fn get_delta_history(
 
     let next_cursor = if has_more {
         entries.last().map(|last| {
-            let next = Cursor::account_history(last.nonce as i64, params.account_id.clone());
+            let next = Cursor::account_delta_history(last.nonce as i64, params.account_id.clone());
             cursor::encode(&next, state.dashboard.cursor_secret())
         })
     } else {
@@ -200,6 +223,14 @@ mod tests {
         assert_eq!(
             entry.decode_warnings[0].section,
             crate::delta_summary::DecodeSection::TxSummary
+        );
+    }
+
+    #[test]
+    fn status_wire_label_matches_serde() {
+        assert_eq!(
+            serde_json::to_value(HistoryEntryStatus::Canonical).unwrap(),
+            serde_json::Value::String(HistoryEntryStatus::Canonical.as_str().to_string()),
         );
     }
 
@@ -249,7 +280,7 @@ mod tests {
         // Kind-valid cursor without a resume position must be rejected,
         // not silently degraded to "first page".
         let empty = Cursor {
-            kind: CursorKind::AccountHistory,
+            kind: CursorKind::AccountDeltaHistory,
             last_nonce: None,
             last_account_id: Some("0xacc".to_string()),
             last_updated_at: None,
@@ -267,7 +298,7 @@ mod tests {
         assert!(matches!(err, GuardianError::InvalidCursor(_)));
 
         // A cursor minted for another account must not resume this one.
-        let foreign = Cursor::account_history(5, "0xother".to_string());
+        let foreign = Cursor::account_delta_history(5, "0xother".to_string());
         let err = get_delta_history(
             &state,
             GetDeltaHistoryParams {

@@ -18,7 +18,8 @@ mod notes;
 mod offline;
 mod proposals;
 pub use delta_history::{
-    HistoryDecodeWarning, HistoryEntry, HistoryNote, HistoryNoteAsset, HistoryPage,
+    HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
+    HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
 };
 pub use proposals::{AbandonRequestState, AbandonStatus};
 

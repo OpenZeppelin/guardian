@@ -77,11 +77,14 @@ export {
 } from '@openzeppelin/guardian-client';
 export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
 export type {
+  HistoryDecodeSection,
   HistoryDecodeWarning,
   HistoryEntry,
+  HistoryEntryStatus,
   HistoryNote,
   HistoryNoteAsset,
   HistoryNoteTag,
+  HistoryNoteVisibility,
   HistoryOptions,
   HistoryPage,
 } from '@openzeppelin/guardian-client';

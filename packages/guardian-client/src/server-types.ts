@@ -180,7 +180,7 @@ export interface ServerLookupResponse {
   accounts: ServerLookupAccount[];
 }
 
-// --- Transaction history (issue #413) ---
+// --- Delta history (issue #413) ---
 
 export interface ServerHistoryNoteAsset {
   asset_id: string;
@@ -191,18 +191,20 @@ export interface ServerHistoryNoteAsset {
 export interface ServerHistoryNote {
   note_id: string;
   tag: 'p2id' | 'p2ide' | 'pswap' | 'mint' | 'burn' | 'custom';
+  note_type: 'public' | 'private';
   assets: ServerHistoryNoteAsset[];
   sender?: string;
   recipient?: string;
 }
 
 export interface ServerHistoryDecodeWarning {
-  section: string;
+  section: 'tx_summary' | 'metadata' | 'input_notes' | 'output_notes' | 'vault' | 'storage';
   reason: string;
 }
 
 export interface ServerHistoryEntry {
   nonce: number;
+  status: 'canonical';
   timestamp: string;
   new_commitment: string | null;
   input_notes: ServerHistoryNote[];

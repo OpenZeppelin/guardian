@@ -435,12 +435,14 @@ async fn test_get_delta_history_success() {
             message: String::new(),
             entries: vec![HistoryEntry {
                 nonce: 3,
+                status: "canonical".to_string(),
                 timestamp: "2026-08-01T12:00:03Z".to_string(),
                 new_commitment: Some("0xnew0003".to_string()),
                 input_notes: vec![],
                 output_notes: vec![HistoryNote {
                     note_id: "0xnote".to_string(),
                     tag: "p2id".to_string(),
+                    note_type: "public".to_string(),
                     assets: vec![HistoryNoteAsset {
                         asset_id: "0xfaucet".to_string(),
                         kind: "fungible".to_string(),

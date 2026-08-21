@@ -757,7 +757,7 @@ pub trait StorageBackend: Send + Sync {
         cursor: Option<AccountDeltaCursor>,
     ) -> Result<Vec<DeltaObject>, String>;
 
-    /// Per-account canonical transaction history paginated newest-first
+    /// Per-account canonical delta history paginated newest-first
     /// by `nonce DESC` (issue #413). Client-facing counterpart of
     /// [`Self::list_account_deltas_paged`] restricted to `canonical`
     /// rows — the confirmed history a wallet renders after recovery.

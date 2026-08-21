@@ -332,6 +332,8 @@ message HistoryNote {
   repeated HistoryNoteAsset assets = 3;
   optional string sender = 4;
   optional string recipient = 5;
+  // On-chain visibility ("public" / "private") from the note metadata.
+  string note_type = 6;
 }
 
 // Why a history entry's note sections are empty: the persisted payload
@@ -346,6 +348,9 @@ message HistoryDecodeWarning {
 // One canonical transaction in an account's history.
 message HistoryEntry {
   uint64 nonce = 1;
+  // Delta lifecycle status; always "canonical" today, carried explicitly
+  // so a future status filter can widen the set without a shape change.
+  string status = 7;
   // RFC 3339 UTC timestamp at which the delta became canonical.
   string timestamp = 2;
   optional string new_commitment = 3;

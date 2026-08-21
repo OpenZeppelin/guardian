@@ -1,5 +1,5 @@
 //! HTTP integration tests for `GET /delta/history` (issue #413): the
-//! client-facing paginated canonical transaction history feed.
+//! client-facing paginated canonical delta history feed.
 
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::testing::helpers::{
@@ -177,6 +177,7 @@ async fn test_history_pagination_returns_canonical_only_newest_first() {
     assert_eq!(items.len(), 2);
     assert_eq!(items[0]["nonce"], json!(5));
     assert_eq!(items[1]["nonce"], json!(4));
+    assert_eq!(items[0]["status"], json!("canonical"));
     assert_eq!(items[0]["timestamp"], json!("2026-08-01T12:00:05Z"));
     assert_eq!(items[0]["new_commitment"], json!("0xnew0005"));
     // Undecodable stub payload → empty sections plus a warning, not a 500.

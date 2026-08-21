@@ -301,7 +301,7 @@ impl GuardianClient {
         Ok(inner)
     }
 
-    /// Retrieves one page of the account's canonical transaction history
+    /// Retrieves one page of the account's canonical delta history
     /// (issue #413), newest-first by nonce, with decoded input/output
     /// note summaries.
     ///

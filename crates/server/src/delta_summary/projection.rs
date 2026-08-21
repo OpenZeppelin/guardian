@@ -6,13 +6,15 @@ use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
 use miden_protocol::crypto::utils::Serializable;
 use miden_protocol::note::Note;
+use miden_protocol::note::NoteMetadata;
+use miden_protocol::note::NoteType as MidenNoteType;
 use miden_protocol::note::PartialNote;
 use miden_protocol::transaction::{RawOutputNote, TransactionSummary};
 use miden_standards::note::{P2idNoteStorage, P2ideNoteStorage, StandardNote};
 
 use super::{
     AssetKind, AssetSummary, CounterpartyDirection, CounterpartySummary, DecodeWarning,
-    DecodedNote, NoteCounts, NoteTag, StorageChange, VaultChange,
+    DecodedNote, NoteCounts, NoteTag, NoteVisibility, StorageChange, VaultChange,
 };
 
 pub fn project_note_counts(summary: &TransactionSummary) -> NoteCounts {
@@ -124,6 +126,7 @@ fn decoded_note_from_full_note(note: &Note) -> DecodedNote {
     DecodedNote {
         note_id: note.id().to_hex(),
         tag: classify_note_tag(note),
+        note_type: note_visibility(note.metadata()),
         assets: note.assets().iter().map(decoded_asset_from).collect(),
         sender,
         recipient,
@@ -134,9 +137,17 @@ fn decoded_note_from_partial_note(partial: &PartialNote) -> DecodedNote {
     DecodedNote {
         note_id: partial.id().to_hex(),
         tag: NoteTag::Custom,
+        note_type: note_visibility(partial.metadata()),
         assets: partial.assets().iter().map(decoded_asset_from).collect(),
         sender: Some(account_id_hex(partial.metadata().sender())),
         recipient: None,
+    }
+}
+
+fn note_visibility(metadata: &NoteMetadata) -> NoteVisibility {
+    match metadata.note_type() {
+        MidenNoteType::Public => NoteVisibility::Public,
+        MidenNoteType::Private => NoteVisibility::Private,
     }
 }
 

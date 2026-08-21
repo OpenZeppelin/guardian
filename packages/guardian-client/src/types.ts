@@ -248,6 +248,24 @@ export interface LookupResponse {
 /** Note classification decoded from the on-chain note script. */
 export type HistoryNoteTag = 'p2id' | 'p2ide' | 'pswap' | 'mint' | 'burn' | 'custom';
 
+/** On-chain note visibility from the note metadata. */
+export type HistoryNoteVisibility = 'public' | 'private';
+
+/** Which section of the persisted payload failed to decode. */
+export type HistoryDecodeSection =
+  | 'tx_summary'
+  | 'metadata'
+  | 'input_notes'
+  | 'output_notes'
+  | 'vault'
+  | 'storage';
+
+/**
+ * Delta lifecycle status of a history entry. Only `canonical` is
+ * emitted today; the set widens if the feed gains a status filter.
+ */
+export type HistoryEntryStatus = 'canonical';
+
 /**
  * One decoded asset inside a history note. `amount` is a base-10
  * string for fungible assets, absent for non-fungible ones.
@@ -265,6 +283,8 @@ export interface HistoryNoteAsset {
 export interface HistoryNote {
   noteId: string;
   tag: HistoryNoteTag;
+  /** On-chain visibility from the note metadata. */
+  noteType: HistoryNoteVisibility;
   assets: HistoryNoteAsset[];
   sender?: string;
   recipient?: string;
@@ -276,13 +296,15 @@ export interface HistoryNote {
  * still returned.
  */
 export interface HistoryDecodeWarning {
-  section: string;
+  section: HistoryDecodeSection;
   reason: string;
 }
 
 /** One canonical transaction in an account's history (issue #413). */
 export interface HistoryEntry {
   nonce: number;
+  /** Delta lifecycle status; always `canonical` today. */
+  status: HistoryEntryStatus;
   /** RFC 3339 UTC timestamp at which the delta became canonical. */
   timestamp: string;
   /**
@@ -295,7 +317,7 @@ export interface HistoryEntry {
   decodeWarnings: HistoryDecodeWarning[];
 }
 
-/** One page of canonical transaction history, newest-first by nonce. */
+/** One page of canonical delta history, newest-first by nonce. */
 export interface HistoryPage {
   entries: HistoryEntry[];
   /** Opaque resume token; `undefined` when the feed is exhausted. */

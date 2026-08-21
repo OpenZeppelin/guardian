@@ -363,6 +363,7 @@ describe('Multisig', () => {
         entries: [
           {
             nonce: 3,
+            status: 'canonical' as const,
             timestamp: '2026-08-01T12:00:03Z',
             newCommitment: '0x' + 'b'.repeat(64),
             inputNotes: [],

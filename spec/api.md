@@ -303,7 +303,7 @@ component schemas.
 | client | `POST /delta` | signed headers | Push a signed single-key delta |
 | client | `GET /delta` | signed headers | Fetch the delta at a nonce |
 | client | `GET /delta/since` | signed headers | Merged delta since a nonce |
-| client | `GET /delta/history` | signed headers | Paginated canonical transaction history with decoded note summaries |
+| client | `GET /delta/history` | signed headers | Paginated canonical delta history with decoded note summaries |
 | client | `GET /state` | signed headers | Latest canonical state |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
 | client | `GET /pubkey` | public | ACK public key / commitment |
@@ -360,7 +360,10 @@ Semantics not captured by the OpenAPI shapes:
   cross-account feeds order by `status_timestamp` /
   `originating_timestamp` and MAY skip or repeat an entry whose timestamp
   is bumped mid-traversal (FR-005).
-- **`GET /delta/history`.** Canonical deltas only, newest-first by nonce, with
+- **`GET /delta/history`.** Canonical deltas only, newest-first by nonce. Each
+  entry carries an explicit `status` (always `canonical` today; the closed set
+  widens if the feed gains a `status=` filter) and decoded notes carry
+  `note_type` (`public` / `private`) from the on-chain note metadata, with
   input/output note summaries decoded server-side from the stored
   `TransactionSummary`. An entry whose payload cannot be decoded is
   still returned, with empty note sections and a `decode_warnings`

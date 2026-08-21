@@ -283,7 +283,7 @@ ways that do not change the coordination behavior shown above:
 - **`GUARDIAN_ENV=prod`** activates the prod-stage startup guards — a filesystem
   storage backend and a rate limit that partitions to 0 req/replica are each
   refused at startup. (An unset `GUARDIAN_DASHBOARD_CURSOR_SECRET` only *warns* —
-  it degrades cross-replica dashboard pagination, not custody, so a
+  it degrades cross-replica pagination on the dashboard feeds and the client `/delta/history` endpoint, not custody, so a
   single-replica prod server still boots.) Note these guards live behind the ACK
   registry init, which in prod requires AWS first: set `GUARDIAN_ENV=prod`
   without `AWS_REGION` and the server refuses to start with `AWS_REGION is

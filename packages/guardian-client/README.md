@@ -189,6 +189,30 @@ const delta = await client.getDelta(accountId, 5);
 const merged = await client.getDeltaSince(accountId, 3);
 ```
 
+### Delta History
+
+Paginated canonical delta history with server-decoded note summaries
+(authenticated with the same signed headers as the other per-account reads).
+Only canonical (confirmed) deltas appear, newest-first by nonce; only
+transactions pushed through Guardian are visible to it. Served even while
+the account is paused.
+
+```typescript
+let cursor: string | undefined;
+do {
+  const page = await client.getDeltaHistory(accountId, { limit: 50, cursor });
+  for (const entry of page.entries) {
+    // entry.status is 'canonical'; notes carry tag, noteType, assets,
+    // sender/recipient where the note script exposes them.
+    console.log(entry.nonce, entry.timestamp, entry.outputNotes);
+  }
+  cursor = page.nextCursor; // undefined when the feed is exhausted
+} while (cursor !== undefined);
+```
+
+`limit` accepts 1–500 (default 50); invalid limits and tampered or
+cross-account cursors are rejected with `invalid_limit` / `invalid_cursor`.
+
 ## Error Handling
 
 The client throws `GuardianHttpError` for non-2xx responses:
