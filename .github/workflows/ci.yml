@@ -322,6 +322,7 @@ jobs:
           EOF
 
       - name: Build workspace dependencies
+        if: matrix.package == 'miden-multisig-client'
         working-directory: packages
         run: npm run build -w @openzeppelin/guardian-client
 
