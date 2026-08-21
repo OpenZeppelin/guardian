@@ -347,6 +347,8 @@ export interface DashboardDeltaDecodedAsset {
 export interface DashboardDeltaDecodedNote {
   noteId: string;
   tag: DashboardDeltaNoteTag;
+  /** On-chain note visibility from the note metadata. */
+  noteType?: 'public' | 'private';
   assets: DashboardDeltaDecodedAsset[];
   sender?: string;
   recipient?: string;

@@ -11,11 +11,16 @@
 //! - `helpers` - Internal GUARDIAN client helpers
 
 mod account;
+mod delta_history;
 mod helpers;
 mod io;
 mod notes;
 mod offline;
 mod proposals;
+pub use delta_history::{
+    HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
+    HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
+};
 pub use proposals::{AbandonRequestState, AbandonStatus};
 
 use std::path::PathBuf;

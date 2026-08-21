@@ -6,6 +6,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ProposalCard } from './ProposalCard';
 import { CreateProposalForm } from './CreateProposalForm';
 import { CandidateWarningBanner } from './CandidateWarningBanner';
+import { DeltaHistoryCard } from './DeltaHistoryCard';
 import { copyToClipboard } from '@/lib/helpers';
 import { USER_PROCEDURES } from '@/lib/procedures';
 import type {
@@ -221,6 +222,9 @@ export function MultisigDashboard({
         onCreateP2id={onCreateP2id}
         onCreateSwitchGuardian={onCreateSwitchGuardian}
       />
+
+      {/* Confirmed delta history (issue #413) */}
+      <DeltaHistoryCard multisig={multisig} />
 
       {/* Proposals List */}
       {proposals.length > 0 && (

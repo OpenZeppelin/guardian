@@ -252,6 +252,26 @@ const status = await multisig.abandonStatus(nonce);
 // 'waiting' | 'landed' | 'abandoned' | 'unexpected'
 ```
 
+### Delta History
+
+Render the account's confirmed history after recovery. One page
+per call, newest-first by nonce, with server-decoded note summaries:
+
+```typescript
+let cursor: string | undefined;
+do {
+  const page = await multisig.deltaHistory({ limit: 50, cursor });
+  for (const entry of page.entries) {
+    console.log(entry.nonce, entry.timestamp, entry.outputNotes);
+  }
+  cursor = page.nextCursor;
+} while (cursor !== undefined);
+```
+
+Only canonical (confirmed) deltas appear — pending proposals live on
+`syncProposals()` — and only transactions pushed through Guardian are
+visible to it.
+
 ### Check Proposal Status
 
 Returns cached proposals without making a network request:

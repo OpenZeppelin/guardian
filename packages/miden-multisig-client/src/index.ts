@@ -83,6 +83,18 @@ export {
   normalizeGuardianErrorCode,
 } from '@openzeppelin/guardian-client';
 export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
+export type {
+  HistoryDecodeSection,
+  HistoryDecodeWarning,
+  HistoryEntry,
+  HistoryEntryStatus,
+  HistoryNote,
+  HistoryNoteAsset,
+  HistoryNoteTag,
+  HistoryNoteVisibility,
+  HistoryOptions,
+  HistoryPage,
+} from '@openzeppelin/guardian-client';
 
 // Codeless transport-failure classification (feature 009, User Story 3).
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';

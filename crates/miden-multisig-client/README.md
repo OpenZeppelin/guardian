@@ -303,6 +303,31 @@ reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches
 the commitment the cosigners signed.
 
+## Delta History
+
+Render the account's confirmed history after recovery. One
+`HistoryPage` per call, newest-first by nonce, with typed note summaries:
+
+```rust
+let mut cursor: Option<String> = None;
+loop {
+    let page = client.delta_history(Some(50), cursor.take()).await?;
+    for entry in &page.entries {
+        // entry.status is HistoryEntryStatus::Canonical; notes carry a
+        // typed tag, visibility, assets, and counterparties.
+        println!("{} at {}", entry.nonce, entry.timestamp);
+    }
+    match page.next_cursor {
+        Some(next) => cursor = Some(next),
+        None => break,
+    }
+}
+```
+
+Only canonical (confirmed) deltas appear — pending proposals live on
+`list_proposals()` — and only transactions pushed through Guardian are
+visible to it.
+
 ## Consume-notes metadata versions
 
 `consume_notes` proposals come in two metadata shapes. The discriminator

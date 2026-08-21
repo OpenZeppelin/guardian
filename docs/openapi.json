@@ -1752,6 +1752,112 @@
         ]
       }
     },
+    "/delta/history": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Paginated canonical delta history for an account (issue\n#413), newest-first by nonce, with decoded input/output note\nsummaries. Read-only: served while the account is paused.",
+        "operationId": "get_delta_history",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size in `[1, 500]`; defaults to 50 when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque `next_cursor` from a previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of canonical history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedResult_HistoryEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor, or account on an unsupported network (unsupported_for_network)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
     "/delta/proposal": {
       "get": {
         "tags": [
@@ -4639,10 +4745,11 @@
       },
       "DecodedNote": {
         "type": "object",
-        "description": "Detail-view types used by the per-delta endpoint; not built by the\nlisting path.",
+        "description": "Decoded note summary shared by the dashboard per-delta detail\nendpoint and the client delta-history feed\n(`HistoryEntry.input_notes` / `output_notes`); not built by the\ndashboard listing path.",
         "required": [
           "note_id",
           "tag",
+          "note_type",
           "assets"
         ],
         "properties": {
@@ -4654,6 +4761,10 @@
           },
           "note_id": {
             "type": "string"
+          },
+          "note_type": {
+            "$ref": "#/components/schemas/NoteVisibility",
+            "description": "On-chain visibility from the note metadata: `public` notes are\nfully shared with the network, `private` notes publish only\ntheir hash."
           },
           "recipient": {
             "type": [
@@ -5098,6 +5209,65 @@
           }
         }
       },
+      "HistoryEntry": {
+        "type": "object",
+        "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
+        "required": [
+          "nonce",
+          "status",
+          "timestamp",
+          "input_notes",
+          "output_notes"
+        ],
+        "properties": {
+          "decode_warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodeWarning"
+            },
+            "description": "Why the note sections are empty when they are: the persisted\npayload could not be decoded (e.g. rows predating the current\nsummary format). The entry itself is still returned rather than\nfailing the page."
+          },
+          "input_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedNote"
+            }
+          },
+          "new_commitment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Account commitment after this transaction; lets a wallet\ncorrelate history entries with recovered state. `null` when the\nstored row predates commitment recording."
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedNote"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/HistoryEntryStatus",
+            "description": "Delta lifecycle status. Always `canonical` today; carried\nexplicitly so a future `status=` filter can surface other\nlifecycle statuses without changing the entry shape."
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "RFC 3339 UTC timestamp at which the delta became canonical."
+          }
+        }
+      },
+      "HistoryEntryStatus": {
+        "type": "string",
+        "description": "Lifecycle status of a history entry. Only `canonical` is emitted\ntoday; the closed set widens when the feed gains a status filter.",
+        "enum": [
+          "canonical"
+        ]
+      },
       "ListProposalsResponse": {
         "type": "object",
         "required": [
@@ -5242,6 +5412,14 @@
           "mint",
           "burn",
           "custom"
+        ]
+      },
+      "NoteVisibility": {
+        "type": "string",
+        "description": "On-chain note visibility, decoded from `NoteMetadata::note_type()`.\nWire labels match issue #322's `metadata.note_type` vocabulary.",
+        "enum": [
+          "public",
+          "private"
         ]
       },
       "OperatorChallengeResponse": {
@@ -5733,6 +5911,76 @@
                   "type": "integer",
                   "format": "int32",
                   "minimum": 0
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PagedResult_HistoryEntry": {
+        "type": "object",
+        "description": "Standard cursor-pagination envelope returned by every paginated\nendpoint. `next_cursor` is `None` at end of list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
+              "required": [
+                "nonce",
+                "status",
+                "timestamp",
+                "input_notes",
+                "output_notes"
+              ],
+              "properties": {
+                "decode_warnings": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DecodeWarning"
+                  },
+                  "description": "Why the note sections are empty when they are: the persisted\npayload could not be decoded (e.g. rows predating the current\nsummary format). The entry itself is still returned rather than\nfailing the page."
+                },
+                "input_notes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DecodedNote"
+                  }
+                },
+                "new_commitment": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Account commitment after this transaction; lets a wallet\ncorrelate history entries with recovered state. `null` when the\nstored row predates commitment recording."
+                },
+                "nonce": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "output_notes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DecodedNote"
+                  }
+                },
+                "status": {
+                  "$ref": "#/components/schemas/HistoryEntryStatus",
+                  "description": "Delta lifecycle status. Always `canonical` today; carried\nexplicitly so a future `status=` filter can surface other\nlifecycle statuses without changing the entry shape."
+                },
+                "timestamp": {
+                  "type": "string",
+                  "description": "RFC 3339 UTC timestamp at which the delta became canonical."
                 }
               }
             }

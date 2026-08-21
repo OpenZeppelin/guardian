@@ -418,9 +418,10 @@ impl DashboardState {
                 if !cfg!(test) {
                     tracing::warn!(
                         "dashboard cursor secret not configured; generating ephemeral per-process \
-                         secret. This degrades only dashboard pagination: a multi-replica \
-                         deployment must set GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared \
-                         64-hex (32-byte) value, or a cursor minted on one replica fails on another."
+                         secret. This degrades pagination on the dashboard feeds and the client \
+                         /delta/history endpoint: a multi-replica deployment must set \
+                         GUARDIAN_DASHBOARD_CURSOR_SECRET to a stable shared 64-hex (32-byte) \
+                         value, or a cursor minted on one replica fails on another."
                     );
                 }
                 CursorSecret::generate()
