@@ -240,8 +240,11 @@ cargo test -p guardian-server --features integration
 cargo test -p guardian-server --features e2e
 ```
 
-TypeScript packages each carry their own `npm test` — see the root
-[`README.md`](../README.md#typescript-tests).
+TypeScript packages live in an npm workspace under `packages/`. Install
+once from that directory with `npm ci`, then run tests with
+`npm test -w @openzeppelin/<package>`. `miden-multisig-client` depends
+on the in-repo `guardian-client` workspace package — build that first.
+See the root [`README.md`](../README.md#typescript-tests).
 
 Cargo feature gates (`integration`, `e2e`) document what each suite
 needs at the top of the relevant test modules under
