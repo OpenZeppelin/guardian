@@ -226,7 +226,7 @@ console.log('Signatures:', signedProposal.signatures.length);
 
 ### Sync Proposals
 
-Fetches proposals from the GUARDIAN server and updates local state:
+Fetches proposals from the GUARDIAN server and reconciles local state — proposals GUARDIAN no longer reports (executed, canonicalized, or abandoned) are pruned from the cache:
 
 ```typescript
 const proposals = await multisig.syncProposals();

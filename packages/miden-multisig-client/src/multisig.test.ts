@@ -955,6 +955,168 @@ describe('Multisig', () => {
       expect(proposals[0].status).toBe('pending');
     });
 
+    it('should prune proposals GUARDIAN no longer reports (executed/canonicalized)', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const pendingProposal = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [
+            {
+              signer_id: '0x' + 'a'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+
+      // First sync: GUARDIAN reports the pending proposal, priming the cache.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingProposal] }),
+      });
+      const first = await multisig.syncProposals();
+      expect(first.length).toBe(1);
+
+      // Second sync: another signer executed the proposal, so GUARDIAN pruned it
+      // and now returns an empty list. The cache must reconcile to empty rather
+      // than keep returning the stale (still-pending-looking) proposal forever.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const second = await multisig.syncProposals();
+      expect(second).toEqual([]);
+      expect(multisig.listProposals()).toEqual([]);
+    });
+
+    it('should keep proposals GUARDIAN still reports across syncs', async () => {
+      // Guards against over-pruning: a proposal the server still reports on a
+      // later sync must survive the reconcile, not be deleted.
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      const pendingProposal = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [
+            {
+              signer_id: '0x' + 'a'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingProposal] }),
+      });
+      const first = await multisig.syncProposals();
+      expect(first.length).toBe(1);
+
+      // GUARDIAN still reports the same pending proposal on the next sync.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingProposal] }),
+      });
+      const second = await multisig.syncProposals();
+      expect(second.length).toBe(1);
+      expect(multisig.listProposals().length).toBe(1);
+    });
+
+    it('should not prune a locally-created proposal GUARDIAN has not reported yet', async () => {
+      // createProposal pushes to GUARDIAN then caches. If GUARDIAN's
+      // read-your-writes lags and the immediately-following sync omits the
+      // just-pushed proposal, it must NOT be evicted: GUARDIAN never reported it
+      // to this client, so it is not a prune candidate.
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: { tx_summary: { data: 'AQID' }, signatures: [] },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+      const created = await multisig.createProposal(1, 'AQID', {
+        proposalType: 'add_signer',
+        targetThreshold: 1,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      });
+      expect(multisig.listProposals().length).toBe(1);
+
+      // GUARDIAN's next getDeltaProposals lags and returns [].
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const synced = await multisig.syncProposals();
+      expect(synced.length).toBe(1);
+      expect(synced[0].id).toBe(created.id);
+      expect(multisig.listProposals().length).toBe(1);
+    });
+
     it('should return ready status when enough signatures', async () => {
       const config = {
         threshold: 1, // Only 1 signature needed

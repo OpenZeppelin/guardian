@@ -205,6 +205,10 @@ export class Multisig {
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
+  // Proposal ids GUARDIAN returned on the most recent syncProposals. Only these
+  // are eligible for pruning on the next sync, so a locally created/imported
+  // proposal GUARDIAN has not yet reported is never evicted (see syncProposals).
+  private lastReportedProposalIds: Set<string> = new Set();
 
   constructor(
     account: Account,
@@ -582,11 +586,39 @@ export class Multisig {
 
   /**
    * Sync proposals from the GUARDIAN server.
+   *
+   * The GUARDIAN response is authoritative for the set of pending proposals: the
+   * server only reports proposals whose status is still pending and drops them
+   * once they are executed and canonicalized. The local cache is therefore
+   * reconciled to the response — a proposal GUARDIAN reported on a previous sync
+   * but no longer reports is pruned — so a stale proposal does not linger locally
+   * and keep showing as pending forever, e.g. a co-signer's browser after another
+   * signer executed the transaction.
+   *
+   * Only proposals GUARDIAN has actually reported are eligible for pruning. A
+   * proposal that is in the cache but that GUARDIAN has not (yet) returned in a
+   * response is left untouched. This keeps two flows correct: (1) a
+   * `createProposal` immediately followed by a sync is not evicted if GUARDIAN's
+   * read-your-writes lags and omits the just-pushed proposal; (2) the offline
+   * export/import flow — `importProposal` caches a proposal this client has not
+   * synced yet — is not evicted before GUARDIAN first reports it. A proposal is
+   * only dropped once GUARDIAN reported it and then stopped (executed / abandoned).
+   *
+   * Nonce-based staleness hiding — a proposal the account has already advanced
+   * past, which GUARDIAN may still briefly report as pending before it prunes it
+   * — is intentionally left to callers' own visible-proposal filter (see the
+   * examples' `filterVisibleProposals`). The Rust client applies a
+   * `proposal.nonce <= account.nonce()` filter directly, but it owns a single
+   * nonce convention end to end; this shared client serves callers that disagree
+   * on what the proposal `nonce` means (some store the pre-execution account
+   * nonce, others the next nonce), so it cannot safely apply that comparison here
+   * and defers it to the caller. This is an intentional TS/Rust surface difference.
    */
   async syncProposals(): Promise<Proposal[]> {
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
+    const reportedIds = new Set<string>();
     for (const delta of deltas) {
       const proposalId = normalizeHexWord(
         computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
@@ -601,13 +633,28 @@ export class Multisig {
       await this.verifyProposalMetadataBinding(proposal);
 
       this.proposals.set(proposal.id, proposal);
+      reportedIds.add(proposal.id);
     }
+
+    // Prune proposals GUARDIAN reported before but no longer reports (executed /
+    // canonicalized / abandoned). Proposals GUARDIAN has never reported to this
+    // client (freshly created, or imported and not yet synced) are left alone.
+    for (const id of this.lastReportedProposalIds) {
+      if (!reportedIds.has(id)) {
+        this.proposals.delete(id);
+      }
+    }
+    this.lastReportedProposalIds = reportedIds;
 
     return Array.from(this.proposals.values());
   }
 
   /**
-   * List all known proposals
+   * Returns the proposals cached by the most recent {@link syncProposals} call.
+   *
+   * This is that sync's reconciled set, not a durable log: proposals GUARDIAN no
+   * longer reports were pruned, so do not treat the result as an ever-growing
+   * history of every proposal ever seen.
    */
   listProposals(): Proposal[] {
     return Array.from(this.proposals.values());
