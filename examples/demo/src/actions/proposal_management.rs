@@ -1,13 +1,14 @@
 //! Unified proposal management - all proposal operations in one place.
 
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::pin::Pin;
 
 use miden_client::Serializable;
 use miden_multisig_client::{
     build_p2id_transaction_request, build_transfer_asset, ensure_hex_prefix, generate_salt,
-    word_from_hex, Asset, ExportedProposal, NoteId, ProcedureName, TransactionType,
+    word_from_hex, Asset, ExportedProposal, NoteId, P2ideHeights, ProcedureName, TransactionType,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -1029,13 +1030,14 @@ async fn action_create_custom_proposal(
     }
 
     print_info("Building a transfer transaction to use as the custom transaction request.");
-    let (recipient, faucet_id, amount, note_type) = match prompt_p2id(state, editor)? {
+    let (recipient, faucet_id, amount, note_type, heights) = match prompt_p2id(state, editor)? {
         TransactionType::P2ID {
             recipient,
             faucet_id,
             amount,
             note_type,
-        } => (recipient, faucet_id, amount, note_type),
+            heights,
+        } => (recipient, faucet_id, amount, note_type, heights),
         _ => return Err("expected a P2ID transaction".to_string()),
     };
 
@@ -1053,6 +1055,7 @@ async fn action_create_custom_proposal(
         recipient,
         vec![asset.into()],
         note_type,
+        heights,
         salt,
         std::iter::empty(),
     )
@@ -1075,6 +1078,7 @@ async fn action_create_custom_proposal(
             faucet_id,
             amount,
             note_type,
+            heights,
             salt,
         },
     );
@@ -1118,6 +1122,7 @@ async fn action_execute_custom_proposal(
         recipe.recipient,
         vec![asset.into()],
         recipe.note_type,
+        recipe.heights,
         recipe.salt,
         std::iter::empty(),
     )
@@ -1350,20 +1355,50 @@ fn prompt_p2id(
         other => return Err(format!("Invalid note visibility '{}'", other)),
     };
 
+    // Get optional P2IDE heights (issue #366)
+    let heights = P2ideHeights {
+        reclaim: prompt_p2ide_height(editor, "  Reclaim block height (blank = none): ")?,
+        timelock: prompt_p2ide_height(editor, "  Timelock block height (blank = none): ")?,
+    };
+
     println!("\nTransfer details:");
     println!("  Recipient: {}", shorten_hex(recipient_input.trim()));
     println!("  Faucet:    {}", shorten_hex(&faucet_id.to_hex()));
     println!("  Amount:    {} / {} available", amount, max_amount);
     println!("  Note:      {}", note_type);
+    if let Some(height) = heights.reclaim {
+        println!("  Reclaim:   block {}", height);
+    }
+    if let Some(height) = heights.timelock {
+        println!("  Timelock:  block {}", height);
+    }
 
     let confirm = prompt_input(editor, "\nConfirm? [y/N]: ")?;
     if confirm.to_lowercase() != "y" {
         return Err("Cancelled".to_string());
     }
 
-    Ok(TransactionType::transfer_with_note_type(
-        recipient, faucet_id, amount, note_type,
+    Ok(TransactionType::transfer_p2ide(
+        recipient, faucet_id, amount, note_type, heights,
     ))
+}
+
+/// Prompts for an optional P2IDE block height (issue #366). Blank => none;
+/// `0` is rejected because it encodes "no constraint" on-chain.
+fn prompt_p2ide_height(
+    editor: &mut DefaultEditor,
+    prompt: &str,
+) -> Result<Option<NonZeroU32>, String> {
+    let input = prompt_input(editor, prompt)?;
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    match input.parse::<u32>() {
+        Ok(0) => Err("Block height must be greater than 0".to_string()),
+        Ok(height) => Ok(NonZeroU32::new(height)),
+        Err(_) => Err(format!("Invalid block height '{}'", input)),
+    }
 }
 
 async fn prompt_consume_notes(

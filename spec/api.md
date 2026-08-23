@@ -13,8 +13,32 @@
 
 - The signed payload includes a Unix timestamp in milliseconds.
 - The server enforces a maximum clock skew window of **300,000 milliseconds** (5 minutes).
-- The server tracks `last_auth_timestamp` per account; requests with a timestamp less than or equal to the last accepted timestamp are rejected.
-- `last_auth_timestamp` is updated atomically when authentication succeeds.
+- The server tracks `last_auth_timestamp` per `(account, signer commitment)`; a request whose timestamp is not strictly greater than the last accepted timestamp from the same signer is rejected with the dedicated stable code `authentication_replay` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: true`). Independent authorized signers never contend on one timestamp, while a replayed request from the same signer always loses: every accepted request advances that signer's own record.
+- All other authentication failures (clock skew, invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
+- `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds.
+- `POST /configure` enforces the same timestamp skew and replay CAS. A first-time
+  configuration seeds the verified signer's floor once the account metadata row
+  exists; reconfiguration consumes the timestamp before changing stored state.
+  The first-time seed is deliberately post-write because replay state has a
+  foreign key to account metadata. A crash in that narrow interval can leave the
+  new account without a floor, allowing any captured, still-fresh request signed
+  by that signer to initialize the floor and execute. Replaying the configure
+  itself only idempotently re-submits the same state, but the bounded first-write
+  window applies to other signed routes too. Concurrent first configurations are
+  not serialized across different signers; callers must not use `/configure` as
+  a general concurrent state-update mechanism.
+- Migrated stores retain the former account-scoped value as a lower bound for
+  signers first seen later, preventing a removed signer from regaining a replay
+  window when it is authorized again.
+- Clients generate strictly increasing timestamps per instance (`max(now_ms, previous + 1)`) and retry only `authentication_replay`, bounded, with a fresh timestamp, recomputed digest, and fresh signature over the identical payload on each attempt. Terminal authentication failures are never retried.
+- During a mixed server/client rollout, a replay CAS reported under the older
+  authentication code—or received by a client without replay-specific retry
+  handling—can surface as a terminal 401. Current clients retry only
+  `authentication_replay` and never retry `authentication_failed`.
+- HTTP `/configure` failures use the standard API error envelope
+  (`{ code, message, meta }`), not `ConfigureResponse` with `success: false`.
+  Direct HTTP consumers that inspect the old error body must migrate with the
+  server rollout. The shared protobuf response fields remain for gRPC.
 
 ### Miden Request Signing
 
@@ -155,6 +179,8 @@ Miden delta proposals use:
 
 `p2id` metadata carries `recipient_id`, `faucet_id`, `amount`, and an optional `note_type` (`"public"` or `"private"`, issue #322). Clients emit `note_type` only when the note is private; an absent field means public, which keeps proposals created before the field existed valid. The value is part of the signed metadata: verifiers rebuild the transaction from it, so a tampered `note_type` fails the tx_summary commitment check.
 
+`p2id` metadata may additionally carry `reclaim_height` and/or `timelock_height` (issue #366): absolute `u32` block heights that make the proposal create a P2IDE note instead of a plain P2ID note (`reclaim_height` lets the sender reclaim an unconsumed note from that block on; `timelock_height` blocks consumption before that block). Presence of either field selects P2IDE; both absent means plain P2ID, which keeps pre-existing proposals valid. `0` is rejected because it is the on-chain encoding for "no constraint". Like `note_type`, the heights are part of the signed metadata and a tampered value fails the tx_summary commitment check.
+
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
 
 EVM proposal creation request:
@@ -279,6 +305,7 @@ component schemas.
 | client | `POST /delta` | signed headers | Push a signed single-key delta |
 | client | `GET /delta` | signed headers | Fetch the delta at a nonce |
 | client | `GET /delta/since` | signed headers | Merged delta since a nonce |
+| client | `GET /delta/history` | signed headers | Paginated canonical delta history with decoded note summaries |
 | client | `GET /state` | signed headers | Latest canonical state |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
 | client | `GET /pubkey` | public | ACK public key / commitment |
@@ -325,14 +352,28 @@ is built with the `evm` feature.
 
 Semantics not captured by the OpenAPI shapes:
 
-- **Pagination.** Paginated dashboard endpoints return
-  `{ items, next_cursor }`; `limit` defaults to 50 and is capped at 500
-  (`invalid_limit` outside `[1, 500]`). Cursors are opaque and signed;
-  tampered/stale cursors return `invalid_cursor`. Per-account feeds key
-  the cursor on immutable fields (`nonce`, `(nonce, commitment)`) and are
-  fully stable; cross-account feeds order by `status_timestamp` /
+- **Pagination.** Paginated endpoints (the dashboard feeds and the
+  client `GET /delta/history`) return `{ items, next_cursor }`; `limit`
+  defaults to 50 and is capped at 500 (`invalid_limit` outside
+  `[1, 500]`). Cursors are opaque and signed, scoped to the issuing
+  endpoint; tampered/stale/cross-endpoint cursors return
+  `invalid_cursor`. Per-account feeds key the cursor on immutable
+  fields (`nonce`, `(nonce, commitment)`) and are fully stable;
+  cross-account feeds order by `status_timestamp` /
   `originating_timestamp` and MAY skip or repeat an entry whose timestamp
   is bumped mid-traversal (FR-005).
+- **`GET /delta/history`.** Canonical deltas only, newest-first by nonce. Each
+  entry carries an explicit `status` (always `canonical` today; the closed set
+  widens if the feed gains a `status=` filter) and decoded notes carry
+  `note_type` (`public` / `private`) from the on-chain note metadata, with
+  input/output note summaries decoded server-side from the stored
+  `TransactionSummary`. An entry whose payload cannot be decoded is
+  still returned, with empty note sections and a `decode_warnings`
+  item. Read-only: served while the account is paused. Only
+  transactions pushed through Guardian appear — history of
+  transactions the account executed elsewhere is not visible to it.
+  EVM-configured accounts are rejected with `unsupported_for_network`,
+  like the other Miden delta APIs.
 - **`/state/lookup`.** An empty `accounts` list is a successful response,
   not a 404 — distinguishing "no account" from "wrong key" would leak
   account presence to non-key-holders. Authentication is proof-of-possession
@@ -372,6 +413,7 @@ Stable error codes include:
 - `commitment_mismatch`
 - `invalid_commitment`
 - `authentication_failed`
+- `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))
 - `authorization_failed`
 - `invalid_input`
 - `storage_error`
@@ -420,6 +462,7 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `GetDeltaProposal(GetDeltaProposalRequest) -> GetDeltaProposalResponse`
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
+- `GetDeltaHistory(GetDeltaHistoryRequest) -> GetDeltaHistoryResponse`
 
 Every gRPC method is rate limited from the same store as the HTTP surface;
 see [Rate Limiting](#rate-limiting) for the keying rules and the rejection

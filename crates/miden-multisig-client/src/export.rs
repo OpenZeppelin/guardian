@@ -6,6 +6,7 @@
 //!
 
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 
 use guardian_shared::FromJson;
 use guardian_shared::SignatureScheme;
@@ -91,6 +92,16 @@ pub struct ExportedMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_type: Option<String>,
 
+    /// P2IDE reclaim block height (issue #366). Presence of either height
+    /// means the proposal creates a P2IDE note; absent => plain P2ID
+    /// (pre-#366 exports). `NonZeroU32`: a `0` fails deserialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_height: Option<NonZeroU32>,
+
+    /// P2IDE timelock block height (issue #366).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timelock_height: Option<NonZeroU32>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids_hex: Vec<String>,
 
@@ -133,6 +144,8 @@ impl ExportedProposal {
             faucet_id_hex: self.metadata.faucet_id_hex.clone(),
             amount: self.metadata.amount,
             note_type: self.metadata.note_type.clone(),
+            reclaim_height: self.metadata.reclaim_height,
+            timelock_height: self.metadata.timelock_height,
             note_ids_hex: self.metadata.note_ids_hex.clone(),
             consume_notes_metadata_version: self.metadata.consume_notes_metadata_version,
             consume_notes_notes: self
@@ -293,6 +306,8 @@ impl ExportedProposal {
             faucet_id_hex: proposal.metadata.faucet_id_hex.clone(),
             amount: proposal.metadata.amount,
             note_type: proposal.metadata.note_type.clone(),
+            reclaim_height: proposal.metadata.reclaim_height,
+            timelock_height: proposal.metadata.timelock_height,
             note_ids_hex: proposal.metadata.note_ids_hex.clone(),
             consume_notes_metadata_version: proposal.metadata.consume_notes_metadata_version,
             consume_notes_notes: proposal
@@ -506,6 +521,8 @@ mod tests {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: vec![],
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),

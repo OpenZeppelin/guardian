@@ -91,7 +91,7 @@ directly on `:50052` (A) and `:50053` (B).
 | Operator/EVM sessions | `auth_sessions` | Log in on A, your cookie works on B; logout is honored fleet-wide. |
 | Login challenges | `auth_challenges` | A challenge is single-use even if issued on A and verified on B. |
 | Canonicalization lease | `worker_leases` | Exactly one replica promotes candidates; the others stand by. |
-| Replay protection | `account_auth_state` | A request timestamp accepted on A cannot be replayed to B; each per-account timestamp is usable exactly once fleet-wide. |
+| Replay protection | `account_auth_state` | A request timestamp accepted on A cannot be replayed to B; each per-account-and-signer timestamp is usable exactly once fleet-wide. A retained migration floor also protects signers first authorized after an account-scoped upgrade. |
 
 Coordination is **backend-derived**: it is on because the backend is Postgres.
 No environment variable enables or disables it.
@@ -283,7 +283,7 @@ ways that do not change the coordination behavior shown above:
 - **`GUARDIAN_ENV=prod`** activates the prod-stage startup guards — a filesystem
   storage backend and a rate limit that partitions to 0 req/replica are each
   refused at startup. (An unset `GUARDIAN_DASHBOARD_CURSOR_SECRET` only *warns* —
-  it degrades cross-replica dashboard pagination, not custody, so a
+  it degrades cross-replica pagination on the dashboard feeds and the client `/delta/history` endpoint, not custody, so a
   single-replica prod server still boots.) Note these guards live behind the ACK
   registry init, which in prod requires AWS first: set `GUARDIAN_ENV=prod`
   without `AWS_REGION` and the server refuses to start with `AWS_REGION is

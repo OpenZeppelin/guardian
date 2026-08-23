@@ -102,9 +102,6 @@ export function LoadMultisigDialog({
                 <SelectItem value="ecdsa">ECDSA</SelectItem>
               </SelectContent>
             </Select>
-            {walletSource === 'para' && (
-              <p className="text-xs text-muted-foreground">Para wallets use ECDSA</p>
-            )}
             {walletSource === 'miden-wallet' && (
               <p className="text-xs text-muted-foreground">Miden Wallet scheme: {defaultScheme}</p>
             )}

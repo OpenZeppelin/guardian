@@ -5,6 +5,11 @@ use thiserror::Error;
 /// A Result type alias for GUARDIAN client operations.
 pub type ClientResult<T> = Result<T, ClientError>;
 
+/// Stable code the server attaches to a replay-protection rejection
+/// (`authentication_replay`, issue #367): the request was correctly signed
+/// but its timestamp did not win the per-signer monotonicity check.
+pub const AUTHENTICATION_REPLAY_CODE: &str = "authentication_replay";
+
 /// Errors that can occur when using the GUARDIAN client.
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -91,6 +96,14 @@ impl ClientError {
         }
     }
 
+    /// Whether the server classified this error as a replay-protection
+    /// rejection ([`AUTHENTICATION_REPLAY_CODE`]). Safe to retry with a
+    /// fresh timestamp and signature over the identical payload; every
+    /// other authentication failure is terminal and must not be retried.
+    pub fn is_replay_rejection(&self) -> bool {
+        self.guardian_code().as_deref() == Some(AUTHENTICATION_REPLAY_CODE)
+    }
+
     /// Whether the server marked this error safe to retry: `meta.retryable`
     /// from the structured details, falling back to the status-code class
     /// (`ResourceExhausted` rejections happen before any handler runs).
@@ -162,6 +175,48 @@ mod tests {
             tonic::Status::new(tonic::Code::Unavailable, "raw internal detail").into();
         assert_eq!(err.guardian_code(), None);
         assert_eq!(err.user_message(), None);
+    }
+
+    #[test]
+    fn replay_rejection_is_classified_only_from_the_stable_code() {
+        let replay_details = serde_json::json!({
+            "code": "authentication_replay",
+            "message": "Guardian received this request out of order. Please try again.",
+            "meta": { "retryable": true }
+        })
+        .to_string()
+        .into_bytes();
+        let replay: ClientError = tonic::Status::with_details(
+            tonic::Code::Unauthenticated,
+            "test",
+            replay_details.into(),
+        )
+        .into();
+        assert!(replay.is_replay_rejection());
+        assert!(replay.is_retryable());
+
+        let terminal_details = serde_json::json!({
+            "code": "authentication_failed",
+            "message": "Guardian could not authenticate this request.",
+            "meta": { "retryable": false }
+        })
+        .to_string()
+        .into_bytes();
+        let terminal: ClientError = tonic::Status::with_details(
+            tonic::Code::Unauthenticated,
+            "test",
+            terminal_details.into(),
+        )
+        .into();
+        assert!(!terminal.is_replay_rejection());
+        assert!(!terminal.is_retryable());
+
+        let bare: ClientError =
+            tonic::Status::new(tonic::Code::Unauthenticated, "Replay attack detected").into();
+        assert!(
+            !bare.is_replay_rejection(),
+            "message text must never classify a replay"
+        );
     }
 
     #[test]

@@ -84,6 +84,12 @@ pub enum CursorKind {
     AccountProposals,
     GlobalDeltas,
     GlobalProposals,
+    /// Client-facing per-account canonical history feed (issue #413).
+    /// Carries `last_nonce` plus `last_account_id` (the account the
+    /// cursor was minted for), and is its own kind so dashboard and
+    /// client cursors cannot be replayed across surfaces — nor a
+    /// history cursor across accounts.
+    AccountDeltaHistory,
 }
 
 /// Decoded cursor payload. Different kinds use different fields:
@@ -168,6 +174,19 @@ impl Cursor {
             last_nonce: Some(last_nonce),
             last_account_id: Some(last_account_id),
             last_updated_at: Some(last_status_timestamp),
+            last_commitment: None,
+        }
+    }
+
+    /// Build an `AccountDeltaHistory` cursor (client canonical history,
+    /// issue #413). Binds the minting account so a cursor issued for
+    /// one account is rejected when replayed against another.
+    pub fn account_delta_history(last_nonce: i64, account_id: String) -> Self {
+        Self {
+            kind: CursorKind::AccountDeltaHistory,
+            last_nonce: Some(last_nonce),
+            last_account_id: Some(account_id),
+            last_updated_at: None,
             last_commitment: None,
         }
     }

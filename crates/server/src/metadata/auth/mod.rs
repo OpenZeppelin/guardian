@@ -3,6 +3,7 @@ use guardian_shared::hex::FromHex;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey as EcdsaPublicKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::PublicKey as FalconPublicKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
+use std::collections::HashSet;
 
 use crate::api::grpc::guardian::auth_config;
 use crate::error::GuardianError;
@@ -91,6 +92,52 @@ impl Auth {
         }
     }
 
+    fn signer_commitment_hex_length(&self) -> usize {
+        match self {
+            Auth::EvmEcdsa { .. } => 40,
+            Auth::MidenFalconRpo { .. } | Auth::MidenEcdsa { .. } => 64,
+        }
+    }
+
+    /// Returns whether a signer commitment uses the scheme's canonical
+    /// lowercase, `0x`-prefixed representation.
+    pub fn is_canonical_signer_commitment(&self, commitment: &str) -> bool {
+        let expected_hex_length = self.signer_commitment_hex_length();
+        let hex = commitment.strip_prefix("0x").unwrap_or("");
+        hex.len() == expected_hex_length
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
+    /// Validates the exact-string signer set used by authorization and account
+    /// state comparison. Non-canonical spellings cannot match reliably, an
+    /// empty set cannot authorize a request, and duplicates make the declared
+    /// signer set ambiguous.
+    pub fn validate_canonical_signer_set(&self) -> Result<(), String> {
+        let commitments = self.cosigner_commitments();
+        if commitments.is_empty() {
+            return Err("authorized signer set must not be empty".to_string());
+        }
+
+        let mut seen = HashSet::with_capacity(commitments.len());
+        for commitment in commitments {
+            if !self.is_canonical_signer_commitment(commitment) {
+                let expected_hex_length = self.signer_commitment_hex_length();
+                return Err(format!(
+                    "authorized signer entry '{commitment}' is not canonical \
+                     (expected 0x followed by {expected_hex_length} lowercase hex digits)"
+                ));
+            }
+            if !seen.insert(commitment) {
+                return Err(format!(
+                    "authorized signer set contains duplicate entry '{commitment}'"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn with_updated_commitments(&self, cosigner_commitments: Vec<String>) -> Self {
         match self {
             Auth::MidenFalconRpo { .. } => Auth::MidenFalconRpo {
@@ -112,10 +159,13 @@ impl Auth {
     ///    optionally bound to request bytes when provided by the transport layer
     /// 2. The signer's commitment is in the authorized list
     ///
+    /// Returns the verified signer's public-key commitment (hex), which
+    /// scopes replay-protection state per (account, signer).
+    ///
     /// # Arguments
     /// * `account_id` - The account ID
     /// * `credentials` - The credentials to verify (includes timestamp)
-    pub fn verify(&self, account_id: &str, credentials: &Credentials) -> Result<(), String> {
+    pub fn verify(&self, account_id: &str, credentials: &Credentials) -> Result<String, String> {
         match self {
             Auth::MidenFalconRpo {
                 cosigner_commitments,

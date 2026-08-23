@@ -28,7 +28,7 @@ export interface SignerInfo {
   activeScheme: SignatureScheme;
 }
 
-export type WalletSource = 'local' | 'para' | 'miden-wallet';
+export type WalletSource = 'local' | 'miden-wallet';
 
 export interface ExternalWalletState {
   source: WalletSource;
@@ -118,7 +118,6 @@ export interface BrowserSessionSnapshot {
   signatureScheme: SignatureScheme | null;
   guardianPubkey: string | null;
   localSigners: SerializedSignerInfo | null;
-  para: SerializedExternalWalletState;
   midenWallet: SerializedExternalWalletState;
   multisig: {
     accountId: string;

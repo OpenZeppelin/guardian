@@ -64,7 +64,9 @@ pub(crate) type MidenSdkClient = Client<FilesystemKeyStore>;
 pub use builder::MultisigClientBuilder;
 pub use client::{AbandonRequestState, AbandonStatus};
 pub use client::{
-    ConsumableNote, MultisigClient, NoteFilter, ProposalResult, RecoveredAccount,
+    ConsumableNote, HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry,
+    HistoryEntryStatus, HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility,
+    HistoryPage, MultisigClient, NoteFilter, ProposalResult, RecoveredAccount,
     StateVerificationResult,
 };
 
@@ -93,7 +95,7 @@ pub use keystore::{
 pub use execution::{SignatureAdvice, build_transfer_asset};
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{
-    CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, Proposal,
+    CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, P2ideHeights, Proposal,
     ProposalMetadata, ProposalStatus, SerializedNote, TransactionType,
 };
 pub use prover::{ProverConfig, ProverRetryPolicy};

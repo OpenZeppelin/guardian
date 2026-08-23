@@ -8,22 +8,9 @@ export default defineConfig({
     dedupe: [
       'react',
       'react-dom',
-      '@tanstack/react-query',
-      'wagmi',
-      '@wagmi/core',
-      'viem',
-      'graz',
-      '@cosmjs/stargate',
-      '@solana/wallet-adapter-base',
-      '@solana/wallet-adapter-react',
-      '@solana-mobile/wallet-adapter-mobile',
-      '@miden-sdk/react',
+      '@miden-sdk/miden-sdk',
     ],
     alias: [
-      {
-        find: /^@getpara\/aa-.*$/,
-        replacement: path.resolve(__dirname, 'getpara-aa-stub.mjs'),
-      },
       { find: '@', replacement: path.resolve(__dirname, './src') },
       {
         find: '@multisig-browser',

@@ -187,14 +187,40 @@ console.log('Commitment:', state.commitment);
 console.log('Created:', state.createdAt);
 ```
 
+### Creating Proposals
+
+Every `create*Proposal` method takes its required arguments followed by a
+single optional options object (issue #387) — there are no positional
+optional parameters:
+
+```typescript
+createP2idProposal(recipientId, faucetId, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)
+createConsumeNotesProposal(noteIds, { nonce }?)
+createAddSignerProposal(commitment, { nonce, newThreshold }?)
+createRemoveSignerProposal(commitment, { nonce, newThreshold }?)
+createChangeThresholdProposal(threshold, { nonce }?)
+createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)
+createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)
+createCustomProposal(requestBytes, label, { nonce }?)
+```
+
+All methods accept `nonce` (identifies the proposal; defaults to
+`Date.now()`). `newThreshold` defaults to the current threshold on add and to
+the min of the current threshold and the remaining signer count on remove.
+The option shapes are exported as `CreateProposalOptions`,
+`CreateSignerProposalOptions`, and `CreateP2idProposalOptions`.
+
+> **Breaking change (issue #387):** these methods previously took `nonce` (and
+> `newThreshold`) as positional parameters. Passing the old positional form
+> now throws at runtime instead of silently applying defaults.
+
 ### Create a Proposal (Add Signer)
 
 ```typescript
 // Create a proposal to add a new signer
 const proposal = await multisig.createAddSignerProposal(
   newSignerCommitment, // Commitment of signer to add
-  undefined,
-  3,
+  { newThreshold: 3 }, // Options: nonce, newThreshold
 );
 console.log('Proposal ID:', proposal.id);
 ```
@@ -241,6 +267,26 @@ console.log(accepted.state); // 'pending'
 const status = await multisig.abandonStatus(nonce);
 // 'waiting' | 'landed' | 'abandoned' | 'unexpected'
 ```
+
+### Delta History
+
+Render the account's confirmed history after recovery. One page
+per call, newest-first by nonce, with server-decoded note summaries:
+
+```typescript
+let cursor: string | undefined;
+do {
+  const page = await multisig.deltaHistory({ limit: 50, cursor });
+  for (const entry of page.entries) {
+    console.log(entry.nonce, entry.timestamp, entry.outputNotes);
+  }
+  cursor = page.nextCursor;
+} while (cursor !== undefined);
+```
+
+Only canonical (confirmed) deltas appear — pending proposals live on
+`syncProposals()` — and only transactions pushed through Guardian are
+visible to it.
 
 ### Check Proposal Status
 
@@ -308,8 +354,11 @@ import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client
 // The options object accepts `noteType` (`NoteType.Public` (default) or
 // `NoteType.Private`, from `@miden-sdk/miden-sdk`); a private note publishes
 // only its hash on chain, so the recipient needs the note shared out-of-band.
-// The typed path is `createP2idProposal(recipient, faucet, amount, nonce?,
-// { noteType })`, which persists the choice in signed metadata.
+// It also accepts `reclaimHeight`/`timelockHeight` (absolute block heights,
+// issue #366); presence of either builds a P2IDE note instead of plain P2ID.
+// The typed path is `createP2idProposal(recipient, faucet, amount,
+// { nonce, noteType, reclaimHeight, timelockHeight })`, which persists the
+// choices in signed metadata.
 const { request, salt } = buildP2idTransactionRequest(senderId, recipientId, faucetId, amount);
 const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg');
 

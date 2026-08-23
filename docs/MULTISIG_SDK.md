@@ -554,7 +554,48 @@ support it. Multiple matches are valid: the same key commitment may authorize
 more than one account, and the method returns all matches instead of choosing
 one implicitly.
 
+### Delta History
+
+Guardian retains the account's canonical delta history, allowing a wallet to
+render its history after recovery. `deltaHistory()` returns one
+page at a time, newest-first by nonce, with server-decoded input and output
+note summaries: note ID, P2ID/P2IDE/swap/mint/burn classification, note
+visibility (`noteType`), assets, and sender or recipient when exposed by the
+note script. Every entry carries `status: 'canonical'` today; the set widens
+if the feed gains a status filter.
+
+```typescript
+let cursor: string | undefined;
+do {
+  const page = await multisig.deltaHistory({ limit: 50, cursor });
+  for (const entry of page.entries) {
+    console.log(`nonce ${entry.nonce} at ${entry.timestamp}`);
+    for (const note of entry.outputNotes) {
+      console.log(`  sent ${note.tag} note ${note.noteId}`);
+    }
+    if (entry.decodeWarnings.length > 0) {
+      // Payload predates the current summary format; sections are empty.
+    }
+  }
+  cursor = page.nextCursor;
+} while (cursor !== undefined);
+```
+
+`limit` accepts 1–500 (default 50). Only canonical (confirmed)
+transactions appear — pending proposals live on `syncProposals()`. The
+feed is served even while the account is paused. Guardian only ever
+sees transactions pushed through it, so history of transactions the
+account executed elsewhere is not included. Output notes whose full
+details are not in the stored summary (e.g. private notes carried as
+partial notes) appear with `tag: 'custom'` and no recipient.
+
 ### Proposal Operations
+
+Every `create*Proposal` method takes a single trailing options object (issue
+#387). All of them accept an optional `nonce` that identifies the proposal
+(defaults to `Date.now()`); method-specific options are listed with each
+method below. Passing a legacy positional `nonce` number where the options
+object is expected throws instead of silently applying defaults.
 
 #### P2ID Transfer (Send Funds)
 
@@ -573,10 +614,26 @@ const privateProposal = await multisig.createP2idProposal(
   recipientAccountId,
   faucetAccountId,
   1000n,
-  undefined,                       // nonce (defaults to Date.now())
   { noteType: NoteType.Private },  // note visibility; defaults to NoteType.Public
 );
+
+// P2IDE note (issue #366): pass `reclaimHeight` and/or `timelockHeight`
+// (absolute block heights) to create a reclaimable/timelocked note instead
+// of a plain P2ID note. `reclaimHeight` lets the sender reclaim the note if
+// it is still unconsumed at that block; `timelockHeight` prevents
+// consumption before that block.
+const reclaimableProposal = await multisig.createP2idProposal(
+  recipientAccountId,
+  faucetAccountId,
+  1000n,
+  { reclaimHeight: 500_000 },
+);
 ```
+
+Note that the two heights are independent and the SDK does not cross-check
+them: a `timelockHeight` at or above `reclaimHeight` means the recipient
+never has a window in which they can claim before the sender can reclaim —
+usually not what you want.
 
 > **Warning:** a `private` P2ID note publishes only its hash on chain. The
 > recipient cannot discover the note by syncing; the full note details must
@@ -630,9 +687,8 @@ any public note.
 
 ```typescript
 const proposal = await multisig.createAddSignerProposal(
-  newSignerCommitment,   // New signer's public key commitment
-  undefined,             // Optional nonce
-  newThreshold           // Optional new threshold
+  newSignerCommitment,     // New signer's public key commitment
+  { newThreshold },        // Options: nonce, newThreshold (defaults to current)
 );
 ```
 
@@ -667,9 +723,9 @@ const proposal = await multisig.createAddSignerProposal(
 
 ```typescript
 const proposal = await multisig.createRemoveSignerProposal(
-  signerToRemove,        // Signer's commitment to remove
-  undefined,             // Optional nonce
-  newThreshold           // Optional new threshold
+  signerToRemove,          // Signer's commitment to remove
+  { newThreshold },        // Options: nonce, newThreshold (defaults to
+                           // min(current threshold, remaining signer count))
 );
 ```
 
@@ -752,18 +808,21 @@ await multisig.executeProposal(signedProposal.id);
 | `syncProposals()` | Sync proposals from GUARDIAN |
 | `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
+| `deltaHistory({ limit?, cursor? }?)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `listProposals()` | Get cached proposals |
-| `createP2idProposal(recipient, faucet, amount, nonce?, { noteType }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`) |
-| `createConsumeNotesProposal(noteIds, nonce?)` | Create note consumption proposal |
+| `createP2idProposal(recipient, faucet, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`; presence of `reclaimHeight`/`timelockHeight` creates a P2IDE note, issue #366) |
+| `createConsumeNotesProposal(noteIds, { nonce }?)` | Create note consumption proposal |
 | `getP2idNoteId(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |
 | `exportNoteToBytes(noteId)` | Export a created note as note-file bytes for out-of-band delivery |
 | `exportNoteToFile(noteId, filename?)` | Browser-only: download the note file |
 | `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
-| `createAddSignerProposal(commitment, nonce?, threshold?)` | Create add signer proposal |
-| `createRemoveSignerProposal(commitment, nonce?, threshold?)` | Create remove signer proposal |
-| `createChangeThresholdProposal(threshold, nonce?)` | Create threshold change proposal |
-| `createSwitchGuardianProposal(endpoint, pubkey, nonce?)` | Create GUARDIAN switch proposal |
+| `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
+| `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
+| `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
+| `createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)` | Create per-procedure threshold override proposal (`threshold: 0` clears the override) |
+| `createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal |
+| `createCustomProposal(requestBytes, label, { nonce }?)` | Create a producer-built custom proposal (issue #266) |
 | `signProposal(id)` | Sign a proposal |
 | `executeProposal(id)` | Execute ready proposal |
 | `exportProposalToJson(id)` | Export for offline signing |
@@ -884,6 +943,41 @@ An empty list means the key is valid but this Guardian has no account metadata
 that authorizes its commitment. Authentication failures, malformed lookup
 responses, and per-account `get_state` failures are returned as errors.
 
+### Delta History
+
+Guardian retains the account's canonical delta history, allowing a wallet to
+render its history after recovery. `delta_history()` returns one
+`HistoryPage` at a time, newest-first by nonce, with server-decoded input and
+output note summaries (typed tags, visibility, assets, counterparties). Every
+entry carries `HistoryEntryStatus::Canonical` today; the set widens if the
+feed gains a status filter.
+
+```rust
+let mut cursor: Option<String> = None;
+loop {
+    let page = client.delta_history(Some(50), cursor.take()).await?;
+    for entry in &page.entries {
+        println!("nonce {} at {}", entry.nonce, entry.timestamp);
+        for note in &entry.output_notes {
+            println!("  sent {} note {}", note.tag.as_str(), note.note_id);
+        }
+    }
+    match page.next_cursor {
+        Some(next) => cursor = Some(next),
+        None => break,
+    }
+}
+```
+
+`limit` accepts 1–500 (server default 50 when `None`). Only canonical
+(confirmed) transactions appear — pending proposals live on
+`list_proposals()`. The feed is served even while the account is
+paused. Guardian only ever sees transactions pushed through it, so
+history of transactions the account executed elsewhere is not included.
+Output notes whose full details are not in the stored summary (e.g.
+private notes carried as partial notes) appear with tag `custom` and no
+recipient.
+
 ### Transaction Types
 
 ```rust
@@ -896,6 +990,18 @@ let tx = TransactionType::transfer(recipient_id, faucet_id, 1000);
 // `miden_protocol::note`.
 let tx = TransactionType::transfer_with_note_type(
     recipient_id, faucet_id, 1000, NoteType::Private,
+);
+
+// P2IDE Transfer (issue #366): optional reclaim and/or timelock block
+// heights. Presence of either height creates a P2IDE note instead of a
+// plain P2ID note. `P2ideHeights` uses `NonZeroU32`, so the invalid zero
+// height is unrepresentable.
+use std::num::NonZeroU32;
+use miden_multisig_client::P2ideHeights;
+
+let tx = TransactionType::transfer_p2ide(
+    recipient_id, faucet_id, 1000, NoteType::Public,
+    P2ideHeights { reclaim: NonZeroU32::new(500_000), timelock: None },
 );
 
 // Consume Notes
@@ -1059,6 +1165,7 @@ full note, so a post-commit sync is enough.
 | `execute_proposal(id)` | Execute ready proposal |
 | `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
+| `delta_history(limit, cursor)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `create_proposal_offline(tx)` | Create offline proposal |
 | `sign_imported_proposal(exported)` | Sign offline proposal |
 | `execute_imported_proposal(exported)` | Execute offline proposal |
@@ -1090,7 +1197,7 @@ full note, so a post-commit sync is enough.
 
 | Variant | Description |
 |---------|-------------|
-| `P2ID { recipient, faucet_id, amount, note_type }` | Transfer funds (`note_type` selects note visibility; defaults to `NoteType::Public` via `transfer()`) |
+| `P2ID { recipient, faucet_id, amount, note_type, heights }` | Transfer funds (`note_type` selects note visibility; `heights: P2ideHeights` with either constraint set creates a P2IDE note — use `transfer_p2ide()`; `transfer()` defaults to a public plain-P2ID note) |
 | `ConsumeNotes { note_ids }` | Consume notes |
 | `AddCosigner { new_commitment }` | Add signer |
 | `RemoveCosigner { commitment }` | Remove signer |

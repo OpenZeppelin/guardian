@@ -328,6 +328,8 @@ pub struct MockStorageBackend {
     // push them in reverse order to control per-call values.
     pub list_account_deltas_paged_responses:
         Arc<StdMutex<Vec<StdResult<Vec<DeltaObject>, String>>>>,
+    pub list_canonical_deltas_paged_responses:
+        Arc<StdMutex<Vec<StdResult<Vec<DeltaObject>, String>>>>,
     pub list_account_proposals_paged_responses:
         Arc<StdMutex<Vec<StdResult<Vec<crate::storage::ProposalRecord>, String>>>>,
     pub list_global_deltas_paged_responses:
@@ -594,6 +596,17 @@ impl MockStorageBackend {
         response: StdResult<Vec<DeltaObject>, String>,
     ) -> Self {
         self.list_account_deltas_paged_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_list_canonical_deltas_paged(
+        self,
+        response: StdResult<Vec<DeltaObject>, String>,
+    ) -> Self {
+        self.list_canonical_deltas_paged_responses
             .lock()
             .unwrap()
             .push(response);
@@ -976,6 +989,19 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or_else(|| Ok(Vec::new()))
     }
 
+    async fn list_canonical_deltas_paged(
+        &self,
+        _account_id: &str,
+        _limit: u32,
+        _cursor: Option<crate::storage::AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        self.list_canonical_deltas_paged_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
     async fn list_account_proposals_paged(
         &self,
         _account_id: &str,
@@ -1054,6 +1080,7 @@ pub struct MockMetadataStore {
         Arc<StdMutex<Vec<StdResult<Vec<crate::metadata::AccountMetadata>, String>>>>,
     pub list_with_pending_candidates_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub update_timestamp_cas_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
+    pub update_timestamp_cas_calls: Arc<StdMutex<Vec<(String, String, i64)>>>,
     pub find_by_cosigner_commitment_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub find_by_cosigner_commitment_calls: Arc<StdMutex<Vec<String>>>,
     pub set_released_calls: Arc<StdMutex<Vec<String>>>,
@@ -1149,6 +1176,10 @@ impl MockMetadataStore {
     pub fn get_set_calls(&self) -> Vec<crate::metadata::AccountMetadata> {
         self.set_calls.lock().unwrap().clone()
     }
+
+    pub fn get_update_timestamp_cas_calls(&self) -> Vec<(String, String, i64)> {
+        self.update_timestamp_cas_calls.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
@@ -1209,9 +1240,15 @@ impl MetadataStore for MockMetadataStore {
 
     async fn update_last_auth_timestamp_cas(
         &self,
-        _account_id: &str,
-        _new_timestamp: i64,
+        account_id: &str,
+        signer_commitment: &str,
+        new_timestamp: i64,
     ) -> StdResult<bool, String> {
+        self.update_timestamp_cas_calls.lock().unwrap().push((
+            account_id.to_string(),
+            signer_commitment.to_string(),
+            new_timestamp,
+        ));
         self.update_timestamp_cas_responses
             .lock()
             .unwrap()

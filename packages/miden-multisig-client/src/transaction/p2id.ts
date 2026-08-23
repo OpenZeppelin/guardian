@@ -1,6 +1,7 @@
 import type { TransactionRequest, Word } from '@miden-sdk/miden-sdk';
 import {
   AccountId,
+  Felt,
   FeltArray,
   FungibleAsset,
   MidenArrays,
@@ -20,8 +21,21 @@ import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
 import type { P2idNoteVisibility } from '../types/proposal.js';
+import { parseP2ideHeight } from '../types/proposal.js';
 
-export interface P2idTransactionOptions extends SignatureOptions {
+/**
+ * P2IDE execution constraints (issue #366). Presence of either height builds
+ * a P2IDE note instead of a plain P2ID note, mirroring the Miden SDK's
+ * `reclaimAfter`/`timelockUntil` semantics on `SendOptions`.
+ */
+export interface P2ideHeightOptions {
+  /** Absolute block height at which the sender may reclaim the note. */
+  reclaimHeight?: number;
+  /** Absolute block height before which the note cannot be consumed. */
+  timelockHeight?: number;
+}
+
+export interface P2idTransactionOptions extends SignatureOptions, P2ideHeightOptions {
   /** Visibility of the created note. Defaults to `NoteType.Public`. */
   noteType?: NoteType;
 }
@@ -66,15 +80,29 @@ function buildP2idNote(
   noteAssets: NoteAssets,
   noteType: NoteType,
   saltHex: string,
+  heights: P2ideHeightOptions = {},
 ): Note {
   const salt = WordType.fromHex(normalizeHexWord(saltHex));
   const serialNum = deriveP2idSerialNumber(salt);
 
-  const noteScript = NoteScript.p2id();
-  const noteStorage = new NoteStorage(new FeltArray([
+  const reclaimHeight = parseP2ideHeight('reclaimHeight', heights.reclaimHeight);
+  const timelockHeight = parseP2ideHeight('timelockHeight', heights.timelockHeight);
+  const isP2ide = reclaimHeight !== undefined || timelockHeight !== undefined;
+
+  // P2IDE storage layout (miden-standards `P2ideNoteStorage`): the P2ID
+  // storage plus reclaim/timelock heights as felts, 0 encoding "unset".
+  const noteScript = isP2ide ? NoteScript.p2ide() : NoteScript.p2id();
+  const storageFelts = [
     recipient.suffix(),
     recipient.prefix(),
-  ]));
+  ];
+  if (isP2ide) {
+    storageFelts.push(
+      new Felt(BigInt(reclaimHeight ?? 0)),
+      new Felt(BigInt(timelockHeight ?? 0)),
+    );
+  }
+  const noteStorage = new NoteStorage(new FeltArray(storageFelts));
 
   const noteRecipient = new NoteRecipient(serialNum, noteScript, noteStorage);
   const noteTag = NoteTag.withAccountTarget(recipient);
@@ -101,6 +129,7 @@ export function buildP2idNoteFromMetadata(
   amount: bigint,
   noteType: NoteType,
   saltHex: string,
+  heights: P2ideHeightOptions = {},
 ): Note {
   const sender = AccountId.fromHex(senderId);
   const recipient = AccountId.fromHex(recipientId);
@@ -109,7 +138,7 @@ export function buildP2idNoteFromMetadata(
   const asset = new FungibleAsset(faucet, amount);
   const noteAssets = new NoteAssets([asset]);
 
-  return buildP2idNote(sender, recipient, noteAssets, noteType, saltHex);
+  return buildP2idNote(sender, recipient, noteAssets, noteType, saltHex, heights);
 }
 
 export function buildP2idTransactionRequest(
@@ -128,6 +157,7 @@ export function buildP2idTransactionRequest(
     amount,
     options.noteType ?? NoteType.Public,
     authSaltHex,
+    { reclaimHeight: options.reclaimHeight, timelockHeight: options.timelockHeight },
   );
 
   const outputNotes = new MidenArrays.NoteArray([note]);

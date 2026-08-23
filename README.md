@@ -165,6 +165,17 @@ cargo test -p guardian-server --features integration
 cargo test -p guardian-server --features e2e
 ```
 
+Postgres-backed tests stay `#[ignore]` and need a live database, so they run
+through their own script:
+
+```bash
+POSTGRES_PASSWORD=guardian docker compose -f docker-compose.postgres.yml up -d postgres
+./scripts/test-postgres.sh
+```
+
+See [LOCAL_DEV.md](./docs/LOCAL_DEV.md#postgres-backed-tests) for the reset and
+safety behaviour.
+
 #### TypeScript Tests
 
 ```bash

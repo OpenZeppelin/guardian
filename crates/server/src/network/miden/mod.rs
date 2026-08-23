@@ -167,7 +167,7 @@ impl NetworkClient for MidenNetworkClient {
         }
 
         if expected_commitment != on_chain_commitment {
-            tracing::warn!(
+            tracing::debug!(
                 account_id = %account_id.to_hex(),
                 expected = %expected_commitment,
                 on_chain = %on_chain_commitment,

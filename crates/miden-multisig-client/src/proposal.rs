@@ -1,6 +1,7 @@
 //! Proposal types and utilities for multisig transactions.
 
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -64,6 +65,29 @@ impl SerializedNote {
     }
 }
 
+/// P2IDE execution constraints for a P2ID transfer (issue #366).
+///
+/// Presence of either height creates a P2IDE note instead of a plain P2ID
+/// note; both `None` (the [`Default`]) means plain P2ID. `NonZeroU32` makes
+/// the invalid zero height unrepresentable — `0` is the on-chain encoding
+/// for "no constraint", so a zero here could silently build an
+/// unconstrained note — and serde rejects a wire `0` at parse time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct P2ideHeights {
+    /// Absolute block height at which the sender may reclaim the note.
+    pub reclaim: Option<NonZeroU32>,
+    /// Absolute block height before which the note cannot be consumed.
+    pub timelock: Option<NonZeroU32>,
+}
+
+impl P2ideHeights {
+    /// Returns true when either constraint is set, i.e. the transfer
+    /// creates a P2IDE note instead of a plain P2ID note.
+    pub fn is_p2ide(&self) -> bool {
+        self.reclaim.is_some() || self.timelock.is_some()
+    }
+}
+
 /// Status of a proposal in the signing workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProposalStatus {
@@ -97,6 +121,10 @@ pub enum TransactionType {
         /// Visibility of the created note (issue #322). Absent in legacy
         /// proposal metadata, which maps to [`NoteType::Public`].
         note_type: NoteType,
+        /// P2IDE reclaim/timelock constraints (issue #366). The default
+        /// (both `None`) is a plain P2ID note, the shape of pre-#366
+        /// proposals.
+        heights: P2ideHeights,
     },
     ConsumeNotes {
         note_ids: Vec<NoteId>,
@@ -151,6 +179,26 @@ impl TransactionType {
             faucet_id,
             amount,
             note_type,
+            heights: P2ideHeights::default(),
+        }
+    }
+
+    /// Creates a P2IDE transfer transaction: a P2ID note with optional
+    /// reclaim and/or timelock block heights (issue #366). Passing
+    /// `P2ideHeights::default()` degenerates to a plain P2ID transfer.
+    pub fn transfer_p2ide(
+        recipient: AccountId,
+        faucet_id: AccountId,
+        amount: u64,
+        note_type: NoteType,
+        heights: P2ideHeights,
+    ) -> Self {
+        Self::P2ID {
+            recipient,
+            faucet_id,
+            amount,
+            note_type,
+            heights,
         }
     }
 
@@ -298,6 +346,13 @@ pub struct ProposalMetadata {
     /// P2ID note visibility, `"public"` or `"private"` (issue #322).
     /// `None` => public, the wire shape of pre-#322 proposals.
     pub note_type: Option<String>,
+
+    /// P2IDE reclaim block height (issue #366). Presence of either height
+    /// means the proposal creates a P2IDE note; both `None` => plain P2ID.
+    /// `NonZeroU32`: a wire `0` is rejected at deserialization.
+    pub reclaim_height: Option<NonZeroU32>,
+    /// P2IDE timelock block height (issue #366).
+    pub timelock_height: Option<NonZeroU32>,
 
     pub note_ids_hex: Vec<String>,
 
@@ -448,6 +503,10 @@ impl ProposalMetadata {
                     faucet_id,
                     amount: parsed_amount,
                     note_type: self.p2id_note_type()?,
+                    heights: P2ideHeights {
+                        reclaim: self.reclaim_height,
+                        timelock: self.timelock_height,
+                    },
                 })
             }
             "switch_guardian" => {
@@ -655,6 +714,8 @@ impl Proposal {
             None => None,
         };
         let note_type = metadata_payload.note_type;
+        let reclaim_height = metadata_payload.reclaim_height;
+        let timelock_height = metadata_payload.timelock_height;
         let note_ids_hex = metadata_payload.note_ids;
         let consume_notes_metadata_version = metadata_payload.consume_notes_metadata_version;
         let consume_notes_notes = metadata_payload
@@ -677,6 +738,8 @@ impl Proposal {
             faucet_id_hex: faucet_id_hex.clone(),
             amount,
             note_type,
+            reclaim_height,
+            timelock_height,
             note_ids_hex: note_ids_hex.clone(),
             consume_notes_metadata_version,
             consume_notes_notes,
@@ -941,6 +1004,7 @@ mod tests {
                 faucet_id,
                 amount,
                 note_type: NoteType::Public,
+                heights: P2ideHeights::default(),
             }
         );
     }
@@ -1423,6 +1487,43 @@ mod tests {
             .to_transaction_type("p2id")
             .expect_err("unknown note_type must be rejected");
         assert!(err.to_string().contains("unsupported metadata.note_type"));
+    }
+
+    /// Absent heights must keep mapping to a plain P2ID note — the only
+    /// behavior that existed before the fields, so pre-#366 proposals
+    /// rebuild identically (issue #366).
+    #[test]
+    fn to_transaction_type_p2id_defaults_to_no_heights() {
+        let tx_type = p2id_metadata(None)
+            .to_transaction_type("p2id")
+            .expect("to_transaction_type");
+        assert!(matches!(
+            tx_type,
+            TransactionType::P2ID {
+                heights: P2ideHeights {
+                    reclaim: None,
+                    timelock: None,
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn to_transaction_type_p2id_threads_p2ide_heights() {
+        let metadata = ProposalMetadata {
+            reclaim_height: NonZeroU32::new(12345),
+            timelock_height: NonZeroU32::new(700),
+            ..p2id_metadata(None)
+        };
+        let tx_type = metadata
+            .to_transaction_type("p2id")
+            .expect("to_transaction_type");
+        let TransactionType::P2ID { heights, .. } = tx_type else {
+            panic!("expected a P2ID transaction");
+        };
+        assert_eq!(heights.reclaim, NonZeroU32::new(12345));
+        assert_eq!(heights.timelock, NonZeroU32::new(700));
     }
 
     #[test]

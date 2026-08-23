@@ -6,9 +6,10 @@
 use miden_client::note::NoteConsumptionStatus;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteId;
-use miden_standards::note::P2idNote;
+use miden_standards::note::{P2idNote, P2ideNote};
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -255,6 +256,7 @@ impl MultisigClient {
             faucet_id,
             amount,
             note_type,
+            heights,
         } = &proposal.transaction_type
         else {
             return Err(MultisigError::UnsupportedTransactionType(
@@ -271,17 +273,36 @@ impl MultisigClient {
         let asset = crate::execution::build_transfer_asset(*faucet_id, *amount)?;
 
         let mut rng = RandomCoin::new(salt);
-        let note: miden_protocol::note::Note = P2idNote::builder()
-            .sender(account.id())
-            .target(*recipient)
-            .asset(asset)
-            .note_type(*note_type)
-            .generate_serial_number(&mut rng)
-            .build()
-            .map_err(|e| {
-                MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
-            })?
-            .into();
+        let note: miden_protocol::note::Note = if heights.is_p2ide() {
+            P2ideNote::builder()
+                .sender(account.id())
+                .target(*recipient)
+                .maybe_reclaim_height(heights.reclaim.map(|h| BlockNumber::from(h.get())))
+                .maybe_timelock_height(heights.timelock.map(|h| BlockNumber::from(h.get())))
+                .asset(asset)
+                .note_type(*note_type)
+                .generate_serial_number(&mut rng)
+                .build()
+                .map_err(|e| {
+                    MultisigError::TransactionExecution(format!(
+                        "failed to build P2IDE note: {}",
+                        e
+                    ))
+                })?
+                .into()
+        } else {
+            P2idNote::builder()
+                .sender(account.id())
+                .target(*recipient)
+                .asset(asset)
+                .note_type(*note_type)
+                .generate_serial_number(&mut rng)
+                .build()
+                .map_err(|e| {
+                    MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
+                })?
+                .into()
+        };
 
         Ok(note.id())
     }

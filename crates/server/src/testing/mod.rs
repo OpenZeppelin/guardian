@@ -8,3 +8,5 @@ pub mod helpers;
 pub mod integration;
 pub mod log_capture;
 pub mod mocks;
+#[cfg(feature = "postgres")]
+pub mod pg;

@@ -15,8 +15,3 @@ export const PROVER_MAX_ATTEMPTS = parseMaxAttempts(
   2,
 );
 export const RPC_MAX_ATTEMPTS = parseMaxAttempts(import.meta.env.VITE_RPC_MAX_ATTEMPTS, 1, 2);
-
-export const PARA_API_KEY = import.meta.env.VITE_PARA_API_KEY ?? '';
-export const PARA_ENVIRONMENT = (import.meta.env.VITE_PARA_ENVIRONMENT ?? 'development') as
-  | 'development'
-  | 'production';

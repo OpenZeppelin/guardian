@@ -2460,10 +2460,11 @@
       },
       "DecodedNote": {
         "type": "object",
-        "description": "Detail-view types used by the per-delta endpoint; not built by the\nlisting path.",
+        "description": "Decoded note summary shared by the dashboard per-delta detail\nendpoint and the client delta-history feed\n(`HistoryEntry.input_notes` / `output_notes`); not built by the\ndashboard listing path.",
         "required": [
           "note_id",
           "tag",
+          "note_type",
           "assets"
         ],
         "properties": {
@@ -2475,6 +2476,10 @@
           },
           "note_id": {
             "type": "string"
+          },
+          "note_type": {
+            "$ref": "#/components/schemas/NoteVisibility",
+            "description": "On-chain visibility from the note metadata: `public` notes are\nfully shared with the network, `private` notes publish only\ntheir hash."
           },
           "recipient": {
             "type": [
@@ -2528,6 +2533,14 @@
           "mint",
           "burn",
           "custom"
+        ]
+      },
+      "NoteVisibility": {
+        "type": "string",
+        "description": "On-chain note visibility, decoded from `NoteMetadata::note_type()`.\nWire labels match issue #322's `metadata.note_type` vocabulary.",
+        "enum": [
+          "public",
+          "private"
         ]
       },
       "OperatorChallengeResponse": {
@@ -3143,6 +3156,16 @@
               "null"
             ]
           },
+          "reclaim_height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "P2IDE reclaim block height (issue #366). Presence of either height\nmeans the proposal creates a P2IDE note; absent => plain P2ID.\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain,\nso `NonZeroU32` rejects it at the serde boundary. `value_type = u64`\nemits an int64-capable OpenAPI schema: `format: int32` implies a\nsigned range that cannot hold heights above 2^31-1.",
+            "maximum": 4294967295,
+            "minimum": 1
+          },
           "required_signatures": {
             "type": [
               "integer",
@@ -3176,6 +3199,16 @@
             ],
             "format": "int64",
             "minimum": 0
+          },
+          "timelock_height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "P2IDE timelock block height (issue #366).\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain,\nso `NonZeroU32` rejects it at the serde boundary. `value_type = u64`\nemits an int64-capable OpenAPI schema.",
+            "maximum": 4294967295,
+            "minimum": 1
           }
         }
       },

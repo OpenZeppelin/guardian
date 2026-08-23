@@ -1,6 +1,6 @@
 ---
 name: smoke-test-ts-multisig-sdk
-description: Drive manual smoke testing of the TypeScript `@openzeppelin/miden-multisig-client` SDK in this repository through the browser-only `examples/smoke-web` harness and targeted TypeScript checks. Use when Codex needs to verify browser multisig account creation, cosigner sync, proposal creation/sign/execute, offline export/import, state verification, or local/Para/Miden Wallet behavior after changes in `packages/miden-multisig-client`, `packages/guardian-client`, `examples/_shared/multisig-browser`, `examples/smoke-web`, or `examples/web`.
+description: Drive manual smoke testing of the TypeScript `@openzeppelin/miden-multisig-client` SDK in this repository through the browser-only `examples/smoke-web` harness and targeted TypeScript checks. Use when Codex needs to verify browser multisig account creation, cosigner sync, proposal creation/sign/execute, offline export/import, state verification, or local/Miden Wallet behavior after changes in `packages/miden-multisig-client`, `packages/guardian-client`, `examples/_shared/multisig-browser`, `examples/smoke-web`, or `examples/web`.
 ---
 
 # Smoke Test TS Multisig SDK
@@ -52,7 +52,7 @@ Treat workspace-path smoke-web runs and deployed-npm scratch-project runs as dif
 
 The smoke harness is designed to be driven from DevTools (`window.smoke.*`), which makes it drivable by browser-automation tools when available. Prefer in this order:
 
-1. **`mcp__Claude_in_Chrome__*`** (Chrome MCP) — drives real Chrome tabs. Use `tabs_context_mcp` to get the tab group, `tabs_create_mcp` to open one tab per cosigner, `navigate` to load the smoke URL, `javascript_tool` to run `await window.smoke.createAccount(...)` etc. Supports ECDSA local-signer flows end-to-end. `browser_batch` lets you chain `navigate → evaluate → wait` in one round-trip. Does **not** bypass wallet modals — Para and Miden Wallet still need a human at the keyboard for the approval UI.
+1. **`mcp__Claude_in_Chrome__*`** (Chrome MCP) — drives real Chrome tabs. Use `tabs_context_mcp` to get the tab group, `tabs_create_mcp` to open one tab per cosigner, `navigate` to load the smoke URL, `javascript_tool` to run `await window.smoke.createAccount(...)` etc. Supports ECDSA local-signer flows end-to-end. `browser_batch` lets you chain `navigate → evaluate → wait` in one round-trip. Does **not** bypass wallet modals — Miden Wallet still needs a human at the keyboard for the approval UI.
 2. **`mcp__Claude_Preview__*`** (Claude Preview) — scoped to a single dev-server preview, good for the 1-cosigner happy path or for `preview_console_logs` and `preview_network` during a handoff. Less suited to concurrent cosigner flows because it is single-tab.
 3. **Manual DevTools** — default fallback. Required for wallet-signer flows that need real user approval.
 
@@ -87,7 +87,7 @@ When reporting, capture the concrete tool invocation path used (Chrome MCP vs Cl
    ```
 5. Open the smoke harness in separate real browsers or fully isolated browser profiles. Do not rely on same-profile parallel tabs. Prefer Chrome + Brave or Chrome + Firefox when driving concurrent cosigners.
 6. Let the page-load bootstrap settle first. If `await window.smoke.status()` is not `ready`, or you need to override the default endpoints or signer settings, initialize the session with `window.smoke.initSession(...)`.
-7. Default to local signers and Falcon unless the prompt explicitly asks for ECDSA, Para, or Miden Wallet.
+7. Default to local signers and Falcon unless the prompt explicitly asks for ECDSA or Miden Wallet.
 8. Record each browser's signer commitment from `await window.smoke.status()` before account creation.
 9. Create the multisig in one browser by passing the other browsers' commitments to `createAccount`.
 10. Load and sync the account in the other browsers with `loadAccount` and `sync`.
@@ -117,8 +117,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - Run `online-proposal-canary` first when the prompt asks for a default create/sign/execute canary.
 - Run `payment-roundtrip-canary` when the prompt asks to test note receipt, note consumption, or self-P2ID payment flow.
 - Run `switch-guardian-offline-canary` when the prompt asks to test switching providers or offline export/import/sign behavior.
-- Run `para-connectivity` when signer resolution, Para integration, or ECDSA wallet flow changed.
-- Run `miden-wallet-connectivity` when Miden Wallet connection, signing, or extension behavior changed.
+- Run `miden-wallet-connectivity` when signer resolution, Miden Wallet connection, signing, extension behavior, or ECDSA wallet flow changed.
 - Run `state-verification` when commitment comparison, sync-after-execute, or account-state inspection changed.
 - Run `recover-by-key-canary` when key-commitment lookup, `recoverByKey`, `lookupAccountByKeyCommitment`, or any related code path changed.
 - Run at least one Falcon pass and one ECDSA pass when key management, commitment parsing, signature encoding, or signer-source selection changed.
@@ -144,7 +143,6 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 
 - Prefer the built-in `durationMs` values from `window.smoke.events()` for command timings:
   - `initSession`
-  - `connectPara`
   - `connectMidenWallet`
   - `createAccount`
   - `loadAccount`
@@ -183,7 +181,7 @@ Treat each browser or browser profile as one cosigner. Prefer distinct browser b
 - Verify execute changes account state, proposal visibility, nonce-sensitive behavior, or detected vault state.
 - Treat an early post-`push_delta` or post-execute on-chain `0x000...0` commitment, or a first canonicalization mismatch, as expected pending state by itself. Only treat it as a product failure if the account never converges after the proving/submission window or reaches a terminal discard/timeout.
 - Verify note visibility before `consume_notes` and after self-P2ID transfer.
-- Verify Para and Miden Wallet sessions expose commitment, public key, and connected state after connect.
+- Verify Miden Wallet sessions expose commitment, public key, and connected state after connect.
 - Verify `Switch GUARDIAN` proves real post-switch behavior, not just local proposal mutation.
 - For a 2-of-2 offline `Switch GUARDIAN` run, verify both cosigners have offline-signed before execute. The proven sequence is: A exports, B imports and offline-signs, A imports B's signed JSON, A offline-signs, A imports the fully-signed JSON, then A executes.
 - Verify `recoverByKey` returns the just-created `accountId` when called from the same browser session that created the account, **after `registerOnGuardian` succeeded** — `createAccount` in the browser harness only builds the account and submits to Miden RPC; GUARDIAN registration is a separate explicit step (see the canary in `references/workflow-matrix.md`). The harness regenerates local signers per page load, so the canary asserts the SDK round-trip, not seed-derivation. Verify the recovered account loads + syncs to the same `state_commitment`.

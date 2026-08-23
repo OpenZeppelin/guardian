@@ -51,8 +51,8 @@ tower-http = { version = "0.6", features = ["cors"] }
 utoipa = { workspace = true }
 dotenvy = "0.15"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-miden-protocol = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+miden-protocol = { workspace = true, features = ["testing"] }
 miden-standards = { workspace = true }
 futures = "0.3"
 futures-util = { version = "0.3", optional = true }

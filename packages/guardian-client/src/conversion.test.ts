@@ -484,5 +484,24 @@ describe('conversion', () => {
       const result = fromServerProposalMetadata(server);
       expect(result.noteType).toBe('private');
     });
+
+    it('p2ide heights survive roundtrip as reclaim_height/timelock_height on the wire (issue #366)', () => {
+      const original: ProposalMetadata = {
+        proposalType: 'p2id',
+        recipientId: '0xrecipient',
+        faucetId: '0xfaucet',
+        amount: '1000',
+        reclaimHeight: 12345,
+        timelockHeight: 700,
+      };
+
+      const server = toServerProposalMetadata(original);
+      expect(server.reclaim_height).toBe(12345);
+      expect(server.timelock_height).toBe(700);
+
+      const result = fromServerProposalMetadata(server);
+      expect(result.reclaimHeight).toBe(12345);
+      expect(result.timelockHeight).toBe(700);
+    });
   });
 });

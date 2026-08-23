@@ -144,18 +144,16 @@ impl LeaderElector for PgLeaseElector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::postgres::{build_postgres_pool_lazy, run_migrations};
-
-    fn database_url() -> Option<String> {
-        std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-    }
+    use crate::storage::postgres::build_postgres_pool_lazy;
+    use crate::testing::pg::test_database_url;
 
     #[tokio::test]
     async fn try_acquire_fails_closed_when_unreachable() {
-        let pool = build_postgres_pool_lazy("postgresql://127.0.0.1:1/__guardian_lease_fault__", 1)
-            .expect("lazy pool builds even with an unreachable address");
+        let pool = build_postgres_pool_lazy(
+            "postgresql://127.0.0.1:1/__guardian_lease_fault__?connect_timeout=1",
+            1,
+        )
+        .expect("lazy pool builds even with an unreachable address");
         let elector = PgLeaseElector::new(pool, "canonicalization", "replica-a");
         assert!(
             elector.try_acquire(Duration::from_secs(30)).await.is_err(),
@@ -164,10 +162,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires DATABASE_URL with migrations applied"]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn single_owner_failover_fences_the_old_holder() {
-        let url = database_url().expect("DATABASE_URL must be set for this #[ignore] test");
-        run_migrations(&url).await.expect("migrations apply");
+        let url = test_database_url().await;
         let name = format!("canon-test-{}", Utc::now().timestamp_micros());
         let short_ttl = Duration::from_secs(1);
         let ttl = Duration::from_secs(60);

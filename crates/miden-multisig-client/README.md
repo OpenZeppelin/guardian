@@ -149,6 +149,21 @@ let tx = TransactionType::transfer(recipient, faucet, 1_000);
 use miden_protocol::note::NoteType;
 let tx = TransactionType::transfer_with_note_type(recipient, faucet, 1_000, NoteType::Private);
 
+// For a reclaimable and/or timelocked send use `transfer_p2ide` (issue #366):
+// presence of either height creates a P2IDE note instead of a plain P2ID note.
+// `P2ideHeights` uses `NonZeroU32` — the invalid zero height ("no constraint"
+// on-chain) is unrepresentable.
+use std::num::NonZeroU32;
+use miden_multisig_client::P2ideHeights;
+
+let tx = TransactionType::transfer_p2ide(
+    recipient, faucet, 1_000, NoteType::Public,
+    P2ideHeights {
+        reclaim: NonZeroU32::new(500_000), // sender may reclaim from this block on
+        timelock: None,                    // no consume-not-before constraint
+    },
+);
+
 // Proposer creates the delta on GUARDIAN
 let proposal = client.propose_transaction(tx).await?;
 
@@ -287,6 +302,31 @@ The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches
 the commitment the cosigners signed.
+
+## Delta History
+
+Render the account's confirmed history after recovery. One
+`HistoryPage` per call, newest-first by nonce, with typed note summaries:
+
+```rust
+let mut cursor: Option<String> = None;
+loop {
+    let page = client.delta_history(Some(50), cursor.take()).await?;
+    for entry in &page.entries {
+        // entry.status is HistoryEntryStatus::Canonical; notes carry a
+        // typed tag, visibility, assets, and counterparties.
+        println!("{} at {}", entry.nonce, entry.timestamp);
+    }
+    match page.next_cursor {
+        Some(next) => cursor = Some(next),
+        None => break,
+    }
+}
+```
+
+Only canonical (confirmed) deltas appear — pending proposals live on
+`list_proposals()` — and only transactions pushed through Guardian are
+visible to it.
 
 ## Consume-notes metadata versions
 

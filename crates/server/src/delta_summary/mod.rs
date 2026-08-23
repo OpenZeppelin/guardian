@@ -11,6 +11,8 @@
 //! pushes. Dashboard listings are pure column reads and spread the
 //! fields to L1 (no nested `metadata` envelope on the wire).
 
+use std::num::NonZeroU32;
+
 use serde::{Deserialize, Serialize};
 
 pub mod build;
@@ -90,6 +92,17 @@ pub enum AssetKind {
     NonFungible,
 }
 
+impl AssetKind {
+    /// Stable lower-snake-case wire label, identical to the serde
+    /// serialization. The gRPC transport carries asset kinds as strings.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AssetKind::Fungible => "fungible",
+            AssetKind::NonFungible => "non_fungible",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CounterpartySummary {
     pub account_id: String,
@@ -144,6 +157,24 @@ pub struct ProposalMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_type: Option<String>,
 
+    /// P2IDE reclaim block height (issue #366). Presence of either height
+    /// means the proposal creates a P2IDE note; absent => plain P2ID.
+    /// Valid heights are 1..=u32::MAX; 0 encodes "no constraint" on-chain,
+    /// so `NonZeroU32` rejects it at the serde boundary. `value_type = u64`
+    /// emits an int64-capable OpenAPI schema: `format: int32` implies a
+    /// signed range that cannot hold heights above 2^31-1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<u64>, minimum = 1, maximum = 4294967295_u64)]
+    pub reclaim_height: Option<NonZeroU32>,
+
+    /// P2IDE timelock block height (issue #366).
+    /// Valid heights are 1..=u32::MAX; 0 encodes "no constraint" on-chain,
+    /// so `NonZeroU32` rejects it at the serde boundary. `value_type = u64`
+    /// emits an int64-capable OpenAPI schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<u64>, minimum = 1, maximum = 4294967295_u64)]
+    pub timelock_height: Option<NonZeroU32>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -171,17 +202,43 @@ pub struct ProposalMetadata {
     pub chain_anchor: Option<String>,
 }
 
-/// Detail-view types used by the per-delta endpoint; not built by the
-/// listing path.
+/// Decoded note summary shared by the dashboard per-delta detail
+/// endpoint and the client delta-history feed
+/// (`HistoryEntry.input_notes` / `output_notes`); not built by the
+/// dashboard listing path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DecodedNote {
     pub note_id: String,
     pub tag: NoteTag,
+    /// On-chain visibility from the note metadata: `public` notes are
+    /// fully shared with the network, `private` notes publish only
+    /// their hash.
+    pub note_type: NoteVisibility,
     pub assets: Vec<DecodedAsset>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient: Option<String>,
+}
+
+/// On-chain note visibility, decoded from `NoteMetadata::note_type()`.
+/// Wire labels match issue #322's `metadata.note_type` vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteVisibility {
+    Public,
+    Private,
+}
+
+impl NoteVisibility {
+    /// Stable lower-snake-case wire label, identical to the serde
+    /// serialization. The gRPC transport carries visibility as strings.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NoteVisibility::Public => "public",
+            NoteVisibility::Private => "private",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
@@ -193,6 +250,21 @@ pub enum NoteTag {
     Mint,
     Burn,
     Custom,
+}
+
+impl NoteTag {
+    /// Stable lower-snake-case wire label, identical to the serde
+    /// serialization. The gRPC transport carries note tags as strings.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NoteTag::P2id => "p2id",
+            NoteTag::P2ide => "p2ide",
+            NoteTag::Pswap => "pswap",
+            NoteTag::Mint => "mint",
+            NoteTag::Burn => "burn",
+            NoteTag::Custom => "custom",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
@@ -254,4 +326,61 @@ pub enum DecodeSection {
     OutputNotes,
     Vault,
     Storage,
+}
+
+impl DecodeSection {
+    /// Stable lower-snake-case wire label, identical to the serde
+    /// serialization. The gRPC transport carries sections as strings.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DecodeSection::TxSummary => "tx_summary",
+            DecodeSection::Metadata => "metadata",
+            DecodeSection::InputNotes => "input_notes",
+            DecodeSection::OutputNotes => "output_notes",
+            DecodeSection::Vault => "vault",
+            DecodeSection::Storage => "storage",
+        }
+    }
+}
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod tests {
+    use super::*;
+
+    /// The hand-written `as_str` labels are the gRPC wire vocabulary;
+    /// they must never drift from the serde (HTTP/JSON) labels the
+    /// same enums emit. A new variant must update both in lockstep.
+    #[test]
+    fn wire_labels_match_serde_serialization() {
+        use NoteTag::*;
+        for tag in [P2id, P2ide, Pswap, Mint, Burn, Custom] {
+            assert_eq!(
+                serde_json::to_value(tag).unwrap(),
+                serde_json::Value::String(tag.as_str().to_string()),
+                "NoteTag::{tag:?}"
+            );
+        }
+        for kind in [AssetKind::Fungible, AssetKind::NonFungible] {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                serde_json::Value::String(kind.as_str().to_string()),
+                "AssetKind::{kind:?}"
+            );
+        }
+        for visibility in [NoteVisibility::Public, NoteVisibility::Private] {
+            assert_eq!(
+                serde_json::to_value(visibility).unwrap(),
+                serde_json::Value::String(visibility.as_str().to_string()),
+                "NoteVisibility::{visibility:?}"
+            );
+        }
+        use DecodeSection::*;
+        for section in [TxSummary, Metadata, InputNotes, OutputNotes, Vault, Storage] {
+            assert_eq!(
+                serde_json::to_value(section).unwrap(),
+                serde_json::Value::String(section.as_str().to_string()),
+                "DecodeSection::{section:?}"
+            );
+        }
+    }
 }

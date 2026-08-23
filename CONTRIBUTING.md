@@ -105,6 +105,10 @@ cargo test --workspace
 cargo test -p guardian-server --features integration
 cargo test -p guardian-server --features e2e
 
+# Postgres-backed server tests (needs a running Postgres, see LOCAL_DEV.md)
+POSTGRES_PASSWORD=guardian docker compose -f docker-compose.postgres.yml up -d postgres
+./scripts/test-postgres.sh
+
 # TypeScript (per package)
 cd packages/guardian-client && npm install && npm test
 cd packages/miden-multisig-client && npm install && npm test
@@ -116,9 +120,19 @@ cd examples/demo && cargo run --release   # Rust TUI multisig flow
 # smoke-web / operator-smoke-web / evm-smoke-web have their own READMEs
 ```
 
+The Postgres-backed server tests stay `#[ignore]`, so `cargo test --workspace`
+skips them; `scripts/test-postgres.sh` is what opts in. Each run starts by
+dropping and recreating the schema, so no run inherits state from an earlier
+one, and it refuses any database whose name does not end in `_test` so it cannot
+destroy your development data. Tests compiled only with the `postgres` feature
+must live under a module path containing `postgres`. Live-database tests must
+also be ignored; the script discovers them using that module-path filter. See
+[LOCAL_DEV.md](./docs/LOCAL_DEV.md#postgres-backed-tests).
+
 CI enforces tests and doctests for the core Rust workspace crates, excluding
 benchmark and example members, plus formatting, clippy, and the build and test
-scripts for all TypeScript packages. Run the matching checks locally before
+scripts for all TypeScript packages. The Postgres-backed tests run in their own
+job against a service container. Run the matching checks locally before
 pushing when you touch a package or browser example.
 
 For UI / SDK changes you cannot fully verify with `cargo test` alone,

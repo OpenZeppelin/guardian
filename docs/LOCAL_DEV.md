@@ -107,6 +107,39 @@ wires `PostgresAuditor` so admin actions land in the `admin_actions` table.
 Pool sizing is controlled by `GUARDIAN_DB_POOL_MAX_SIZE` and
 `GUARDIAN_METADATA_DB_POOL_MAX_SIZE`.
 
+### Postgres-backed tests
+
+The `guardian-server` tests that need a live database (metadata replay state,
+delta storage fencing, the audit append-only trigger, and the lease, session,
+and challenge coordination stores) stay `#[ignore]` and run through one script:
+
+```bash
+POSTGRES_PASSWORD=guardian docker compose -f docker-compose.postgres.yml up -d postgres
+./scripts/test-postgres.sh
+```
+
+Name the `postgres` service explicitly: an unqualified `up -d` also builds and
+starts the server image, which these tests do not use. `POSTGRES_PASSWORD` is
+required even when only the database service is selected, because Compose
+interpolates the whole file; the script's default connection URL expects
+`guardian`. If your Compose volume was initialised with a different password,
+pass a matching `DATABASE_URL` instead of relying on the default.
+
+The suite drops and recreates the `public` schema before the first test and
+re-applies every migration from empty, so no run inherits state from an earlier
+one and there is no cleanup step. It creates `guardian_test` if it is missing,
+and it refuses to run against a database whose name does not end in `_test`, so
+a `DATABASE_URL` still exported from a Path B session cannot lose your
+development data. Point it elsewhere with:
+
+```bash
+DATABASE_URL=postgres://user:pass@host:5432/guardian_test ./scripts/test-postgres.sh
+```
+
+Run one suite at a time per server: the reset wipes the shared test database.
+Execution is serial because one test reverts the newest migration for the
+duration of its own run.
+
 The local compose Postgres uses no TLS, so omit `sslmode` (plaintext). To
 exercise certificate verification locally, run a TLS-enabled Postgres with a
 self-signed CA and point the server at it:

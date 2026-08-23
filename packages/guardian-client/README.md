@@ -189,6 +189,30 @@ const delta = await client.getDelta(accountId, 5);
 const merged = await client.getDeltaSince(accountId, 3);
 ```
 
+### Delta History
+
+Paginated canonical delta history with server-decoded note summaries
+(authenticated with the same signed headers as the other per-account reads).
+Only canonical (confirmed) deltas appear, newest-first by nonce; only
+transactions pushed through Guardian are visible to it. Served even while
+the account is paused.
+
+```typescript
+let cursor: string | undefined;
+do {
+  const page = await client.getDeltaHistory(accountId, { limit: 50, cursor });
+  for (const entry of page.entries) {
+    // entry.status is 'canonical'; notes carry tag, noteType, assets,
+    // sender/recipient where the note script exposes them.
+    console.log(entry.nonce, entry.timestamp, entry.outputNotes);
+  }
+  cursor = page.nextCursor; // undefined when the feed is exhausted
+} while (cursor !== undefined);
+```
+
+`limit` accepts 1–500 (default 50); invalid limits and tampered or
+cross-account cursors are rejected with `invalid_limit` / `invalid_cursor`.
+
 ## Error Handling
 
 The client throws `GuardianHttpError` for non-2xx responses:
@@ -218,8 +242,8 @@ class), and `retryAfterSecs()` returns the server's hint, preferring the
 `Retry-After` header over the envelope value.
 
 Rate-limit rejections happen before the server touches any state, so
-retrying them is always safe. The client does not retry automatically
-(automatic backoff is tracked in
+retrying them is always safe. The client does not retry rate limits
+automatically (automatic backoff is tracked in
 [#360](https://github.com/OpenZeppelin/guardian/issues/360)); a bounded
 loop over the exposed hint is a few lines:
 
@@ -241,6 +265,30 @@ async function getStateWithRetry(accountId: string, maxAttempts = 3) {
   }
 }
 ```
+
+### Replay-protection retries
+
+Signed requests carry a strictly increasing per-instance timestamp
+(`max(Date.now(), previous + 1)`). When a correctly signed request still
+loses the server's per-signer replay check (stable code
+`authentication_replay`, typically two in-flight requests landing out of
+order), the client retries automatically, up to 2 times with a 50ms
+backoff, minting a fresh timestamp and signature over the identical
+payload each attempt. Terminal authentication failures
+(`authentication_failed`: clock outside the skew window, invalid or
+unauthorized signature) are never retried; branch on `error.code`, never
+on message text.
+
+The client retries only `authentication_replay`; it never retries
+`authentication_failed`. During a mixed server/client rollout, a replay CAS
+reported under the older authentication code—or received by a client without
+replay-specific retry handling—can therefore surface as a terminal 401 until
+both sides use the same error contract.
+
+The upgraded server also returns the standard `{ code, message, meta }` error
+envelope for failed HTTP `/configure` requests instead of a
+`ConfigureResponse` with `success: false`. Direct HTTP integrations that inspect
+the old error body must migrate with the server rollout.
 
 ## Testing
 

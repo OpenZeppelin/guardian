@@ -382,6 +382,20 @@ impl StorageBackend for EncryptedStorage {
             .collect()
     }
 
+    async fn list_canonical_deltas_paged(
+        &self,
+        account_id: &str,
+        limit: u32,
+        cursor: Option<AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        self.inner
+            .list_canonical_deltas_paged(account_id, limit, cursor)
+            .await?
+            .into_iter()
+            .map(|delta| self.decrypt_delta(delta))
+            .collect()
+    }
+
     async fn list_account_proposals_paged(
         &self,
         account_id: &str,

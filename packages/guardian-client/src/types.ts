@@ -112,6 +112,10 @@ export interface ProposalMetadata {
    * executor need this anchor to reproduce the summary the proposer signed.
    */
   chainAnchor?: string;
+  /** P2IDE reclaim block height (issue #366). Presence of either height means a P2IDE note. */
+  reclaimHeight?: number;
+  /** P2IDE timelock block height (issue #366). */
+  timelockHeight?: number;
 }
 
 export interface DeltaObject {
@@ -250,4 +254,91 @@ export interface LookupAccount {
 /** Response shape for `lookupAccountByKeyCommitment`. */
 export interface LookupResponse {
   accounts: LookupAccount[];
+}
+
+/** Note classification decoded from the on-chain note script. */
+export type HistoryNoteTag = 'p2id' | 'p2ide' | 'pswap' | 'mint' | 'burn' | 'custom';
+
+/** On-chain note visibility from the note metadata. */
+export type HistoryNoteVisibility = 'public' | 'private';
+
+/** Which section of the persisted payload failed to decode. */
+export type HistoryDecodeSection =
+  | 'tx_summary'
+  | 'metadata'
+  | 'input_notes'
+  | 'output_notes'
+  | 'vault'
+  | 'storage';
+
+/**
+ * Delta lifecycle status of a history entry. Only `canonical` is
+ * emitted today; the set widens if the feed gains a status filter.
+ */
+export type HistoryEntryStatus = 'canonical';
+
+/**
+ * One decoded asset inside a history note. `amount` is a base-10
+ * string for fungible assets, absent for non-fungible ones.
+ */
+export interface HistoryNoteAsset {
+  assetId: string;
+  kind: 'fungible' | 'non_fungible';
+  amount?: string;
+}
+
+/**
+ * One decoded note attached to a history entry. `sender` / `recipient`
+ * are account IDs when the note script exposes them.
+ */
+export interface HistoryNote {
+  noteId: string;
+  tag: HistoryNoteTag;
+  /** On-chain visibility from the note metadata. */
+  noteType: HistoryNoteVisibility;
+  assets: HistoryNoteAsset[];
+  sender?: string;
+  recipient?: string;
+}
+
+/**
+ * Why a history entry's note sections are empty: the persisted payload
+ * could not be decoded server-side (schema drift). The entry itself is
+ * still returned.
+ */
+export interface HistoryDecodeWarning {
+  section: HistoryDecodeSection;
+  reason: string;
+}
+
+/** One canonical transaction in an account's history (issue #413). */
+export interface HistoryEntry {
+  nonce: number;
+  /** Delta lifecycle status; always `canonical` today. */
+  status: HistoryEntryStatus;
+  /** RFC 3339 UTC timestamp at which the delta became canonical. */
+  timestamp: string;
+  /**
+   * Account commitment after this transaction; `undefined` when the
+   * stored row predates commitment recording.
+   */
+  newCommitment?: string;
+  inputNotes: HistoryNote[];
+  outputNotes: HistoryNote[];
+  decodeWarnings: HistoryDecodeWarning[];
+}
+
+/** One page of canonical delta history, newest-first by nonce. */
+export interface HistoryPage {
+  entries: HistoryEntry[];
+  /** Opaque resume token; `undefined` when the feed is exhausted. */
+  nextCursor?: string;
+}
+
+/** Options for `getDeltaHistory`. */
+export interface HistoryOptions {
+  /** Page size in `[1, 500]`; server default 50 when omitted. */
+  limit?: number;
+  /** Opaque `nextCursor` from a previous page. */
+  cursor?: string;
 }

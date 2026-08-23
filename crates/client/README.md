@@ -43,6 +43,31 @@ assert_eq!(response.state, "pending");
 let delta = client.get_delta(&account_id, nonce).await?;
 ```
 
+### Delta History
+
+Paginated canonical delta history (issue #413), newest-first by nonce, with
+server-decoded note summaries. Pass the previous page's `next_cursor` to
+resume; `None` on the response means the feed is exhausted. Only canonical
+deltas appear, and only transactions pushed through Guardian are visible.
+
+```rust
+let mut cursor: Option<String> = None;
+loop {
+    let page = client
+        .get_delta_history(&account_id, Some(50), cursor.take())
+        .await?;
+    for entry in &page.entries {
+        // entry.status == "canonical"; notes carry tag, note_type,
+        // assets, sender/recipient where the note script exposes them.
+        println!("{} at {}", entry.nonce, entry.timestamp);
+    }
+    match page.next_cursor {
+        Some(next) => cursor = Some(next),
+        None => break,
+    }
+}
+```
+
 ### Rate Limits and Retries
 
 The server rate-limits both its gRPC and HTTP surfaces. The sustained
@@ -55,8 +80,8 @@ class), and `retry_after()` returns the server's hint, preferring the
 `retry-after` status metadata over the envelope value.
 
 Rate-limit rejections happen before the server touches any state, so
-retrying them is always safe. The client does not retry automatically
-(automatic backoff is tracked in
+retrying them is always safe. The client does not retry rate limits
+automatically (automatic backoff is tracked in
 [#360](https://github.com/OpenZeppelin/guardian/issues/360)); a bounded
 loop over the exposed hint is a few lines:
 
@@ -79,6 +104,24 @@ let state = loop {
 Retries are idempotent (the original request timestamp is preserved). The
 server refuses with `GUARDIAN_CANDIDATE_LANDED` when the transaction
 demonstrably landed.
+
+### Replay-protection retries
+
+Signed requests carry a strictly increasing per-instance timestamp
+(`max(now_ms, previous + 1)`). When a correctly signed request still loses
+the server's per-signer replay check (stable code `authentication_replay`,
+typically two in-flight requests landing out of order), the client retries
+automatically, up to 2 times with a 50ms backoff, minting a fresh timestamp
+and signature over the identical payload each attempt.
+`ClientError::is_replay_rejection()` exposes the classification. Terminal
+authentication failures (`authentication_failed`: clock outside the skew
+window, invalid or unauthorized signature) are never retried.
+
+The client retries only `authentication_replay`; it never retries
+`authentication_failed`. During a mixed server/client rollout, a replay CAS
+reported under the older authentication code—or received by a client without
+replay-specific retry handling—can therefore surface as a terminal error until
+both sides use the same error contract.
 
 ## Authentication
 

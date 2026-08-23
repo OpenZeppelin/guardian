@@ -142,6 +142,116 @@ jobs:
           --features authz-test-probe
           api::dashboard::tests::authz_probe::
 
+  server-feature-tests:
+    name: Server Integration and E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.repository_owner == 'OpenZeppelin'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
+        with:
+          toolchain: 1.93.0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-server-feature-tests-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-server-feature-tests-
+
+      - name: Run server integration tests
+        run: >-
+          cargo test
+          -p guardian-server
+          --lib
+          --features integration,e2e
+          testing::integration::
+
+      - name: Run server E2E tests
+        run: >-
+          cargo test
+          -p guardian-server
+          --lib
+          --features integration,e2e
+          testing::e2e::
+
+  postgres-test:
+    name: Postgres Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.repository_owner == 'OpenZeppelin'
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: guardian
+          POSTGRES_PASSWORD: guardian
+          POSTGRES_DB: guardian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U guardian -d guardian_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
+        with:
+          toolchain: 1.93.0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-postgres-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-postgres-test-
+
+      - name: Run Postgres-backed tests
+        env:
+          DATABASE_URL: postgres://guardian:guardian@localhost:5432/guardian_test
+        run: ./scripts/test-postgres.sh
+
+      # Cover tests compiled only with the Postgres feature without rerunning
+      # the full default-feature suite already exercised by the coverage job.
+      - name: Run Postgres feature unit tests
+        run: cargo test -p guardian-server --lib --features postgres -- postgres
+
   npm-test:
     name: TypeScript Package Tests
     runs-on: ubuntu-latest
@@ -196,6 +306,22 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # miden-multisig-client depends on @openzeppelin/guardian-client;
+      # `npm ci` resolves the published registry version, which lags the
+      # in-repo package whenever a PR changes both (the default for server
+      # contract changes per AGENTS.md). Build the sibling package and
+      # overlay it into node_modules so the job tests the pair that will
+      # actually ship together.
+      - name: Use in-repo guardian-client
+        if: matrix.package == 'miden-multisig-client'
+        working-directory: packages/guardian-client
+        run: |
+          npm ci
+          npm run build
+          rm -rf ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
+          cp -r dist ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
+          cp package.json ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/package.json
 
       - name: Build
         run: npm run build

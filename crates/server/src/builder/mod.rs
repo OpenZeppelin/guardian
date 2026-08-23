@@ -238,7 +238,7 @@ impl ServerBuilder {
     /// use server::logging::LoggingConfig;
     /// use tracing::Level;
     ///
-    /// // Default logging (info level with env filter)
+    /// // Default logging (info level, env filter, GUARDIAN_LOG_FORMAT honoured)
     /// let builder = ServerBuilder::new()
     ///     .with_logging(LoggingConfig::default());
     ///

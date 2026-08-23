@@ -97,6 +97,31 @@ export function isP2idNoteVisibility(value: string): value is P2idNoteVisibility
   return value === 'public' || value === 'private';
 }
 
+/** Maximum P2IDE block height: heights are `u32` on-chain (`BlockNumber`). */
+export const MAX_P2IDE_BLOCK_HEIGHT = 0xffff_ffff;
+
+/**
+ * Validates a P2IDE reclaim/timelock height (issue #366). Heights are `u32`
+ * block numbers; `0` is rejected because it is the on-chain encoding for "no
+ * constraint", so accepting it would silently build an unconstrained note.
+ * An invalid value throws rather than being dropped, which would rebuild a
+ * note that could never match the signed tx_summary commitment.
+ */
+export function parseP2ideHeight(
+  field: 'reclaimHeight' | 'timelockHeight',
+  value: number | undefined,
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isInteger(value) || value < 1 || value > MAX_P2IDE_BLOCK_HEIGHT) {
+    throw new Error(
+      `unsupported ${field} '${value}': expected an integer between 1 and ${MAX_P2IDE_BLOCK_HEIGHT}`,
+    );
+  }
+  return value;
+}
+
 export interface P2IdProposalMetadata extends BaseProposalMetadata {
   proposalType: 'p2id';
   recipientId: string;
@@ -104,6 +129,15 @@ export interface P2IdProposalMetadata extends BaseProposalMetadata {
   amount: string;
   /** Visibility of the created note. Absent on the wire => 'public' (pre-#322 proposals). */
   noteType?: P2idNoteVisibility;
+  /**
+   * Absolute block height at which the sender may reclaim the note (issue
+   * #366). Presence of either height means the proposal creates a P2IDE note
+   * instead of a plain P2ID note; both absent => plain P2ID (pre-#366
+   * proposals).
+   */
+  reclaimHeight?: number;
+  /** Absolute block height before which the note cannot be consumed (issue #366). */
+  timelockHeight?: number;
 }
 
 export interface CustomProposalMetadata extends BaseProposalMetadata {

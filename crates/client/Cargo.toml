@@ -18,7 +18,7 @@ serde_json = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 thiserror = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }

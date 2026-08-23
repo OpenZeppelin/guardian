@@ -7,11 +7,17 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     dedupe: ['@miden-sdk/miden-sdk'],
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-      '@openzeppelin/guardian-client': path.resolve(__dirname, '../../packages/guardian-client/dist/index.js'),
-      '@openzeppelin/miden-multisig-client': path.resolve(__dirname, '../../packages/miden-multisig-client/dist/index.js'),
-    },
+    alias: [
+      { find: '@', replacement: path.resolve(__dirname, './src') },
+      {
+        find: '@openzeppelin/guardian-client',
+        replacement: path.resolve(__dirname, '../../packages/guardian-client/dist/index.js'),
+      },
+      {
+        find: '@openzeppelin/miden-multisig-client',
+        replacement: path.resolve(__dirname, '../../packages/miden-multisig-client/dist/index.js'),
+      },
+    ],
   },
   server: {
     port: 3001,

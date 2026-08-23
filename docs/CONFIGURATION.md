@@ -254,7 +254,7 @@ one-command Grafana dashboard stack.
 |---|---|---|
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` | _unset_ | AWS Secrets Manager secret name/ARN holding the operator allowlist JSON. Hot-reloaded on every challenge and authenticated `/dashboard/*` request. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | _unset_ | Local JSON path for the same payload. Local dev only. |
-| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process if unset | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. The prod Terraform profile injects a pre-created Secrets Manager value into every task. If unset outside that profile, the server **warns** and generates an ephemeral per-process key and still boots (in every stage); an ephemeral key only breaks dashboard pagination across replicas — nothing else, so it is not a startup guard. |
+| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process if unset | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. The prod Terraform profile injects a pre-created Secrets Manager value into every task. If unset outside that profile, the server **warns** and generates an ephemeral per-process key and still boots (in every stage); an ephemeral key breaks pagination cursors across replicas and restarts — the dashboard feeds and the client `GET /delta/history` endpoint — nothing else, so it is not a startup guard. |
 
 `GET /dashboard/info.environment` is derived from `GUARDIAN_NETWORK_TYPE`
 (`testnet`, `devnet`, or `local`) rather than configured separately.
@@ -296,7 +296,13 @@ separate variable.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `RUST_LOG` | `info` | Standard `tracing-subscriber` filter. Module-scoped filters work: `RUST_LOG=server::jobs::canonicalization=debug`. |
+| `RUST_LOG` | `info` | Standard `tracing-subscriber` filter. Module-scoped filters work: `RUST_LOG=server::jobs::canonicalization=debug`. Hot-path request *events* (`get_state`, `get_delta`, `push_delta`, proposal create/sign, `lookup_account`) are `debug`; use `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug` to see them. At `info` each request instead emits a single span-close line carrying the span's fields (account ID, nonce, commitment, signer/match counts) plus `time.busy` / `time.idle`. That line is emitted on the success *and* the error path, which is what correlates the centralized 5xx log (see below) back to an account. |
+| `GUARDIAN_LOG_FORMAT` | `text` | Log output format. `text` — human-readable (ANSI when TTY, plain otherwise). `json` — flattened JSON with span context for CloudWatch Logs Insights. `compact` — single-line text. Value is trimmed and case-insensitive; unknown values fall back to `text` with a stderr warn (emitted before the tracing subscriber is installed). Defaults to `text` when unset. ECS default is `json` (see `infra/variables.tf` `guardian_log_format`). |
+
+The 5xx and 4xx lines emitted from `GuardianError`'s HTTP `IntoResponse` and
+`tonic::Status` conversions run *after* the service span has closed, so they
+carry only `code` and `detail`, never account fields. The preceding span-close
+line is what supplies the account context for them.
 
 Useful filters during debugging — see
 [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#logging-and-observability).

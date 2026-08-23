@@ -52,7 +52,13 @@ export {
 export type { ProverConfig, ProverRetryPolicy } from './prover/config.js';
 export type { RpcConfig, RpcRetryPolicy } from './rpc/config.js';
 export { lookupAuthDigest } from './lookupAuth.js';
-export { Multisig, type AccountState } from './multisig.js';
+export {
+  Multisig,
+  type AccountState,
+  type CreateProposalOptions,
+  type CreateSignerProposalOptions,
+  type CreateP2idProposalOptions,
+} from './multisig.js';
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {
   chainAnchorFromBase64,
@@ -68,6 +74,7 @@ export {
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
   type P2idTransactionOptions,
+  type P2ideHeightOptions,
 } from './transaction.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
@@ -80,6 +87,18 @@ export {
   normalizeGuardianErrorCode,
 } from '@openzeppelin/guardian-client';
 export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
+export type {
+  HistoryDecodeSection,
+  HistoryDecodeWarning,
+  HistoryEntry,
+  HistoryEntryStatus,
+  HistoryNote,
+  HistoryNoteAsset,
+  HistoryNoteTag,
+  HistoryNoteVisibility,
+  HistoryOptions,
+  HistoryPage,
+} from '@openzeppelin/guardian-client';
 
 // Codeless transport-failure classification (feature 009, User Story 3).
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
@@ -113,6 +132,8 @@ export {
   isConsumeNotesV2,
   isP2idNoteVisibility,
   type P2idNoteVisibility,
+  MAX_P2IDE_BLOCK_HEIGHT,
+  parseP2ideHeight,
 } from './types/proposal.js';
 
 export {

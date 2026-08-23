@@ -91,6 +91,7 @@ Use this when changing endpoints, payloads, status enums, signatures, or auth be
 - Maintain storage/metadata backend parity (filesystem/postgres where applicable).
 - Preserve canonicalization semantics (pending/candidate/canonical/discarded lifecycle).
 - Default local development/test backend is `filesystem` unless a task explicitly requires Postgres.
+- Put tests compiled only with the `postgres` feature under a module path containing `postgres`. Mark live-database tests ignored; `scripts/test-postgres.sh` discovers the ignored tests using that module-path filter.
 - Keep shared server layers network-agnostic. Put Miden/EVM-specific logic in `src/network/*`, and dispatch from services/builders via account network config rather than embedding network-specific assumptions in shared modules.
 - Secret-bearing fields (keys, tokens, credential URLs, DB/RPC URLs) must use a wrapper from `src/secret/` (`FixedKey<N>`, `SecretBytes`, `SecretString`, `CredentialUrl`) — never bind a raw `String`/`Vec<u8>` to a config field or struct. Read-and-wrap in one expression. See `CONTRIBUTING.md` ("Secrets in server memory").
 
