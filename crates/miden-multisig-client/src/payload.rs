@@ -62,6 +62,14 @@ pub struct ProposalMetadataPayload {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
+
+    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
+    /// proposal's transaction summary was built at. Since protocol 0.16 the
+    /// signed summary binds the reference block commitment, so cosigners and
+    /// the executor need this anchor to reproduce the summary the proposer
+    /// signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_anchor: Option<String>,
 }
 
 /// Complete payload for a multisig transaction proposal.
@@ -256,6 +264,16 @@ impl ProposalPayload {
             .metadata
             .get_or_insert_with(ProposalMetadataPayload::default);
         metadata.required_signatures = Some(required_signatures as u64);
+        self
+    }
+
+    /// Sets the base64-serialized chain anchor pinning the proposal's
+    /// reference block.
+    pub fn with_chain_anchor(mut self, chain_anchor_b64: String) -> Self {
+        let metadata = self
+            .metadata
+            .get_or_insert_with(ProposalMetadataPayload::default);
+        metadata.chain_anchor = Some(chain_anchor_b64);
         self
     }
 
@@ -488,6 +506,38 @@ mod tests {
         assert_eq!(meta.target_threshold, Some(2));
         assert!(meta.signer_commitments.is_empty());
         assert!(meta.salt.is_none());
+    }
+
+    /// The chain anchor rides the wire as `chain_anchor` and is omitted when
+    /// unset, so pre-anchor payload shapes stay byte-identical.
+    #[test]
+    fn with_chain_anchor_round_trips_and_is_omitted_when_unset() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_add_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string())
+        .with_chain_anchor("bW9jay1jaGFpbi1hbmNob3I=".to_string());
+
+        let json = serde_json::to_value(payload.metadata.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            json.get("chain_anchor").and_then(|v| v.as_str()),
+            Some("bW9jay1jaGFpbi1hbmNob3I=")
+        );
+
+        let parsed: ProposalMetadataPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            parsed.chain_anchor.as_deref(),
+            Some("bW9jay1jaGFpbi1hbmNob3I=")
+        );
+
+        let without_anchor = ProposalMetadataPayload {
+            proposal_type: "add_signer".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&without_anchor).unwrap();
+        assert!(json.get("chain_anchor").is_none());
     }
 
     // ---------- consume_notes metadata v1/v2 round-trip (issue #229) ----------

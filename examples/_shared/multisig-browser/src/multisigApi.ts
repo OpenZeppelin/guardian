@@ -457,7 +457,7 @@ export async function prepareAndSubmitCustomProposal(
   const finalRequest = buildRequestFromRecipe(recipe, advice);
 
   try {
-    await multisig.submitTransaction(finalRequest);
+    await multisig.submitTransaction(recipe.proposalId, finalRequest);
   } catch (submitError) {
     // The local apply step can transiently fail (autoSync race) even when the
     // on-chain submit succeeded. Re-sync so local state catches up, then surface

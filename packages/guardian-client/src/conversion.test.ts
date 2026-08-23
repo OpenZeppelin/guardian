@@ -454,6 +454,21 @@ describe('conversion', () => {
       expect(result.salt).toBe(original.salt);
     });
 
+    it('chainAnchor survives roundtrip as chain_anchor on the wire', () => {
+      const original: ProposalMetadata = {
+        proposalType: 'add_signer',
+        targetThreshold: 2,
+        signerCommitments: ['0xabc'],
+        chainAnchor: 'bW9jay1jaGFpbi1hbmNob3I=',
+      };
+
+      const server = toServerProposalMetadata(original);
+      expect(server.chain_anchor).toBe('bW9jay1jaGFpbi1hbmNob3I=');
+
+      const result = fromServerProposalMetadata(server);
+      expect(result.chainAnchor).toBe('bW9jay1jaGFpbi1hbmNob3I=');
+    });
+
     it('p2id noteType survives roundtrip as note_type on the wire (issue #322)', () => {
       const original: ProposalMetadata = {
         proposalType: 'p2id',

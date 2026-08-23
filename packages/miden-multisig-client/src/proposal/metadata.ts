@@ -10,6 +10,7 @@ export class ProposalMetadataCodec {
       description: metadata.description,
       salt: metadata.saltHex,
       requiredSignatures: metadata.requiredSignatures,
+      chainAnchor: metadata.chainAnchor,
     };
 
     switch (metadata.proposalType) {
@@ -68,6 +69,7 @@ export class ProposalMetadataCodec {
       description: guardian.description ?? '',
       saltHex: guardian.salt,
       requiredSignatures: guardian.requiredSignatures,
+      chainAnchor: guardian.chainAnchor,
     };
 
     switch (guardian.proposalType) {

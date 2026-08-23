@@ -73,17 +73,18 @@ impl MultisigClient {
             std::iter::empty(),
         )?;
 
+        let (tx_summary, chain_anchor) =
+            crate::transaction::execute_for_summary(&mut self.miden_client, account_id, tx_request)
+                .await?;
+
         let metadata = ExportedMetadata {
             proposal_type: "switch_guardian".to_string(),
             salt_hex: Some(crate::transaction::word_to_hex(&salt)),
             new_guardian_pubkey_hex: Some(crate::transaction::word_to_hex(&new_commitment)),
             new_guardian_endpoint: Some(new_endpoint),
+            chain_anchor: Some(crate::transaction::chain_anchor_to_base64(&chain_anchor)),
             ..Default::default()
         };
-
-        let tx_summary =
-            crate::transaction::execute_for_summary(&mut self.miden_client, account_id, tx_request)
-                .await?;
 
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_word_hex(tx_commitment);
@@ -242,8 +243,16 @@ impl MultisigClient {
         )
         .await?;
 
-        // Execute and finalize
-        self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
-            .await
+        // Execute and finalize at the proposal's anchored reference block; the
+        // anchor was checked against the signed summary's block commitment in
+        // `verify_proposal_summary_binding` above.
+        let chain_anchor = proposal.metadata.chain_anchor()?;
+        self.finalize_transaction(
+            account_id,
+            final_tx_request,
+            &proposal.transaction_type,
+            chain_anchor,
+        )
+        .await
     }
 }

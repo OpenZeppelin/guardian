@@ -36,9 +36,13 @@ import {
   TransactionRequest,
   TransactionSummary,
   Word,
+  type ChainAnchor,
 } from '@miden-sdk/miden-sdk';
 import {
+  chainAnchorFromBase64,
+  chainAnchorToBase64,
   executeForSummary,
+  executeForSummaryAt,
   summarySalt,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
@@ -657,11 +661,14 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'add_signer',
       targetThreshold,
       targetSignerCommitments,
@@ -713,11 +720,14 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'remove_signer',
       targetThreshold,
       targetSignerCommitments,
@@ -757,11 +767,14 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'change_threshold',
       targetThreshold: newThreshold,
       targetSignerCommitments: this.signerCommitments,
@@ -803,7 +816,9 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
     const action = targetThreshold === 0
@@ -811,6 +826,7 @@ export class Multisig {
       : `Set ${targetProcedure} threshold override to ${targetThreshold}`;
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'update_procedure_threshold',
       targetProcedure,
       targetThreshold,
@@ -843,11 +859,14 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'switch_guardian',
       saltHex: salt.toHex(),
       requiredSignatures: this.getEffectiveThreshold('switch_guardian'),
@@ -890,11 +909,14 @@ export class Multisig {
 
     const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes);
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'consume_notes',
       noteIds,
       metadataVersion: CONSUME_NOTES_METADATA_VERSION_V2,
@@ -947,11 +969,14 @@ export class Multisig {
       { noteType: options.noteType },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'p2id',
       saltHex: salt.toHex(),
       requiredSignatures: this.getEffectiveThreshold('p2id'),
@@ -1260,8 +1285,16 @@ export class Multisig {
   async executeProposal(proposalId: string): Promise<void> {
     const { metadata, finalRequest, proposal } = await this.prepareProposalExecution(proposalId);
 
+    // Execute at the proposal's anchored reference block, so the summary the
+    // cosigners signed reproduces exactly. The anchor was already checked
+    // against the summary's block commitment during binding verification.
     const accountId = AccountId.fromHex(this._accountId);
-    await this.proverWorkflow.submit(accountId, finalRequest);
+    const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
+    try {
+      await this.proverWorkflow.submitAt(accountId, finalRequest, anchor);
+    } finally {
+      anchor.free();
+    }
 
     if (metadata.proposalType === 'switch_guardian') {
       if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
@@ -1328,9 +1361,38 @@ export class Multisig {
    * Submit an integration-built transaction (advice already injected). Mirrors
    * the Rust `submit_transaction`; used by the custom proposal producer flow
    * after `prepareCustomExecution` rebuilds its request with the returned advice.
+   * The transaction is executed at the proposal's anchored reference block,
+   * since the collected signatures only authorize the summary produced there.
    */
-  async submitTransaction(request: TransactionRequest): Promise<void> {
-    await this.proverWorkflow.submit(AccountId.fromHex(this._accountId), request);
+  async submitTransaction(proposalId: string, request: TransactionRequest): Promise<void> {
+    const normalizedProposalId = normalizeHexWord(proposalId);
+    const delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
+    const existing = this.getLocalProposal(proposalId);
+    const proposal = this.proposalFactory().fromDelta(
+      delta,
+      normalizedProposalId,
+      existing?.metadata,
+      existing?.signatures ?? [],
+    );
+
+    const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
+    const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+    const txSummary = TransactionSummary.deserialize(
+      base64ToUint8Array(delta.deltaPayload.txSummary.data),
+    );
+    const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
+    if (anchorCommitment !== summaryBlockCommitment) {
+      anchor.free();
+      throw new Error(
+        `Proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
+      );
+    }
+
+    try {
+      await this.proverWorkflow.submitAt(AccountId.fromHex(this._accountId), request, anchor);
+    } finally {
+      anchor.free();
+    }
   }
 
   /**
@@ -1362,11 +1424,14 @@ export class Multisig {
 
     const webClient = await this.getRawClient();
     const request = deserializeTransactionRequest(transactionRequestBytes);
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const proposalNonce = nonce ?? Date.now();
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'custom',
       description: '',
       rawProposalType: label,
@@ -1425,8 +1490,23 @@ export class Multisig {
 
     const bindingRequest = deserializeTransactionRequest(transactionRequestBytes);
 
+    // Probe at the proposal's anchored reference block: the signed summary
+    // binds that block's commitment, so probing at the local sync height would
+    // never reproduce it. The anchor arrives from an untrusted party via
+    // GUARDIAN, so its block commitment is checked against the signed summary
+    // before executing against it.
+    const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
+    const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+    const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
+    if (anchorCommitment !== summaryBlockCommitment) {
+      anchor.free();
+      throw new Error(
+        `Custom proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
+      );
+    }
     const webClient = await this.getRawClient();
-    const derived = await executeForSummary(webClient, this._accountId, bindingRequest);
+    const derived = await executeForSummaryAt(webClient, this._accountId, bindingRequest, anchor);
+    anchor.free();
     const derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
     if (derivedCommitmentHex !== signedCommitmentHex) {
       throw new Error(
@@ -1869,10 +1949,28 @@ export class Multisig {
 
   private async verifyProposalMetadataBinding(proposal: Proposal): Promise<string> {
     const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
+
+    const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
+
+    // The anchor arrives from an untrusted party via GUARDIAN, so check its
+    // block commitment against the one bound into the signed summary before
+    // anything executes against it. `ChainAnchor.deserialize` already enforced
+    // internal header/chain consistency.
+    const anchor = this.requireProposalAnchor(proposal.id, proposal.metadata);
+    const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+    const summaryBlockCommitment = normalizeHexWord(summary.blockCommitment().toHex());
+    if (anchorCommitment !== summaryBlockCommitment) {
+      anchor.free();
+      throw new Error(
+        `Invalid proposal: chain anchor does not match the block commitment bound into the tx_summary for ${proposal.id}`,
+      );
+    }
+
     if (proposal.metadata.proposalType === 'custom') {
       // Custom proposals (issue #266) have no per-type reconstruction recipe;
       // the id ↔ tx_summary commitment match above is the only available
       // integrity guarantee for an opaque proposal.
+      anchor.free();
       return txSummaryCommitment;
     }
 
@@ -1884,17 +1982,18 @@ export class Multisig {
       // native Rust client does not mutate, so this is an intentional divergence.
       // The id ↔ tx_summary match above plus `verifyGuardianEndpointCommitment`
       // at propose/execute time still bind the proposal.
+      anchor.free();
       return txSummaryCommitment;
     }
 
-    const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
     const salt = proposal.metadata.saltHex
       ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
       : summarySalt(summary);
 
     const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
     const webClient = await this.getRawClient();
-    const reconstructed = await executeForSummary(webClient, this._accountId, request);
+    const reconstructed = await executeForSummaryAt(webClient, this._accountId, request, anchor);
+    anchor.free();
     const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
 
     if (reconstructedCommitment !== txSummaryCommitment) {
@@ -1902,6 +2001,23 @@ export class Multisig {
     }
 
     return txSummaryCommitment;
+  }
+
+  /**
+   * Decodes a proposal's chain anchor. Throws when absent: a proposal without
+   * an anchor was created at an unknown reference block, so its signed summary
+   * cannot be reproduced, verified, or executed. The caller owns the returned
+   * anchor and must `free()` it once done.
+   */
+  private requireProposalAnchor(proposalId: string, metadata: ProposalMetadata): ChainAnchor {
+    if (!metadata.chainAnchor) {
+      throw new Error(
+        `Proposal ${proposalId} has no chain anchor; it was created without ` +
+          'chain-anchored execution and its signed summary cannot be reproduced ' +
+          'at the original reference block',
+      );
+    }
+    return chainAnchorFromBase64(metadata.chainAnchor);
   }
 
   private async buildTransactionRequestFromMetadata(

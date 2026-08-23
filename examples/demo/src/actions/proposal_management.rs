@@ -1134,7 +1134,7 @@ async fn action_execute_custom_proposal(
 
     print_waiting("Submitting custom transaction");
     client
-        .submit_transaction(request)
+        .submit_transaction(&proposal_id, request)
         .await
         .map_err(|e| format!("submit failed: {}", e))?;
 

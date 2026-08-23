@@ -163,6 +163,12 @@ pub struct ProposalMetadata {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
+
+    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
+    /// proposal's transaction summary was built at. Opaque to the server;
+    /// carried so the dashboard view round-trips the client payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_anchor: Option<String>,
 }
 
 /// Detail-view types used by the per-delta endpoint; not built by the

@@ -37,10 +37,10 @@
     "test:browser": "playwright test --config playwright.config.ts"
   },
   "dependencies": {
-    "@miden-sdk/miden-sdk": "0.16.0-rc.2",
+    "@miden-sdk/miden-sdk": "0.16.0-rc.3",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^2.0.1",
-    "@openzeppelin/guardian-client": "^0.16.2"
+    "@openzeppelin/guardian-client": "file:../guardian-client"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

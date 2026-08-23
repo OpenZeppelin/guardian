@@ -112,6 +112,13 @@ pub struct ExportedMetadata {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
+
+    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
+    /// tx_summary was built at. Mirrors
+    /// `ProposalMetadataPayload::chain_anchor`; required to verify or execute
+    /// the imported proposal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_anchor: Option<String>,
 }
 
 impl ExportedProposal {
@@ -144,6 +151,7 @@ impl ExportedProposal {
                 .iter()
                 .map(|signature| signature.signer_commitment.clone())
                 .collect(),
+            chain_anchor_b64: self.metadata.chain_anchor.clone(),
         }
     }
 
@@ -296,6 +304,7 @@ impl ExportedProposal {
             new_guardian_pubkey_hex: proposal.metadata.new_guardian_pubkey_hex.clone(),
             new_guardian_endpoint: proposal.metadata.new_guardian_endpoint.clone(),
             target_procedure: proposal.metadata.target_procedure.clone(),
+            chain_anchor: proposal.metadata.chain_anchor_b64.clone(),
         };
 
         Ok(Self {
@@ -503,6 +512,7 @@ mod tests {
             new_guardian_pubkey_hex: None,
             new_guardian_endpoint: None,
             target_procedure: None,
+            chain_anchor: None,
         };
 
         let json = serde_json::to_string(&meta).expect("should serialize");

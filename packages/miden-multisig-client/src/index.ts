@@ -55,7 +55,10 @@ export { lookupAuthDigest } from './lookupAuth.js';
 export { Multisig, type AccountState } from './multisig.js';
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {
+  chainAnchorFromBase64,
+  chainAnchorToBase64,
   executeForSummary,
+  executeForSummaryAt,
   summarySalt,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,

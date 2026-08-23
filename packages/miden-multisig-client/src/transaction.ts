@@ -1,7 +1,13 @@
 export {
   buildConsumeNotesTransactionRequest,
 } from './transaction/consumeNotes.js';
-export { executeForSummary, summarySalt } from './transaction/summary.js';
+export {
+  chainAnchorFromBase64,
+  chainAnchorToBase64,
+  executeForSummary,
+  executeForSummaryAt,
+  summarySalt,
+} from './transaction/summary.js';
 export {
   buildP2idNoteFromMetadata,
   buildP2idTransactionRequest,

@@ -37,6 +37,14 @@ interface BaseProposalMetadata {
   description: string;
   saltHex?: string;
   requiredSignatures?: number;
+  /**
+   * Base64-serialized Miden `ChainAnchor` pinning the reference block the
+   * proposal's transaction summary was built at. Required to verify or
+   * execute the proposal: since protocol 0.16 the signed summary binds the
+   * reference block commitment, so it only reproduces when re-executed at
+   * that block.
+   */
+  chainAnchor?: string;
 }
 
 export interface UpdateSignersProposalMetadata extends BaseProposalMetadata {
