@@ -20,12 +20,16 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| 0.17.x (unreleased) | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.2` | `0.16.0-rc.3` (exact) |
+| 0.17.0-rc.1 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.2` | `0.16.0-rc.3` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
 | 0.15.x | 0.15 | `0.15.x` | `0.15.0` | `^0.15.0` |
 | 0.14.x | 0.14 | n/a | `0.14.x` | `^0.14.0` |
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
+
+The 0.17 line is a release candidate while `miden-standards` itself is still an
+rc, and it is published to npm under the `rc` dist-tag, so `npm install` without
+an explicit version still resolves the 0.16.x line.
 
 Pins are exact on the 0.16 rc line because the rc protocol is still moving. The
 Rust and npm pins must move together: nothing at build time verifies that the npm
