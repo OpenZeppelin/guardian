@@ -14,7 +14,7 @@ miden-standards = { workspace = true }
 miden-protocol = { workspace = true }
 
 anyhow = { workspace = true }
-guardian-shared = { version = "=0.16.2", path = "../shared" }
+guardian-shared = { version = "=0.17.0-rc.1", path = "../shared" }
 
 [features]
 testing = ["miden-protocol/testing"]

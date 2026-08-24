@@ -163,6 +163,13 @@ console.log('raw bytes (base64):', debug.rawTransactionSummary);
 Single-key Miden accounts and EVM accounts always return an empty
 proposal queue.
 
+Send proposals carry their P2ID fields on the entry metadata. `noteType`
+is the note's visibility, absent meaning public (issue #322).
+`reclaimHeight` and `timelockHeight` are optional P2IDE constraints
+(issue #366): the presence of *either* means the proposal creates a P2IDE
+note rather than a plain P2ID one, so a dashboard should surface them as
+spend conditions rather than hiding them.
+
 ```typescript
 const page = await client.listAccountProposals('0x...', { limit: 50 });
 for (const entry of page.items) {
