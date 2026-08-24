@@ -6033,7 +6033,7 @@
       },
       "ProposalMetadata": {
         "type": "object",
-        "description": "Operator-stated intent lifted from a matching proposal. Mirrors\n`ProposalMetadataPayload` in `crates/miden-multisig-client/src/payload.rs`\nfield-for-field, except `chain_anchor`: that is a ~1.6 KB execution\nartifact clients read from the proposal payload itself, so lifting it\nhere would duplicate it into every delta row and dashboard listing for\na consumer that never executes proposals. Deliberately dropped at decode.",
+        "description": "Operator-stated intent lifted from a matching proposal.\n`chain_anchor` remains only in the proposal payload to avoid duplicating it\nin delta metadata and dashboard listings.",
         "required": [
           "proposal_type"
         ],
