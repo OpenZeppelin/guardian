@@ -310,6 +310,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-npm-multisig-
 
+      # rust-toolchain.toml pins a toolchain with components that rustup syncs
+      # on first cargo use. Two test files shell out to `cargo run`
+      # concurrently (procedure-roots, account-roundtrip), and concurrent
+      # first-use syncs race each other ("detected conflict: 'bin/cargo'").
+      # Building both example fixtures here syncs once, serially, and turns
+      # the in-test cargo runs into cache hits.
+      - name: Sync pinned toolchain and prebuild example fixtures
+        if: matrix.package == 'miden-multisig-client'
+        working-directory: .
+        run: cargo build --quiet --example procedure_roots --example serialized_account -p miden-multisig-client
+
       - name: Install dependencies
         run: npm ci
 

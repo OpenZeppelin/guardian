@@ -2,24 +2,7 @@ import type { MultisigConfig } from '../types.js';
 import { StorageSlot, StorageMap, Word } from '@miden-sdk/miden-sdk';
 import { ensureHexPrefix } from '../utils/encoding.js';
 import { getProcedureRoot } from '../procedures.js';
-
-/**
- * `AuthGuardedMultisig` storage slot names (`miden::standards::auth::*`). These must match the
- * Rust `miden-standards` component exactly: account ID and commitment derive from the storage
- * layout, so any divergence breaks cross-SDK determinism (guarded by the parity test).
- */
-const MULTISIG_SLOT_NAMES = {
-  THRESHOLD_CONFIG: 'miden::standards::auth::multisig::threshold_config',
-  SIGNER_PUBLIC_KEYS: 'miden::standards::auth::multisig::approver_public_keys',
-  SIGNER_SCHEME_IDS: 'miden::standards::auth::multisig::approver_schemes',
-  EXECUTED_TRANSACTIONS: 'miden::standards::auth::multisig::executed_transactions',
-  PROCEDURE_THRESHOLDS: 'miden::standards::auth::multisig::procedure_thresholds',
-} as const;
-
-const GUARDIAN_SLOT_NAMES = {
-  PUBLIC_KEY: 'miden::standards::auth::guardian::pub_key',
-  SCHEME_ID: 'miden::standards::auth::guardian::scheme',
-} as const;
+import { MULTISIG_SLOT_NAMES, GUARDIAN_SLOT_NAMES } from './layout.js';
 
 function signerMapKey(index: bigint): Word {
   return new Word(new BigUint64Array([index, 0n, 0n, 0n]));
