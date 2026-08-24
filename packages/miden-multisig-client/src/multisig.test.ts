@@ -10,11 +10,20 @@ import {
   executeForSummaryAt,
 } from './transaction.js';
 
-const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig, mockNoteFileDeserialize } = vi.hoisted(() => ({
+const {
+  mockRpcGetAccountDetails,
+  mockAccountDeserialize,
+  mockDetectConfig,
+  mockNoteFileDeserialize,
+  mockGetSignerCommitments,
+  mockGetGuardianCommitment,
+} = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
   mockDetectConfig: vi.fn(),
   mockNoteFileDeserialize: vi.fn(),
+  mockGetSignerCommitments: vi.fn(),
+  mockGetGuardianCommitment: vi.fn(),
 }));
 
 const { MOCK_CHAIN_ANCHOR_B64, createMockChainAnchor } = vi.hoisted(() => {
@@ -156,11 +165,19 @@ vi.mock('./utils/encoding.js', async () => {
   };
 });
 
-vi.mock('./inspector.js', () => ({
-  AccountInspector: {
-    fromAccount: mockDetectConfig,
-  },
-}));
+// Keep the real assertCompleteDetectedConfig so refreshConfigFromAccount's
+// fail-closed validation is exercised.
+vi.mock('./inspector.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./inspector.js')>();
+  return {
+    ...actual,
+    AccountInspector: {
+      fromAccount: mockDetectConfig,
+      getSignerPublicKeyCommitments: mockGetSignerCommitments,
+      getGuardianPublicKeyCommitment: mockGetGuardianCommitment,
+    },
+  };
+});
 
 // Mock fetch for GUARDIAN client
 const mockFetch = vi.fn();
@@ -426,6 +443,56 @@ describe('Multisig', () => {
     });
   });
 
+  describe('getSignerPublicKeyCommitments (issue #306)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it('reads commitments from the store-backed account', async () => {
+      const storeAccount = mockedAccount('0x' + 'b'.repeat(64), 1);
+      mockWebClient.getAccount.mockResolvedValueOnce(storeAccount);
+      const expected = ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)];
+      mockGetSignerCommitments.mockReturnValueOnce(expected);
+
+      const multisig = createTestMultisig(config);
+      const commitments = await multisig.getSignerPublicKeyCommitments();
+
+      expect(commitments).toEqual(expected);
+      expect(mockGetSignerCommitments).toHaveBeenCalledWith(storeAccount);
+    });
+
+    it('falls back to the account snapshot when the store has no record', async () => {
+      mockWebClient.getAccount.mockResolvedValueOnce(null);
+      mockGetSignerCommitments.mockReturnValueOnce(['0x' + '3'.repeat(64)]);
+
+      const multisig = createTestMultisig(config);
+      await multisig.getSignerPublicKeyCommitments();
+
+      expect(mockGetSignerCommitments).toHaveBeenCalledWith(mockAccount);
+    });
+  });
+
+  describe('getGuardianPublicKeyCommitment (issue #306)', () => {
+    it('reads the guardian commitment from the store-backed account', async () => {
+      const storeAccount = mockedAccount('0x' + 'b'.repeat(64), 1);
+      mockWebClient.getAccount.mockResolvedValueOnce(storeAccount);
+      mockGetGuardianCommitment.mockReturnValueOnce('0x' + '4'.repeat(64));
+
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+
+      const commitment = await multisig.getGuardianPublicKeyCommitment();
+
+      expect(commitment).toBe('0x' + '4'.repeat(64));
+      expect(mockGetGuardianCommitment).toHaveBeenCalledWith(storeAccount);
+    });
+  });
+
   describe('fetchState', () => {
     it('should fetch account state from GUARDIAN', async () => {
       const config = {
@@ -576,6 +643,44 @@ describe('Multisig', () => {
       ]);
       expect(multisig.guardianCommitment).toBe('0x' + 'd'.repeat(64));
       expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+    });
+
+    it('keeps the previous config when a refresh reads an incomplete signer set (issue #306 review)', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config, mockSigner, '0x' + 'a'.repeat(30));
+
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+      // Storage reports 3 signers but only 1 entry was readable: adopting
+      // this would let membership proposals rewrite the on-chain set without
+      // the omitted keys. The refresh must keep the previous config instead.
+      mockDetectConfig.mockReturnValueOnce({
+        threshold: 2,
+        numSigners: 3,
+        signerCommitments: ['0x' + '1'.repeat(64)],
+        guardianCommitment: '0x' + 'd'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      await multisig.syncState();
+
+      expect(multisig.threshold).toBe(1);
+      expect(multisig.signerCommitments).toEqual(['0x' + 'a'.repeat(64)]);
+      expect(multisig.guardianCommitment).toBe('0x' + 'c'.repeat(64));
     });
 
     it('should overwrite local state when account is not found on-chain', async () => {
