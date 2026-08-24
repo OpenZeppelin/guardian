@@ -129,6 +129,12 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
+      - name: Install pinned Rust toolchain
+        # Package tests spawn `cargo run` from parallel vitest workers; rustup
+        # is not concurrency-safe, so install the rust-toolchain.toml pin here
+        # before those concurrent invocations race to install it themselves.
+        run: rustup toolchain install
+
       - name: Build, test, and publish
         env:
           PACKAGES: ${{ needs.prepare.outputs.packages }}
