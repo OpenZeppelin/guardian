@@ -47,6 +47,10 @@ incremental = false   # Disable incremental compilation for reproducibility
 # compile once and stay cached, so the extra compile cost is paid rarely.
 [profile.dev.package."*"]
 opt-level = 3
+# No debuginfo for dependencies: nobody steps into them, and dep debuginfo at
+# opt-level 3 is the bulk of target-dir size — which matters because CI's
+# per-repo cache quota is 10GB across all jobs' target caches.
+debug = false
 
 [workspace.dependencies]
 # Core

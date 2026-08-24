@@ -17,6 +17,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Incremental state is dead weight in CI (caches restore whole target dirs)
+  # and inflates every cached target dir against the 10GB repo cache quota.
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   test:
