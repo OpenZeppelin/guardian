@@ -57,15 +57,31 @@ jobs:
           cache-on-failure: true
 
       - name: Install cargo-llvm-cov
+        if: github.event_name == 'push'
         uses: taiki-e/install-action@4a44d353abec8bd780e47de38e5bc5ea77053391 # cargo-llvm-cov
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@742a3ac9a75553d78e25773da9e6c438fdc5a74a # nextest
 
-      # nextest schedules every binary's tests in one parallel pool (cargo
-      # test parallelizes only within a binary) and prints per-test timings,
-      # so slow tests are visible in the log.
-      - name: Run tests with coverage
+      # Coverage runs on pushes to main only: instrumentation slows test
+      # execution 1.5-2x and forces workspace crates to recompile under
+      # coverage flags, and was the dominant remaining cost on the PR path.
+      # PRs run the same test set uninstrumented; Codecov tracks trends from
+      # main. nextest schedules every binary's tests in one parallel pool
+      # (cargo test parallelizes only within a binary) and prints per-test
+      # timings, so slow tests are visible in the log.
+      - name: Run tests (PRs, uninstrumented)
+        if: github.event_name != 'push'
+        run: >-
+          cargo nextest run
+          --workspace
+          --exclude guardian-prod-benchmarks
+          --exclude guardian-server-bench-loadgen
+          --exclude guardian-demo
+          --exclude guardian-rust-example
+
+      - name: Run tests with coverage (main)
+        if: github.event_name == 'push'
         run: >-
           cargo llvm-cov nextest
           --workspace
@@ -89,6 +105,7 @@ jobs:
           --doc
 
       - name: Upload coverage to Codecov
+        if: github.event_name == 'push'
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
         with:
           files: ./lcov.info
@@ -475,7 +492,11 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'OpenZeppelin'
+    # Main-only: this job proves the reproducible release profile (LTO,
+    # codegen-units=1) compiles with all features — ~5m per run that PR
+    # feedback does not need. A skipped job still reports a check run, so
+    # required-check rules stay satisfied on PRs.
+    if: github.repository_owner == 'OpenZeppelin' && github.event_name == 'push'
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
