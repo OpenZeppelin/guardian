@@ -865,29 +865,24 @@ mod tests {
     /// one migration behind for the rest of the run. `Drop` reports a failed
     /// re-apply instead of panicking: unwinding out of `Drop` during another
     /// panic aborts the whole test binary.
+    /// Re-applies whatever migrations its holder reverted, on drop.
+    ///
+    /// The tests that use it now step forward only as far as the migration under
+    /// test, so the remainder is always still pending and this always has work to
+    /// do. There is deliberately no way to disarm it: leaving the schema one
+    /// migration behind would fail every Postgres test that runs afterwards.
     struct RevertedMigration {
         url: String,
-        reapplied: bool,
     }
 
     impl RevertedMigration {
         fn new(url: String) -> Self {
-            Self {
-                url,
-                reapplied: false,
-            }
-        }
-
-        fn defuse(mut self) {
-            self.reapplied = true;
+            Self { url }
         }
     }
 
     impl Drop for RevertedMigration {
         fn drop(&mut self) {
-            if self.reapplied {
-                return;
-            }
             use diesel::Connection;
             use diesel_migrations::MigrationHarness;
             let outcome = diesel::PgConnection::establish(&self.url)
