@@ -142,6 +142,9 @@ vi.mock('./utils/signature.js', async () => {
       values: [1, 2, 3],
     })),
     signatureHexToBytes: vi.fn((hex: string) => new Uint8Array([0, 1, 2, 3])),
+    // These tests use synthetic signature bytes to exercise advice routing;
+    // recoverability is covered by tests/ecdsa-advice-encoding.test.ts.
+    assertEcdsaSignatureRecoverable: vi.fn(),
   };
 });
 
@@ -3025,6 +3028,12 @@ describe('Multisig', () => {
         expect.anything(),
         expect.anything(),
       );
+      // The advice payload now comes from the SDK, so the routing assertion is
+      // the commitment each entry is keyed on: cosigner first, GUARDIAN ack
+      // second. Swapping the two entries must not pass.
+      const adviceCalls = vi.mocked(buildSignatureAdviceEntry).mock.calls;
+      expect(adviceCalls[0][0].toHex()).toBe(config.signerCommitments[0]);
+      expect(adviceCalls[1][0].toHex()).toBe(config.guardianCommitment);
       expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.proveTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.submitProvenTransaction).not.toHaveBeenCalled();
@@ -3716,6 +3725,12 @@ describe('Multisig', () => {
         expect.anything(),
         expect.anything(),
       );
+      // The advice payload now comes from the SDK, so the routing assertion is
+      // the commitment each entry is keyed on: cosigner first, GUARDIAN ack
+      // second. Swapping the two entries must not pass.
+      const adviceCalls = vi.mocked(buildSignatureAdviceEntry).mock.calls;
+      expect(adviceCalls[0][0].toHex()).toBe(config.signerCommitments[0]);
+      expect(adviceCalls[1][0].toHex()).toBe(config.guardianCommitment);
     });
 
     it('should execute imported ECDSA proposals with scheme-aware advice', async () => {
@@ -3830,6 +3845,12 @@ describe('Multisig', () => {
         expect.anything(),
         expect.anything(),
       );
+      // The advice payload now comes from the SDK, so the routing assertion is
+      // the commitment each entry is keyed on: cosigner first, GUARDIAN ack
+      // second. Swapping the two entries must not pass.
+      const adviceCalls = vi.mocked(buildSignatureAdviceEntry).mock.calls;
+      expect(adviceCalls[0][0].toHex()).toBe(config.signerCommitments[0]);
+      expect(adviceCalls[1][0].toHex()).toBe(config.guardianCommitment);
     });
 
     it('should verify switch_guardian endpoint commitment before execution', async () => {

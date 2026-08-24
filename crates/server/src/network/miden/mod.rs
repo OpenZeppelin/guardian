@@ -229,16 +229,14 @@ impl NetworkClient for MidenNetworkClient {
             Account::from_json(prev_state_json)?
         };
 
-        let mut preview_account = base_account.clone();
-        if !is_full_state {
-            guardian_shared::account_delta::apply_account_delta(
-                &mut preview_account,
-                account_delta,
-            )?;
-        }
-        // Gate the replay-protection adjustment on the structural multisig component, not the
-        // guardian key's value (which a delta could zero); see `has_multisig_auth`.
-        let is_multisig = MidenAccountInspector::new(&preview_account).has_multisig_auth();
+        // Gate on the account as it entered the transaction. The chain writes the
+        // `executed_transactions` entry during authentication, so what matters is whether the
+        // multisig component was present then, not after the delta: a delta may carry
+        // `StorageValuePatch::Remove`/`Create` for `threshold_config`, and gating on the
+        // post-delta account would omit an entry the chain recorded (or add one it did not),
+        // leaving a commitment that can never match. On the full-state path the two are the
+        // same account.
+        let is_multisig = MidenAccountInspector::new(&base_account).has_multisig_auth();
         let mut storage_entries = Vec::new();
 
         if is_multisig {

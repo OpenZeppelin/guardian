@@ -170,4 +170,71 @@ describe('validateMultisigConfig', () => {
       }),
     ).not.toThrow();
   });
+
+  describe('procedure threshold overrides vs update_procedure_threshold', () => {
+    const signers = Array.from({ length: 5 }, (_, i) => '0x' + String(i + 1).repeat(64));
+    const guardian = '0x' + '9'.repeat(64);
+
+    const config = (
+      threshold: number,
+      procedureThresholds: Array<{ procedure: string; threshold: number }>,
+    ) =>
+      ({
+        threshold,
+        signerCommitments: signers,
+        guardianCommitment: guardian,
+        procedureThresholds,
+      }) as Parameters<typeof validateMultisigConfig>[0];
+
+    it('rejects an override above the default threshold that guards the setter', () => {
+      // The reviewer's case: a 2-of-5 with `send_asset: 4` reads as a 4-of-5
+      // spend lock, but two signers can lower it and spend on the next tx.
+      expect(() =>
+        validateMultisigConfig(config(2, [{ procedure: 'send_asset', threshold: 4 }])),
+      ).toThrow(/exceeds the threshold of 2 that guards update_procedure_threshold/);
+    });
+
+    it('accepts the same override once the setter is raised to match', () => {
+      expect(() =>
+        validateMultisigConfig(
+          config(2, [
+            { procedure: 'send_asset', threshold: 4 },
+            { procedure: 'update_procedure_threshold', threshold: 4 },
+          ]),
+        ),
+      ).not.toThrow();
+    });
+
+    it('rejects an override above an explicitly raised setter', () => {
+      expect(() =>
+        validateMultisigConfig(
+          config(2, [
+            { procedure: 'send_asset', threshold: 4 },
+            { procedure: 'update_procedure_threshold', threshold: 3 },
+          ]),
+        ),
+      ).toThrow(/exceeds the threshold of 3 that guards update_procedure_threshold/);
+    });
+
+    it('accepts overrides at or below the default threshold', () => {
+      expect(() =>
+        validateMultisigConfig(
+          config(3, [
+            { procedure: 'send_asset', threshold: 3 },
+            { procedure: 'receive_asset', threshold: 1 },
+          ]),
+        ),
+      ).not.toThrow();
+    });
+
+    it('allows the setter override to exceed the default threshold', () => {
+      // Raising only the setter is always safe: it makes overrides harder to
+      // edit, never easier.
+      expect(() =>
+        validateMultisigConfig(
+          config(2, [{ procedure: 'update_procedure_threshold', threshold: 5 }]),
+        ),
+      ).not.toThrow();
+    });
+  });
 });

@@ -3,7 +3,10 @@ import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { describe, expect, it } from 'vitest';
 
-import { buildSignatureAdviceEntry } from '../src/utils/signature.js';
+import {
+  assertEcdsaSignatureRecoverable,
+  buildSignatureAdviceEntry,
+} from '../src/utils/signature.js';
 import { bytesToHex, hexToBytes } from '../src/utils/encoding.js';
 
 const ECDSA_AUTH_SCHEME_ID = 1;
@@ -90,5 +93,50 @@ describe('ECDSA advice payload comes from the SDK, not from local packing', () =
     );
 
     expect(key.toHex()).toBe(expected.toHex());
+  });
+});
+
+describe('ECDSA recoverability guard', () => {
+  const priv = hexToBytes(PRIVATE_KEY_HEX);
+  const publicKeyHex = bytesToHex(secp256k1.getPublicKey(priv, true));
+
+  function signatureHex(): string {
+    const digest = keccak_256(hexToBytes(MESSAGE_HEX));
+    const sig = secp256k1.sign(digest, priv, { prehash: false });
+    const withV = new Uint8Array(65);
+    withV.set(sig.toCompactRawBytes(), 0);
+    withV[64] = sig.recovery;
+    return bytesToHex(withV);
+  }
+
+  it('accepts a signature that recovers the expected key', () => {
+    expect(() =>
+      assertEcdsaSignatureRecoverable(signatureHex(), MESSAGE_HEX, publicKeyHex),
+    ).not.toThrow();
+  });
+
+  it('rejects an unrecoverable signature instead of letting WASM abort', () => {
+    // `toPreparedSignature` on r = 0 raises `RuntimeError: unreachable` inside
+    // the module, which poisons it for every later call in the session, so this
+    // has to fail before reaching the SDK.
+    const unrecoverable = `0x${'00'.repeat(32)}${'11'.repeat(32)}00`;
+
+    expect(() =>
+      assertEcdsaSignatureRecoverable(unrecoverable, MESSAGE_HEX, publicKeyHex),
+    ).toThrow(/does not recover a public key/);
+  });
+
+  it('rejects a signature that recovers a different key', () => {
+    const otherKey = bytesToHex(secp256k1.getPublicKey(hexToBytes('0x' + '22'.repeat(32)), true));
+
+    expect(() => assertEcdsaSignatureRecoverable(signatureHex(), MESSAGE_HEX, otherKey)).toThrow(
+      /does not match the expected/,
+    );
+  });
+
+  it('rejects a wrong recovery byte', () => {
+    const flipped = signatureHex().slice(0, -2) + (signatureHex().endsWith('00') ? '01' : '00');
+
+    expect(() => assertEcdsaSignatureRecoverable(flipped, MESSAGE_HEX, publicKeyHex)).toThrow();
   });
 });

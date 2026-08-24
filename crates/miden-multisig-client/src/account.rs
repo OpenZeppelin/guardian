@@ -339,6 +339,38 @@ mod tests {
         MultisigAccount::new(account)
     }
 
+    /// Parity with `validateMultisigConfig` in the TypeScript client: an override above the
+    /// threshold guarding `set_procedure_threshold` is rejected, because a smaller quorum could
+    /// lower it and then use the procedure. Both clients must refuse the same shapes, so a
+    /// TS-created account cannot present a spend lock that Rust would not build.
+    #[test]
+    fn rejects_override_above_the_setter_threshold() {
+        let signers = vec![word(1), word(2), word(3), word(4), word(5)];
+
+        let unenforceable = MultisigGuardianConfig::new(2, signers.clone(), word(99))
+            .with_proc_threshold_overrides(vec![(ProcedureName::SendAsset.root(), 4)]);
+        assert!(
+            MultisigGuardianBuilder::new(unenforceable)
+                .with_seed([7u8; 32])
+                .build()
+                .is_err(),
+            "a send_asset override of 4 under a default threshold of 2 must be rejected"
+        );
+
+        let enforceable = MultisigGuardianConfig::new(2, signers, word(99))
+            .with_proc_threshold_overrides(vec![
+                (ProcedureName::SendAsset.root(), 4),
+                (ProcedureName::UpdateProcedureThreshold.root(), 4),
+            ]);
+        assert!(
+            MultisigGuardianBuilder::new(enforceable)
+                .with_seed([7u8; 32])
+                .build()
+                .is_ok(),
+            "raising the setter override to 4 must make the same send_asset override valid"
+        );
+    }
+
     fn build_account_with_signer_slots(oz_commitments: Vec<Word>) -> MultisigAccount {
         fn signer_slot(slot_name: &str, commitments: Vec<Word>) -> StorageSlot {
             let slot_name = StorageSlotName::new(slot_name).expect("valid slot name");

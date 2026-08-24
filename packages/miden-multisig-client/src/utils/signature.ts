@@ -1,5 +1,6 @@
 import { AdviceMap, Felt, FeltArray, Poseidon2, Signature, Word } from '@miden-sdk/miden-sdk';
 import * as midenSdk from '@miden-sdk/miden-sdk';
+import { EcdsaFormat } from './ecdsa.js';
 import { hexToBytes, normalizeHexWord } from './encoding.js';
 import type { ProposalSignatureEntry, SignatureScheme } from '../types.js';
 
@@ -40,6 +41,36 @@ export function buildSignatureAdviceEntry(
   const key = Poseidon2.hashElements(elements);
 
   return { key, values: signature.toPreparedSignature(message) };
+}
+
+/**
+ * `toPreparedSignature` recovers the ECDSA public key from the message, and an
+ * unrecoverable signature aborts inside WASM with `unreachable`, which poisons
+ * the module instance for the rest of the session. Recover first through the
+ * pure-JS path so a malformed cosigner or GUARDIAN signature surfaces as a
+ * normal error instead.
+ */
+export function assertEcdsaSignatureRecoverable(
+  signatureHex: string,
+  messageHex: string,
+  expectedPublicKeyHex: string,
+): void {
+  let recovered: string;
+  try {
+    recovered = EcdsaFormat.recoverCompressedPublicKeyHex(
+      hexToBytes(messageHex),
+      hexToBytes(signatureHex),
+    );
+  } catch (error) {
+    throw new Error(`ECDSA signature does not recover a public key: ${String(error)}`);
+  }
+
+  const expected = EcdsaFormat.compressPublicKey(expectedPublicKeyHex);
+  if (recovered.toLowerCase() !== expected.toLowerCase()) {
+    throw new Error(
+      `ECDSA signature recovers public key ${recovered}, which does not match the expected ${expected}`,
+    );
+  }
 }
 
 export function tryComputeEcdsaCommitmentHex(pubkeyHex: string): string | null {

@@ -86,12 +86,15 @@ impl<'a> MidenAccountInspector<'a> {
         self.extract_guardian_public_key().is_some()
     }
 
-    /// Whether the account carries the multisig auth component, detected by the structural
-    /// presence of its `threshold_config` slot. Unlike the guardian-key presence check, this
-    /// is a property of the account's code/storage layout that cannot be cleared by any delta,
-    /// so it is the correct gate for the replay-protection adjustment: the `executed_transactions`
-    /// map belongs to the multisig component, and the adjustment must run for every multisig tx
-    /// regardless of the guardian key's value.
+    /// Whether the account carries the multisig auth component, detected by the presence of its
+    /// `threshold_config` slot. Preferred over the guardian-key check for gating the
+    /// replay-protection adjustment, because the `executed_transactions` map belongs to the
+    /// multisig component and the adjustment must run for every multisig tx regardless of the
+    /// guardian key's value.
+    ///
+    /// Note this is NOT delta-invariant: `StorageValuePatch::Remove` removes a value slot
+    /// outright, so callers must evaluate it on the pre-delta account (the state that was
+    /// authenticated) rather than the post-delta one.
     pub fn has_multisig_auth(&self) -> bool {
         self.get_item_by_name(multisig_threshold_config_slot())
             .is_some()

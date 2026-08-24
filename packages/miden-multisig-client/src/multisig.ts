@@ -73,6 +73,7 @@ import {
   normalizeHexWord,
 } from './utils/encoding.js';
 import {
+  assertEcdsaSignatureRecoverable,
   buildSignatureAdviceEntry,
   normalizeSignerCommitment,
   signatureHexToBytes,
@@ -1630,6 +1631,13 @@ export class Multisig {
         cosignerSig.signature.scheme,
       );
       const signature = Signature.deserialize(sigBytes);
+      if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
+        assertEcdsaSignatureRecoverable(
+          cosignerSig.signature.signature,
+          normalizedTxCommitmentHex,
+          ecdsaPublicKey,
+        );
+      }
       const { key, values } = buildSignatureAdviceEntry(
         signerCommitment,
         createTxCommitmentWord(),
@@ -1664,6 +1672,9 @@ export class Multisig {
     }
     const ackSigBytes = signatureHexToBytes(ackSigHex, ackScheme);
     const ackSignature = Signature.deserialize(ackSigBytes);
+    if (ackScheme === 'ecdsa' && ackPubkey) {
+      assertEcdsaSignatureRecoverable(ackSigHex, normalizedTxCommitmentHex, ackPubkey);
+    }
     const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
       guardianCommitment,
       createTxCommitmentWord(),
@@ -1775,6 +1786,13 @@ export class Multisig {
         cosignerSig.signature.scheme,
       );
       const signature = Signature.deserialize(sigBytes);
+      if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
+        assertEcdsaSignatureRecoverable(
+          cosignerSig.signature.signature,
+          normalizedTxCommitmentHex,
+          ecdsaPublicKey,
+        );
+      }
       const { key, values } = buildSignatureAdviceEntry(
         signerCommitment,
         createTxCommitmentWord(),
@@ -1814,6 +1832,9 @@ export class Multisig {
       }
       const ackSigBytes = signatureHexToBytes(ackSigHex, ackScheme);
       const ackSignature = Signature.deserialize(ackSigBytes);
+      if (ackScheme === 'ecdsa' && ackPubkey) {
+        assertEcdsaSignatureRecoverable(ackSigHex, normalizedTxCommitmentHex, ackPubkey);
+      }
       const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
         guardianCommitment,
         createTxCommitmentWord(),

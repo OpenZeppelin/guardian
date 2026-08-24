@@ -20,8 +20,11 @@ async function buildUpdateGuardianScript(
   signatureScheme: SignatureScheme,
   midenRpcEndpoint?: string,
 ): Promise<TransactionScript> {
-  const keyFelts = WordType.fromHex(normalizeHexWord(newGuardianPubkey)).toFelts();
-  const keyLiteral = keyFelts.map((felt) => felt.asInt().toString()).join('.');
+  // Must be a word literal, not a dotted felt list: `push.<word>` pushes in
+  // reverse so Word[0] lands on top, while `push.f0.f1.f2.f3` leaves Word[3] on
+  // top. The component stores the four elements verbatim, so the dotted form
+  // writes the key reversed and diverges from the Rust builder.
+  const keyLiteral = normalizeHexWord(newGuardianPubkey);
   const schemeId = authSchemeId(signatureScheme);
 
   // The Rust builder calls the guarded-multisig component's re-export

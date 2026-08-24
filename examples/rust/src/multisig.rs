@@ -137,7 +137,8 @@ pub fn build_update_signers_script() -> Result<TransactionScript, String> {
 
     let tx_script_code = "
         use miden::standards::auth::multisig
-        begin
+        @transaction_script
+        pub proc main
             call.multisig::update_signers_and_threshold
         end
     ";

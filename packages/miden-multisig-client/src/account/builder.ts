@@ -139,5 +139,28 @@ export function validateMultisigConfig(config: MultisigConfig): void {
       }
       seen.add(pt.procedure);
     }
+
+    // An override is only enforceable if lowering it costs at least as many
+    // signatures as the override itself demands. `update_procedure_threshold`
+    // is the procedure that edits overrides, so anything above its own
+    // effective threshold can be lowered by a smaller quorum and then used:
+    // a 2-of-5 with `send_asset: 4` is a 2-of-5 spend lock, not a 4-of-5 one.
+    // Mirrors `AuthMultisig::new` in miden-standards, which rejects the same
+    // shape, so Rust cannot build an account TypeScript would otherwise allow.
+    const setterOverride = config.procedureThresholds.find(
+      (pt) => pt.procedure === 'update_procedure_threshold'
+    )?.threshold;
+    const setterThreshold = setterOverride ?? config.threshold;
+
+    for (const pt of config.procedureThresholds) {
+      if (pt.threshold > setterThreshold) {
+        throw new Error(
+          `procedure threshold override for ${pt.procedure} (${pt.threshold}) exceeds the ` +
+            `threshold of ${setterThreshold} that guards update_procedure_threshold; such an ` +
+            `override can be removed by a smaller quorum. Raise the update_procedure_threshold ` +
+            `override to at least ${pt.threshold} to make it enforceable`
+        );
+      }
+    }
   }
 }

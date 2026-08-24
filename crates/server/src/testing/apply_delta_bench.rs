@@ -40,10 +40,9 @@ use miden_protocol::transaction::{
     InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
 };
 use miden_protocol::{Felt, Word as MidenWord, ZERO};
+use miden_standards::account::auth::AuthGuardedMultisig;
 use std::hint::black_box;
 use std::time::Instant;
-
-const EXECUTED_TXS_SLOT: &str = "openzeppelin::multisig::executed_transactions";
 
 const WARMUP_ITERS: usize = 25;
 const MEASURED_ITERS: usize = 200;
@@ -81,7 +80,7 @@ fn build_account(cosigners: usize, executed_txs: usize) -> Account {
         .build_existing()
         .expect("build existing multisig-guardian account");
 
-    let executed_txs_name = StorageSlotName::new(EXECUTED_TXS_SLOT).expect("valid slot name");
+    let executed_txs_name = AuthGuardedMultisig::executed_transactions_slot().clone();
     for i in 0..executed_txs {
         seed_replay_entry(&mut account, &executed_txs_name, i as u64);
     }
@@ -109,7 +108,7 @@ fn seed_replay_entry(account: &mut Account, slot: &StorageSlotName, i: u64) {
 /// insert is the per-transaction minimum; many inserts model the largest delta
 /// the body limit accepts.
 fn build_partial_delta(account: &Account, entries: usize) -> serde_json::Value {
-    let executed_txs_name = StorageSlotName::new(EXECUTED_TXS_SLOT).expect("valid slot name");
+    let executed_txs_name = AuthGuardedMultisig::executed_transactions_slot().clone();
     let map_entries = (0..entries.max(1)).map(|i| {
         let key = MidenWord::from([
             Felt::new_unchecked(0xdead_0000 + i as u64),
