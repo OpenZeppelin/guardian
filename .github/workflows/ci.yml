@@ -122,6 +122,11 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v1-rust
+          # One dependency cache shared by the full-build dev jobs (rust-cache
+          # still splits it per toolchain): their dep artifacts are near-
+          # identical, and per-job copies crowded the 10GB repo cache quota
+          # alongside the docker-publish buildkit layer caches.
+          shared-key: dev-deps
           cache-on-failure: true
 
       - name: Run authz test probe tests
@@ -160,6 +165,11 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v1-rust
+          # One dependency cache shared by the full-build dev jobs (rust-cache
+          # still splits it per toolchain): their dep artifacts are near-
+          # identical, and per-job copies crowded the 10GB repo cache quota
+          # alongside the docker-publish buildkit layer caches.
+          shared-key: dev-deps
           cache-on-failure: true
 
       - name: Run server integration tests
@@ -220,6 +230,11 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v1-rust
+          # One dependency cache shared by the full-build dev jobs (rust-cache
+          # still splits it per toolchain): their dep artifacts are near-
+          # identical, and per-job copies crowded the 10GB repo cache quota
+          # alongside the docker-publish buildkit layer caches.
+          shared-key: dev-deps
           cache-on-failure: true
 
       - name: Run Postgres-backed tests
@@ -283,6 +298,11 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v1-rust
+          # One dependency cache shared by the full-build dev jobs (rust-cache
+          # still splits it per toolchain): their dep artifacts are near-
+          # identical, and per-job copies crowded the 10GB repo cache quota
+          # alongside the docker-publish buildkit layer caches.
+          shared-key: dev-deps
           cache-on-failure: true
 
       - name: Sync pinned toolchain and prebuild example fixtures
@@ -336,6 +356,11 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v1-rust
+          # One dependency cache shared by the full-build dev jobs (rust-cache
+          # still splits it per toolchain): their dep artifacts are near-
+          # identical, and per-job copies crowded the 10GB repo cache quota
+          # alongside the docker-publish buildkit layer caches.
+          shared-key: dev-deps
           cache-on-failure: true
 
       - name: Run contract behavior and SDK integration tests
@@ -511,6 +536,11 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           prefix-key: v1-rust
+          # One dependency cache shared by the full-build dev jobs (rust-cache
+          # still splits it per toolchain): their dep artifacts are near-
+          # identical, and per-job copies crowded the 10GB repo cache quota
+          # alongside the docker-publish buildkit layer caches.
+          shared-key: dev-deps
           cache-on-failure: true
 
       - name: Check OpenAPI spec is up to date
