@@ -126,7 +126,10 @@ pub struct NoteCounts {
 
 /// Operator-stated intent lifted from a matching proposal. Mirrors
 /// `ProposalMetadataPayload` in `crates/miden-multisig-client/src/payload.rs`
-/// field-for-field.
+/// field-for-field, except `chain_anchor`: that is a ~1.6 KB execution
+/// artifact clients read from the proposal payload itself, so lifting it
+/// here would duplicate it into every delta row and dashboard listing for
+/// a consumer that never executes proposals. Deliberately dropped at decode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct ProposalMetadata {
     /// One of the validated multisig proposal types (`add_signer`,
@@ -194,12 +197,6 @@ pub struct ProposalMetadata {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
-
-    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
-    /// proposal's transaction summary was built at. Opaque to the server;
-    /// carried so the dashboard view round-trips the client payload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chain_anchor: Option<String>,
 }
 
 /// Decoded note summary shared by the dashboard per-delta detail
