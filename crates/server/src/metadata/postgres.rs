@@ -666,10 +666,7 @@ mod tests {
 
     /// Which of `candidates` still have rows, checked across every purged table so
     /// a delete that misses one table cannot pass.
-    fn account_ids_present(
-        conn: &mut diesel::PgConnection,
-        candidates: &[&str],
-    ) -> Vec<String> {
+    fn account_ids_present(conn: &mut diesel::PgConnection, candidates: &[&str]) -> Vec<String> {
         let ids: Vec<String> = candidates.iter().map(|id| (*id).to_string()).collect();
         let rows: Vec<AccountIdRow> = diesel::RunQueryDsl::load(
             diesel::sql_query(
@@ -717,9 +714,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires Postgres; re-runs the Miden 0.16 reset; run ./scripts/test-postgres.sh"]
     async fn miden_016_reset_purges_miden_rows_and_preserves_evm() {
-        const RESET_SQL: &str = include_str!(
-            "../../migrations/2026-08-24-000001_miden_016_irreversible_reset/up.sql"
-        );
+        const RESET_SQL: &str =
+            include_str!("../../migrations/2026-08-24-000001_miden_016_irreversible_reset/up.sql");
 
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
