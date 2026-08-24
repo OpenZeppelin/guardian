@@ -1634,8 +1634,6 @@ export class Multisig {
         signerCommitment,
         createTxCommitmentWord(),
         signature,
-        ecdsaPublicKey,
-        cosignerSig.signature.scheme === 'ecdsa' ? cosignerSig.signature.signature : undefined,
       );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
@@ -1670,8 +1668,6 @@ export class Multisig {
       guardianCommitment,
       createTxCommitmentWord(),
       ackSignature,
-      ackScheme === 'ecdsa' ? ackPubkey : undefined,
-      ackScheme === 'ecdsa' ? ackSigHex : undefined,
     );
     const ackKeyHex = normalizeHexWord(ackKey.toHex());
     if (adviceMapKeys.has(ackKeyHex)) {
@@ -1783,10 +1779,6 @@ export class Multisig {
         signerCommitment,
         createTxCommitmentWord(),
         signature,
-        ecdsaPublicKey,
-        cosignerSig.signature.scheme === 'ecdsa'
-          ? cosignerSig.signature.signature
-          : undefined,
       );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
@@ -1826,8 +1818,6 @@ export class Multisig {
         guardianCommitment,
         createTxCommitmentWord(),
         ackSignature,
-        ackScheme === 'ecdsa' ? ackPubkey : undefined,
-        ackScheme === 'ecdsa' ? ackSigHex : undefined,
       );
       const ackKeyHex = normalizeHexWord(ackKey.toHex());
       if (adviceMapKeys.has(ackKeyHex)) {

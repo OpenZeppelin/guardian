@@ -3018,16 +3018,12 @@ describe('Multisig', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        cosignerPubkey,
-        cosignerSignature,
       );
       expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
         2,
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        ackPubkey,
-        ackSignature,
       );
       expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.proveTransaction).not.toHaveBeenCalled();
@@ -3713,16 +3709,12 @@ describe('Multisig', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        cosignerPubkey,
-        cosignerSignature,
       );
       expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
         2,
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        ackPubkey,
-        ackSignature,
       );
     });
 
@@ -3831,16 +3823,12 @@ describe('Multisig', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        cosignerPubkey,
-        cosignerSignature,
       );
       expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
         2,
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        ackPubkey,
-        ackSignature,
       );
     });
 
