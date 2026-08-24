@@ -187,8 +187,6 @@ describe('validateMultisigConfig', () => {
       }) as Parameters<typeof validateMultisigConfig>[0];
 
     it('rejects an override above the default threshold that guards the setter', () => {
-      // The reviewer's case: a 2-of-5 with `send_asset: 4` reads as a 4-of-5
-      // spend lock, but two signers can lower it and spend on the next tx.
       expect(() =>
         validateMultisigConfig(config(2, [{ procedure: 'send_asset', threshold: 4 }])),
       ).toThrow(/exceeds the threshold of 2 that guards update_procedure_threshold/);

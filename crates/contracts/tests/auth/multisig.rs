@@ -1274,11 +1274,7 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
     Ok(())
 }
 
-/// Reproduces add-cosigner proposal creation on a fresh (`build()`, nonce-0,
-/// never-deployed) guarded multisig account — the demo path that fails against a
-/// real node with "value for key ... not present in the advice map". The passing
-/// add-signer test above uses `build_existing()` with a pre-committed account, so
-/// this isolates the brand-new-account variable.
+/// Exercises add-cosigner creation for a fresh, undeployed account.
 #[tokio::test]
 async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     let (_sk, public_keys, _auth, _gsk, guardian_public_key, _gauth) =

@@ -1,9 +1,6 @@
 import { defineConfig } from '@playwright/test';
 
-// Browser-based cross-SDK determinism gate. Uses the system Chrome (channel: 'chrome') so no
-// Chromium download is needed, and a Vite dev server to serve the WASM SDK + built package to
-// the harness page. This is the gate that the node/vitest harness cannot provide (account
-// construction needs a browser IndexedDB store).
+// Account construction needs the browser's IndexedDB-backed store.
 export default defineConfig({
   testDir: './tests/browser',
   testMatch: '**/*.spec.ts',

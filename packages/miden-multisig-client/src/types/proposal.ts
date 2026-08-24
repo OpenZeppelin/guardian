@@ -136,16 +136,13 @@ export interface P2IdProposalMetadata extends BaseProposalMetadata {
    * proposals).
    */
   reclaimHeight?: number;
-  /** Absolute block height before which the note cannot be consumed (issue #366). */
+  /** Absolute block height before which the note cannot be consumed. */
   timelockHeight?: number;
 }
 
 export interface CustomProposalMetadata extends BaseProposalMetadata {
   proposalType: 'custom';
-  /** Original server-defined proposal label, e.g. "b2agg" (issue #266). Mirrors
-   * Rust `ProposalMetadata.proposal_type`; it is what lets a custom proposal
-   * round-trip back to GUARDIAN/export, so it is required in the domain model.
-   * Any wire-level optionality is resolved in the parser/codec boundary. */
+  /** Original server-defined proposal label, preserved during round trips. */
   rawProposalType: string;
 }
 

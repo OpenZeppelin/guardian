@@ -146,20 +146,8 @@ mod tests {
         );
     }
 
-    /// Guards against silent transaction-kernel drift.
-    ///
-    /// The transaction kernel is re-assembled from `miden-protocol`'s MASM at build
-    /// time, and its commitment is derived from hashes computed by transitive crates
-    /// (notably the Plonky3 `p3-*` family, pulled in via `miden-crypto`). If a stale
-    /// or mismatched `Cargo.lock` resolves those crates to a version different from the
-    /// network's, the client computes a kernel the node doesn't recognise, and every
-    /// transaction aborts in the prologue with "value for key ... not present in the
-    /// advice map" (the missing key being the network's kernel commitment).
-    ///
-    /// This value must equal the live network's "Proof Commitment" (kernel commitment).
-    /// If this test fails after a dependency bump, the kernel has drifted: align the
-    /// kernel-affecting crates (run `cargo update`) until it matches the network again,
-    /// then update this constant in the same change.
+    /// Guards the locally assembled transaction kernel against network drift.
+    /// Dependency changes must preserve the live network's proof commitment.
     #[test]
     fn transaction_kernel_commitment_matches_network() {
         use miden_protocol::transaction::TransactionKernel;

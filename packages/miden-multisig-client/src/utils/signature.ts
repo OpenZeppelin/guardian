@@ -43,13 +43,7 @@ export function buildSignatureAdviceEntry(
   return { key, values: signature.toPreparedSignature(message) };
 }
 
-/**
- * `toPreparedSignature` recovers the ECDSA public key from the message, and an
- * unrecoverable signature aborts inside WASM with `unreachable`, which poisons
- * the module instance for the rest of the session. Recover first through the
- * pure-JS path so a malformed cosigner or GUARDIAN signature surfaces as a
- * normal error instead.
- */
+/** Rejects unrecoverable ECDSA signatures before entering WASM. */
 export function assertEcdsaSignatureRecoverable(
   signatureHex: string,
   messageHex: string,

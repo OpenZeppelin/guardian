@@ -20,18 +20,11 @@ async function buildUpdateGuardianScript(
   signatureScheme: SignatureScheme,
   midenRpcEndpoint?: string,
 ): Promise<TransactionScript> {
-  // Must be a word literal, not a dotted felt list: `push.<word>` pushes in
-  // reverse so Word[0] lands on top, while `push.f0.f1.f2.f3` leaves Word[3] on
-  // top. The component stores the four elements verbatim, so the dotted form
-  // writes the key reversed and diverges from the Rust builder.
+  // A word literal preserves the key's element order on the operand stack.
   const keyLiteral = normalizeHexWord(newGuardianPubkey);
   const schemeId = authSchemeId(signatureScheme);
 
-  // The Rust builder calls the guarded-multisig component's re-export
-  // (`::miden::standards::components::auth::guarded_multisig::update_guardian_public_key`);
-  // the web SDK assembler links only the `miden::standards` library, so this calls the
-  // origin procedure directly — a re-export shares its MAST root, so the compiled call
-  // is identical.
+  // Calling the origin procedure yields the same MAST root as its component re-export.
   const scriptSource = `
 use miden::standards::auth::guardian
 

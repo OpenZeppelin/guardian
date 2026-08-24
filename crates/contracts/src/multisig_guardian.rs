@@ -1,14 +1,8 @@
 //! MultisigGuardian Account Builder
 //!
-//! High-level API for creating accounts with multisig + GUARDIAN authentication,
-//! and the single source of truth for MultisigGuardian account creation.
-//!
-//! Builds the upstream `miden-standards` `AuthGuardedMultisig` component plus a
-//! `BasicWallet`. The guardian is always present (no enable/disable selector) and
-//! guardian-key rotation is authorized by the effective procedure threshold for
-//! `update_guardian_public_key` — the account's default multisig threshold unless an
-//! override is configured for that root — with no current-guardian co-signature,
-//! matching `docs/CONCEPTS.md`.
+//! Builds accounts from the upstream `AuthGuardedMultisig` component and a
+//! `BasicWallet`. Guardian rotation requires the procedure's multisig threshold,
+//! without a current-guardian signature.
 
 use anyhow::{Result, anyhow};
 use miden_protocol::Word;
@@ -37,15 +31,8 @@ pub struct MultisigGuardianConfig {
     /// Account type, which also determines on-chain storage visibility
     /// (`Private` keeps state off-chain; defaults to `Private`).
     pub account_type: AccountType,
-    /// Optional procedure-specific threshold overrides (procedure root -> threshold).
-    ///
-    /// Guardian rotation carries no override by default and therefore uses the account's
-    /// default threshold, but nothing here or in the contract rejects an override on
-    /// `update_guardian_public_key`'s root. Because rotation is note-less, the guardian
-    /// signature check is skipped when it is the only non-auth procedure called, so an
-    /// override on that root is the sole quorum gating guardian replacement — an override
-    /// of 1 lets a single signer replace the guardian without guardian consent. See the
-    /// override caveats in `docs/MULTISIG_SDK.md`.
+    /// Procedure-specific threshold overrides (procedure root -> threshold).
+    /// An override for guardian rotation is its sole authorization quorum.
     pub proc_threshold_overrides: Vec<(Word, u32)>,
 }
 

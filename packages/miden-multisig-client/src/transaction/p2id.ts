@@ -119,7 +119,7 @@ function buildP2idNote(
 /**
  * Rebuilds the P2ID note a proposal creates, from its metadata fields. The
  * note is deterministic in the salt, so the resulting ID matches the note the
- * proposal produces on execution (issue #356). Since Miden 0.16, the asset
+ * proposal produces on execution. Since Miden 0.16, the asset
  * callback flag is encoded in the faucet account ID.
  */
 export function buildP2idNoteFromMetadata(

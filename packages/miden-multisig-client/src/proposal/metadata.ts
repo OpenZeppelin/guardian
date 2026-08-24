@@ -147,7 +147,7 @@ export class ProposalMetadataCodec {
         };
       default:
         // Any proposal type the SDK does not model collapses to the 'custom'
-        // bucket while preserving the original label (issue #266).
+        // bucket while preserving the original label.
         return {
           ...base,
           proposalType: 'custom',

@@ -116,9 +116,6 @@ describe('ECDSA recoverability guard', () => {
   });
 
   it('rejects an unrecoverable signature instead of letting WASM abort', () => {
-    // `toPreparedSignature` on r = 0 raises `RuntimeError: unreachable` inside
-    // the module, which poisons it for every later call in the session, so this
-    // has to fail before reaching the SDK.
     const unrecoverable = `0x${'00'.repeat(32)}${'11'.repeat(32)}00`;
 
     expect(() =>

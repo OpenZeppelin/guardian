@@ -44,10 +44,7 @@ mod tests {
 
     use super::decode_proposal_metadata;
 
-    /// The ~1.6 KB `chain_anchor` execution artifact must not survive the
-    /// lift into the `deltas.metadata` column: dashboard listings spread this
-    /// block into every row, and clients read the anchor from the proposal
-    /// payload itself.
+    /// Keeps `chain_anchor` out of delta metadata and dashboard listings.
     #[test]
     fn decode_proposal_metadata_drops_the_chain_anchor() {
         let payload = json!({

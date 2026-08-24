@@ -1,9 +1,4 @@
-// Browser harness: builds a guarded-multisig account with the SAME fixed inputs as the Rust
-// cross-SDK parity test (`crates/contracts/src/multisig_guardian.rs`
-// `test_browser_deterministic_account_matches_rust_builder`) and exposes the resulting
-// account id + commitment on `window` for Playwright to read. Runs against the built `dist/`
-// artifact and the real WASM SDK in a browser (the node/vitest harness cannot — its store
-// needs IndexedDB). No network: `autoSync` is off and only local compile + store writes run.
+// Uses the Rust parity test's fixed inputs and exposes results to Playwright.
 import { MidenClient, Word } from '@miden-sdk/miden-sdk';
 
 import {
@@ -58,9 +53,7 @@ async function run(): Promise<void> {
     hasProcedure[name] = code.hasProcedure(Word.fromHex(root));
   }
 
-  // Compile every config transaction script against the real 0.16 WASM assembler. These
-  // scripts must mirror the Rust builders (`@transaction_script pub proc main`); a syntax or
-  // module-path drift fails compilation here instead of at a cosigner's first config proposal.
+  // Compile every config script against the real WASM assembler.
   const rpcOptions = { midenRpcEndpoint: 'https://rpc.devnet.miden.io' };
   const configScriptsCompiled: Record<string, boolean> = {};
   await buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT], rpcOptions);

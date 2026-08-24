@@ -229,13 +229,8 @@ impl NetworkClient for MidenNetworkClient {
             Account::from_json(prev_state_json)?
         };
 
-        // Gate on the account as it entered the transaction. The chain writes the
-        // `executed_transactions` entry during authentication, so what matters is whether the
-        // multisig component was present then, not after the delta: a delta may carry
-        // `StorageValuePatch::Remove`/`Create` for `threshold_config`, and gating on the
-        // post-delta account would omit an entry the chain recorded (or add one it did not),
-        // leaving a commitment that can never match. On the full-state path the two are the
-        // same account.
+        // Authentication records replay protection from the pre-delta account shape.
+        // A delta may add or remove the multisig component itself.
         let is_multisig = MidenAccountInspector::new(&base_account).has_multisig_auth();
         let mut storage_entries = Vec::new();
 
@@ -351,7 +346,6 @@ impl NetworkClient for MidenNetworkClient {
         // Carry the reference block, expiration delta and user params (which hold the
         // auth-arg salt) from the last TransactionSummary, matching the pre-existing
         // salt convention.
-        // TODO: Maybe we should use zeroed user params to prevent confusions.
         let last = tx_summaries.last().unwrap();
         let block_commitment = last.block_commitment();
         let expiration_delta = last.expiration_delta();

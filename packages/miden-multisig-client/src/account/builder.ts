@@ -17,15 +17,7 @@ import { buildMultisigStorageSlots, buildGuardianStorageSlots } from './storage.
 import { GUARDED_MULTISIG_ACCOUNT_COMPONENT_MASM } from './masm/account-components/auth.js';
 import { normalizeSignerCommitment } from '../utils/signature.js';
 
-/**
- * Builds the upstream guarded-multisig auth `AccountComponent` from a config, using the
- * given code builder to compile the vendored MASM. Pure with respect to network/store —
- * callers supply the raw WASM client only for its assembler.
- *
- * Only the guarded-multisig component is compiled here: the web SDK assembler already provides
- * the `miden::standards::auth::*` library modules, so linking them again would be a duplicate
- * definition.
- */
+/** Builds the guarded-multisig component without relinking assembler-provided libraries. */
 function buildGuardedMultisigComponent(
   authBuilder: Awaited<ReturnType<WasmWebClient['createCodeBuilder']>>,
   config: MultisigConfig,

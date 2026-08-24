@@ -1096,7 +1096,7 @@ export class Multisig {
 
   /**
    * Export a note created by this multisig account as serialized note-file
-   * bytes for out-of-band delivery (issue #356).
+   * bytes for out-of-band delivery.
    *
    * A private note publishes only its commitment on chain, so the recipient
    * can never learn its contents via sync; the sender must hand them the
@@ -1139,7 +1139,7 @@ export class Multisig {
 
   /**
    * Export a note created by this multisig account as a note file downloaded
-   * by the browser (issue #356). Browser-only convenience over
+   * by the browser. Browser-only convenience over
    * {@link exportNoteToBytes}; use that method directly in non-DOM
    * environments.
    *
@@ -1167,7 +1167,7 @@ export class Multisig {
   }
 
   /**
-   * Import a note file received out-of-band (issue #356) so the note can be
+   * Import a note file received out-of-band so the note can be
    * consumed by this multisig account.
    *
    * Sync the Miden client with the network afterwards so the note's on-chain
@@ -1194,7 +1194,7 @@ export class Multisig {
   }
 
   /**
-   * Import a note file received out-of-band (issue #356) from a browser
+   * Import a note file received out-of-band from a browser
    * `File`/`Blob` (e.g. a file-input selection). See
    * {@link importNoteFromBytes} for the returned identifier semantics.
    */
@@ -1209,7 +1209,7 @@ export class Multisig {
    * The P2ID note is rebuilt deterministically from the proposal salt, so the
    * ID is known ahead of execution. For a private P2ID this is the ID to pass
    * to {@link exportNoteToBytes} after executing, so the note file can be delivered
-   * to the recipient out-of-band (issue #356).
+   * to the recipient out-of-band.
    *
    * The note ID remains deterministic from the proposal metadata and salt.
    */
@@ -1461,8 +1461,8 @@ export class Multisig {
   }
 
   /**
-   * Create a proposal from a producer-built transaction the SDK does not model
-   * (issue #266 producer API). `transactionRequestBytes` is a serialized TransactionRequest;
+   * Create a proposal from a producer-built transaction the SDK does not model.
+   * `transactionRequestBytes` is a serialized TransactionRequest;
    * `proposalType` is a free-form, non-empty label that must not collide with a
    * built-in type. The integration keeps its own recipe to execute later via
    * `prepareCustomExecution`.
@@ -1509,7 +1509,7 @@ export class Multisig {
   /**
    * Assemble the validated execution advice (cosigner signatures + GUARDIAN
    * acknowledgment) for a ready custom proposal, so an integration can rebuild
-   * its transaction with its own recipe and submit (issue #266 producer API).
+   * its transaction with its own recipe and submit.
    *
    * `transactionRequestBytes` is the serialized transaction request; it is used only to verify
    * (binding check) that it reproduces the signed commitment, before the
@@ -2045,18 +2045,15 @@ export class Multisig {
       }
 
       if (proposal.metadata.proposalType === 'custom') {
-        // Custom proposals (issue #266) have no per-type reconstruction recipe;
+        // Custom proposals have no per-type reconstruction recipe;
         // the id ↔ tx_summary commitment match above is the only available
         // integrity guarantee for an opaque proposal.
         return txSummaryCommitment;
       }
 
       if (proposal.metadata.proposalType === 'switch_guardian') {
-        // Exempt from binding re-execution (mirrors the `custom` exemption above).
-        // WASM `executeForSummary` mutates the in-session account, so a second
-        // execution reconstructs a different delta and falsely rejects. Rust
-        // does not mutate. The id ↔ tx_summary match plus
-        // `verifyGuardianEndpointCommitment` still bind the proposal.
+        // Re-execution would mutate the WASM account twice. The proposal ID and
+        // guardian endpoint commitment provide the binding checks for this type.
         return txSummaryCommitment;
       }
 

@@ -1,17 +1,14 @@
 import { expect, test } from '@playwright/test';
 
-// Cross-SDK parity gate. The Rust upstream builder pins these values in
-// `crates/contracts/src/multisig_guardian.rs::test_browser_deterministic_account_matches_rust_builder`.
+// Pinned by the corresponding Rust cross-SDK parity test.
 const EXPECTED_ID = '0xade67f7701e9e9c12493c6206bc46e';
 const EXPECTED_COMMITMENT =
   '0x0efd2d9b391c608de6814b57339894f448e3b2645609976b531bfa9c7ada3ca5';
-// Storage commitment of the Rust account (7 slots, no schema-commitment slot). TS reproduces
-// this exactly once it uses buildWithoutSchemaCommitment() — proving the storage layout matches.
+// Rust account storage commitment: seven slots without a schema-commitment slot.
 const EXPECTED_STORAGE_COMMITMENT =
   '0xa5b24ee9ed2f2d73b8590851401bc20ed8bd0d588965a881e16ffecff8012c4f';
 
-// Procedure roots that are threshold-override targets. These must be present in the TS-built
-// account for cross-SDK threshold overrides to bind correctly.
+// Threshold overrides must resolve to procedures in the TypeScript-built account.
 const OVERRIDE_TARGET_PROCEDURES = [
   'update_signers',
   'update_procedure_threshold',
@@ -52,9 +49,7 @@ test('TS account reproduces the Rust storage layout and override-target procedur
     expect(hasProcedure?.[name], `missing override-target procedure: ${name}`).toBe(true);
   }
 
-  // The config transaction scripts (`@transaction_script pub proc main`, mirroring the Rust
-  // builders) compile against the SDK's 0.16 assembler; a syntax or module-path drift between
-  // the SDKs fails here instead of at a cosigner's first config proposal.
+  // Config scripts must compile against the SDK's real WASM assembler.
   const configScriptsCompiled = result?.configScriptsCompiled as
     | Record<string, boolean>
     | undefined;
