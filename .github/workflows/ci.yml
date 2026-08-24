@@ -46,29 +46,15 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
 
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      # rust-cache prunes workspace-member artifacts before saving (they
+      # recompile anyway) and dedupes the target dir, keeping per-job caches
+      # within the repo's 10GB Actions cache quota. Keys automatically include
+      # the job id, toolchain, and all Cargo manifests.
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: ~/.cargo/registry/index
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo git
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-target-
+          prefix-key: v1-rust
+          cache-on-failure: true
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@4a44d353abec8bd780e47de38e5bc5ea77053391 # cargo-llvm-cov
@@ -132,16 +118,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
 
-      - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-authz-test-probe-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-authz-test-probe-
+          prefix-key: v1-rust
+          cache-on-failure: true
 
       - name: Run authz test probe tests
         run: >-
@@ -175,16 +156,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
 
-      - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-server-feature-tests-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-server-feature-tests-
+          prefix-key: v1-rust
+          cache-on-failure: true
 
       - name: Run server integration tests
         run: >-
@@ -240,16 +216,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
 
-      - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-postgres-test-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-postgres-test-
+          prefix-key: v1-rust
+          cache-on-failure: true
 
       - name: Run Postgres-backed tests
         env:
@@ -307,24 +278,13 @@ jobs:
         if: matrix.package == 'miden-multisig-client'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - name: Cache cargo
+      - name: Cache cargo (rust-cache)
         if: matrix.package == 'miden-multisig-client'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-npm-multisig-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-npm-multisig-
+          prefix-key: v1-rust
+          cache-on-failure: true
 
-      # rust-toolchain.toml pins a toolchain with components that rustup syncs
-      # on first cargo use. Two test files shell out to `cargo run`
-      # concurrently (procedure-roots, account-roundtrip), and concurrent
-      # first-use syncs race each other ("detected conflict: 'bin/cargo'").
-      # Building both example fixtures here syncs once, serially, and turns
-      # the in-test cargo runs into cache hits.
       - name: Sync pinned toolchain and prebuild example fixtures
         if: matrix.package == 'miden-multisig-client'
         working-directory: .
@@ -372,16 +332,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
 
-      - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-contracts-
+          prefix-key: v1-rust
+          cache-on-failure: true
 
       - name: Run contract behavior and SDK integration tests
         run: cargo test -p miden-confidential-contracts -p miden-multisig-client --all-targets
@@ -453,16 +408,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
 
-      - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
+          prefix-key: v1-rust
+          cache-on-failure: true
 
       - name: Build (generate protobuf descriptors)
         run: cargo build --package guardian-server
@@ -557,19 +507,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
 
-      - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-openapi-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-openapi-
+          prefix-key: v1-rust
+          cache-on-failure: true
 
-      # Fails if the committed docs/openapi*.json files are out of sync
-      # with the utoipa annotations. Regenerate with:
-      #   cargo run --features evm --bin gen-openapi -- docs
       - name: Check OpenAPI spec is up to date
         run: cargo run --features evm --bin gen-openapi -- --check docs
