@@ -17,11 +17,11 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.2
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.3
 ```
 
 > **Miden version note**: this package targets the Miden 0.16 pre-release
-> line (`@miden-sdk/miden-sdk 0.16.0-rc.2`), matching the Rust workspace.
+> line (`@miden-sdk/miden-sdk 0.16.0-rc.3`), matching the Rust workspace.
 > The peer version is exact on purpose and cannot be given as a range: no
 > stable `0.16.0` is published, so a `0.16.x`/`^0.16.0` range resolves to
 > nothing, and the transaction-summary layout and procedure roots are only
@@ -370,11 +370,13 @@ const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg
 const advice = await multisig.prepareCustomExecution(proposal.id, request.serialize());
 
 // The browser TransactionRequest is immutable, so rebuild from the same recipe
-// (inputs + salt) with the advice, then submit.
+// (inputs + salt) with the advice, then submit. `submitTransaction` takes the
+// proposal id to execute at the proposal's anchored reference block, since the
+// collected signatures only authorize the summary produced there.
 const { request: finalRequest } = buildP2idTransactionRequest(
   senderId, recipientId, faucetId, amount, { salt, signatureAdviceMap: advice },
 );
-await multisig.submitTransaction(finalRequest);
+await multisig.submitTransaction(proposal.id, finalRequest);
 ```
 
 The integration keeps only its own recipe (build inputs + salt) so it can

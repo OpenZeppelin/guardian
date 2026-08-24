@@ -357,11 +357,6 @@ and its block commitment against the one signed into the summary — before
 anything executes against it. A proposal without an anchor cannot be verified
 or executed.
 
-One consequence: a transaction's expiration delta counts from the anchored
-reference block, not from execution time. A proposal that is signed and
-executed after its expiration block is rejected with a chain-anchor expiration
-error; re-create the proposal in that case.
-
 ### Custom Proposal Types
 
 Guardian accepts any non-empty `proposal_type`, not just the first-party

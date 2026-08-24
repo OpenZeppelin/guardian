@@ -1441,19 +1441,18 @@ export class Multisig {
     );
 
     const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
-    const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
-    const txSummary = TransactionSummary.deserialize(
-      base64ToUint8Array(delta.deltaPayload.txSummary.data),
-    );
-    const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
-    if (anchorCommitment !== summaryBlockCommitment) {
-      anchor.free();
-      throw new Error(
-        `Proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
-      );
-    }
-
     try {
+      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+      const txSummary = TransactionSummary.deserialize(
+        base64ToUint8Array(delta.deltaPayload.txSummary.data),
+      );
+      const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
+      if (anchorCommitment !== summaryBlockCommitment) {
+        throw new Error(
+          `Proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
+        );
+      }
+
       await this.proverWorkflow.submitAt(AccountId.fromHex(this._accountId), request, anchor);
     } finally {
       anchor.free();
@@ -1561,18 +1560,21 @@ export class Multisig {
     // GUARDIAN, so its block commitment is checked against the signed summary
     // before executing against it.
     const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
-    const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
-    const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
-    if (anchorCommitment !== summaryBlockCommitment) {
+    let derivedCommitmentHex: string;
+    try {
+      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+      const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
+      if (anchorCommitment !== summaryBlockCommitment) {
+        throw new Error(
+          `Custom proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
+        );
+      }
+      const webClient = await this.getRawClient();
+      const derived = await executeForSummaryAt(webClient, this._accountId, bindingRequest, anchor);
+      derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
+    } finally {
       anchor.free();
-      throw new Error(
-        `Custom proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
-      );
     }
-    const webClient = await this.getRawClient();
-    const derived = await executeForSummaryAt(webClient, this._accountId, bindingRequest, anchor);
-    anchor.free();
-    const derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
     if (derivedCommitmentHex !== signedCommitmentHex) {
       throw new Error(
         `Custom proposal binding mismatch: expected ${signedCommitmentHex}, got ${derivedCommitmentHex}`,
@@ -2022,50 +2024,50 @@ export class Multisig {
     // anything executes against it. `ChainAnchor.deserialize` already enforced
     // internal header/chain consistency.
     const anchor = this.requireProposalAnchor(proposal.id, proposal.metadata);
-    const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
-    const summaryBlockCommitment = normalizeHexWord(summary.blockCommitment().toHex());
-    if (anchorCommitment !== summaryBlockCommitment) {
-      anchor.free();
-      throw new Error(
-        `Invalid proposal: chain anchor does not match the block commitment bound into the tx_summary for ${proposal.id}`,
-      );
-    }
+    try {
+      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+      const summaryBlockCommitment = normalizeHexWord(summary.blockCommitment().toHex());
+      if (anchorCommitment !== summaryBlockCommitment) {
+        throw new Error(
+          `Invalid proposal: chain anchor does not match the block commitment bound into the tx_summary for ${proposal.id}`,
+        );
+      }
 
-    if (proposal.metadata.proposalType === 'custom') {
-      // Custom proposals (issue #266) have no per-type reconstruction recipe;
-      // the id ↔ tx_summary commitment match above is the only available
-      // integrity guarantee for an opaque proposal.
-      anchor.free();
+      if (proposal.metadata.proposalType === 'custom') {
+        // Custom proposals (issue #266) have no per-type reconstruction recipe;
+        // the id ↔ tx_summary commitment match above is the only available
+        // integrity guarantee for an opaque proposal.
+        return txSummaryCommitment;
+      }
+
+      if (proposal.metadata.proposalType === 'switch_guardian') {
+        // Exempt from binding re-execution (mirrors the `custom` exemption above).
+        // The WASM `executeForSummary` leaves the guardian-disabling side effect
+        // applied to the in-session account, so re-execution reconstructs a smaller
+        // delta and falsely rejects with "metadata does not match tx_summary". The
+        // native Rust client does not mutate, so this is an intentional divergence.
+        // The id ↔ tx_summary match above plus `verifyGuardianEndpointCommitment`
+        // at propose/execute time still bind the proposal.
+        return txSummaryCommitment;
+      }
+
+      const salt = proposal.metadata.saltHex
+        ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
+        : summarySalt(summary);
+
+      const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
+      const webClient = await this.getRawClient();
+      const reconstructed = await executeForSummaryAt(webClient, this._accountId, request, anchor);
+      const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
+
+      if (reconstructedCommitment !== txSummaryCommitment) {
+        throw new Error(`Invalid proposal: metadata does not match tx_summary for ${proposal.id}`);
+      }
+
       return txSummaryCommitment;
-    }
-
-    if (proposal.metadata.proposalType === 'switch_guardian') {
-      // Exempt from binding re-execution (mirrors the `custom` exemption above).
-      // The WASM `executeForSummary` leaves the guardian-disabling side effect
-      // applied to the in-session account, so re-execution reconstructs a smaller
-      // delta and falsely rejects with "metadata does not match tx_summary". The
-      // native Rust client does not mutate, so this is an intentional divergence.
-      // The id ↔ tx_summary match above plus `verifyGuardianEndpointCommitment`
-      // at propose/execute time still bind the proposal.
+    } finally {
       anchor.free();
-      return txSummaryCommitment;
     }
-
-    const salt = proposal.metadata.saltHex
-      ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
-      : summarySalt(summary);
-
-    const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
-    const webClient = await this.getRawClient();
-    const reconstructed = await executeForSummaryAt(webClient, this._accountId, request, anchor);
-    anchor.free();
-    const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
-
-    if (reconstructedCommitment !== txSummaryCommitment) {
-      throw new Error(`Invalid proposal: metadata does not match tx_summary for ${proposal.id}`);
-    }
-
-    return txSummaryCommitment;
   }
 
   /**

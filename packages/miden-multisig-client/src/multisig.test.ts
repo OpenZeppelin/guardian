@@ -5,6 +5,7 @@ import {
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
   buildUpdateSignersTransactionRequest,
+  chainAnchorFromBase64,
   executeForSummary,
   executeForSummaryAt,
 } from './transaction.js';
@@ -1112,6 +1113,65 @@ describe('Multisig', () => {
       await expect(multisig.syncProposals()).rejects.toThrow(
         'Invalid proposal: metadata does not match tx_summary'
       );
+    });
+
+    /// A structurally valid anchor pinned to the wrong block must be rejected
+    /// before anything executes against it: its commitment disagrees with the
+    /// block commitment signed into the tx_summary.
+    it('should reject a proposal whose chain anchor does not match the summary block commitment', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [
+            {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: {
+                tx_summary: { data: 'AQID' },
+                signatures: [],
+                metadata: {
+                  proposal_type: 'add_signer',
+                  chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+                  target_threshold: 1,
+                  signer_commitments: ['0x' + 'a'.repeat(64)],
+                  description: '',
+                },
+              },
+              status: {
+                status: 'pending',
+                timestamp: '2024-01-01T00:00:00Z',
+                proposer_id: '0x' + 'c'.repeat(64),
+                cosigner_sigs: [],
+              },
+            },
+          ],
+        }),
+      });
+
+      // Deserializes fine, but pins a different block than the one bound into
+      // the summary (mock summary blockCommitment is 'b' * 64).
+      const freed = vi.fn();
+      vi.mocked(chainAnchorFromBase64).mockReturnValueOnce({
+        commitment: () => ({ toHex: () => '0x' + 'e'.repeat(64) }),
+        free: freed,
+        serialize: () => new Uint8Array([9, 9, 9]),
+      } as never);
+
+      const reExecutionsBefore = vi.mocked(executeForSummaryAt).mock.calls.length;
+      await expect(multisig.syncProposals()).rejects.toThrow(
+        'chain anchor does not match the block commitment bound into the tx_summary'
+      );
+      expect(vi.mocked(executeForSummaryAt).mock.calls.length).toBe(reExecutionsBefore);
+      expect(freed).toHaveBeenCalledTimes(1);
     });
 
     it('should reject non-32-byte signer IDs from GUARDIAN proposals', async () => {

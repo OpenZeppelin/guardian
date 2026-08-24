@@ -292,10 +292,13 @@ let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").a
 
 // Producer (once threshold is met): bind-check the request, fetch the validated
 // advice, inject it into the request, and submit. `prepare_custom_execution`
-// verifies the request against the signed commitment *before* the GUARDIAN ack.
+// verifies the request against the signed commitment *before* the GUARDIAN ack,
+// re-executing at the proposal's anchored reference block; `submit_transaction`
+// takes the proposal id to execute at that same anchor, since the collected
+// signatures only authorize the summary produced there.
 let advice = client.prepare_custom_execution(&proposal.id, &request.to_bytes()).await?;
 request.advice_map_mut().extend(advice);
-client.submit_transaction(request).await?;
+client.submit_transaction(&proposal.id, request).await?;
 ```
 
 The integration keeps only its own recipe (build inputs + salt) so it can

@@ -15,18 +15,15 @@ export class ProverWorkflow {
     private readonly runtime?: RetryRuntime,
   ) {}
 
-  async submit(accountId: AccountId, request: TransactionRequest): Promise<void> {
-    const execution = await this.client.transactions.executeRequest(accountId, request);
-    const proof = await proveWithRetry(execution, this.config, this.runtime);
-    const submission = await proof.submit();
-    await submission.apply();
-  }
-
   /**
    * Executes the request at the given chain anchor's reference block instead
-   * of the local sync height, then proves, submits, and applies — the anchored
-   * counterpart of {@link submit} for executing signed multisig proposals,
-   * whose summary only reproduces at the block it was proposed at.
+   * of the local sync height, then proves, submits, and applies. Every
+   * multisig proposal execution goes through here: the signed summary binds
+   * the reference block since protocol 0.16, so the collected signatures only
+   * authorize an execution pinned to the proposal's anchor. There is
+   * deliberately no unanchored variant — submitting a signed proposal at the
+   * local sync height would reproduce the original
+   * "metadata does not match tx_summary" failure.
    */
   async submitAt(
     accountId: AccountId,
