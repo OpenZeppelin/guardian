@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-build-target-
 
@@ -136,7 +136,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-authz-test-probe-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-authz-test-probe-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-authz-test-probe-
 
@@ -179,7 +179,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-server-feature-tests-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-server-feature-tests-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-server-feature-tests-
 
@@ -244,7 +244,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-postgres-test-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-postgres-test-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-postgres-test-
 
@@ -312,7 +312,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-npm-multisig-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-npm-multisig-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-npm-multisig-
 
@@ -376,7 +376,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-contracts-
 
@@ -457,7 +457,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-
 
@@ -561,7 +561,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-openapi-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-openapi-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-openapi-
 
