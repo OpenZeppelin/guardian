@@ -70,9 +70,15 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@4a44d353abec8bd780e47de38e5bc5ea77053391 # cargo-llvm-cov
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@742a3ac9a75553d78e25773da9e6c438fdc5a74a # nextest
+
+      # nextest schedules every binary's tests in one parallel pool (cargo
+      # test parallelizes only within a binary) and prints per-test timings,
+      # so slow tests are visible in the log.
       - name: Run tests with coverage
         run: >-
-          cargo llvm-cov
+          cargo llvm-cov nextest
           --workspace
           --exclude guardian-prod-benchmarks
           --exclude guardian-server-bench-loadgen

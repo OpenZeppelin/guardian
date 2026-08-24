@@ -39,6 +39,15 @@ lto = true            # Link-time optimization for better optimization and deter
 codegen-units = 1     # Single codegen unit for maximum reproducibility
 incremental = false   # Disable incremental compilation for reproducibility
 
+# Dependencies — the crypto crates especially (Falcon, RPO, Merkle) — are an
+# order of magnitude slower at opt-level 0, which dominated test wall-clock
+# (the CI Test Suite spent ~14 of its 20 minutes executing tests). Build
+# dependencies optimized in dev/test/coverage builds; workspace crates keep
+# opt-level 0 for fast rebuilds, debugging, and coverage. Dependencies
+# compile once and stay cached, so the extra compile cost is paid rarely.
+[profile.dev.package."*"]
+opt-level = 3
+
 [workspace.dependencies]
 # Core
 serde = "1.0.228"
