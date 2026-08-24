@@ -124,9 +124,9 @@ pub struct NoteCounts {
     pub output: u32,
 }
 
-/// Operator-stated intent lifted from a matching proposal. Mirrors
-/// `ProposalMetadataPayload` in `crates/miden-multisig-client/src/payload.rs`
-/// field-for-field.
+/// Operator-stated intent lifted from a matching proposal.
+/// `chain_anchor` remains only in the proposal payload to avoid duplicating it
+/// in delta metadata and dashboard listings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct ProposalMetadata {
     /// One of the validated multisig proposal types (`add_signer`,

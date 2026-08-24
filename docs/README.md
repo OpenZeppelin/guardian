@@ -36,22 +36,25 @@ You are an operator / SRE / DevOps.
    model to make good ops decisions.
 2. [Production guide](./PRODUCTION.md) — supported production shape,
    readiness checklist, and links to the detailed runbooks.
-3. [Guides](./guides/README.md) — task-oriented, end-to-end walkthroughs
+3. [Miden compatibility](./MIDEN_COMPATIBILITY.md): which Miden version
+   each Guardian release targets, what broke between lines, and which
+   upgrades reset stored data.
+4. [Guides](./guides/README.md) — task-oriented, end-to-end walkthroughs
    for running Guardian in a specific mode (e.g. self-hosted Compose with
    AWS-managed signers).
-4. [Deploying Guardian Server to AWS ECS](./SERVER_AWS_DEPLOY.md) —
+5. [Deploying Guardian Server to AWS ECS](./SERVER_AWS_DEPLOY.md) —
    end-to-end deploy via `scripts/aws-deploy.sh`, stage profiles.
-5. [AWS deployment architecture](./architecture/infra.md) — runtime
+6. [AWS deployment architecture](./architecture/infra.md) — runtime
    topology, AWS resource inventory mapped to each `.tf` file.
-6. [Configuration reference](./CONFIGURATION.md) — every env var in one
+7. [Configuration reference](./CONFIGURATION.md) — every env var in one
    place.
-7. [Observability](./guides/observability/README.md) — enabling and scraping
+8. [Observability](./guides/observability/README.md) — enabling and scraping
    Prometheus metrics, with a one-command Grafana dashboard stack.
-8. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
+9. [Secrets and key management](./runbooks/secrets.md) — bootstrap,
    replacement, and compromise response for production secrets.
-9. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
+10. [Operator dashboard](./DASHBOARD.md) — what it is, enrolling
    operators, permission vocabulary, multi-task caveats.
-10. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
+11. [Troubleshooting](./TROUBLESHOOTING.md) — symptoms, error codes,
     recovery procedures.
 
 ### I want to *develop on* Guardian (work in this repo)

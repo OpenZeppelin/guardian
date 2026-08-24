@@ -105,6 +105,13 @@ export interface ProposalMetadata {
   amount?: string;
   /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
   noteType?: string;
+  /**
+   * Base64-serialized Miden `ChainAnchor` pinning the reference block the
+   * proposal's transaction summary was built at. Since protocol 0.16 the
+   * signed summary binds the reference block commitment, so cosigners and the
+   * executor need this anchor to reproduce the summary the proposer signed.
+   */
+  chainAnchor?: string;
   /** P2IDE reclaim block height (issue #366). Presence of either height means a P2IDE note. */
   reclaimHeight?: number;
   /** P2IDE timelock block height (issue #366). */

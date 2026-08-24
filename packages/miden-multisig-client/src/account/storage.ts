@@ -3,19 +3,22 @@ import { StorageSlot, StorageMap, Word } from '@miden-sdk/miden-sdk';
 import { ensureHexPrefix } from '../utils/encoding.js';
 import { getProcedureRoot } from '../procedures.js';
 
-// Storage slot names matching the MASM definitions
+/**
+ * `AuthGuardedMultisig` storage slot names (`miden::standards::auth::*`). These must match the
+ * Rust `miden-standards` component exactly: account ID and commitment derive from the storage
+ * layout, so any divergence breaks cross-SDK determinism (guarded by the parity test).
+ */
 const MULTISIG_SLOT_NAMES = {
-  THRESHOLD_CONFIG: 'openzeppelin::multisig::threshold_config',
-  SIGNER_PUBLIC_KEYS: 'openzeppelin::multisig::signer_public_keys',
-  SIGNER_SCHEME_IDS: 'openzeppelin::multisig::signer_scheme_ids',
-  EXECUTED_TRANSACTIONS: 'openzeppelin::multisig::executed_transactions',
-  PROCEDURE_THRESHOLDS: 'openzeppelin::multisig::procedure_thresholds',
+  THRESHOLD_CONFIG: 'miden::standards::auth::multisig::threshold_config',
+  SIGNER_PUBLIC_KEYS: 'miden::standards::auth::multisig::approver_public_keys',
+  SIGNER_SCHEME_IDS: 'miden::standards::auth::multisig::approver_schemes',
+  EXECUTED_TRANSACTIONS: 'miden::standards::auth::multisig::executed_transactions',
+  PROCEDURE_THRESHOLDS: 'miden::standards::auth::multisig::procedure_thresholds',
 } as const;
 
 const GUARDIAN_SLOT_NAMES = {
-  SELECTOR: 'openzeppelin::guardian::selector',
-  PUBLIC_KEY: 'openzeppelin::guardian::public_key',
-  SCHEME_ID: 'openzeppelin::guardian::scheme_id',
+  PUBLIC_KEY: 'miden::standards::auth::guardian::pub_key',
+  SCHEME_ID: 'miden::standards::auth::guardian::scheme',
 } as const;
 
 function signerMapKey(index: bigint): Word {
@@ -70,24 +73,25 @@ export class StorageLayoutBuilder {
     return [slot0, slot1, slot2, slot3, slot4];
   }
 
+  /**
+   * The guarded-multisig has no enable/disable selector; the guardian is always present, so this
+   * returns just two slots: the guardian public-key map and its scheme map.
+   */
   buildGuardianSlots(config: MultisigConfig): StorageSlot[] {
-    const selector = config.guardianEnabled !== false ? 1n : 0n;
     const schemeId = config.signatureScheme === 'ecdsa' ? 1n : 2n;
-    const selectorWord = new Word(new BigUint64Array([selector, 0n, 0n, 0n]));
-    const slot0 = StorageSlot.fromValue(GUARDIAN_SLOT_NAMES.SELECTOR, selectorWord);
+    const zeroKey = signerMapKey(0n);
 
     const guardianKeyMap = new StorageMap();
-    const zeroKey = signerMapKey(0n);
     const guardianKey = Word.fromHex(ensureHexPrefix(config.guardianCommitment));
     guardianKeyMap.insert(zeroKey, guardianKey);
-    const slot1 = StorageSlot.map(GUARDIAN_SLOT_NAMES.PUBLIC_KEY, guardianKeyMap);
+    const slot0 = StorageSlot.map(GUARDIAN_SLOT_NAMES.PUBLIC_KEY, guardianKeyMap);
 
     const guardianSchemeMap = new StorageMap();
     const guardianScheme = new Word(new BigUint64Array([schemeId, 0n, 0n, 0n]));
     guardianSchemeMap.insert(zeroKey, guardianScheme);
-    const slot2 = StorageSlot.map(GUARDIAN_SLOT_NAMES.SCHEME_ID, guardianSchemeMap);
+    const slot1 = StorageSlot.map(GUARDIAN_SLOT_NAMES.SCHEME_ID, guardianSchemeMap);
 
-    return [slot0, slot1, slot2];
+    return [slot0, slot1];
   }
 }
 

@@ -3084,7 +3084,7 @@
       },
       "ProposalMetadata": {
         "type": "object",
-        "description": "Operator-stated intent lifted from a matching proposal. Mirrors\n`ProposalMetadataPayload` in `crates/miden-multisig-client/src/payload.rs`\nfield-for-field.",
+        "description": "Operator-stated intent lifted from a matching proposal.\n`chain_anchor` remains only in the proposal payload to avoid duplicating it\nin delta metadata and dashboard listings.",
         "required": [
           "proposal_type"
         ],

@@ -996,7 +996,7 @@ impl StorageBackend for FilesystemService {
             .filter(|d| !matches!(d.status, DeltaStatus::Pending { .. }))
             .filter(|d| cutoff.is_none_or(|cutoff_nonce| d.nonce < cutoff_nonce))
             .collect();
-        deltas.sort_by(|a, b| b.nonce.cmp(&a.nonce));
+        deltas.sort_by_key(|delta| std::cmp::Reverse(delta.nonce));
         deltas.truncate(limit as usize);
         Ok(deltas)
     }
@@ -1015,7 +1015,7 @@ impl StorageBackend for FilesystemService {
             .filter(|d| d.status.is_canonical())
             .filter(|d| cutoff.is_none_or(|cutoff_nonce| d.nonce < cutoff_nonce))
             .collect();
-        deltas.sort_by(|a, b| b.nonce.cmp(&a.nonce));
+        deltas.sort_by_key(|d| std::cmp::Reverse(d.nonce));
         deltas.truncate(limit as usize);
         Ok(deltas)
     }

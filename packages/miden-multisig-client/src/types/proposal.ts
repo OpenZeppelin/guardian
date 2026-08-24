@@ -37,6 +37,14 @@ interface BaseProposalMetadata {
   description: string;
   saltHex?: string;
   requiredSignatures?: number;
+  /**
+   * Base64-serialized Miden `ChainAnchor` pinning the reference block the
+   * proposal's transaction summary was built at. Required to verify or
+   * execute the proposal: since protocol 0.16 the signed summary binds the
+   * reference block commitment, so it only reproduces when re-executed at
+   * that block.
+   */
+  chainAnchor?: string;
 }
 
 export interface UpdateSignersProposalMetadata extends BaseProposalMetadata {
@@ -128,16 +136,13 @@ export interface P2IdProposalMetadata extends BaseProposalMetadata {
    * proposals).
    */
   reclaimHeight?: number;
-  /** Absolute block height before which the note cannot be consumed (issue #366). */
+  /** Absolute block height before which the note cannot be consumed. */
   timelockHeight?: number;
 }
 
 export interface CustomProposalMetadata extends BaseProposalMetadata {
   proposalType: 'custom';
-  /** Original server-defined proposal label, e.g. "b2agg" (issue #266). Mirrors
-   * Rust `ProposalMetadata.proposal_type`; it is what lets a custom proposal
-   * round-trip back to GUARDIAN/export, so it is required in the domain model.
-   * Any wire-level optionality is resolved in the parser/codec boundary. */
+  /** Original server-defined proposal label, preserved during round trips. */
   rawProposalType: string;
 }
 

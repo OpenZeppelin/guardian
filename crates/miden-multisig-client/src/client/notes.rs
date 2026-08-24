@@ -9,7 +9,7 @@ use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteId;
-use miden_standards::note::{P2idNote, P2ideNote, P2ideNoteStorage};
+use miden_standards::note::{P2idNote, P2ideNote};
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -270,39 +270,38 @@ impl MultisigClient {
             ));
         }
         let salt = proposal.metadata.salt()?;
-        let asset = crate::execution::build_transfer_asset(account.inner(), *faucet_id, *amount)?;
+        let asset = crate::execution::build_transfer_asset(*faucet_id, *amount)?;
 
         let mut rng = RandomCoin::new(salt);
-        let is_p2ide = heights.is_p2ide();
-        let note = if is_p2ide {
-            let storage = P2ideNoteStorage::new(
-                *recipient,
-                heights.reclaim.map(|h| BlockNumber::from(h.get())),
-                heights.timelock.map(|h| BlockNumber::from(h.get())),
-            );
-            P2ideNote::create(
-                account.id(),
-                storage,
-                vec![asset.into()],
-                *note_type,
-                Default::default(),
-                &mut rng,
-            )
-            .map_err(|e| {
-                MultisigError::TransactionExecution(format!("failed to build P2IDE note: {}", e))
-            })?
+        let note: miden_protocol::note::Note = if heights.is_p2ide() {
+            P2ideNote::builder()
+                .sender(account.id())
+                .target(*recipient)
+                .maybe_reclaim_height(heights.reclaim.map(|h| BlockNumber::from(h.get())))
+                .maybe_timelock_height(heights.timelock.map(|h| BlockNumber::from(h.get())))
+                .asset(asset)
+                .note_type(*note_type)
+                .generate_serial_number(&mut rng)
+                .build()
+                .map_err(|e| {
+                    MultisigError::TransactionExecution(format!(
+                        "failed to build P2IDE note: {}",
+                        e
+                    ))
+                })?
+                .into()
         } else {
-            P2idNote::create(
-                account.id(),
-                *recipient,
-                vec![asset.into()],
-                *note_type,
-                Default::default(),
-                &mut rng,
-            )
-            .map_err(|e| {
-                MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
-            })?
+            P2idNote::builder()
+                .sender(account.id())
+                .target(*recipient)
+                .asset(asset)
+                .note_type(*note_type)
+                .generate_serial_number(&mut rng)
+                .build()
+                .map_err(|e| {
+                    MultisigError::TransactionExecution(format!("failed to build P2ID note: {}", e))
+                })?
+                .into()
         };
 
         Ok(note.id())

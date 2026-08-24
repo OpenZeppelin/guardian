@@ -1,31 +1,28 @@
-# OpenZeppelin Contracts for Miden
+# miden-confidential-contracts
 
-**A library for secure smart contract development** written in Miden Assembly (MASM) and Rust for [Miden](https://miden.xyz)
+Builder facade for Guardian's custody accounts on [Miden](https://miden.xyz).
 
-> ## ⚠️ WARNING! ⚠️
->
-> This repo contains highly experimental code.
-> Expect rapid iteration.
-> **Use at your own risk.**
+Since the adoption of the audited upstream `AuthGuardedMultisig` component from
+[`miden-standards`](https://crates.io/crates/miden-standards), this crate no longer
+ships any MASM of its own. It provides:
 
-## Development
+- `MultisigGuardianConfig` / `MultisigGuardianBuilder` — the single source of truth
+  for constructing guarded-multisig accounts (validation, storage layout, signature
+  scheme mapping) across the server, SDKs, examples, and benchmarks.
+- The MockChain behavior test suite (`tests/`) exercising the upstream component's
+  authentication paths: update signers, per-procedure thresholds, guardian-key
+  rotation, and replay protection.
 
-### Running Tests
+Cross-SDK determinism (a TypeScript-built account must be byte-identical to a
+Rust-built one) is pinned by `test_browser_deterministic_account_matches_rust_builder`
+against the Playwright gate in `packages/miden-multisig-client/tests/browser/`.
+
+## Running tests
 
 ```bash
-cargo test
+cargo test -p miden-confidential-contracts --all-targets
 ```
-
-## Standards
-
-This folder contains written standards for conventions used in this repository.
-
-Each file documents **how** a specific pattern should be used (storage layout, naming, invariants, and testing rules).
-
-### List
-
-- [GUARDIAN Usage Standard](./standards/GUARDIAN.md)
 
 ## License
 
-OpenZeppelin Contracts is released under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE).

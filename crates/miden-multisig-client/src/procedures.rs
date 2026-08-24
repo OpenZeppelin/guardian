@@ -5,13 +5,17 @@
 use miden_protocol::Word;
 
 /// Procedure names that can be used for threshold overrides.
+///
+/// Roots are sourced from the upstream `AuthGuardedMultisig` + `BasicWallet`
+/// procedures via `cargo run --example procedure_roots -- --json` (typescript_hex
+/// encoding). The upstream component has no standalone `verify_guardian` procedure;
+/// guardian verification is internal to `auth_tx_guarded_multisig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProcedureName {
     UpdateSigners,
     UpdateProcedureThreshold,
     AuthTx,
     UpdateGuardian,
-    VerifyGuardian,
     SendAsset,
     ReceiveAsset,
 }
@@ -19,29 +23,26 @@ pub enum ProcedureName {
 impl ProcedureName {
     /// Get the procedure root for this procedure name.
     ///
-    /// These roots are deterministic based on the MASM bytecode.
+    /// These roots are deterministic based on the upstream MASM bytecode.
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => procedure_root_word(
-                "0x34963b067dbba634e57b416bc2f2a9a8d4ac24147f40b2900148c9ba44774274",
+                "0xa261cfd3c8791ac5abe1e78e14eade2f20789d73ab1c23c430418de59bc3380e",
             ),
             ProcedureName::UpdateProcedureThreshold => procedure_root_word(
-                "0xec74c4b96ce593c11017ae54dec9c0ae5e0d242e8b3074eb3908d961300aed67",
+                "0x97587c61d49313b1d5a3c8b7437e0080e67ed9bd9d3e7206bcae562f934ccd03",
             ),
             ProcedureName::AuthTx => procedure_root_word(
-                "0x0708020dce7b91b61116e3eb27e5d686e129a83df3c540e0a7693b4523814e72",
+                "0xa6aa6f69d9358535272ba433cd48d20628a5c69598e00c6dd01a22e83a5f15df",
             ),
             ProcedureName::UpdateGuardian => procedure_root_word(
-                "0xeceb1f2c2d7d20312dbaf091e9a27a2b63f9fcba120948043069793a5715bc96",
-            ),
-            ProcedureName::VerifyGuardian => procedure_root_word(
-                "0xe6a8a62d37117f55a79b5345aa3d263ab16e973d486bac9a1612663dfdecf82d",
+                "0x0a614ff7c81a561cbd2a4c2d9482031a7a841ca5de33349daed23a9d871b3675",
             ),
             ProcedureName::SendAsset => procedure_root_word(
-                "0xfb1c73d10de1954e9e8948964e3e77cf4e33759d2e012cb00eb10c50f2974eb4",
+                "0x595bc83258726a66bd904912cfd5186c07cbd902dfbc115b7d6bc8105efc57e3",
             ),
             ProcedureName::ReceiveAsset => procedure_root_word(
-                "0x6170fd6d682d91777b551fd866258f43cc657f1291f8f071500f4e56e9c153da",
+                "0x34a56dd18f6fe5aab63198b9dcfc6467e793ebabb37d56b994b902504635da13",
             ),
         }
     }
@@ -53,7 +54,6 @@ impl ProcedureName {
             ProcedureName::UpdateProcedureThreshold,
             ProcedureName::AuthTx,
             ProcedureName::UpdateGuardian,
-            ProcedureName::VerifyGuardian,
             ProcedureName::SendAsset,
             ProcedureName::ReceiveAsset,
         ]
@@ -98,7 +98,6 @@ impl std::fmt::Display for ProcedureName {
             ProcedureName::UpdateProcedureThreshold => write!(f, "update_procedure_threshold"),
             ProcedureName::AuthTx => write!(f, "auth_tx"),
             ProcedureName::UpdateGuardian => write!(f, "update_guardian"),
-            ProcedureName::VerifyGuardian => write!(f, "verify_guardian"),
             ProcedureName::SendAsset => write!(f, "send_asset"),
             ProcedureName::ReceiveAsset => write!(f, "receive_asset"),
         }
@@ -114,7 +113,6 @@ impl std::str::FromStr for ProcedureName {
             "update_procedure_threshold" => Ok(ProcedureName::UpdateProcedureThreshold),
             "auth_tx" => Ok(ProcedureName::AuthTx),
             "update_guardian" => Ok(ProcedureName::UpdateGuardian),
-            "verify_guardian" => Ok(ProcedureName::VerifyGuardian),
             "send_asset" => Ok(ProcedureName::SendAsset),
             "receive_asset" => Ok(ProcedureName::ReceiveAsset),
             _ => Err(format!("unknown procedure name: {}", s)),
@@ -129,63 +127,6 @@ fn procedure_root_word(hex_str: &str) -> Word {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn procedure_roots_match_compiled_account() {
-        use miden_confidential_contracts::multisig_guardian::{
-            MultisigGuardianBuilder, MultisigGuardianConfig,
-        };
-        use miden_protocol::{Felt, Word};
-
-        let commit = |s: u64| {
-            Word::from([
-                Felt::new_unchecked(s),
-                Felt::new_unchecked(s + 1),
-                Felt::new_unchecked(s + 2),
-                Felt::new_unchecked(s + 3),
-            ])
-        };
-        let config = MultisigGuardianConfig::new(1, vec![commit(1)], commit(10));
-        let account = MultisigGuardianBuilder::new(config)
-            .with_seed([42u8; 32])
-            .build()
-            .expect("build account");
-
-        let roots: Vec<Word> = account
-            .code()
-            .procedures()
-            .iter()
-            .map(|p| *p.mast_root())
-            .collect();
-
-        assert_eq!(
-            ProcedureName::UpdateSigners.root(),
-            roots[0],
-            "update_signers"
-        );
-        assert_eq!(
-            ProcedureName::UpdateProcedureThreshold.root(),
-            roots[1],
-            "update_procedure_threshold"
-        );
-        assert_eq!(
-            ProcedureName::UpdateGuardian.root(),
-            roots[2],
-            "update_guardian"
-        );
-        assert_eq!(ProcedureName::AuthTx.root(), roots[3], "auth_tx");
-        assert_eq!(
-            ProcedureName::VerifyGuardian.root(),
-            roots[4],
-            "verify_guardian"
-        );
-        assert_eq!(ProcedureName::SendAsset.root(), roots[5], "send_asset");
-        assert_eq!(
-            ProcedureName::ReceiveAsset.root(),
-            roots[6],
-            "receive_asset"
-        );
-    }
 
     #[test]
     fn procedure_threshold_new_creates_correctly() {
@@ -214,6 +155,53 @@ mod tests {
         for name in ProcedureName::all() {
             let _root = name.root();
         }
+    }
+
+    /// Custody-critical guard: each hardcoded root MUST match the live upstream
+    /// `AuthGuardedMultisig` / `BasicWallet` procedure root. A mismatch means a
+    /// per-procedure threshold override would be stored under the wrong key and
+    /// silently ignored at authentication time.
+    #[test]
+    fn procedure_roots_match_upstream_component() {
+        use miden_standards::account::auth::AuthGuardedMultisig;
+        use miden_standards::account::wallets::BasicWallet;
+
+        let auth_code = AuthGuardedMultisig::code();
+        let upstream_root = |masm_name: &str| -> Word {
+            let export = auth_code
+                .exports()
+                .find(|e| e.path.to_string().rsplit("::").next() == Some(masm_name))
+                .unwrap_or_else(|| panic!("upstream procedure `{masm_name}` not found"));
+            auth_code
+                .get_procedure_root_by_path(&*export.path)
+                .expect("root by path")
+                .into()
+        };
+
+        assert_eq!(
+            ProcedureName::UpdateSigners.root(),
+            upstream_root("update_signers_and_threshold")
+        );
+        assert_eq!(
+            ProcedureName::UpdateProcedureThreshold.root(),
+            upstream_root("set_procedure_threshold")
+        );
+        assert_eq!(
+            ProcedureName::AuthTx.root(),
+            upstream_root("auth_tx_guarded_multisig")
+        );
+        assert_eq!(
+            ProcedureName::UpdateGuardian.root(),
+            upstream_root("update_guardian_public_key")
+        );
+        assert_eq!(
+            ProcedureName::SendAsset.root(),
+            Word::from(BasicWallet::move_asset_to_note_root())
+        );
+        assert_eq!(
+            ProcedureName::ReceiveAsset.root(),
+            Word::from(BasicWallet::receive_asset_root())
+        );
     }
 
     #[test]

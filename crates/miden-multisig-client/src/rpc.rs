@@ -13,11 +13,12 @@ use miden_client::note_transport::{
 use miden_client::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client::rpc::domain::account_vault::AccountVaultInfo;
 use miden_client::rpc::domain::limits::RpcLimits;
-use miden_client::rpc::domain::note::{FetchedNote, NoteSyncBlock};
+use miden_client::rpc::domain::note::{FetchedNote, SyncNotesBlock};
 use miden_client::rpc::domain::nullifier::NullifierUpdate;
 use miden_client::rpc::domain::storage_map::StorageMapInfo;
 use miden_client::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use miden_client::rpc::domain::transaction::TransactionRecord;
+use miden_client::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use miden_client::rpc::{GrpcError, NetworkNoteStatusInfo, NodeRpcClient, RpcError, RpcStatusInfo};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -27,7 +28,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::NoteHeader;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
-use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
+use miden_protocol::transaction::ProvenTransaction;
 
 use crate::error::{MultisigError, Result, rpc_kind};
 
@@ -239,15 +240,22 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         self.inner.has_genesis_commitment()
     }
 
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> std::result::Result<AttestedTransactionEncryptionKey, RpcError> {
+        self.execute(|| self.inner.get_transaction_encryption_key())
+            .await
+    }
+
     /// Never retried, regardless of the policy: re-sending a submission whose
     /// outcome is unknown could execute it twice.
     async fn submit_proven_transaction(
         &self,
         proven_transaction: ProvenTransaction,
-        transaction_inputs: TransactionInputs,
+        sealed_transaction_inputs: SealedTransactionInputs,
     ) -> std::result::Result<BlockNumber, RpcError> {
         self.inner
-            .submit_proven_transaction(proven_transaction, transaction_inputs)
+            .submit_proven_transaction(proven_transaction, sealed_transaction_inputs)
             .await
     }
 
@@ -257,7 +265,7 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         &self,
         proven_batch: ProvenBatch,
         proposed_batch: ProposedBatch,
-        transaction_inputs: Vec<TransactionInputs>,
+        transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> std::result::Result<BlockNumber, RpcError> {
         self.inner
             .submit_proven_batch(proven_batch, proposed_batch, transaction_inputs)
@@ -306,7 +314,7 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         block_from: BlockNumber,
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
-    ) -> std::result::Result<Vec<NoteSyncBlock>, RpcError> {
+    ) -> std::result::Result<Vec<SyncNotesBlock>, RpcError> {
         self.execute(|| self.inner.sync_notes(block_from, block_to, note_tags))
             .await
     }
@@ -704,10 +712,15 @@ mod tests {
         async fn set_genesis_commitment(&self, _: Word) -> std::result::Result<(), RpcError> {
             unimplemented!()
         }
+        async fn get_transaction_encryption_key(
+            &self,
+        ) -> std::result::Result<AttestedTransactionEncryptionKey, RpcError> {
+            unimplemented!()
+        }
         async fn submit_proven_transaction(
             &self,
             _: ProvenTransaction,
-            _: TransactionInputs,
+            _: SealedTransactionInputs,
         ) -> std::result::Result<BlockNumber, RpcError> {
             unimplemented!()
         }
@@ -715,7 +728,7 @@ mod tests {
             &self,
             _: ProvenBatch,
             _: ProposedBatch,
-            _: Vec<TransactionInputs>,
+            _: Vec<SealedTransactionInputs>,
         ) -> std::result::Result<BlockNumber, RpcError> {
             unimplemented!()
         }
@@ -751,7 +764,7 @@ mod tests {
             _: BlockNumber,
             _: BlockNumber,
             _: &BTreeSet<NoteTag>,
-        ) -> std::result::Result<Vec<NoteSyncBlock>, RpcError> {
+        ) -> std::result::Result<Vec<SyncNotesBlock>, RpcError> {
             unimplemented!()
         }
         async fn sync_nullifiers(

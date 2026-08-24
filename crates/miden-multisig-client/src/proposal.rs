@@ -225,6 +225,25 @@ impl TransactionType {
         Self::AddCosigner { new_commitment }
     }
 
+    /// Returns the signer-set size this transaction produces, given the
+    /// current size, or `None` when the transaction does not change the
+    /// signer set. Used to detect growth that dilutes per-procedure
+    /// threshold overrides (absolute counts, never re-scaled on-chain).
+    pub fn target_signer_count(&self, current_num_signers: u32) -> Option<u32> {
+        match self {
+            Self::AddCosigner { .. } => Some(current_num_signers + 1),
+            Self::RemoveCosigner { .. } => Some(current_num_signers.saturating_sub(1)),
+            Self::UpdateSigners {
+                signer_commitments, ..
+            } => Some(signer_commitments.len() as u32),
+            Self::P2ID { .. }
+            | Self::ConsumeNotes { .. }
+            | Self::SwitchGuardian { .. }
+            | Self::UpdateProcedureThreshold { .. }
+            | Self::Custom => None,
+        }
+    }
+
     /// Creates a RemoveCosigner transaction.
     pub fn remove_cosigner(commitment: Word) -> Self {
         Self::RemoveCosigner { commitment }
@@ -350,6 +369,12 @@ pub struct ProposalMetadata {
 
     pub required_signatures: Option<usize>,
     pub signers: Vec<String>,
+
+    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
+    /// tx_summary was built at. Required to verify or execute the proposal:
+    /// since protocol 0.16 the signed summary binds the reference block
+    /// commitment, so it only reproduces when re-executed at that block.
+    pub chain_anchor_b64: Option<String>,
 }
 
 impl ProposalMetadata {
@@ -359,6 +384,21 @@ impl ProposalMetadata {
 
     pub fn is_consume_notes_v2(&self) -> bool {
         self.consume_notes_metadata_version == Some(CONSUME_NOTES_METADATA_VERSION_V2)
+    }
+
+    /// Decodes the proposal's chain anchor. Errors when absent: a proposal
+    /// without an anchor was created at an unknown reference block, so its
+    /// signed summary cannot be reproduced, verified, or executed.
+    pub fn chain_anchor(&self) -> Result<miden_client::transaction::ChainAnchor> {
+        let anchor_b64 = self.chain_anchor_b64.as_deref().ok_or_else(|| {
+            MultisigError::InvalidConfig(
+                "proposal metadata has no chain_anchor; it was created without \
+                 chain-anchored execution and its signed summary cannot be \
+                 reproduced at the original reference block"
+                    .to_string(),
+            )
+        })?;
+        crate::transaction::chain_anchor_from_base64(anchor_b64)
     }
 
     /// Converts salt hex to Word.
@@ -708,6 +748,7 @@ impl Proposal {
             target_procedure: target_procedure.clone(),
             required_signatures: Some(required_signatures),
             signers: Vec::new(),
+            chain_anchor_b64: metadata_payload.chain_anchor,
         };
         let transaction_type = metadata.to_transaction_type(&proposal_type)?;
 
@@ -863,16 +904,18 @@ fn word_to_bytes(word: &Word) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
 
     fn create_test_tx_summary() -> TransactionSummary {
         // Use a minimal valid account ID
         let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("Valid empty delta");
@@ -882,6 +925,8 @@ mod tests {
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
             Word::default(),
+            0,
+            TransactionSummaryUserParams::new([Felt::ZERO; 7]),
         )
     }
 
@@ -899,6 +944,37 @@ mod tests {
         let invalid = format!("0x{}{}", "ff".repeat(8), "00".repeat(24));
         let err = word_from_hex(&invalid).expect_err("non-canonical field element should fail");
         assert!(err.contains("invalid field element"));
+    }
+
+    /// A proposal without an anchor cannot be verified or executed, and a
+    /// present anchor must decode as a structurally valid `ChainAnchor` —
+    /// garbage base64 or well-formed base64 of non-anchor bytes are both
+    /// rejected before anything executes against them.
+    #[test]
+    fn chain_anchor_is_required_and_validated() {
+        let missing = ProposalMetadata::default();
+        let err = missing
+            .chain_anchor()
+            .expect_err("missing anchor must fail");
+        assert!(err.to_string().contains("no chain_anchor"));
+
+        let garbage = ProposalMetadata {
+            chain_anchor_b64: Some("!!!not-base64!!!".to_string()),
+            ..Default::default()
+        };
+        let err = garbage
+            .chain_anchor()
+            .expect_err("garbage base64 must fail");
+        assert!(err.to_string().contains("invalid chain_anchor base64"));
+
+        let non_anchor = ProposalMetadata {
+            chain_anchor_b64: Some(BASE64.encode([0xAAu8; 16])),
+            ..Default::default()
+        };
+        let err = non_anchor
+            .chain_anchor()
+            .expect_err("non-anchor bytes must fail");
+        assert!(err.to_string().contains("invalid chain_anchor"));
     }
 
     #[test]

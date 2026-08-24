@@ -221,7 +221,7 @@ impl CursorSecret {
     /// Generate a fresh random secret. Call this once per server
     /// startup (e.g. at `DashboardState` construction).
     pub fn generate() -> Self {
-        use rand::RngCore;
+        use rand::Rng;
         let mut bytes = [0u8; CURSOR_SECRET_LEN];
         rand::rng().fill_bytes(&mut bytes);
         Self {
