@@ -313,31 +313,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # `npm ci` resolves the published @openzeppelin/guardian-client, which
-      # lags the in-repo package whenever a PR changes both. Overlay the
-      # sibling dist so this job tests the pair that will ship together.
-      # Refuse a symlink: a `file:` install points back at the sibling, and
-      # replacing dist would delete the build this step just produced.
       - name: Overlay in-repo guardian-client
         if: matrix.package == 'miden-multisig-client'
         working-directory: packages/guardian-client
         run: |
-          set -euo pipefail
           npm ci
           npm run build
-          TARGET="../miden-multisig-client/node_modules/@openzeppelin/guardian-client"
-          if [ ! -e "$TARGET" ]; then
-            echo "::error::$TARGET is missing after npm ci"
-            exit 1
-          fi
-          if [ -L "$TARGET" ]; then
-            echo "::error::$TARGET is a symlink; overlaying would mutate the sibling. Pin a published version, not file:."
-            ls -l "$TARGET"
-            exit 1
-          fi
-          rm -rf "$TARGET/dist"
-          cp -r dist "$TARGET/dist"
-          cp package.json "$TARGET/package.json"
+          rm -rf ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
+          cp -r dist ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
+          cp package.json ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/package.json
 
       - name: Build
         run: npm run build
@@ -346,10 +330,6 @@ jobs:
         run: npm test
 
   contract-behavior:
-    # Isolated MockChain / SDK integration suite for the upstream
-    # guarded-multisig component. The workspace coverage job also runs these
-    # targets; this job fails faster on the auth paths
-    # (update signers, per-procedure thresholds, guardian rotation).
     name: Contract Behavior Tests
     runs-on: ubuntu-latest
     if: github.repository_owner == 'OpenZeppelin'
@@ -387,11 +367,6 @@ jobs:
         run: cargo test -p miden-confidential-contracts -p miden-multisig-client --all-targets
 
   ts-sdk-browser:
-    # Browser-only cross-SDK determinism gate for the TypeScript multisig
-    # client. Vitest lives in npm-test; this job is the IndexedDB path that
-    # node cannot provide (TS-built account id/commitment == Rust builder).
-    # A miden-standards or @miden-sdk/miden-sdk bump that shifts storage
-    # layout fails here instead of stranding deployed accounts silently.
     name: TypeScript SDK Browser Determinism
     runs-on: ubuntu-latest
     if: github.repository_owner == 'OpenZeppelin'
@@ -417,34 +392,19 @@ jobs:
         working-directory: packages/miden-multisig-client
         run: npm ci
 
-      # Same overlay as npm-test: Playwright builds against dist/, which
-      # typechecks and bundles the sibling client, not the published lag.
       - name: Overlay in-repo guardian-client
         working-directory: packages/guardian-client
         run: |
-          set -euo pipefail
           npm ci
           npm run build
-          TARGET="../miden-multisig-client/node_modules/@openzeppelin/guardian-client"
-          if [ ! -e "$TARGET" ]; then
-            echo "::error::$TARGET is missing after npm ci"
-            exit 1
-          fi
-          if [ -L "$TARGET" ]; then
-            echo "::error::$TARGET is a symlink; overlaying would mutate the sibling. Pin a published version, not file:."
-            ls -l "$TARGET"
-            exit 1
-          fi
-          rm -rf "$TARGET/dist"
-          cp -r dist "$TARGET/dist"
-          cp package.json "$TARGET/package.json"
+          rm -rf ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
+          cp -r dist ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
+          cp package.json ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/package.json
 
       - name: Build package
         working-directory: packages/miden-multisig-client
         run: npm run build
 
-      # channel 'chrome' in playwright.config.ts uses the runner's system
-      # Chrome; no browser download required.
       - name: Run browser determinism gate
         working-directory: packages/miden-multisig-client
         run: npm run test:browser

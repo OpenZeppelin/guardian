@@ -1362,12 +1362,9 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     }
 }
 
-/// Pins the protocol behaviour Guardian's proposal flow depends on: since
-/// miden-protocol 0.16-rc a transaction summary commits to the reference block, so an
-/// otherwise identical re-execution at a later block produces a different commitment.
-/// Guardian proposes at one block and executes at a later one, which is why the SDKs
-/// capture a `ChainAnchor` at proposal time and re-execute against it (verification
-/// and execution both pin back to the proposal's reference block).
+/// A transaction summary commits to the reference block, so an otherwise
+/// identical re-execution at a later block produces a different commitment.
+/// SDKs capture a `ChainAnchor` at proposal time and re-execute against it.
 #[tokio::test]
 async fn transaction_summary_commitment_is_bound_to_the_reference_block() -> anyhow::Result<()> {
     let (_secret_keys, public_keys, _authenticators, _, guardian_public_key, _) =
@@ -1410,11 +1407,10 @@ async fn transaction_summary_commitment_is_bound_to_the_reference_block() -> any
     Ok(())
 }
 
-/// A signature set collected against one reference block does not authorize execution at a
-/// later block, but does authorize execution pinned back to the block it was collected at.
-/// Pinning is therefore the mechanism the fix has to reach; `miden-client` 0.16.0-rc.2
-/// exposes it as `ChainAnchor` / `execute_transaction_at`, which the multisig SDK uses to
-/// ship each proposal's reference block with the signed data and execute against it.
+/// A signature set collected against one reference block does not authorize
+/// execution at a later block, but does authorize execution pinned back to
+/// the block it was collected at. The summary binds the reference block, so
+/// execution must use the proposal `ChainAnchor`.
 #[tokio::test]
 async fn signatures_authorize_only_at_the_reference_block_they_were_collected_at()
 -> anyhow::Result<()> {

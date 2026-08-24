@@ -2053,12 +2053,10 @@ export class Multisig {
 
       if (proposal.metadata.proposalType === 'switch_guardian') {
         // Exempt from binding re-execution (mirrors the `custom` exemption above).
-        // The WASM `executeForSummary` leaves the guardian-disabling side effect
-        // applied to the in-session account, so re-execution reconstructs a smaller
-        // delta and falsely rejects with "metadata does not match tx_summary". The
-        // native Rust client does not mutate, so this is an intentional divergence.
-        // The id ↔ tx_summary match above plus `verifyGuardianEndpointCommitment`
-        // at propose/execute time still bind the proposal.
+        // WASM `executeForSummary` mutates the in-session account, so a second
+        // execution reconstructs a different delta and falsely rejects. Rust
+        // does not mutate. The id ↔ tx_summary match plus
+        // `verifyGuardianEndpointCommitment` still bind the proposal.
         return txSummaryCommitment;
       }
 
