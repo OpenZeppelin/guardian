@@ -321,18 +321,31 @@ jobs:
         working-directory: .
         run: cargo build --quiet --example procedure_roots --example serialized_account -p miden-multisig-client
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Overlay in-repo guardian-client
+      # miden-multisig-client must build against the in-repo guardian-client, not
+      # the published one: a PR that changes both (the default for contract
+      # changes per AGENTS.md) would otherwise test a stale pair, and during a
+      # coordinated release the internal dep is bumped before guardian-client is
+      # published, so the registry cannot satisfy it at all and `npm ci` fails
+      # with ETARGET. Resolving the dep at the sibling fixes both cases: it is
+      # the pair that ships together, and it needs no registry entry.
+      #
+      # The package.json edit is scoped to this checkout. Publishing runs from a
+      # clean tree in publish.yml, so the shipped manifest keeps its semver
+      # range. `npm install` rather than `npm ci` because a `file:` dep cannot
+      # live in the committed lockfile without breaking publish.
+      - name: Build the in-repo guardian-client
         if: matrix.package == 'miden-multisig-client'
         working-directory: packages/guardian-client
+        run: npm ci && npm run build
+
+      - name: Install dependencies
         run: |
-          npm ci
-          npm run build
-          rm -rf ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
-          cp -r dist ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
-          cp package.json ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/package.json
+          if [[ "${{ matrix.package }}" == "miden-multisig-client" ]]; then
+            npm pkg set 'dependencies.@openzeppelin/guardian-client=file:../guardian-client'
+            npm install --no-audit --no-fund
+          else
+            npm ci
+          fi
 
       - name: Build
         run: npm run build
@@ -399,18 +412,18 @@ jobs:
           cache: npm
           cache-dependency-path: packages/miden-multisig-client/package-lock.json
 
+      # Same reason as the ts-packages job: resolve guardian-client at the
+      # sibling so this gate tests the pair that ships together and does not
+      # depend on the internal dep already being published.
+      - name: Build the in-repo guardian-client
+        working-directory: packages/guardian-client
+        run: npm ci && npm run build
+
       - name: Install package dependencies
         working-directory: packages/miden-multisig-client
-        run: npm ci
-
-      - name: Overlay in-repo guardian-client
-        working-directory: packages/guardian-client
         run: |
-          npm ci
-          npm run build
-          rm -rf ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
-          cp -r dist ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/dist
-          cp package.json ../miden-multisig-client/node_modules/@openzeppelin/guardian-client/package.json
+          npm pkg set 'dependencies.@openzeppelin/guardian-client=file:../guardian-client'
+          npm install --no-audit --no-fund
 
       - name: Build package
         working-directory: packages/miden-multisig-client
