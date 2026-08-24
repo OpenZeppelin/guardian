@@ -175,7 +175,8 @@ source is set the server validates it at startup and fails fast on a
 missing/malformed/wrong-length key — it never silently falls back to plaintext.
 Encryption is fixed for a populated store: the server records a marker on the
 first encrypted write and refuses to mix plaintext and ciphertext, so enable it
-against an empty store (e.g. after the Miden 0.15 cutover). Switching an existing
+against an empty store (e.g. after the Miden 0.16 reset, see
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#data-resets)). Switching an existing
 store requires an explicit re-encryption migration (not yet provided).
 
 ### Hosted ECDSA signer backend

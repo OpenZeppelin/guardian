@@ -583,6 +583,257 @@ mod tests {
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
+    /// Seeds one account plus a row in every table the 0.16 reset purges, so a
+    /// test can assert on the whole blast radius rather than one table.
+    fn seed_network_account(
+        conn: &mut diesel::PgConnection,
+        account_id: &str,
+        kind: &str,
+        signer_commitment: &str,
+    ) {
+        let auth = if kind == "evm" {
+            serde_json::json!({ "EvmEcdsa": { "signers": [signer_commitment] } })
+        } else {
+            serde_json::json!({
+                "MidenFalconRpo": { "cosigner_commitments": [signer_commitment] }
+            })
+        };
+
+        diesel::RunQueryDsl::execute(
+            diesel::sql_query(
+                "INSERT INTO account_metadata (account_id, auth, network_config, created_at, \
+                 updated_at, has_pending_candidate) \
+                 VALUES ($1, $2, jsonb_build_object('kind', $3::text), now(), now(), false)",
+            )
+            .bind::<Text, _>(account_id)
+            .bind::<diesel::sql_types::Jsonb, _>(auth)
+            .bind::<Text, _>(kind),
+            conn,
+        )
+        .expect("seed metadata");
+
+        diesel::RunQueryDsl::execute(
+            diesel::sql_query(
+                "INSERT INTO account_auth_state (account_id, signer_commitment, \
+                 last_auth_timestamp) VALUES ($1, $2, 4242)",
+            )
+            .bind::<Text, _>(account_id)
+            .bind::<Text, _>(signer_commitment),
+            conn,
+        )
+        .expect("seed auth state");
+
+        diesel::RunQueryDsl::execute(
+            diesel::sql_query(
+                "INSERT INTO states (account_id, state_json, commitment, created_at, updated_at) \
+                 VALUES ($1, '{}'::jsonb, $2, now(), now())",
+            )
+            .bind::<Text, _>(account_id)
+            .bind::<Text, _>(format!("0xstate_{account_id}")),
+            conn,
+        )
+        .expect("seed state");
+
+        diesel::RunQueryDsl::execute(
+            diesel::sql_query(
+                "INSERT INTO deltas (account_id, nonce, prev_commitment, delta_payload, status, \
+                 status_kind, status_timestamp) \
+                 VALUES ($1, 1, '0xprev', '{}'::jsonb, '{}'::jsonb, 'canonical', now())",
+            )
+            .bind::<Text, _>(account_id),
+            conn,
+        )
+        .expect("seed delta");
+
+        diesel::RunQueryDsl::execute(
+            diesel::sql_query(
+                "INSERT INTO delta_proposals (account_id, commitment, nonce, prev_commitment, \
+                 delta_payload, status, status_kind, status_timestamp) \
+                 VALUES ($1, $2, 1, '0xprev', '{}'::jsonb, '{}'::jsonb, 'candidate', now())",
+            )
+            .bind::<Text, _>(account_id)
+            .bind::<Text, _>(format!("0xproposal_{account_id}")),
+            conn,
+        )
+        .expect("seed proposal");
+    }
+
+    #[derive(diesel::QueryableByName)]
+    struct AccountIdRow {
+        #[diesel(sql_type = Text)]
+        account_id: String,
+    }
+
+    /// Which of `candidates` still have rows, checked across every purged table so
+    /// a delete that misses one table cannot pass.
+    fn account_ids_present(
+        conn: &mut diesel::PgConnection,
+        candidates: &[&str],
+    ) -> Vec<String> {
+        let ids: Vec<String> = candidates.iter().map(|id| (*id).to_string()).collect();
+        let rows: Vec<AccountIdRow> = diesel::RunQueryDsl::load(
+            diesel::sql_query(
+                "SELECT DISTINCT account_id FROM ( \
+                     SELECT account_id FROM account_metadata \
+                     UNION ALL SELECT account_id FROM states \
+                     UNION ALL SELECT account_id FROM deltas \
+                     UNION ALL SELECT account_id FROM delta_proposals \
+                 ) all_rows WHERE account_id = ANY($1) ORDER BY account_id",
+            )
+            .bind::<diesel::sql_types::Array<Text>, _>(ids),
+            conn,
+        )
+        .expect("query surviving account ids");
+        rows.into_iter().map(|r| r.account_id).collect()
+    }
+
+    #[derive(diesel::QueryableByName)]
+    struct SignerRow {
+        #[diesel(sql_type = Text)]
+        signer_commitment: String,
+    }
+
+    fn auth_state_signers(conn: &mut diesel::PgConnection, account_id: &str) -> Vec<String> {
+        let rows: Vec<SignerRow> = diesel::RunQueryDsl::load(
+            diesel::sql_query(
+                "SELECT signer_commitment FROM account_auth_state WHERE account_id = $1 \
+                 ORDER BY signer_commitment",
+            )
+            .bind::<Text, _>(account_id),
+            conn,
+        )
+        .expect("query auth state signers");
+        rows.into_iter().map(|r| r.signer_commitment).collect()
+    }
+
+    /// The Miden 0.16 reset's `down.sql` is a deliberate no-op, so it cannot be
+    /// reverted and re-applied like the backfill migrations above. Re-running its
+    /// `up.sql` against seeded rows is equivalent: the deletes are idempotent.
+    ///
+    /// It runs inside a transaction that always rolls back, because the reset
+    /// deletes every non-EVM row and would otherwise destroy fixtures belonging
+    /// to tests in other modules that do not share `pg_serial_lock`. Rolling back
+    /// also releases the `ACCESS EXCLUSIVE` locks the migration takes.
+    #[tokio::test]
+    #[ignore = "requires Postgres; re-runs the Miden 0.16 reset; run ./scripts/test-postgres.sh"]
+    async fn miden_016_reset_purges_miden_rows_and_preserves_evm() {
+        const RESET_SQL: &str = include_str!(
+            "../../migrations/2026-08-24-000001_miden_016_irreversible_reset/up.sql"
+        );
+
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        run_migrations(&url).await.expect("migrations apply");
+
+        let suffix = Utc::now().timestamp_micros();
+        let miden_account = format!("0xmiden_reset{suffix}");
+        let evm_account = format!("evm:1:0x{suffix:040x}");
+        let miden_signer = format!("0x{}", "ab".repeat(32));
+        let evm_signer = format!("0x{}", "cd".repeat(20));
+
+        {
+            let url = url.clone();
+            let miden_account = miden_account.clone();
+            let evm_account = evm_account.clone();
+            let miden_signer = miden_signer.clone();
+            let evm_signer = evm_signer.clone();
+            tokio::task::spawn_blocking(move || {
+                use diesel::Connection;
+                use diesel::connection::SimpleConnection;
+                let mut conn =
+                    diesel::PgConnection::establish(&url).expect("sync connection for reset");
+
+                let outcome = conn.transaction::<(), diesel::result::Error, _>(|conn| {
+                    seed_network_account(conn, &miden_account, "miden", &miden_signer);
+                    seed_network_account(conn, &evm_account, "evm", &evm_signer);
+
+                    // A row whose metadata is already gone must be purged too.
+                    let orphan = format!("{miden_account}_orphan");
+                    diesel::RunQueryDsl::execute(
+                        diesel::sql_query(
+                            "INSERT INTO states (account_id, state_json, commitment, created_at, \
+                             updated_at) VALUES ($1, '{}'::jsonb, '0xorphan', now(), now())",
+                        )
+                        .bind::<Text, _>(&orphan),
+                        conn,
+                    )
+                    .expect("seed orphaned state");
+
+                    conn.batch_execute(RESET_SQL).expect("reset applies");
+
+                    assert_eq!(
+                        account_ids_present(conn, &[&miden_account, &orphan, &evm_account]),
+                        vec![evm_account.clone()],
+                        "only the EVM account may survive the reset"
+                    );
+                    assert_eq!(
+                        auth_state_signers(conn, &miden_account),
+                        Vec::<String>::new(),
+                        "Miden replay state must cascade away with its metadata"
+                    );
+                    assert_eq!(
+                        auth_state_signers(conn, &evm_account),
+                        vec![evm_signer.clone()],
+                        "EVM replay state must survive"
+                    );
+
+                    Err(diesel::result::Error::RollbackTransaction)
+                });
+                assert!(matches!(
+                    outcome,
+                    Err(diesel::result::Error::RollbackTransaction)
+                ));
+            })
+            .await
+            .expect("blocking reset task");
+        }
+    }
+
+    /// Version of the migration these backfill tests exercise. Diesel strips the
+    /// dashes from the directory name, so `2026-08-13-000001_auth_state_per_signer`
+    /// is version `20260813000001`; using the dashed form would never match and
+    /// would spin the revert loop below until it ran out of migrations.
+    const PER_SIGNER_MIGRATION_VERSION: &str = "20260813000001";
+
+    /// Revert migrations until the per-signer backfill itself has been undone.
+    ///
+    /// `revert_last_migration` only undoes the newest applied migration, so a
+    /// migration added after the backfill (for example the Miden 0.16 reset,
+    /// whose `down.sql` is a deliberate no-op) would otherwise be reverted
+    /// instead, leaving `account_auth_state` in per-signer shape and making the
+    /// legacy inserts below fail on `signer_commitment`. Looping keeps these
+    /// tests correct as migrations accumulate.
+    fn revert_to_before_per_signer(conn: &mut diesel::PgConnection) {
+        use diesel_migrations::MigrationHarness;
+        loop {
+            let reverted = conn
+                .revert_last_migration(crate::storage::postgres::MIGRATIONS)
+                .expect("revert migration");
+            if reverted.to_string() == PER_SIGNER_MIGRATION_VERSION {
+                return;
+            }
+        }
+    }
+
+    /// Apply exactly the per-signer backfill and stop.
+    ///
+    /// These tests must not run the whole chain forward: the Miden 0.16 reset is
+    /// newer than the backfill and deletes the Miden fixtures they just seeded,
+    /// so every assertion about the expansion would see `NotFound`. Stepping one
+    /// migration forward exercises the backfill in isolation; `RevertedMigration`
+    /// re-applies the remainder on drop.
+    fn apply_per_signer_migration(conn: &mut diesel::PgConnection) {
+        use diesel_migrations::MigrationHarness;
+        let applied = conn
+            .run_next_migration(crate::storage::postgres::MIGRATIONS)
+            .expect("apply per-signer migration");
+        assert_eq!(
+            applied.to_string(),
+            PER_SIGNER_MIGRATION_VERSION,
+            "expected the per-signer backfill to be the next pending migration"
+        );
+    }
+
     fn insert_legacy_auth_state(
         conn: &mut diesel::PgConnection,
         account_id: &str,
@@ -866,7 +1117,8 @@ mod tests {
         let falcon_signer_b = format!("0x{}", "bb".repeat(32));
         let ecdsa_signer = format!("0x{}", "cc".repeat(32));
         let evm_signer = format!("0x{}", "dd".repeat(20));
-        let reverted = RevertedMigration::new(url.clone());
+        // Held for its `Drop`: re-applies the migrations reverted below.
+        let _reverted = RevertedMigration::new(url.clone());
         {
             let url = url.clone();
             let falcon_account_id = falcon_account_id.clone();
@@ -878,11 +1130,9 @@ mod tests {
             let evm_signer = evm_signer.clone();
             tokio::task::spawn_blocking(move || {
                 use diesel::Connection;
-                use diesel_migrations::MigrationHarness;
                 let mut conn =
                     diesel::PgConnection::establish(&url).expect("sync connection for revert");
-                conn.revert_last_migration(crate::storage::postgres::MIGRATIONS)
-                    .expect("revert per-signer migration");
+                revert_to_before_per_signer(&mut conn);
                 insert_legacy_auth_state(
                     &mut conn,
                     &falcon_account_id,
@@ -914,8 +1164,21 @@ mod tests {
             .expect("blocking revert task");
         }
 
-        run_migrations(&url).await.expect("migration reapplies");
-        reverted.defuse();
+        // Step forward only to the per-signer backfill, not through the newer
+        // Miden 0.16 reset, which would delete the fixtures seeded above. The
+        // `RevertedMigration` guard re-applies the remainder on drop, so it is
+        // deliberately not defused here.
+        {
+            let url = url.clone();
+            tokio::task::spawn_blocking(move || {
+                use diesel::Connection;
+                let mut conn =
+                    diesel::PgConnection::establish(&url).expect("sync connection for migrate");
+                apply_per_signer_migration(&mut conn);
+            })
+            .await
+            .expect("blocking migrate task");
+        }
 
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         assert_eq!(
@@ -991,7 +1254,8 @@ mod tests {
     async fn migration_preserves_floor_for_non_canonical_signer_metadata() {
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
-        let reverted = RevertedMigration::new(url.clone());
+        // Held for its `Drop`: re-applies the migrations reverted below.
+        let _reverted = RevertedMigration::new(url.clone());
 
         let suffix = Utc::now().timestamp_micros();
         let coerced_object_account_id = format!("0xcoercedbackfill{suffix}");
@@ -1022,11 +1286,9 @@ mod tests {
             let malformed_accounts = malformed_accounts.clone();
             tokio::task::spawn_blocking(move || {
                 use diesel::Connection;
-                use diesel_migrations::MigrationHarness;
                 let mut conn =
                     diesel::PgConnection::establish(&url).expect("sync connection for revert");
-                conn.revert_last_migration(crate::storage::postgres::MIGRATIONS)
-                    .expect("revert per-signer migration");
+                revert_to_before_per_signer(&mut conn);
                 for (account_id, auth) in &malformed_accounts {
                     insert_legacy_auth_state(&mut conn, account_id, auth.clone(), 4242);
                 }
@@ -1035,10 +1297,19 @@ mod tests {
             .expect("blocking revert task");
         }
 
-        run_migrations(&url)
+        // Same reason as above: stop at the per-signer backfill so the 0.16 reset
+        // does not remove the malformed-metadata fixtures before the assertions.
+        {
+            let url = url.clone();
+            tokio::task::spawn_blocking(move || {
+                use diesel::Connection;
+                let mut conn =
+                    diesel::PgConnection::establish(&url).expect("sync connection for migrate");
+                apply_per_signer_migration(&mut conn);
+            })
             .await
             .expect("the legacy account floor makes inert signer metadata safe to migrate");
-        reverted.defuse();
+        }
 
         let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
         for (account_id, _) in &malformed_accounts {

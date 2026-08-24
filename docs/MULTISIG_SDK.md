@@ -1359,17 +1359,15 @@ console.log('Notes consumed, funds now in vault');
 
 ## Version Compatibility
 
-| SDK Version | miden-client | miden-sdk (npm) | Notes |
-|-------------|--------------|-----------------|-------|
-| 0.16.x | =0.16.0-rc.2 | 0.16.0-rc.3 (exact) | Miden 0.16 rc protocol in both SDKs; breaking: upstream `miden-standards` guarded-multisig contract replaces the local MASM, `guardianEnabled` removed, all procedure roots changed; the transaction summary now binds the reference block, expiration delta and seven user params (the auth-arg salt occupies the trailing four) instead of a dedicated salt word, so summary commitments and delta payloads from the alpha line do not carry over; proposals carry a serialized `ChainAnchor` (metadata `chain_anchor`) and verification/execution pin to it; releases wait for upstream 0.16 to stabilize; Para wallet packages still on 0.15 via npm overrides |
-| 0.15.x | 0.15.0 | ^0.15.0 | Miden 0.15 protocol; v1 account IDs, bech32m addresses |
-| 0.14.x | 0.14.x | ^0.14.0 | Devnet default, MidenClient public API |
-| 0.13.x | 0.13.0 | ^0.13.0 | ECDSA support, wallet signers |
-| 0.12.x | 0.12.5 | ^0.12.5 | Initial release |
+Which Miden protocol line each Guardian release targets, the exact `miden-client`
+and `@miden-sdk/miden-sdk` pins, what broke between lines, and which upgrades
+reset stored data: see
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md).
 
-### Breaking Changes
-
-Check the [GitHub release notes](https://github.com/OpenZeppelin/guardian/releases) for breaking changes between versions.
+Guardian's version and Miden's are not aligned (Guardian 0.16.x runs on Miden
+0.15; Miden 0.16 lands in Guardian 0.17.x), so read that matrix rather than
+matching the numbers. Per-release breaking changes are also in the
+[GitHub release notes](https://github.com/OpenZeppelin/guardian/releases).
 
 ### Contract version pinning
 
@@ -1377,9 +1375,13 @@ Accounts are built from the audited upstream `AuthGuardedMultisig` component, pi
 exactly in both SDKs so a TypeScript-built account is byte-identical to a Rust-built
 one:
 
-- **Rust**: `miden-standards = "=0.16.0-rc.6"` (workspace `Cargo.toml`)
-- **TypeScript**: `@miden-sdk/miden-sdk 0.16.0-rc.3`, whose bundled WASM embeds the
+- **Rust**: the `miden-standards` pin in the workspace `Cargo.toml`
+- **TypeScript**: the `@miden-sdk/miden-sdk` pin, whose bundled WASM embeds the
   matching upstream `miden-standards` guarded-multisig component
+
+The exact versions for each Guardian release are in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix); they are not
+repeated here so there is one place to update.
 
 The pins are deliberate and must move together: nothing at build time verifies the
 npm SDK's embedded miden-standards matches the Rust pin — the CI parity gates
@@ -1410,10 +1412,15 @@ supported contract version.
 
 #### SDK ↔ contract version support
 
-| SDK release | miden-standards (contract) | Operates accounts created with |
-|---|---|---|
-| next (0.16.x, unreleased) | 0.16.0-rc.6 | miden-standards 0.16.0-rc.6 contracts only (procedure roots are unchanged from rc.4, so rc.4-era accounts keep working) |
-| ≤ 0.15.x | — (local Guardian MASM) | pre-upstream accounts (wiped by the 0.15 cutover) |
+An SDK release operates only accounts created with its pinned contract version;
+the mapping is in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix).
+
+Compatibility there is about the on-chain account, not Guardian's stored state.
+Adopting a new Miden line has twice required an irreversible server-side reset, so
+even an account whose contract version still matches must be re-registered
+afterwards. See
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#data-resets).
 
 Both SDKs **enforce** this at runtime rather than trusting the table: before any
 procedure-root-keyed storage read, the account's code is checked for the pinned

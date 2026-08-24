@@ -213,6 +213,7 @@ Common mappings:
 
 - Server or API behavior -> `spec/`, `docs/CONCEPTS.md`, SDK docs
 - Multisig SDK behavior -> `docs/MULTISIG_SDK.md`, `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`, `examples/demo`, `examples/web`, `examples/smoke-web`
+- Miden version support, cross-line breaking changes, data resets -> `docs/MIDEN_COMPATIBILITY.md` (facts live there; `docs/PRODUCTION.md` keeps operator steps and `docs/TROUBLESHOOTING.md` keeps symptoms)
 - New or changed public API, builder option, or config field on a published crate or package -> that crate's or package's own `README.md`, in the same PR. These READMEs are the crates.io and npm landing pages, so a field documented only in `docs/` is invisible to every consumer who never opens the repo. Published surfaces: `crates/shared`, `crates/client`, `crates/contracts`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/guardian-evm-client`, `packages/guardian-operator-client`, `packages/miden-multisig-client`. Keep relative links out of npm READMEs; they resolve only on GitHub.
 - Operator/dashboard behavior -> `docs/DASHBOARD.md`, `docs/PRODUCTION.md`, `examples/operator-smoke-web`
 - EVM proposal behavior -> `speckit/features/001-evm-proposal-support/`, `packages/guardian-evm-client`, `examples/evm-smoke-web`

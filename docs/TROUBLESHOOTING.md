@@ -27,8 +27,14 @@ Miden 0.15 is not readable under 0.16, and the 0.16 devnet is a fresh
 chain, so 0.15-era accounts and notes no longer exist on-chain. There is
 no migration: delete local miden-client stores (`store.sqlite3`),
 `~/.guardian` metadata, and browser IndexedDB state, then recreate
-accounts. Guardian server records for 0.15 accounts remain readable as
-history but do not interoperate with 0.16 networks.
+accounts. The Guardian server does not keep 0.15 account records either: the
+first 0.16 startup runs an irreversible reset that deletes Miden account
+metadata, states, deltas, and proposals (EVM rows are preserved). So after the
+upgrade any remaining failure of this kind is a *client-side* leftover, not
+server state. Operator steps are in
+[`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-016); what changed between
+Miden lines is in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md).
 
 ### Server fails to start
 
