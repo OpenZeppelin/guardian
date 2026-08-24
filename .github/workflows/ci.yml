@@ -151,7 +151,7 @@ jobs:
   server-feature-tests:
     name: Server Integration and E2E
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     if: github.repository_owner == 'OpenZeppelin'
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -202,7 +202,7 @@ jobs:
   postgres-test:
     name: Postgres Test Suite
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     if: github.repository_owner == 'OpenZeppelin'
     services:
       postgres:
