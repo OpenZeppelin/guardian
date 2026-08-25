@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use miden_client::ClientError;
 use miden_client::note::{NoteFile, NoteSyncHint};
-use miden_client::store::NoteFilter as StoreNoteFilter;
+use miden_client::store::{InputNoteRecord, NoteFilter as StoreNoteFilter};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteDetailsCommitment, NoteId, NoteInclusionProof};
 
@@ -24,6 +24,9 @@ use crate::proposal::{Proposal, ProposalMetadata};
 pub enum NoteImportSource {
     /// Embedded in a v2 `consume_notes` proposal (`consume_notes_notes`).
     Proposal,
+    /// Discovered on chain by a tag-scoped historical scan
+    /// ([`MultisigClient::backfill_public_notes_by_tag`]).
+    Backfill,
 }
 
 impl NoteImportSource {
@@ -31,6 +34,7 @@ impl NoteImportSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Proposal => "proposal",
+            Self::Backfill => "backfill",
         }
     }
 }
@@ -154,6 +158,120 @@ fn import_error_retryable(error: &ClientError) -> bool {
 }
 
 impl MultisigClient {
+    /// Looks up existing store records for the given notes, keyed by details
+    /// commitment rather than note ID: records the store keeps without
+    /// metadata (a note details import in `Expected` state, or a note
+    /// observed as consumed on chain) have no note ID, and an ID lookup
+    /// would keep re-importing them forever. Shared by the recovery
+    /// primitives (#415 proposal import, #416 public backfill).
+    pub(crate) async fn existing_records_by_commitment(
+        &mut self,
+        commitments: Vec<NoteDetailsCommitment>,
+    ) -> std::result::Result<BTreeMap<NoteDetailsCommitment, InputNoteRecord>, ClientError> {
+        Ok(self
+            .miden_client
+            .get_input_notes(StoreNoteFilter::DetailsCommitments(commitments))
+            .await?
+            .into_iter()
+            .map(|record| (record.details_commitment(), record))
+            .collect())
+    }
+
+    /// Imports one note with its inclusion proof and classifies the result.
+    /// Upstream `import_notes` batches are atomic, which is why callers
+    /// import individually — one bad note must not sink the rest. Returns
+    /// the outcome and whether the import succeeded (input for the batched
+    /// consumed-state re-check).
+    pub(crate) async fn import_note_with_proof(
+        &mut self,
+        source: NoteImportSource,
+        note: Note,
+        proof: NoteInclusionProof,
+    ) -> (NoteImportOutcome, bool) {
+        let identifier = note.id().to_hex();
+        let file = NoteFile::Committed { note, proof };
+        match self
+            .miden_client
+            .import_notes(std::slice::from_ref(&file))
+            .await
+        {
+            Ok(_) => (
+                NoteImportOutcome {
+                    identifier,
+                    source,
+                    status: NoteImportStatus::Imported,
+                    retryable: false,
+                    reason: None,
+                },
+                true,
+            ),
+            Err(e) => (
+                NoteImportOutcome {
+                    identifier,
+                    source,
+                    status: NoteImportStatus::Failed,
+                    retryable: import_error_retryable(&e),
+                    reason: Some(format!("failed to import note: {}", e)),
+                },
+                false,
+            ),
+        }
+    }
+
+    /// Re-classifies provisionally `Imported` outcomes whose note the chain
+    /// had already nullified: upstream stores those as consumption history,
+    /// not as consumable notes — report that honestly instead of `Imported`.
+    /// One batched store read covers every imported note. A failed check
+    /// downgrades nothing; it flags the outcome's classification as
+    /// unconfirmed instead.
+    pub(crate) async fn reclassify_consumed_imports(
+        &mut self,
+        imported: &[(usize, NoteDetailsCommitment)],
+        outcomes: &mut [NoteImportOutcome],
+    ) {
+        if imported.is_empty() {
+            return;
+        }
+        let check = self
+            .miden_client
+            .get_input_notes(StoreNoteFilter::DetailsCommitments(
+                imported.iter().map(|(_, commitment)| *commitment).collect(),
+            ))
+            .await;
+        match check {
+            Ok(records) => {
+                let consumed: BTreeSet<NoteDetailsCommitment> = records
+                    .iter()
+                    .filter(|record| record.is_consumed())
+                    .map(|record| record.details_commitment())
+                    .collect();
+                for (index, commitment) in imported {
+                    if consumed.contains(commitment) {
+                        outcomes[*index].status = NoteImportStatus::AlreadyConsumed;
+                        outcomes[*index].reason = Some(
+                            "note was already consumed on chain; recorded as consumption \
+                             history"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                // The imports themselves succeeded; stay `Imported` but
+                // flag that the consumed-state classification is unknown.
+                for (index, _) in imported {
+                    outcomes[*index].reason = Some(format!(
+                        "imported, but the consumed-state check failed ({}); run sync to \
+                         confirm the note's status",
+                        e
+                    ));
+                }
+            }
+        }
+    }
+}
+
+impl MultisigClient {
     /// Imports the notes embedded in v2 `consume_notes` proposals into the
     /// local Miden store (issue #415), typically after key-based recovery
     /// rebuilt the proposal list but left the note store empty.
@@ -199,21 +317,10 @@ impl MultisigClient {
             return outcomes;
         }
 
-        // Look up existing records by details commitment, not note ID: records
-        // the store keeps without metadata (a note details import in Expected
-        // state, or a note observed as consumed on chain) have no note ID, and
-        // an ID lookup would keep re-importing them forever.
         let commitments: Vec<NoteDetailsCommitment> =
             decoded.iter().map(Note::details_commitment).collect();
-        let existing = match self
-            .miden_client
-            .get_input_notes(StoreNoteFilter::DetailsCommitments(commitments))
-            .await
-        {
-            Ok(records) => records
-                .into_iter()
-                .map(|record| (record.details_commitment(), record))
-                .collect::<BTreeMap<_, _>>(),
+        let existing = match self.existing_records_by_commitment(commitments).await {
+            Ok(existing) => existing,
             Err(e) => {
                 let reason = format!("failed to read local store: {}", e);
                 for note in &decoded {
@@ -289,30 +396,13 @@ impl MultisigClient {
             let outcome = match proofs.remove(&note.id()) {
                 Some(proof) => {
                     let details_commitment = note.details_commitment();
-                    let file = NoteFile::Committed { note, proof };
-                    match self
-                        .miden_client
-                        .import_notes(std::slice::from_ref(&file))
-                        .await
-                    {
-                        Ok(_) => {
-                            imported.push((outcomes.len(), details_commitment));
-                            NoteImportOutcome {
-                                identifier,
-                                source: NoteImportSource::Proposal,
-                                status: NoteImportStatus::Imported,
-                                retryable: false,
-                                reason: None,
-                            }
-                        }
-                        Err(e) => NoteImportOutcome {
-                            identifier,
-                            source: NoteImportSource::Proposal,
-                            status: NoteImportStatus::Failed,
-                            retryable: import_error_retryable(&e),
-                            reason: Some(format!("failed to import note: {}", e)),
-                        },
+                    let (outcome, was_imported) = self
+                        .import_note_with_proof(NoteImportSource::Proposal, note, proof)
+                        .await;
+                    if was_imported {
+                        imported.push((outcomes.len(), details_commitment));
                     }
+                    outcome
                 }
                 None => {
                     // The sync hint's tag makes the resulting `Expected`
@@ -352,47 +442,8 @@ impl MultisigClient {
             outcomes.push(outcome);
         }
 
-        // A note the chain already nullified is stored as consumption history,
-        // not as a consumable note — report that honestly instead of
-        // `Imported`. One batched store read covers every imported note.
-        if !imported.is_empty() {
-            let check = self
-                .miden_client
-                .get_input_notes(StoreNoteFilter::DetailsCommitments(
-                    imported.iter().map(|(_, commitment)| *commitment).collect(),
-                ))
-                .await;
-            match check {
-                Ok(records) => {
-                    let consumed: BTreeSet<NoteDetailsCommitment> = records
-                        .iter()
-                        .filter(|record| record.is_consumed())
-                        .map(|record| record.details_commitment())
-                        .collect();
-                    for (index, commitment) in &imported {
-                        if consumed.contains(commitment) {
-                            outcomes[*index].status = NoteImportStatus::AlreadyConsumed;
-                            outcomes[*index].reason = Some(
-                                "note was already consumed on chain; recorded as consumption \
-                                 history"
-                                    .to_string(),
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    // The imports themselves succeeded; stay `Imported` but
-                    // flag that the consumed-state classification is unknown.
-                    for (index, _) in &imported {
-                        outcomes[*index].reason = Some(format!(
-                            "imported, but the consumed-state check failed ({}); run sync to \
-                             confirm the note's status",
-                            e
-                        ));
-                    }
-                }
-            }
-        }
+        self.reclassify_consumed_imports(&imported, &mut outcomes)
+            .await;
 
         outcomes
     }
@@ -606,6 +657,7 @@ mod tests {
     #[test]
     fn status_and_source_render_stable_strings() {
         assert_eq!(NoteImportSource::Proposal.to_string(), "proposal");
+        assert_eq!(NoteImportSource::Backfill.to_string(), "backfill");
         let expected = [
             (NoteImportStatus::Imported, "imported"),
             (NoteImportStatus::AlreadyPresent, "already-present"),

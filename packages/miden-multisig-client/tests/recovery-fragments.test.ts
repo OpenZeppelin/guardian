@@ -18,6 +18,7 @@ import {
   STORE_ERROR_FRAGMENT,
   TRANSPORT_DISABLED_FRAGMENT,
 } from '../src/recovery.js';
+import { RPC_PAGINATION_FRAGMENT } from '../src/publicNoteBackfill.js';
 
 const require = createRequire(import.meta.url);
 
@@ -30,5 +31,6 @@ describe('recovery classification fragments', () => {
     expect(binaryText).toContain(TRANSPORT_DISABLED_FRAGMENT);
     expect(binaryText).toContain(PAGINATION_GUARD_FRAGMENT);
     expect(binaryText).toContain(STORE_ERROR_FRAGMENT);
+    expect(binaryText).toContain(RPC_PAGINATION_FRAGMENT);
   });
 });

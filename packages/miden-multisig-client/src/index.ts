@@ -109,7 +109,7 @@ export type {
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
 export type { ConnectivityCategory, UserFacingError } from './connectivity.js';
 
-// Recovery primitives (issue #415).
+// Recovery primitives (issues #415, #416).
 export { importNotesFromProposals } from './proposalNoteImport.js';
 export type {
   ImportNotesFromProposalsOptions,
@@ -117,6 +117,12 @@ export type {
   NoteImportSource,
   NoteImportStatus,
 } from './proposalNoteImport.js';
+export { backfillPublicNotesByTag } from './publicNoteBackfill.js';
+export type {
+  BackfillPublicNotesOptions,
+  BlockRange,
+  PublicBackfillReport,
+} from './publicNoteBackfill.js';
 
 export {
   FalconSigner,
