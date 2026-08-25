@@ -125,7 +125,7 @@ export function LoadMultisigDialog({
                     <strong>Signing as:</strong> {signatureScheme}
                   </div>
                   <div>
-                    <strong>GUARDIAN:</strong> {detectedConfig.guardianEnabled ? 'Enabled' : 'Disabled'}
+                    <strong>GUARDIAN:</strong> {detectedConfig.guardianCommitment ? 'Present' : 'Not found'}
                   </div>
                   <div className="text-xs text-muted-foreground">
                     Signers:{' '}

@@ -10,7 +10,7 @@ import { GuardianHttpClient } from '@openzeppelin/guardian-client';
 import type { StateObject } from '@openzeppelin/guardian-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
-import { AccountInspector } from './inspector.js';
+import { AccountInspector, assertCompleteDetectedConfig } from './inspector.js';
 import { getRawMidenClient, requireConfigValue, requireMidenRpcEndpoint } from './raw-client.js';
 import type { MultisigConfig, Signer } from './types.js';
 import {
@@ -214,11 +214,13 @@ export class MultisigClient {
     const account = Account.deserialize(accountBytes);
 
     const detected = AccountInspector.fromAccount(account);
+    // Fail closed on a partial read: the detected signer set becomes the
+    // authoritative config that membership proposals rewrite on-chain.
+    assertCompleteDetectedConfig(detected);
     const config: MultisigConfig = {
       threshold: detected.threshold,
       signerCommitments: detected.signerCommitments,
-      guardianCommitment: detected.guardianCommitment ?? '',
-      guardianEnabled: detected.guardianEnabled,
+      guardianCommitment: detected.guardianCommitment,
       procedureThresholds: Array.from(detected.procedureThresholds.entries()).map(
         ([procedure, threshold]) => ({ procedure, threshold })
       ),

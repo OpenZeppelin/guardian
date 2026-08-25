@@ -123,6 +123,13 @@ pub struct ExportedMetadata {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
+
+    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
+    /// tx_summary was built at. Mirrors
+    /// `ProposalMetadataPayload::chain_anchor`; required to verify or execute
+    /// the imported proposal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_anchor: Option<String>,
 }
 
 impl ExportedProposal {
@@ -157,6 +164,7 @@ impl ExportedProposal {
                 .iter()
                 .map(|signature| signature.signer_commitment.clone())
                 .collect(),
+            chain_anchor_b64: self.metadata.chain_anchor.clone(),
         }
     }
 
@@ -311,6 +319,7 @@ impl ExportedProposal {
             new_guardian_pubkey_hex: proposal.metadata.new_guardian_pubkey_hex.clone(),
             new_guardian_endpoint: proposal.metadata.new_guardian_endpoint.clone(),
             target_procedure: proposal.metadata.target_procedure.clone(),
+            chain_anchor: proposal.metadata.chain_anchor_b64.clone(),
         };
 
         Ok(Self {
@@ -474,9 +483,12 @@ mod tests {
     use guardian_shared::ToJson;
     use miden_client::Serializable;
     use miden_protocol::account::AccountId;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word, ZERO};
 
     use super::*;
@@ -517,6 +529,7 @@ mod tests {
             new_guardian_pubkey_hex: None,
             new_guardian_endpoint: None,
             target_procedure: None,
+            chain_anchor: None,
         };
 
         let json = serde_json::to_string(&meta).expect("should serialize");
@@ -723,8 +736,9 @@ mod tests {
         let account_id = AccountId::from_hex(&valid_account_id()).expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("valid delta");
@@ -733,7 +747,17 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new_unchecked(7), ZERO, ZERO, ZERO]),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([
+                ZERO,
+                ZERO,
+                ZERO,
+                Felt::new_unchecked(7),
+                ZERO,
+                ZERO,
+                ZERO,
+            ]),
         )
     }
 

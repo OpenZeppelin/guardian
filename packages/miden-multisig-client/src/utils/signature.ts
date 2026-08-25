@@ -1,12 +1,13 @@
 import { AdviceMap, Felt, FeltArray, Poseidon2, Signature, Word } from '@miden-sdk/miden-sdk';
 import * as midenSdk from '@miden-sdk/miden-sdk';
+import { EcdsaFormat } from './ecdsa.js';
 import { hexToBytes, normalizeHexWord } from './encoding.js';
 import type { ProposalSignatureEntry, SignatureScheme } from '../types.js';
 
 export const ECDSA_AUTH_SCHEME_ID = 1;
 export const FALCON_AUTH_SCHEME_ID = 2;
 
-function authSchemeId(scheme: SignatureScheme): number {
+export function authSchemeId(scheme: SignatureScheme): number {
   return scheme === 'ecdsa' ? ECDSA_AUTH_SCHEME_ID : FALCON_AUTH_SCHEME_ID;
 }
 
@@ -21,31 +22,17 @@ export function signatureHexToBytes(
   return withPrefix;
 }
 
-function bytesToPackedU32Felts(bytes: Uint8Array): Felt[] {
-  const felts: Felt[] = [];
-  for (let i = 0; i < bytes.length; i += 4) {
-    let packed = 0;
-    for (let j = 0; j < 4 && i + j < bytes.length; j += 1) {
-      packed |= bytes[i + j] << (j * 8);
-    }
-    felts.push(new Felt(BigInt(packed >>> 0)));
-  }
-  return felts;
-}
-
-function encodeEcdsaSignatureFelts(pubkeyBytes: Uint8Array, sigBytes: Uint8Array): Felt[] {
-  const pkFelts = bytesToPackedU32Felts(pubkeyBytes);
-  const sigFelts = bytesToPackedU32Felts(sigBytes);
-  return [...pkFelts, ...sigFelts];
-  
-}
-
+/**
+ * `toPreparedSignature` is the SDK binding for the Rust
+ * `Signature::to_encoded_signature`, so both Falcon and ECDSA advice payloads
+ * come from upstream rather than being packed here. For ECDSA it emits
+ * `QX[8] || QY[8] || SIG_R[8] || SIG_S[8]` and recovers the public key from the
+ * message, which is why the signature must carry its recovery byte.
+ */
 export function buildSignatureAdviceEntry(
   pubkeyCommitment: Word,
   message: Word,
   signature: Signature,
-  ecdsaPubkeyHex?: string,
-  ecdsaSigHex?: string,
 ): { key: Word; values: Felt[] } {
   const elements = new FeltArray([
     ...pubkeyCommitment.toFelts(),
@@ -53,16 +40,31 @@ export function buildSignatureAdviceEntry(
   ]);
   const key = Poseidon2.hashElements(elements);
 
-  let values: Felt[];
-  if (ecdsaPubkeyHex && ecdsaSigHex) {
-    const pkBytes = hexToBytes(ecdsaPubkeyHex);
-    const sigBytes = hexToBytes(ecdsaSigHex);
-    values = encodeEcdsaSignatureFelts(pkBytes, sigBytes);
-  } else {
-    values = signature.toPreparedSignature(message);
+  return { key, values: signature.toPreparedSignature(message) };
+}
+
+/** Rejects unrecoverable ECDSA signatures before entering WASM. */
+export function assertEcdsaSignatureRecoverable(
+  signatureHex: string,
+  messageHex: string,
+  expectedPublicKeyHex: string,
+): void {
+  let recovered: string;
+  try {
+    recovered = EcdsaFormat.recoverCompressedPublicKeyHex(
+      hexToBytes(messageHex),
+      hexToBytes(signatureHex),
+    );
+  } catch (error) {
+    throw new Error(`ECDSA signature does not recover a public key: ${String(error)}`);
   }
 
-  return { key, values };
+  const expected = EcdsaFormat.compressPublicKey(expectedPublicKeyHex);
+  if (recovered.toLowerCase() !== expected.toLowerCase()) {
+    throw new Error(
+      `ECDSA signature recovers public key ${recovered}, which does not match the expected ${expected}`,
+    );
+  }
 }
 
 export function tryComputeEcdsaCommitmentHex(pubkeyHex: string): string | null {
@@ -84,41 +86,6 @@ export function tryComputeCommitmentHex(
     return normalizeHexWord(instance.toCommitment().toHex());
   } catch {
     return null;
-  }
-}
-
-export function verifyEcdsaCommitment(
-  pubkeyHex: string,
-  expectedCommitmentHex: string,
-): { match: boolean; computedHex: string; packedFelts: string[]; error?: string } {
-  try {
-    const bytes = hexToBytes(pubkeyHex);
-    const packedU32Values: number[] = [];
-    for (let i = 0; i < bytes.length; i += 4) {
-      let packed = 0;
-      for (let j = 0; j < 4 && i + j < bytes.length; j += 1) {
-        packed |= bytes[i + j] << (j * 8);
-      }
-      packedU32Values.push(packed >>> 0);
-    }
-
-    const packedFelts = bytesToPackedU32Felts(bytes);
-    const feltArray = new FeltArray(packedFelts);
-    const computed = Poseidon2.hashElements(feltArray);
-    const computedHex = normalizeHexWord(computed.toHex());
-    const expectedNorm = normalizeHexWord(expectedCommitmentHex);
-    return {
-      match: computedHex === expectedNorm,
-      computedHex,
-      packedFelts: packedU32Values.map((value) => value.toString()),
-    };
-  } catch (error) {
-    return {
-      match: false,
-      computedHex: `ERROR: ${error}`,
-      packedFelts: [],
-      error: String(error),
-    };
   }
 }
 

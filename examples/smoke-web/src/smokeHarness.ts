@@ -360,6 +360,30 @@ function normalizeSessionInput(input: InitSessionInput): SessionConfig {
   };
 }
 
+/**
+ * GUARDIAN keeps reporting a just-executed proposal's delta until
+ * canonicalization observes the on-chain commitment. In that window
+ * `syncProposals` re-validates the delta against the local account state the
+ * execution already advanced, so a refresh right after a successful submit can
+ * throw even though the transaction landed. (The Rust client never sees this:
+ * `list_proposals` pre-filters proposals with `nonce <= account.nonce()`.)
+ */
+const POST_EXECUTE_TRANSIENT_PATTERNS = [
+  /metadata does not match tx_summary/i,
+  /is not greater than local nonce/i,
+];
+const POST_EXECUTE_REFRESH_ATTEMPTS = 5;
+const POST_EXECUTE_REFRESH_DELAY_MS = 2000;
+
+function isPostExecuteTransient(err: unknown): boolean {
+  const message = normalizeError(err);
+  return POST_EXECUTE_TRANSIENT_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function useStateRef<T>(
   initialValue: T,
 ): [T, React.MutableRefObject<T>, (value: SetStateAction<T>) => void] {
@@ -1206,7 +1230,37 @@ export function useSmokeHarness(): {
         }
 
         await executeOnlineProposal(currentMultisig, proposalId);
-        const refreshed = await refreshMultisigState(currentMultisig);
+
+        // The transaction is submitted at this point; a refresh failure below
+        // must not surface as an execution failure. Retry through GUARDIAN's
+        // canonicalization window, and if it still has not converged, report
+        // the executed-but-pending state instead of throwing.
+        let refreshed: Awaited<ReturnType<typeof refreshMultisigState>> | null = null;
+        let pendingError: string | null = null;
+        for (let attempt = 1; attempt <= POST_EXECUTE_REFRESH_ATTEMPTS; attempt++) {
+          try {
+            refreshed = await refreshMultisigState(currentMultisig);
+            pendingError = null;
+            break;
+          } catch (err) {
+            if (!isPostExecuteTransient(err)) {
+              throw err;
+            }
+            pendingError = normalizeError(err);
+            if (attempt < POST_EXECUTE_REFRESH_ATTEMPTS) {
+              await delay(POST_EXECUTE_REFRESH_DELAY_MS);
+            }
+          }
+        }
+
+        if (!refreshed) {
+          const message =
+            'Proposal executed; local refresh is still pending GUARDIAN ' +
+            `canonicalization: ${pendingError}`;
+          setLastError(message);
+          return buildCurrentSnapshot({ lastError: message });
+        }
+
         return buildCurrentSnapshot({
           guardianState: refreshed.state,
           detectedConfig: refreshed.config,

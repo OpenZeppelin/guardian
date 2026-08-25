@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Word } from '@miden-sdk/miden-sdk';
 
 const {
-  mockFromVaultKey,
   mockFungibleAssetConstructor,
   mockHashElements,
   mockNormalizeHexWord,
@@ -21,11 +20,6 @@ const {
   ];
 
   return {
-    mockFromVaultKey: vi.fn((vaultKey: unknown, amount: bigint) => ({
-      kind: 'asset-from-vault-key',
-      vaultKey,
-      amount,
-    })),
     mockFungibleAssetConstructor: vi.fn(),
     noteMetadataCalls: [] as unknown[][],
     noteRecipientCalls: [] as unknown[][],
@@ -112,8 +106,6 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     constructor(faucet: unknown, amount: bigint) {
       mockFungibleAssetConstructor(faucet, amount);
     }
-
-    static fromVaultKey = mockFromVaultKey;
   }
 
   class NoteArray {
@@ -191,25 +183,12 @@ vi.mock('../utils/random.js', () => ({
 }));
 
 import { buildP2idTransactionRequest, parseP2idNoteType, p2idNoteTypeToMetadata } from './p2id.js';
-import type { Account } from '@miden-sdk/miden-sdk';
+import { NoteType } from '@miden-sdk/miden-sdk';
 
 const FAUCET_ID = '0x7bfb0f38b0fafa103f86a805594171';
 
-const mockAccount = {
-  vault: () => ({
-    fungibleAssets: () => [
-      {
-        faucetId: () => ({ toString: () => FAUCET_ID }),
-        vaultKey: () => ({ kind: 'vault-key' }),
-      },
-    ],
-  }),
-} as unknown as Account;
-import { NoteType } from '@miden-sdk/miden-sdk';
-
 describe('buildP2idTransactionRequest', () => {
   beforeEach(() => {
-    mockFromVaultKey.mockClear();
     mockFungibleAssetConstructor.mockClear();
     mockHashElements.mockClear();
     mockNormalizeHexWord.mockClear();
@@ -228,7 +207,6 @@ describe('buildP2idTransactionRequest', () => {
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
       FAUCET_ID,
       10n,
-      mockAccount,
       { salt },
     );
 
@@ -250,13 +228,26 @@ describe('buildP2idTransactionRequest', () => {
     buildP2idTransactionRequest(
       '0x7bfb0f38b0fafa103f86a805594170',
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
-      '0x7bfb0f38b0fafa103f86a805594171',
+      FAUCET_ID,
       10n,
-      mockAccount,
     );
 
     expect(noteMetadataCalls).toHaveLength(1);
     expect(noteMetadataCalls[0][1]).toBe(NoteType.Public);
+  });
+
+  it('builds the asset from the faucet id, whose callback flag it carries since Miden 0.16', () => {
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      FAUCET_ID,
+      10n,
+    );
+
+    expect(mockFungibleAssetConstructor).toHaveBeenCalledTimes(1);
+    const [faucet, amount] = mockFungibleAssetConstructor.mock.calls[0] as [{ hex: string }, bigint];
+    expect(faucet.hex).toBe(FAUCET_ID);
+    expect(amount).toBe(10n);
   });
 
   it('threads the requested noteType into the note metadata (issue #322)', () => {
@@ -265,7 +256,6 @@ describe('buildP2idTransactionRequest', () => {
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
       '0x7bfb0f38b0fafa103f86a805594171',
       10n,
-      mockAccount,
       { noteType: NoteType.Private },
     );
 
@@ -279,7 +269,6 @@ describe('buildP2idTransactionRequest', () => {
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
       FAUCET_ID,
       10n,
-      mockAccount,
     );
 
     expect(noteRecipientCalls).toHaveLength(1);
@@ -294,7 +283,6 @@ describe('buildP2idTransactionRequest', () => {
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
       FAUCET_ID,
       10n,
-      mockAccount,
       { reclaimHeight: 12345 },
     );
 
@@ -315,7 +303,6 @@ describe('buildP2idTransactionRequest', () => {
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
       FAUCET_ID,
       10n,
-      mockAccount,
       { timelockHeight: 777 },
     );
 
@@ -331,7 +318,6 @@ describe('buildP2idTransactionRequest', () => {
       '0x8a65fc5a39e4cd106d648e3eb4ab5f',
       FAUCET_ID,
       10n,
-      mockAccount,
       { reclaimHeight: 500, timelockHeight: 400 },
     );
 
@@ -352,8 +338,7 @@ describe('buildP2idTransactionRequest', () => {
         '0x8a65fc5a39e4cd106d648e3eb4ab5f',
         FAUCET_ID,
         10n,
-        mockAccount,
-        { reclaimHeight: height },
+          { reclaimHeight: height },
       ),
     ).toThrow(/unsupported reclaimHeight/);
   });

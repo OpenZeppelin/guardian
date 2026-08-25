@@ -816,7 +816,8 @@ mod tests {
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
             .with_validate_guardian_commitment(Err(
-                "OpenZeppelin slot 'openzeppelin::guardian::public_key' mismatch".to_string(),
+                "Miden Standards slot 'miden::standards::auth::guardian::pub_key' mismatch"
+                    .to_string(),
             ));
 
         let storage_backend = MockStorageBackend::new();
@@ -843,7 +844,7 @@ mod tests {
         match result.unwrap_err() {
             GuardianError::AuthorizationFailed(msg) => {
                 assert!(msg.contains("Unauthorized account configuration"));
-                assert!(msg.contains("openzeppelin::guardian::public_key"));
+                assert!(msg.contains("miden::standards::auth::guardian::pub_key"));
             }
             e => panic!("Expected AuthorizationFailed, got: {:?}", e),
         }

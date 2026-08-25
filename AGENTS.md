@@ -213,6 +213,7 @@ Common mappings:
 
 - Server or API behavior -> `spec/`, `docs/CONCEPTS.md`, SDK docs
 - Multisig SDK behavior -> `docs/MULTISIG_SDK.md`, `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`, `examples/demo`, `examples/web`, `examples/smoke-web`
+- Miden version support, cross-line breaking changes, data resets -> `docs/MIDEN_COMPATIBILITY.md` (facts live there; `docs/PRODUCTION.md` keeps operator steps and `docs/TROUBLESHOOTING.md` keeps symptoms)
 - New or changed public API, builder option, or config field on a published crate or package -> that crate's or package's own `README.md`, in the same PR. These READMEs are the crates.io and npm landing pages, so a field documented only in `docs/` is invisible to every consumer who never opens the repo. Published surfaces: `crates/shared`, `crates/client`, `crates/contracts`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/guardian-evm-client`, `packages/guardian-operator-client`, `packages/miden-multisig-client`. Keep relative links out of npm READMEs; they resolve only on GitHub.
 - Operator/dashboard behavior -> `docs/DASHBOARD.md`, `docs/PRODUCTION.md`, `examples/operator-smoke-web`
 - EVM proposal behavior -> `speckit/features/001-evm-proposal-support/`, `packages/guardian-evm-client`, `examples/evm-smoke-web`
@@ -231,7 +232,8 @@ When docs are not updated after a visible behavior change, note why in the final
 ## 11) Versioning Policy
 
 - Keep crate/package versions aligned with the active Miden dependency line.
-- Current baseline is Miden `0.14.x`; changes must remain compatible with that line unless migration is explicit.
+- Current baseline is the Miden `0.16` pre-release line (exact-pinned pre-releases, currently the `rc` series) across the Rust workspace and `packages/miden-multisig-client`. Changes must remain compatible with that line unless migration is explicit.
+- Pre-release pins are exact and must move together across both SDKs. The pin pair is authoritative: `@miden-sdk/miden-sdk` bundles a WASM built against specific `miden-protocol`/`miden-standards` versions, and only a matching pair produces identical transaction-summary commitments and auth procedure roots. Read the bundled versions with `strings packages/miden-multisig-client/node_modules/@miden-sdk/miden-sdk/dist/st/assets/miden_client_web.wasm | grep -oE "miden-[a-z-]+-[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?" | sort -u` and pin the Rust workspace to exactly those. Ranges are never acceptable here: semver ranges exclude pre-releases, so `0.16.x` resolves to no published version.
 - If a change requires moving to a new Miden line, treat it as a coordinated release task:
   1. Update workspace/dependency constraints.
   2. Update both multisig SDKs and both base clients as needed.

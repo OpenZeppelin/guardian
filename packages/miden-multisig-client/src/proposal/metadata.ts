@@ -10,6 +10,7 @@ export class ProposalMetadataCodec {
       description: metadata.description,
       salt: metadata.saltHex,
       requiredSignatures: metadata.requiredSignatures,
+      chainAnchor: metadata.chainAnchor,
     };
 
     switch (metadata.proposalType) {
@@ -73,6 +74,7 @@ export class ProposalMetadataCodec {
       description: guardian.description ?? '',
       saltHex: guardian.salt,
       requiredSignatures: guardian.requiredSignatures,
+      chainAnchor: guardian.chainAnchor,
     };
 
     switch (guardian.proposalType) {
@@ -145,7 +147,7 @@ export class ProposalMetadataCodec {
         };
       default:
         // Any proposal type the SDK does not model collapses to the 'custom'
-        // bucket while preserving the original label (issue #266).
+        // bucket while preserving the original label.
         return {
           ...base,
           proposalType: 'custom',

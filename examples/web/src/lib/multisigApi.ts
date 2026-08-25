@@ -186,7 +186,6 @@ export async function createMultisigAccount(
     threshold,
     signerCommitments,
     guardianCommitment,
-    guardianEnabled: true,
     procedureThresholds,
     storageMode: 'private',
     signatureScheme,

@@ -17,8 +17,29 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.3
 ```
+
+> **Why the peer version is exact**: no stable `0.16.0` is published, so a
+> `0.16.x`/`^0.16.0` range resolves to nothing, and the transaction-summary
+> layout and procedure roots are only byte-compatible within one pre-release
+> pair. Package releases wait for upstream 0.16 to stabilize.
+
+## Miden compatibility
+
+This package's version and Miden's are **not** aligned. Pick the release that
+matches your Miden node:
+
+| This package | Miden protocol |
+|---|---|
+| 0.17.x | 0.16.x (pre-release) |
+| 0.16.x | 0.15.x |
+| 0.15.x | 0.15.x |
+
+Adopting a new Miden line has twice required an irreversible reset of
+Guardian-stored account data, so an upgrade is not a drop-in. Full matrix, the
+breaking changes per line, and what each upgrade does to stored data:
+[MIDEN_COMPATIBILITY.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/MIDEN_COMPATIBILITY.md).
 
 ## Setup
 
@@ -139,6 +160,47 @@ The configuration is automatically detected from the account's on-chain storage:
 const multisig = await client.load(accountId, signer);
 ```
 
+### Read Signer Public-Key Commitments
+
+Since accounts use the upstream `AuthGuardedMultisig` component, the Miden
+SDK's `Account.getPublicKeyCommitments()` returns the approver commitments
+natively. The `AccountInspector` accessors are the strict, layout-insulated
+alternative (issue #306): they validate the complete set against the
+configured signer count and throw instead of silently omitting unreadable
+entries, and they shield consumers from storage-layout changes across
+contract versions.
+
+Holding only a fetched Miden SDK `Account` (e.g. a wallet or dApp):
+
+```typescript
+import { AccountInspector } from '@openzeppelin/miden-multisig-client';
+
+const commitments = AccountInspector.getSignerPublicKeyCommitments(account);
+const guardianKey = AccountInspector.getGuardianPublicKeyCommitment(account);
+```
+
+Or from a loaded `Multisig` instance (reads current store-backed state):
+
+```typescript
+const signerKeys = await multisig.getSignerPublicKeyCommitments();
+```
+
+Commitments are ordered by signer index as currently stored; indices re-pack
+when signers are removed, so index 0 is the key listed first at creation (by
+convention the creating client's own key) only until the first membership
+change. Hot/cold roles are a consumer-side convention, not part of on-chain
+state. `getSignerPublicKeyCommitments` throws rather than silently returning
+a truncated list when any signer entry is absent; `getGuardianPublicKeyCommitment`
+throws when the guardian entry is missing (the guarded-multisig always
+includes a guardian). Both are gated on this SDK's pinned contract version
+and reject accounts built from a different miden-standards release.
+
+The `Account` passed to `AccountInspector` must come from the same copy of
+`@miden-sdk/miden-sdk` that this package links. An application bundling its
+own SDK copy (common in wallets) will get a descriptive error from the SDK's
+instance checks; construct the account with this package's SDK instance
+instead.
+
 ### Recover An Account By Key
 
 When the wallet only holds a signing key from the account's authorization
@@ -248,6 +310,14 @@ const proposal = await multisig.createAddSignerProposal(
 );
 console.log('Proposal ID:', proposal.id);
 ```
+
+Per-procedure threshold overrides are absolute signature counts and are never
+re-scaled on-chain, so growing the signer set silently lowers every override's
+effective signing ratio (a 2-of-2 override becomes 2-of-n).
+`createAddSignerProposal` logs a `console.warn` per affected override, and
+`multisig.overridesDilutedBySignerGrowth(newNumSigners)` returns them for UIs
+that want to prompt before proposing. Raise the affected overrides via an
+update-procedure-threshold proposal alongside the growth.
 
 ### Sign a Proposal
 
@@ -386,17 +456,35 @@ const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg
 const advice = await multisig.prepareCustomExecution(proposal.id, request.serialize());
 
 // The browser TransactionRequest is immutable, so rebuild from the same recipe
-// (inputs + salt) with the advice, then submit.
+// (inputs + salt) with the advice, then submit. `submitTransaction` takes the
+// proposal id to execute at the proposal's anchored reference block, since the
+// collected signatures only authorize the summary produced there.
 const { request: finalRequest } = buildP2idTransactionRequest(
   senderId, recipientId, faucetId, amount, { salt, signatureAdviceMap: advice },
 );
-await multisig.submitTransaction(finalRequest);
+await multisig.submitTransaction(proposal.id, finalRequest);
 ```
 
 The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches the
 commitment the cosigners signed.
+
+If a recipe was not retained, recover the salt from the proposal's transaction
+summary with `summarySalt`:
+
+```typescript
+import { summarySalt } from '@openzeppelin/miden-multisig-client';
+import { TransactionSummary } from '@miden-sdk/miden-sdk';
+
+const salt = summarySalt(TransactionSummary.deserialize(bytes));
+```
+
+On the Miden 0.16 pre-release line a summary no longer carries a dedicated salt
+word: it binds seven user-defined elements, and the guarded-multisig auth
+component zeroes the leading three and passes the auth-arg salt as the trailing
+four. `summarySalt` reads that convention, so prefer it over indexing
+`userParams()` by hand.
 
 > **Rust ↔ TS parity:** both SDKs expose the same producer surface —
 > `createCustomProposal` / `propose_custom_transaction`, `prepareCustomExecution` /

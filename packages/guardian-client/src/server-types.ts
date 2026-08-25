@@ -57,6 +57,8 @@ export interface ServerProposalMetadata {
   amount?: string;
   /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
   note_type?: string;
+  /** Base64-serialized Miden `ChainAnchor` pinning the proposal's reference block. */
+  chain_anchor?: string;
   /** P2IDE reclaim block height (issue #366). Presence of either height means a P2IDE note. */
   reclaim_height?: number;
   /** P2IDE timelock block height (issue #366). */

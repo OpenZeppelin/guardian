@@ -24,9 +24,9 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.16.2"
+version = "0.17.0-rc.1"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.96.1"
 authors = ["OpenZeppelin"]
 license = "AGPL-3.0"
 repository = "https://github.com/OpenZeppelin/guardian"
@@ -38,6 +38,19 @@ strip = true           # Strip debug symbols for smaller, more reproducible bina
 lto = true            # Link-time optimization for better optimization and determinism
 codegen-units = 1     # Single codegen unit for maximum reproducibility
 incremental = false   # Disable incremental compilation for reproducibility
+
+# Dependencies — the crypto crates especially (Falcon, RPO, Merkle) — are an
+# order of magnitude slower at opt-level 0, which dominated test wall-clock
+# (the CI Test Suite spent ~14 of its 20 minutes executing tests). Build
+# dependencies optimized in dev/test/coverage builds; workspace crates keep
+# opt-level 0 for fast rebuilds, debugging, and coverage. Dependencies
+# compile once and stay cached, so the extra compile cost is paid rarely.
+[profile.dev.package."*"]
+opt-level = 3
+# No debuginfo for dependencies: nobody steps into them, and dep debuginfo at
+# opt-level 3 is the bulk of target-dir size — which matters because CI's
+# per-repo cache quota is 10GB across all jobs' target caches.
+debug = false
 
 [workspace.dependencies]
 # Core
@@ -52,9 +65,9 @@ tonic-prost = "0.14.2"
 thiserror = "2.0.9"
 hex = "0.4.3"
 base64 = "0.22"
-rand_chacha = "0.9.0"
+rand_chacha = "0.10"
 tempfile = "3.15.0"
-rand = "0.9"
+rand = "0.10"
 anyhow = { version = "1.0", features = ["backtrace", "std"] }
 assert_matches = "1.5"
 rstest = "0.26"
@@ -64,11 +77,13 @@ chrono = "0.4"
 # parameter inference for axum `Query`/`Path` extractors.
 utoipa = { version = "5", features = ["axum_extras"] }
 
-# Miden
-miden-protocol = "0.15.3"
-miden-standards = "0.15.3"
-miden-tx = "0.15.3"
-miden-node-proto ="0.15.0"
-miden-testing = "0.15.3"
-miden-client = "0.15.0"
-miden-client-sqlite-store = "0.15.0"
+# Miden 0.16 rc line: exact pins only. Must match the versions embedded in
+# the @miden-sdk/miden-sdk WASM build, or the two clients compute different
+# transaction summary commitments and auth procedure roots.
+miden-protocol = "=0.16.0-rc.6"
+miden-standards = "=0.16.0-rc.6"
+miden-tx = "=0.16.0-rc.6"
+miden-node-proto-build = { version = "=0.16.0-rc.1", default-features = false }
+miden-testing = "=0.16.0-rc.6"
+miden-client = "=0.16.0-rc.2"
+miden-client-sqlite-store = "=0.16.0-rc.2"

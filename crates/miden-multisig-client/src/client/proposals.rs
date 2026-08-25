@@ -315,9 +315,18 @@ impl MultisigClient {
         )
         .await?;
 
-        // Execute and finalize
-        self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
-            .await
+        // Execute and finalize at the proposal's anchored reference block, so
+        // the summary the cosigners signed reproduces exactly. The anchor was
+        // already checked against the summary's block commitment when
+        // `get_proposal` verified the summary binding.
+        let chain_anchor = proposal.metadata.chain_anchor()?;
+        self.finalize_transaction(
+            account_id,
+            final_tx_request,
+            &proposal.transaction_type,
+            chain_anchor,
+        )
+        .await
     }
 
     /// Creates a proposal from a producer-built transaction the SDK does not
@@ -357,24 +366,27 @@ impl MultisigClient {
         let account_id = account.id();
 
         let tx_request = deserialize_transaction_request(transaction_request_bytes)?;
-        let tx_summary =
+        let (tx_summary, chain_anchor) =
             execute_for_summary(&mut self.miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
 
         let required_signatures = account.threshold()? as usize;
+        let chain_anchor_b64 = crate::transaction::chain_anchor_to_base64(&chain_anchor);
 
         let metadata = crate::proposal::ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
             proposal_type: Some(proposal_type.to_string()),
             required_signatures: Some(required_signatures),
             signers: vec![self.key_manager.commitment_hex()],
+            chain_anchor_b64: Some(chain_anchor_b64.clone()),
             ..Default::default()
         };
 
         let payload = crate::payload::ProposalPayload::new(&tx_summary)
             .with_signature(self.key_manager.as_ref(), tx_commitment)
             .with_custom_metadata(proposal_type.to_string())
-            .with_required_signatures(required_signatures);
+            .with_required_signatures(required_signatures)
+            .with_chain_anchor(chain_anchor_b64);
 
         let nonce = account.nonce() + 1;
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
@@ -441,9 +453,19 @@ impl MultisigClient {
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
+        // Re-execute at the proposal's anchored reference block: the signed
+        // summary binds that block's commitment, so probing at the local sync
+        // height would never reproduce it. The anchor itself was verified
+        // against the summary when `get_proposal` checked the binding.
+        let chain_anchor = proposal.metadata.chain_anchor()?;
         let probe_request = deserialize_transaction_request(transaction_request_bytes)?;
-        let derived_summary =
-            execute_for_summary(&mut self.miden_client, account_id, probe_request).await?;
+        let derived_summary = crate::transaction::execute_for_summary_at(
+            &mut self.miden_client,
+            account_id,
+            probe_request,
+            chain_anchor,
+        )
+        .await?;
         let derived_commitment = derived_summary.to_commitment();
         if derived_commitment != tx_summary_commitment {
             return Err(MultisigError::InvalidConfig(format!(
@@ -493,22 +515,23 @@ impl MultisigClient {
     /// Submits an integration-built transaction on-chain (issue #266 producer
     /// API). The caller injects the advice from `prepare_custom_execution` into
     /// its own transaction request (`request.advice_map_mut().extend(advice)`)
-    /// and passes it here to finalize.
-    pub async fn submit_transaction(&mut self, request: TransactionRequest) -> Result<()> {
+    /// and passes it here with the proposal id to finalize. The transaction is
+    /// executed at the proposal's anchored reference block, since the collected
+    /// signatures only authorize the summary produced at that block.
+    pub async fn submit_transaction(
+        &mut self,
+        proposal_id: &str,
+        request: TransactionRequest,
+    ) -> Result<()> {
         // Refresh local state first: the account may have advanced between
         // `prepare_custom_execution` and submit, and submitting against stale
         // state would reject an otherwise-valid request.
         self.sync().await?;
         let account_id = self.require_account()?.id();
-        self.miden_client
-            .submit_new_transaction(account_id, request)
-            .await
-            .map_err(|e| {
-                MultisigError::TransactionExecution(format!(
-                    "transaction submission failed: {:?}",
-                    e
-                ))
-            })?;
+        let proposal = self.get_proposal(&account_id, proposal_id).await?;
+        let chain_anchor = proposal.metadata.chain_anchor()?;
+        self.submit_transaction_at(account_id, request, chain_anchor)
+            .await?;
         let _ = self.miden_client.sync_state().await;
         Ok(())
     }
@@ -541,6 +564,7 @@ impl MultisigClient {
         self.sync().await?;
 
         let account = self.require_account()?.clone();
+        warn_on_override_dilution(&account, &transaction_type);
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         ProposalBuilder::new(transaction_type)
@@ -697,13 +721,45 @@ fn classify_abandon_status(status: &guardian_client::DeltaStatus) -> AbandonStat
     }
 }
 
+/// Warns when a signer-set-growing transaction would dilute per-procedure
+/// threshold overrides. Overrides are absolute signature counts and the
+/// on-chain update never re-scales them, so growth silently lowers every
+/// override's effective signing ratio; the fix is raising the override via
+/// `update_procedure_threshold` alongside the growth.
+fn warn_on_override_dilution(
+    account: &crate::account::MultisigAccount,
+    transaction_type: &TransactionType,
+) {
+    let current = account.cosigner_commitments().len() as u32;
+    let Some(target) = transaction_type.target_signer_count(current) else {
+        return;
+    };
+    let Ok(diluted) = account.overrides_diluted_by_signer_growth(target) else {
+        return;
+    };
+    for (procedure, threshold) in diluted {
+        tracing::warn!(
+            %procedure,
+            threshold,
+            current_signers = current,
+            target_signers = target,
+            "growing the signer set dilutes this procedure threshold override \
+             ({threshold}-of-{current} becomes {threshold}-of-{target}); consider raising it \
+             via update_procedure_threshold alongside the signer update"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use guardian_client::DeltaObject;
     use guardian_shared::ToJson;
     use miden_protocol::account::AccountId;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word, ZERO};
 
     use super::{AbandonStatus, classify_abandon_status};
@@ -714,8 +770,9 @@ mod tests {
         let account_id = AccountId::from_hex(account_id).expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("valid delta");
@@ -724,7 +781,17 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new_unchecked(seed), ZERO, ZERO, ZERO]),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([
+                ZERO,
+                ZERO,
+                ZERO,
+                Felt::new_unchecked(seed),
+                ZERO,
+                ZERO,
+                ZERO,
+            ]),
         )
     }
 

@@ -15,6 +15,22 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 2. Cosigners fetch pending deltas, verify details locally, sign the transaction summary, and push signatures back to GUARDIAN.
 3. Once ready, any cosigner builds the final transaction using all cosigner signatures + the GUARDIAN ack, executes it on-chain.
 
+## Miden compatibility
+
+This package's version and Miden's are **not** aligned. Pick the release that
+matches your Miden node:
+
+| This package | Miden protocol |
+|---|---|
+| 0.17.x | 0.16.x (pre-release) |
+| 0.16.x | 0.15.x |
+| 0.15.x | 0.15.x |
+
+Adopting a new Miden line has twice required an irreversible reset of
+Guardian-stored account data, so an upgrade is not a drop-in. Full matrix, the
+breaking changes per line, and what each upgrade does to stored data:
+[MIDEN_COMPATIBILITY.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/MIDEN_COMPATIBILITY.md).
+
 ## Installation
 
 Add the crate to your workspace (already available in this repo). From another project:
@@ -322,10 +338,13 @@ let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").a
 
 // Producer (once threshold is met): bind-check the request, fetch the validated
 // advice, inject it into the request, and submit. `prepare_custom_execution`
-// verifies the request against the signed commitment *before* the GUARDIAN ack.
+// verifies the request against the signed commitment *before* the GUARDIAN ack,
+// re-executing at the proposal's anchored reference block; `submit_transaction`
+// takes the proposal id to execute at that same anchor, since the collected
+// signatures only authorize the summary produced there.
 let advice = client.prepare_custom_execution(&proposal.id, &request.to_bytes()).await?;
 request.advice_map_mut().extend(advice);
-client.submit_transaction(request).await?;
+client.submit_transaction(&proposal.id, request).await?;
 ```
 
 The integration keeps only its own recipe (build inputs + salt) so it can
