@@ -167,7 +167,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # mode=min stores only final-stage layers: mode=max held ~2.4GB of the
+          # 10GB repo cache quota that the CI cargo caches need, and this
+          # workflow only runs on releases, where a slower image build is fine.
+          cache-to: type=gha,mode=min
           provenance: mode=max
           sbom: true
 
