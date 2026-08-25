@@ -13,26 +13,35 @@ function stubClient(options: {
   before: number;
   /** Note count after the drain (subsequent `notes.list()` calls). */
   after: number;
-  fetchPrivate: (opts?: { mode?: string }) => Promise<void>;
+  fetchPrivate: () => Promise<void>;
+  syncNoteTransport?: () => Promise<void>;
 }): {
   client: MidenClient;
   fetchPrivate: ReturnType<typeof vi.fn>;
   list: ReturnType<typeof vi.fn>;
+  removeSetting: ReturnType<typeof vi.fn>;
+  syncNoteTransport: ReturnType<typeof vi.fn>;
 } {
   let call = 0;
   const fetchPrivate = vi.fn(options.fetchPrivate);
+  const removeSetting = vi.fn(async () => {});
+  const syncNoteTransport = vi.fn(options.syncNoteTransport ?? (async () => {}));
   const list = vi.fn(async () => {
     const length = call === 0 ? options.before : options.after;
     call += 1;
     return new Array(length).fill({});
   });
-  const client = { notes: { list, fetchPrivate } } as unknown as MidenClient;
-  return { client, fetchPrivate, list };
+  const client = {
+    notes: { list, fetchPrivate },
+    settings: { remove: removeSetting },
+    syncNoteTransport,
+  } as unknown as MidenClient;
+  return { client, fetchPrivate, list, removeSetting, syncNoteTransport };
 }
 
 describe('drainPrivateNoteBacklog', () => {
   it('reports completed with the count of newly imported records', async () => {
-    const { client, fetchPrivate } = stubClient({
+    const { client, fetchPrivate, removeSetting, syncNoteTransport } = stubClient({
       before: 1,
       after: 3,
       fetchPrivate: async () => {},
@@ -40,8 +49,32 @@ describe('drainPrivateNoteBacklog', () => {
 
     const report = await drainPrivateNoteBacklog(client);
 
-    expect(fetchPrivate).toHaveBeenCalledWith({ mode: 'all' });
+    expect(fetchPrivate).toHaveBeenCalledWith();
+    // The covered-tags marker must be cleared before the transport sync so
+    // every tracked tag is re-drained from the start (miden-sdk 0.16 moved
+    // full-drain semantics into covered-tag bookkeeping).
+    expect(removeSetting).toHaveBeenCalledWith('note_transport_covered_tags');
+    expect(removeSetting.mock.invocationCallOrder[0]).toBeLessThan(
+      syncNoteTransport.mock.invocationCallOrder[0],
+    );
     expect(report).toEqual({ status: 'completed', imported: 2, retryable: false });
+  });
+
+  it('classifies a failure thrown by the transport sync stage like a drain failure', async () => {
+    const { client } = stubClient({
+      before: 0,
+      after: 2,
+      fetchPrivate: async () => {},
+      syncNoteTransport: async () => {
+        throw new TypeError('Failed to fetch');
+      },
+    });
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    expect(report.status).toBe('failed');
+    expect(report.retryable).toBe(true);
+    expect(report.imported).toBe(2);
   });
 
   it('reports a disabled transport as unavailable, not retryable, without throwing', async () => {
@@ -294,13 +327,19 @@ describe('drainPrivateNoteBacklog (wasm mock client)', () => {
     const deviceA = await MidenClient.createMock();
     const account = await deviceA.accounts.create();
     const accountBytes = account.serialize();
+    // miden-sdk 0.16 requires at least one asset on a P2ID note. The token
+    // is a syntactically valid fungible-faucet account id (the same constant
+    // the Rust test fixtures use); nothing is minted from it — the note only
+    // travels the mock transport.
     const note = await createP2IDNote({
       from: account,
       to: account,
-      assets: [],
+      assets: { token: '0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c', amount: 100 },
       type: NoteVisibility.Private,
     });
-    await deviceA.notes.sendPrivate({ note, to: account });
+    // The mock chain never commits the note, so any at-or-below-commitment
+    // hint works; 0 is always valid.
+    await deviceA.notes.sendPrivate({ note, to: account, scanAfterBlockNum: 0 });
     const transportState = await deviceA.serializeMockNoteTransportNode();
 
     // Device B ("new device after loss"): fresh store sharing the same

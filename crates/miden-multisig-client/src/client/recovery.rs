@@ -7,7 +7,7 @@
 //! (issue #414, sub-issue of #357).
 
 use miden_client::ClientError;
-use miden_client::note_transport::NoteTransportError;
+use miden_client::note_transport::{NOTE_TRANSPORT_COVERED_TAGS_KEY, NoteTransportError};
 
 use super::MultisigClient;
 use crate::error::{Result, error_chain};
@@ -84,7 +84,22 @@ impl MultisigClient {
         }
 
         let before = self.input_note_count().await?;
-        let drain_result = self.miden_client.fetch_all_private_notes().await;
+        // miden-client 0.16 replaced the explicit full drain with covered-tag
+        // bookkeeping inside `sync_note_transport`: each tag not yet marked
+        // covered is drained from the start with a local cursor (the global
+        // cursor is never regressed), then the steady-state fetch runs.
+        // Clearing the covered-tags marker first forces that full per-tag
+        // re-drain for every tracked tag, which is exactly the recovery
+        // semantic this primitive promises. Imports dedupe, so re-draining
+        // already-seen history is harmless.
+        let drain_result = match self
+            .miden_client
+            .remove_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string())
+            .await
+        {
+            Ok(_) => self.miden_client.sync_note_transport().await.map(|_| ()),
+            Err(err) => Err(err),
+        };
         // Count even when the drain failed: each fetched batch is imported as
         // it arrives, so notes recovered before the failure stay in the store.
         // A drain never removes records (and `&mut self` excludes concurrent
@@ -145,8 +160,8 @@ impl MultisigClient {
     }
 }
 
-/// Maps a `fetch_all_private_notes` failure onto a report class:
-/// `(status, retryable)`.
+/// Maps a transport-drain (`sync_note_transport`) failure onto a report
+/// class: `(status, retryable)`.
 fn classify_drain_failure(err: &ClientError) -> (TransportRecoveryStatus, bool) {
     match err {
         // The match is deliberately exhaustive so a new upstream variant is a
@@ -362,16 +377,17 @@ mod tests {
         use miden_client::account::{
             AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType,
         };
-        use miden_client::auth::AuthSchemeId;
+        use miden_protocol::account::auth::AuthScheme;
+        use miden_standards::account::auth::Approver;
 
         let key_pair = AuthSecretKey::new_falcon512_poseidon2();
-        let auth_component = AuthSingleSig::new(
+        let auth_component = AuthSingleSig::new(Approver::new(
             key_pair.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
-        );
+            AuthScheme::Falcon512Poseidon2,
+        ));
         AccountBuilder::new([seed; 32])
             .account_type(AccountType::Private)
-            .with_auth_component(auth_component)
+            .with_component(auth_component)
             .with_component(BasicWallet)
             .build_with_schema_commitment()
             .expect("test wallet builds")
@@ -379,16 +395,18 @@ mod tests {
 
     /// A distinct (per `seed`) private P2ID note addressed at `target`.
     fn private_note_for(target: &Account, seed: u32) -> Note {
+        use miden_protocol::asset::FungibleAsset;
+
         let mut rng = RandomCoin::new(Word::from(&[seed, 0, 0, 0]));
-        P2idNote::create(
-            target.id(),
-            target.id(),
-            vec![],
-            NoteType::Private,
-            Default::default(),
-            &mut rng,
-        )
-        .expect("p2id note builds")
+        P2idNote::builder()
+            .sender(target.id())
+            .target(target.id())
+            .asset(FungibleAsset::mock(1))
+            .note_type(NoteType::Private)
+            .generate_serial_number(&mut rng)
+            .build()
+            .expect("p2id note builds")
+            .into()
     }
 
     fn add_to_transport(node: &Arc<RwLock<MockNoteTransportNode>>, note: Note) {
@@ -669,7 +687,13 @@ mod tests {
         let mut sender = live_client(&dir.path().join("sender"), true).await;
         sender
             .miden_client
-            .send_private_note(private_note_for(&account, 77), &Address::new(account.id()))
+            .send_private_note_with_block_hint(
+                private_note_for(&account, 77),
+                &Address::new(account.id()),
+                // The note never commits on the mock chain, so any
+                // at-or-below-commitment hint is valid.
+                miden_protocol::block::BlockNumber::from(0u32),
+            )
             .await
             .expect("transport send succeeds");
 

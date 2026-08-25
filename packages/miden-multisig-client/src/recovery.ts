@@ -171,7 +171,22 @@ export async function drainPrivateNoteBacklog(
     Math.max((await midenClient.notes.list()).length - before, 0);
 
   try {
-    await midenClient.notes.fetchPrivate({ mode: 'all' });
+    // The incremental fetch doubles as the transport probe: miden-sdk 0.16's
+    // syncNoteTransport silently no-ops when the transport is disabled, but
+    // this drain must report `unavailable`, and fetchPrivate still throws
+    // the upstream disabled error.
+    await midenClient.notes.fetchPrivate();
+    // miden-sdk 0.16 replaced the explicit full drain with covered-tag
+    // bookkeeping inside syncNoteTransport: every tag not yet marked covered
+    // is drained from the start with a local cursor (the global cursor is
+    // never regressed), then the steady-state fetch runs. Clearing the
+    // covered-tags marker first forces that full per-tag re-drain — exactly
+    // the recovery semantic this primitive promises. Imports dedupe, so
+    // re-draining already-seen history is harmless. The key mirrors
+    // miden-client's `NOTE_TRANSPORT_COVERED_TAGS_KEY`, which the JS surface
+    // does not re-export.
+    await midenClient.settings.remove('note_transport_covered_tags');
+    await midenClient.syncNoteTransport();
   } catch (err) {
     // A broken local store is an environment failure, not a transport
     // outcome: the whole recovery flow needs to know, so it propagates
