@@ -86,6 +86,10 @@ import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
 import { ProposalSignatures } from './proposal/signatures.js';
 import {
+  importNotesFromProposals as importNotesFromProposalsStandalone,
+  type NoteImportOutcome,
+} from './proposalNoteImport.js';
+import {
   getRawMidenClient,
   getTransactionProver,
   requireMidenRpcEndpoint,
@@ -1229,6 +1233,28 @@ export class Multisig {
   async importNoteFromFile(file: Blob): Promise<string> {
     const noteBytes = new Uint8Array(await file.arrayBuffer());
     return this.importNoteFromBytes(noteBytes);
+  }
+
+  /**
+   * Import the notes embedded in this account's pending v2 consume-notes
+   * proposals into the local Miden store (issue #415) — the recovery
+   * convenience over the standalone
+   * {@link importNotesFromProposalsStandalone | importNotesFromProposals},
+   * reusing this client's Miden RPC endpoint and retry configuration
+   * instead of taking them as parameters.
+   *
+   * When `proposals` is omitted, the pending proposals are synced from
+   * GUARDIAN first. See the standalone function for per-note outcome
+   * semantics; run a sync afterwards so imported notes are verified.
+   */
+  async importNotesFromProposals(
+    proposals?: ReadonlyArray<Pick<Proposal, 'id' | 'metadata'>>,
+  ): Promise<NoteImportOutcome[]> {
+    const source = proposals ?? (await this.syncProposals());
+    return importNotesFromProposalsStandalone(this.midenClient, source, {
+      midenRpcEndpoint: this.getMidenRpcEndpoint(),
+      rpc: { retry: { maxAttempts: this.rpcConfig.maxAttempts } },
+    });
   }
 
   /**

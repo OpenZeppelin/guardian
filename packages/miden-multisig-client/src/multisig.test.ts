@@ -17,6 +17,7 @@ const {
   mockNoteFileDeserialize,
   mockGetSignerCommitments,
   mockGetGuardianCommitment,
+  mockImportNotesFromProposals,
 } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
@@ -24,6 +25,11 @@ const {
   mockNoteFileDeserialize: vi.fn(),
   mockGetSignerCommitments: vi.fn(),
   mockGetGuardianCommitment: vi.fn(),
+  mockImportNotesFromProposals: vi.fn(),
+}));
+
+vi.mock('./proposalNoteImport.js', () => ({
+  importNotesFromProposals: mockImportNotesFromProposals,
 }));
 
 const { MOCK_CHAIN_ANCHOR_B64, createMockChainAnchor } = vi.hoisted(() => {
@@ -427,6 +433,47 @@ describe('Multisig', () => {
 
       expect(result).toBe(page);
       expect(spy).toHaveBeenCalledWith('0x' + 'a'.repeat(30), { limit: 5, cursor: 'prev' });
+    });
+  });
+
+  describe('importNotesFromProposals (issue #415)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it("delegates to the standalone helper with this client's endpoint and rpc settings", async () => {
+      const multisig = createTestMultisig(config);
+      const outcomes = [{ identifier: '0x1', source: 'proposal', status: 'imported' }];
+      mockImportNotesFromProposals.mockResolvedValue(outcomes);
+      const proposals = [
+        { id: 'p-1', metadata: { proposalType: 'consume_notes', description: '', noteIds: [] } },
+      ];
+
+      const result = await multisig.importNotesFromProposals(proposals as never);
+
+      expect(result).toBe(outcomes);
+      expect(mockImportNotesFromProposals).toHaveBeenCalledWith(mockWebClient, proposals, {
+        midenRpcEndpoint: MIDEN_RPC_ENDPOINT,
+        // Reuses the client's resolved retry budget (default: 2 attempts).
+        rpc: { retry: { maxAttempts: 2 } },
+      });
+    });
+
+    it('syncs proposals from GUARDIAN when none are passed', async () => {
+      const multisig = createTestMultisig(config);
+      mockImportNotesFromProposals.mockResolvedValue([]);
+      const spy = vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+
+      await multisig.importNotesFromProposals();
+
+      expect(spy).toHaveBeenCalledWith('0x' + 'a'.repeat(30));
+      expect(mockImportNotesFromProposals).toHaveBeenCalledWith(
+        mockWebClient,
+        [],
+        expect.objectContaining({ midenRpcEndpoint: MIDEN_RPC_ENDPOINT }),
+      );
     });
   });
 

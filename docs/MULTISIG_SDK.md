@@ -631,27 +631,28 @@ export/import helpers).
 
 After key-based recovery the local Miden store starts empty, so notes the
 account was in the middle of consuming are gone. v2 `consume_notes` proposals
-embed the serialized notes they consume (issue #229), and the standalone
-`importNotesFromProposals` helper turns those embedded bytes back into store
-records (issue #415): it fetches each note's on-chain inclusion proof and
-imports the note individually, so it works for private notes too — the node
-never needs to hold the note body.
+embed the serialized notes they consume (issue #229), and
+`multisig.importNotesFromProposals()` turns those embedded bytes back into
+store records (issue #415): it fetches each note's on-chain inclusion proof
+and imports the note individually, so it works for private notes too — the
+node never needs to hold the note body. The method reuses the client's Miden
+RPC endpoint and retry configuration, and syncs pending proposals from
+GUARDIAN when none are passed.
 
 ```typescript
-import { importNotesFromProposals } from '@openzeppelin/miden-multisig-client';
-
 const multisig = await client.load(accountId, signer);
-const proposals = await multisig.syncProposals();
 
-const outcomes = await importNotesFromProposals(midenClient, proposals, {
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io',
-});
+const outcomes = await multisig.importNotesFromProposals();
 for (const outcome of outcomes) {
   console.log(outcome.identifier, outcome.status, outcome.reason ?? '');
 }
 
 await multisig.syncState(); // verifies the imported notes
 ```
+
+A standalone `importNotesFromProposals(midenClient, proposals, {
+midenRpcEndpoint, rpc? })` export backs the method for callers holding a raw
+WASM client or proposals from another source.
 
 Each unique embedded note gets its own `NoteImportOutcome` with a `status` of
 `imported`, `already-present`, `already-consumed`, `not-committed`, `invalid`,
@@ -902,6 +903,7 @@ Standalone functions:
 | `exportNoteToFile(noteId, filename?)` | Browser-only: download the note file |
 | `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
+| `importNotesFromProposals(proposals?)` | Import notes embedded in pending v2 consume-notes proposals, reusing the client's RPC settings; syncs proposals when none are passed (issue #415) |
 | `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
