@@ -66,8 +66,9 @@ pub use client::{AbandonRequestState, AbandonStatus};
 pub use client::{
     ConsumableNote, HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry,
     HistoryEntryStatus, HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility,
-    HistoryPage, MultisigClient, NoteFilter, ProposalResult, RecoveredAccount,
-    StateVerificationResult, TransportRecoveryReport, TransportRecoveryStatus,
+    HistoryPage, MultisigClient, NoteFilter, NoteImportOutcome, NoteImportSource, NoteImportStatus,
+    ProposalResult, RecoveredAccount, StateVerificationResult, TransportRecoveryReport,
+    TransportRecoveryStatus,
 };
 
 // Procedures

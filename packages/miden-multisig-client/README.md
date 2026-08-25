@@ -265,6 +265,73 @@ service's retention. Senders may deliver private notes out-of-band without
 using the transport, and relayed blobs are pruned after the retention
 window.
 
+### Recover Notes From Pending Proposals
+
+After key-based recovery the local Miden store starts empty. v2
+`consume_notes` proposals embed the serialized notes they consume, and the
+standalone `importNotesFromProposals` helper turns those embedded bytes back
+into store records: it fetches each note's on-chain inclusion proof and
+imports the note individually, so it works for private notes too.
+
+```typescript
+import { importNotesFromProposals } from '@openzeppelin/miden-multisig-client';
+
+const proposals = await multisig.syncProposals();
+const outcomes = await importNotesFromProposals(midenClient, proposals, {
+  midenRpcEndpoint: 'https://rpc.testnet.miden.io',
+});
+await multisig.syncState(); // verifies the imported notes
+```
+
+Each unique embedded note gets its own `NoteImportOutcome` (`imported`,
+`already-present`, `already-consumed`, `not-committed`, `invalid`, or
+`failed`); duplicates across proposals fold into one outcome, a malformed or
+failing note never blocks the others, and the helper never throws for
+per-note problems. Notes not yet on chain are recorded as expected (their
+tag is tracked so a later sync picks them up) and reported retryable.
+
+Proposals are opportunistic recovery material, not a backup: v1 proposals
+carry no note bytes, proposals disappear once canonicalized, and embedded
+note bytes are visible to the Guardian operator (existing v2 behavior, not a
+new exposure).
+
+### Backfill Historical Public Notes By Tag
+
+Normal forward sync starts from the store's **global** cursor, so in a store
+shared with other accounts the cursor may already be past blocks containing
+a recovered account's notes. `backfillPublicNotesByTag` scans a historical
+block range (genesis to tip by default) for public notes addressed at the
+account's standard note tag and imports them with their on-chain inclusion
+proofs — without ever touching the global sync height. The scan's cost grows
+with the number of matching notes, not the range length, so a full
+genesis-to-tip scan is fast on an ordinary account.
+
+```typescript
+import { backfillPublicNotesByTag } from '@openzeppelin/miden-multisig-client';
+
+const multisig = await client.load(accountId, signer);
+const report = await backfillPublicNotesByTag(midenClient, {
+  accountId: multisig.accountId,
+  midenRpcEndpoint: 'https://rpc.testnet.miden.io',
+});
+// report.discovered, report.skippedPrivate, report.outcomes (per public note)
+await multisig.syncState(); // verifies the imported notes
+```
+
+Each unique public note gets its own `NoteImportOutcome` (source
+`'backfill'`), with the same statuses and duplicate tolerance as the
+proposal import. Tags are best-effort filters: notes sent with unrelated
+custom tags are outside this scan's guarantee, and unrelated notes whose tag
+collides with the account's are imported harmlessly. Private matches are
+counted as `skippedPrivate` — the chain holds no body for them; recover
+those with the transport drain or the proposal import instead.
+
+Scan problems are reported, never thrown: a range dense enough to trip the
+node's pagination cap is split client-side and rescanned, and any sub-range
+that still cannot be covered lands in `report.uncovered` with
+`retryable`/`reason` set, so a partial scan never aborts the rest of a
+recovery flow.
+
 ### Fetch Account State
 
 ```typescript
