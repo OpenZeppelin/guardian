@@ -4,9 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "build:sdk": "npm --prefix ../../packages run build -w @openzeppelin/guardian-client && npm --prefix ../../packages run build -w @openzeppelin/miden-multisig-client",
+    "predev": "npm run build:sdk",
     "dev": "vite",
+    "prebuild": "npm run build:sdk",
     "build": "vite build",
     "preview": "vite preview",
+    "pretypecheck": "npm run build:sdk",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

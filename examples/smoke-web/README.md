@@ -16,9 +16,19 @@ This app is the browser analogue of the Rust CLI smoke surface:
 
 ## Setup
 
+Install the shared TypeScript workspace dependencies once from the repository
+root. The example's `dev`, `build`, and `typecheck` commands rebuild their
+Guardian SDK dependencies automatically.
+
 ```bash
-cd /Users/marcos/repos/guardian/examples/smoke-web
-npm install
+cd packages
+npm ci
+
+cd ../examples/_shared/multisig-browser
+npm ci
+
+cd ../../smoke-web
+npm ci
 npm run typecheck
 npm run dev
 ```
