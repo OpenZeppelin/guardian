@@ -60,6 +60,8 @@ The app exposes `window.smoke` with JSON-safe methods:
 - `exportProposal({ proposalId })`
 - `signProposalOffline({ proposalId, json })`
 - `importProposal({ json })`
+- `recoverByKey()`
+- `recoverNotes({ transportDrain?, proposalImport?, publicBackfill?, fromBlock?, toBlock?, syncAfter? })`
 - `clearLocalState()`
 - `events()`
 
@@ -128,5 +130,6 @@ Use this harness for manual smoke flows that need:
 - custom (producer-API) propose/sign/prepare/submit loops
 - offline export/import/sign flows
 - switch-GUARDIAN proposal orchestration
+- key-based account recovery plus the note-recovery flow (`recoverNotes`)
 
 The UI is intentionally plain. Agents should prefer `window.smoke` over DOM clicking.

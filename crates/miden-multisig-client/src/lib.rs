@@ -67,8 +67,9 @@ pub use client::{
     BlockRange, ConsumableNote, HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning,
     HistoryEntry, HistoryEntryStatus, HistoryNote, HistoryNoteAsset, HistoryNoteTag,
     HistoryNoteVisibility, HistoryPage, MultisigClient, NoteFilter, NoteImportOutcome,
-    NoteImportSource, NoteImportStatus, ProposalResult, PublicBackfillReport, RecoveredAccount,
-    StateVerificationResult, TransportRecoveryReport, TransportRecoveryStatus,
+    NoteImportSource, NoteImportStatus, NoteRecoveryOptions, NoteRecoveryReport, ProposalResult,
+    PublicBackfillOptions, PublicBackfillReport, RecoveredAccount, RecoveryStep,
+    RecoveryStepProblem, StateVerificationResult, TransportRecoveryReport, TransportRecoveryStatus,
 };
 
 // Procedures

@@ -235,12 +235,35 @@ authorizes the queried commitment.
 
 ### Recovering Notes After Device Loss
 
-The three recovery primitives from #357 restore note state that normal
-forward sync cannot see. Use them together after `load()` on a recovered
-account: the transport drain re-fetches relayed private notes, the proposal
-import rebuilds notes embedded in pending consume proposals, and the public
-backfill rescans the chain for public notes behind the store's sync cursor.
-Run a sync afterwards so imported notes are verified.
+Normal forward sync cannot see notes that landed behind the store's
+cursors. After `load()` on a recovered account, `multisig.recoverNotes()`
+runs the three recovery strategies as one flow — the transport drain
+re-fetches relayed private notes, the proposal import rebuilds notes
+embedded in pending consume proposals, and the public backfill rescans the
+chain for historical public notes — and finishes with a normal sync (chain
+sync plus GUARDIAN state sync) so imported notes are verified and ready to
+consume.
+
+```typescript
+const multisig = await client.load(accountId, signer);
+
+const report = await multisig.recoverNotes();
+console.log(`recovered ${report.imported} notes`);
+for (const problem of report.problems) {
+  console.log(`step ${problem.step} did not run: ${problem.reason}`);
+}
+```
+
+Pass `RecoverNotesOptions` to choose strategies (`transportDrain`,
+`proposalImport`, `publicBackfill`), bound the backfill's block range
+(`fromBlock`/`toBlock`), or skip the final sync (`syncAfter: false`). Each
+strategy's own report lands in the combined `NoteRecoveryReport`; a strategy
+that cannot run at all (GUARDIAN unreachable, chain tip unresolvable, broken
+local store) becomes a `RecoveryStepProblem` entry instead of aborting the
+flow, and `retryable: true` means rerunning the flow — which is idempotent —
+can plausibly recover more.
+
+The three underlying primitives are also exposed individually:
 
 #### Drain The Private-Note Transport Backlog
 

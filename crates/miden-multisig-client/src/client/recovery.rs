@@ -3,8 +3,7 @@
 //! After recovery on a fresh device the local store has no note-transport
 //! cursor — and in a shared dirty store another account's sync may have
 //! advanced the cursor past notes belonging to the newly recovered account.
-//! The primitives here rescan sources that normal forward sync would skip
-//! (issue #414, sub-issue of #357).
+//! The primitives here rescan sources that normal forward sync would skip.
 
 use miden_client::ClientError;
 use miden_client::note_transport::{NOTE_TRANSPORT_COVERED_TAGS_KEY, NoteTransportError};
@@ -54,7 +53,7 @@ pub struct TransportRecoveryReport {
 impl MultisigClient {
     /// Rescans the full private-note transport backlog for every tracked note
     /// tag and imports what it finds, regardless of the stored transport
-    /// cursor (issue #414).
+    /// cursor.
     ///
     /// Use after account recovery: a fresh store has no transport cursor, and
     /// in a shared store another account's sync may have advanced the cursor
@@ -209,27 +208,17 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use miden_client::builder::ClientBuilder;
-    use miden_client::keystore::FilesystemKeyStore;
+    use miden_client::ClientError;
     use miden_client::note_transport::{NoteTransportClient, NoteTransportError};
     use miden_client::rpc::Endpoint;
-    use miden_client::testing::mock::MockRpcApi;
     use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
-    use miden_client::{ClientError, Serializable};
-    use miden_client_sqlite_store::SqliteStore;
-    use miden_protocol::Word;
-    use miden_protocol::account::Account;
-    use miden_protocol::account::auth::AuthSecretKey;
-    use miden_protocol::crypto::rand::RandomCoin;
-    use miden_protocol::note::{Note, NoteDetails, NoteTag, NoteType};
-    use miden_standards::account::auth::AuthSingleSig;
-    use miden_standards::note::P2idNote;
+    use miden_protocol::note::{Note, NoteTag, NoteType};
     use miden_tx::utils::sync::RwLock;
 
     use super::*;
-    use crate::keystore::GuardianKeyStore;
-    use crate::prover::ProverConfig;
-    use crate::rpc::RpcConfig;
+    use crate::client::test_support::{
+        add_to_transport, mock_transport, offline_client, p2id_note_for, test_wallet,
+    };
 
     // ---------------------------------------------------------------------
     // classification
@@ -327,92 +316,9 @@ mod tests {
     // offline behavioral tests (mock chain + mock transport)
     // ---------------------------------------------------------------------
 
-    /// Fully offline MultisigClient: mock chain RPC, SQLite store in a temp
-    /// dir, and (optionally) the upstream mock note transport.
-    async fn offline_client(
-        dir: &Path,
-        transport: Option<Arc<dyn NoteTransportClient>>,
-    ) -> MultisigClient {
-        let store = SqliteStore::new(dir.join("store.sqlite3"))
-            .await
-            .expect("sqlite store opens");
-        let keystore_dir = dir.join("keys");
-        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
-
-        let mut builder = ClientBuilder::<FilesystemKeyStore>::new()
-            .rpc(Arc::new(MockRpcApi::default()))
-            .store(Arc::new(store))
-            .filesystem_keystore(keystore_dir)
-            .expect("keystore opens");
-        if let Some(transport) = transport {
-            builder = builder.note_transport(transport);
-        }
-        let miden_client = builder.build().await.expect("miden client builds");
-
-        MultisigClient::new(
-            miden_client,
-            Arc::new(GuardianKeyStore::generate()),
-            "http://localhost:1".to_string(),
-            dir.to_path_buf(),
-            Endpoint::localhost(),
-            None,
-            ProverConfig::new(),
-            RpcConfig::new(),
-        )
-    }
-
-    fn mock_transport() -> (
-        Arc<RwLock<MockNoteTransportNode>>,
-        Arc<dyn NoteTransportClient>,
-    ) {
-        let node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-        let api: Arc<dyn NoteTransportClient> = Arc::new(MockNoteTransportApi::new(node.clone()));
-        (node, api)
-    }
-
-    /// A plain wallet account with a fresh seed; enough for the store-side
-    /// account/tag behavior under test (no multisig components needed).
-    fn test_wallet(seed: u8) -> Account {
-        use miden_client::account::component::BasicWallet;
-        use miden_client::account::{
-            AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType,
-        };
-        use miden_protocol::account::auth::AuthScheme;
-        use miden_standards::account::auth::Approver;
-
-        let key_pair = AuthSecretKey::new_falcon512_poseidon2();
-        let auth_component = AuthSingleSig::new(Approver::new(
-            key_pair.public_key().to_commitment(),
-            AuthScheme::Falcon512Poseidon2,
-        ));
-        AccountBuilder::new([seed; 32])
-            .account_type(AccountType::Private)
-            .with_component(auth_component)
-            .with_component(BasicWallet)
-            .build_with_schema_commitment()
-            .expect("test wallet builds")
-    }
-
     /// A distinct (per `seed`) private P2ID note addressed at `target`.
-    fn private_note_for(target: &Account, seed: u32) -> Note {
-        use miden_protocol::asset::FungibleAsset;
-
-        let mut rng = RandomCoin::new(Word::from(&[seed, 0, 0, 0]));
-        P2idNote::builder()
-            .sender(target.id())
-            .target(target.id())
-            .asset(FungibleAsset::mock(1))
-            .note_type(NoteType::Private)
-            .generate_serial_number(&mut rng)
-            .build()
-            .expect("p2id note builds")
-            .into()
-    }
-
-    fn add_to_transport(node: &Arc<RwLock<MockNoteTransportNode>>, note: Note) {
-        let header = *note.header();
-        let details_bytes = NoteDetails::from(note).to_bytes();
-        node.write().add_note(header, details_bytes);
+    fn private_note_for(target: &miden_protocol::account::Account, seed: u32) -> Note {
+        p2id_note_for(target, seed, NoteType::Private)
     }
 
     #[tokio::test]

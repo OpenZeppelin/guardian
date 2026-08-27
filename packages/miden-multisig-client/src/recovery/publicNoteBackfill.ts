@@ -1,5 +1,5 @@
 /**
- * Historical public-note backfill by tag (issue #416, sub-issue of #357).
+ * Historical public-note backfill by tag.
  *
  * Public notes addressed to an account are on chain, but normal forward sync
  * starts from the store's **global** cursor: in a shared dirty store the
@@ -58,9 +58,20 @@ const MAX_SCAN_REQUESTS = 128;
  * wrap modulo 2^32 at the WASM boundary and scan the wrong range. */
 const MAX_BLOCK_NUMBER = 4_294_967_295;
 
+/**
+ * The requested scan range is invalid (out-of-range bound, or inverted
+ * against the resolved chain tip) — a caller error that retrying cannot fix,
+ * as opposed to the transient chain-tip-lookup failures this function also
+ * throws. `Multisig.recoverNotes` keys its problem retryability on this,
+ * mirroring the Rust orchestrator's `InvalidConfig` check.
+ */
+export class BackfillRangeError extends Error {}
+
 function requireBlockNumber(name: string, value: number): void {
   if (!Number.isInteger(value) || value < 0 || value > MAX_BLOCK_NUMBER) {
-    throw new Error(`${name} must be an integer in [0, ${MAX_BLOCK_NUMBER}], got ${value}`);
+    throw new BackfillRangeError(
+      `${name} must be an integer in [0, ${MAX_BLOCK_NUMBER}], got ${value}`,
+    );
   }
 }
 
@@ -162,7 +173,7 @@ export interface BackfillPublicNotesOptions {
 /**
  * Scans a historical block range for public notes addressed at an account's
  * standard note tag and imports what it finds with their on-chain inclusion
- * proofs (issue #416). Counterpart of
+ * proofs. Counterpart of
  * `MultisigClient::backfill_public_notes_by_tag` in the Rust SDK.
  *
  * Use after account recovery: normal forward sync starts from the store's
@@ -170,7 +181,7 @@ export interface BackfillPublicNotesOptions {
  * past blocks containing the recovered account's notes, and a fresh store
  * would need to replay the whole chain state to see them. The scan is
  * tag-scoped and its cost grows with the number of matching notes, not the
- * range length (spike #412), which makes genesis an acceptable default lower
+ * range length, which makes genesis an acceptable default lower
  * bound. The global sync height is never touched — run normal sync
  * afterwards to verify the imported notes. The store must have synced at
  * least once (`MultisigClient.load` does this): importing a proof into a
@@ -235,7 +246,7 @@ export async function backfillPublicNotesByTag(
     }
   }
   if (from > to) {
-    throw new Error(`backfill range is inverted: fromBlock ${from} > toBlock ${to}`);
+    throw new BackfillRangeError(`backfill range is inverted: fromBlock ${from} > toBlock ${to}`);
   }
 
   // Work queue of inclusive sub-ranges, split in half whenever the node

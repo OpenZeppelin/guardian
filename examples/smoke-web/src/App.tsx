@@ -421,6 +421,12 @@ export default function App() {
             >
               Recover by key
             </button>
+            <button
+              disabled={!sessionReady || !accountLoaded}
+              onClick={() => runAction(async () => api.recoverNotes())}
+            >
+              Recover notes
+            </button>
             <button disabled={!sessionReady || !accountLoaded} onClick={handleRegisterOnGuardian}>
               Register on Guardian
             </button>
@@ -715,7 +721,12 @@ const { recipe } = await window.smoke.createCustomProposal({
 await window.smoke.executeCustomProposal({ recipe });
 
 const matches = await window.smoke.recoverByKey();
-// matches: [{ accountId: '0x...', state: { ... } }, ...]`}
+// matches: [{ accountId: '0x...', state: { ... } }, ...]
+
+// After loading a recovered account, restore its notes in one call:
+const { report } = await window.smoke.recoverNotes();
+// report.imported, report.transport, report.proposalImport,
+// report.backfill, report.problems`}
           </pre>
         </section>
       </main>

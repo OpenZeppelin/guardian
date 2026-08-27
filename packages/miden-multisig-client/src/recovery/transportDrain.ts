@@ -4,8 +4,7 @@
  * After recovery on a fresh device the local store has no note-transport
  * cursor — and in a shared dirty store another account's sync may have
  * advanced the cursor past notes belonging to the newly recovered account.
- * The primitives here rescan sources that normal forward sync would skip
- * (issue #414, sub-issue of #357).
+ * The primitives here rescan sources that normal forward sync would skip.
  */
 
 import type { MidenClient } from '@miden-sdk/miden-sdk';
@@ -137,8 +136,8 @@ function classifyDrainFailure(err: unknown): DrainFailure {
 
 /**
  * Rescans the full private-note transport backlog for every tracked note tag
- * and imports what it finds, regardless of the stored transport cursor
- * (issue #414). Counterpart of `MultisigClient::drain_private_note_backlog`
+ * and imports what it finds, regardless of the stored transport
+ * cursor. Counterpart of `MultisigClient::drain_private_note_backlog`
  * in the Rust SDK; note that the WASM boundary exposes only error message
  * text, so failure classification here is message-based and cannot always
  * distinguish a node connectivity failure mid-import from a transport

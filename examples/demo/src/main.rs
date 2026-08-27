@@ -11,8 +11,8 @@ use rustyline::DefaultEditor;
 
 use actions::{
     action_create_account, action_delta_history, action_list_notes, action_proposal_management,
-    action_recover_by_key, action_show_account, action_show_status, action_sync_account,
-    action_verify_state_commitment,
+    action_recover_by_key, action_recover_notes, action_show_account, action_show_status,
+    action_sync_account, action_verify_state_commitment,
 };
 use display::{
     print_banner, print_error, print_full_hex, print_section, print_success, print_waiting,
@@ -194,6 +194,7 @@ async fn handle_action(
         MenuAction::DeltaHistory => action_delta_history(state, editor).await,
         MenuAction::ProposalManagement => action_proposal_management(state, editor).await,
         MenuAction::RecoverByKey => action_recover_by_key(state).await,
+        MenuAction::RecoverNotes => action_recover_notes(state).await,
         MenuAction::ShowAccount => action_show_account(state).await,
         MenuAction::ShowStatus => action_show_status(state).await,
         MenuAction::Quit => {

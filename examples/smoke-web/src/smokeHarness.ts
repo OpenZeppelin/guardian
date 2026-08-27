@@ -9,10 +9,12 @@ import {
   type DetectedMultisigConfig,
   type Multisig,
   type MultisigClient,
+  type NoteRecoveryReport,
   type ProcedureName,
   type ProcedureThreshold,
   type Proposal,
   type RecoveredAccount,
+  type RecoverNotesOptions,
   type SignatureScheme,
 } from '@openzeppelin/miden-multisig-client';
 import {
@@ -171,6 +173,10 @@ export interface SmokeApi {
     proposals: Array<ReturnType<typeof serializeProposal>>;
   }>;
   recoverByKey(): Promise<RecoveredAccount[]>;
+  recoverNotes(input?: RecoverNotesOptions): Promise<{
+    report: NoteRecoveryReport;
+    status: BrowserSessionSnapshot;
+  }>;
   clearLocalState(): Promise<BrowserSessionSnapshot>;
   events(): Promise<SmokeEventEntry[]>;
 }
@@ -1436,6 +1442,34 @@ export function useSmokeHarness(): {
     [multisigClientRef, resolveSignerContext, withCommand],
   );
 
+  const recoverNotes = useCallback(
+    async (
+      input: RecoverNotesOptions = {},
+    ): Promise<{ report: NoteRecoveryReport; status: BrowserSessionSnapshot }> =>
+      withCommand('recoverNotes', async () => {
+        requireSessionReady();
+        const currentMultisig = multisigRef.current;
+        if (!currentMultisig) {
+          throw new Error('No multisig account is loaded');
+        }
+
+        const report = await currentMultisig.recoverNotes(input);
+
+        const refreshed = await refreshMultisigState(currentMultisig);
+        return {
+          report,
+          status: buildCurrentSnapshot({
+            guardianState: refreshed.state,
+            detectedConfig: refreshed.config,
+            proposals: refreshed.proposals,
+            consumableNotes: refreshed.notes,
+            lastError: null,
+          }),
+        };
+      }),
+    [buildCurrentSnapshot, multisigRef, refreshMultisigState, withCommand],
+  );
+
   const clearLocalState = useCallback(
     async (): Promise<BrowserSessionSnapshot> =>
       withCommand('clearLocalState', async () => {
@@ -1493,6 +1527,7 @@ export function useSmokeHarness(): {
     signProposalOffline,
     importProposal,
     recoverByKey,
+    recoverNotes,
     clearLocalState,
     events: listEvents,
   };

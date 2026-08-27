@@ -584,6 +584,37 @@ account executed elsewhere is not included. Output notes whose full
 details are not in the stored summary (e.g. private notes carried as
 partial notes) appear with `tag: 'custom'` and no recipient.
 
+### Recovering Notes After Device Loss
+
+Normal forward sync cannot see notes that landed behind the store's
+cursors. After `load()` on a recovered account, `multisig.recoverNotes()`
+runs the three recovery strategies below as one flow — the transport drain,
+the proposal-embedded note import, and the historical public-note backfill —
+and finishes with a normal sync (chain sync plus GUARDIAN state sync) so
+imported notes are verified and ready to consume:
+
+```typescript
+const multisig = await client.load(accountId, signer);
+
+const report = await multisig.recoverNotes();
+console.log(`recovered ${report.imported} notes`);
+for (const problem of report.problems) {
+  // A strategy that could not run at all lands here; the flow continues
+  // with the remaining strategies either way.
+  console.warn(`step ${problem.step} did not run: ${problem.reason}`);
+}
+if (report.retryable) {
+  // The flow is idempotent — rerun it to plausibly recover more.
+}
+```
+
+Pass `RecoverNotesOptions` to choose strategies (`transportDrain`,
+`proposalImport`, `publicBackfill`), bound the backfill's block range
+(`fromBlock`/`toBlock`), or skip the final sync (`syncAfter: false`). The
+combined `NoteRecoveryReport` carries each strategy's own report
+(`transport`, `proposalImport`, `backfill`) untouched. The three
+strategies are also exposed individually, below.
+
 ### Draining the Private-Note Transport Backlog
 
 After recovery on a fresh device the local store has no note-transport
@@ -591,7 +622,7 @@ cursor — and in a store shared with other accounts, sync may have advanced
 the cursor past private notes addressed to the newly recovered account.
 Normal sync then never revisits them. `drainPrivateNoteBacklog` rescans the
 full transport backlog for every tracked note tag, regardless of the stored
-cursor (issue #414):
+cursor:
 
 ```typescript
 import { drainPrivateNoteBacklog } from '@openzeppelin/miden-multisig-client';
@@ -631,9 +662,9 @@ export/import helpers).
 
 After key-based recovery the local Miden store starts empty, so notes the
 account was in the middle of consuming are gone. v2 `consume_notes` proposals
-embed the serialized notes they consume (issue #229), and
+embed the serialized notes they consume, and
 `multisig.importNotesFromProposals()` turns those embedded bytes back into
-store records (issue #415): it fetches each note's on-chain inclusion proof
+store records: it fetches each note's on-chain inclusion proof
 and imports the note individually, so it works for private notes too — the
 node never needs to hold the note body. The method reuses the client's Miden
 RPC endpoint and retry configuration, and syncs pending proposals from
@@ -673,12 +704,12 @@ exposure). Only notes still mid-consumption are recoverable this way.
 Normal forward sync starts from the store's **global** cursor, so in a store
 shared with other accounts the cursor may already be past blocks containing a
 recovered account's notes, and a fresh store has no efficient path to them at
-all. The standalone `backfillPublicNotesByTag` helper (issue #416) scans a
+all. The standalone `backfillPublicNotesByTag` helper scans a
 historical block range — genesis to the current chain tip by default — for
 public notes addressed at the account's standard note tag and imports them
 with their on-chain inclusion proofs, without ever touching the global sync
 height. The scan is tag-scoped and its cost grows with the number of matching
-notes, not the range length (spike #412), so a full genesis-to-tip scan is
+notes, not the range length, so a full genesis-to-tip scan is
 fast on an ordinary account.
 
 ```typescript
@@ -937,8 +968,8 @@ Standalone functions:
 | Function | Description |
 |----------|-------------|
 | `drainPrivateNoteBacklog(midenClient)` | Rescan the full private-note transport backlog for tracked tags after recovery; returns a `TransportRecoveryReport` (`completed` / `unavailable` / `failed`) instead of throwing on transport problems |
-| `importNotesFromProposals(midenClient, proposals, { midenRpcEndpoint, rpc? })` | Import notes embedded in v2 consume-notes proposals into the local store; returns per-note `NoteImportOutcome`s (issue #415) |
-| `backfillPublicNotesByTag(midenClient, { accountId, midenRpcEndpoint, fromBlock?, toBlock?, rpc? })` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag, screen them for relevance, and import them with proofs; returns a `PublicBackfillReport` (issue #416). Prefer `multisig.backfillPublicNotesByTag({ fromBlock?, toBlock? })`, which reuses the client's endpoint and retry configuration |
+| `importNotesFromProposals(midenClient, proposals, { midenRpcEndpoint, rpc? })` | Import notes embedded in v2 consume-notes proposals into the local store; returns per-note `NoteImportOutcome`s |
+| `backfillPublicNotesByTag(midenClient, { accountId, midenRpcEndpoint, fromBlock?, toBlock?, rpc? })` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag, screen them for relevance, and import them with proofs; returns a `PublicBackfillReport`. Prefer `multisig.backfillPublicNotesByTag({ fromBlock?, toBlock? })`, which reuses the client's endpoint and retry configuration |
 
 #### Multisig
 
@@ -961,7 +992,8 @@ Standalone functions:
 | `exportNoteToFile(noteId, filename?)` | Browser-only: download the note file |
 | `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
-| `importNotesFromProposals(proposals?)` | Import notes embedded in pending v2 consume-notes proposals, reusing the client's RPC settings; syncs proposals when none are passed (issue #415) |
+| `recoverNotes(options?)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
+| `importNotesFromProposals(proposals?)` | Import notes embedded in pending v2 consume-notes proposals, reusing the client's RPC settings; syncs proposals when none are passed |
 | `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
@@ -1142,6 +1174,38 @@ Output notes whose full details are not in the stored summary (e.g.
 private notes carried as partial notes) appear with tag `custom` and no
 recipient.
 
+### Recovering Notes After Device Loss
+
+Normal forward sync cannot see notes that landed behind the store's
+cursors. After `pull_account` on a recovered account, `recover_notes` runs
+the three recovery strategies below as one flow — the transport drain, the
+proposal-embedded note import, and the historical public-note backfill —
+and finishes with a normal sync so imported notes are verified and ready to
+consume:
+
+```rust
+client.pull_account(account_id).await?;
+
+// `None` runs every strategy over the full chain and syncs afterwards.
+let report = client.recover_notes(None).await?;
+println!("recovered {} notes", report.imported);
+for problem in &report.problems {
+    // A strategy that could not run at all lands here; the flow continues
+    // with the remaining strategies either way.
+    eprintln!("step {} did not run: {}", problem.step, problem.reason);
+}
+if report.retryable {
+    // The flow is idempotent — rerun it to plausibly recover more.
+}
+```
+
+Pass `NoteRecoveryOptions` to choose strategies (`transport_drain`,
+`proposal_import`, `public_backfill`), bound the backfill's block range
+(`backfill: PublicBackfillOptions { from_block, to_block }`), or skip the
+final sync (`sync_after: false`). The combined `NoteRecoveryReport` carries
+each strategy's own report (`transport`, `proposal_import`, `backfill`)
+untouched. The three strategies are also exposed individually, below.
+
 ### Draining the Private-Note Transport Backlog
 
 After recovery on a fresh device the local store has no note-transport
@@ -1149,7 +1213,7 @@ cursor — and in a store shared with other accounts, sync may have advanced
 the cursor past private notes addressed to the newly recovered account.
 Normal sync then never revisits them. `drain_private_note_backlog` rescans
 the full transport backlog for every tracked note tag, regardless of the
-stored cursor (issue #414):
+stored cursor:
 
 ```rust
 use miden_multisig_client::TransportRecoveryStatus;
@@ -1193,9 +1257,9 @@ outside both are recoverable only from their sender (see
 
 After key-based recovery the local Miden store starts empty, so notes the
 account was in the middle of consuming are gone. v2 `consume_notes` proposals
-embed the serialized notes they consume (issue #229), and
+embed the serialized notes they consume, and
 `import_notes_from_proposals` turns those embedded bytes back into store
-records (issue #415): it fetches each note's on-chain inclusion proof and
+records: it fetches each note's on-chain inclusion proof and
 imports the note individually, so it works for private notes too — the node
 never needs to hold the note body.
 
@@ -1227,18 +1291,19 @@ exposure). Only notes still mid-consumption are recoverable this way.
 Normal forward sync starts from the store's **global** cursor, so in a store
 shared with other accounts the cursor may already be past blocks containing a
 recovered account's notes, and a fresh store has no efficient path to them at
-all. `backfill_public_notes_by_tag` (issue #416) scans a historical block
+all. `backfill_public_notes_by_tag` scans a historical block
 range — genesis to the current chain tip by default — for public notes
 addressed at the account's standard note tag and imports them with their
 on-chain inclusion proofs, without ever touching the global sync height. The
 scan is tag-scoped and its cost grows with the number of matching notes, not
-the range length (spike #412), so a full genesis-to-tip scan is fast on an
+the range length, so a full genesis-to-tip scan is fast on an
 ordinary account.
 
 ```rust
-// `None`/`None` scans genesis to the current chain tip.
+// `None` scans genesis to the current chain tip; pass
+// `Some(PublicBackfillOptions { from_block, to_block })` to bound the scan.
 let report = client
-    .backfill_public_notes_by_tag(account_id, None, None)
+    .backfill_public_notes_by_tag(account_id, None)
     .await?;
 println!(
     "scanned [{}, {}]: {} discovered, {} private skipped",
@@ -1479,8 +1544,9 @@ full note, so a post-commit sync is enough.
 | `export_note_to_bytes(note_id)` | Export a created note as note-file bytes |
 | `import_note_from_file(path)` | Import a note file received out-of-band |
 | `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
-| `import_notes_from_proposals(&proposals)` | Import notes embedded in v2 consume-notes proposals; returns per-note `NoteImportOutcome`s (issue #415) |
-| `backfill_public_notes_by_tag(account_id, from_block, to_block)` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag, screen them for relevance, and import them with proofs; returns a `PublicBackfillReport` (issue #416) |
+| `recover_notes(options)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
+| `import_notes_from_proposals(&proposals)` | Import notes embedded in v2 consume-notes proposals; returns per-note `NoteImportOutcome`s |
+| `backfill_public_notes_by_tag(account_id, options)` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag, screen them for relevance, and import them with proofs; returns a `PublicBackfillReport` |
 
 #### MultisigAccount
 

@@ -280,12 +280,33 @@ let spendable = client.list_consumable_notes_filtered(filter).await?;
 
 ### Recovering Notes After Device Loss
 
-The three recovery primitives from #357 restore note state that normal
-forward sync cannot see. Use them together after `pull_account` on a
-recovered account: the transport drain re-fetches relayed private notes, the
-proposal import rebuilds notes embedded in pending consume proposals, and
-the public backfill rescans the chain for public notes behind the store's
-sync cursor. Run a sync afterwards so imported notes are verified.
+Normal forward sync cannot see notes that landed behind the store's
+cursors. After `pull_account` on a recovered account, `recover_notes` runs
+the three recovery strategies as one flow — the transport drain re-fetches
+relayed private notes, the proposal import rebuilds notes embedded in
+pending consume proposals, and the public backfill rescans the chain for
+historical public notes — and finishes with a normal sync so imported notes
+are verified and ready to consume.
+
+```rust
+client.pull_account(account_id).await?;
+
+let report = client.recover_notes(None).await?;
+println!("recovered {} notes", report.imported);
+for problem in &report.problems {
+    println!("step {} did not run: {}", problem.step, problem.reason);
+}
+```
+
+Pass `NoteRecoveryOptions` to choose strategies, bound the backfill's block
+range, or skip the final sync. Each strategy's own report lands in the
+combined `NoteRecoveryReport`; a strategy that cannot run at all (GUARDIAN
+unreachable, chain tip unresolvable, broken local store) becomes a
+`RecoveryStepProblem` entry instead of aborting the flow, and
+`retryable: true` means rerunning the flow — which is idempotent — can
+plausibly recover more.
+
+The three underlying primitives are also exposed individually:
 
 #### Draining the Private-Note Transport Backlog
 
@@ -359,8 +380,10 @@ The scan's cost grows with the number of matching notes, not the range
 length, so a full genesis-to-tip scan is fast on an ordinary account.
 
 ```rust
+// Pass `Some(PublicBackfillOptions { from_block, to_block })` to bound the
+// scan; `None` covers genesis through the current chain tip.
 let report = client
-    .backfill_public_notes_by_tag(account_id, None, None)
+    .backfill_public_notes_by_tag(account_id, None)
     .await?;
 println!(
     "discovered {} ({} private, {} irrelevant skipped), {} outcomes",
@@ -470,8 +493,7 @@ is the `consume_notes_metadata_version` field on the wire.
   advanced past the block, store was wiped, private-note transport
   pruned the blob), verification fails with
   `MultisigError::LegacyConsumeNotesNoteMissing` and the cosigner
-  cannot sign. This is the failure tracked by
-  [issue #229](https://github.com/OpenZeppelin/guardian/issues/229).
+  cannot sign. This is the gap the v2 shape closes.
 - **v2 (self-contained)** — `consume_notes_metadata_version: 2` plus a
   `consume_notes_notes` array carrying base64-serialized `Note` bytes
   aligned by index with `note_ids`. Verification rebuilds the request

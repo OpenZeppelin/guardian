@@ -1,4 +1,4 @@
-//! Historical public-note backfill by tag (issue #416, sub-issue of #357).
+//! Historical public-note backfill by tag.
 //!
 //! Public notes addressed to an account are on chain, but normal forward
 //! sync starts from the store's **global** cursor: in a shared dirty store
@@ -30,6 +30,17 @@ pub struct BlockRange {
     pub from: u32,
     /// Last block of the range.
     pub to: u32,
+}
+
+/// Options for [`MultisigClient::backfill_public_notes_by_tag`]. Every field
+/// has a default, so `None` (or `PublicBackfillOptions::default()`) scans the
+/// whole chain.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PublicBackfillOptions {
+    /// First block of the scan range; defaults to genesis.
+    pub from_block: Option<BlockNumber>,
+    /// Last block of the scan range; defaults to the current chain tip.
+    pub to_block: Option<BlockNumber>,
 }
 
 /// Result of [`MultisigClient::backfill_public_notes_by_tag`].
@@ -79,14 +90,14 @@ const MAX_SCAN_REQUESTS: usize = 128;
 impl MultisigClient {
     /// Scans a historical block range for public notes addressed at
     /// `account_id`'s standard note tag and imports what it finds with their
-    /// on-chain inclusion proofs (issue #416).
+    /// on-chain inclusion proofs.
     ///
     /// Use after account recovery: normal forward sync starts from the
     /// store's **global** cursor, so in a shared dirty store the cursor may
     /// already be past blocks containing the recovered account's notes, and a
     /// fresh store would need to replay the whole chain state to see them.
     /// The scan is tag-scoped and its cost grows with the number of matching
-    /// notes, not the range length (spike #412), which makes genesis an
+    /// notes, not the range length, which makes genesis an
     /// acceptable default lower bound. The global sync height is never
     /// touched — run normal sync afterwards to verify the imported notes.
     /// The store must have synced at least once (recovery via
@@ -94,8 +105,8 @@ impl MultisigClient {
     /// store that has never seen the chain fails, and such failures surface
     /// as `Failed` outcomes.
     ///
-    /// `from_block` defaults to genesis and `to_block` to the current chain
-    /// tip. Notes are discovered by tag only — a best-effort filter: notes
+    /// The scan range comes from `options` (pass `None` for the defaults:
+    /// genesis through the current chain tip). Notes are discovered by tag only — a best-effort filter: notes
     /// sent with unrelated custom tags are outside this scan's guarantee,
     /// and, exactly like normal sync, every new discovery is screened with
     /// the [`miden_client::note::NoteScreener`] before import — tag-colliding
@@ -116,9 +127,12 @@ impl MultisigClient {
     pub async fn backfill_public_notes_by_tag(
         &mut self,
         account_id: AccountId,
-        from_block: Option<BlockNumber>,
-        to_block: Option<BlockNumber>,
+        options: Option<PublicBackfillOptions>,
     ) -> Result<PublicBackfillReport> {
+        let PublicBackfillOptions {
+            from_block,
+            to_block,
+        } = options.unwrap_or_default();
         let rpc = self.node_rpc_client();
 
         let from = from_block.unwrap_or(BlockNumber::from(0u32)).as_u32();
@@ -398,102 +412,17 @@ impl MultisigClient {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::sync::Arc;
 
-    use miden_client::builder::ClientBuilder;
-    use miden_client::keystore::FilesystemKeyStore;
-    use miden_client::rpc::Endpoint;
     use miden_client::testing::MockChain;
     use miden_client::testing::mock::MockRpcApi;
-    use miden_client_sqlite_store::SqliteStore;
-    use miden_protocol::Word;
     use miden_protocol::account::Account;
-    use miden_protocol::account::auth::AuthSecretKey;
-    use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::transaction::RawOutputNote;
-    use miden_standards::account::auth::AuthSingleSig;
-    use miden_standards::note::P2idNote;
 
     use super::*;
-    use crate::keystore::GuardianKeyStore;
-    use crate::prover::ProverConfig;
-    use crate::rpc::RpcConfig;
-
-    /// Fully offline MultisigClient with the given node API injected into
-    /// both the inner Miden client and the multisig client's direct node
-    /// channel, so node-backed primitives and store syncs see the same mock
-    /// chain.
-    async fn offline_client_with_node(
-        dir: &Path,
-        node: Arc<dyn miden_client::rpc::NodeRpcClient>,
-    ) -> MultisigClient {
-        let store = SqliteStore::new(dir.join("store.sqlite3"))
-            .await
-            .expect("sqlite store opens");
-        let keystore_dir = dir.join("keys");
-        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
-
-        let miden_client = ClientBuilder::<FilesystemKeyStore>::new()
-            .rpc(node.clone())
-            .store(Arc::new(store))
-            .filesystem_keystore(keystore_dir)
-            .expect("keystore opens")
-            .build()
-            .await
-            .expect("miden client builds");
-
-        let mut client = MultisigClient::new(
-            miden_client,
-            Arc::new(GuardianKeyStore::generate()),
-            "http://localhost:1".to_string(),
-            dir.to_path_buf(),
-            Endpoint::localhost(),
-            None,
-            ProverConfig::new(),
-            RpcConfig::new(),
-        );
-        client.set_node_rpc_client(node);
-        client
-    }
-
-    /// A plain wallet account with a fresh seed; enough for the store-side
-    /// account/tag behavior under test (no multisig components needed).
-    fn test_wallet(seed: u8) -> Account {
-        use miden_client::account::component::BasicWallet;
-        use miden_client::account::{
-            AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType,
-        };
-        use miden_protocol::account::auth::AuthScheme;
-        use miden_standards::account::auth::Approver;
-
-        let key_pair = AuthSecretKey::new_falcon512_poseidon2();
-        let auth_component = AuthSingleSig::new(Approver::new(
-            key_pair.public_key().to_commitment(),
-            AuthScheme::Falcon512Poseidon2,
-        ));
-        AccountBuilder::new([seed; 32])
-            .account_type(AccountType::Private)
-            .with_component(auth_component)
-            .with_component(BasicWallet)
-            .build_with_schema_commitment()
-            .expect("test wallet builds")
-    }
-
-    /// A distinct (per `seed`) P2ID note addressed at `target`.
-    fn p2id_note_for(target: &Account, seed: u32, note_type: NoteType) -> Note {
-        let mut rng = RandomCoin::new(Word::from(&[seed, 0, 0, 0]));
-        P2idNote::builder()
-            .sender(test_wallet(200).id())
-            .target(target.id())
-            .asset(FungibleAsset::mock(1))
-            .note_type(note_type)
-            .generate_serial_number(&mut rng)
-            .build()
-            .expect("p2id note builds")
-            .into()
-    }
+    use crate::client::test_support::{
+        offline_client_with_node, offline_client_with_node_parts, p2id_note_for, test_wallet,
+    };
 
     fn public_note_for(target: &Account, seed: u32) -> Note {
         p2id_note_for(target, seed, NoteType::Public)
@@ -547,7 +476,7 @@ mod tests {
         );
 
         let report = client
-            .backfill_public_notes_by_tag(target.id(), None, None)
+            .backfill_public_notes_by_tag(target.id(), None)
             .await
             .unwrap();
 
@@ -584,7 +513,7 @@ mod tests {
         // Rerunning tolerates the duplicate discovery: the note is reported
         // as already present, not re-imported.
         let report = client
-            .backfill_public_notes_by_tag(target.id(), None, None)
+            .backfill_public_notes_by_tag(target.id(), None)
             .await
             .unwrap();
         assert_eq!(report.outcomes.len(), 1);
@@ -634,7 +563,7 @@ mod tests {
         client.add_or_update_account(&target, false).await.unwrap();
 
         let report = client
-            .backfill_public_notes_by_tag(target.id(), None, None)
+            .backfill_public_notes_by_tag(target.id(), None)
             .await
             .unwrap();
 
@@ -676,34 +605,9 @@ mod tests {
         let note = public_note_for(&target, 5);
         let api = chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
 
-        // Built inline instead of via `offline_client_with_node` to keep a
-        // handle on the store for seeding the proof-less record.
-        let store = Arc::new(
-            SqliteStore::new(dir.path().join("store.sqlite3"))
-                .await
-                .unwrap(),
-        );
-        let keystore_dir = dir.path().join("keys");
-        std::fs::create_dir_all(&keystore_dir).unwrap();
-        let miden_client = ClientBuilder::<FilesystemKeyStore>::new()
-            .rpc(api.clone())
-            .store(store.clone())
-            .filesystem_keystore(keystore_dir)
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        let mut client = MultisigClient::new(
-            miden_client,
-            Arc::new(GuardianKeyStore::generate()),
-            "http://localhost:1".to_string(),
-            dir.path().to_path_buf(),
-            Endpoint::localhost(),
-            None,
-            ProverConfig::new(),
-            RpcConfig::new(),
-        );
-        client.set_node_rpc_client(api.clone());
+        // The parts variant keeps a handle on the store for seeding the
+        // proof-less record.
+        let (mut client, store) = offline_client_with_node_parts(dir.path(), api.clone()).await;
 
         client.miden_client.sync_state().await.unwrap();
         client.add_or_update_account(&target, false).await.unwrap();
@@ -727,7 +631,7 @@ mod tests {
         store.upsert_input_notes(&[record]).await.unwrap();
 
         let report = client
-            .backfill_public_notes_by_tag(target.id(), None, None)
+            .backfill_public_notes_by_tag(target.id(), None)
             .await
             .unwrap();
 
@@ -982,7 +886,7 @@ mod tests {
         client.set_node_rpc_client(capped.clone());
 
         let report = client
-            .backfill_public_notes_by_tag(target.id(), None, None)
+            .backfill_public_notes_by_tag(target.id(), None)
             .await
             .unwrap();
 
@@ -1024,8 +928,10 @@ mod tests {
         let report = client
             .backfill_public_notes_by_tag(
                 target.id(),
-                Some(BlockNumber::from(0u32)),
-                Some(BlockNumber::from(3u32)),
+                Some(PublicBackfillOptions {
+                    from_block: Some(BlockNumber::from(0u32)),
+                    to_block: Some(BlockNumber::from(3u32)),
+                }),
             )
             .await
             .unwrap();
@@ -1061,7 +967,13 @@ mod tests {
         let target = test_wallet(17);
 
         let report = client
-            .backfill_public_notes_by_tag(target.id(), None, Some(BlockNumber::from(9u32)))
+            .backfill_public_notes_by_tag(
+                target.id(),
+                Some(PublicBackfillOptions {
+                    to_block: Some(BlockNumber::from(9u32)),
+                    ..Default::default()
+                }),
+            )
             .await
             .unwrap();
         assert_eq!(report.scanned_from, 0);
@@ -1073,7 +985,7 @@ mod tests {
         assert!(report.reason.is_some());
 
         let err = client
-            .backfill_public_notes_by_tag(target.id(), None, None)
+            .backfill_public_notes_by_tag(target.id(), None)
             .await
             .expect_err("tip resolution failure must error");
         assert!(err.to_string().contains("chain tip"));
@@ -1089,8 +1001,10 @@ mod tests {
         let err = client
             .backfill_public_notes_by_tag(
                 target.id(),
-                Some(BlockNumber::from(5u32)),
-                Some(BlockNumber::from(1u32)),
+                Some(PublicBackfillOptions {
+                    from_block: Some(BlockNumber::from(5u32)),
+                    to_block: Some(BlockNumber::from(1u32)),
+                }),
             )
             .await
             .expect_err("inverted range must error");

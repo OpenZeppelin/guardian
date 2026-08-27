@@ -1,12 +1,12 @@
-//! Recovery primitives for MultisigClient (issue #415, sub-issue of #357).
+//! Recovery primitives for MultisigClient.
 //!
 //! After key-based recovery the local Miden store starts empty, so notes the
 //! account was in the middle of consuming are gone. v2 `consume_notes`
-//! proposals embed the serialized notes they consume (issue #229), which makes
+//! proposals embed the serialized notes they consume, which makes
 //! pending proposals opportunistic recovery material: this module rebuilds
 //! importable notes from those embedded bytes plus a node-fetched inclusion
 //! proof, without needing the node to hold the note body — so it works for
-//! private notes too (spike #412).
+//! private notes too.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -163,7 +163,7 @@ impl MultisigClient {
     /// metadata (a note details import in `Expected` state, or a note
     /// observed as consumed on chain) have no note ID, and an ID lookup
     /// would keep re-importing them forever. Shared by the recovery
-    /// primitives (#415 proposal import, #416 public backfill).
+    /// primitives (proposal import and public backfill).
     pub(crate) async fn existing_records_by_commitment(
         &mut self,
         commitments: Vec<NoteDetailsCommitment>,
@@ -273,7 +273,7 @@ impl MultisigClient {
 
 impl MultisigClient {
     /// Imports the notes embedded in v2 `consume_notes` proposals into the
-    /// local Miden store (issue #415), typically after key-based recovery
+    /// local Miden store, typically after key-based recovery
     /// rebuilt the proposal list but left the note store empty.
     ///
     /// Proposals are opportunistic recovery material, not a backup: v1

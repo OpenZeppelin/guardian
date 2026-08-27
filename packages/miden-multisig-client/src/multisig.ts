@@ -93,6 +93,12 @@ import {
   backfillPublicNotesByTag as backfillPublicNotesByTagStandalone,
   type PublicBackfillReport,
 } from './recovery/publicNoteBackfill.js';
+import { drainPrivateNoteBacklog } from './recovery/transportDrain.js';
+import {
+  runNoteRecovery,
+  type NoteRecoveryReport,
+  type RecoverNotesOptions,
+} from './recovery/recoverNotes.js';
 import {
   getRawMidenClient,
   getTransactionProver,
@@ -1241,7 +1247,7 @@ export class Multisig {
 
   /**
    * Import the notes embedded in this account's pending v2 consume-notes
-   * proposals into the local Miden store (issue #415) — the recovery
+   * proposals into the local Miden store — the recovery
    * convenience over the standalone
    * {@link importNotesFromProposalsStandalone | importNotesFromProposals},
    * reusing this client's Miden RPC endpoint and retry configuration
@@ -1264,7 +1270,7 @@ export class Multisig {
   /**
    * Scan a historical block range for public notes addressed at this
    * account's standard note tag and import them with their on-chain
-   * inclusion proofs (issue #416) — the recovery convenience over the
+   * inclusion proofs — the recovery convenience over the
    * standalone
    * {@link backfillPublicNotesByTagStandalone | backfillPublicNotesByTag},
    * reusing this client's Miden RPC endpoint and retry configuration
@@ -1283,6 +1289,43 @@ export class Multisig {
       rpc: { retry: { maxAttempts: this.rpcConfig.maxAttempts } },
       ...(options.fromBlock !== undefined ? { fromBlock: options.fromBlock } : {}),
       ...(options.toBlock !== undefined ? { toBlock: options.toBlock } : {}),
+    });
+  }
+
+  /**
+   * Run the note-recovery strategies as a single wallet-facing flow,
+   * typically right after key-based recovery loaded the account — the TS
+   * counterpart of the Rust SDK's `MultisigClient::recover_notes`.
+   *
+   * By default every strategy runs — the private-note transport backlog
+   * drain, the proposal-embedded note import, and the historical
+   * public-note backfill over the whole chain — followed by a normal sync
+   * (chain sync plus GUARDIAN state sync) that verifies whatever was
+   * imported. Pass {@link RecoverNotesOptions} to choose strategies, bound
+   * the backfill's block range, or skip the final sync.
+   *
+   * No strategy failure aborts the flow: each primitive already reports
+   * per-note and per-source problems instead of throwing, and a strategy
+   * that cannot run at all (GUARDIAN unreachable while listing proposals,
+   * chain tip unresolvable, a broken local store) becomes a
+   * `RecoveryStepProblem` entry in the report while the remaining
+   * strategies still run. The flow is idempotent — rerunning re-imports
+   * nothing that already arrived — so a report with `retryable: true` can
+   * simply be retried. Throws only for an inverted backfill range.
+   */
+  async recoverNotes(options: RecoverNotesOptions = {}): Promise<NoteRecoveryReport> {
+    return runNoteRecovery(options, {
+      transportDrain: () => drainPrivateNoteBacklog(this.midenClient),
+      proposalImport: () => this.importNotesFromProposals(),
+      publicBackfill: () =>
+        this.backfillPublicNotesByTag({
+          ...(options.fromBlock !== undefined ? { fromBlock: options.fromBlock } : {}),
+          ...(options.toBlock !== undefined ? { toBlock: options.toBlock } : {}),
+        }),
+      sync: async () => {
+        await this.midenClient.syncChain();
+        await this.syncState();
+      },
     });
   }
 

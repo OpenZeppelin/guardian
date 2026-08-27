@@ -1,13 +1,13 @@
 /**
- * Recovery primitives (issue #415, sub-issue of #357).
+ * Recovery primitives.
  *
  * After key-based recovery the local Miden store starts empty, so notes the
  * account was in the middle of consuming are gone. v2 `consume_notes`
- * proposals embed the serialized notes they consume (issue #229), which makes
+ * proposals embed the serialized notes they consume, which makes
  * pending proposals opportunistic recovery material: this module rebuilds
  * importable notes from those embedded bytes plus a node-fetched inclusion
  * proof, without needing the node to hold the note body — so it works for
- * private notes too (spike #412).
+ * private notes too.
  */
 
 import {
@@ -91,7 +91,7 @@ export interface ImportNotesFromProposalsOptions {
   rpc?: RpcConfig;
 }
 
-/** Shared by the recovery primitives (#415 proposal import, #416 backfill). */
+/** Shared by the recovery primitives (proposal import and backfill). */
 export function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -142,7 +142,7 @@ function recordKeys(record: InputNoteRecord): string[] {
  * note ID nor a nullifier, and an ID-only lookup would keep re-importing
  * them forever. (The WASM NoteFilter has no details-commitment variant,
  * unlike the Rust SDK, so the store is scanned once and keyed both ways.)
- * Shared by the recovery primitives (#415 proposal import, #416 backfill).
+ * Shared by the recovery primitives (proposal import and backfill).
  */
 export async function collectExistingRecords(
   webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
@@ -245,7 +245,7 @@ export async function reclassifyConsumedImports(
 
 /**
  * Imports the notes embedded in v2 `consume_notes` proposals into the local
- * Miden store (issue #415), typically after key-based recovery rebuilt the
+ * Miden store, typically after key-based recovery rebuilt the
  * proposal list (`syncProposals`) but left the note store empty.
  *
  * Proposals are opportunistic recovery material, not a backup: v1 proposals
