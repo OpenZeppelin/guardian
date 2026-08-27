@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use miden_client::Serializable;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note_transport::NoteTransportClient;
@@ -19,7 +20,6 @@ use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::{Note, NoteDetails, NoteType};
-use miden_client::Serializable;
 use miden_standards::note::P2idNote;
 use miden_tx::utils::sync::RwLock;
 

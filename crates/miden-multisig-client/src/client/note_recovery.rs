@@ -249,8 +249,14 @@ impl MultisigClient {
                 .count()
         };
         report.imported = report.transport.as_ref().map_or(0, |t| t.imported)
-            + report.proposal_import.as_ref().map_or(0, |o| imported_outcomes(o))
-            + report.backfill.as_ref().map_or(0, |b| imported_outcomes(&b.outcomes));
+            + report
+                .proposal_import
+                .as_ref()
+                .map_or(0, |o| imported_outcomes(o))
+            + report
+                .backfill
+                .as_ref()
+                .map_or(0, |b| imported_outcomes(&b.outcomes));
         report.retryable = report.problems.iter().any(|p| p.retryable)
             || report.transport.as_ref().is_some_and(|t| t.retryable)
             || report
@@ -276,8 +282,8 @@ mod tests {
     use crate::account::MultisigAccount;
     use crate::client::public_note_backfill::PublicBackfillOptions;
     use crate::client::test_support::{
-        add_to_transport, mock_transport, offline_client, offline_client_with_node,
-        p2id_note_for, test_wallet,
+        add_to_transport, mock_transport, offline_client, offline_client_with_node, p2id_note_for,
+        test_wallet,
     };
 
     /// Loads `client` the way `pull_account` leaves it: the account is in

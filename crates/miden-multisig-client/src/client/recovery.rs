@@ -234,7 +234,10 @@ impl MultisigClient {
         Ok(tags
             .iter()
             .filter(|record| {
-                matches!(record.source, NoteTagSource::User | NoteTagSource::Account(_))
+                matches!(
+                    record.source,
+                    NoteTagSource::User | NoteTagSource::Account(_)
+                )
             })
             .count())
     }

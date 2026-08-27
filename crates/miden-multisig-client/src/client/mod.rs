@@ -26,12 +26,12 @@ mod public_note_backfill;
 mod recovery;
 #[cfg(test)]
 mod test_support;
-pub use note_recovery::{
-    NoteRecoveryOptions, NoteRecoveryReport, RecoveryStep, RecoveryStepProblem,
-};
 pub use delta_history::{
     HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
+};
+pub use note_recovery::{
+    NoteRecoveryOptions, NoteRecoveryReport, RecoveryStep, RecoveryStepProblem,
 };
 pub use proposal_note_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
 pub use proposals::{AbandonRequestState, AbandonStatus};

@@ -29,7 +29,11 @@ pub fn print_menu(state: &SessionState) {
     print_menu_option("s", "Show account details", state.has_account());
     print_menu_option("c", "Show connection status", true);
     print_menu_option("r", "Recover by key", true);
-    print_menu_option("n", "Recover notes (after device loss)", state.has_account());
+    print_menu_option(
+        "n",
+        "Recover notes (after device loss)",
+        state.has_account(),
+    );
     print_menu_option("q", "Quit", true);
 
     println!();
