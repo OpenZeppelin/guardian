@@ -682,14 +682,9 @@ notes, not the range length (spike #412), so a full genesis-to-tip scan is
 fast on an ordinary account.
 
 ```typescript
-import { backfillPublicNotesByTag } from '@openzeppelin/miden-multisig-client';
-
 const multisig = await client.load(accountId, signer);
-const report = await backfillPublicNotesByTag(midenClient, {
-  accountId: multisig.accountId,
-  midenRpcEndpoint: 'https://rpc.testnet.miden.io',
-  // fromBlock / toBlock bound the scan; they default to genesis and tip.
-});
+// fromBlock / toBlock bound the scan; they default to genesis and tip.
+const report = await multisig.backfillPublicNotesByTag();
 console.log(report.discovered, 'discovered,', report.skippedPrivate, 'private skipped');
 for (const outcome of report.outcomes) {
   console.log(outcome.identifier, outcome.status, outcome.reason ?? '');
@@ -698,19 +693,28 @@ for (const outcome of report.outcomes) {
 await multisig.syncState(); // verifies the imported notes
 ```
 
+The standalone `backfillPublicNotesByTag(midenClient, { accountId, midenRpcEndpoint, fromBlock?, toBlock?, rpc? })` remains available when no `Multisig` instance is at hand.
+
 The `PublicBackfillReport` carries the requested range (`scannedFrom` /
 `scannedTo`), the number of unique tag matches (`discovered`), the private
 matches skipped (`skippedPrivate` — the chain holds no body for them; the
-transport drain and proposal import cover those), and one `NoteImportOutcome`
-per unique public note with source `'backfill'` and the same statuses as the
+transport drain and proposal import cover those), the matches the relevance
+screen rejected (`skippedIrrelevant`), and one `NoteImportOutcome` per
+imported public note with source `'backfill'` and the same statuses as the
 proposal import. The store must have synced at least once (`load` does this);
 importing into a store that has never seen the chain surfaces as `failed`
 outcomes. A proof-less expected record left by an earlier proposal import is
 upgraded in place with the freshly fetched proof rather than skipped.
 
-Tags are best-effort filters: notes sent with unrelated custom tags are
-outside this scan's guarantee, and unrelated notes whose tag collides with
-the account's are imported harmlessly (they never become consumable).
+Tags are best-effort, truncated filters shared by unrelated notes, so —
+exactly like normal sync — every new discovery is screened for relevance
+before import, and tag-colliding notes the account cannot consume are
+counted as `skippedIrrelevant` instead of polluting the store. This SDK
+screens statically against the well-known P2ID/P2IDE scripts (the WASM
+surface does not expose the execution-based screener), so notes with custom
+scripts are conservatively skipped; the Rust SDK screens by execution and
+covers all scripts. Notes sent with unrelated custom tags remain outside
+this scan's guarantee.
 
 Scan problems are reported, never thrown: a range dense enough to trip the
 node's per-request pagination cap is split client-side and rescanned as
@@ -934,7 +938,7 @@ Standalone functions:
 |----------|-------------|
 | `drainPrivateNoteBacklog(midenClient)` | Rescan the full private-note transport backlog for tracked tags after recovery; returns a `TransportRecoveryReport` (`completed` / `unavailable` / `failed`) instead of throwing on transport problems |
 | `importNotesFromProposals(midenClient, proposals, { midenRpcEndpoint, rpc? })` | Import notes embedded in v2 consume-notes proposals into the local store; returns per-note `NoteImportOutcome`s (issue #415) |
-| `backfillPublicNotesByTag(midenClient, { accountId, midenRpcEndpoint, fromBlock?, toBlock?, rpc? })` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag and import them with proofs; returns a `PublicBackfillReport` (issue #416) |
+| `backfillPublicNotesByTag(midenClient, { accountId, midenRpcEndpoint, fromBlock?, toBlock?, rpc? })` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag, screen them for relevance, and import them with proofs; returns a `PublicBackfillReport` (issue #416). Prefer `multisig.backfillPublicNotesByTag({ fromBlock?, toBlock? })`, which reuses the client's endpoint and retry configuration |
 
 #### Multisig
 
@@ -1249,17 +1253,22 @@ client.sync().await?; // verifies the imported notes
 The `PublicBackfillReport` carries the requested range (`scanned_from` /
 `scanned_to`), the number of unique tag matches (`discovered`), the private
 matches skipped (`skipped_private` — the chain holds no body for them; the
-transport drain and proposal import cover those), and one `NoteImportOutcome`
-per unique public note with source `Backfill` and the same statuses as the
+transport drain and proposal import cover those), the matches the relevance
+screener rejected (`skipped_irrelevant`), and one `NoteImportOutcome` per
+imported public note with source `Backfill` and the same statuses as the
 proposal import. The store must have synced at least once (recovery via
-`pull_account` does this); importing into a store that has never seen the
-chain surfaces as `Failed` outcomes. A proof-less expected record left by an
-earlier proposal import is upgraded in place with the freshly fetched proof
-rather than skipped.
+`pull_account` does this, and screening also needs the account tracked in
+the store); importing into a store that has never seen the chain surfaces as
+`Failed` outcomes. A proof-less expected record left by an earlier proposal
+import is upgraded in place with the freshly fetched proof rather than
+skipped.
 
-Tags are best-effort filters: notes sent with unrelated custom tags are
-outside this scan's guarantee, and unrelated notes whose tag collides with
-the account's are imported harmlessly (they never become consumable).
+Tags are best-effort, truncated filters shared by unrelated notes, so —
+exactly like normal sync — every new discovery is screened with the
+execution-based `NoteScreener` before import, and tag-colliding notes the
+account cannot consume are counted as `skipped_irrelevant` instead of
+polluting the store. Notes sent with unrelated custom tags remain outside
+this scan's guarantee.
 
 Scan problems are reported, not returned as errors: a range dense enough to
 trip the node's per-request pagination cap is split client-side and rescanned
@@ -1471,7 +1480,7 @@ full note, so a post-commit sync is enough.
 | `import_note_from_file(path)` | Import a note file received out-of-band |
 | `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
 | `import_notes_from_proposals(&proposals)` | Import notes embedded in v2 consume-notes proposals; returns per-note `NoteImportOutcome`s (issue #415) |
-| `backfill_public_notes_by_tag(account_id, from_block, to_block)` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag and import them with proofs; returns a `PublicBackfillReport` (issue #416) |
+| `backfill_public_notes_by_tag(account_id, from_block, to_block)` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag, screen them for relevance, and import them with proofs; returns a `PublicBackfillReport` (issue #416) |
 
 #### MultisigAccount
 

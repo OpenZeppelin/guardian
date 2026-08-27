@@ -18,6 +18,7 @@ const {
   mockGetSignerCommitments,
   mockGetGuardianCommitment,
   mockImportNotesFromProposals,
+  mockBackfillPublicNotesByTag,
 } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
@@ -26,10 +27,15 @@ const {
   mockGetSignerCommitments: vi.fn(),
   mockGetGuardianCommitment: vi.fn(),
   mockImportNotesFromProposals: vi.fn(),
+  mockBackfillPublicNotesByTag: vi.fn(),
 }));
 
-vi.mock('./proposalNoteImport.js', () => ({
+vi.mock('./recovery/proposalNoteImport.js', () => ({
   importNotesFromProposals: mockImportNotesFromProposals,
+}));
+
+vi.mock('./recovery/publicNoteBackfill.js', () => ({
+  backfillPublicNotesByTag: mockBackfillPublicNotesByTag,
 }));
 
 const { MOCK_CHAIN_ANCHOR_B64, createMockChainAnchor } = vi.hoisted(() => {
@@ -474,6 +480,52 @@ describe('Multisig', () => {
         [],
         expect.objectContaining({ midenRpcEndpoint: MIDEN_RPC_ENDPOINT }),
       );
+    });
+  });
+
+  describe('backfillPublicNotesByTag (issue #416)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it("delegates to the standalone helper with this account's id, endpoint, and rpc settings", async () => {
+      const multisig = createTestMultisig(config);
+      const report = {
+        scannedFrom: 5,
+        scannedTo: 9,
+        discovered: 0,
+        skippedPrivate: 0,
+        skippedIrrelevant: 0,
+        outcomes: [],
+        uncovered: [],
+        retryable: false,
+      };
+      mockBackfillPublicNotesByTag.mockResolvedValue(report);
+
+      const result = await multisig.backfillPublicNotesByTag({ fromBlock: 5, toBlock: 9 });
+
+      expect(result).toBe(report);
+      expect(mockBackfillPublicNotesByTag).toHaveBeenCalledWith(mockWebClient, {
+        accountId: '0x' + 'a'.repeat(30),
+        midenRpcEndpoint: MIDEN_RPC_ENDPOINT,
+        // Reuses the client's resolved retry budget (default: 2 attempts).
+        rpc: { retry: { maxAttempts: 2 } },
+        fromBlock: 5,
+        toBlock: 9,
+      });
+    });
+
+    it('omits unset block bounds so the standalone genesis/tip defaults apply', async () => {
+      const multisig = createTestMultisig(config);
+      mockBackfillPublicNotesByTag.mockResolvedValue({ outcomes: [] } as never);
+
+      await multisig.backfillPublicNotesByTag();
+
+      const options = mockBackfillPublicNotesByTag.mock.calls.at(-1)?.[1] as object;
+      expect('fromBlock' in options).toBe(false);
+      expect('toBlock' in options).toBe(false);
     });
   });
 

@@ -17,8 +17,8 @@ import {
   PAGINATION_GUARD_FRAGMENT,
   STORE_ERROR_FRAGMENT,
   TRANSPORT_DISABLED_FRAGMENT,
-} from '../src/recovery.js';
-import { RPC_PAGINATION_FRAGMENT } from '../src/publicNoteBackfill.js';
+} from '../src/recovery/transportDrain.js';
+import { RPC_PAGINATION_FRAGMENT } from '../src/recovery/publicNoteBackfill.js';
 
 const require = createRequire(import.meta.url);
 

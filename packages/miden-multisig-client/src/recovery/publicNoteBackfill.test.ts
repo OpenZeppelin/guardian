@@ -14,8 +14,16 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       if (!hex.startsWith('0x')) {
         throw new Error(`invalid account id: ${hex}`);
       }
-      return { hex };
+      return {
+        hex,
+        prefix: () => ({ asInt: () => BigInt('0x' + hex.slice(2, 10)) }),
+        suffix: () => ({ asInt: () => BigInt('0x' + hex.slice(-8)) }),
+      };
     }),
+  },
+  NoteScript: {
+    p2id: vi.fn(() => ({ root: () => ({ toHex: () => '0x' + 'a1'.repeat(32) }) })),
+    p2ide: vi.fn(() => ({ root: () => ({ toHex: () => '0x' + 'a2'.repeat(32) }) })),
   },
   NoteTag: {
     withAccountTarget: vi.fn((accountId: { hex: string }) => ({ target: accountId.hex })),
@@ -57,6 +65,10 @@ const NOTE_ID_1 = `0x${'11'.repeat(32)}`;
 const NOTE_ID_2 = `0x${'22'.repeat(32)}`;
 const NOTE_ID_3 = `0x${'33'.repeat(32)}`;
 
+const OTHER_ACCOUNT_ID = `0x${'5c'.repeat(15)}`;
+const P2ID_ROOT = `0x${'a1'.repeat(32)}`;
+const UNKNOWN_ROOT = `0x${'ee'.repeat(32)}`;
+
 const PAGINATION_ERROR = () =>
   new Error('rpc pagination error: too many pagination iterations, possible infinite loop');
 const TRANSIENT_ERROR = () => Object.assign(new Error('node down'), { code: 14 });
@@ -76,11 +88,25 @@ function noteAssets(idHex: string) {
   };
 }
 
-function makeNote(idHex: string) {
+function makeNote(
+  idHex: string,
+  options: { scriptRoot?: string; targetHex?: string } = {},
+) {
   const assets = noteAssets(idHex);
+  const scriptRoot = options.scriptRoot ?? P2ID_ROOT;
+  const targetHex = options.targetHex ?? ACCOUNT_ID;
+  // P2ID note storage layout: [target.suffix, target.prefix].
+  const storageItems = [
+    { asInt: () => BigInt('0x' + targetHex.slice(-8)) },
+    { asInt: () => BigInt('0x' + targetHex.slice(2, 10)) },
+  ];
   return {
     id: () => ({ toString: () => idHex }),
-    recipient: () => ({ digest: () => ({ toHex: () => recipientDigestFor(idHex) }) }),
+    script: () => ({ root: () => ({ toHex: () => scriptRoot }) }),
+    recipient: () => ({
+      digest: () => ({ toHex: () => recipientDigestFor(idHex) }),
+      storage: () => ({ items: () => storageItems }),
+    }),
     assets: () => assets,
   };
 }
@@ -97,11 +123,14 @@ function syncInfoWith(...committed: Array<ReturnType<typeof makeCommitted>>) {
   return { notes: () => committed };
 }
 
-function makeFetchedNote(idHex: string, options: { withBody?: boolean } = {}) {
+function makeFetchedNote(
+  idHex: string,
+  options: { withBody?: boolean; scriptRoot?: string; targetHex?: string } = {},
+) {
   return {
     noteId: { toString: () => idHex },
     inclusionProof: `proof:${idHex}`,
-    note: (options.withBody ?? true) ? makeNote(idHex) : undefined,
+    note: (options.withBody ?? true) ? makeNote(idHex, options) : undefined,
   };
 }
 
@@ -173,6 +202,7 @@ describe('backfillPublicNotesByTag', () => {
       scannedTo: 42,
       discovered: 1,
       skippedPrivate: 0,
+      skippedIrrelevant: 0,
       outcomes: [{ identifier: NOTE_ID_1, source: 'backfill', status: 'imported' }],
       uncovered: [],
       retryable: false,
@@ -219,6 +249,29 @@ describe('backfillPublicNotesByTag', () => {
     expect(mockGetNotesById.mock.calls[0][0]).toHaveLength(1);
   });
 
+  it('screens out tag-colliding notes the account cannot consume, like normal sync', async () => {
+    mockSyncNotes.mockResolvedValue(
+      syncInfoWith(makeCommitted(NOTE_ID_1, 1), makeCommitted(NOTE_ID_2, 1), makeCommitted(NOTE_ID_3, 1)),
+    );
+    mockGetNotesById.mockResolvedValue([
+      makeFetchedNote(NOTE_ID_1),
+      // A real P2ID note addressed at a different account (tag collision).
+      makeFetchedNote(NOTE_ID_2, { targetHex: OTHER_ACCOUNT_ID }),
+      // A note with an unknown script: not statically screenable, so it is
+      // conservatively treated as irrelevant.
+      makeFetchedNote(NOTE_ID_3, { scriptRoot: UNKNOWN_ROOT }),
+    ]);
+
+    const report = await run();
+
+    expect(report.discovered).toBe(3);
+    expect(report.skippedIrrelevant).toBe(2);
+    expect(report.outcomes).toEqual([
+      { identifier: NOTE_ID_1, source: 'backfill', status: 'imported' },
+    ]);
+    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+  });
+
   it('skips notes the store already tracks, including metadata-less records', async () => {
     mockSyncNotes.mockResolvedValue(
       syncInfoWith(makeCommitted(NOTE_ID_1, 1), makeCommitted(NOTE_ID_2, 1)),
@@ -242,7 +295,10 @@ describe('backfillPublicNotesByTag', () => {
 
   it('upgrades a proof-less expected record with the fetched proof instead of skipping it', async () => {
     mockSyncNotes.mockResolvedValue(syncInfoWith(makeCommitted(NOTE_ID_1, 1)));
-    mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
+    // The unknown script would fail the relevance screen — but tracked
+    // records are material the user already chose to track, so the upgrade
+    // path must bypass screening.
+    mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1, { scriptRoot: UNKNOWN_ROOT })]);
     // An expected record without a proof (e.g. left by a proposal import
     // that ran while the note was uncommitted): forward sync will never
     // revisit the note's block, so the backfill must apply the proof.

@@ -19,7 +19,7 @@ use miden_protocol::note::{
 };
 
 use super::MultisigClient;
-use super::proposal_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
+use super::proposal_note_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
 use crate::error::{MultisigError, Result};
 use crate::rpc::is_transient_rpc_error;
 
@@ -49,6 +49,11 @@ pub struct PublicBackfillReport {
     /// bodies, so they cannot be rebuilt from a scan. Private notes are
     /// covered by the transport drain and proposal-import primitives instead.
     pub skipped_private: usize,
+    /// Unique public matches the relevance screener rejected: tags are
+    /// best-effort, truncated filters, so unrelated notes can carry this
+    /// account's tag. Like normal sync, only notes the account could
+    /// actually consume are imported; the rest are counted here.
+    pub skipped_irrelevant: usize,
     /// One outcome per unique public note discovered.
     pub outcomes: Vec<NoteImportOutcome>,
     /// Sub-ranges of `[scanned_from, scanned_to]` the scan could not cover
@@ -91,10 +96,14 @@ impl MultisigClient {
     ///
     /// `from_block` defaults to genesis and `to_block` to the current chain
     /// tip. Notes are discovered by tag only — a best-effort filter: notes
-    /// sent with unrelated custom tags are outside this scan's guarantee, and
-    /// unrelated notes whose tag collides with the account's are imported
-    /// harmlessly (they simply never become consumable). Only public notes
-    /// can be rebuilt from chain data; private matches are counted as
+    /// sent with unrelated custom tags are outside this scan's guarantee,
+    /// and, exactly like normal sync, every new discovery is screened with
+    /// the [`miden_client::note::NoteScreener`] before import — tag-colliding
+    /// notes the account can never consume are counted as
+    /// `skipped_irrelevant` instead of polluting the store (screening
+    /// requires the account to be tracked in the store, which recovery via
+    /// [`MultisigClient::pull_account`] guarantees). Only public notes can
+    /// be rebuilt from chain data; private matches are counted as
     /// `skipped_private` and are covered by the transport drain and
     /// proposal-import primitives instead.
     ///
@@ -245,6 +254,7 @@ impl MultisigClient {
             }
         }
 
+        let mut skipped_irrelevant = 0usize;
         let commitments: Vec<NoteDetailsCommitment> = pending
             .iter()
             .map(|(note, _)| note.details_commitment())
@@ -263,34 +273,88 @@ impl MultisigClient {
                 }
             }
             Ok(existing) => {
+                // Split the fetched notes into ones the store already tracks
+                // and genuinely new discoveries. Only the new ones go through
+                // relevance screening: tracked records are material the user
+                // already chose to track (a proposal import, an earlier
+                // backfill, normal sync).
+                let mut tracked: Vec<(Note, NoteInclusionProof)> = Vec::new();
+                let mut fresh: Vec<(Note, NoteInclusionProof)> = Vec::new();
+                for (note, proof) in pending {
+                    match existing.get(&note.details_commitment()) {
+                        Some(record)
+                            if record.is_consumed() || record.inclusion_proof().is_some() =>
+                        {
+                            let status = if record.is_consumed() {
+                                NoteImportStatus::AlreadyConsumed
+                            } else {
+                                NoteImportStatus::AlreadyPresent
+                            };
+                            outcomes.push(NoteImportOutcome {
+                                identifier: note.id().to_hex(),
+                                source: NoteImportSource::Backfill,
+                                status,
+                                retryable: false,
+                                reason: None,
+                            });
+                        }
+                        // Unlike the proposal import, a proof-less
+                        // (`Expected`) record is NOT skipped: this primitive
+                        // exists because forward sync will never revisit the
+                        // note's block, so the freshly fetched proof is
+                        // applied to upgrade the record in place (upstream
+                        // import handles existing records). No screening
+                        // either — the record is already-tracked material.
+                        Some(_) => tracked.push((note, proof)),
+                        None => fresh.push((note, proof)),
+                    }
+                }
+
+                // Screen new discoveries for relevance the same way normal
+                // sync does before it stores a tag match (tags are shared,
+                // truncated filters — anyone can commit public notes carrying
+                // this account's tag, and unscreened imports would pollute
+                // the store and pay per-note import RPC for junk). Notes the
+                // account cannot ever consume are counted, not imported.
+                if !fresh.is_empty() {
+                    let notes: Vec<Note> = fresh.iter().map(|(note, _)| note.clone()).collect();
+                    match self
+                        .miden_client
+                        .note_screener()
+                        .get_batch_consumability_for_account(account_id, &notes)
+                        .await
+                    {
+                        Ok(relevant) => {
+                            for (note, proof) in fresh {
+                                if relevant.contains_key(&note.id()) {
+                                    tracked.push((note, proof));
+                                } else {
+                                    skipped_irrelevant += 1;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // Screening needs the account's state in the
+                            // store; without a verdict nothing is imported.
+                            let reason = format!("relevance screening failed: {}", e);
+                            for (note, _) in &fresh {
+                                outcomes.push(NoteImportOutcome {
+                                    identifier: note.id().to_hex(),
+                                    source: NoteImportSource::Backfill,
+                                    status: NoteImportStatus::Failed,
+                                    retryable: false,
+                                    reason: Some(reason.clone()),
+                                });
+                            }
+                        }
+                    }
+                }
+
                 // Provisionally `Imported` outcomes, re-classified in one
                 // batched consumed-state check below.
                 let mut imported: Vec<(usize, NoteDetailsCommitment)> = Vec::new();
-                for (note, proof) in pending {
+                for (note, proof) in tracked {
                     let commitment = note.details_commitment();
-                    // Unlike the proposal import, a proof-less (`Expected`)
-                    // record is NOT skipped here: this primitive exists
-                    // because forward sync will never revisit the note's
-                    // block, so the freshly fetched proof is applied to
-                    // upgrade the record in place (upstream import handles
-                    // existing records).
-                    if let Some(record) = existing.get(&commitment)
-                        && (record.is_consumed() || record.inclusion_proof().is_some())
-                    {
-                        let status = if record.is_consumed() {
-                            NoteImportStatus::AlreadyConsumed
-                        } else {
-                            NoteImportStatus::AlreadyPresent
-                        };
-                        outcomes.push(NoteImportOutcome {
-                            identifier: note.id().to_hex(),
-                            source: NoteImportSource::Backfill,
-                            status,
-                            retryable: false,
-                            reason: None,
-                        });
-                        continue;
-                    }
                     let (outcome, was_imported) = self
                         .import_note_with_proof(NoteImportSource::Backfill, note, proof)
                         .await;
@@ -323,6 +387,7 @@ impl MultisigClient {
             scanned_to: to,
             discovered: discovered.len(),
             skipped_private,
+            skipped_irrelevant,
             outcomes,
             uncovered,
             retryable,
@@ -339,8 +404,8 @@ mod tests {
     use miden_client::builder::ClientBuilder;
     use miden_client::keystore::FilesystemKeyStore;
     use miden_client::rpc::Endpoint;
+    use miden_client::testing::MockChain;
     use miden_client::testing::mock::MockRpcApi;
-    use miden_client::testing::{MockChain, NoteBuilder};
     use miden_client_sqlite_store::SqliteStore;
     use miden_protocol::Word;
     use miden_protocol::account::Account;
@@ -350,7 +415,6 @@ mod tests {
     use miden_protocol::transaction::RawOutputNote;
     use miden_standards::account::auth::AuthSingleSig;
     use miden_standards::note::P2idNote;
-    use rand::SeedableRng;
 
     use super::*;
     use crate::keystore::GuardianKeyStore;
@@ -491,6 +555,7 @@ mod tests {
         assert_eq!(report.scanned_to, cursor.as_u32());
         assert_eq!(report.discovered, 1);
         assert_eq!(report.skipped_private, 0);
+        assert_eq!(report.skipped_irrelevant, 0);
         assert!(report.uncovered.is_empty());
         assert!(!report.retryable, "{report:?}");
         assert_eq!(report.reason, None);
@@ -533,7 +598,8 @@ mod tests {
     }
 
     /// Tags are best-effort filters: an unrelated note sharing the tag is
-    /// imported harmlessly, and private matches are counted but skipped —
+    /// screened out for relevance (exactly like normal sync) instead of
+    /// polluting the store, and private matches are counted but skipped —
     /// the chain does not hold their bodies.
     #[tokio::test]
     async fn backfill_tolerates_tag_collisions_and_skips_private_matches() {
@@ -542,12 +608,19 @@ mod tests {
         let tag = NoteTag::with_account_target(target.id());
 
         let own = public_note_for(&target, 2);
-        let colliding =
-            NoteBuilder::new(test_wallet(201).id(), rand::rngs::StdRng::seed_from_u64(7))
-                .tag(tag.as_u32())
-                .note_type(NoteType::Public)
-                .build()
-                .expect("colliding note builds");
+        // A real P2ID note addressed at a DIFFERENT account, re-tagged with
+        // the target's tag: a genuine tag collision the screener must reject
+        // (the target can never consume it).
+        let mis_addressed = public_note_for(&test_wallet(201), 7);
+        let colliding = Note::new(
+            mis_addressed.assets().clone(),
+            miden_protocol::note::PartialNoteMetadata::new(
+                mis_addressed.metadata().sender(),
+                NoteType::Public,
+            )
+            .with_tag(tag),
+            mis_addressed.recipient().clone(),
+        );
         let private = p2id_note_for(&target, 3, NoteType::Private);
         let api = chain_with_notes(vec![
             RawOutputNote::Full(own.clone()),
@@ -567,21 +640,25 @@ mod tests {
 
         assert_eq!(report.discovered, 3);
         assert_eq!(report.skipped_private, 1);
-        assert_eq!(report.outcomes.len(), 2);
-        assert!(
-            report
-                .outcomes
-                .iter()
-                .all(|o| o.status == NoteImportStatus::Imported),
+        assert_eq!(
+            report.skipped_irrelevant, 1,
+            "the tag-colliding note must be screened out, not imported: {report:?}"
+        );
+        assert_eq!(report.outcomes.len(), 1);
+        assert_eq!(
+            report.outcomes[0].status,
+            NoteImportStatus::Imported,
             "{report:?}"
         );
-        let imported: BTreeSet<String> = report
-            .outcomes
-            .iter()
-            .map(|o| o.identifier.clone())
-            .collect();
-        assert!(imported.contains(&own.id().to_hex()));
-        assert!(imported.contains(&colliding.id().to_hex()));
+        assert_eq!(report.outcomes[0].identifier, own.id().to_hex());
+        let _ = colliding;
+        // The screened-out note must not be in the store.
+        let records = client
+            .miden_client
+            .get_input_notes(miden_client::store::NoteFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
     }
 
     /// A proof-less `Expected` record (e.g. left by a proposal import that

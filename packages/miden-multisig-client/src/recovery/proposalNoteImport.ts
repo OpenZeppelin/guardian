@@ -24,13 +24,13 @@ import {
   RpcClient,
 } from '@miden-sdk/miden-sdk';
 
-import { getRawMidenClient, requireMidenRpcEndpoint, type RawClientSource } from './raw-client.js';
-import { resolveRpcConfig, type RpcConfig } from './rpc/config.js';
-import { isTransientRpcError } from './rpc/errors.js';
-import { retryRpcRead } from './rpc/retry.js';
-import { isConsumeNotesV2 } from './types/proposal.js';
-import type { Proposal } from './types/proposal.js';
-import { noteFromBase64, normalizeHexWord } from './utils/encoding.js';
+import { getRawMidenClient, requireMidenRpcEndpoint, type RawClientSource } from '../raw-client.js';
+import { resolveRpcConfig, type RpcConfig } from '../rpc/config.js';
+import { isTransientRpcError } from '../rpc/errors.js';
+import { retryRpcRead } from '../rpc/retry.js';
+import { isConsumeNotesV2 } from '../types/proposal.js';
+import type { Proposal } from '../types/proposal.js';
+import { noteFromBase64, normalizeHexWord } from '../utils/encoding.js';
 
 /** Where a recovered note's bytes came from. */
 export type NoteImportSource =

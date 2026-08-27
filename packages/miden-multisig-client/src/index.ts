@@ -53,7 +53,7 @@ export {
   drainPrivateNoteBacklog,
   type TransportRecoveryReport,
   type TransportRecoveryStatus,
-} from './recovery.js';
+} from './recovery/transportDrain.js';
 export type { ProverConfig, ProverRetryPolicy } from './prover/config.js';
 export type { RpcConfig, RpcRetryPolicy } from './rpc/config.js';
 export { lookupAuthDigest } from './lookupAuth.js';
@@ -110,19 +110,19 @@ export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
 export type { ConnectivityCategory, UserFacingError } from './connectivity.js';
 
 // Recovery primitives (issues #415, #416).
-export { importNotesFromProposals } from './proposalNoteImport.js';
+export { importNotesFromProposals } from './recovery/proposalNoteImport.js';
 export type {
   ImportNotesFromProposalsOptions,
   NoteImportOutcome,
   NoteImportSource,
   NoteImportStatus,
-} from './proposalNoteImport.js';
-export { backfillPublicNotesByTag } from './publicNoteBackfill.js';
+} from './recovery/proposalNoteImport.js';
+export { backfillPublicNotesByTag } from './recovery/publicNoteBackfill.js';
 export type {
   BackfillPublicNotesOptions,
   BlockRange,
   PublicBackfillReport,
-} from './publicNoteBackfill.js';
+} from './recovery/publicNoteBackfill.js';
 
 export {
   FalconSigner,

@@ -9,27 +9,27 @@
 //! - `notes` - Note filtering and listing
 //! - `recovery` - Recovery primitives (transport backlog drain)
 //! - `io` - Export/import functionality
-//! - `proposal_import` - Recovery primitive: proposal-embedded note import
-//! - `backfill` - Recovery primitive: historical public-note backfill by tag
+//! - `proposal_note_import` - Recovery primitive: proposal-embedded note import
+//! - `public_note_backfill` - Recovery primitive: historical public-note backfill by tag
 //! - `helpers` - Internal GUARDIAN client helpers
 
 mod account;
-mod backfill;
 mod delta_history;
 mod helpers;
 mod io;
 mod notes;
 mod offline;
-mod proposal_import;
+mod proposal_note_import;
 mod proposals;
+mod public_note_backfill;
 mod recovery;
-pub use backfill::{BlockRange, PublicBackfillReport};
 pub use delta_history::{
     HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
 };
-pub use proposal_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
+pub use proposal_note_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
 pub use proposals::{AbandonRequestState, AbandonStatus};
+pub use public_note_backfill::{BlockRange, PublicBackfillReport};
 pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
 
 use std::path::PathBuf;

@@ -17,12 +17,13 @@ import {
   type InputNoteRecord,
   type Note,
   type NoteInclusionProof,
+  NoteScript,
   NoteTag,
   NoteType,
   RpcClient,
 } from '@miden-sdk/miden-sdk';
 
-import { errorMessage } from './connectivity.js';
+import { errorMessage } from '../connectivity.js';
 import {
   collectExistingRecords,
   detailsKeyOf,
@@ -31,11 +32,11 @@ import {
   type NoteImportOutcome,
   reclassifyConsumedImports,
 } from './proposalNoteImport.js';
-import { getRawMidenClient, requireMidenRpcEndpoint, type RawClientSource } from './raw-client.js';
-import { resolveRpcConfig, type RpcConfig } from './rpc/config.js';
-import { isTransientRpcError } from './rpc/errors.js';
-import { retryRpcRead } from './rpc/retry.js';
-import { normalizeHexWord } from './utils/encoding.js';
+import { getRawMidenClient, requireMidenRpcEndpoint, type RawClientSource } from '../raw-client.js';
+import { resolveRpcConfig, type RpcConfig } from '../rpc/config.js';
+import { isTransientRpcError } from '../rpc/errors.js';
+import { retryRpcRead } from '../rpc/retry.js';
+import { normalizeHexWord } from '../utils/encoding.js';
 
 /**
  * `RpcError::PaginationError`'s Display prefix in the WASM error chain: the
@@ -61,6 +62,38 @@ function requireBlockNumber(name: string, value: number): void {
   if (!Number.isInteger(value) || value < 0 || value > MAX_BLOCK_NUMBER) {
     throw new Error(`${name} must be an integer in [0, ${MAX_BLOCK_NUMBER}], got ${value}`);
   }
+}
+
+/**
+ * Static relevance screen for a discovered public note. The Rust SDK screens
+ * with the execution-based `NoteScreener` normal sync uses; the WASM surface
+ * does not expose it, so this mirrors its verdict for the well-known note
+ * scripts: a note is relevant when it is a P2ID/P2IDE note whose target (or
+ * P2IDE reclaimer) is the scanned account. Notes with other scripts are
+ * conservatively treated as irrelevant — tags are shared, truncated filters,
+ * and importing unscreened tag matches would let anyone pollute the store.
+ * Exported for the drift-guard test, which pins the root and storage-layout
+ * assumptions against real WASM-built notes.
+ */
+export function isRelevantToAccount(note: Note, account: AccountId): boolean {
+  const root = normalizeHexWord(note.script().root().toHex());
+  const items = note.recipient().storage().items();
+  const prefix = account.prefix().asInt();
+  const suffix = account.suffix().asInt();
+  const accountAt = (index: number): boolean =>
+    items.length > index + 1 &&
+    items[index].asInt() === suffix &&
+    items[index + 1].asInt() === prefix;
+  if (root === normalizeHexWord(NoteScript.p2id().root().toHex())) {
+    // P2ID note storage: [target.suffix, target.prefix].
+    return accountAt(0);
+  }
+  if (root === normalizeHexWord(NoteScript.p2ide().root().toHex())) {
+    // P2IDE note storage: [reclaimer.suffix, reclaimer.prefix,
+    // target.suffix, target.prefix, reclaim, timelock].
+    return accountAt(2) || accountAt(0);
+  }
+  return false;
 }
 
 /** A contiguous block range, inclusive on both ends. */
@@ -89,6 +122,13 @@ export interface PublicBackfillReport {
    * bodies, so they cannot be rebuilt from a scan. Private notes are covered
    * by the transport drain and proposal-import primitives instead. */
   skippedPrivate: number;
+  /** Unique public matches the relevance screen rejected: tags are
+   * best-effort, truncated filters, so unrelated notes can carry this
+   * account's tag. Like normal sync, only notes the account could actually
+   * consume are imported; the rest are counted here. (This SDK screens
+   * statically against the well-known P2ID/P2IDE scripts; the Rust SDK uses
+   * the execution-based screener.) */
+  skippedIrrelevant: number;
   /** One outcome per unique public note discovered. */
   outcomes: NoteImportOutcome[];
   /** Sub-ranges of `[scannedFrom, scannedTo]` the scan could not cover (RPC
@@ -138,11 +178,16 @@ export interface BackfillPublicNotesOptions {
  * `failed` outcomes.
  *
  * Notes are discovered by tag only — a best-effort filter: notes sent with
- * unrelated custom tags are outside this scan's guarantee, and unrelated
- * notes whose tag collides with the account's are imported harmlessly (they
- * simply never become consumable). Only public notes can be rebuilt from
- * chain data; private matches are counted as `skippedPrivate` and are
- * covered by the transport drain and proposal-import primitives instead.
+ * unrelated custom tags are outside this scan's guarantee, and, like normal
+ * sync, every new discovery is screened for relevance before import —
+ * tag-colliding notes the account cannot consume are counted as
+ * `skippedIrrelevant` instead of polluting the store. This SDK screens
+ * statically against the well-known P2ID/P2IDE scripts (the WASM surface
+ * does not expose the execution-based screener the Rust SDK uses), so notes
+ * with custom scripts are conservatively skipped. Only public notes can be
+ * rebuilt from chain data; private matches are counted as `skippedPrivate`
+ * and are covered by the transport drain and proposal-import primitives
+ * instead.
  *
  * A range dense enough to trip the node's internal pagination cap is split
  * client-side and rescanned as narrower requests; ranges that still cannot
@@ -152,12 +197,12 @@ export interface BackfillPublicNotesOptions {
  * account ID, a block bound that is not a u32 integer, or
  * `fromBlock > toBlock`).
  *
+ * Prefer the `Multisig.backfillPublicNotesByTag` convenience method, which
+ * reuses the client's endpoint and retry configuration.
+ *
  * @example
  * ```typescript
- * const report = await backfillPublicNotesByTag(midenClient, {
- *   accountId: multisig.accountId,
- *   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
- * });
+ * const report = await multisig.backfillPublicNotesByTag();
  * console.log(report.discovered, 'discovered,', report.outcomes.length, 'public');
  * await multisig.syncState(); // verifies the imported notes
  * ```
@@ -252,6 +297,7 @@ export async function backfillPublicNotesByTag(
     }
   }
   const skippedPrivate = discovered.size - publicNotes.length;
+  let skippedIrrelevant = 0;
 
   const outcomes: NoteImportOutcome[] = [];
   const buildReport = (): PublicBackfillReport => {
@@ -267,6 +313,7 @@ export async function backfillPublicNotesByTag(
       scannedTo: to,
       discovered: discovered.size,
       skippedPrivate,
+      skippedIrrelevant,
       outcomes,
       uncovered,
       // Rerunning can help when scan ranges were left uncovered OR when any
@@ -366,6 +413,7 @@ export async function backfillPublicNotesByTag(
 
   // Provisionally `imported` outcomes, re-classified in one batched
   // consumed-state check below.
+  const screenAccount = AccountId.fromHex(options.accountId);
   const imported: Array<{ index: number; detailsKey: string }> = [];
   for (const candidate of pending) {
     const record = existing.get(candidate.idHex) ?? existing.get(candidate.detailsKey);
@@ -380,6 +428,13 @@ export async function backfillPublicNotesByTag(
         source: 'backfill',
         status: record.isConsumed() ? 'already-consumed' : 'already-present',
       });
+      continue;
+    }
+    // Screen genuinely new discoveries for relevance, exactly like normal
+    // sync does before it stores a tag match. Records the store already
+    // tracks are material the user chose to track and skip the screen.
+    if (!record && !isRelevantToAccount(candidate.note, screenAccount)) {
+      skippedIrrelevant += 1;
       continue;
     }
     const { outcome, wasImported } = await importNoteWithProof(
