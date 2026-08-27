@@ -24,16 +24,21 @@ import {
   RpcClient,
 } from '@miden-sdk/miden-sdk';
 
-import { getRawMidenClient, requireMidenRpcEndpoint, type RawClientSource } from './raw-client.js';
-import { resolveRpcConfig, type RpcConfig } from './rpc/config.js';
-import { isTransientRpcError } from './rpc/errors.js';
-import { retryRpcRead } from './rpc/retry.js';
-import { isConsumeNotesV2 } from './types/proposal.js';
-import type { Proposal } from './types/proposal.js';
-import { noteFromBase64, normalizeHexWord } from './utils/encoding.js';
+import { getRawMidenClient, requireMidenRpcEndpoint, type RawClientSource } from '../raw-client.js';
+import { resolveRpcConfig, type RpcConfig } from '../rpc/config.js';
+import { isTransientRpcError } from '../rpc/errors.js';
+import { retryRpcRead } from '../rpc/retry.js';
+import { isConsumeNotesV2 } from '../types/proposal.js';
+import type { Proposal } from '../types/proposal.js';
+import { noteFromBase64, normalizeHexWord } from '../utils/encoding.js';
 
 /** Where a recovered note's bytes came from. */
-export type NoteImportSource = 'proposal';
+export type NoteImportSource =
+  /** Embedded in a v2 `consume_notes` proposal. */
+  | 'proposal'
+  /** Discovered on chain by a tag-scoped historical scan
+   * (`backfillPublicNotesByTag`). */
+  | 'backfill';
 
 /** Per-note result of a recovery import attempt. */
 export type NoteImportStatus =
@@ -86,7 +91,8 @@ export interface ImportNotesFromProposalsOptions {
   rpc?: RpcConfig;
 }
 
-function errorDetail(error: unknown): string {
+/** Shared by the recovery primitives (#415 proposal import, #416 backfill). */
+export function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -107,7 +113,7 @@ interface DecodedCandidate {
 /** Collision-safe key over full note details: recipient digest + canonical
  * asset list. Mirrors what the details commitment covers, which the WASM
  * record surface does not expose directly. */
-function detailsKeyOf(recipientDigestHex: string, assets: NoteAssets): string {
+export function detailsKeyOf(recipientDigestHex: string, assets: NoteAssets): string {
   const fingerprint = assets
     .fungibleAssets()
     .map((asset) => `${normalizeHexWord(asset.faucetId().toString())}:${asset.amount()}`)
@@ -127,6 +133,114 @@ function recordKeys(record: InputNoteRecord): string[] {
     detailsKeyOf(normalizeHexWord(details.recipient().digest().toHex()), details.assets()),
   );
   return keys;
+}
+
+/**
+ * Scans the store once and keys every record by note ID *and* details key:
+ * records the store keeps without metadata (a note details import in
+ * expected state, or a note observed as consumed on chain) expose neither a
+ * note ID nor a nullifier, and an ID-only lookup would keep re-importing
+ * them forever. (The WASM NoteFilter has no details-commitment variant,
+ * unlike the Rust SDK, so the store is scanned once and keyed both ways.)
+ * Shared by the recovery primitives (#415 proposal import, #416 backfill).
+ */
+export async function collectExistingRecords(
+  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+): Promise<Map<string, InputNoteRecord>> {
+  const existing = new Map<string, InputNoteRecord>();
+  const records = await webClient.getInputNotes(new NoteFilter(NoteFilterTypes.All));
+  for (const record of records) {
+    for (const key of recordKeys(record)) {
+      existing.set(key, record);
+    }
+  }
+  return existing;
+}
+
+/**
+ * Imports one note with its inclusion proof and classifies the result.
+ * Upstream note-import batches are atomic, which is why callers import
+ * individually — one bad note must not sink the rest. Returns the outcome
+ * and whether the import succeeded (input for the batched consumed-state
+ * re-check).
+ */
+export async function importNoteWithProof(
+  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+  source: NoteImportSource,
+  idHex: string,
+  note: Note,
+  proof: NoteInclusionProof,
+): Promise<{ outcome: NoteImportOutcome; wasImported: boolean }> {
+  try {
+    const inputNote = InputNote.authenticated(note, proof);
+    await webClient.importNoteFile(NoteFile.fromInputNote(inputNote));
+    return {
+      outcome: { identifier: idHex, source, status: 'imported' },
+      wasImported: true,
+    };
+  } catch (error) {
+    return {
+      outcome: {
+        identifier: idHex,
+        source,
+        status: 'failed',
+        retryable: isTransientRpcError(error),
+        reason: `failed to import note: ${errorDetail(error)}`,
+      },
+      wasImported: false,
+    };
+  }
+}
+
+/**
+ * Re-classifies provisionally `imported` outcomes whose note the chain had
+ * already nullified: upstream stores those as consumption history, not as
+ * consumable notes — report that honestly instead of `imported`. One batched
+ * store read covers every imported note. A failed check downgrades nothing;
+ * it flags the outcome's classification as unconfirmed instead.
+ */
+export async function reclassifyConsumedImports(
+  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+  imported: Array<{ index: number; detailsKey: string }>,
+  outcomes: NoteImportOutcome[],
+): Promise<void> {
+  if (imported.length === 0) {
+    return;
+  }
+  try {
+    const consumedRecords = await webClient.getInputNotes(
+      new NoteFilter(NoteFilterTypes.Consumed),
+    );
+    const consumed = new Set(
+      consumedRecords.map((record) => {
+        const details = record.details();
+        return detailsKeyOf(
+          normalizeHexWord(details.recipient().digest().toHex()),
+          details.assets(),
+        );
+      }),
+    );
+    for (const entry of imported) {
+      if (consumed.has(entry.detailsKey)) {
+        outcomes[entry.index] = {
+          ...outcomes[entry.index],
+          status: 'already-consumed',
+          reason: 'note was already consumed on chain; recorded as consumption history',
+        };
+      }
+    }
+  } catch (error) {
+    // The imports themselves succeeded; stay `imported` but flag that the
+    // consumed-state classification is unknown.
+    for (const entry of imported) {
+      outcomes[entry.index] = {
+        ...outcomes[entry.index],
+        reason: `imported, but the consumed-state check failed (${errorDetail(
+          error,
+        )}); run sync to confirm the note's status`,
+      };
+    }
+  }
 }
 
 /**
@@ -221,20 +335,9 @@ export async function importNotesFromProposals(
     return outcomes;
   }
 
-  // Look up existing records by note ID *and* recipient digest: records the
-  // store keeps without metadata (a note details import in expected state, or
-  // a note observed as consumed on chain) expose neither a note ID nor a
-  // nullifier, and an ID-only lookup would keep re-importing them forever.
-  // (The WASM NoteFilter has no details-commitment variant, unlike the Rust
-  // SDK, so this scans the store once and keys records both ways.)
-  const existing = new Map<string, InputNoteRecord>();
+  let existing: Map<string, InputNoteRecord>;
   try {
-    const records = await webClient.getInputNotes(new NoteFilter(NoteFilterTypes.All));
-    for (const record of records) {
-      for (const key of recordKeys(record)) {
-        existing.set(key, record);
-      }
-    }
+    existing = await collectExistingRecords(webClient);
   } catch (error) {
     const reason = `failed to read local store: ${errorDetail(error)}`;
     for (const candidate of decoded) {
@@ -302,24 +405,17 @@ export async function importNotesFromProposals(
   for (const candidate of pending) {
     const proof = proofs.get(candidate.idHex);
     if (proof) {
-      try {
-        const inputNote = InputNote.authenticated(candidate.note, proof);
-        await webClient.importNoteFile(NoteFile.fromInputNote(inputNote));
+      const { outcome, wasImported } = await importNoteWithProof(
+        webClient,
+        'proposal',
+        candidate.idHex,
+        candidate.note,
+        proof,
+      );
+      if (wasImported) {
         imported.push({ index: outcomes.length, detailsKey: candidate.detailsKey });
-        outcomes.push({
-          identifier: candidate.idHex,
-          source: 'proposal',
-          status: 'imported',
-        });
-      } catch (error) {
-        outcomes.push({
-          identifier: candidate.idHex,
-          source: 'proposal',
-          status: 'failed',
-          retryable: isTransientRpcError(error),
-          reason: `failed to import note: ${errorDetail(error)}`,
-        });
       }
+      outcomes.push(outcome);
     } else {
       try {
         // Track the tag FIRST so the resulting expected record can never
@@ -349,45 +445,7 @@ export async function importNotesFromProposals(
     }
   }
 
-  // A note the chain already nullified is stored as consumption history, not
-  // as a consumable note — report that honestly instead of `imported`. One
-  // batched store read covers every imported note.
-  if (imported.length > 0) {
-    try {
-      const consumedRecords = await webClient.getInputNotes(
-        new NoteFilter(NoteFilterTypes.Consumed),
-      );
-      const consumed = new Set(
-        consumedRecords.map((record) => {
-          const details = record.details();
-          return detailsKeyOf(
-            normalizeHexWord(details.recipient().digest().toHex()),
-            details.assets(),
-          );
-        }),
-      );
-      for (const entry of imported) {
-        if (consumed.has(entry.detailsKey)) {
-          outcomes[entry.index] = {
-            ...outcomes[entry.index],
-            status: 'already-consumed',
-            reason: 'note was already consumed on chain; recorded as consumption history',
-          };
-        }
-      }
-    } catch (error) {
-      // The imports themselves succeeded; stay `imported` but flag that the
-      // consumed-state classification is unknown.
-      for (const entry of imported) {
-        outcomes[entry.index] = {
-          ...outcomes[entry.index],
-          reason: `imported, but the consumed-state check failed (${errorDetail(
-            error,
-          )}); run sync to confirm the note's status`,
-        };
-      }
-    }
-  }
+  await reclassifyConsumedImports(webClient, imported, outcomes);
 
   return outcomes;
 }

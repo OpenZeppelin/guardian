@@ -233,7 +233,16 @@ several accounts, and the helper surfaces all of them rather than silently
 picking one. The returned list is empty (not an error) when no account
 authorizes the queried commitment.
 
-### Drain The Private-Note Transport Backlog
+### Recovering Notes After Device Loss
+
+The three recovery primitives from #357 restore note state that normal
+forward sync cannot see. Use them together after `load()` on a recovered
+account: the transport drain re-fetches relayed private notes, the proposal
+import rebuilds notes embedded in pending consume proposals, and the public
+backfill rescans the chain for public notes behind the store's sync cursor.
+Run a sync afterwards so imported notes are verified.
+
+#### Drain The Private-Note Transport Backlog
 
 After recovery on a fresh device the local store has no note-transport
 cursor — and in a store shared with other accounts, sync may have advanced
@@ -265,7 +274,7 @@ service's retention. Senders may deliver private notes out-of-band without
 using the transport, and relayed blobs are pruned after the retention
 window.
 
-### Recover Notes From Pending Proposals
+#### Recover Notes From Pending Proposals
 
 After key-based recovery the local Miden store starts empty. v2
 `consume_notes` proposals embed the serialized notes they consume, and
@@ -295,6 +304,41 @@ Proposals are opportunistic recovery material, not a backup: v1 proposals
 carry no note bytes, proposals disappear once canonicalized, and embedded
 note bytes are visible to the Guardian operator (existing v2 behavior, not a
 new exposure).
+
+#### Backfill Historical Public Notes By Tag
+
+Normal forward sync starts from the store's **global** cursor, so in a store
+shared with other accounts the cursor may already be past blocks containing
+a recovered account's notes. `backfillPublicNotesByTag` scans a historical
+block range (genesis to tip by default) for public notes addressed at the
+account's standard note tag and imports them with their on-chain inclusion
+proofs — without ever touching the global sync height. The scan's cost grows
+with the number of matching notes, not the range length, so a full
+genesis-to-tip scan is fast on an ordinary account.
+
+```typescript
+const multisig = await client.load(accountId, signer);
+const report = await multisig.backfillPublicNotesByTag();
+// report.discovered, report.skippedPrivate, report.skippedIrrelevant,
+// report.outcomes (per imported public note)
+await multisig.syncState(); // verifies the imported notes
+```
+
+Each imported public note gets its own `NoteImportOutcome` (source
+`'backfill'`), with the same statuses and duplicate tolerance as the
+proposal import. Tags are best-effort, truncated filters shared by
+unrelated notes, so — like normal sync — every new discovery is screened
+for relevance before import: tag-colliding notes the account cannot consume
+are counted as `skippedIrrelevant` instead of polluting the store (this SDK
+screens statically against the well-known P2ID/P2IDE scripts). Private
+matches are counted as `skippedPrivate` — the chain holds no body for them;
+recover those with the transport drain or the proposal import instead.
+
+Scan problems are reported, never thrown: a range dense enough to trip the
+node's pagination cap is split client-side and rescanned, and any sub-range
+that still cannot be covered lands in `report.uncovered` with
+`retryable`/`reason` set, so a partial scan never aborts the rest of a
+recovery flow.
 
 ### Fetch Account State
 

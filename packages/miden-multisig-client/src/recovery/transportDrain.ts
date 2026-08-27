@@ -9,7 +9,7 @@
  */
 
 import type { MidenClient } from '@miden-sdk/miden-sdk';
-import { errorMessage, isLikelyNetworkError } from './connectivity.js';
+import { errorMessage, isLikelyNetworkError } from '../connectivity.js';
 
 /**
  * Outcome class of a private-note transport backlog drain:

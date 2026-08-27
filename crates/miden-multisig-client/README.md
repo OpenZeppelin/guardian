@@ -195,36 +195,6 @@ client.sign_proposal(&to_sign.id).await?;
 client.execute_proposal(&proposal.id).await?;
 ```
 
-### Draining the Private-Note Transport Backlog
-
-After recovery on a fresh device the local store has no note-transport
-cursor — and in a store shared with other accounts, sync may have advanced
-the cursor past private notes addressed to the newly recovered account.
-`drain_private_note_backlog` rescans the full transport backlog for every
-tracked note tag, regardless of the stored cursor. Run it after
-`pull_account`: the drain only sees tags tracked in the store, and
-`pull_account` inserting the account is what tracks its tag.
-
-```rust
-client.pull_account(account_id).await?;
-
-let report = client.drain_private_note_backlog().await?;
-// report.status: Completed | Unavailable | Failed
-// report.imported: number of newly imported note records
-```
-
-Transport problems are reported in the result, never returned as errors:
-`Unavailable` means no transport endpoint is configured or the transport
-could not be reached before anything was imported; `Failed` with
-`retryable: true` keeps any partial progress and rerunning the drain
-continues it. The drain is idempotent and never regresses the stored
-transport cursor.
-
-Transport recovery is **not a backup**: it is bounded by the transport
-service's retention. Senders may deliver private notes out-of-band without
-using the transport, and relayed blobs are pruned after the retention
-window.
-
 ### Recovering From a Dead Transaction (Abandon)
 
 If `execute_proposal` dies after guardian approval (RPC submit failure,
@@ -308,7 +278,46 @@ let filter = NoteFilter::by_faucet_min_amount(faucet, 5_000);
 let spendable = client.list_consumable_notes_filtered(filter).await?;
 ```
 
-### Recovering Notes From Pending Proposals
+### Recovering Notes After Device Loss
+
+The three recovery primitives from #357 restore note state that normal
+forward sync cannot see. Use them together after `pull_account` on a
+recovered account: the transport drain re-fetches relayed private notes, the
+proposal import rebuilds notes embedded in pending consume proposals, and
+the public backfill rescans the chain for public notes behind the store's
+sync cursor. Run a sync afterwards so imported notes are verified.
+
+#### Draining the Private-Note Transport Backlog
+
+After recovery on a fresh device the local store has no note-transport
+cursor — and in a store shared with other accounts, sync may have advanced
+the cursor past private notes addressed to the newly recovered account.
+`drain_private_note_backlog` rescans the full transport backlog for every
+tracked note tag, regardless of the stored cursor. Run it after
+`pull_account`: the drain only sees tags tracked in the store, and
+`pull_account` inserting the account is what tracks its tag.
+
+```rust
+client.pull_account(account_id).await?;
+
+let report = client.drain_private_note_backlog().await?;
+// report.status: Completed | Unavailable | Failed
+// report.imported: number of newly imported note records
+```
+
+Transport problems are reported in the result, never returned as errors:
+`Unavailable` means no transport endpoint is configured or the transport
+could not be reached before anything was imported; `Failed` with
+`retryable: true` keeps any partial progress and rerunning the drain
+continues it. The drain is idempotent and never regresses the stored
+transport cursor.
+
+Transport recovery is **not a backup**: it is bounded by the transport
+service's retention. Senders may deliver private notes out-of-band without
+using the transport, and relayed blobs are pruned after the retention
+window.
+
+#### Recovering Notes From Pending Proposals
 
 After key-based recovery the local Miden store starts empty. v2
 `consume_notes` proposals embed the serialized notes they consume, and
@@ -337,6 +346,49 @@ Proposals are opportunistic recovery material, not a backup: v1 proposals
 carry no note bytes, proposals disappear once canonicalized, and embedded
 note bytes are visible to the GUARDIAN operator (existing v2 behavior, not a
 new exposure).
+
+#### Backfilling Historical Public Notes By Tag
+
+Normal forward sync starts from the store's **global** cursor, so in a store
+shared with other accounts the cursor may already be past blocks containing
+a recovered account's notes. `backfill_public_notes_by_tag` scans a
+historical block range (genesis to tip by default) for public notes
+addressed at the account's standard note tag and imports them with their
+on-chain inclusion proofs — without ever touching the global sync height.
+The scan's cost grows with the number of matching notes, not the range
+length, so a full genesis-to-tip scan is fast on an ordinary account.
+
+```rust
+let report = client
+    .backfill_public_notes_by_tag(account_id, None, None)
+    .await?;
+println!(
+    "discovered {} ({} private, {} irrelevant skipped), {} outcomes",
+    report.discovered,
+    report.skipped_private,
+    report.skipped_irrelevant,
+    report.outcomes.len()
+);
+client.sync().await?; // verifies the imported notes
+```
+
+Each imported public note gets its own `NoteImportOutcome` (source
+`Backfill`), with the same statuses and duplicate tolerance as the proposal
+import. Tags are best-effort, truncated filters shared by unrelated notes,
+so — exactly like normal sync — every new discovery is screened with the
+execution-based `NoteScreener` before import: tag-colliding notes the
+account cannot consume are counted as `skipped_irrelevant` instead of
+polluting the store (screening needs the account tracked in the store, which
+recovery via `pull_account` guarantees). Private matches are counted as
+`skipped_private` — the chain holds no body for them; recover those with the
+transport drain or the proposal import instead.
+
+Scan problems are reported, not returned as errors: a range dense enough to
+trip the node's pagination cap is split client-side and rescanned, and any
+sub-range that still cannot be covered lands in `report.uncovered` with
+`retryable`/`reason` set, so a partial scan never aborts the rest of a
+recovery flow. An `Err` means only that the scan range could not be
+established (chain-tip lookup failed or the range is inverted).
 
 ### Custom Proposal Types
 

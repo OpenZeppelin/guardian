@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { importNotesFromProposals } from './proposalNoteImport.js';
-import type { Proposal } from './types/proposal.js';
-import { uint8ArrayToBase64 } from './utils/encoding.js';
+import type { Proposal } from '../types/proposal.js';
+import { uint8ArrayToBase64 } from '../utils/encoding.js';
 
 const { mockNoteDeserialize, mockGetNotesById } = vi.hoisted(() => ({
   mockNoteDeserialize: vi.fn(),

@@ -88,7 +88,11 @@ import { ProposalSignatures } from './proposal/signatures.js';
 import {
   importNotesFromProposals as importNotesFromProposalsStandalone,
   type NoteImportOutcome,
-} from './proposalNoteImport.js';
+} from './recovery/proposalNoteImport.js';
+import {
+  backfillPublicNotesByTag as backfillPublicNotesByTagStandalone,
+  type PublicBackfillReport,
+} from './recovery/publicNoteBackfill.js';
 import {
   getRawMidenClient,
   getTransactionProver,
@@ -1254,6 +1258,31 @@ export class Multisig {
     return importNotesFromProposalsStandalone(this.midenClient, source, {
       midenRpcEndpoint: this.getMidenRpcEndpoint(),
       rpc: { retry: { maxAttempts: this.rpcConfig.maxAttempts } },
+    });
+  }
+
+  /**
+   * Scan a historical block range for public notes addressed at this
+   * account's standard note tag and import them with their on-chain
+   * inclusion proofs (issue #416) — the recovery convenience over the
+   * standalone
+   * {@link backfillPublicNotesByTagStandalone | backfillPublicNotesByTag},
+   * reusing this client's Miden RPC endpoint and retry configuration
+   * instead of taking them as parameters.
+   *
+   * `fromBlock`/`toBlock` default to genesis and the current chain tip. See
+   * the standalone function for the report semantics; run a sync afterwards
+   * so imported notes are verified.
+   */
+  async backfillPublicNotesByTag(
+    options: { fromBlock?: number; toBlock?: number } = {},
+  ): Promise<PublicBackfillReport> {
+    return backfillPublicNotesByTagStandalone(this.midenClient, {
+      accountId: this._accountId,
+      midenRpcEndpoint: this.getMidenRpcEndpoint(),
+      rpc: { retry: { maxAttempts: this.rpcConfig.maxAttempts } },
+      ...(options.fromBlock !== undefined ? { fromBlock: options.fromBlock } : {}),
+      ...(options.toBlock !== undefined ? { toBlock: options.toBlock } : {}),
     });
   }
 

@@ -9,7 +9,8 @@
 //! - `notes` - Note filtering and listing
 //! - `recovery` - Recovery primitives (transport backlog drain)
 //! - `io` - Export/import functionality
-//! - `proposal_import` - Recovery primitive: proposal-embedded note import
+//! - `proposal_note_import` - Recovery primitive: proposal-embedded note import
+//! - `public_note_backfill` - Recovery primitive: historical public-note backfill by tag
 //! - `helpers` - Internal GUARDIAN client helpers
 
 mod account;
@@ -18,15 +19,17 @@ mod helpers;
 mod io;
 mod notes;
 mod offline;
-mod proposal_import;
+mod proposal_note_import;
 mod proposals;
+mod public_note_backfill;
 mod recovery;
 pub use delta_history::{
     HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
 };
-pub use proposal_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
+pub use proposal_note_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
 pub use proposals::{AbandonRequestState, AbandonStatus};
+pub use public_note_backfill::{BlockRange, PublicBackfillReport};
 pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
 
 use std::path::PathBuf;
@@ -154,6 +157,16 @@ impl MultisigClient {
 
     pub(crate) fn node_rpc_client(&self) -> Arc<dyn miden_client::rpc::NodeRpcClient> {
         Arc::clone(&self.node_rpc_client)
+    }
+
+    /// Swaps the node RPC client for a mock, so offline tests can drive the
+    /// success paths of node-backed primitives.
+    #[cfg(test)]
+    pub(crate) fn set_node_rpc_client(
+        &mut self,
+        client: Arc<dyn miden_client::rpc::NodeRpcClient>,
+    ) {
+        self.node_rpc_client = client;
     }
 
     /// Returns the GUARDIAN endpoint.

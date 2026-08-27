@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { MidenClient } from '@miden-sdk/miden-sdk';
-import { freshDeviceStore as freshDevice } from './testing/fake-indexeddb-device.js';
-import { drainPrivateNoteBacklog } from './recovery.js';
+import { freshDeviceStore as freshDevice } from '../testing/fake-indexeddb-device.js';
+import { drainPrivateNoteBacklog } from './transportDrain.js';
 
 /**
  * Classification tests use hand-rolled stub clients — the primitive takes the
