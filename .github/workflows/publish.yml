@@ -196,7 +196,8 @@ jobs:
           }
 
           guardian_client_name="@openzeppelin/guardian-client"
-          guardian_client_range=$(jq -r '.dependencies["@openzeppelin/guardian-client"]' miden-multisig-client/package.json)
+          guardian_client_dependency=$(jq -r '.dependencies["@openzeppelin/guardian-client"]' miden-multisig-client/package.json)
+          guardian_client_version=$(jq -r '.version' guardian-client/package.json)
 
           for index in "${!packages[@]}"; do
             package="${packages[${index}]}"
@@ -245,11 +246,11 @@ jobs:
               fi
             else
               if [[ "${package}" == "miden-multisig-client" ]]; then
-                if [[ -z "${guardian_client_range}" || "${guardian_client_range}" == "null" ]]; then
+                if [[ -z "${guardian_client_dependency}" || "${guardian_client_dependency}" == "null" ]]; then
                   abort "${package_name}" "${package_version}" "❌ Missing ${guardian_client_name} dependency" "${next_index}"
                 fi
-                if ! wait_for_npm "${guardian_client_name}" "${guardian_client_range}"; then
-                  abort "${package_name}" "${package_version}" "❌ Timed out waiting for ${guardian_client_name}@${guardian_client_range} on npm" "${next_index}"
+                if ! wait_for_npm "${guardian_client_name}" "${guardian_client_version}"; then
+                  abort "${package_name}" "${package_version}" "❌ Timed out waiting for ${guardian_client_name}@${guardian_client_version} on npm" "${next_index}"
                 fi
               fi
               if npm publish -w "${workspace_name}" --provenance --access public --tag "${npm_tag}"; then

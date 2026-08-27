@@ -76,11 +76,11 @@ Update these when the public workflow or expected responses changed.
 Minimum:
 - `cargo test -p guardian-server`
 - `cargo test -p guardian-client`
-- `cd packages/guardian-client && npm test`
+- `cd packages && npm ci && npm test -w @openzeppelin/guardian-client`
 
 Expand when the contract crosses layers:
 - `cargo test -p miden-multisig-client`
-- `cd packages/miden-multisig-client && npm test`
+- `cd packages && npm run build -w @openzeppelin/guardian-client && npm test -w @openzeppelin/miden-multisig-client`
 - `cargo test -p guardian-demo`
 - `cd examples/smoke-web && npm run typecheck && npm run build`
 - manual smoke with `smoke-test-rust-multisig-sdk` or `smoke-test-ts-multisig-sdk`
