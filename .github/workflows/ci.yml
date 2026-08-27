@@ -308,22 +308,33 @@ jobs:
         working-directory: packages
         run: npm ci
 
-      - name: Assert guardian-client is a workspace link
+      - name: Assert miden SDK uses the workspace guardian-client
         if: matrix.package == 'miden-multisig-client'
         working-directory: packages
         run: |
           node <<'EOF'
           const lock = require("./package-lock.json");
-          const entry = lock.packages["node_modules/@openzeppelin/guardian-client"];
-          if (!entry || entry.link !== true || entry.resolved !== "guardian-client") {
+          const workspaceEntry = lock.packages["node_modules/@openzeppelin/guardian-client"];
+          const nestedEntry =
+            lock.packages[
+              "miden-multisig-client/node_modules/@openzeppelin/guardian-client"
+            ];
+          if (
+            !workspaceEntry ||
+            workspaceEntry.link !== true ||
+            workspaceEntry.resolved !== "guardian-client" ||
+            nestedEntry
+          ) {
             console.error(
-              "@openzeppelin/guardian-client must resolve to the workspace package, got",
-              entry,
+              "@openzeppelin/miden-multisig-client must resolve guardian-client from the workspace",
+              { workspaceEntry, nestedEntry },
             );
             process.exit(1);
           }
           EOF
 
+      # Workspaces link the package sources, but the multisig SDK imports the
+      # guardian-client's generated dist output.
       - name: Build workspace dependencies
         if: matrix.package == 'miden-multisig-client'
         working-directory: packages
@@ -395,6 +406,8 @@ jobs:
         working-directory: packages
         run: npm ci
 
+      # Workspaces link the package sources, but the multisig SDK imports the
+      # guardian-client's generated dist output.
       - name: Build workspace dependencies
         working-directory: packages
         run: npm run build -w @openzeppelin/guardian-client

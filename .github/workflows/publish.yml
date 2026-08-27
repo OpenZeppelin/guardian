@@ -207,6 +207,8 @@ jobs:
             next_index=$((index + 1))
 
             if [[ "${package}" == "miden-multisig-client" ]]; then
+              # npm ci links the local workspace, but the multisig SDK imports
+              # the guardian-client's generated dist output.
               if ! npm run build -w @openzeppelin/guardian-client; then
                 abort "${package_name}" "${package_version}" "❌ Workspace dependency build failed" "${next_index}"
               fi
