@@ -140,7 +140,9 @@ export interface PublicBackfillReport {
    * statically against the well-known P2ID/P2IDE scripts; the Rust SDK uses
    * the execution-based screener.) */
   skippedIrrelevant: number;
-  /** One outcome per unique public note discovered. */
+  /** One outcome per unique public note that passed the relevance screen —
+   * `outcomes.length === discovered - skippedPrivate - skippedIrrelevant`.
+   * Screened-out and private matches get no outcome, only their counters. */
   outcomes: NoteImportOutcome[];
   /** Sub-ranges of `[scannedFrom, scannedTo]` the scan could not cover (RPC
    * failures, or the scan budget ran out while splitting around the node's

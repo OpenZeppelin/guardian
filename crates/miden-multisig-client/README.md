@@ -395,7 +395,7 @@ println!(
 client.sync().await?; // verifies the imported notes
 ```
 
-Each imported public note gets its own `NoteImportOutcome` (source
+Each screened-in public note gets its own `NoteImportOutcome`, imported or not (source
 `Backfill`), with the same statuses and duplicate tolerance as the proposal
 import. Tags are best-effort, truncated filters shared by unrelated notes,
 so — exactly like normal sync — every new discovery is screened with the

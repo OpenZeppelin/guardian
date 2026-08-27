@@ -15,15 +15,23 @@ function stubClient(options: {
   after: number;
   fetchPrivate: () => Promise<void>;
   syncNoteTransport?: () => Promise<void>;
+  /** Stored covered-tags value returned by `settings.get` (default absent). */
+  coveredSnapshot?: unknown;
+  /** Tracked note tags returned by `tags.list()` (default none). */
+  tags?: number[];
 }): {
   client: MidenClient;
   fetchPrivate: ReturnType<typeof vi.fn>;
   list: ReturnType<typeof vi.fn>;
+  getSetting: ReturnType<typeof vi.fn>;
+  setSetting: ReturnType<typeof vi.fn>;
   removeSetting: ReturnType<typeof vi.fn>;
   syncNoteTransport: ReturnType<typeof vi.fn>;
 } {
   let call = 0;
   const fetchPrivate = vi.fn(options.fetchPrivate);
+  const getSetting = vi.fn(async () => options.coveredSnapshot ?? null);
+  const setSetting = vi.fn(async () => {});
   const removeSetting = vi.fn(async () => {});
   const syncNoteTransport = vi.fn(options.syncNoteTransport ?? (async () => {}));
   const list = vi.fn(async () => {
@@ -33,10 +41,11 @@ function stubClient(options: {
   });
   const client = {
     notes: { list, fetchPrivate },
-    settings: { remove: removeSetting },
+    settings: { get: getSetting, set: setSetting, remove: removeSetting },
+    tags: { list: vi.fn(async () => options.tags ?? []) },
     syncNoteTransport,
   } as unknown as MidenClient;
-  return { client, fetchPrivate, list, removeSetting, syncNoteTransport };
+  return { client, fetchPrivate, list, getSetting, setSetting, removeSetting, syncNoteTransport };
 }
 
 describe('drainPrivateNoteBacklog', () => {
@@ -128,6 +137,110 @@ describe('drainPrivateNoteBacklog', () => {
     expect(report.status).toBe('failed');
     expect(report.retryable).toBe(true);
     expect(report.imported).toBe(3);
+  });
+
+  it('runs one transport sync per 64 tracked tags so no backfill candidate is deferred', async () => {
+    const { client, syncNoteTransport } = stubClient({
+      before: 0,
+      after: 65,
+      fetchPrivate: async () => {},
+      tags: new Array(65).fill(0).map((_, i) => i),
+    });
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    // Upstream backfills at most MAX_BACKFILL_TAGS_PER_SYNC = 64 uncovered
+    // tags per sync; with 65 tracked tags a single call would silently skip
+    // the 65th while reporting completed.
+    expect(syncNoteTransport).toHaveBeenCalledTimes(2);
+    expect(report.status).toBe('completed');
+  });
+
+  it('restores the covered-tags snapshot when the drain fails after clearing it', async () => {
+    const snapshot = new Uint8Array([1, 2, 3]);
+    const { client, setSetting } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {},
+      syncNoteTransport: async () => {
+        throw new Error('note transport network error: 503');
+      },
+      coveredSnapshot: snapshot,
+    });
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    // Leaving the cleared marker in place would make every subsequent
+    // normal sync re-attempt (and fail) the same per-tag backfill.
+    expect(setSetting).toHaveBeenCalledWith('note_transport_covered_tags', snapshot);
+    expect(report.status).toBe('unavailable');
+    expect(report.retryable).toBe(true);
+  });
+
+  it('does not write a covered-tags value that never existed', async () => {
+    const { client, setSetting } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {},
+      syncNoteTransport: async () => {
+        throw new Error('note transport network error: 503');
+      },
+    });
+
+    await drainPrivateNoteBacklog(client);
+
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it('classifies a mid-drain node RPC failure as failed, not unavailable', async () => {
+    const { client } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {},
+      syncNoteTransport: async () => {
+        throw new Error('grpc request failed for sync_state: unavailable');
+      },
+    });
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    // The node failing mid-import interrupted the drain; the transport
+    // itself was reachable, so "proceed without transport notes" would be
+    // the wrong guidance (mirrors the Rust `ClientError::RpcError` arm).
+    expect(report.status).toBe('failed');
+    expect(report.retryable).toBe(true);
+  });
+
+  it('classifies a permanently misconfigured transport endpoint as not retryable', async () => {
+    const { client } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {
+        throw new Error('connection error: invalid uri: missing scheme');
+      },
+    });
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    // Mirrors the Rust cause-chain classifier: a client that can never
+    // connect must not tell recovery flows to loop retrying it.
+    expect(report.status).toBe('unavailable');
+    expect(report.retryable).toBe(false);
+  });
+
+  it('keeps a dropped connection retryable', async () => {
+    const { client } = stubClient({
+      before: 0,
+      after: 0,
+      fetchPrivate: async () => {
+        throw new Error('connection error: connection refused');
+      },
+    });
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    expect(report.status).toBe('unavailable');
+    expect(report.retryable).toBe(true);
   });
 
   it('reports an unreachable transport as unavailable and retryable', async () => {

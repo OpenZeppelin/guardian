@@ -102,17 +102,21 @@ interface DecodedCandidate {
   /** Metadata-independent identifier: metadata-less store records (details
    * imports in expected state, chain-consumed history) expose neither a note
    * ID nor a nullifier, so records are matched by their details — recipient
-   * digest plus asset fingerprint, together equivalent to the details
-   * commitment (recipient alone is not collision-safe: two distinct notes
-   * can share a recipient while carrying different assets). */
+   * digest plus asset fingerprint (see {@link detailsKeyOf} for the
+   * fingerprint's coverage and its limits). */
   detailsKey: string;
-  /** Decimal string of the note's tag, for `addTag`. */
-  tagString: string;
 }
 
-/** Collision-safe key over full note details: recipient digest + canonical
- * asset list. Mirrors what the details commitment covers, which the WASM
- * record surface does not expose directly. */
+/** Details key: recipient digest + canonical FUNGIBLE asset list. This
+ * approximates the details commitment — which the WASM record surface does
+ * not expose — as closely as the surface allows: `fungibleAssets()` silently
+ * omits non-fungible assets and no complete accessor or commitment exists,
+ * so two notes sharing a recipient digest and fungible assets but differing
+ * only in non-fungible assets collide (the Rust SDK, keyed on the real
+ * `NoteDetailsCommitment`, does not). Latent until NFA-bearing notes reach
+ * these flows; closing it needs an upstream `NoteAssets` commitment/NFA
+ * accessor. Recipient digest alone would be worse: distinct notes can share
+ * a recipient while carrying different fungible assets. */
 export function detailsKeyOf(recipientDigestHex: string, assets: NoteAssets): string {
   const fingerprint = assets
     .fungibleAssets()
@@ -312,7 +316,6 @@ export async function importNotesFromProposals(
             normalizeHexWord(note.recipient().digest().toHex()),
             note.assets(),
           ),
-          tagString: String(note.metadata().tag().asU32()),
         };
       } catch (error) {
         outcomes.push({
@@ -418,14 +421,16 @@ export async function importNotesFromProposals(
       outcomes.push(outcome);
     } else {
       try {
-        // Track the tag FIRST so the resulting expected record can never
-        // exist untagged: the WASM details import cannot carry a tag (unlike
-        // the Rust SDK's note file), and sync only discovers the note's
-        // commitment through a tracked tag. Tag first also means a failure
-        // here leaves no dead record behind.
-        await webClient.addTag(candidate.tagString);
+        // Mirror the Rust SDK's `NoteFile::ExpectedNote` + sync-hint import:
+        // the tag rides in the note file itself, so upstream registers a
+        // note-source tag that sync uses to discover the commitment and
+        // removes once the note commits. (An explicit `addTag` would instead
+        // create a permanent user-source tag that the transport backfill
+        // also re-drains, and that would outlive even a failed import.)
         const details = new NoteDetails(candidate.note.assets(), candidate.note.recipient());
-        await webClient.importNoteFile(NoteFile.fromNoteDetails(details));
+        await webClient.importNoteFile(
+          NoteFile.fromExpectedNote(details, candidate.note.metadata().tag(), 0),
+        );
         outcomes.push({
           identifier: candidate.idHex,
           source: 'proposal',

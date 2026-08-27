@@ -5,10 +5,15 @@
 //! advanced the cursor past notes belonging to the newly recovered account.
 //! The primitives here rescan sources that normal forward sync would skip.
 
+use std::collections::BTreeSet;
+
 use miden_client::ClientError;
 use miden_client::note_transport::{NOTE_TRANSPORT_COVERED_TAGS_KEY, NoteTransportError};
+use miden_client::sync::NoteTagSource;
+use miden_protocol::note::NoteTag;
 
 use super::MultisigClient;
+use crate::MidenSdkClient;
 use crate::error::{Result, error_chain};
 use crate::rpc::{is_transient_note_transport_error, is_transient_rpc_error};
 
@@ -68,6 +73,11 @@ impl MultisigClient {
     /// backup. Transport-disabled and transport-unreachable outcomes are
     /// reported in the [`TransportRecoveryReport`] rather than returned as
     /// errors; an `Err` from this method means the local store itself failed.
+    ///
+    /// The rescan runs as many transport syncs as the upstream per-sync tag
+    /// backfill cap requires to cover every tracked candidate tag, and a
+    /// failed drain restores the pre-drain covered-tags bookkeeping so
+    /// normal sync keeps working exactly as it did before the attempt.
     pub async fn drain_private_note_backlog(&mut self) -> Result<TransportRecoveryReport> {
         if !self.miden_client.is_note_transport_enabled() {
             return Ok(TransportRecoveryReport {
@@ -83,6 +93,14 @@ impl MultisigClient {
         }
 
         let before = self.input_note_count().await?;
+        // Snapshot the covered-tags set before clearing it: the clear is
+        // durable, and upstream re-marks a tag covered only after its
+        // backfill succeeds — so without a restore, a drain that fails on a
+        // tag with a permanently bad relay blob would leave every tag
+        // uncovered and make every subsequent normal sync re-attempt (and
+        // fail) the same backfill. Restoring on failure returns the client
+        // to its working pre-drain state.
+        let covered_snapshot = self.covered_tags_snapshot().await?;
         // miden-client 0.16 replaced the explicit full drain with covered-tag
         // bookkeeping inside `sync_note_transport`: each tag not yet marked
         // covered is drained from the start with a local cursor (the global
@@ -90,15 +108,35 @@ impl MultisigClient {
         // Clearing the covered-tags marker first forces that full per-tag
         // re-drain for every tracked tag, which is exactly the recovery
         // semantic this primitive promises. Imports dedupe, so re-draining
-        // already-seen history is harmless.
+        // already-seen history is harmless. Upstream backfills at most
+        // `MAX_BACKFILL_TAGS_PER_SYNC` uncovered tags per call, so run
+        // enough passes to cover every candidate tag before reporting the
+        // backlog fully scanned.
+        let passes = self
+            .backfill_candidate_count()
+            .await?
+            .div_ceil(MidenSdkClient::MAX_BACKFILL_TAGS_PER_SYNC)
+            .max(1);
         let drain_result = match self
             .miden_client
             .remove_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string())
             .await
         {
-            Ok(_) => self.miden_client.sync_note_transport().await.map(|_| ()),
+            Ok(_) => {
+                let mut result = Ok(());
+                for _ in 0..passes {
+                    if let Err(err) = self.miden_client.sync_note_transport().await {
+                        result = Err(err);
+                        break;
+                    }
+                }
+                result
+            }
             Err(err) => Err(err),
         };
+        if drain_result.is_err() {
+            self.restore_covered_tags(&covered_snapshot).await;
+        }
         // Count even when the drain failed: each fetched batch is imported as
         // it arrives, so notes recovered before the failure stay in the store.
         // A drain never removes records (and `&mut self` excludes concurrent
@@ -141,6 +179,64 @@ impl MultisigClient {
                 })
             }
         }
+    }
+
+    /// The covered-tags set as stored, for restore-on-failure. Unreadable
+    /// bytes decode to an empty set — upstream resets the entry to empty on
+    /// load, so that is the state the drain actually starts from.
+    async fn covered_tags_snapshot(&mut self) -> Result<BTreeSet<NoteTag>> {
+        match self
+            .miden_client
+            .get_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string())
+            .await
+        {
+            Ok(Some(tags)) => Ok(tags),
+            Ok(None) => Ok(BTreeSet::new()),
+            Err(err @ ClientError::StoreError(_)) => {
+                Err(crate::error::MultisigError::miden_client_with_context(
+                    "failed to read the covered-tags setting before the transport drain",
+                    err,
+                ))
+            }
+            Err(_) => Ok(BTreeSet::new()),
+        }
+    }
+
+    /// Best-effort restore after a failed drain: the pre-drain covered set
+    /// united with whatever the interrupted backfill already re-covered. A
+    /// tag restored here was covered before the drain, so restoring it only
+    /// returns the client to its working pre-drain state; a later successful
+    /// drain re-covers everything from scratch anyway.
+    async fn restore_covered_tags(&mut self, snapshot: &BTreeSet<NoteTag>) {
+        if snapshot.is_empty() {
+            return;
+        }
+        let current: BTreeSet<NoteTag> = self
+            .miden_client
+            .get_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let merged: BTreeSet<NoteTag> = snapshot.union(&current).copied().collect();
+        let _ = self
+            .miden_client
+            .set_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string(), merged)
+            .await;
+    }
+
+    /// Number of tags the transport backfill considers candidates (`User`-
+    /// and `Account`-source, matching upstream `backfill_candidate_tags`).
+    async fn backfill_candidate_count(&mut self) -> Result<usize> {
+        let tags = self.miden_client.get_note_tags().await.map_err(|e| {
+            crate::error::MultisigError::miden_client_with_context("failed to list note tags", e)
+        })?;
+        Ok(tags
+            .iter()
+            .filter(|record| {
+                matches!(record.source, NoteTagSource::User | NoteTagSource::Account(_))
+            })
+            .count())
     }
 
     /// Number of input note records currently in the local store.
@@ -375,6 +471,79 @@ mod tests {
         let report = client.drain_private_note_backlog().await.unwrap();
         assert_eq!(report.status, TransportRecoveryStatus::Completed);
         assert_eq!(report.imported, 0);
+    }
+
+    /// Clearing the covered set makes every tracked tag a backfill candidate
+    /// at once, and upstream backfills at most
+    /// `MAX_BACKFILL_TAGS_PER_SYNC` tags per transport sync — the drain must
+    /// keep syncing until every tag's backlog is recovered instead of
+    /// reporting `Completed` after the first 64.
+    #[tokio::test]
+    async fn drain_covers_more_tags_than_the_per_sync_backfill_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let (node, api) = mock_transport();
+        let mut client = offline_client(dir.path(), Some(api)).await;
+
+        let count = MidenSdkClient::MAX_BACKFILL_TAGS_PER_SYNC + 1;
+        for seed in 0..count {
+            let account = test_wallet(seed as u8);
+            client.add_or_update_account(&account, false).await.unwrap();
+            add_to_transport(
+                &node,
+                p2id_note_for(&account, seed as u32 + 1, NoteType::Private),
+            );
+        }
+
+        let report = client.drain_private_note_backlog().await.unwrap();
+        assert_eq!(report.status, TransportRecoveryStatus::Completed);
+        assert_eq!(
+            report.imported, count,
+            "every tag's backlog must be recovered, not just the first backfill batch"
+        );
+    }
+
+    /// A failed drain must restore the pre-drain covered-tags set: leaving
+    /// it cleared would make every subsequent normal sync re-attempt (and
+    /// fail) the same per-tag backfill, breaking a client that synced fine
+    /// before the drain.
+    #[tokio::test]
+    async fn failed_drain_restores_the_covered_tags_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+        let api: Arc<dyn NoteTransportClient> = Arc::new(InterruptibleTransport {
+            inner: MockNoteTransportApi::new(node.clone()),
+            fetches_before_failure: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut client = offline_client(dir.path(), Some(api)).await;
+
+        let account = test_wallet(7);
+        client.add_or_update_account(&account, false).await.unwrap();
+        add_to_transport(&node, private_note_for(&account, 1));
+
+        // Pre-drain state: the account's tag is covered, so normal sync
+        // skips its backfill and never touches the failing transport.
+        let covered: BTreeSet<NoteTag> =
+            std::iter::once(NoteTag::with_account_target(account.id())).collect();
+        client
+            .miden_client
+            .set_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string(), covered.clone())
+            .await
+            .unwrap();
+
+        let report = client.drain_private_note_backlog().await.unwrap();
+        assert_ne!(report.status, TransportRecoveryStatus::Completed);
+        assert_eq!(report.imported, 0);
+
+        let restored: BTreeSet<NoteTag> = client
+            .miden_client
+            .get_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string())
+            .await
+            .unwrap()
+            .expect("covered set must be restored after a failed drain");
+        assert!(
+            restored.is_superset(&covered),
+            "pre-drain covered tags must survive a failed drain: {restored:?}"
+        );
     }
 
     #[tokio::test]

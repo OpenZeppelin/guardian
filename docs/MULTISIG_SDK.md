@@ -731,8 +731,9 @@ The `PublicBackfillReport` carries the requested range (`scannedFrom` /
 matches skipped (`skippedPrivate` — the chain holds no body for them; the
 transport drain and proposal import cover those), the matches the relevance
 screen rejected (`skippedIrrelevant`), and one `NoteImportOutcome` per
-imported public note with source `'backfill'` and the same statuses as the
-proposal import. The store must have synced at least once (`load` does this);
+screened-in public note (imported or not — `outcomes.length ===
+discovered − skippedPrivate − skippedIrrelevant`) with source `'backfill'`
+and the same statuses as the proposal import. The store must have synced at least once (`load` does this);
 importing into a store that has never seen the chain surfaces as `failed`
 outcomes. A proof-less expected record left by an earlier proposal import is
 upgraded in place with the freshly fetched proof rather than skipped.
@@ -1320,8 +1321,9 @@ The `PublicBackfillReport` carries the requested range (`scanned_from` /
 matches skipped (`skipped_private` — the chain holds no body for them; the
 transport drain and proposal import cover those), the matches the relevance
 screener rejected (`skipped_irrelevant`), and one `NoteImportOutcome` per
-imported public note with source `Backfill` and the same statuses as the
-proposal import. The store must have synced at least once (recovery via
+screened-in public note (imported or not — `outcomes.len() ==
+discovered − skipped_private − skipped_irrelevant`) with source `Backfill`
+and the same statuses as the proposal import. The store must have synced at least once (recovery via
 `pull_account` does this, and screening also needs the account tracked in
 the store); importing into a store that has never seen the chain surfaces as
 `Failed` outcomes. A proof-less expected record left by an earlier proposal

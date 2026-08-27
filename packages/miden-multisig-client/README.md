@@ -343,11 +343,11 @@ genesis-to-tip scan is fast on an ordinary account.
 const multisig = await client.load(accountId, signer);
 const report = await multisig.backfillPublicNotesByTag();
 // report.discovered, report.skippedPrivate, report.skippedIrrelevant,
-// report.outcomes (per imported public note)
+// report.outcomes (one per screened-in public note, whatever its status)
 await multisig.syncState(); // verifies the imported notes
 ```
 
-Each imported public note gets its own `NoteImportOutcome` (source
+Each screened-in public note gets its own `NoteImportOutcome`, imported or not (source
 `'backfill'`), with the same statuses and duplicate tolerance as the
 proposal import. Tags are best-effort, truncated filters shared by
 unrelated notes, so — like normal sync — every new discovery is screened

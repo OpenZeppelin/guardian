@@ -9,6 +9,7 @@
 
 import type { MidenClient } from '@miden-sdk/miden-sdk';
 import { errorMessage, isLikelyNetworkError } from '../connectivity.js';
+import { isTransientRpcError } from '../rpc/errors.js';
 
 /**
  * Outcome class of a private-note transport backlog drain:
@@ -61,6 +62,45 @@ export interface TransportRecoveryReport {
 export const TRANSPORT_DISABLED_FRAGMENT = 'note transport is disabled';
 /** Exported for the drift-guard test, which pins them against the shipped WASM binary. */
 export const PAGINATION_GUARD_FRAGMENT = 'did not converge';
+/**
+ * `NoteTransportError::Network`'s Display prefix — the transport service
+ * answered with an error. Exported for the drift-guard test.
+ */
+export const TRANSPORT_NETWORK_FRAGMENT = 'note transport network error';
+/**
+ * `NoteTransportError::Connection`'s Display prefix — endpoint parsing, TLS
+ * configuration, and actual connect failures, indiscriminately. Exported for
+ * the drift-guard test.
+ */
+export const TRANSPORT_CONNECTION_FRAGMENT = 'connection error';
+/**
+ * `RpcError::RequestError`'s Display prefix — a NODE RPC failure (each
+ * fetched batch is imported through the node, so this is a mid-drain import
+ * failure, not a transport outage). Exported for the drift-guard test.
+ */
+export const NODE_RPC_FRAGMENT = 'grpc request failed';
+/**
+ * The covered-tags bookkeeping key, mirror of miden-client's
+ * `NOTE_TRANSPORT_COVERED_TAGS_KEY` (the JS surface does not re-export it).
+ * Exported for the drift-guard test, which pins it against the shipped WASM
+ * binary so a silent upstream rename cannot degrade the drain to a no-op.
+ */
+export const NOTE_TRANSPORT_COVERED_TAGS_KEY = 'note_transport_covered_tags';
+
+/**
+ * Mirror of miden-client's `Client::MAX_BACKFILL_TAGS_PER_SYNC`: upstream
+ * backfills at most this many uncovered tags per transport sync, deferring
+ * the remainder to the next sync.
+ */
+const MAX_BACKFILL_TAGS_PER_SYNC = 64;
+
+/**
+ * Mirror of the Rust SDK's `CONNECT_PERMANENT_SIGNALS`: connection-failure
+ * wording a retry cannot fix (misconfigured endpoint, TLS/certificate
+ * problems). Everything else connection-shaped is the peer-still-booting
+ * case and stays retryable.
+ */
+const CONNECT_PERMANENT_SIGNALS = ['certificate', 'tls', 'invalid uri', 'unsupported scheme'];
 /**
  * `ClientError::StoreError`'s Display prefix in the WASM error chain.
  * Exported for the drift-guard test, which pins it against the shipped WASM
@@ -125,9 +165,30 @@ function classifyDrainFailure(err: unknown): DrainFailure {
   if (lower.includes(PAGINATION_GUARD_FRAGMENT)) {
     return { status: 'failed', retryable: true, reason, scanned: true };
   }
-  // Connectivity-shaped wording: the transport (or the node, mid-import —
-  // the message text cannot tell them apart) could not be reached; worth
-  // retrying once connectivity returns.
+  // A NODE RPC failure: each fetched batch is imported through the node
+  // (inclusion-proof lookup), so this interrupted the drain mid-way — the
+  // transport itself was reachable. Mirrors the Rust `ClientError::RpcError`
+  // arm: report `failed`, with the shared RPC classifier deciding whether a
+  // rerun can help.
+  if (lower.includes(NODE_RPC_FRAGMENT)) {
+    return { status: 'failed', retryable: isTransientRpcError(err), reason, scanned: true };
+  }
+  // The transport answered with an error — worth retrying once the service
+  // recovers.
+  if (lower.includes(TRANSPORT_NETWORK_FRAGMENT)) {
+    return { status: 'unavailable', retryable: true, reason, scanned: true };
+  }
+  // `Connection` wraps endpoint parsing, TLS configuration, and actual
+  // connect failures indiscriminately; permanent wording (mirroring the Rust
+  // SDK's cause-chain classifier) must not tell a recovery flow to loop
+  // retrying a client that can never connect.
+  if (lower.includes(TRANSPORT_CONNECTION_FRAGMENT)) {
+    const permanent = CONNECT_PERMANENT_SIGNALS.some((signal) => lower.includes(signal));
+    return { status: 'unavailable', retryable: !permanent, reason, scanned: true };
+  }
+  // Remaining connectivity-shaped wording (e.g. a raw fetch failure): the
+  // transport could not be reached; worth retrying once connectivity
+  // returns.
   if (isLikelyNetworkError(err)) {
     return { status: 'unavailable', retryable: true, reason, scanned: true };
   }
@@ -135,13 +196,31 @@ function classifyDrainFailure(err: unknown): DrainFailure {
 }
 
 /**
+ * Best-effort restore after a failed drain: returning the covered-tags
+ * value to its pre-drain state keeps a client that synced fine before the
+ * attempt syncing fine after it. Unlike the Rust twin — which merges the
+ * snapshot with whatever the interrupted backfill re-covered — this
+ * restores the snapshot verbatim (the WASM surface exposes the set only as
+ * an opaque value); at worst the next successful drain re-covers tags the
+ * failed attempt already handled, which is idempotent.
+ */
+async function restoreCoveredTags(midenClient: MidenClient, snapshot: unknown): Promise<void> {
+  if (snapshot === null || snapshot === undefined) return;
+  try {
+    await midenClient.settings.set(NOTE_TRANSPORT_COVERED_TAGS_KEY, snapshot);
+  } catch {
+    // Best effort: if the store cannot be written the drain error already
+    // describes the failure.
+  }
+}
+
+/**
  * Rescans the full private-note transport backlog for every tracked note tag
  * and imports what it finds, regardless of the stored transport
  * cursor. Counterpart of `MultisigClient::drain_private_note_backlog`
- * in the Rust SDK; note that the WASM boundary exposes only error message
- * text, so failure classification here is message-based and cannot always
- * distinguish a node connectivity failure mid-import from a transport
- * connectivity failure — both classes are reported retryable.
+ * in the Rust SDK; the WASM boundary exposes only error message text, so
+ * failure classification here is message-based, keyed on the upstream
+ * Display prefixes pinned by the drift-guard test.
  *
  * Use after account recovery, passing the **same** `MidenClient` instance
  * that was injected into `MultisigClient`: a fresh store has no transport
@@ -157,6 +236,11 @@ function classifyDrainFailure(err: unknown): DrainFailure {
  * backup. Transport-disabled and transport-unreachable outcomes are reported
  * in the {@link TransportRecoveryReport} rather than thrown; this function
  * only throws when the local store itself fails.
+ *
+ * The rescan runs as many transport syncs as the upstream per-sync tag
+ * backfill cap requires to cover every tracked tag, and a failed drain
+ * restores the pre-drain covered-tags bookkeeping so normal sync keeps
+ * working exactly as it did before the attempt.
  */
 export async function drainPrivateNoteBacklog(
   midenClient: MidenClient,
@@ -168,6 +252,15 @@ export async function drainPrivateNoteBacklog(
   // tab) during the drain are attributed to it.
   const importedSince = async (): Promise<number> =>
     Math.max((await midenClient.notes.list()).length - before, 0);
+
+  // Snapshot the covered-tags value before clearing it: the clear is
+  // durable, and upstream re-marks a tag covered only after its backfill
+  // succeeds — so without a restore, a drain that fails on a tag with a
+  // permanently bad relay blob would leave every tag uncovered and make
+  // every subsequent normal sync re-attempt (and fail) the same backfill.
+  // Store errors here propagate like the count above.
+  const coveredSnapshot = await midenClient.settings.get(NOTE_TRANSPORT_COVERED_TAGS_KEY);
+  let cleared = false;
 
   try {
     // The incremental fetch doubles as the transport probe: miden-sdk 0.16's
@@ -181,11 +274,17 @@ export async function drainPrivateNoteBacklog(
     // never regressed), then the steady-state fetch runs. Clearing the
     // covered-tags marker first forces that full per-tag re-drain — exactly
     // the recovery semantic this primitive promises. Imports dedupe, so
-    // re-draining already-seen history is harmless. The key mirrors
-    // miden-client's `NOTE_TRANSPORT_COVERED_TAGS_KEY`, which the JS surface
-    // does not re-export.
-    await midenClient.settings.remove('note_transport_covered_tags');
-    await midenClient.syncNoteTransport();
+    // re-draining already-seen history is harmless.
+    await midenClient.settings.remove(NOTE_TRANSPORT_COVERED_TAGS_KEY);
+    cleared = true;
+    // Upstream backfills at most `MAX_BACKFILL_TAGS_PER_SYNC` uncovered tags
+    // per sync, so run enough passes to cover every tracked tag before
+    // reporting the backlog fully scanned.
+    const tagCount = (await midenClient.tags.list()).length;
+    const passes = Math.max(1, Math.ceil(tagCount / MAX_BACKFILL_TAGS_PER_SYNC));
+    for (let pass = 0; pass < passes; pass += 1) {
+      await midenClient.syncNoteTransport();
+    }
   } catch (err) {
     // A broken local store is an environment failure, not a transport
     // outcome: the whole recovery flow needs to know, so it propagates
@@ -193,6 +292,9 @@ export async function drainPrivateNoteBacklog(
     // the report.
     if (isLocalStoreError(err)) {
       throw err;
+    }
+    if (cleared) {
+      await restoreCoveredTags(midenClient, coveredSnapshot);
     }
     const { status, retryable, reason, scanned } = classifyDrainFailure(err);
     // Count even when the drain failed: each fetched batch is imported as it

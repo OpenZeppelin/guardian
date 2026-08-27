@@ -65,7 +65,9 @@ pub struct PublicBackfillReport {
     /// account's tag. Like normal sync, only notes the account could
     /// actually consume are imported; the rest are counted here.
     pub skipped_irrelevant: usize,
-    /// One outcome per unique public note discovered.
+    /// One outcome per unique public note that passed the relevance screen —
+    /// `outcomes.len() == discovered - skipped_private - skipped_irrelevant`.
+    /// Screened-out and private matches get no outcome, only their counters.
     pub outcomes: Vec<NoteImportOutcome>,
     /// Sub-ranges of `[scanned_from, scanned_to]` the scan could not cover
     /// (RPC failures, or the scan budget ran out while splitting around the

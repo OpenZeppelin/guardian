@@ -16,6 +16,12 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   NoteFile: {
     fromInputNote: vi.fn((inputNote: unknown) => ({ kind: 'with-proof', inputNote })),
     fromNoteDetails: vi.fn((details: unknown) => ({ kind: 'details', details })),
+    fromExpectedNote: vi.fn((details: unknown, tag: unknown, afterBlockNum: number) => ({
+      kind: 'expected',
+      details,
+      tag,
+      afterBlockNum,
+    })),
   },
   NoteFilter: vi.fn().mockImplementation((noteType: number) => ({ noteType })),
   NoteFilterTypes: {
@@ -142,7 +148,6 @@ describe('importNotesFromProposals', () => {
   let mockWebClient: {
     getInputNotes: ReturnType<typeof vi.fn>;
     importNoteFile: ReturnType<typeof vi.fn>;
-    addTag: ReturnType<typeof vi.fn>;
   };
   const noteRegistry = new Map<string, ReturnType<typeof makeNote>>();
 
@@ -169,7 +174,6 @@ describe('importNotesFromProposals', () => {
         return [];
       }),
       importNoteFile: vi.fn().mockResolvedValue(NOTE_ID_1),
-      addTag: vi.fn().mockResolvedValue(undefined),
     };
   });
 
@@ -207,7 +211,7 @@ describe('importNotesFromProposals', () => {
     });
   });
 
-  it('tracks the tag and parks an uncommitted note as expected details, reported retryable', async () => {
+  it('parks an uncommitted note as an expected-note file with its sync-hint tag, reported retryable', async () => {
     mockGetNotesById.mockResolvedValue([]);
 
     const outcomes = await run([makeProposal('p-1', [noteBase64('note-1')])]);
@@ -221,19 +225,21 @@ describe('importNotesFromProposals', () => {
         reason: expect.stringContaining('not yet committed'),
       },
     ]);
-    // The tag must be tracked (before the import) or sync can never discover
-    // the note's commitment — the WASM details file cannot carry a tag.
-    expect(mockWebClient.addTag).toHaveBeenCalledWith(String(tagFor(NOTE_ID_1)));
-    expect(mockWebClient.addTag.mock.invocationCallOrder[0]).toBeLessThan(
-      mockWebClient.importNoteFile.mock.invocationCallOrder[0],
-    );
-    const detailsFile = mockWebClient.importNoteFile.mock.calls[0][0] as {
+    // The tag rides in the expected-note file itself (mirroring the Rust
+    // `NoteFile::ExpectedNote` + sync hint), so upstream registers a
+    // note-source tag it removes once the note commits — never a permanent
+    // user-source `addTag`.
+    const expectedFile = mockWebClient.importNoteFile.mock.calls[0][0] as {
       kind: string;
       details: { assets: string; recipient: { digest: () => { toHex: () => string } } };
+      tag: { asU32: () => number };
+      afterBlockNum: number;
     };
-    expect(detailsFile.kind).toBe('details');
-    expect(detailsFile.details.assets).toBe(noteRegistry.get('note-1')!.assets());
-    expect(detailsFile.details.recipient.digest().toHex()).toBe(recipientDigestFor(NOTE_ID_1));
+    expect(expectedFile.kind).toBe('expected');
+    expect(expectedFile.tag.asU32()).toBe(tagFor(NOTE_ID_1));
+    expect(expectedFile.afterBlockNum).toBe(0);
+    expect(expectedFile.details.assets).toBe(noteRegistry.get('note-1')!.assets());
+    expect(expectedFile.details.recipient.digest().toHex()).toBe(recipientDigestFor(NOTE_ID_1));
   });
 
   it('isolates a malformed note without blocking the rest', async () => {
