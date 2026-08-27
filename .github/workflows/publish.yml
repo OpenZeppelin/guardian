@@ -239,6 +239,19 @@ jobs:
               npm_tag="latest"
             fi
 
+            if [[ "${package}" == "miden-multisig-client" ]]; then
+              if [[ -z "${guardian_client_dependency}" || "${guardian_client_dependency}" == "null" ]]; then
+                abort "${package_name}" "${package_version}" "❌ Missing ${guardian_client_name} dependency" "${next_index}"
+              fi
+              # The published manifest carries a semver range, so the in-repo
+              # guardian-client version must satisfy it or consumers resolve
+              # a different release than the one this SDK was tested against.
+              # Checked in dry runs too so a rehearsal catches it.
+              if ! npx --yes --package=semver semver --range "${guardian_client_dependency}" "${guardian_client_version}" >/dev/null; then
+                abort "${package_name}" "${package_version}" "❌ ${guardian_client_name}@${guardian_client_version} does not satisfy dependency range ${guardian_client_dependency}" "${next_index}"
+              fi
+            fi
+
             if npm view "${package_name}@${package_version}" version 2>/dev/null; then
               echo "⚠️ ${package_name}@${package_version} is already published, skipping."
               summarize "${package_name}" "${package_version}" "⏭️ Already published"
@@ -250,15 +263,6 @@ jobs:
               fi
             else
               if [[ "${package}" == "miden-multisig-client" ]]; then
-                if [[ -z "${guardian_client_dependency}" || "${guardian_client_dependency}" == "null" ]]; then
-                  abort "${package_name}" "${package_version}" "❌ Missing ${guardian_client_name} dependency" "${next_index}"
-                fi
-                # The published manifest carries a semver range, so the in-repo
-                # guardian-client version must satisfy it or consumers resolve
-                # a different release than the one this SDK was tested against.
-                if ! npx --yes --package=semver semver --range "${guardian_client_dependency}" "${guardian_client_version}" >/dev/null; then
-                  abort "${package_name}" "${package_version}" "❌ ${guardian_client_name}@${guardian_client_version} does not satisfy dependency range ${guardian_client_dependency}" "${next_index}"
-                fi
                 if ! wait_for_npm "${guardian_client_name}" "${guardian_client_version}"; then
                   abort "${package_name}" "${package_version}" "❌ ${guardian_client_name}@${guardian_client_version} is not on npm; publish it first or select it in the same run" "${next_index}"
                 fi
