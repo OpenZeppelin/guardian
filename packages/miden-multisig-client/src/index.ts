@@ -76,6 +76,11 @@ export {
   type P2idTransactionOptions,
   type P2ideHeightOptions,
 } from './transaction.js';
+// Commitment derivation for hand-rolled export/import flows (issue #433):
+// the proposal id is the tx summary's commitment, recomputed from the
+// serialized summary exactly as import verification does. Returns normalized
+// hex, directly comparable to `ExportedProposal.commitment` / `Proposal.id`.
+export { computeCommitmentFromTxSummary } from './multisig/helpers.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
 export type { GuardianErrorMeta } from '@openzeppelin/guardian-client';

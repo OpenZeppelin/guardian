@@ -2306,6 +2306,173 @@ describe('Multisig', () => {
     });
   });
 
+  describe('createSwitchGuardianProposalOffline (issue #433)', () => {
+    const NEW_GUARDIAN_ENDPOINT = 'http://new-guardian.com';
+    const newGuardianPubkey = '0x' + '9'.repeat(64);
+
+    // Routes fetch by target: the new GUARDIAN answers, everything else — in
+    // particular the current GUARDIAN at localhost:3000 — is network-dead.
+    // This is the exact scenario the offline path exists for (0xMiden/wallet#782).
+    function stubFetchWithDeadCurrentGuardian(
+      newGuardianResponses: Record<string, unknown> = {},
+    ): void {
+      mockFetch.mockImplementation(async (url: string) => {
+        if (!url.startsWith(NEW_GUARDIAN_ENDPOINT)) {
+          throw new Error(`current GUARDIAN unreachable: ${url}`);
+        }
+        if (url.startsWith(`${NEW_GUARDIAN_ENDPOINT}/pubkey`)) {
+          return { ok: true, json: async () => ({ commitment: newGuardianPubkey }) };
+        }
+        return {
+          ok: true,
+          json: async () => ({ success: true, message: 'ok', ...newGuardianResponses }),
+        };
+      });
+    }
+
+    it('creates, signs, and caches the proposal without contacting the current GUARDIAN', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: [mockSigner.commitment],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      stubFetchWithDeadCurrentGuardian();
+
+      const exported = await multisig.createSwitchGuardianProposalOffline(
+        NEW_GUARDIAN_ENDPOINT,
+        newGuardianPubkey,
+        { nonce: 7 },
+      );
+
+      expect(exported.accountId).toBe(multisig.accountId);
+      expect(exported.nonce).toBe(7);
+      expect(exported.commitment).toBe('0x' + 'c'.repeat(64));
+      expect(exported.metadata.proposalType).toBe('switch_guardian');
+      if (exported.metadata.proposalType === 'switch_guardian') {
+        expect(exported.metadata.newGuardianEndpoint).toBe(NEW_GUARDIAN_ENDPOINT);
+        expect(exported.metadata.newGuardianPubkey).toBe(newGuardianPubkey);
+        expect(exported.metadata.chainAnchor).toBe(MOCK_CHAIN_ANCHOR_B64);
+        expect(exported.metadata.saltHex).toBe('0x' + 'd'.repeat(64));
+      }
+
+      // The proposer's signature is included, over the exported commitment.
+      expect(exported.signatures).toHaveLength(1);
+      expect(exported.signatures[0].commitment).toBe(mockSigner.commitment);
+      expect(exported.signatures[0].scheme).toBe('falcon');
+      expect(mockSigner.signCommitment).toHaveBeenCalledWith(exported.commitment);
+
+      // The only network call is the new endpoint's /pubkey verification.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        `${NEW_GUARDIAN_ENDPOINT}/pubkey?scheme=falcon`,
+        expect.objectContaining({ method: 'GET' }),
+      );
+      // Pre-build node sync (mirrors the Rust sync_network_only).
+      expect(mockWebClient.syncState).toHaveBeenCalled();
+
+      // Cached locally, ready at threshold 1 (proposer already signed).
+      const cached = multisig.listProposals();
+      expect(cached).toHaveLength(1);
+      expect(cached[0].id).toBe(exported.commitment);
+      expect(cached[0].status).toBe('ready');
+    });
+
+    it('rejects when the new endpoint commitment does not match, before building or signing', async () => {
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+      const config = {
+        threshold: 1,
+        signerCommitments: [mockSigner.commitment],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ commitment: '0x' + '2'.repeat(64) }),
+      });
+
+      await expect(
+        multisig.createSwitchGuardianProposalOffline(NEW_GUARDIAN_ENDPOINT, newGuardianPubkey),
+      ).rejects.toThrow('Refusing to use GUARDIAN endpoint');
+      expect(buildUpdateGuardianTransactionRequest).not.toHaveBeenCalled();
+      expect(mockSigner.signCommitment).not.toHaveBeenCalled();
+      expect(multisig.listProposals()).toHaveLength(0);
+    });
+
+    it('rejects legacy positional callers (issue #387)', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: [mockSigner.commitment],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      await expect(
+        (multisig.createSwitchGuardianProposalOffline as any)(
+          NEW_GUARDIAN_ENDPOINT,
+          newGuardianPubkey,
+          123,
+        ),
+      ).rejects.toThrow('trailing options object');
+    });
+
+    it('supports the full offline trio: create → cosign → execute against a dead current GUARDIAN', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const signerB: Signer = {
+          ...mockSigner,
+          commitment: '0x' + '8'.repeat(64),
+          signCommitment: vi.fn().mockReturnValue('0x' + 'e'.repeat(128)),
+        };
+        const config = {
+          threshold: 2,
+          signerCommitments: [mockSigner.commitment, signerB.commitment],
+          guardianCommitment: '0x' + 'c'.repeat(64),
+        };
+        stubFetchWithDeadCurrentGuardian({ ack_pubkey: '0x' + 'f'.repeat(64) });
+
+        // Proposer (signer A) creates the proposal fully offline.
+        const proposerClient = createTestMultisig(config);
+        const exported = await proposerClient.createSwitchGuardianProposalOffline(
+          NEW_GUARDIAN_ENDPOINT,
+          newGuardianPubkey,
+          { nonce: 1 },
+        );
+        expect(proposerClient.listProposals()[0].status).toBe('pending');
+
+        // Cosigner (signer B) imports and signs side-channel.
+        const cosignerClient = createTestMultisig(config, signerB);
+        const importedByCosigner = await cosignerClient.importProposal(JSON.stringify(exported));
+        expect(importedByCosigner.status).toBe('pending');
+        const signedJson = await cosignerClient.signProposalOffline(importedByCosigner.id);
+
+        // Proposer imports the cosigned proposal — now at threshold.
+        const readyProposal = await proposerClient.importProposal(signedJson);
+        expect(readyProposal.status).toBe('ready');
+        expect(readyProposal.signatures).toHaveLength(2);
+
+        // Execution succeeds with the current GUARDIAN unreachable: the
+        // canonicalization push is best-effort, and registration goes to the
+        // new GUARDIAN only.
+        mockWebClient.getAccount.mockResolvedValueOnce({
+          serialize: () => new Uint8Array([1, 2, 3]),
+        });
+        await expect(proposerClient.executeProposal(readyProposal.id)).resolves.toBeUndefined();
+
+        expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+        expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+        expect(proposerClient.listProposals()[0].status).toBe('finalized');
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('pre-switch GUARDIAN'),
+          expect.any(Error),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
   describe('createUpdateProcedureThresholdProposal', () => {
     it('should create procedure-threshold update proposals', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({

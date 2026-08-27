@@ -741,6 +741,19 @@ const proposal = await multisig.createSwitchGuardianProposal(
 );
 ```
 
+When the current GUARDIAN is unreachable, create the switch proposal fully
+offline instead — nothing is pushed to the current operator (issue #433;
+mirrors the Rust `create_proposal_offline`). The returned `ExportedProposal`
+already carries the proposer's signature; share its JSON with cosigners for
+`importProposal` / `signProposalOffline`, then execute:
+
+```typescript
+const exported = await multisig.createSwitchGuardianProposalOffline(
+  newGuardianEndpoint,
+  newGuardianCommitment
+);
+```
+
 ### Signing & Executing Proposals
 
 ```typescript
@@ -817,6 +830,7 @@ await multisig.executeProposal(signedProposal.id);
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
 | `createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)` | Create per-procedure threshold override proposal (`threshold: 0` clears the override) |
 | `createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal |
+| `createSwitchGuardianProposalOffline(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal without contacting the current GUARDIAN; returns a signed `ExportedProposal` for side-channel cosigning (issue #433) |
 | `createCustomProposal(requestBytes, label, { nonce }?)` | Create a producer-built custom proposal (issue #266) |
 | `signProposal(id)` | Sign a proposal |
 | `executeProposal(id)` | Execute ready proposal |
