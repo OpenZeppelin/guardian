@@ -198,6 +198,7 @@ jobs:
           guardian_client_name="@openzeppelin/guardian-client"
           guardian_client_dependency=$(jq -r '.dependencies["@openzeppelin/guardian-client"]' miden-multisig-client/package.json)
           guardian_client_version=$(jq -r '.version' guardian-client/package.json)
+          guardian_client_built=false
 
           for index in "${!packages[@]}"; do
             package="${packages[${index}]}"
@@ -207,16 +208,19 @@ jobs:
             package_version=$(jq -r '.version' "${package_dir}/package.json")
             next_index=$((index + 1))
 
-            if [[ "${package}" == "miden-multisig-client" ]]; then
+            if [[ "${package}" == "miden-multisig-client" && "${guardian_client_built}" != "true" ]]; then
               # npm ci links the local workspace, but the multisig SDK imports
               # the guardian-client's generated dist output.
-              if ! npm run build -w @openzeppelin/guardian-client; then
+              if ! npm run build -w "${guardian_client_name}"; then
                 abort "${package_name}" "${package_version}" "❌ Workspace dependency build failed" "${next_index}"
               fi
             fi
 
             if ! npm run build -w "${workspace_name}"; then
               abort "${package_name}" "${package_version}" "❌ Build failed" "${next_index}"
+            fi
+            if [[ "${package}" == "guardian-client" ]]; then
+              guardian_client_built=true
             fi
 
             if ! npm test -w "${workspace_name}"; then
@@ -249,8 +253,14 @@ jobs:
                 if [[ -z "${guardian_client_dependency}" || "${guardian_client_dependency}" == "null" ]]; then
                   abort "${package_name}" "${package_version}" "❌ Missing ${guardian_client_name} dependency" "${next_index}"
                 fi
+                # The published manifest carries a semver range, so the in-repo
+                # guardian-client version must satisfy it or consumers resolve
+                # a different release than the one this SDK was tested against.
+                if ! npx --yes --package=semver semver --range "${guardian_client_dependency}" "${guardian_client_version}" >/dev/null; then
+                  abort "${package_name}" "${package_version}" "❌ ${guardian_client_name}@${guardian_client_version} does not satisfy dependency range ${guardian_client_dependency}" "${next_index}"
+                fi
                 if ! wait_for_npm "${guardian_client_name}" "${guardian_client_version}"; then
-                  abort "${package_name}" "${package_version}" "❌ Timed out waiting for ${guardian_client_name}@${guardian_client_version} on npm" "${next_index}"
+                  abort "${package_name}" "${package_version}" "❌ ${guardian_client_name}@${guardian_client_version} is not on npm; publish it first or select it in the same run" "${next_index}"
                 fi
               fi
               if npm publish -w "${workspace_name}" --provenance --access public --tag "${npm_tag}"; then
