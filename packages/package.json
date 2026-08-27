@@ -1,8 +1,14 @@
 {
   "name": "guardian-js",
   "private": true,
-  "packageManager": "npm@11.6.2",
+  "engines": {
+    "node": ">=24",
+    "npm": ">=11"
+  },
   "workspaces": [
-    "./*"
+    "guardian-client",
+    "guardian-evm-client",
+    "guardian-operator-client",
+    "miden-multisig-client"
   ]
 }

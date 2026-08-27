@@ -24,7 +24,7 @@ Three decisions when running Guardian locally:
 ## Prerequisites
 
 - Rust toolchain pinned by [`rust-toolchain.toml`](../rust-toolchain.toml).
-- Node 18+ if you will run any TS examples or packages.
+- Node 24+ (bundles npm 11, which the `packages/` workspace lockfile requires) if you will run any TS examples or packages.
 - Docker if you will use `docker-compose.*.yml`.
 - A Miden node — required for almost every flow. Either point at a
   Miden Devnet endpoint or run one locally; configure via
