@@ -328,6 +328,8 @@ pub struct MockStorageBackend {
     // push them in reverse order to control per-call values.
     pub list_account_deltas_paged_responses:
         Arc<StdMutex<Vec<StdResult<Vec<DeltaObject>, String>>>>,
+    pub list_canonical_deltas_paged_responses:
+        Arc<StdMutex<Vec<StdResult<Vec<DeltaObject>, String>>>>,
     pub list_account_proposals_paged_responses:
         Arc<StdMutex<Vec<StdResult<Vec<crate::storage::ProposalRecord>, String>>>>,
     pub list_global_deltas_paged_responses:
@@ -594,6 +596,17 @@ impl MockStorageBackend {
         response: StdResult<Vec<DeltaObject>, String>,
     ) -> Self {
         self.list_account_deltas_paged_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_list_canonical_deltas_paged(
+        self,
+        response: StdResult<Vec<DeltaObject>, String>,
+    ) -> Self {
+        self.list_canonical_deltas_paged_responses
             .lock()
             .unwrap()
             .push(response);
@@ -970,6 +983,19 @@ impl StorageBackend for MockStorageBackend {
         _cursor: Option<crate::storage::AccountDeltaCursor>,
     ) -> Result<Vec<DeltaObject>, String> {
         self.list_account_deltas_paged_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    async fn list_canonical_deltas_paged(
+        &self,
+        _account_id: &str,
+        _limit: u32,
+        _cursor: Option<crate::storage::AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        self.list_canonical_deltas_paged_responses
             .lock()
             .unwrap()
             .pop()

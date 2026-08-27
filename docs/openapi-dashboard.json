@@ -7,7 +7,7 @@
       "name": "AGPL-3.0",
       "identifier": "AGPL-3.0"
     },
-    "version": "0.16.2"
+    "version": "0.17.0-rc.1"
   },
   "paths": {
     "/auth/challenge": {
@@ -2460,10 +2460,11 @@
       },
       "DecodedNote": {
         "type": "object",
-        "description": "Detail-view types used by the per-delta endpoint; not built by the\nlisting path.",
+        "description": "Decoded note summary shared by the dashboard per-delta detail\nendpoint and the client delta-history feed\n(`HistoryEntry.input_notes` / `output_notes`); not built by the\ndashboard listing path.",
         "required": [
           "note_id",
           "tag",
+          "note_type",
           "assets"
         ],
         "properties": {
@@ -2475,6 +2476,10 @@
           },
           "note_id": {
             "type": "string"
+          },
+          "note_type": {
+            "$ref": "#/components/schemas/NoteVisibility",
+            "description": "On-chain visibility from the note metadata: `public` notes are\nfully shared with the network, `private` notes publish only\ntheir hash."
           },
           "recipient": {
             "type": [
@@ -2528,6 +2533,14 @@
           "mint",
           "burn",
           "custom"
+        ]
+      },
+      "NoteVisibility": {
+        "type": "string",
+        "description": "On-chain note visibility, decoded from `NoteMetadata::note_type()`.\nWire labels match issue #322's `metadata.note_type` vocabulary.",
+        "enum": [
+          "public",
+          "private"
         ]
       },
       "OperatorChallengeResponse": {
@@ -3071,7 +3084,7 @@
       },
       "ProposalMetadata": {
         "type": "object",
-        "description": "Operator-stated intent lifted from a matching proposal. Mirrors\n`ProposalMetadataPayload` in `crates/miden-multisig-client/src/payload.rs`\nfield-for-field.",
+        "description": "Operator-stated intent lifted from a matching proposal.\n`chain_anchor` remains only in the proposal payload to avoid duplicating it\nin delta metadata and dashboard listings.",
         "required": [
           "proposal_type"
         ],

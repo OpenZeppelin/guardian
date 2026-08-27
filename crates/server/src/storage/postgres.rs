@@ -1996,6 +1996,38 @@ impl StorageBackend for PostgresService {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    async fn list_canonical_deltas_paged(
+        &self,
+        account_id: &str,
+        limit: u32,
+        cursor: Option<AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let mut query = deltas::table
+            .filter(deltas::account_id.eq(account_id))
+            .filter(deltas::status_kind.eq("canonical"))
+            .into_boxed();
+
+        if let Some(c) = cursor {
+            query = query.filter(deltas::nonce.lt(c.last_nonce));
+        }
+
+        let rows: Vec<DeltaRow> = query
+            .order(deltas::nonce.desc())
+            .limit(limit as i64)
+            .select(DeltaRow::as_select())
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to list canonical deltas: {e}"))?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     async fn list_account_proposals_paged(
         &self,
         account_id: &str,
@@ -2830,6 +2862,92 @@ mod tests {
     fn test_create_test_state() {
         let state = create_test_state("0x123");
         assert_eq!(state.account_id, "0x123");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn list_canonical_deltas_paged_filters_and_paginates_in_sql() {
+        use crate::delta_object::DeltaStatus;
+        use crate::storage::AccountDeltaCursor;
+        use diesel::sql_types::Text;
+
+        let url = crate::testing::pg::test_database_url().await;
+
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xhist{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        // Mixed statuses: canonical 1..=5, candidate 6, discarded 7.
+        for nonce in 1u64..=5 {
+            let mut delta = create_test_delta(&account_id, nonce);
+            delta.status = DeltaStatus::canonical(now.clone());
+            service.submit_delta(&delta).await.expect("canonical");
+        }
+        // Backdate the candidate far outside any "recent" window: the
+        // suite shares one database and the recent-candidate scan is
+        // global, so a fresh candidate here would leak into concurrent
+        // tests that page that scan (e.g.
+        // pull_candidate_deltas_filters_in_the_store).
+        let mut candidate = create_test_delta(&account_id, 6);
+        candidate.status =
+            DeltaStatus::candidate((chrono::Utc::now() - chrono::TimeDelta::hours(1)).to_rfc3339());
+        service.submit_delta(&candidate).await.expect("candidate");
+        let mut discarded = create_test_delta(&account_id, 7);
+        discarded.status = DeltaStatus::Discarded {
+            timestamp: now.clone(),
+            reason: None,
+        };
+        service.submit_delta(&discarded).await.expect("discarded");
+
+        // Page 1: canonical only, newest-first, SQL-side limit.
+        let page1 = service
+            .list_canonical_deltas_paged(&account_id, 3, None)
+            .await
+            .expect("page 1");
+        assert_eq!(
+            page1.iter().map(|d| d.nonce).collect::<Vec<_>>(),
+            vec![5, 4, 3],
+            "canonical rows only, nonce DESC — candidate 6 / discarded 7 excluded",
+        );
+        assert!(page1.iter().all(|d| d.status.is_canonical()));
+
+        // Page 2 via the nonce cursor: continues without skip or repeat.
+        let page2 = service
+            .list_canonical_deltas_paged(&account_id, 3, Some(AccountDeltaCursor { last_nonce: 3 }))
+            .await
+            .expect("page 2");
+        assert_eq!(
+            page2.iter().map(|d| d.nonce).collect::<Vec<_>>(),
+            vec![2, 1],
+            "cursor resumes strictly below last_nonce",
+        );
+
+        // Suite hygiene: the database is shared across tests in this
+        // run, so remove this test's rows once assertions pass.
+        let mut conn = service.pool.get().await.expect("cleanup conn");
+        diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup deltas");
+        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup metadata");
     }
 
     #[tokio::test]

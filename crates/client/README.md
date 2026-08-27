@@ -43,6 +43,31 @@ assert_eq!(response.state, "pending");
 let delta = client.get_delta(&account_id, nonce).await?;
 ```
 
+### Delta History
+
+Paginated canonical delta history (issue #413), newest-first by nonce, with
+server-decoded note summaries. Pass the previous page's `next_cursor` to
+resume; `None` on the response means the feed is exhausted. Only canonical
+deltas appear, and only transactions pushed through Guardian are visible.
+
+```rust
+let mut cursor: Option<String> = None;
+loop {
+    let page = client
+        .get_delta_history(&account_id, Some(50), cursor.take())
+        .await?;
+    for entry in &page.entries {
+        // entry.status == "canonical"; notes carry tag, note_type,
+        // assets, sender/recipient where the note script exposes them.
+        println!("{} at {}", entry.nonce, entry.timestamp);
+    }
+    match page.next_cursor {
+        Some(next) => cursor = Some(next),
+        None => break,
+    }
+}
+```
+
 ### Rate Limits and Retries
 
 The server rate-limits both its gRPC and HTTP surfaces. The sustained

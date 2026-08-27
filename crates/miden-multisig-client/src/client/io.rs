@@ -266,15 +266,17 @@ impl MultisigClient {
 fn note_file_note_id(note_file: &NoteFile) -> Option<String> {
     match note_file {
         NoteFile::NoteId(id) => Some(id.to_hex()),
-        NoteFile::NoteWithProof(note, _) => Some(note.id().to_hex()),
-        NoteFile::NoteDetails { .. } => None,
+        NoteFile::Committed { note, .. } => Some(note.id().to_hex()),
+        NoteFile::ExpectedNote { .. } => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use miden_client::note::NoteSyncHint;
     use miden_protocol::Word;
     use miden_protocol::account::AccountId;
+    use miden_protocol::asset::FungibleAsset;
     use miden_protocol::block::BlockNumber;
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
@@ -286,15 +288,15 @@ mod tests {
         let sender = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let target = AccountId::from_hex("0x1b1b1b1a1b1b1b011b1b1b1b1b1b1b").unwrap();
         let mut rng = RandomCoin::new(Word::default());
-        P2idNote::create(
-            sender,
-            target,
-            vec![],
-            NoteType::Private,
-            Default::default(),
-            &mut rng,
-        )
-        .unwrap()
+        P2idNote::builder()
+            .sender(sender)
+            .target(target)
+            .asset(FungibleAsset::mock(1))
+            .note_type(NoteType::Private)
+            .generate_serial_number(&mut rng)
+            .build()
+            .unwrap()
+            .into()
     }
 
     #[test]
@@ -307,10 +309,10 @@ mod tests {
         assert_eq!(note_file_note_id(&id_file), Some(expected));
 
         // A details-only file has no note ID yet.
-        let details_file = NoteFile::NoteDetails {
+        let sync_hint = NoteSyncHint::new(BlockNumber::from(0u32), note.metadata().tag());
+        let details_file = NoteFile::ExpectedNote {
             details: note.into(),
-            after_block_num: BlockNumber::from(0u32),
-            tag: None,
+            sync_hint,
         };
         assert_eq!(note_file_note_id(&details_file), None);
     }
@@ -318,18 +320,18 @@ mod tests {
     #[test]
     fn note_file_roundtrips_through_bytes() {
         let note = build_test_note();
-        let file = NoteFile::NoteDetails {
+        let sync_hint = NoteSyncHint::new(BlockNumber::from(7u32), note.metadata().tag());
+        let file = NoteFile::ExpectedNote {
             details: note.into(),
-            after_block_num: BlockNumber::from(7u32),
-            tag: None,
+            sync_hint,
         };
 
         let bytes = file.to_bytes();
         let decoded = NoteFile::read_from_bytes(&bytes).unwrap();
         match decoded {
-            NoteFile::NoteDetails {
-                after_block_num, ..
-            } => assert_eq!(after_block_num, BlockNumber::from(7u32)),
+            NoteFile::ExpectedNote { sync_hint, .. } => {
+                assert_eq!(sync_hint.after_block_num(), BlockNumber::from(7u32));
+            }
             _ => panic!("expected details variant"),
         }
 

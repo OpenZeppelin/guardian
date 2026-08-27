@@ -10,16 +10,11 @@ import {
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
-import {
-  MULTISIG_ECDSA_MASM,
-  MULTISIG_MASM,
-} from '../account/masm/auth.js';
 import { getProcedureRoot, type ProcedureName } from '../procedures.js';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
-import type { SignatureScheme } from '../types.js';
 
 function buildProcedureThresholdFelts(procedure: ProcedureName, threshold: number): Felt[] {
   const procedureRoot = WordType.fromHex(normalizeHexWord(getProcedureRoot(procedure)));
@@ -32,48 +27,39 @@ function buildProcedureThresholdFelts(procedure: ProcedureName, threshold: numbe
   ];
 }
 
-function buildProcedureThresholdAdvice(
-  procedure: ProcedureName,
-  threshold: number,
-): { configHash: Word; payload: FeltArray } {
-  // `Poseidon2.hashElements` consumes (frees) its `FeltArray` by value, so the
-  // advice payload must be a freshly built one — reusing the hashed array
-  // surfaces as "null pointer passed to rust" at the later `advice.insert`.
-  const configHash = Poseidon2.hashElements(
+/**
+ * `set_procedure_threshold` reads its `[proc_threshold, PROC_ROOT]` inputs from the operand stack
+ * (pushed by the script), so no advice-map entry is attached; this hash is returned only for
+ * caller bookkeeping.
+ */
+function buildProcedureThresholdConfigHash(procedure: ProcedureName, threshold: number): Word {
+  return Poseidon2.hashElements(
     new FeltArray(buildProcedureThresholdFelts(procedure, threshold)),
   );
-  const payload = new FeltArray(buildProcedureThresholdFelts(procedure, threshold));
-  return { configHash, payload };
 }
 
 async function buildUpdateProcedureThresholdScript(
   client: MidenClient | WasmWebClient,
   procedure: ProcedureName,
   threshold: number,
-  signatureScheme: SignatureScheme,
   midenRpcEndpoint?: string,
 ): Promise<TransactionScript> {
-  const multisigMasm = signatureScheme === 'ecdsa' ? MULTISIG_ECDSA_MASM : MULTISIG_MASM;
   const procedureRoot = normalizeHexWord(getProcedureRoot(procedure));
 
   const scriptSource = `
-use oz_multisig::multisig
+use miden::standards::auth::multisig
 
-begin
+@transaction_script
+pub proc main
     push.${procedureRoot}
     push.${threshold}
-    call.multisig::update_procedure_threshold
+    call.multisig::set_procedure_threshold
     dropw
     drop
 end
   `;
 
-  return compileTxScript(
-    client,
-    scriptSource,
-    [{ namespace: 'oz_multisig::multisig', code: multisigMasm }],
-    midenRpcEndpoint,
-  );
+  return compileTxScript(client, scriptSource, [], midenRpcEndpoint);
 }
 
 export function buildUpdateProcedureThresholdTransactionRequest(
@@ -94,14 +80,12 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
   threshold: number,
   options: SignatureOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }> {
-  const signatureScheme = options.signatureScheme ?? 'falcon';
-  const { configHash } = buildProcedureThresholdAdvice(procedure, threshold);
+  const configHash = buildProcedureThresholdConfigHash(procedure, threshold);
 
   const script = await buildUpdateProcedureThresholdScript(
     client,
     procedure,
     threshold,
-    signatureScheme,
     options.midenRpcEndpoint,
   );
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();

@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use miden_client::DebugMode;
 use miden_client::builder::ClientBuilder;
 use miden_client::grpc_support::{
     DEFAULT_GRPC_TIMEOUT_MS, DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT,
@@ -351,7 +350,6 @@ pub(crate) async fn create_miden_client(
     configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
         .store(store)
         .rng(rng)
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(Some(20))
         .max_block_number_delta(256)
         .build()

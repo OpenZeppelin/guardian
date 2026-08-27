@@ -7,17 +7,22 @@ mod fixtures {
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
     use miden_protocol::account::AccountDelta;
-    use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::delta::AccountVaultDelta;
+    use miden_protocol::account::{
+        AccountStoragePatch, StorageMapPatch, StorageSlotPatch, StorageValuePatch,
+    };
     use miden_protocol::account::{StorageMapKey, StorageSlotName};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word as MidenWord, ZERO};
     use std::fs;
 
     // Storage slot names (matching multisig_guardian.rs)
-    const THRESHOLD_CONFIG_SLOT: &str = "openzeppelin::multisig::threshold_config";
-    const SIGNER_PUBKEYS_SLOT: &str = "openzeppelin::multisig::signer_public_keys";
-    const EXECUTED_TXS_SLOT: &str = "openzeppelin::multisig::executed_transactions";
+    const THRESHOLD_CONFIG_SLOT: &str = "miden::standards::auth::multisig::threshold_config";
+    const SIGNER_PUBKEYS_SLOT: &str = "miden::standards::auth::multisig::approver_public_keys";
+    const EXECUTED_TXS_SLOT: &str = "miden::standards::auth::multisig::executed_transactions";
 
     fn create_multisig_guardian_account(
         threshold: u64,
@@ -146,30 +151,41 @@ mod fixtures {
             StorageSlotName::new(SIGNER_PUBKEYS_SLOT).expect("invalid slot name");
         let executed_txs_name = StorageSlotName::new(EXECUTED_TXS_SLOT).expect("invalid slot name");
 
-        let mut storage_delta_1 = AccountStorageDelta::default();
-        storage_delta_1
-            .set_map_item(
+        let storage_delta_1 = AccountStoragePatch::from_entries([
+            (
                 signer_pubkeys_name.clone(),
-                StorageMapKey::new(MidenWord::from([Felt::new_unchecked(3), ZERO, ZERO, ZERO])),
-                commitment_4,
-            )
-            .expect("Failed to set signer pubkey in delta 1");
-        storage_delta_1
-            .set_item(
+                StorageSlotPatch::Map(StorageMapPatch::from_iters(
+                    [],
+                    [(
+                        StorageMapKey::new(MidenWord::from([
+                            Felt::new_unchecked(3),
+                            ZERO,
+                            ZERO,
+                            ZERO,
+                        ])),
+                        commitment_4,
+                    )],
+                )),
+            ),
+            (
                 threshold_config_name.clone(),
-                MidenWord::from([
-                    Felt::new_unchecked(threshold),
-                    Felt::new_unchecked(4),
-                    ZERO,
-                    ZERO,
-                ]),
-            )
-            .expect("Failed to set threshold config in delta 1");
+                StorageSlotPatch::Value(StorageValuePatch::Update {
+                    value: MidenWord::from([
+                        Felt::new_unchecked(threshold),
+                        Felt::new_unchecked(4),
+                        ZERO,
+                        ZERO,
+                    ]),
+                }),
+            ),
+        ])
+        .expect("Failed to build storage patch for delta 1");
 
         let delta_1 = AccountDelta::new(
             account_id,
             storage_delta_1,
             AccountVaultDelta::default(),
+            None,
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 1");
@@ -179,14 +195,18 @@ mod fixtures {
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         );
 
         let mut account_state: Account =
             Account::from_json(&account_json).expect("Failed to deserialize");
         let prev_commitment_1 = current_commitment;
-        account_state
-            .apply_delta(tx_summary_1.account_delta())
-            .expect("Failed to apply delta 1");
+        guardian_shared::account_delta::apply_account_delta(
+            &mut account_state,
+            tx_summary_1.account_delta(),
+        )
+        .expect("Failed to apply delta 1");
 
         // Apply replay protection (matches what apply_delta does for GUARDIAN accounts)
         let tx_commitment_1 = tx_summary_1.to_commitment();
@@ -239,30 +259,41 @@ mod fixtures {
         println!("\n🔄 Delta 2: Add 5th signer");
         println!("  New signer: {}", commitment_5_hex);
 
-        let mut storage_delta_2 = AccountStorageDelta::default();
-        storage_delta_2
-            .set_map_item(
+        let storage_delta_2 = AccountStoragePatch::from_entries([
+            (
                 signer_pubkeys_name.clone(),
-                StorageMapKey::new(MidenWord::from([Felt::new_unchecked(4), ZERO, ZERO, ZERO])),
-                commitment_5,
-            )
-            .expect("Failed to set signer pubkey in delta 2");
-        storage_delta_2
-            .set_item(
+                StorageSlotPatch::Map(StorageMapPatch::from_iters(
+                    [],
+                    [(
+                        StorageMapKey::new(MidenWord::from([
+                            Felt::new_unchecked(4),
+                            ZERO,
+                            ZERO,
+                            ZERO,
+                        ])),
+                        commitment_5,
+                    )],
+                )),
+            ),
+            (
                 threshold_config_name.clone(),
-                MidenWord::from([
-                    Felt::new_unchecked(threshold),
-                    Felt::new_unchecked(5),
-                    ZERO,
-                    ZERO,
-                ]),
-            )
-            .expect("Failed to set threshold config in delta 2");
+                StorageSlotPatch::Value(StorageValuePatch::Update {
+                    value: MidenWord::from([
+                        Felt::new_unchecked(threshold),
+                        Felt::new_unchecked(5),
+                        ZERO,
+                        ZERO,
+                    ]),
+                }),
+            ),
+        ])
+        .expect("Failed to build storage patch for delta 2");
 
         let delta_2 = AccountDelta::new(
             account_id,
             storage_delta_2,
             AccountVaultDelta::default(),
+            None,
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 2");
@@ -272,12 +303,16 @@ mod fixtures {
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         );
 
         let prev_commitment_2 = current_commitment;
-        account_state
-            .apply_delta(tx_summary_2.account_delta())
-            .expect("Failed to apply delta 2");
+        guardian_shared::account_delta::apply_account_delta(
+            &mut account_state,
+            tx_summary_2.account_delta(),
+        )
+        .expect("Failed to apply delta 2");
 
         // Apply replay protection
         let tx_commitment_2 = tx_summary_2.to_commitment();
@@ -324,18 +359,24 @@ mod fixtures {
 
         println!("\n🔄 Delta 3: Increase threshold to 3");
 
-        let mut storage_delta_3 = AccountStorageDelta::default();
-        storage_delta_3
-            .set_item(
-                threshold_config_name.clone(),
-                MidenWord::from([Felt::new_unchecked(3), Felt::new_unchecked(5), ZERO, ZERO]),
-            )
-            .expect("Failed to set threshold config in delta 3");
+        let storage_delta_3 = AccountStoragePatch::from_entries([(
+            threshold_config_name.clone(),
+            StorageSlotPatch::Value(StorageValuePatch::Update {
+                value: MidenWord::from([
+                    Felt::new_unchecked(3),
+                    Felt::new_unchecked(5),
+                    ZERO,
+                    ZERO,
+                ]),
+            }),
+        )])
+        .expect("Failed to build storage patch for delta 3");
 
         let delta_3 = AccountDelta::new(
             account_id,
             storage_delta_3,
             AccountVaultDelta::default(),
+            None,
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 3");
@@ -345,12 +386,16 @@ mod fixtures {
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
             MidenWord::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         );
 
         let prev_commitment_3 = current_commitment;
-        account_state
-            .apply_delta(tx_summary_3.account_delta())
-            .expect("Failed to apply delta 3");
+        guardian_shared::account_delta::apply_account_delta(
+            &mut account_state,
+            tx_summary_3.account_delta(),
+        )
+        .expect("Failed to apply delta 3");
 
         // Apply replay protection
         let tx_commitment_3 = tx_summary_3.to_commitment();

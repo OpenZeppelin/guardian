@@ -13,12 +13,17 @@ description = "Minimal Miden node RPC client for Guardian"
 async-trait = "0.1"
 guardian-shared = { path = "../shared" }
 miden-protocol = { workspace = true }
-miden-node-proto = { workspace = true }
+tonic = { workspace = true, features = ["tls-native-roots", "tls-ring", "transport"] }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
-tonic = { workspace = true, features = ["tls-native-roots", "tls-ring", "transport"] }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
 hex = { workspace = true }
 
 [features]
 scripted-node = []
+
+[build-dependencies]
+miden-node-proto-build = { workspace = true }
+tonic-prost-build = { workspace = true }

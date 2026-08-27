@@ -129,6 +129,12 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
+      - name: Install pinned Rust toolchain
+        # Package tests spawn `cargo run` from parallel vitest workers; rustup
+        # is not concurrency-safe, so install the rust-toolchain.toml pin here
+        # before those concurrent invocations race to install it themselves.
+        run: rustup toolchain install
+
       - name: Build, test, and publish
         working-directory: packages
         env:
@@ -214,12 +220,24 @@ jobs:
               abort "${package_name}" "${package_version}" "❌ Tests failed" "${next_index}"
             fi
 
+            # A prerelease must not take the `latest` dist-tag, or `npm install`
+            # with no version moves every consumer onto it. npm ignores semver
+            # prerelease semantics when assigning tags, so this has to be
+            # explicit. `latest` for a stable version is npm's own default, so
+            # passing it always keeps the two branches identical apart from the
+            # tag itself.
+            if [[ "${package_version}" == *-* ]]; then
+              npm_tag="rc"
+            else
+              npm_tag="latest"
+            fi
+
             if npm view "${package_name}@${package_version}" version 2>/dev/null; then
               echo "⚠️ ${package_name}@${package_version} is already published, skipping."
               summarize "${package_name}" "${package_version}" "⏭️ Already published"
             elif [[ "${DRY_RUN}" == "true" ]]; then
-              if npm publish -w "${workspace_name}" --provenance --access public --dry-run; then
-                summarize "${package_name}" "${package_version}" "✅ Dry run succeeded"
+              if npm publish -w "${workspace_name}" --provenance --access public --tag "${npm_tag}" --dry-run; then
+                summarize "${package_name}" "${package_version}" "✅ Dry run succeeded (tag: ${npm_tag})"
               else
                 abort "${package_name}" "${package_version}" "❌ Dry run failed" "${next_index}"
               fi
@@ -232,8 +250,8 @@ jobs:
                   abort "${package_name}" "${package_version}" "❌ Timed out waiting for ${guardian_client_name}@${guardian_client_range} on npm" "${next_index}"
                 fi
               fi
-              if npm publish -w "${workspace_name}" --provenance --access public; then
-                summarize "${package_name}" "${package_version}" "✅ Published"
+              if npm publish -w "${workspace_name}" --provenance --access public --tag "${npm_tag}"; then
+                summarize "${package_name}" "${package_version}" "✅ Published (tag: ${npm_tag})"
               else
                 abort "${package_name}" "${package_version}" "❌ Publish failed" "${next_index}"
               fi

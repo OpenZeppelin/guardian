@@ -1916,6 +1916,9 @@ function parseDecodedNote(
       parseDecodedAsset(a, `${context}.assets[${i}]`),
     ),
   };
+  if (record.note_type === 'public' || record.note_type === 'private') {
+    note.noteType = record.note_type;
+  }
   if (typeof record.sender === 'string') note.sender = record.sender;
   if (typeof record.recipient === 'string') note.recipient = record.recipient;
   return note;

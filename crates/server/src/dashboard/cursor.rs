@@ -84,6 +84,12 @@ pub enum CursorKind {
     AccountProposals,
     GlobalDeltas,
     GlobalProposals,
+    /// Client-facing per-account canonical history feed (issue #413).
+    /// Carries `last_nonce` plus `last_account_id` (the account the
+    /// cursor was minted for), and is its own kind so dashboard and
+    /// client cursors cannot be replayed across surfaces — nor a
+    /// history cursor across accounts.
+    AccountDeltaHistory,
 }
 
 /// Decoded cursor payload. Different kinds use different fields:
@@ -172,6 +178,19 @@ impl Cursor {
         }
     }
 
+    /// Build an `AccountDeltaHistory` cursor (client canonical history,
+    /// issue #413). Binds the minting account so a cursor issued for
+    /// one account is rejected when replayed against another.
+    pub fn account_delta_history(last_nonce: i64, account_id: String) -> Self {
+        Self {
+            kind: CursorKind::AccountDeltaHistory,
+            last_nonce: Some(last_nonce),
+            last_account_id: Some(account_id),
+            last_updated_at: None,
+            last_commitment: None,
+        }
+    }
+
     /// Build a `GlobalProposals` cursor with the
     /// `(status_timestamp, account_id, nonce, commitment)` composite
     /// key.
@@ -202,7 +221,7 @@ impl CursorSecret {
     /// Generate a fresh random secret. Call this once per server
     /// startup (e.g. at `DashboardState` construction).
     pub fn generate() -> Self {
-        use rand::RngCore;
+        use rand::Rng;
         let mut bytes = [0u8; CURSOR_SECRET_LEN];
         rand::rng().fill_bytes(&mut bytes);
         Self {

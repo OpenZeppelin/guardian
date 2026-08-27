@@ -1,5 +1,6 @@
 import type {
   AccountId,
+  ChainAnchor,
   MidenClient,
   TransactionProver,
   TransactionRequest,
@@ -12,6 +13,8 @@ import { ProverWorkflow } from './workflow.js';
 function asType<T>(value: unknown): T {
   return value as T;
 }
+
+const anchor = asType<ChainAnchor>({ marker: 'anchor' });
 
 describe('ProverWorkflow', () => {
   it('executes once, retries proof with fresh provers, submits once, and applies once', async () => {
@@ -47,12 +50,14 @@ describe('ProverWorkflow', () => {
       runtime,
     );
 
-    await workflow.submit(
+    await workflow.submitAt(
       asType<AccountId>({}),
       asType<TransactionRequest>({}),
+      anchor,
     );
 
     expect(executeRequest).toHaveBeenCalledTimes(1);
+    expect(executeRequest.mock.calls[0][2]).toEqual({ anchor });
     expect(prove).toHaveBeenCalledTimes(2);
     expect(provers).toHaveLength(2);
     expect(provers[0]).not.toBe(provers[1]);
@@ -83,7 +88,7 @@ describe('ProverWorkflow', () => {
     );
 
     await expect(
-      workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({})),
+      workflow.submitAt(asType<AccountId>({}), asType<TransactionRequest>({}), anchor),
     ).rejects.toBe(final);
     expect(prove).toHaveBeenCalledTimes(2);
     expect(runtime.sleep).toHaveBeenCalledTimes(1);
@@ -113,7 +118,7 @@ describe('ProverWorkflow', () => {
     );
 
     await expect(
-      workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({})),
+      workflow.submitAt(asType<AccountId>({}), asType<TransactionRequest>({}), anchor),
     ).rejects.toBe(rateLimited);
     expect(prove).toHaveBeenCalledTimes(1);
     expect(submit).toHaveBeenCalledTimes(1);
@@ -133,7 +138,7 @@ describe('ProverWorkflow', () => {
       createProver: () => undefined,
     });
 
-    await workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({}));
+    await workflow.submitAt(asType<AccountId>({}), asType<TransactionRequest>({}), anchor);
 
     expect(prove).toHaveBeenCalledWith();
   });

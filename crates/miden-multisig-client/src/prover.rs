@@ -400,8 +400,9 @@ mod tests {
     fn transaction_inputs() -> TransactionInputs {
         let mut chain = MockChain::new();
         chain.prove_next_block().unwrap();
+        let (auth_components, _) = Auth::IncrNonce.build_components();
         let account = AccountBuilder::new([0; 32])
-            .with_auth_component(Auth::IncrNonce)
+            .with_components(auth_components)
             .with_component(BasicWallet)
             .build()
             .unwrap();

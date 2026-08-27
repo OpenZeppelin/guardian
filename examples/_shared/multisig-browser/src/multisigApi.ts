@@ -12,7 +12,6 @@ import {
   FalconSigner,
   MidenWalletSigner,
   MultisigClient as MultisigClientClass,
-  ParaSigner,
   type AccountState,
   type ConsumableNote,
   type DetectedMultisigConfig,
@@ -26,13 +25,6 @@ import {
   type WalletSigningContext,
 } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo, ResolvedSigner } from './types';
-
-interface ParaSignerOptions {
-  paraClient: { signMessage(params: { walletId: string; messageBase64: string }): Promise<unknown> };
-  walletId: string;
-  commitment: string;
-  publicKey: string;
-}
 
 interface MidenWalletSignerOptions {
   wallet: WalletSigningContext;
@@ -59,20 +51,6 @@ export function resolveLocalSigner(
     signatureScheme,
     signerInstance: new FalconSigner(signer.falcon.secretKey),
     walletSource: 'local',
-  };
-}
-
-export function resolveParaSigner({
-  paraClient,
-  walletId,
-  commitment,
-  publicKey,
-}: ParaSignerOptions): ResolvedSigner {
-  return {
-    commitment,
-    signatureScheme: 'ecdsa',
-    signerInstance: new ParaSigner(paraClient, walletId, commitment, publicKey),
-    walletSource: 'para',
   };
 }
 
@@ -205,7 +183,6 @@ export async function createMultisigAccount(
     threshold,
     signerCommitments,
     guardianCommitment,
-    guardianEnabled: true,
     procedureThresholds,
     storageMode: 'private',
     signatureScheme,
@@ -405,17 +382,15 @@ export interface CustomProposalRecipe {
   saltHex: string;
 }
 
-async function buildRequestFromRecipe(
-  multisig: Multisig,
+function buildRequestFromRecipe(
   recipe: CustomProposalRecipe,
   signatureAdviceMap?: AdviceMap,
-): Promise<TransactionRequest> {
+): TransactionRequest {
   return buildP2idTransactionRequest(
     recipe.senderId,
     recipe.recipientId,
     recipe.faucetId,
     BigInt(recipe.amount),
-    await multisig.getStoreAccount(),
     { salt: Word.fromHex(recipe.saltHex), signatureAdviceMap },
   ).request;
 }
@@ -433,7 +408,6 @@ export async function createCustomP2idProposal(
     recipientId,
     faucetId,
     amount,
-    await multisig.getStoreAccount(),
   );
 
   const created = await createProposalResult(multisig, () =>
@@ -456,13 +430,13 @@ export async function prepareAndSubmitCustomProposal(
   multisig: Multisig,
   recipe: CustomProposalRecipe,
 ): Promise<void> {
-  const bindingRequestBytes = (await buildRequestFromRecipe(multisig, recipe)).serialize();
+  const bindingRequestBytes = buildRequestFromRecipe(recipe).serialize();
   const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequestBytes);
 
-  const finalRequest = await buildRequestFromRecipe(multisig, recipe, advice);
+  const finalRequest = buildRequestFromRecipe(recipe, advice);
 
   try {
-    await multisig.submitTransaction(finalRequest);
+    await multisig.submitTransaction(recipe.proposalId, finalRequest);
   } catch (submitError) {
     // The local apply step can transiently fail (autoSync race) even when the
     // on-chain submit succeeded. Re-sync so local state catches up, then surface

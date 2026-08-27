@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
-import { useModal } from '@getpara/react-sdk-lite';
 import { MidenWalletAdapter } from '@demox-labs/miden-wallet-adapter-miden';
 import { NoteType } from '@miden-sdk/miden-sdk';
 import type { MidenClient } from '@miden-sdk/miden-sdk';
@@ -44,7 +43,6 @@ import {
   registerOnGuardianWithState,
   resolveLocalSigner,
   resolveMidenWalletSigner,
-  resolveParaSigner,
   serializeConsumableNote,
   serializeDetectedMultisigConfig,
   serializeExternalWalletState,
@@ -54,7 +52,6 @@ import {
   signProposalOffline as signOfflineProposal,
   syncAll,
   useMidenWallet,
-  useParaSession,
   verifyStateCommitment,
   type BrowserSessionSnapshot,
   type CustomProposalRecipe,
@@ -127,7 +124,6 @@ export interface SignProposalOfflineInput {
 
 export interface SmokeApi {
   initSession(input: InitSessionInput): Promise<BrowserSessionSnapshot>;
-  connectPara(): Promise<BrowserSessionSnapshot>;
   connectMidenWallet(): Promise<BrowserSessionSnapshot>;
   status(): Promise<BrowserSessionSnapshot>;
   createAccount(input: CreateAccountInput): Promise<BrowserSessionSnapshot>;
@@ -187,7 +183,6 @@ interface SnapshotState {
   bootError: string | null;
   guardianPubkey: string | null;
   localSigners: SignerInfo | null;
-  paraSession: ExternalWalletState;
   midenWalletSession: ExternalWalletState;
   multisig: Multisig | null;
   guardianState: AccountState | null;
@@ -315,7 +310,6 @@ function buildSnapshot(state: SnapshotState): BrowserSessionSnapshot {
     signatureScheme: state.sessionConfig.signatureScheme,
     guardianPubkey: state.guardianPubkey,
     localSigners: state.localSigners ? serializeSignerInfo(state.localSigners) : null,
-    para: serializeExternalWalletState(state.paraSession),
     midenWallet: serializeExternalWalletState(state.midenWalletSession),
     multisig: state.multisig
       ? {
@@ -340,14 +334,54 @@ function buildSnapshot(state: SnapshotState): BrowserSessionSnapshot {
   };
 }
 
+const WALLET_SOURCES = ['local', 'miden-wallet'] as const satisfies readonly WalletSource[];
+
+function requireWalletSource(source: WalletSource | undefined): WalletSource {
+  if (source === undefined) {
+    return 'local';
+  }
+
+  if (!WALLET_SOURCES.includes(source)) {
+    throw new Error(
+      `Unsupported signerSource ${JSON.stringify(source)}; expected one of ${WALLET_SOURCES.join(', ')}`,
+    );
+  }
+
+  return source;
+}
+
 function normalizeSessionInput(input: InitSessionInput): SessionConfig {
   return {
     guardianEndpoint: input.guardianEndpoint?.trim() || DEFAULT_GUARDIAN_ENDPOINT,
     midenRpcEndpoint: input.midenRpcEndpoint?.trim() || DEFAULT_MIDEN_RPC_URL,
-    signerSource: input.signerSource ?? 'local',
+    signerSource: requireWalletSource(input.signerSource),
     signatureScheme: input.signatureScheme ?? 'falcon',
     browserLabel: input.browserLabel?.trim() ?? DEFAULT_BROWSER_LABEL,
   };
+}
+
+/**
+ * GUARDIAN keeps reporting a just-executed proposal's delta until
+ * canonicalization observes the on-chain commitment. In that window
+ * `syncProposals` re-validates the delta against the local account state the
+ * execution already advanced, so a refresh right after a successful submit can
+ * throw even though the transaction landed. (The Rust client never sees this:
+ * `list_proposals` pre-filters proposals with `nonce <= account.nonce()`.)
+ */
+const POST_EXECUTE_TRANSIENT_PATTERNS = [
+  /metadata does not match tx_summary/i,
+  /is not greater than local nonce/i,
+];
+const POST_EXECUTE_REFRESH_ATTEMPTS = 5;
+const POST_EXECUTE_REFRESH_DELAY_MS = 2000;
+
+function isPostExecuteTransient(err: unknown): boolean {
+  const message = normalizeError(err);
+  return POST_EXECUTE_TRANSIENT_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function useStateRef<T>(
@@ -406,12 +440,6 @@ export function useSmokeHarness(): {
   const [midenWalletAdapter] = useState(
     () => new MidenWalletAdapter({ appName: DEFAULT_APP_NAME }),
   );
-  const { openModal } = useModal();
-  const {
-    session: paraSession,
-    paraClient,
-    walletId: paraWalletId,
-  } = useParaSession(sessionConfig.midenRpcEndpoint);
   const {
     session: midenWalletSession,
     connect: connectMidenWallet,
@@ -419,12 +447,7 @@ export function useSmokeHarness(): {
     signBytes,
     connectError: midenWalletConnectError,
   } = useMidenWallet(midenWalletAdapter);
-  const paraSessionRef = useRef(paraSession);
   const midenWalletSessionRef = useRef(midenWalletSession);
-
-  useEffect(() => {
-    paraSessionRef.current = paraSession;
-  }, [paraSession]);
 
   useEffect(() => {
     midenWalletSessionRef.current = midenWalletSession;
@@ -465,7 +488,6 @@ export function useSmokeHarness(): {
         bootError: bootErrorRef.current,
         guardianPubkey: guardianPubkeyRef.current,
         localSigners: localSignersRef.current,
-        paraSession: paraSessionRef.current,
         midenWalletSession: midenWalletSessionRef.current,
         multisig: multisigRef.current,
         guardianState: guardianStateRef.current,
@@ -489,7 +511,6 @@ export function useSmokeHarness(): {
       midenWalletSessionRef,
       multisigClientRef,
       multisigRef,
-      paraSessionRef,
       proposalsRef,
       sessionConfigRef,
       webClientRef,
@@ -537,55 +558,37 @@ export function useSmokeHarness(): {
       source: WalletSource = sessionConfigRef.current.signerSource,
       signatureScheme: SignatureScheme = sessionConfigRef.current.signatureScheme,
     ): ResolvedSigner => {
-      const currentParaSession = paraSessionRef.current;
       const currentMidenWalletSession = midenWalletSessionRef.current;
 
-      if (source === 'para') {
-        if (!paraClient || !currentParaSession.commitment || !currentParaSession.publicKey) {
-          throw new Error('Para wallet is not connected');
+      switch (requireWalletSource(source)) {
+        case 'miden-wallet': {
+          if (
+            !currentMidenWalletSession.commitment ||
+            !currentMidenWalletSession.publicKey ||
+            !currentMidenWalletSession.scheme
+          ) {
+            throw new Error('Miden Wallet is not connected');
+          }
+
+          return resolveMidenWalletSigner({
+            wallet: { signBytes },
+            commitment: currentMidenWalletSession.commitment,
+            publicKey: currentMidenWalletSession.publicKey,
+            scheme: currentMidenWalletSession.scheme,
+          });
         }
+        case 'local': {
+          if (!localSignersRef.current) {
+            throw new Error('Local signers are not initialized');
+          }
 
-        if (!paraWalletId) {
-          throw new Error('Para wallet did not expose a wallet id');
+          return resolveLocalSigner(localSignersRef.current, signatureScheme);
         }
-
-        return resolveParaSigner({
-          paraClient,
-          walletId: paraWalletId,
-          commitment: currentParaSession.commitment,
-          publicKey: currentParaSession.publicKey,
-        });
       }
-
-      if (source === 'miden-wallet') {
-        if (
-          !currentMidenWalletSession.commitment ||
-          !currentMidenWalletSession.publicKey ||
-          !currentMidenWalletSession.scheme
-        ) {
-          throw new Error('Miden Wallet is not connected');
-        }
-
-        return resolveMidenWalletSigner({
-          wallet: { signBytes },
-          commitment: currentMidenWalletSession.commitment,
-          publicKey: currentMidenWalletSession.publicKey,
-          scheme: currentMidenWalletSession.scheme,
-        });
-      }
-
-      if (!localSignersRef.current) {
-        throw new Error('Local signers are not initialized');
-      }
-
-      return resolveLocalSigner(localSignersRef.current, signatureScheme);
     },
     [
       localSignersRef,
       midenWalletSessionRef,
-      paraClient,
-      paraSessionRef,
-      paraWalletId,
       sessionConfigRef,
       signBytes,
     ],
@@ -782,30 +785,6 @@ export function useSmokeHarness(): {
     async (input: InitSessionInput): Promise<BrowserSessionSnapshot> =>
       bootSession(normalizeSessionInput(input), 'initSession'),
     [bootSession],
-  );
-
-  const connectParaSession = useCallback(
-    async (): Promise<BrowserSessionSnapshot> =>
-      withCommand('connectPara', async () => {
-        if (!paraSessionRef.current.connected) {
-          openModal();
-          await waitForCondition(() => paraSessionRef.current.connected);
-        }
-
-        const nextConfig: SessionConfig = {
-          ...sessionConfigRef.current,
-          signerSource: 'para',
-          signatureScheme: 'ecdsa',
-        };
-        setSessionConfig(nextConfig);
-
-        return buildCurrentSnapshot({
-          sessionConfig: nextConfig,
-          paraSession: paraSessionRef.current,
-          lastError: null,
-        });
-      }),
-    [buildCurrentSnapshot, openModal, sessionConfigRef, withCommand],
   );
 
   const connectMidenWalletSession = useCallback(
@@ -1251,7 +1230,37 @@ export function useSmokeHarness(): {
         }
 
         await executeOnlineProposal(currentMultisig, proposalId);
-        const refreshed = await refreshMultisigState(currentMultisig);
+
+        // The transaction is submitted at this point; a refresh failure below
+        // must not surface as an execution failure. Retry through GUARDIAN's
+        // canonicalization window, and if it still has not converged, report
+        // the executed-but-pending state instead of throwing.
+        let refreshed: Awaited<ReturnType<typeof refreshMultisigState>> | null = null;
+        let pendingError: string | null = null;
+        for (let attempt = 1; attempt <= POST_EXECUTE_REFRESH_ATTEMPTS; attempt++) {
+          try {
+            refreshed = await refreshMultisigState(currentMultisig);
+            pendingError = null;
+            break;
+          } catch (err) {
+            if (!isPostExecuteTransient(err)) {
+              throw err;
+            }
+            pendingError = normalizeError(err);
+            if (attempt < POST_EXECUTE_REFRESH_ATTEMPTS) {
+              await delay(POST_EXECUTE_REFRESH_DELAY_MS);
+            }
+          }
+        }
+
+        if (!refreshed) {
+          const message =
+            'Proposal executed; local refresh is still pending GUARDIAN ' +
+            `canonicalization: ${pendingError}`;
+          setLastError(message);
+          return buildCurrentSnapshot({ lastError: message });
+        }
+
         return buildCurrentSnapshot({
           guardianState: refreshed.state,
           detectedConfig: refreshed.config,
@@ -1462,7 +1471,6 @@ export function useSmokeHarness(): {
 
   const api: SmokeApi = {
     initSession,
-    connectPara: connectParaSession,
     connectMidenWallet: connectMidenWalletSession,
     status,
     createAccount,

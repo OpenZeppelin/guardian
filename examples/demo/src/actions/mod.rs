@@ -1,5 +1,6 @@
 // Re-export all actions
 mod create_account;
+mod delta_history;
 mod list_notes;
 mod proposal_management;
 mod recover_by_key;
@@ -9,6 +10,7 @@ mod sync_account;
 mod verify_state_commitment;
 
 pub use create_account::action_create_account;
+pub use delta_history::action_delta_history;
 pub use list_notes::action_list_notes;
 pub use proposal_management::action_proposal_management;
 pub use recover_by_key::action_recover_by_key;

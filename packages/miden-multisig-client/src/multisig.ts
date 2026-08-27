@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { GuardianHttpClient, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -36,9 +36,14 @@ import {
   TransactionRequest,
   TransactionSummary,
   Word,
+  type ChainAnchor,
 } from '@miden-sdk/miden-sdk';
 import {
+  chainAnchorFromBase64,
+  chainAnchorToBase64,
   executeForSummary,
+  executeForSummaryAt,
+  summarySalt,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -68,6 +73,7 @@ import {
   normalizeHexWord,
 } from './utils/encoding.js';
 import {
+  assertEcdsaSignatureRecoverable,
   buildSignatureAdviceEntry,
   normalizeSignerCommitment,
   signatureHexToBytes,
@@ -75,7 +81,7 @@ import {
 } from './utils/signature.js';
 import { computeCommitmentFromTxSummary, accountIdToHex } from './multisig/helpers.js';
 import { buildGuardianSignatureFromSigner } from './multisig/signing.js';
-import { AccountInspector } from './inspector.js';
+import { AccountInspector, assertCompleteDetectedConfig } from './inspector.js';
 import { ProposalFactory } from './proposal/factory.js';
 import { ProposalMetadataCodec } from './proposal/metadata.js';
 import { ProposalSignatures } from './proposal/signatures.js';
@@ -299,6 +305,32 @@ export class Multisig {
   }
 
   /**
+   * Read the current ordered signer public-key commitments from account
+   * storage (store-backed state, falling back to the snapshot).
+   *
+   * Commitments are ordered by signer index as currently stored; indices
+   * re-pack when signers are removed, so index 0 is the creation-time first
+   * key only until the first membership change. Unlike the
+   * `signerCommitments` field, which reflects the config detected at
+   * construction / last sync, this reads the account state directly.
+   * See `AccountInspector.getSignerPublicKeyCommitments` (issue #306).
+   */
+  async getSignerPublicKeyCommitments(): Promise<string[]> {
+    const account = await this.getStoreAccount();
+    return AccountInspector.getSignerPublicKeyCommitments(account);
+  }
+
+  /**
+   * Read the current guardian public-key commitment from account storage.
+   * The guarded-multisig always includes a guardian, so this throws (rather
+   * than returning null) when the entry is missing.
+   */
+  async getGuardianPublicKeyCommitment(): Promise<string> {
+    const account = await this.getStoreAccount();
+    return AccountInspector.getGuardianPublicKeyCommitment(account);
+  }
+
+  /**
    * Maps a proposal type to the procedure that determines its threshold.
    */
   private getProposalProcedure(proposalType: ProposalType): ProcedureName | null {
@@ -338,6 +370,43 @@ export class Multisig {
     }
 
     return this.procedureThresholds.get(procedure) ?? this.threshold;
+  }
+
+  /**
+   * Per-procedure threshold overrides whose effective signing ratio is diluted
+   * by growing the signer set to `newNumSigners`.
+   *
+   * Overrides are absolute signature counts, not ratios, and the on-chain
+   * `update_signers_and_threshold` procedure does not re-scale them: growing
+   * the approver set silently lowers every override's effective signing ratio
+   * (a 2-of-2 override becomes 2-of-n). Callers creating a proposal that grows
+   * the signer set should surface these overrides and suggest raising them via
+   * an update-procedure-threshold proposal alongside the growth.
+   *
+   * @param newNumSigners - Signer-set size the proposal produces
+   * @returns The configured overrides, or an empty list when the set does not grow
+   */
+  overridesDilutedBySignerGrowth(
+    newNumSigners: number,
+  ): Array<{ procedure: ProcedureName; threshold: number }> {
+    if (newNumSigners <= this.signerCommitments.length) {
+      return [];
+    }
+    return Array.from(this.procedureThresholds.entries()).map(([procedure, threshold]) => ({
+      procedure,
+      threshold,
+    }));
+  }
+
+  private warnOnOverrideDilution(newNumSigners: number): void {
+    const current = this.signerCommitments.length;
+    for (const { procedure, threshold } of this.overridesDilutedBySignerGrowth(newNumSigners)) {
+      console.warn(
+        `growing the signer set dilutes the ${procedure} threshold override ` +
+          `(${threshold}-of-${current} becomes ${threshold}-of-${newNumSigners}); consider raising it ` +
+          `via an update-procedure-threshold proposal alongside the signer update`,
+      );
+    }
   }
 
   /**
@@ -531,12 +600,14 @@ export class Multisig {
 
     try {
       const detected = AccountInspector.fromAccount(account);
+      // Fail closed on a partial read: adopting a truncated signer set would
+      // let membership proposals rewrite the account without the omitted
+      // keys. The catch below keeps the previously validated config instead.
+      assertCompleteDetectedConfig(detected);
       this.account = account;
       this.threshold = detected.threshold;
       this.signerCommitments = detected.signerCommitments;
-      if (detected.guardianCommitment) {
-        this.guardianCommitment = detected.guardianCommitment;
-      }
+      this.guardianCommitment = detected.guardianCommitment;
       this.procedureThresholds = new Map(detected.procedureThresholds);
     } catch (error) {
       console.warn('Failed to refresh multisig config from account state', error);
@@ -656,6 +727,7 @@ export class Multisig {
     const webClient = await this.getRawClient();
     const targetThreshold = options.newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
+    this.warnOnOverrideDilution(targetSignerCommitments.length);
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
@@ -664,10 +736,13 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'add_signer',
       targetThreshold,
       targetSignerCommitments,
@@ -720,10 +795,13 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'remove_signer',
       targetThreshold,
       targetSignerCommitments,
@@ -764,10 +842,13 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'change_threshold',
       targetThreshold: newThreshold,
       targetSignerCommitments: this.signerCommitments,
@@ -810,13 +891,16 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const action = targetThreshold === 0
       ? `Clear threshold override for ${targetProcedure}`
       : `Set ${targetProcedure} threshold override to ${targetThreshold}`;
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'update_procedure_threshold',
       targetProcedure,
       targetThreshold,
@@ -850,10 +934,13 @@ export class Multisig {
       { signatureScheme: this.signer.scheme },
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'switch_guardian',
       saltHex: salt.toHex(),
       requiredSignatures: this.getEffectiveThreshold('switch_guardian'),
@@ -897,10 +984,13 @@ export class Multisig {
 
     const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes);
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'consume_notes',
       noteIds,
       metadataVersion: CONSUME_NOTES_METADATA_VERSION_V2,
@@ -946,8 +1036,6 @@ export class Multisig {
       throw new Error('Amount must be greater than 0');
     }
 
-    const account = await this.getStoreAccount();
-
     // Forward everything but the nonce, so a note option added to
     // CreateP2idProposalOptions can't be silently dropped before the builder.
     const { nonce: _nonce, ...noteOptions } = options;
@@ -956,14 +1044,16 @@ export class Multisig {
       recipientId,
       faucetId,
       amount,
-      account,
       noteOptions,
     );
 
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'p2id',
       saltHex: salt.toHex(),
       requiredSignatures: this.getEffectiveThreshold('p2id'),
@@ -1034,7 +1124,7 @@ export class Multisig {
 
   /**
    * Export a note created by this multisig account as serialized note-file
-   * bytes for out-of-band delivery (issue #356).
+   * bytes for out-of-band delivery.
    *
    * A private note publishes only its commitment on chain, so the recipient
    * can never learn its contents via sync; the sender must hand them the
@@ -1077,7 +1167,7 @@ export class Multisig {
 
   /**
    * Export a note created by this multisig account as a note file downloaded
-   * by the browser (issue #356). Browser-only convenience over
+   * by the browser. Browser-only convenience over
    * {@link exportNoteToBytes}; use that method directly in non-DOM
    * environments.
    *
@@ -1105,7 +1195,7 @@ export class Multisig {
   }
 
   /**
-   * Import a note file received out-of-band (issue #356) so the note can be
+   * Import a note file received out-of-band so the note can be
    * consumed by this multisig account.
    *
    * Sync the Miden client with the network afterwards so the note's on-chain
@@ -1132,7 +1222,7 @@ export class Multisig {
   }
 
   /**
-   * Import a note file received out-of-band (issue #356) from a browser
+   * Import a note file received out-of-band from a browser
    * `File`/`Blob` (e.g. a file-input selection). See
    * {@link importNoteFromBytes} for the returned identifier semantics.
    */
@@ -1147,10 +1237,9 @@ export class Multisig {
    * The P2ID note is rebuilt deterministically from the proposal salt, so the
    * ID is known ahead of execution. For a private P2ID this is the ID to pass
    * to {@link exportNoteToBytes} after executing, so the note file can be delivered
-   * to the recipient out-of-band (issue #356).
+   * to the recipient out-of-band.
    *
-   * Call this before executing the proposal: the asset is derived from the
-   * current vault state, which execution itself changes.
+   * The note ID remains deterministic from the proposal metadata and salt.
    */
   async getP2idNoteId(proposal: Proposal): Promise<string> {
     const metadata = proposal.metadata;
@@ -1164,13 +1253,11 @@ export class Multisig {
       throw new Error('getP2idNoteId requires a P2ID proposal with recipient, faucet, amount, and salt metadata');
     }
 
-    const account = await this.getStoreAccount();
     const note = buildP2idNoteFromMetadata(
       this._accountId,
       metadata.recipientId,
       metadata.faucetId,
       BigInt(metadata.amount),
-      account,
       parseP2idNoteType(metadata.noteType),
       metadata.saltHex,
       { reclaimHeight: metadata.reclaimHeight, timelockHeight: metadata.timelockHeight },
@@ -1216,6 +1303,19 @@ export class Multisig {
    */
   async abandonStatus(nonce: number): Promise<AbandonStatus> {
     return this.guardian.abandonStatus(this._accountId, nonce);
+  }
+
+  /**
+   * Fetch one page of this account's canonical delta history
+   * from GUARDIAN (issue #413), newest-first by nonce, with decoded
+   * input/output note summaries. Pass `options.cursor` from a previous
+   * page's `nextCursor` to resume; an absent `nextCursor` means the
+   * feed is exhausted. Served while the account is paused. Only
+   * transactions pushed through GUARDIAN appear — history of
+   * transactions executed elsewhere is not visible to it.
+   */
+  async deltaHistory(options: HistoryOptions = {}): Promise<HistoryPage> {
+    return this.guardian.getDeltaHistory(this._accountId, options);
   }
 
   async signProposal(proposalId: string): Promise<Proposal> {
@@ -1279,8 +1379,16 @@ export class Multisig {
   async executeProposal(proposalId: string): Promise<void> {
     const { metadata, finalRequest, proposal } = await this.prepareProposalExecution(proposalId);
 
+    // Execute at the proposal's anchored reference block, so the summary the
+    // cosigners signed reproduces exactly. The anchor was already checked
+    // against the summary's block commitment during binding verification.
     const accountId = AccountId.fromHex(this._accountId);
-    await this.proverWorkflow.submit(accountId, finalRequest);
+    const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
+    try {
+      await this.proverWorkflow.submitAt(accountId, finalRequest, anchor);
+    } finally {
+      anchor.free();
+    }
 
     if (metadata.proposalType === 'switch_guardian') {
       if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
@@ -1347,14 +1455,42 @@ export class Multisig {
    * Submit an integration-built transaction (advice already injected). Mirrors
    * the Rust `submit_transaction`; used by the custom proposal producer flow
    * after `prepareCustomExecution` rebuilds its request with the returned advice.
+   * The transaction is executed at the proposal's anchored reference block,
+   * since the collected signatures only authorize the summary produced there.
    */
-  async submitTransaction(request: TransactionRequest): Promise<void> {
-    await this.proverWorkflow.submit(AccountId.fromHex(this._accountId), request);
+  async submitTransaction(proposalId: string, request: TransactionRequest): Promise<void> {
+    const normalizedProposalId = normalizeHexWord(proposalId);
+    const delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
+    const existing = this.getLocalProposal(proposalId);
+    const proposal = this.proposalFactory().fromDelta(
+      delta,
+      normalizedProposalId,
+      existing?.metadata,
+      existing?.signatures ?? [],
+    );
+
+    const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
+    try {
+      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+      const txSummary = TransactionSummary.deserialize(
+        base64ToUint8Array(delta.deltaPayload.txSummary.data),
+      );
+      const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
+      if (anchorCommitment !== summaryBlockCommitment) {
+        throw new Error(
+          `Proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
+        );
+      }
+
+      await this.proverWorkflow.submitAt(AccountId.fromHex(this._accountId), request, anchor);
+    } finally {
+      anchor.free();
+    }
   }
 
   /**
-   * Create a proposal from a producer-built transaction the SDK does not model
-   * (issue #266 producer API). `transactionRequestBytes` is a serialized TransactionRequest;
+   * Create a proposal from a producer-built transaction the SDK does not model.
+   * `transactionRequestBytes` is a serialized TransactionRequest;
    * `proposalType` is a free-form, non-empty label that must not collide with a
    * built-in type. The integration keeps its own recipe to execute later via
    * `prepareCustomExecution`.
@@ -1382,10 +1518,13 @@ export class Multisig {
 
     const webClient = await this.getRawClient();
     const request = deserializeTransactionRequest(transactionRequestBytes);
-    const summary = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const chainAnchor = chainAnchorToBase64(anchor);
+    anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
+      chainAnchor,
       proposalType: 'custom',
       description: '',
       rawProposalType: label,
@@ -1398,7 +1537,7 @@ export class Multisig {
   /**
    * Assemble the validated execution advice (cosigner signatures + GUARDIAN
    * acknowledgment) for a ready custom proposal, so an integration can rebuild
-   * its transaction with its own recipe and submit (issue #266 producer API).
+   * its transaction with its own recipe and submit.
    *
    * `transactionRequestBytes` is the serialized transaction request; it is used only to verify
    * (binding check) that it reproduces the signed commitment, before the
@@ -1444,9 +1583,27 @@ export class Multisig {
 
     const bindingRequest = deserializeTransactionRequest(transactionRequestBytes);
 
-    const webClient = await this.getRawClient();
-    const derived = await executeForSummary(webClient, this._accountId, bindingRequest);
-    const derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
+    // Probe at the proposal's anchored reference block: the signed summary
+    // binds that block's commitment, so probing at the local sync height would
+    // never reproduce it. The anchor arrives from an untrusted party via
+    // GUARDIAN, so its block commitment is checked against the signed summary
+    // before executing against it.
+    const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
+    let derivedCommitmentHex: string;
+    try {
+      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+      const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
+      if (anchorCommitment !== summaryBlockCommitment) {
+        throw new Error(
+          `Custom proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
+        );
+      }
+      const webClient = await this.getRawClient();
+      const derived = await executeForSummaryAt(webClient, this._accountId, bindingRequest, anchor);
+      derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
+    } finally {
+      anchor.free();
+    }
     if (derivedCommitmentHex !== signedCommitmentHex) {
       throw new Error(
         `Custom proposal binding mismatch: expected ${signedCommitmentHex}, got ${derivedCommitmentHex}`,
@@ -1502,12 +1659,17 @@ export class Multisig {
         cosignerSig.signature.scheme,
       );
       const signature = Signature.deserialize(sigBytes);
+      if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
+        assertEcdsaSignatureRecoverable(
+          cosignerSig.signature.signature,
+          normalizedTxCommitmentHex,
+          ecdsaPublicKey,
+        );
+      }
       const { key, values } = buildSignatureAdviceEntry(
         signerCommitment,
         createTxCommitmentWord(),
         signature,
-        ecdsaPublicKey,
-        cosignerSig.signature.scheme === 'ecdsa' ? cosignerSig.signature.signature : undefined,
       );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
@@ -1538,12 +1700,13 @@ export class Multisig {
     }
     const ackSigBytes = signatureHexToBytes(ackSigHex, ackScheme);
     const ackSignature = Signature.deserialize(ackSigBytes);
+    if (ackScheme === 'ecdsa' && ackPubkey) {
+      assertEcdsaSignatureRecoverable(ackSigHex, normalizedTxCommitmentHex, ackPubkey);
+    }
     const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
       guardianCommitment,
       createTxCommitmentWord(),
       ackSignature,
-      ackScheme === 'ecdsa' ? ackPubkey : undefined,
-      ackScheme === 'ecdsa' ? ackSigHex : undefined,
     );
     const ackKeyHex = normalizeHexWord(ackKey.toHex());
     if (adviceMapKeys.has(ackKeyHex)) {
@@ -1610,7 +1773,7 @@ export class Multisig {
 
     const txSummaryBytes = base64ToUint8Array(txSummaryBase64);
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
-    const saltHex = txSummary.salt().toHex();
+    const saltHex = summarySalt(txSummary).toHex();
     const txCommitmentHex = txSummary.toCommitment().toHex();
     const normalizedTxCommitmentHex = normalizeHexWord(txCommitmentHex);
     const normalizedSignerCommitments = new Set(
@@ -1651,14 +1814,17 @@ export class Multisig {
         cosignerSig.signature.scheme,
       );
       const signature = Signature.deserialize(sigBytes);
+      if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
+        assertEcdsaSignatureRecoverable(
+          cosignerSig.signature.signature,
+          normalizedTxCommitmentHex,
+          ecdsaPublicKey,
+        );
+      }
       const { key, values } = buildSignatureAdviceEntry(
         signerCommitment,
         createTxCommitmentWord(),
         signature,
-        ecdsaPublicKey,
-        cosignerSig.signature.scheme === 'ecdsa'
-          ? cosignerSig.signature.signature
-          : undefined,
       );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
@@ -1694,12 +1860,13 @@ export class Multisig {
       }
       const ackSigBytes = signatureHexToBytes(ackSigHex, ackScheme);
       const ackSignature = Signature.deserialize(ackSigBytes);
+      if (ackScheme === 'ecdsa' && ackPubkey) {
+        assertEcdsaSignatureRecoverable(ackSigHex, normalizedTxCommitmentHex, ackPubkey);
+      }
       const { key: ackKey, values: ackValues } = buildSignatureAdviceEntry(
         guardianCommitment,
         createTxCommitmentWord(),
         ackSignature,
-        ackScheme === 'ecdsa' ? ackPubkey : undefined,
-        ackScheme === 'ecdsa' ? ackSigHex : undefined,
       );
       const ackKeyHex = normalizeHexWord(ackKey.toHex());
       if (adviceMapKeys.has(ackKeyHex)) {
@@ -1888,39 +2055,70 @@ export class Multisig {
 
   private async verifyProposalMetadataBinding(proposal: Proposal): Promise<string> {
     const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
-    if (proposal.metadata.proposalType === 'custom') {
-      // Custom proposals (issue #266) have no per-type reconstruction recipe;
-      // the id ↔ tx_summary commitment match above is the only available
-      // integrity guarantee for an opaque proposal.
-      return txSummaryCommitment;
-    }
-
-    if (proposal.metadata.proposalType === 'switch_guardian') {
-      // Exempt from binding re-execution (mirrors the `custom` exemption above).
-      // The WASM `executeForSummary` leaves the guardian-disabling side effect
-      // applied to the in-session account, so re-execution reconstructs a smaller
-      // delta and falsely rejects with "metadata does not match tx_summary". The
-      // native Rust client does not mutate, so this is an intentional divergence.
-      // The id ↔ tx_summary match above plus `verifyGuardianEndpointCommitment`
-      // at propose/execute time still bind the proposal.
-      return txSummaryCommitment;
-    }
 
     const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
-    const salt = proposal.metadata.saltHex
-      ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
-      : summary.salt();
 
-    const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
-    const webClient = await this.getRawClient();
-    const reconstructed = await executeForSummary(webClient, this._accountId, request);
-    const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
+    // The anchor arrives from an untrusted party via GUARDIAN, so check its
+    // block commitment against the one bound into the signed summary before
+    // anything executes against it. `ChainAnchor.deserialize` already enforced
+    // internal header/chain consistency.
+    const anchor = this.requireProposalAnchor(proposal.id, proposal.metadata);
+    try {
+      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+      const summaryBlockCommitment = normalizeHexWord(summary.blockCommitment().toHex());
+      if (anchorCommitment !== summaryBlockCommitment) {
+        throw new Error(
+          `Invalid proposal: chain anchor does not match the block commitment bound into the tx_summary for ${proposal.id}`,
+        );
+      }
 
-    if (reconstructedCommitment !== txSummaryCommitment) {
-      throw new Error(`Invalid proposal: metadata does not match tx_summary for ${proposal.id}`);
+      if (proposal.metadata.proposalType === 'custom') {
+        // Custom proposals have no per-type reconstruction recipe;
+        // the id ↔ tx_summary commitment match above is the only available
+        // integrity guarantee for an opaque proposal.
+        return txSummaryCommitment;
+      }
+
+      if (proposal.metadata.proposalType === 'switch_guardian') {
+        // Re-execution would mutate the WASM account twice. The proposal ID and
+        // guardian endpoint commitment provide the binding checks for this type.
+        return txSummaryCommitment;
+      }
+
+      const salt = proposal.metadata.saltHex
+        ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
+        : summarySalt(summary);
+
+      const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
+      const webClient = await this.getRawClient();
+      const reconstructed = await executeForSummaryAt(webClient, this._accountId, request, anchor);
+      const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
+
+      if (reconstructedCommitment !== txSummaryCommitment) {
+        throw new Error(`Invalid proposal: metadata does not match tx_summary for ${proposal.id}`);
+      }
+
+      return txSummaryCommitment;
+    } finally {
+      anchor.free();
     }
+  }
 
-    return txSummaryCommitment;
+  /**
+   * Decodes a proposal's chain anchor. Throws when absent: a proposal without
+   * an anchor was created at an unknown reference block, so its signed summary
+   * cannot be reproduced, verified, or executed. The caller owns the returned
+   * anchor and must `free()` it once done.
+   */
+  private requireProposalAnchor(proposalId: string, metadata: ProposalMetadata): ChainAnchor {
+    if (!metadata.chainAnchor) {
+      throw new Error(
+        `Proposal ${proposalId} has no chain anchor; it was created without ` +
+          'chain-anchored execution and its signed summary cannot be reproduced ' +
+          'at the original reference block',
+      );
+    }
+    return chainAnchorFromBase64(metadata.chainAnchor);
   }
 
   private async buildTransactionRequestFromMetadata(
@@ -2004,13 +2202,11 @@ export class Multisig {
         throw new UnsupportedMetadataVersionError(version);
       }
       case 'p2id': {
-        const account = await this.getStoreAccount();
         const { request } = buildP2idTransactionRequest(
           this._accountId,
           metadata.recipientId,
           metadata.faucetId,
           BigInt(metadata.amount),
-          account,
           {
             salt,
             signatureAdviceMap,

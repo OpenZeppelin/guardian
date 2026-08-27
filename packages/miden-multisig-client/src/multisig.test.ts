@@ -5,15 +5,37 @@ import {
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
   buildUpdateSignersTransactionRequest,
+  chainAnchorFromBase64,
   executeForSummary,
+  executeForSummaryAt,
 } from './transaction.js';
 
-const { mockRpcGetAccountDetails, mockAccountDeserialize, mockDetectConfig, mockNoteFileDeserialize } = vi.hoisted(() => ({
+const {
+  mockRpcGetAccountDetails,
+  mockAccountDeserialize,
+  mockDetectConfig,
+  mockNoteFileDeserialize,
+  mockGetSignerCommitments,
+  mockGetGuardianCommitment,
+} = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
   mockDetectConfig: vi.fn(),
   mockNoteFileDeserialize: vi.fn(),
+  mockGetSignerCommitments: vi.fn(),
+  mockGetGuardianCommitment: vi.fn(),
 }));
+
+const { MOCK_CHAIN_ANCHOR_B64, createMockChainAnchor } = vi.hoisted(() => {
+  const MOCK_CHAIN_ANCHOR_B64 = 'bW9jay1jaGFpbi1hbmNob3I=';
+  const createMockChainAnchor = () =>
+    ({
+      commitment: () => ({ toHex: () => '0x' + 'b'.repeat(64) }),
+      free: () => {},
+      serialize: () => new Uint8Array([9, 9, 9]),
+    }) as never;
+  return { MOCK_CHAIN_ANCHOR_B64, createMockChainAnchor };
+});
 
 // Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => ({
@@ -40,9 +62,10 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       toCommitment: () => ({
         toHex: () => '0x' + 'c'.repeat(64),
       }),
-      salt: () => ({
-        toHex: () => '0x' + 'd'.repeat(64),
+      blockCommitment: () => ({
+        toHex: () => '0x' + 'b'.repeat(64),
       }),
+      userParams: () => [0, 0, 0, 1, 2, 3, 4],
       serialize: () => new Uint8Array([1, 2, 3]),
     }),
   },
@@ -78,6 +101,12 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
 // Mock transaction module
 vi.mock('./transaction.js', () => ({
   executeForSummary: vi.fn(),
+  executeForSummaryAt: vi.fn(),
+  chainAnchorToBase64: vi.fn(() => MOCK_CHAIN_ANCHOR_B64),
+  chainAnchorFromBase64: vi.fn(() => createMockChainAnchor()),
+  summarySalt: vi.fn(() => ({
+    toHex: () => '0x' + 'd'.repeat(64),
+  })),
   buildUpdateSignersTransactionRequest: vi.fn().mockResolvedValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
@@ -122,6 +151,9 @@ vi.mock('./utils/signature.js', async () => {
       values: [1, 2, 3],
     })),
     signatureHexToBytes: vi.fn((hex: string) => new Uint8Array([0, 1, 2, 3])),
+    // These tests use synthetic signature bytes to exercise advice routing;
+    // recoverability is covered by tests/ecdsa-advice-encoding.test.ts.
+    assertEcdsaSignatureRecoverable: vi.fn(),
   };
 });
 
@@ -133,11 +165,19 @@ vi.mock('./utils/encoding.js', async () => {
   };
 });
 
-vi.mock('./inspector.js', () => ({
-  AccountInspector: {
-    fromAccount: mockDetectConfig,
-  },
-}));
+// Keep the real assertCompleteDetectedConfig so refreshConfigFromAccount's
+// fail-closed validation is exercised.
+vi.mock('./inspector.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./inspector.js')>();
+  return {
+    ...actual,
+    AccountInspector: {
+      fromAccount: mockDetectConfig,
+      getSignerPublicKeyCommitments: mockGetSignerCommitments,
+      getGuardianPublicKeyCommitment: mockGetGuardianCommitment,
+    },
+  };
+});
 
 // Mock fetch for GUARDIAN client
 const mockFetch = vi.fn();
@@ -186,6 +226,15 @@ describe('Multisig', () => {
   beforeEach(() => {
     mockFetch.mockReset();
     vi.mocked(executeForSummary).mockResolvedValue({
+      summary: {
+        toCommitment: () => ({
+          toHex: () => '0x' + 'c'.repeat(64),
+        }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      },
+      anchor: createMockChainAnchor(),
+    } as any);
+    vi.mocked(executeForSummaryAt).mockResolvedValue({
       toCommitment: () => ({
         toHex: () => '0x' + 'c'.repeat(64),
       }),
@@ -204,7 +253,6 @@ describe('Multisig', () => {
       threshold: 1,
       numSigners: 1,
       signerCommitments: ['0x' + 'a'.repeat(64)],
-      guardianEnabled: true,
       guardianCommitment: '0x' + 'c'.repeat(64),
       vaultBalances: [],
       procedureThresholds: new Map(),
@@ -350,6 +398,38 @@ describe('Multisig', () => {
     });
   });
 
+  describe('history (issue #413)', () => {
+    it('delegates to the guardian client with the account id and options', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      const page = {
+        entries: [
+          {
+            nonce: 3,
+            status: 'canonical' as const,
+            timestamp: '2026-08-01T12:00:03Z',
+            newCommitment: '0x' + 'b'.repeat(64),
+            inputNotes: [],
+            outputNotes: [],
+            decodeWarnings: [],
+          },
+        ],
+        nextCursor: 'cursor-token',
+      };
+      const spy = vi.spyOn(guardian, 'getDeltaHistory').mockResolvedValue(page);
+
+      const result = await multisig.deltaHistory({ limit: 5, cursor: 'prev' });
+
+      expect(result).toBe(page);
+      expect(spy).toHaveBeenCalledWith('0x' + 'a'.repeat(30), { limit: 5, cursor: 'prev' });
+    });
+  });
+
   describe('signerCommitment', () => {
     it('should return signer commitment', () => {
       const config = {
@@ -360,6 +440,56 @@ describe('Multisig', () => {
 
       const multisig = createTestMultisig(config);
       expect(multisig.signerCommitment).toBe(mockSigner.commitment);
+    });
+  });
+
+  describe('getSignerPublicKeyCommitments (issue #306)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it('reads commitments from the store-backed account', async () => {
+      const storeAccount = mockedAccount('0x' + 'b'.repeat(64), 1);
+      mockWebClient.getAccount.mockResolvedValueOnce(storeAccount);
+      const expected = ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)];
+      mockGetSignerCommitments.mockReturnValueOnce(expected);
+
+      const multisig = createTestMultisig(config);
+      const commitments = await multisig.getSignerPublicKeyCommitments();
+
+      expect(commitments).toEqual(expected);
+      expect(mockGetSignerCommitments).toHaveBeenCalledWith(storeAccount);
+    });
+
+    it('falls back to the account snapshot when the store has no record', async () => {
+      mockWebClient.getAccount.mockResolvedValueOnce(null);
+      mockGetSignerCommitments.mockReturnValueOnce(['0x' + '3'.repeat(64)]);
+
+      const multisig = createTestMultisig(config);
+      await multisig.getSignerPublicKeyCommitments();
+
+      expect(mockGetSignerCommitments).toHaveBeenCalledWith(mockAccount);
+    });
+  });
+
+  describe('getGuardianPublicKeyCommitment (issue #306)', () => {
+    it('reads the guardian commitment from the store-backed account', async () => {
+      const storeAccount = mockedAccount('0x' + 'b'.repeat(64), 1);
+      mockWebClient.getAccount.mockResolvedValueOnce(storeAccount);
+      mockGetGuardianCommitment.mockReturnValueOnce('0x' + '4'.repeat(64));
+
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+
+      const commitment = await multisig.getGuardianPublicKeyCommitment();
+
+      expect(commitment).toBe('0x' + '4'.repeat(64));
+      expect(mockGetGuardianCommitment).toHaveBeenCalledWith(storeAccount);
     });
   });
 
@@ -499,7 +629,6 @@ describe('Multisig', () => {
         threshold: 2,
         numSigners: 2,
         signerCommitments: ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)],
-        guardianEnabled: true,
         guardianCommitment: '0x' + 'd'.repeat(64),
         vaultBalances: [],
         procedureThresholds: new Map(),
@@ -514,6 +643,44 @@ describe('Multisig', () => {
       ]);
       expect(multisig.guardianCommitment).toBe('0x' + 'd'.repeat(64));
       expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+    });
+
+    it('keeps the previous config when a refresh reads an incomplete signer set (issue #306 review)', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config, mockSigner, '0x' + 'a'.repeat(30));
+
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+      // Storage reports 3 signers but only 1 entry was readable: adopting
+      // this would let membership proposals rewrite the on-chain set without
+      // the omitted keys. The refresh must keep the previous config instead.
+      mockDetectConfig.mockReturnValueOnce({
+        threshold: 2,
+        numSigners: 3,
+        signerCommitments: ['0x' + '1'.repeat(64)],
+        guardianCommitment: '0x' + 'd'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      await multisig.syncState();
+
+      expect(multisig.threshold).toBe(1);
+      expect(multisig.signerCommitments).toEqual(['0x' + 'a'.repeat(64)]);
+      expect(multisig.guardianCommitment).toBe('0x' + 'c'.repeat(64));
     });
 
     it('should overwrite local state when account is not found on-chain', async () => {
@@ -923,6 +1090,7 @@ describe('Multisig', () => {
             signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             signer_commitments: ['0x' + 'a'.repeat(64)],
             description: '',
@@ -974,6 +1142,7 @@ describe('Multisig', () => {
             signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             signer_commitments: ['0x' + 'a'.repeat(64)],
             description: '',
@@ -1026,6 +1195,7 @@ describe('Multisig', () => {
                 signatures: [],
                 metadata: {
                   proposal_type: 'add_signer',
+                  chain_anchor: MOCK_CHAIN_ANCHOR_B64,
                   target_threshold: 1,
                   signer_commitments: ['0x' + 'a'.repeat(64)],
                   description: '',
@@ -1042,7 +1212,7 @@ describe('Multisig', () => {
         }),
       });
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
@@ -1051,6 +1221,65 @@ describe('Multisig', () => {
       await expect(multisig.syncProposals()).rejects.toThrow(
         'Invalid proposal: metadata does not match tx_summary'
       );
+    });
+
+    /// A structurally valid anchor pinned to the wrong block must be rejected
+    /// before anything executes against it: its commitment disagrees with the
+    /// block commitment signed into the tx_summary.
+    it('should reject a proposal whose chain anchor does not match the summary block commitment', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [
+            {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: {
+                tx_summary: { data: 'AQID' },
+                signatures: [],
+                metadata: {
+                  proposal_type: 'add_signer',
+                  chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+                  target_threshold: 1,
+                  signer_commitments: ['0x' + 'a'.repeat(64)],
+                  description: '',
+                },
+              },
+              status: {
+                status: 'pending',
+                timestamp: '2024-01-01T00:00:00Z',
+                proposer_id: '0x' + 'c'.repeat(64),
+                cosigner_sigs: [],
+              },
+            },
+          ],
+        }),
+      });
+
+      // Deserializes fine, but pins a different block than the one bound into
+      // the summary (mock summary blockCommitment is 'b' * 64).
+      const freed = vi.fn();
+      vi.mocked(chainAnchorFromBase64).mockReturnValueOnce({
+        commitment: () => ({ toHex: () => '0x' + 'e'.repeat(64) }),
+        free: freed,
+        serialize: () => new Uint8Array([9, 9, 9]),
+      } as never);
+
+      const reExecutionsBefore = vi.mocked(executeForSummaryAt).mock.calls.length;
+      await expect(multisig.syncProposals()).rejects.toThrow(
+        'chain anchor does not match the block commitment bound into the tx_summary'
+      );
+      expect(vi.mocked(executeForSummaryAt).mock.calls.length).toBe(reExecutionsBefore);
+      expect(freed).toHaveBeenCalledTimes(1);
     });
 
     it('should reject non-32-byte signer IDs from GUARDIAN proposals', async () => {
@@ -1072,6 +1301,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
               description: '',
@@ -1119,6 +1349,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 2,
               signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
               description: '',
@@ -1202,6 +1433,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'add_signer',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 1,
         targetSignerCommitments: ['0x' + 'a'.repeat(64)],
         description: '',
@@ -1247,6 +1479,7 @@ describe('Multisig', () => {
       await expect(
         multisig.createProposal(1, 'AQID', {
           proposalType: 'add_signer',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
           description: '',
@@ -1289,7 +1522,7 @@ describe('Multisig', () => {
         }),
       });
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
@@ -1298,6 +1531,7 @@ describe('Multisig', () => {
       await expect(
         multisig.createProposal(1, 'AQID', {
           proposalType: 'add_signer',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
           description: '',
@@ -1310,10 +1544,13 @@ describe('Multisig', () => {
     it('should include the faucet asset in the proposal description', async () => {
       const { executeForSummary } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'c'.repeat(64),
-        }),
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          toCommitment: () => ({
+            toHex: () => '0x' + 'c'.repeat(64),
+          }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const config = {
@@ -1333,6 +1570,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'p2id',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             recipient_id: '0xrecipient',
             faucet_id: '0xfaucet',
             amount: '100',
@@ -1364,10 +1602,13 @@ describe('Multisig', () => {
       const { executeForSummary, buildP2idTransactionRequest } = await import('./transaction.js');
       const { NoteType } = await import('@miden-sdk/miden-sdk');
       vi.mocked(executeForSummary).mockResolvedValue({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'c'.repeat(64),
-        }),
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          toCommitment: () => ({
+            toHex: () => '0x' + 'c'.repeat(64),
+          }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const config = {
@@ -1387,6 +1628,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'p2id',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             recipient_id: '0xrecipient',
             faucet_id: '0xfaucet',
             amount: '100',
@@ -1421,12 +1663,11 @@ describe('Multisig', () => {
         '0xrecipient',
         '0xfaucet',
         100n,
-        expect.anything(),
         { noteType: NoteType.Private },
       );
       // ...and the rebuild-from-metadata path parses note_type back to Private.
       const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
-      expect(lastCall[5]).toMatchObject({ noteType: NoteType.Private });
+      expect(lastCall[4]).toMatchObject({ noteType: NoteType.Private });
 
       // The pushed wire metadata carries note_type so cosigners rebuild the
       // same private note at verification/execution.
@@ -1440,10 +1681,13 @@ describe('Multisig', () => {
     it('threads P2IDE reclaim/timelock heights into the request and wire metadata (issue #366)', async () => {
       const { executeForSummary, buildP2idTransactionRequest } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'c'.repeat(64),
-        }),
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          toCommitment: () => ({
+            toHex: () => '0x' + 'c'.repeat(64),
+          }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+        },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const config = {
@@ -1495,7 +1739,7 @@ describe('Multisig', () => {
 
       // Propose path builds the P2IDE note from the heights...
       const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
-      expect(lastCall[5]).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
+      expect(lastCall[4]).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
 
       // ...and the pushed wire metadata carries the heights so cosigners
       // rebuild the same P2IDE note at verification/execution.
@@ -1510,10 +1754,13 @@ describe('Multisig', () => {
     it('omits the heights from wire metadata for a plain P2ID send (pre-#366 shape)', async () => {
       const { executeForSummary } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'c'.repeat(64),
-        }),
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          toCommitment: () => ({
+            toHex: () => '0x' + 'c'.repeat(64),
+          }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+        },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const config = {
@@ -1687,6 +1934,7 @@ describe('Multisig', () => {
       const proposal = {
         metadata: {
           proposalType: 'p2id',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           recipientId: '0x' + 'b'.repeat(30),
           faucetId: '0x' + 'c'.repeat(30),
           amount: '100',
@@ -1714,10 +1962,13 @@ describe('Multisig', () => {
   describe('createChangeThresholdProposal', () => {
     it('passes the signer scheme to update-signers requests', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'c'.repeat(64),
-        }),
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          toCommitment: () => ({
+            toHex: () => '0x' + 'c'.repeat(64),
+          }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const ecdsaSigner: Signer = {
@@ -1742,6 +1993,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'change_threshold',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 2,
             description: '',
           },
@@ -1808,8 +2060,11 @@ describe('Multisig', () => {
 
     beforeEach(() => {
       vi.mocked(executeForSummary).mockResolvedValue({
-        toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+        },
+        anchor: createMockChainAnchor(),
       } as any);
     });
 
@@ -1914,7 +2169,10 @@ describe('Multisig', () => {
   describe('createSwitchGuardianProposal', () => {
     it('should verify new endpoint commitment before creating proposal', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const config = {
@@ -1963,7 +2221,10 @@ describe('Multisig', () => {
 
     it('should reject switch proposal when endpoint commitment does not match', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const config = {
@@ -1986,7 +2247,10 @@ describe('Multisig', () => {
 
     it('should use the signer scheme when resolving new GUARDIAN commitments', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const ecdsaSigner: Signer = {
@@ -2045,10 +2309,13 @@ describe('Multisig', () => {
   describe('createUpdateProcedureThresholdProposal', () => {
     it('should create procedure-threshold update proposals', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'c'.repeat(64),
-        }),
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          toCommitment: () => ({
+            toHex: () => '0x' + 'c'.repeat(64),
+          }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const config = {
@@ -2068,6 +2335,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'update_procedure_threshold',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             target_procedure: 'send_asset',
             description: '',
@@ -2106,10 +2374,13 @@ describe('Multisig', () => {
 
     it('passes the signer scheme to ECDSA procedure-threshold updates', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
-        toCommitment: () => ({
-          toHex: () => '0x' + 'c'.repeat(64),
-        }),
-        serialize: () => new Uint8Array([1, 2, 3]),
+        summary: {
+          toCommitment: () => ({
+            toHex: () => '0x' + 'c'.repeat(64),
+          }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const ecdsaSigner: Signer = {
@@ -2136,6 +2407,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'update_procedure_threshold',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             target_procedure: 'send_asset',
             description: '',
@@ -2205,6 +2477,7 @@ describe('Multisig', () => {
 
       await multisig.createProposal(1, 'AQID', {
         proposalType: 'add_signer',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 1,
         targetSignerCommitments: ['0x' + 'a'.repeat(64)],
         description: '',
@@ -2228,6 +2501,7 @@ describe('Multisig', () => {
           ...mockDelta.delta_payload,
           metadata: {
             proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             description: '',
             target_threshold: 1,
             signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -2282,12 +2556,13 @@ describe('Multisig', () => {
 
       await multisig.createProposal(1, 'AQID', {
         proposalType: 'add_signer',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 1,
         targetSignerCommitments: ['0x' + 'a'.repeat(64)],
         description: '',
       });
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
@@ -2321,6 +2596,7 @@ describe('Multisig', () => {
                 signatures: [],
                 metadata: {
                   proposal_type: 'add_signer',
+                  chain_anchor: MOCK_CHAIN_ANCHOR_B64,
                   description: '',
                   target_threshold: 1,
                   signer_commitments: [mockSigner.commitment],
@@ -2354,7 +2630,7 @@ describe('Multisig', () => {
 
       const multisig = createTestMultisig(config);
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
@@ -2370,6 +2646,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposalType: 'add_signer',
+              chainAnchor: MOCK_CHAIN_ANCHOR_B64,
               targetThreshold: 1,
               targetSignerCommitments: ['0x' + 'a'.repeat(64)],
               description: '',
@@ -2390,7 +2667,7 @@ describe('Multisig', () => {
 
       const multisig = createTestMultisig(config);
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
         toCommitment: () => ({
           toHex: () => '0x' + 'c'.repeat(64),
         }),
@@ -2405,6 +2682,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposalType: 'add_signer',
+            chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 1,
             targetSignerCommitments: ['0x' + 'a'.repeat(64)],
             description: '',
@@ -2414,12 +2692,13 @@ describe('Multisig', () => {
 
       proposal.metadata = {
         proposalType: 'add_signer',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 2,
         targetSignerCommitments: ['0x' + 'a'.repeat(64)],
         description: '',
       };
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
@@ -2451,6 +2730,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               description: '',
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -2506,6 +2786,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               description: '',
               target_threshold: 2,
               signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -2596,6 +2877,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'add_signer' as const,
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
           description: '',
@@ -2634,6 +2916,7 @@ describe('Multisig', () => {
           ],
           metadata: {
             proposalType: 'change_threshold',
+            chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 1,
             targetSignerCommitments: ['0x' + 'a'.repeat(64)],
             description: '',
@@ -2679,6 +2962,7 @@ describe('Multisig', () => {
             ],
             metadata: {
               proposalType: 'change_threshold',
+              chainAnchor: MOCK_CHAIN_ANCHOR_B64,
               targetThreshold: 1,
               targetSignerCommitments: ['0x' + 'a'.repeat(64)],
               description: '',
@@ -2705,6 +2989,7 @@ describe('Multisig', () => {
         signatures: [],
         metadata: {
           proposalType: 'add_signer' as const,
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 2,
           targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
           description: '',
@@ -2780,6 +3065,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'change_threshold',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
           description: '',
@@ -2797,6 +3083,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
             },
@@ -2839,17 +3126,19 @@ describe('Multisig', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        cosignerPubkey,
-        cosignerSignature,
       );
       expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
         2,
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        ackPubkey,
-        ackSignature,
       );
+      // The advice payload now comes from the SDK, so the routing assertion is
+      // the commitment each entry is keyed on: cosigner first, GUARDIAN ack
+      // second. Swapping the two entries must not pass.
+      const adviceCalls = vi.mocked(buildSignatureAdviceEntry).mock.calls;
+      expect(adviceCalls[0][0].toHex()).toBe(config.signerCommitments[0]);
+      expect(adviceCalls[1][0].toHex()).toBe(config.guardianCommitment);
       expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.proveTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.submitProvenTransaction).not.toHaveBeenCalled();
@@ -2891,6 +3180,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey,
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
@@ -2944,6 +3234,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               description: '',
               target_threshold: 2,
               signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -2986,7 +3277,7 @@ describe('Multisig', () => {
       const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
         toCommitment: () => ({
           toHex: () => '0x' + 'd'.repeat(64),
         }),
@@ -3007,6 +3298,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'change_threshold',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
           description: '',
@@ -3044,6 +3336,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
@@ -3091,6 +3384,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
@@ -3171,6 +3465,7 @@ describe('Multisig', () => {
           ],
           metadata: {
             proposalType: 'change_threshold',
+            chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 1,
             targetSignerCommitments: ['0x' + 'a'.repeat(64)],
             description: '',
@@ -3188,6 +3483,7 @@ describe('Multisig', () => {
               signatures: [],
               metadata: {
                 proposal_type: 'change_threshold',
+                chain_anchor: MOCK_CHAIN_ANCHOR_B64,
                 target_threshold: 1,
                 signer_commitments: ['0x' + 'a'.repeat(64)],
               },
@@ -3262,6 +3558,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
@@ -3309,6 +3606,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               description: '',
               target_threshold: 2,
               signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -3342,7 +3640,7 @@ describe('Multisig', () => {
       ).rejects.toThrow('not ready for execution');
     });
 
-    it('should fail when GUARDIAN ack signature is missing (selector ON)', async () => {
+    it('should fail when GUARDIAN ack signature is missing', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3360,6 +3658,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             description: '',
             target_threshold: 1,
             signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -3452,6 +3751,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'change_threshold',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
           description: '',
@@ -3469,6 +3769,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
             },
@@ -3522,17 +3823,19 @@ describe('Multisig', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        cosignerPubkey,
-        cosignerSignature,
       );
       expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
         2,
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        ackPubkey,
-        ackSignature,
       );
+      // The advice payload now comes from the SDK, so the routing assertion is
+      // the commitment each entry is keyed on: cosigner first, GUARDIAN ack
+      // second. Swapping the two entries must not pass.
+      const adviceCalls = vi.mocked(buildSignatureAdviceEntry).mock.calls;
+      expect(adviceCalls[0][0].toHex()).toBe(config.signerCommitments[0]);
+      expect(adviceCalls[1][0].toHex()).toBe(config.guardianCommitment);
     });
 
     it('should execute imported ECDSA proposals with scheme-aware advice', async () => {
@@ -3577,6 +3880,7 @@ describe('Multisig', () => {
           ],
           metadata: {
             proposalType: 'change_threshold',
+            chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 1,
             targetSignerCommitments: ['0x' + 'a'.repeat(64)],
             description: '',
@@ -3595,6 +3899,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
             },
@@ -3638,17 +3943,19 @@ describe('Multisig', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        cosignerPubkey,
-        cosignerSignature,
       );
       expect(vi.mocked(buildSignatureAdviceEntry)).toHaveBeenNthCalledWith(
         2,
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        ackPubkey,
-        ackSignature,
       );
+      // The advice payload now comes from the SDK, so the routing assertion is
+      // the commitment each entry is keyed on: cosigner first, GUARDIAN ack
+      // second. Swapping the two entries must not pass.
+      const adviceCalls = vi.mocked(buildSignatureAdviceEntry).mock.calls;
+      expect(adviceCalls[0][0].toHex()).toBe(config.signerCommitments[0]);
+      expect(adviceCalls[1][0].toHex()).toBe(config.guardianCommitment);
     });
 
     it('should verify switch_guardian endpoint commitment before execution', async () => {
@@ -3677,6 +3984,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey,
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
@@ -3699,6 +4007,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'switch_guardian',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               new_guardian_pubkey: newGuardianPubkey,
               new_guardian_endpoint: 'http://new-guardian.com',
             },
@@ -3761,6 +4070,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey,
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
@@ -3812,6 +4122,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
@@ -3859,6 +4170,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
@@ -3911,6 +4223,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
@@ -3946,9 +4259,33 @@ describe('Multisig', () => {
         .mockRejectedValueOnce(transient)
         .mockResolvedValueOnce({});
 
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'b2agg',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+              description: '',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+
       vi.useFakeTimers();
       try {
-        const submission = multisig.submitTransaction({} as never);
+        const submission = multisig.submitTransaction('0x' + 'c'.repeat(64), {} as never);
         await vi.runAllTimersAsync();
         await submission;
       } finally {
@@ -3978,6 +4315,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: proposalType,
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             description: '',
           },
         },
@@ -4011,6 +4349,7 @@ describe('Multisig', () => {
       };
       builtinDelta.delta_payload.metadata = {
         proposal_type: 'change_threshold',
+        chain_anchor: MOCK_CHAIN_ANCHOR_B64,
         description: '',
         target_threshold: 1,
         signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -4054,7 +4393,7 @@ describe('Multisig', () => {
 
       // Signed commitment comes from TransactionSummary.deserialize -> 'c' * 64.
       // Make the binding request derive a different commitment so the check fails.
-      vi.mocked(executeForSummary).mockResolvedValueOnce({
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
         toCommitment: () => ({
           toHex: () => '0x' + '9'.repeat(64),
         }),
@@ -4118,6 +4457,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 2,
             signer_commitments: ['0x1', '0x2'],
           },
@@ -4140,6 +4480,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'add_signer',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 2,
         targetSignerCommitments: ['0x1', '0x2'],
         description: '',
@@ -4181,6 +4522,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'p2id',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               recipient_id: '0xrecipient',
               faucet_id: '0xfaucet',
               amount: '100',
@@ -4226,6 +4568,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 2,
             signer_commitments: ['0x1', '0x2'],
             description: '',
@@ -4249,6 +4592,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'consume_notes',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         noteIds: ['0xnote1', '0xnote2'],
         description: '',
       });
@@ -4274,6 +4618,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             signer_commitments: ['0x' + 'a'.repeat(64)],
             description: '',
@@ -4297,6 +4642,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'p2id',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         recipientId: '0xrecipient',
         faucetId: '0xfaucet',
         amount: '100',
@@ -4324,6 +4670,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposalType: 'add_signer',
+            chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 2,
             targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
             description: '',
@@ -4347,6 +4694,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'switch_guardian',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         newGuardianPubkey: '0xnewpubkey',
         newGuardianEndpoint: 'http://new-guardian.com',
         description: '',
@@ -4377,6 +4725,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 2,
               signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
               description: '',
@@ -4413,6 +4762,7 @@ describe('Multisig', () => {
             ...mockProposalsPending[0].delta_payload,
             metadata: {
               proposal_type: 'add_signer',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 2,
               signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
               description: '',
@@ -4517,6 +4867,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 3,
               signer_commitments: ['0xa', '0xb', '0xc'],
               salt: '0xlegacysalt',
@@ -4567,6 +4918,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'p2id',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               recipient_id: '0xrecipient',
               faucet_id: '0xfaucet',
               amount: '12345',
@@ -4623,6 +4975,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'switch_guardian',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               new_guardian_pubkey: '0xnewpubkey',
               new_guardian_endpoint: 'http://new-guardian.com',
               salt: '0xsalt',

@@ -996,7 +996,26 @@ impl StorageBackend for FilesystemService {
             .filter(|d| !matches!(d.status, DeltaStatus::Pending { .. }))
             .filter(|d| cutoff.is_none_or(|cutoff_nonce| d.nonce < cutoff_nonce))
             .collect();
-        deltas.sort_by(|a, b| b.nonce.cmp(&a.nonce));
+        deltas.sort_by_key(|delta| std::cmp::Reverse(delta.nonce));
+        deltas.truncate(limit as usize);
+        Ok(deltas)
+    }
+
+    async fn list_canonical_deltas_paged(
+        &self,
+        account_id: &str,
+        limit: u32,
+        cursor: Option<AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let cutoff = cursor.map(|c| c.last_nonce as u64);
+        let mut deltas: Vec<DeltaObject> = self
+            .pull_deltas_after(account_id, 0)
+            .await?
+            .into_iter()
+            .filter(|d| d.status.is_canonical())
+            .filter(|d| cutoff.is_none_or(|cutoff_nonce| d.nonce < cutoff_nonce))
+            .collect();
+        deltas.sort_by_key(|d| std::cmp::Reverse(d.nonce));
         deltas.truncate(limit as usize);
         Ok(deltas)
     }

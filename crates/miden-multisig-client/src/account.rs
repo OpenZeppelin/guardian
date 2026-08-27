@@ -6,16 +6,26 @@ use miden_protocol::account::{
     Account, AccountId, AccountStorage, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
 
+use miden_standards::account::auth::AuthGuardedMultisig;
+
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
 use crate::proposal::TransactionType;
 
-// Storage slot names for OpenZeppelin multisig/guardian components
-const OZ_MULTISIG_THRESHOLD_CONFIG: &str = "openzeppelin::multisig::threshold_config";
-const OZ_MULTISIG_SIGNER_PUBKEYS: &str = "openzeppelin::multisig::signer_public_keys";
-const OZ_MULTISIG_PROCEDURE_THRESHOLDS: &str = "openzeppelin::multisig::procedure_thresholds";
-const OZ_GUARDIAN_SELECTOR: &str = "openzeppelin::guardian::selector";
-const OZ_GUARDIAN_PUBLIC_KEY: &str = "openzeppelin::guardian::public_key";
+/// `AuthGuardedMultisig` storage slot names (`miden::standards::auth::*`), sourced from the
+/// component's `*_slot()` accessors so they cannot drift.
+fn multisig_threshold_config_slot() -> &'static str {
+    AuthGuardedMultisig::threshold_config_slot().as_str()
+}
+fn multisig_approver_pubkeys_slot() -> &'static str {
+    AuthGuardedMultisig::approver_public_keys_slot().as_str()
+}
+fn multisig_procedure_thresholds_slot() -> &'static str {
+    AuthGuardedMultisig::procedure_thresholds_slot().as_str()
+}
+fn guardian_public_key_slot() -> &'static str {
+    AuthGuardedMultisig::guardian_public_key_slot().as_str()
+}
 
 /// Wrapper around a Miden Account with multisig-specific helpers.
 ///
@@ -24,8 +34,8 @@ const OZ_GUARDIAN_PUBLIC_KEY: &str = "openzeppelin::guardian::public_key";
 /// - Signer commitments map slot: `[index, 0, 0, 0] => COMMITMENT`
 /// - Executed transactions map slot (replay protection)
 /// - Procedure threshold overrides map slot: `PROC_ROOT => [threshold, 0, 0, 0]`
-/// - GUARDIAN selector slot: `[1, 0, 0, 0]` (ON) or `[0, 0, 0, 0]` (OFF)
-/// - GUARDIAN public key map slot
+/// - GUARDIAN public key map slot (the guardian is always present in the upstream
+///   `AuthGuardedMultisig` component — there is no enable/disable selector)
 #[derive(Debug, Clone)]
 pub struct MultisigAccount {
     account: Account,
@@ -69,13 +79,16 @@ impl MultisigAccount {
 
     fn get_map_item_by_name(&self, slot_name: &str, key: Word) -> Option<Word> {
         let slot_name = StorageSlotName::new(slot_name).ok()?;
-        self.account.storage().get_map_item(&slot_name, key).ok()
+        self.account
+            .storage()
+            .get_map_item(&slot_name, StorageMapKey::new(key))
+            .ok()
     }
 
     /// Returns the multisig threshold from storage.
     pub fn threshold(&self) -> Result<u32> {
         let slot_value = self
-            .get_item_by_name(OZ_MULTISIG_THRESHOLD_CONFIG)
+            .get_item_by_name(multisig_threshold_config_slot())
             .ok_or_else(|| {
                 MultisigError::AccountStorage("threshold config slot not found".to_string())
             })?;
@@ -86,7 +99,7 @@ impl MultisigAccount {
     /// Returns the number of signers from storage.
     pub fn num_signers(&self) -> Result<u32> {
         let slot_value = self
-            .get_item_by_name(OZ_MULTISIG_THRESHOLD_CONFIG)
+            .get_item_by_name(multisig_threshold_config_slot())
             .ok_or_else(|| {
                 MultisigError::AccountStorage("threshold config slot not found".to_string())
             })?;
@@ -94,9 +107,34 @@ impl MultisigAccount {
         Ok(slot_value[1].as_canonical_u64() as u32)
     }
 
+    /// Whether the account's code carries the auth procedure of the contract
+    /// version this SDK pins (`ProcedureName::AuthTx`). False means the account
+    /// was created from a different miden-standards release, so this SDK's
+    /// hardcoded procedure roots do not describe it.
+    pub fn is_pinned_contract_version(&self) -> bool {
+        self.account
+            .code()
+            .has_procedure(ProcedureName::AuthTx.root())
+    }
+
+    /// Rejects accounts built from a different contract version before any
+    /// procedure-root-keyed storage read. Without this, reads against such an
+    /// account silently miss its stored overrides (the map is keyed by *its*
+    /// roots, not this SDK's) and report the default threshold.
+    fn assert_pinned_contract_version(&self) -> Result<()> {
+        if self.is_pinned_contract_version() {
+            return Ok(());
+        }
+        Err(MultisigError::UnsupportedContractVersion {
+            account_id: self.account.id(),
+        })
+    }
+
     /// Returns the configured threshold override for a specific procedure, if present.
     pub fn procedure_threshold(&self, procedure: ProcedureName) -> Result<Option<u32>> {
-        let value = self.get_map_item_by_name(OZ_MULTISIG_PROCEDURE_THRESHOLDS, procedure.root());
+        self.assert_pinned_contract_version()?;
+        let value =
+            self.get_map_item_by_name(multisig_procedure_thresholds_slot(), procedure.root());
         let Some(value) = value else {
             return Ok(None);
         };
@@ -122,6 +160,25 @@ impl MultisigAccount {
             }
         }
         Ok(overrides)
+    }
+
+    /// Returns the per-procedure threshold overrides whose effective signing
+    /// ratio is diluted by growing the signer set to `new_num_signers`.
+    ///
+    /// Overrides are absolute signature counts, not ratios, and the on-chain
+    /// `update_signers_and_threshold` procedure does not re-scale them: growing
+    /// the approver set silently lowers every override's effective signing
+    /// ratio (a 2-of-2 override becomes 2-of-n). Callers creating a proposal
+    /// that grows the signer set should surface these overrides and suggest
+    /// raising them via `update_procedure_threshold` alongside the growth.
+    pub fn overrides_diluted_by_signer_growth(
+        &self,
+        new_num_signers: u32,
+    ) -> Result<Vec<(ProcedureName, u32)>> {
+        if new_num_signers <= self.num_signers()? {
+            return Ok(Vec::new());
+        }
+        self.procedure_threshold_overrides()
     }
 
     /// Returns the effective threshold for a procedure (override if present, else default).
@@ -154,7 +211,7 @@ impl MultisigAccount {
     /// Returns a vector of commitment Words. Returns empty vector if
     /// the slot is empty or has no entries.
     pub fn cosigner_commitments(&self) -> Vec<Word> {
-        self.extract_indexed_map_words(OZ_MULTISIG_SIGNER_PUBKEYS)
+        self.extract_indexed_map_words(multisig_approver_pubkeys_slot())
     }
 
     fn extract_indexed_map_words(&self, slot_name: &str) -> Vec<Word> {
@@ -166,7 +223,11 @@ impl MultisigAccount {
         let mut index = 0u32;
         loop {
             let key = Word::from([index, 0, 0, 0]);
-            match self.account.storage().get_map_item(&slot_name, key) {
+            match self
+                .account
+                .storage()
+                .get_map_item(&slot_name, StorageMapKey::new(key))
+            {
                 Ok(value) if value != Word::default() => {
                     commitments.push(value);
                     index += 1;
@@ -191,19 +252,10 @@ impl MultisigAccount {
         self.cosigner_commitments().contains(commitment)
     }
 
-    /// Returns whether GUARDIAN verification is enabled.
-    pub fn guardian_enabled(&self) -> Result<bool> {
-        let slot_value = self.get_item_by_name(OZ_GUARDIAN_SELECTOR).ok_or_else(|| {
-            MultisigError::AccountStorage("GUARDIAN selector slot not found".to_string())
-        })?;
-
-        Ok(slot_value[0].as_canonical_u64() == 1)
-    }
-
     /// Returns the GUARDIAN server commitment from GUARDIAN public key map slot.
     pub fn guardian_commitment(&self) -> Result<Word> {
         let key = Word::from([0u32, 0, 0, 0]);
-        self.get_map_item_by_name(OZ_GUARDIAN_PUBLIC_KEY, key)
+        self.get_map_item_by_name(guardian_public_key_slot(), key)
             .ok_or_else(|| {
                 MultisigError::AccountStorage("GUARDIAN public key slot not found".to_string())
             })
@@ -220,9 +272,13 @@ impl MultisigAccount {
             overrides.push((procedure, threshold));
         }
 
-        let slot_name = StorageSlotName::new(OZ_MULTISIG_PROCEDURE_THRESHOLDS).map_err(|e| {
-            MultisigError::AccountStorage(format!("invalid procedure threshold slot name: {}", e))
-        })?;
+        let slot_name =
+            StorageSlotName::new(multisig_procedure_thresholds_slot()).map_err(|e| {
+                MultisigError::AccountStorage(format!(
+                    "invalid procedure threshold slot name: {}",
+                    e
+                ))
+            })?;
         let entries = overrides.into_iter().map(|(procedure, threshold)| {
             (
                 StorageMapKey::new(procedure.root()),
@@ -238,7 +294,7 @@ impl MultisigAccount {
         let storage_slots = storage
             .into_slots()
             .into_iter()
-            .filter(|current| current.name().as_str() != OZ_MULTISIG_PROCEDURE_THRESHOLDS)
+            .filter(|current| current.name().as_str() != multisig_procedure_thresholds_slot())
             .chain([slot])
             .collect();
         let storage = AccountStorage::new(storage_slots).map_err(|e| {
@@ -270,6 +326,9 @@ mod tests {
                 (ProcedureName::SendAsset.root(), 1),
                 (ProcedureName::UpdateSigners.root(), 3),
                 (ProcedureName::UpdateGuardian.root(), 1),
+                // miden-standards rc.4 rejects an override above the threshold guarding
+                // set_procedure_threshold, since a smaller quorum could strip it.
+                (ProcedureName::UpdateProcedureThreshold.root(), 3),
             ]);
 
         let account = MultisigGuardianBuilder::new(config)
@@ -278,6 +337,38 @@ mod tests {
             .expect("account builds");
 
         MultisigAccount::new(account)
+    }
+
+    /// Parity with `validateMultisigConfig` in the TypeScript client: an override above the
+    /// threshold guarding `set_procedure_threshold` is rejected, because a smaller quorum could
+    /// lower it and then use the procedure. Both clients must refuse the same shapes, so a
+    /// TS-created account cannot present a spend lock that Rust would not build.
+    #[test]
+    fn rejects_override_above_the_setter_threshold() {
+        let signers = vec![word(1), word(2), word(3), word(4), word(5)];
+
+        let unenforceable = MultisigGuardianConfig::new(2, signers.clone(), word(99))
+            .with_proc_threshold_overrides(vec![(ProcedureName::SendAsset.root(), 4)]);
+        assert!(
+            MultisigGuardianBuilder::new(unenforceable)
+                .with_seed([7u8; 32])
+                .build()
+                .is_err(),
+            "a send_asset override of 4 under a default threshold of 2 must be rejected"
+        );
+
+        let enforceable = MultisigGuardianConfig::new(2, signers, word(99))
+            .with_proc_threshold_overrides(vec![
+                (ProcedureName::SendAsset.root(), 4),
+                (ProcedureName::UpdateProcedureThreshold.root(), 4),
+            ]);
+        assert!(
+            MultisigGuardianBuilder::new(enforceable)
+                .with_seed([7u8; 32])
+                .build()
+                .is_ok(),
+            "raising the setter override to 4 must make the same send_asset override valid"
+        );
     }
 
     fn build_account_with_signer_slots(oz_commitments: Vec<Word>) -> MultisigAccount {
@@ -300,13 +391,43 @@ mod tests {
         let storage_slots = storage
             .into_slots()
             .into_iter()
-            .filter(|slot| slot.name().as_str() != OZ_MULTISIG_SIGNER_PUBKEYS)
-            .chain([signer_slot(OZ_MULTISIG_SIGNER_PUBKEYS, oz_commitments)])
+            .filter(|slot| slot.name().as_str() != multisig_approver_pubkeys_slot())
+            .chain([signer_slot(
+                multisig_approver_pubkeys_slot(),
+                oz_commitments,
+            )])
             .collect();
         let storage = AccountStorage::new(storage_slots).expect("valid storage");
         let account = Account::new_unchecked(id, vault, storage, code, nonce, seed);
 
         MultisigAccount::new(account)
+    }
+
+    /// An account built from a different contract version (here: `NoAuth` +
+    /// `BasicWallet`, which lacks the pinned guarded-multisig auth procedure)
+    /// must fail root-keyed threshold reads loudly instead of silently
+    /// reporting the default threshold.
+    #[test]
+    fn procedure_threshold_rejects_foreign_contract_version() {
+        use miden_protocol::account::AccountBuilder;
+        use miden_standards::account::auth::NoAuth;
+        use miden_standards::account::wallets::BasicWallet;
+
+        let account = AccountBuilder::new([3u8; 32])
+            .with_component(NoAuth)
+            .with_component(BasicWallet)
+            .build_existing()
+            .expect("account builds");
+        let account = MultisigAccount::new(account);
+
+        assert!(!account.is_pinned_contract_version());
+        let err = account
+            .procedure_threshold(ProcedureName::SendAsset)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            MultisigError::UnsupportedContractVersion { .. }
+        ));
     }
 
     #[test]
@@ -325,6 +446,67 @@ mod tests {
                 .expect("threshold"),
             2
         );
+    }
+
+    #[test]
+    fn overrides_diluted_by_signer_growth_lists_overrides_only_on_growth() {
+        let account = build_test_account();
+        let num_signers = account.num_signers().expect("num signers");
+
+        let diluted = account
+            .overrides_diluted_by_signer_growth(num_signers + 1)
+            .expect("diluted overrides");
+        assert_eq!(
+            diluted,
+            account
+                .procedure_threshold_overrides()
+                .expect("configured overrides"),
+            "growth must report every configured override"
+        );
+
+        assert!(
+            account
+                .overrides_diluted_by_signer_growth(num_signers)
+                .expect("same size")
+                .is_empty(),
+            "unchanged signer count must report nothing"
+        );
+        assert!(
+            account
+                .overrides_diluted_by_signer_growth(num_signers - 1)
+                .expect("shrink")
+                .is_empty(),
+            "shrinking must report nothing"
+        );
+    }
+
+    #[test]
+    fn target_signer_count_grows_only_for_signer_set_changes() {
+        use crate::proposal::TransactionType;
+
+        let commitment = word(42);
+        assert_eq!(
+            TransactionType::add_cosigner(commitment).target_signer_count(3),
+            Some(4)
+        );
+        assert_eq!(
+            TransactionType::remove_cosigner(commitment).target_signer_count(3),
+            Some(2)
+        );
+        assert_eq!(
+            TransactionType::UpdateSigners {
+                new_threshold: 2,
+                signer_commitments: vec![word(1), word(2), word(3), word(4), word(5)],
+            }
+            .target_signer_count(3),
+            Some(5)
+        );
+        assert_eq!(
+            TransactionType::switch_guardian("https://g.example", commitment)
+                .target_signer_count(3),
+            None
+        );
+        assert_eq!(TransactionType::Custom.target_signer_count(3), None);
     }
 
     #[test]

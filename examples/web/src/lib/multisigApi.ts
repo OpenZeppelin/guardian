@@ -12,7 +12,6 @@ import {
   MultisigClient as MultisigClientClass,
   FalconSigner,
   EcdsaSigner,
-  ParaSigner,
   MidenWalletSigner,
   type WalletSigningContext,
   AccountInspector,
@@ -28,13 +27,6 @@ type ResolvedSigner = {
   signerInstance: Signer;
   walletSource: WalletSource;
 };
-
-interface ParaSignerOptions {
-  paraClient: { signMessage(params: { walletId: string; messageBase64: string }): Promise<unknown> };
-  walletId: string;
-  commitment: string;
-  publicKey: string;
-}
 
 interface MidenWalletSignerOptions {
   wallet: WalletSigningContext;
@@ -61,20 +53,6 @@ export function resolveLocalSigner(
     signatureScheme,
     signerInstance: new FalconSigner(signer.falcon.secretKey),
     walletSource: 'local',
-  };
-}
-
-export function resolveParaSigner({
-  paraClient,
-  walletId,
-  commitment,
-  publicKey,
-}: ParaSignerOptions): ResolvedSigner {
-  return {
-    commitment,
-    signatureScheme: 'ecdsa',
-    signerInstance: new ParaSigner(paraClient, walletId, commitment, publicKey),
-    walletSource: 'para',
   };
 }
 
@@ -178,11 +156,13 @@ export async function initMultisigClient(
   guardianEndpoint: string,
   midenRpcEndpoint: string,
   prover?: import('@openzeppelin/miden-multisig-client').ProverConfig,
+  rpc?: import('@openzeppelin/miden-multisig-client').RpcConfig,
 ): Promise<{ client: MultisigClient; guardianPubkey: string }> {
   const client = new MultisigClientClass(midenClient, {
     guardianEndpoint,
     midenRpcEndpoint,
     prover,
+    rpc,
   });
   const response = await client.guardianClient.getPubkey();
   const guardianPubkey = typeof response === 'string' ? response : response.commitment;
@@ -206,7 +186,6 @@ export async function createMultisigAccount(
     threshold,
     signerCommitments,
     guardianCommitment,
-    guardianEnabled: true,
     procedureThresholds,
     storageMode: 'private',
     signatureScheme,

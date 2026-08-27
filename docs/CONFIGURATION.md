@@ -175,7 +175,8 @@ source is set the server validates it at startup and fails fast on a
 missing/malformed/wrong-length key — it never silently falls back to plaintext.
 Encryption is fixed for a populated store: the server records a marker on the
 first encrypted write and refuses to mix plaintext and ciphertext, so enable it
-against an empty store (e.g. after the Miden 0.15 cutover). Switching an existing
+against an empty store (e.g. after the Miden 0.16 reset, see
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#data-resets)). Switching an existing
 store requires an explicit re-encryption migration (not yet provided).
 
 ### Hosted ECDSA signer backend
@@ -254,7 +255,7 @@ one-command Grafana dashboard stack.
 |---|---|---|
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` | _unset_ | AWS Secrets Manager secret name/ARN holding the operator allowlist JSON. Hot-reloaded on every challenge and authenticated `/dashboard/*` request. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | _unset_ | Local JSON path for the same payload. Local dev only. |
-| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process if unset | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. The prod Terraform profile injects a pre-created Secrets Manager value into every task. If unset outside that profile, the server **warns** and generates an ephemeral per-process key and still boots (in every stage); an ephemeral key only breaks dashboard pagination across replicas — nothing else, so it is not a startup guard. |
+| `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process if unset | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. The prod Terraform profile injects a pre-created Secrets Manager value into every task. If unset outside that profile, the server **warns** and generates an ephemeral per-process key and still boots (in every stage); an ephemeral key breaks pagination cursors across replicas and restarts — the dashboard feeds and the client `GET /delta/history` endpoint — nothing else, so it is not a startup guard. |
 
 `GET /dashboard/info.environment` is derived from `GUARDIAN_NETWORK_TYPE`
 (`testnet`, `devnet`, or `local`) rather than configured separately.

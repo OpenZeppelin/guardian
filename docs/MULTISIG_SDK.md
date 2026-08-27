@@ -27,14 +27,14 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.3
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "0.15.1"
-miden-client = "0.15.0"
+miden-multisig-client = "0.16.0"
+miden-client = "=0.16.0-rc.2"
 ```
 
 ### 5-Minute Example
@@ -66,7 +66,6 @@ const config = {
   threshold: 1,
   signerCommitments: [signer.commitment, cosigner1Commitment, cosigner2Commitment],
   guardianCommitment,
-  guardianEnabled: true,
 };
 const multisig = await client.create(config, signer);
 await multisig.registerOnGuardian();
@@ -344,6 +343,20 @@ GUARDIAN is a coordination server that:
 - **Ready**: Threshold met, can be executed
 - **Finalized**: Executed on-chain or discarded
 
+#### Chain-anchored execution
+
+Since Miden protocol 0.16 a signed transaction summary binds the reference
+block commitment, so a summary produced at one block cannot be reproduced by
+re-executing at a later one. Proposals therefore carry a **chain anchor**
+(`chain_anchor` in the proposal metadata): a serialized Miden `ChainAnchor`
+capturing the reference block the proposer executed at. Cosigners verify and
+the executor executes against that anchor, so everyone reproduces the exact
+summary the signatures authorize regardless of their own sync height. The
+anchor is validated on receipt — its internal consistency at deserialization,
+and its block commitment against the one signed into the summary — before
+anything executes against it. A proposal without an anchor cannot be verified
+or executed.
+
 ### Custom Proposal Types
 
 Guardian accepts any non-empty `proposal_type`, not just the first-party
@@ -380,14 +393,14 @@ Rust and TypeScript**:
   // TypeScript: rebuild via the integration's builder (the wasm request is immutable)
   const advice = await multisig.prepareCustomExecution(proposalId, transactionRequestBytes);
   const finalReq = myBuilder.extendAdviceMap(advice).build();
-  await multisig.submitTransaction(finalReq);
+  await multisig.submitTransaction(proposalId, finalReq);
   ```
   ```rust
   // Rust: inject into the request's advice map, submit via the SDK helper
   let advice = client.prepare_custom_execution(&proposal_id, &transaction_request_bytes).await?;
   let mut req = deserialize_transaction_request(&transaction_request_bytes)?;
   req.advice_map_mut().extend(advice);
-  client.submit_transaction(req).await?;
+  client.submit_transaction(&proposal_id, req).await?;
   ```
 
 The SDK owns the security-critical pieces (binding check, signature + ack
@@ -477,7 +490,6 @@ const config: MultisigConfig = {
     '0x5678...efgh',                        // Cosigner 2
   ],
   guardianCommitment,                            // GUARDIAN server commitment
-  guardianEnabled: true,
 };
 
 // Create the account
@@ -536,6 +548,41 @@ bundled `FalconSigner`, `EcdsaSigner`, Miden Wallet signer, and Para signer
 support it. Multiple matches are valid: the same key commitment may authorize
 more than one account, and the method returns all matches instead of choosing
 one implicitly.
+
+### Delta History
+
+Guardian retains the account's canonical delta history, allowing a wallet to
+render its history after recovery. `deltaHistory()` returns one
+page at a time, newest-first by nonce, with server-decoded input and output
+note summaries: note ID, P2ID/P2IDE/swap/mint/burn classification, note
+visibility (`noteType`), assets, and sender or recipient when exposed by the
+note script. Every entry carries `status: 'canonical'` today; the set widens
+if the feed gains a status filter.
+
+```typescript
+let cursor: string | undefined;
+do {
+  const page = await multisig.deltaHistory({ limit: 50, cursor });
+  for (const entry of page.entries) {
+    console.log(`nonce ${entry.nonce} at ${entry.timestamp}`);
+    for (const note of entry.outputNotes) {
+      console.log(`  sent ${note.tag} note ${note.noteId}`);
+    }
+    if (entry.decodeWarnings.length > 0) {
+      // Payload predates the current summary format; sections are empty.
+    }
+  }
+  cursor = page.nextCursor;
+} while (cursor !== undefined);
+```
+
+`limit` accepts 1–500 (default 50). Only canonical (confirmed)
+transactions appear — pending proposals live on `syncProposals()`. The
+feed is served even while the account is paused. Guardian only ever
+sees transactions pushed through it, so history of transactions the
+account executed elsewhere is not included. Output notes whose full
+details are not in the stored summary (e.g. private notes carried as
+partial notes) appear with `tag: 'custom'` and no recipient.
 
 ### Proposal Operations
 
@@ -640,6 +687,33 @@ const proposal = await multisig.createAddSignerProposal(
 );
 ```
 
+> **Override dilution on signer growth**: per-procedure threshold overrides
+> are absolute signature counts, and the on-chain update never re-scales
+> them — growing the signer set silently lowers every override's effective
+> signing ratio (a 2-of-2 override becomes 2-of-n). Both SDKs surface this:
+> the TypeScript SDK logs a `console.warn` per affected override and exposes
+> `multisig.overridesDilutedBySignerGrowth(newNumSigners)`; the Rust SDK
+> emits a `tracing::warn!` in `propose_transaction` and exposes
+> `MultisigAccount::overrides_diluted_by_signer_growth(new_num_signers)`.
+> To keep the intended security level, raise the affected overrides via an
+> update-procedure-threshold proposal alongside the growth.
+
+> **Overrides apply to guardian rotation too**: `update_guardian` is a valid
+> override target in both SDKs. Guardian rotation is a note-less operation, so
+> the upstream contract skips the guardian signature check when
+> `update_guardian_public_key` is the only non-auth procedure called — the
+> multisig quorum alone authorizes it. That quorum is the override on
+> `update_guardian`'s root when one is set, so an override of 1 lets a single
+> signer replace the guardian with no guardian consent. Nothing in the builder
+> or the contract restricts overrides on this root; treat an override on
+> `update_guardian` as a deliberate reduction of the account's recovery
+> threshold. Installing such an override is gated — at creation the account's
+> author chooses it, and at runtime `set_procedure_threshold` requires the
+> default quorum plus a guardian signature — but the gate applies only to
+> installing it. Once stored, the reduced quorum governs every future rotation
+> on its own, with no further guardian involvement, until another
+> update-procedure-threshold proposal raises it back.
+
 #### Remove Signer
 
 ```typescript
@@ -729,6 +803,7 @@ await multisig.executeProposal(signedProposal.id);
 | `syncProposals()` | Sync proposals from GUARDIAN |
 | `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
+| `deltaHistory({ limit?, cursor? }?)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `listProposals()` | Get cached proposals |
 | `createP2idProposal(recipient, faucet, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`; presence of `reclaimHeight`/`timelockHeight` creates a P2IDE note, issue #366) |
 | `createConsumeNotesProposal(noteIds, { nonce }?)` | Create note consumption proposal |
@@ -749,6 +824,8 @@ await multisig.executeProposal(signedProposal.id);
 | `importProposal(json)` | Import offline proposal |
 | `signProposalOffline(id)` | Sign imported proposal offline |
 | `getConsumableNotes()` | Get notes that can be consumed |
+| `getSignerPublicKeyCommitments()` | Read the current signer public-key commitments from account storage, ordered by signer index (strict; throws on partial reads) |
+| `getGuardianPublicKeyCommitment()` | Read the current guardian commitment from account storage (strict; throws when the entry is missing — the guarded-multisig always includes a guardian) |
 
 #### FalconSigner
 
@@ -766,14 +843,30 @@ await multisig.executeProposal(signedProposal.id);
 |--------|-------------|
 | `fromBase64(data)` | Inspect base64-encoded account |
 | `fromAccount(account)` | Inspect Account object |
+| `getSignerPublicKeyCommitments(account)` | Read the signer public-key commitments ordered by signer index (strict; throws on a foreign contract version or any absent entry) |
+| `getGuardianPublicKeyCommitment(account)` | Read the guardian commitment (strict; throws on a foreign contract version or a missing entry) |
 
-Returns `DetectedMultisigConfig`:
+`fromBase64` / `fromAccount` return `DetectedMultisigConfig`:
 - `threshold`: number
 - `numSigners`: number
 - `signerCommitments`: string[]
-- `guardianEnabled`: boolean
-- `guardianCommitment`: string
+- `guardianCommitment`: string | null
 - `vaultBalances`: { faucetId, amount }[]
+
+> **Reading an account's keys:** since the account uses the upstream
+> `AuthGuardedMultisig` component, the Miden SDK's
+> `Account.getPublicKeyCommitments()` returns the approver commitments
+> natively. The accessors above are the strict, layout-insulated
+> alternative (issue #306): they validate the complete set against the
+> configured signer count and throw instead of silently omitting
+> unreadable entries, and they shield consumers from storage-layout
+> changes across contract versions (both are gated on the pinned contract
+> version — see [Contract version pinning](#contract-version-pinning)).
+> Commitments are ordered by signer index as currently stored (indices
+> re-pack when signers are removed); hot/cold roles are a consumer-side
+> convention. The `Account` must come from the same copy of
+> `@miden-sdk/miden-sdk` that this package links — a separately bundled
+> SDK copy is rejected by the SDK's instance checks.
 
 ---
 
@@ -833,7 +926,7 @@ client.sync().await?;
 // Inspect account
 println!("Threshold: {}", account.threshold()?);
 println!("Nonce: {}", account.nonce());
-println!("GUARDIAN enabled: {}", account.guardian_enabled()?);
+println!("GUARDIAN commitment: {:?}", account.guardian_commitment()?);
 ```
 
 ### Recovering Accounts By Key
@@ -863,6 +956,41 @@ for entry in recovered {
 An empty list means the key is valid but this Guardian has no account metadata
 that authorizes its commitment. Authentication failures, malformed lookup
 responses, and per-account `get_state` failures are returned as errors.
+
+### Delta History
+
+Guardian retains the account's canonical delta history, allowing a wallet to
+render its history after recovery. `delta_history()` returns one
+`HistoryPage` at a time, newest-first by nonce, with server-decoded input and
+output note summaries (typed tags, visibility, assets, counterparties). Every
+entry carries `HistoryEntryStatus::Canonical` today; the set widens if the
+feed gains a status filter.
+
+```rust
+let mut cursor: Option<String> = None;
+loop {
+    let page = client.delta_history(Some(50), cursor.take()).await?;
+    for entry in &page.entries {
+        println!("nonce {} at {}", entry.nonce, entry.timestamp);
+        for note in &entry.output_notes {
+            println!("  sent {} note {}", note.tag.as_str(), note.note_id);
+        }
+    }
+    match page.next_cursor {
+        Some(next) => cursor = Some(next),
+        None => break,
+    }
+}
+```
+
+`limit` accepts 1–500 (server default 50 when `None`). Only canonical
+(confirmed) transactions appear — pending proposals live on
+`list_proposals()`. The feed is served even while the account is
+paused. Guardian only ever sees transactions pushed through it, so
+history of transactions the account executed elsewhere is not included.
+Output notes whose full details are not in the stored summary (e.g.
+private notes carried as partial notes) appear with tag `custom` and no
+recipient.
 
 ### Transaction Types
 
@@ -1051,6 +1179,7 @@ full note, so a post-commit sync is enough.
 | `execute_proposal(id)` | Execute ready proposal |
 | `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
+| `delta_history(limit, cursor)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `create_proposal_offline(tx)` | Create offline proposal |
 | `sign_imported_proposal(exported)` | Sign offline proposal |
 | `execute_imported_proposal(exported)` | Execute offline proposal |
@@ -1076,7 +1205,6 @@ full note, so a post-commit sync is enough.
 | `cosigner_commitments()` | List of commitments (Word) |
 | `cosigner_commitments_hex()` | List as hex strings |
 | `is_cosigner(commitment)` | Check if commitment is signer |
-| `guardian_enabled()` | GUARDIAN integration enabled |
 | `guardian_commitment()` | GUARDIAN server commitment |
 
 #### TransactionType
@@ -1112,7 +1240,6 @@ const config = {
   threshold: 2,
   signerCommitments: [ceoCommitment, cfoCommitment, cooCommitment],
   guardianCommitment,
-  guardianEnabled: true,
 };
 
 const treasury = await client.create(config, ceoSigner);
@@ -1251,16 +1378,78 @@ console.log('Notes consumed, funds now in vault');
 
 ## Version Compatibility
 
-| SDK Version | miden-client | miden-sdk (npm) | Notes |
-|-------------|--------------|-----------------|-------|
-| 0.15.x | 0.15.0 | ^0.15.0 | Miden 0.15 protocol; v1 account IDs, bech32m addresses |
-| 0.14.x | 0.14.x | ^0.14.0 | Devnet default, MidenClient public API |
-| 0.13.x | 0.13.0 | ^0.13.0 | ECDSA support, wallet signers |
-| 0.12.x | 0.12.5 | ^0.12.5 | Initial release |
+Which Miden protocol line each Guardian release targets, the exact `miden-client`
+and `@miden-sdk/miden-sdk` pins, what broke between lines, and which upgrades
+reset stored data: see
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md).
 
-### Breaking Changes
+Guardian's version and Miden's are not aligned (Guardian 0.16.x runs on Miden
+0.15; Miden 0.16 lands in Guardian 0.17.x), so read that matrix rather than
+matching the numbers. Per-release breaking changes are also in the
+[GitHub release notes](https://github.com/OpenZeppelin/guardian/releases).
 
-Check the [GitHub release notes](https://github.com/OpenZeppelin/guardian/releases) for breaking changes between versions.
+### Contract version pinning
+
+Accounts are built from the audited upstream `AuthGuardedMultisig` component, pinned
+exactly in both SDKs so a TypeScript-built account is byte-identical to a Rust-built
+one:
+
+- **Rust**: the `miden-standards` pin in the workspace `Cargo.toml`
+- **TypeScript**: the `@miden-sdk/miden-sdk` pin, whose bundled WASM embeds the
+  matching upstream `miden-standards` guarded-multisig component
+
+The exact versions for each Guardian release are in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix); they are not
+repeated here so there is one place to update.
+
+The pins are deliberate and must move together: nothing at build time verifies the
+npm SDK's embedded miden-standards matches the Rust pin — the CI parity gates
+(`procedure_roots_match_upstream_component`, the vitest `procedure-roots` test, and
+the Playwright determinism spec) are what catch drift.
+
+**Deployed accounts are immutable.** An account's code — and therefore its procedure
+roots — is fixed at creation. The SDK's hardcoded `PROCEDURE_ROOTS` /
+`ProcedureName::root()` values, and the transaction scripts it compiles against the
+bundled library, all assume the account was built from the *currently pinned*
+contract version. Consequences of bumping the pin to a miden-standards release whose
+MASM changed:
+
+- Management transactions built by the new SDK **fail against old accounts** (the
+  script calls a procedure root the old account's code does not export).
+- Per-procedure threshold reads and `set_procedure_threshold` writes key the
+  account's `procedure_thresholds` storage map by the *new* roots — against an old
+  account they silently miss the stored overrides or store overrides the account
+  never consults.
+
+**Release policy until a contract-version registry lands**: treat any
+miden-standards / @miden-sdk pin bump that changes procedure roots as a breaking
+release. Bump the minor version, regenerate the root constants (both SDKs), and
+state explicitly in the release notes that the new SDK operates only accounts
+created with the new contract version. The planned fix is a version registry keyed
+by the account's auth-procedure root, letting one SDK operate accounts from every
+supported contract version.
+
+#### SDK ↔ contract version support
+
+An SDK release operates only accounts created with its pinned contract version;
+the mapping is in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix).
+
+Compatibility there is about the on-chain account, not Guardian's stored state.
+Adopting a new Miden line has twice required an irreversible server-side reset, so
+even an account whose contract version still matches must be re-registered
+afterwards. See
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#data-resets).
+
+Both SDKs **enforce** this at runtime rather than trusting the table: before any
+procedure-root-keyed storage read, the account's code is checked for the pinned
+contract version's auth procedure (`auth_tx_guarded_multisig`). A mismatch fails
+loudly — Rust `MultisigError::UnsupportedContractVersion` (from
+`MultisigAccount::procedure_threshold` and everything built on it), TS an
+`unsupported contract version` error from `AccountInspector.fromAccount` — instead
+of silently reporting wrong thresholds. `MultisigAccount::is_pinned_contract_version()`
+exposes the check directly. When a new contract version is adopted, add a row here
+and regenerate the root constants in the same change.
 
 ---
 

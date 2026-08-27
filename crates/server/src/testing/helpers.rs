@@ -19,10 +19,12 @@ use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
 use guardian_shared::{FromJson, ToJson};
-use miden_protocol::account::{AccountDelta, AccountId, AccountStorageDelta, AccountVaultDelta};
+use miden_protocol::account::{AccountDelta, AccountId, AccountVaultDelta};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+use miden_protocol::transaction::{
+    InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+};
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word, ZERO};
 use prost::Message;
@@ -339,8 +341,9 @@ pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {
 
     let delta = AccountDelta::new(
         account_id,
-        AccountStorageDelta::default(),
+        miden_protocol::account::AccountStoragePatch::default(),
         AccountVaultDelta::default(),
+        None,
         Felt::ZERO,
     )
     .expect("Valid empty delta");
@@ -350,7 +353,9 @@ pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {
         delta,
         InputNotes::new(Vec::new()).unwrap(),
         RawOutputNotes::new(Vec::new()).unwrap(),
-        Word::from([ZERO; 4]), // Salt
+        Word::from([ZERO; 4]),
+        0,
+        TransactionSummaryUserParams::new([ZERO; 7]),
     );
 
     tx_summary.to_json()

@@ -1,4 +1,4 @@
-import type { Account, TransactionRequest, Word } from '@miden-sdk/miden-sdk';
+import type { TransactionRequest, Word } from '@miden-sdk/miden-sdk';
 import {
   AccountId,
   Felt,
@@ -74,32 +74,6 @@ export function deriveP2idSerialNumber(salt: Word): Word {
   ]));
 }
 
-/**
- * Builds the fungible asset to transfer, sourcing the callback flag from the held asset.
- *
- * In Miden 0.15 the callback flag is part of the vault key, so rebuilding the asset from
- * `faucet`/`amount` with the default flag would not match the held asset and the transfer
- * would abort. When the faucet is absent the default flag is used, surfacing the
- * missing-asset error during execution.
- */
-function resolveFungibleAssetFromVault(
-  account: Account,
-  faucet: AccountId,
-  amount: bigint,
-): FungibleAsset {
-  const faucetHex = faucet.toString();
-  const assetFromVault = account
-    .vault()
-    .fungibleAssets()
-    .find(asset => asset.faucetId().toString() === faucetHex);
-
-  if (!assetFromVault) {
-    return new FungibleAsset(faucet, amount);
-  }
-
-  return FungibleAsset.fromVaultKey(assetFromVault.vaultKey(), amount);
-}
-
 function buildP2idNote(
   sender: AccountId,
   recipient: AccountId,
@@ -145,15 +119,14 @@ function buildP2idNote(
 /**
  * Rebuilds the P2ID note a proposal creates, from its metadata fields. The
  * note is deterministic in the salt, so the resulting ID matches the note the
- * proposal produces on execution (issue #356). The asset is derived from the
- * account's current vault state, so call this before the transfer executes.
+ * proposal produces on execution. Since Miden 0.16, the asset
+ * callback flag is encoded in the faucet account ID.
  */
 export function buildP2idNoteFromMetadata(
   senderId: string,
   recipientId: string,
   faucetId: string,
   amount: bigint,
-  account: Account,
   noteType: NoteType,
   saltHex: string,
   heights: P2ideHeightOptions = {},
@@ -162,7 +135,7 @@ export function buildP2idNoteFromMetadata(
   const recipient = AccountId.fromHex(recipientId);
   const faucet = AccountId.fromHex(faucetId);
 
-  const asset = resolveFungibleAssetFromVault(account, faucet, amount);
+  const asset = new FungibleAsset(faucet, amount);
   const noteAssets = new NoteAssets([asset]);
 
   return buildP2idNote(sender, recipient, noteAssets, noteType, saltHex, heights);
@@ -173,7 +146,6 @@ export function buildP2idTransactionRequest(
   recipientId: string,
   faucetId: string,
   amount: bigint,
-  account: Account,
   options: P2idTransactionOptions = {},
 ): { request: TransactionRequest; salt: Word } {
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
@@ -183,7 +155,6 @@ export function buildP2idTransactionRequest(
     recipientId,
     faucetId,
     amount,
-    account,
     options.noteType ?? NoteType.Public,
     authSaltHex,
     { reclaimHeight: options.reclaimHeight, timelockHeight: options.timelockHeight },

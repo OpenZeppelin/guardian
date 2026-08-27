@@ -21,6 +21,7 @@ mod dashboard_info;
 mod dashboard_pagination;
 mod delta_commit;
 mod get_delta;
+mod get_delta_history;
 mod get_delta_proposal;
 mod get_delta_proposals;
 mod get_delta_since;
@@ -65,8 +66,13 @@ pub use dashboard_info::{
     AGG_DELTA_STATUS_COUNTS, AGG_IN_FLIGHT_PROPOSAL_COUNT, AGG_LATEST_ACTIVITY,
     DashboardDeltaStatusCounts, DashboardInfoResponse, DashboardServiceStatus, get_dashboard_info,
 };
-pub use dashboard_pagination::{DEFAULT_LIMIT, MAX_LIMIT, PagedResult, parse_cursor, parse_limit};
+pub use dashboard_pagination::{
+    DEFAULT_LIMIT, MAX_LIMIT, PagedResult, parse_cursor, parse_limit, validate_limit,
+};
 pub use get_delta::{GetDeltaParams, GetDeltaResult, get_delta};
+pub use get_delta_history::{
+    GetDeltaHistoryParams, HistoryEntry, HistoryEntryStatus, get_delta_history,
+};
 pub use get_delta_proposal::{GetDeltaProposalParams, GetDeltaProposalResult, get_delta_proposal};
 pub use get_delta_proposals::{
     GetDeltaProposalsParams, GetDeltaProposalsResult, get_delta_proposals,

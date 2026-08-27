@@ -3,9 +3,9 @@ use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
-    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams,
-    GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams, LookupAccountParams,
-    PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
+    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaHistoryParams, GetDeltaParams,
+    GetDeltaProposalParams, GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams,
+    LookupAccountParams, PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -51,6 +51,23 @@ pub struct DeltaQuery {
 #[into_params(parameter_in = Query)]
 pub struct StateQuery {
     pub account_id: String,
+}
+
+/// Query parameters for the paginated history feed (issue #413).
+/// `limit` and `cursor` are kept as raw strings so the signed request
+/// payload (canonical JSON of this struct, omitted keys skipped)
+/// byte-matches what SDKs sign, and so limit parsing shares the
+/// dashboard rules.
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct HistoryQuery {
+    pub account_id: String,
+    /// Page size in `[1, 500]`; defaults to 50 when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<String>,
+    /// Opaque `next_cursor` from a previous page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
@@ -270,6 +287,48 @@ pub async fn get_delta_since(
 
     let response = services::get_delta_since(&state, params).await?;
     Ok(Json(response.merged_delta))
+}
+
+/// Paginated canonical delta history for an account (issue
+/// #413), newest-first by nonce, with decoded input/output note
+/// summaries. Read-only: served while the account is paused.
+#[utoipa::path(
+    get,
+    path = "/delta/history",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(HistoryQuery),
+    responses(
+        (status = 200, description = "One page of canonical history", body = crate::services::PagedResult<crate::services::HistoryEntry>),
+        (status = 400, description = "Invalid limit or cursor, or account on an unsupported network (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_delta_history(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<HistoryQuery>,
+) -> Result<Json<crate::services::PagedResult<crate::services::HistoryEntry>>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+
+    let limit = services::parse_limit(query.limit.as_deref())?;
+    let cursor = services::parse_cursor(
+        query.cursor.as_deref(),
+        state.dashboard.cursor_secret(),
+        crate::dashboard::cursor::CursorKind::AccountDeltaHistory,
+    )?;
+
+    let params = GetDeltaHistoryParams {
+        account_id: query.account_id,
+        limit,
+        cursor,
+        credentials: request_payload.apply_to(credentials),
+    };
+
+    let response = services::get_delta_history(&state, params).await?;
+    Ok(Json(response))
 }
 
 /// Fetch the latest canonical state object for an account.

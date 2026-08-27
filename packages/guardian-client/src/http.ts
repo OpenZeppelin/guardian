@@ -11,6 +11,8 @@ import type {
   DeltaProposalRequest,
   DeltaProposalResponse,
   ExecutionDelta,
+  HistoryOptions,
+  HistoryPage,
   LookupResponse,
   PubkeyResponse,
   PushDeltaResponse,
@@ -26,6 +28,7 @@ import type {
   ServerAbandonCandidateResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
+  ServerHistoryPage,
   ServerLookupResponse,
   ServerProposalsResponse,
   ServerPubkeyResponse,
@@ -37,6 +40,7 @@ import type {
 import {
   fromServerConfigureResponse,
   fromServerDeltaObject,
+  fromServerHistoryPage,
   fromServerLookupResponse,
   fromServerStateObject,
   toServerConfigureRequest,
@@ -450,6 +454,33 @@ export class GuardianHttpClient {
     }, accountId, requestPayload);
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
+  }
+
+  /**
+   * Fetch one page of the account's canonical delta history
+   * (issue #413), newest-first by nonce, with decoded input/output
+   * note summaries. Pass `options.cursor` from a previous page's
+   * `nextCursor` to resume; an absent `nextCursor` on the result means
+   * the feed is exhausted. Read-only: served while the account is
+   * paused. Only transactions pushed through Guardian appear.
+   */
+  async getDeltaHistory(accountId: string, options: HistoryOptions = {}): Promise<HistoryPage> {
+    // Signed payload and query string must carry the same values: the
+    // server signs the canonical JSON of its query struct, where limit
+    // stays a string and omitted parameters are omitted keys.
+    const requestPayload: Record<string, string> = { account_id: accountId };
+    if (options.limit !== undefined) {
+      requestPayload.limit = options.limit.toString();
+    }
+    if (options.cursor !== undefined) {
+      requestPayload.cursor = options.cursor;
+    }
+    const params = new URLSearchParams(requestPayload);
+    const response = await this.fetchAuthenticated(`/delta/history?${params}`, {
+      method: 'GET',
+    }, accountId, requestPayload);
+    const server = (await response.json()) as ServerHistoryPage;
+    return fromServerHistoryPage(server);
   }
 
   private async fetch(path: string, init: RequestInit): Promise<Response> {
