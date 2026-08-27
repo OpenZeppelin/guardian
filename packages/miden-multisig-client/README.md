@@ -265,6 +265,37 @@ service's retention. Senders may deliver private notes out-of-band without
 using the transport, and relayed blobs are pruned after the retention
 window.
 
+### Recover Notes From Pending Proposals
+
+After key-based recovery the local Miden store starts empty. v2
+`consume_notes` proposals embed the serialized notes they consume, and
+`multisig.importNotesFromProposals()` turns those embedded bytes back into
+store records: it fetches each note's on-chain inclusion proof and imports
+the note individually, so it works for private notes too. The method reuses
+the client's Miden RPC endpoint and retry configuration, and syncs pending
+proposals from GUARDIAN when none are passed.
+
+```typescript
+const outcomes = await multisig.importNotesFromProposals();
+await multisig.syncState(); // verifies the imported notes
+```
+
+(A standalone `importNotesFromProposals(midenClient, proposals, {
+midenRpcEndpoint, rpc? })` export backs the method for callers holding a raw
+WASM client or proposals from another source.)
+
+Each unique embedded note gets its own `NoteImportOutcome` (`imported`,
+`already-present`, `already-consumed`, `not-committed`, `invalid`, or
+`failed`); duplicates across proposals fold into one outcome, a malformed or
+failing note never blocks the others, and the helper never throws for
+per-note problems. Notes not yet on chain are recorded as expected (their
+tag is tracked so a later sync picks them up) and reported retryable.
+
+Proposals are opportunistic recovery material, not a backup: v1 proposals
+carry no note bytes, proposals disappear once canonicalized, and embedded
+note bytes are visible to the Guardian operator (existing v2 behavior, not a
+new exposure).
+
 ### Fetch Account State
 
 ```typescript

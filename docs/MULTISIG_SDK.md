@@ -627,6 +627,47 @@ transport, and relayed blobs are pruned after the retention window. Notes
 outside both are recoverable only from their sender (see the note
 export/import helpers).
 
+### Recovering Notes From Pending Proposals
+
+After key-based recovery the local Miden store starts empty, so notes the
+account was in the middle of consuming are gone. v2 `consume_notes` proposals
+embed the serialized notes they consume (issue #229), and
+`multisig.importNotesFromProposals()` turns those embedded bytes back into
+store records (issue #415): it fetches each note's on-chain inclusion proof
+and imports the note individually, so it works for private notes too — the
+node never needs to hold the note body. The method reuses the client's Miden
+RPC endpoint and retry configuration, and syncs pending proposals from
+GUARDIAN when none are passed.
+
+```typescript
+const multisig = await client.load(accountId, signer);
+
+const outcomes = await multisig.importNotesFromProposals();
+for (const outcome of outcomes) {
+  console.log(outcome.identifier, outcome.status, outcome.reason ?? '');
+}
+
+await multisig.syncState(); // verifies the imported notes
+```
+
+A standalone `importNotesFromProposals(midenClient, proposals, {
+midenRpcEndpoint, rpc? })` export backs the method for callers holding a raw
+WASM client or proposals from another source.
+
+Each unique embedded note gets its own `NoteImportOutcome` with a `status` of
+`imported`, `already-present`, `already-consumed`, `not-committed`, `invalid`,
+or `failed` — duplicates across proposals fold into one outcome, and a
+malformed or failing note never blocks the others (the helper never throws
+for per-note problems). A `not-committed` note (not yet on chain) is recorded
+as expected with its tag tracked so a later sync picks it up;
+`retryable: true` marks outcomes worth retrying (transient RPC failures
+included).
+
+Proposals are opportunistic recovery material, not a backup: v1 proposals
+carry no note bytes, proposals disappear once canonicalized, and the embedded
+bytes are visible to the Guardian operator (existing v2 behavior, not a new
+exposure). Only notes still mid-consumption are recoverable this way.
+
 ### Proposal Operations
 
 Every `create*Proposal` method takes a single trailing options object (issue
@@ -839,6 +880,7 @@ Standalone functions:
 | Function | Description |
 |----------|-------------|
 | `drainPrivateNoteBacklog(midenClient)` | Rescan the full private-note transport backlog for tracked tags after recovery; returns a `TransportRecoveryReport` (`completed` / `unavailable` / `failed`) instead of throwing on transport problems |
+| `importNotesFromProposals(midenClient, proposals, { midenRpcEndpoint, rpc? })` | Import notes embedded in v2 consume-notes proposals into the local store; returns per-note `NoteImportOutcome`s (issue #415) |
 
 #### Multisig
 
@@ -861,6 +903,7 @@ Standalone functions:
 | `exportNoteToFile(noteId, filename?)` | Browser-only: download the note file |
 | `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
+| `importNotesFromProposals(proposals?)` | Import notes embedded in pending v2 consume-notes proposals, reusing the client's RPC settings; syncs proposals when none are passed (issue #415) |
 | `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
@@ -1088,6 +1131,39 @@ transport, and relayed blobs are pruned after the retention window. Notes
 outside both are recoverable only from their sender (see
 `import_note_from_file`).
 
+### Recovering Notes From Pending Proposals
+
+After key-based recovery the local Miden store starts empty, so notes the
+account was in the middle of consuming are gone. v2 `consume_notes` proposals
+embed the serialized notes they consume (issue #229), and
+`import_notes_from_proposals` turns those embedded bytes back into store
+records (issue #415): it fetches each note's on-chain inclusion proof and
+imports the note individually, so it works for private notes too — the node
+never needs to hold the note body.
+
+```rust
+let proposals = client.list_proposals().await?;
+let outcomes = client.import_notes_from_proposals(&proposals).await;
+for outcome in &outcomes {
+    println!("{}: {} {:?}", outcome.identifier, outcome.status, outcome.reason);
+}
+client.sync().await?; // verifies the imported notes
+```
+
+Each unique embedded note gets its own `NoteImportOutcome` with a
+`NoteImportStatus` of `Imported`, `AlreadyPresent`, `AlreadyConsumed`,
+`NotCommitted`, `Invalid`, or `Failed` — duplicates across proposals fold
+into one outcome, and a malformed or failing note never blocks the others,
+which is why the method returns a plain `Vec` instead of `Result`. A
+`NotCommitted` note (not yet on chain) is recorded in `Expected` state with
+its tag tracked so a later sync picks it up; `retryable: true` marks
+outcomes worth retrying (transient RPC failures included).
+
+Proposals are opportunistic recovery material, not a backup: v1 proposals
+carry no note bytes, proposals disappear once canonicalized, and the embedded
+bytes are visible to the Guardian operator (existing v2 behavior, not a new
+exposure). Only notes still mid-consumption are recoverable this way.
+
 ### Transaction Types
 
 ```rust
@@ -1289,6 +1365,7 @@ full note, so a post-commit sync is enough.
 | `export_note_to_bytes(note_id)` | Export a created note as note-file bytes |
 | `import_note_from_file(path)` | Import a note file received out-of-band |
 | `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
+| `import_notes_from_proposals(&proposals)` | Import notes embedded in v2 consume-notes proposals; returns per-note `NoteImportOutcome`s (issue #415) |
 
 #### MultisigAccount
 

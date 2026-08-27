@@ -9,6 +9,7 @@
 //! - `notes` - Note filtering and listing
 //! - `recovery` - Recovery primitives (transport backlog drain)
 //! - `io` - Export/import functionality
+//! - `proposal_import` - Recovery primitive: proposal-embedded note import
 //! - `helpers` - Internal GUARDIAN client helpers
 
 mod account;
@@ -17,12 +18,14 @@ mod helpers;
 mod io;
 mod notes;
 mod offline;
+mod proposal_import;
 mod proposals;
 mod recovery;
 pub use delta_history::{
     HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
 };
+pub use proposal_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
 pub use proposals::{AbandonRequestState, AbandonStatus};
 pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
 
