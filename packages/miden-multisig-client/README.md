@@ -201,38 +201,6 @@ own SDK copy (common in wallets) will get a descriptive error from the SDK's
 instance checks; construct the account with this package's SDK instance
 instead.
 
-### Recover An Account By Key
-
-When the wallet only holds a signing key from the account's authorization
-set, it does not yet know the account ID. `recoverByKey` queries Guardian's
-`/state/lookup` endpoint with proof-of-possession of the key, fetches state
-for each matching account, and returns `(accountId, state)` pairs.
-
-```typescript
-const recovered = await client.recoverByKey(signer);
-
-if (recovered.length === 0) {
-  // No account on this Guardian operator authorizes the key.
-} else {
-  for (const { accountId, state } of recovered) {
-    const multisig = await client.load(accountId, signer);
-    // ...
-  }
-}
-```
-
-The `Signer` passed to `recoverByKey` MUST implement `signLookupMessage`
-(the bundled `FalconSigner` and `EcdsaSigner` both do). The lookup endpoint
-authenticates by proof-of-possession of the queried commitment — same key
-that already authenticates per-account requests, so revealing the account ID
-does not grant any new capability. See the design doc for the security
-analysis.
-
-Multiple matches are returned uniformly: a key may legitimately authorize
-several accounts, and the helper surfaces all of them rather than silently
-picking one. The returned list is empty (not an error) when no account
-authorizes the queried commitment.
-
 ### Fetch Account State
 
 ```typescript
@@ -460,6 +428,99 @@ four. `summarySalt` reads that convention, so prefer it over indexing
 > only difference is advice injection: Rust mutates the request's advice map in
 > place (`request.advice_map_mut().extend(advice)`), while the immutable browser
 > `TransactionRequest` is rebuilt from the recipe with the advice.
+
+### Recover An Account By Key
+
+When the wallet only holds a signing key from the account's authorization
+set, it does not yet know the account ID. `recoverByKey` queries Guardian's
+`/state/lookup` endpoint with proof-of-possession of the key, fetches state
+for each matching account, and returns `(accountId, state)` pairs.
+
+```typescript
+const recovered = await client.recoverByKey(signer);
+
+if (recovered.length === 0) {
+  // No account on this Guardian operator authorizes the key.
+} else {
+  for (const { accountId, state } of recovered) {
+    const multisig = await client.load(accountId, signer);
+    // ...
+  }
+}
+```
+
+The `Signer` passed to `recoverByKey` MUST implement `signLookupMessage`
+(the bundled `FalconSigner` and `EcdsaSigner` both do). The lookup endpoint
+authenticates by proof-of-possession of the queried commitment — same key
+that already authenticates per-account requests, so revealing the account ID
+does not grant any new capability. See the design doc for the security
+analysis.
+
+Multiple matches are returned uniformly: a key may legitimately authorize
+several accounts, and the helper surfaces all of them rather than silently
+picking one. The returned list is empty (not an error) when no account
+authorizes the queried commitment.
+
+### Recovering Notes After Device Loss
+
+Normal forward sync cannot see notes that landed behind the store's
+cursors. After `load()` on a recovered account, `multisig.recoverNotes()`
+runs the three recovery strategies as one flow — the private-note transport
+drain, the proposal-embedded note import, and the historical public-note
+backfill — and finishes with a normal sync (transport fetch, chain sync,
+and GUARDIAN state sync) so imported notes are verified and ready to
+consume. The flow is the one public entry point; the strategies are
+internal.
+
+```typescript
+const multisig = await client.load(accountId, signer);
+
+const report = await multisig.recoverNotes();
+console.log(`recovered ${report.imported} notes`);
+for (const problem of report.problems) {
+  console.log(`step ${problem.step} did not run: ${problem.reason}`);
+}
+```
+
+Strategies are individually selectable and the backfill's block range can be
+bounded:
+
+```typescript
+// Rescan only the transport backlog and recent public history, skipping the
+// proposal import and the final verifying sync.
+const report = await multisig.recoverNotes({
+  proposalImport: false,
+  fromBlock: 1_690_000,
+  syncAfter: false,
+});
+```
+
+The combined `NoteRecoveryReport` carries each strategy's own report
+(`transport`, `proposalImport`, `backfill`) untouched; a strategy that
+cannot run at all (GUARDIAN unreachable, chain tip unresolvable, broken
+local store) becomes a `RecoveryStepProblem` entry instead of aborting the
+flow, and `retryable: true` means rerunning the flow — which is idempotent —
+can plausibly recover more. In brief:
+
+- **Transport drain** — rescans the full private-note transport backlog for
+  every tracked tag, regardless of the stored cursor (and without ever
+  regressing it). Bounded by the transport service's retention: a
+  best-effort rescan, **not** a backup.
+- **Proposal import** — rebuilds importable notes from the bytes v2
+  consume-notes proposals embed (validated against the proposals' declared
+  note ids) plus node-fetched inclusion proofs, so it works for private
+  notes too. Per-note `NoteImportOutcome`s; corrupt proposals and notes are
+  isolated as `invalid` outcomes instead of blocking the rest.
+- **Public backfill** — tag-scoped historical scan (genesis to tip by
+  default) importing discovered public notes with their proofs, never
+  touching the global sync height; cost scales with matches, not range
+  length. This SDK screens discoveries statically against the well-known
+  P2ID/P2IDE scripts (custom-script notes are counted as
+  `skippedUnscreenable`), and unscannable sub-ranges are reported in
+  `uncovered` instead of failing the flow.
+
+For the full report semantics see
+[`docs/MULTISIG_SDK.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MULTISIG_SDK.md).
 
 ## Transaction Utilities
 

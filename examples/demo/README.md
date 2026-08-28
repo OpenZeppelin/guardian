@@ -27,6 +27,7 @@ once.
 4. Pull/register the account from another terminal and sign proposals.
 5. Create proposals (transfer, consume notes, switch GUARDIAN) and gather signatures.
 6. Execute once the threshold is satisfied, or export/import proposals for offline signing.
+7. After recovering an account on a fresh device (`r` then a sync/pull), run `n` — "Recover notes" — to restore pending notes via the transport drain, proposal import, and public backfill in one flow.
 
 All of these steps are surfaced via the interactive menu—run it in multiple terminals to simulate different cosigners.
 

@@ -118,6 +118,67 @@ impl MultisigClient {
         Ok(proposals)
     }
 
+    /// [`MultisigClient::list_proposals`] variant for the recovery flow:
+    /// per-proposal failures (a payload that does not parse, a summary
+    /// binding that does not verify) are isolated as skip reasons instead of
+    /// failing the whole listing, so one corrupt proposal cannot block
+    /// recovering notes from the healthy ones. The strict listing stays the
+    /// signing-path behavior, where a malformed proposal must surface loudly.
+    /// GUARDIAN being unreachable still errors — there is nothing to isolate
+    /// without a listing.
+    ///
+    /// Returns the parsed proposals plus `(identifier, reason)` pairs for
+    /// the skipped ones.
+    pub(crate) async fn list_proposals_isolating_failures(
+        &mut self,
+    ) -> Result<(Vec<Proposal>, Vec<(String, String)>)> {
+        let (account_id, current_nonce) = {
+            let account = self.require_account()?;
+            (account.id(), account.nonce())
+        };
+
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+
+        let response = guardian_client
+            .get_delta_proposals(&account_id)
+            .await
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to get proposals: {}", e))
+            })?;
+
+        let mut proposals = Vec::with_capacity(response.proposals.len());
+        let mut skipped = Vec::new();
+        for (position, delta) in response.proposals.iter().enumerate() {
+            let identifier = format!("proposal at nonce {} (#{})", delta.nonce, position);
+            if let Err(e) = Self::ensure_proposal_account_id(&delta.account_id, &account_id) {
+                skipped.push((identifier, e.to_string()));
+                continue;
+            }
+            let proposal = match Proposal::from(delta) {
+                Ok(proposal) => proposal,
+                Err(e) => {
+                    skipped.push((identifier, format!("failed to parse proposal: {}", e)));
+                    continue;
+                }
+            };
+
+            if proposal.nonce <= current_nonce {
+                continue;
+            }
+
+            if let Err(e) = self.verify_proposal_summary_binding(&proposal).await {
+                skipped.push((
+                    format!("proposal {}", proposal.id),
+                    format!("summary binding failed verification: {}", e),
+                ));
+                continue;
+            }
+            proposals.push(proposal);
+        }
+
+        Ok((proposals, skipped))
+    }
+
     /// Signs a proposal with the user's key.
     pub async fn sign_proposal(&mut self, proposal_id: &str) -> Result<Proposal> {
         let account = self.require_account()?;

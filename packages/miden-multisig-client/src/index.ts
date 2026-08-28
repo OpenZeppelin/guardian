@@ -49,6 +49,10 @@ export {
   type MultisigClientConfig,
   type RecoveredAccount,
 } from './client.js';
+export type {
+  TransportRecoveryReport,
+  TransportRecoveryStatus,
+} from './recovery/transportDrain.js';
 export type { ProverConfig, ProverRetryPolicy } from './prover/config.js';
 export type { RpcConfig, RpcRetryPolicy } from './rpc/config.js';
 export { lookupAuthDigest } from './lookupAuth.js';
@@ -103,6 +107,23 @@ export type {
 // Codeless transport-failure classification (feature 009, User Story 3).
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
 export type { ConnectivityCategory, UserFacingError } from './connectivity.js';
+
+// The wallet-facing recovery flow (`Multisig.recoverNotes`) and its report
+// types. The individual strategies are internal — the flow is the one entry
+// point, so callers cannot accidentally skip the required context (tracked
+// account, synced store) or the final verifying sync.
+export type {
+  NoteImportOutcome,
+  NoteImportSource,
+  NoteImportStatus,
+} from './recovery/proposalNoteImport.js';
+export type { BlockRange, PublicBackfillReport } from './recovery/publicNoteBackfill.js';
+export type {
+  NoteRecoveryReport,
+  RecoverNotesOptions,
+  RecoveryStep,
+  RecoveryStepProblem,
+} from './recovery/recoverNotes.js';
 
 export {
   FalconSigner,

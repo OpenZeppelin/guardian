@@ -278,7 +278,6 @@ let filter = NoteFilter::by_faucet_min_amount(faucet, 5_000);
 let spendable = client.list_consumable_notes_filtered(filter).await?;
 ```
 
-
 ### Custom Proposal Types
 
 GUARDIAN accepts any non-empty `proposal_type`, so an integration can propose a
@@ -347,6 +346,72 @@ Only canonical (confirmed) deltas appear — pending proposals live on
 `list_proposals()` — and only transactions pushed through Guardian are
 visible to it.
 
+## Recovering Notes After Device Loss
+
+Normal forward sync cannot see notes that landed behind the store's
+cursors. After `pull_account` on a recovered account, `recover_notes` runs
+the three recovery strategies as one flow — the private-note transport
+drain, the proposal-embedded note import, and the historical public-note
+backfill — and finishes with a normal sync so imported notes are verified
+and ready to consume. The flow is the one public entry point; the
+strategies are internal.
+
+```rust
+client.pull_account(account_id).await?;
+
+// `None` runs every strategy over the full chain and syncs afterwards.
+let report = client.recover_notes(None).await?;
+println!("recovered {} notes", report.imported);
+for problem in &report.problems {
+    println!("step {} did not run: {}", problem.step, problem.reason);
+}
+```
+
+Strategies are individually selectable and the backfill's block range can be
+bounded:
+
+```rust
+use miden_multisig_client::{NoteRecoveryOptions, PublicBackfillOptions};
+
+let report = client
+    .recover_notes(Some(NoteRecoveryOptions {
+        proposal_import: false,
+        backfill: PublicBackfillOptions {
+            from_block: Some(1_690_000u32.into()),
+            ..Default::default()
+        },
+        sync_after: false,
+        ..Default::default()
+    }))
+    .await?;
+```
+
+The combined `NoteRecoveryReport` carries each strategy's own report
+(`transport`, `proposal_import`, `backfill`) untouched; a strategy that
+cannot run at all (GUARDIAN unreachable, chain tip unresolvable, broken
+local store) becomes a `RecoveryStepProblem` entry instead of aborting the
+flow, and `retryable: true` means rerunning the flow — which is idempotent —
+can plausibly recover more. In brief:
+
+- **Transport drain** — rescans the full private-note transport backlog for
+  every tracked tag, regardless of the stored cursor (and without ever
+  regressing it). Bounded by the transport service's retention: a
+  best-effort rescan, **not** a backup.
+- **Proposal import** — rebuilds importable notes from the bytes v2
+  consume-notes proposals embed (validated against the proposals' declared
+  note ids) plus node-fetched inclusion proofs, so it works for private
+  notes too. Per-note `NoteImportOutcome`s; corrupt proposals and notes are
+  isolated as `Invalid` outcomes instead of blocking the rest.
+- **Public backfill** — tag-scoped historical scan (genesis to tip by
+  default) importing discovered public notes with their proofs, never
+  touching the global sync height; cost scales with matches, not range
+  length. Discoveries are screened with the execution-based `NoteScreener`
+  exactly like normal sync, and unscannable sub-ranges are reported in
+  `uncovered` instead of failing the flow.
+
+For the full report semantics see
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md).
+
 ## Consume-notes metadata versions
 
 `consume_notes` proposals come in two metadata shapes. The discriminator
@@ -359,8 +424,7 @@ is the `consume_notes_metadata_version` field on the wire.
   advanced past the block, store was wiped, private-note transport
   pruned the blob), verification fails with
   `MultisigError::LegacyConsumeNotesNoteMissing` and the cosigner
-  cannot sign. This is the failure tracked by
-  [issue #229](https://github.com/OpenZeppelin/guardian/issues/229).
+  cannot sign. This is the gap the v2 shape closes.
 - **v2 (self-contained)** — `consume_notes_metadata_version: 2` plus a
   `consume_notes_notes` array carrying base64-serialized `Note` bytes
   aligned by index with `note_ids`. Verification rebuilds the request

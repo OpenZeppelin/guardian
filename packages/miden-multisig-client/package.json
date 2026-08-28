@@ -24,7 +24,11 @@
   "files": [
     "dist",
     "src",
-    "masm"
+    "masm",
+    "!dist/testing",
+    "!src/testing",
+    "!dist/**/*.test.*",
+    "!src/**/*.test.ts"
   ],
   "scripts": {
     "generate:masm": "node ./scripts/generate-masm.mjs",
@@ -44,6 +48,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "^5.7.2",
     "vite": "^5.4.21",
     "vitest": "^2.1.8"
