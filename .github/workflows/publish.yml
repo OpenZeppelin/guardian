@@ -247,7 +247,7 @@ jobs:
               # guardian-client version must satisfy it or consumers resolve
               # a different release than the one this SDK was tested against.
               # Checked in dry runs too so a rehearsal catches it.
-              if ! npx --yes --package=semver semver --range "${guardian_client_dependency}" "${guardian_client_version}" >/dev/null; then
+              if ! node -e 'process.exit(require("semver").satisfies(process.argv[1], process.argv[2]) ? 0 : 1)' "${guardian_client_version}" "${guardian_client_dependency}"; then
                 abort "${package_name}" "${package_version}" "❌ ${guardian_client_name}@${guardian_client_version} does not satisfy dependency range ${guardian_client_dependency}" "${next_index}"
               fi
             fi
