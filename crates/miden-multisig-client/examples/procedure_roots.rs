@@ -10,25 +10,11 @@
 //! ```
 
 use std::env;
-use std::path::Path;
 
 use miden_protocol::Word;
+use miden_standards::account::auth::AuthGuardedMultisig;
 use miden_standards::account::wallets::BasicWallet;
-use miden_standards::code_builder::CodeBuilder;
 use serde::Serialize;
-
-/// The auth component MASM this package bundles and builds accounts from.
-///
-/// Deliberately NOT `miden_standards::account::auth::AuthGuardedMultisig::code()`.
-/// Accounts are assembled in JS from this file, so deriving the pinned roots from
-/// the standards component instead pins a procedure nobody builds: the two agree
-/// only while the MASM is byte-identical AND both compile against the same
-/// standards release. `auth_tx` calls `miden::standards::fee`, so its root moves
-/// with the fee library -- the one procedure where that assumption breaks, and the
-/// one whose mismatch surfaces as "unsupported contract version" at account read.
-const PACKAGE_AUTH_MASM: &str = include_str!(
-    "../../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm"
-);
 
 #[derive(Debug, Serialize)]
 struct ProcedureRootRecord {
@@ -77,11 +63,7 @@ fn record(
 }
 
 fn main() {
-    // Compile the bundled MASM against the standards this build resolves, so the
-    // pin describes the account that will actually be created.
-    let auth_code = CodeBuilder::new()
-        .compile_component_code("guarded_multisig", PACKAGE_AUTH_MASM)
-        .expect("bundled guarded-multisig MASM should compile");
+    let auth_code = AuthGuardedMultisig::code();
     let auth_root = |masm_name: &str| -> Word {
         let export = auth_code
             .exports()
