@@ -113,6 +113,24 @@ export interface RecoverNotesOptions {
 }
 
 /**
+ * The guardian-switch slice of {@link RecoverNotesOptions}: only the
+ * proposal-embedded note import runs. Every strategy flag is listed
+ * explicitly so a newly added strategy cannot silently join the switch path
+ * — the TS counterpart of the Rust SDK's
+ * `NoteRecoveryOptions::for_guardian_switch`. See
+ * `Multisig.preservePreSwitchProposalNotes` for why the other strategies do
+ * not apply on the switch path.
+ */
+export const GUARDIAN_SWITCH_RECOVERY_OPTIONS: Readonly<
+  Required<Pick<RecoverNotesOptions, 'transportDrain' | 'proposalImport' | 'publicBackfill' | 'syncAfter'>>
+> = {
+  transportDrain: false,
+  proposalImport: true,
+  publicBackfill: false,
+  syncAfter: false,
+};
+
+/**
  * The strategy implementations `runNoteRecovery` orchestrates. `Multisig`
  * wires these to the SDK primitives; tests can substitute stubs.
  */

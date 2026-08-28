@@ -9,11 +9,23 @@
 //! single flow and finishes with a normal sync so recovered notes are
 //! verified and ready to consume.
 
+use std::time::Duration;
+
 use super::MultisigClient;
 use super::proposal_note_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
 use super::public_note_backfill::{PublicBackfillOptions, PublicBackfillReport};
 use super::recovery::TransportRecoveryReport;
 use crate::error::{MultisigError, Result, error_chain};
+
+/// Upper bound on [`MultisigClient::preserve_pre_switch_proposal_notes`].
+/// The pre-switch import sits on the switch-guardian critical path against a
+/// GUARDIAN that is being switched away from — plausibly half-dead — and
+/// neither the gRPC nor the HTTP guardian client applies a request deadline
+/// of its own, so a hang here would stall the switch indefinitely. Generous
+/// enough for the listing plus per-proposal summary re-verification of a
+/// realistic pending set; the mirror of the TS SDK's
+/// `PRE_SWITCH_IMPORT_TIMEOUT_MS`.
+pub const PRE_SWITCH_IMPORT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Options for [`MultisigClient::recover_notes`]. The default runs every
 /// strategy over the full chain history and syncs afterwards; pass `None` to
@@ -45,6 +57,26 @@ impl Default for NoteRecoveryOptions {
             public_backfill: true,
             backfill: PublicBackfillOptions::default(),
             sync_after: true,
+        }
+    }
+}
+
+impl NoteRecoveryOptions {
+    /// The guardian-switch slice of the flow: only the proposal-embedded
+    /// note import runs. See
+    /// [`MultisigClient::preserve_pre_switch_proposal_notes`] for why the
+    /// other strategies do not apply on the switch path.
+    ///
+    /// Every field is listed on purpose (no `..Default::default()`): adding
+    /// a strategy to [`NoteRecoveryOptions`] must force a compile-time
+    /// decision on whether it belongs on the switch path.
+    pub fn for_guardian_switch() -> Self {
+        Self {
+            transport_drain: false,
+            proposal_import: true,
+            public_backfill: false,
+            backfill: PublicBackfillOptions::default(),
+            sync_after: false,
         }
     }
 }
@@ -301,6 +333,100 @@ impl MultisigClient {
 
         Ok(report)
     }
+
+    /// Preserves the pre-switch note context while the old GUARDIAN still
+    /// serves it: runs the proposal-embedded note import (the
+    /// [`NoteRecoveryOptions::for_guardian_switch`] slice of
+    /// [`MultisigClient::recover_notes`]) so the notes inside pending
+    /// consume-notes proposals land in the local store before the client
+    /// repoints to the new GUARDIAN. Pending proposals do not survive a
+    /// guardian switch — the new GUARDIAN is registered with bare account
+    /// state — so they are the one recovery source a later device-loss
+    /// `recover_notes` against the new GUARDIAN can no longer reach.
+    ///
+    /// Must run before the switch transaction executes: the import
+    /// re-verifies each pending proposal's summary binding against local
+    /// state, which only reproduces while the account has not advanced past
+    /// the state the proposals were built on. Like every listing-based
+    /// flow, this covers proposals pending at the next nonce; one superseded
+    /// at an earlier nonce (it lost a same-nonce race) is filtered out by
+    /// the listing and its embedded notes are not imported here.
+    ///
+    /// The other primitives are deliberately skipped on the switch path
+    /// (issue #417): the switch executes against an intact local store —
+    /// chain cursor, transport cursor, and note records all persist — and
+    /// both the note transport and the node are configured independently of
+    /// the GUARDIAN, so a switch loses nothing the transport drain or the
+    /// public backfill rescan. Both remain device-loss recovery tools and
+    /// work unchanged against the new GUARDIAN. The verifying sync is
+    /// skipped too: the switch flow syncs on its own, and the next normal
+    /// sync verifies the imports.
+    ///
+    /// Best-effort like the rest of the switch's old-GUARDIAN interaction:
+    /// problems are logged and folded into the returned report (`None` only
+    /// when the flow could not run at all), never raised — an unreachable
+    /// old GUARDIAN must not block the switch. That promise also covers a
+    /// GUARDIAN that hangs instead of failing (neither client stack applies
+    /// its own request deadline), so the whole flow runs under
+    /// [`PRE_SWITCH_IMPORT_TIMEOUT`]; on expiry the import is cancelled,
+    /// logged, and the switch proceeds.
+    ///
+    /// [`MultisigClient::execute_proposal`] runs this automatically on the
+    /// switch-guardian path; wallets repointing a follower client by hand
+    /// (via [`MultisigClient::set_guardian_endpoint`]) can call it first to
+    /// get the same preservation.
+    pub async fn preserve_pre_switch_proposal_notes(&mut self) -> Option<NoteRecoveryReport> {
+        let flow = self.recover_notes(Some(NoteRecoveryOptions::for_guardian_switch()));
+        match tokio::time::timeout(PRE_SWITCH_IMPORT_TIMEOUT, flow).await {
+            Err(_elapsed) => {
+                tracing::warn!(
+                    timeout_secs = PRE_SWITCH_IMPORT_TIMEOUT.as_secs(),
+                    "pre-switch proposal-note import timed out and was cancelled; notes \
+                     embedded in pending proposals may be unrecoverable after the \
+                     guardian switch"
+                );
+                None
+            }
+            Ok(Ok(report)) => {
+                for problem in &report.problems {
+                    tracing::warn!(
+                        step = problem.step.as_str(),
+                        reason = %problem.reason,
+                        "pre-switch proposal-note import did not finish; notes embedded \
+                         in pending proposals may be unrecoverable after the guardian \
+                         switch"
+                    );
+                }
+                // Per-note failures never reach `problems` — and this is the
+                // last moment the notes are reachable, so "retryable" cannot
+                // help: the source is gone once the client repoints. They
+                // must be observable now.
+                for outcome in report.proposal_import.iter().flatten().filter(|o| {
+                    matches!(
+                        o.status,
+                        NoteImportStatus::Invalid | NoteImportStatus::Failed
+                    )
+                }) {
+                    tracing::warn!(
+                        identifier = %outcome.identifier,
+                        status = outcome.status.as_str(),
+                        reason = outcome.reason.as_deref().unwrap_or("unknown"),
+                        "pre-switch import could not preserve an embedded note; it may \
+                         be unrecoverable after the guardian switch"
+                    );
+                }
+                Some(report)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %error_chain(&e),
+                    "pre-switch proposal-note import could not run; notes embedded in \
+                     pending proposals may be unrecoverable after the guardian switch"
+                );
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -418,6 +544,41 @@ mod tests {
         assert!(!report.synced);
         assert_eq!(report.imported, 0);
         assert!(!report.retryable);
+    }
+
+    /// The switch-guardian slice (issue #417) runs only the proposal-embedded
+    /// note import: even with a transport backlog waiting, the drain, the
+    /// backfill, and the verifying sync are all skipped — a switch executes
+    /// against an intact local store, so they have nothing to recover — and
+    /// an unreachable pre-switch GUARDIAN folds into the report instead of
+    /// erroring, so it can never block the switch.
+    #[tokio::test]
+    async fn preserve_pre_switch_proposal_notes_runs_only_the_import_and_never_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (node, api) = mock_transport();
+        let mut client = offline_client(dir.path(), Some(api)).await;
+        load_account(&mut client, 35).await;
+        let account = client.account.as_ref().unwrap().inner().clone();
+        add_to_transport(&node, p2id_note_for(&account, 1, NoteType::Private));
+
+        let report = client
+            .preserve_pre_switch_proposal_notes()
+            .await
+            .expect("best-effort flow reports instead of erroring");
+
+        assert_eq!(
+            report.transport, None,
+            "transport drain must not run on the switch path"
+        );
+        assert_eq!(
+            report.backfill, None,
+            "public backfill must not run on the switch path"
+        );
+        assert!(!report.synced, "the switch flow owns its own syncs");
+        assert_eq!(report.imported, 0);
+        let steps: Vec<RecoveryStep> = report.problems.iter().map(|p| p.step).collect();
+        assert_eq!(steps, vec![RecoveryStep::ProposalImport]);
+        assert!(report.retryable);
     }
 
     /// With a reachable mock node the backfill strategy produces a real

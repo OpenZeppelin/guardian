@@ -124,6 +124,10 @@ export type {
   RecoveryStep,
   RecoveryStepProblem,
 } from './recovery/recoverNotes.js';
+// The guardian-switch slice of the flow (issue #417): run automatically by
+// `executeProposal` on the switch path, exported so wallets repointing a
+// follower client by hand can request the same preservation.
+export { GUARDIAN_SWITCH_RECOVERY_OPTIONS } from './recovery/recoverNotes.js';
 
 export {
   FalconSigner,

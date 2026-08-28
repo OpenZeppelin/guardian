@@ -245,7 +245,12 @@ impl MultisigClient {
     /// switch happens later in `finalize_transaction`), but its delta is still
     /// pushed to the pre-switch GUARDIAN so it canonicalizes like any other
     /// proposal. That push is best-effort: an unreachable GUARDIAN must not block
-    /// the switch, so the ack and any error are discarded.
+    /// the switch, so the ack and any error are discarded. The notes embedded
+    /// in pending consume-notes proposals are then imported from the
+    /// pre-switch GUARDIAN before the switch executes (equally best-effort,
+    /// see [`MultisigClient::preserve_pre_switch_proposal_notes`]): pending
+    /// proposals do not survive the switch, so their embedded notes must land
+    /// in the local store while the old GUARDIAN still serves them.
     pub async fn execute_proposal(&mut self, proposal_id: &str) -> Result<()> {
         // Sync with the network before executing to ensure we have latest state
         self.sync().await?;
@@ -324,7 +329,16 @@ impl MultisigClient {
                 .await?;
             signature_advice.push(guardian_advice);
         } else {
-            // SwitchGuardian: push the delta to the pre-switch GUARDIAN so it
+            // SwitchGuardian, both steps best-effort against the old GUARDIAN.
+            //
+            // #417 first: import notes embedded in pending proposals. Must
+            // run before the switch executes and `finalize_transaction`
+            // repoints — and before the delta push below, so the pending
+            // listing is read before anything switch-related lands on the
+            // old GUARDIAN — see `preserve_pre_switch_proposal_notes`.
+            let _ = self.preserve_pre_switch_proposal_notes().await;
+
+            // Then push the delta to the pre-switch GUARDIAN so it
             // canonicalizes there and the account is released (issue #305).
             // Best-effort — an unreachable GUARDIAN must not block the switch —
             // but the outcome must be observable: a silently lost push leaves

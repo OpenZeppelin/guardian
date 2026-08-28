@@ -176,6 +176,15 @@ impl MultisigClient {
     ///
     /// Only `SwitchGuardian` transactions are supported in this mode.
     ///
+    /// Unlike the online [`MultisigClient::execute_proposal`] switch path,
+    /// this flow deliberately skips the pre-switch proposal-note import
+    /// (issue #417): that import lists pending proposals from the very
+    /// GUARDIAN this flow exists to avoid contacting, and even a best-effort
+    /// attempt would stall an emergency switch on connect timeouts. When the
+    /// old GUARDIAN is in fact still reachable, call
+    /// [`MultisigClient::preserve_pre_switch_proposal_notes`] before
+    /// executing to import the notes embedded in its pending proposals.
+    ///
     /// # Example
     ///
     /// ```ignore

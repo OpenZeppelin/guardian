@@ -95,6 +95,7 @@ import {
 } from './recovery/publicNoteBackfill.js';
 import { drainPrivateNoteBacklog } from './recovery/transportDrain.js';
 import {
+  GUARDIAN_SWITCH_RECOVERY_OPTIONS,
   runNoteRecovery,
   type NoteRecoveryReport,
   type RecoverNotesOptions,
@@ -207,6 +208,18 @@ function resolveProposalNonce(
   }
   return options.nonce ?? Date.now();
 }
+
+/**
+ * Upper bound on `Multisig.preservePreSwitchProposalNotes`. The pre-switch
+ * import sits on the switch-guardian critical path against a GUARDIAN that is
+ * being switched away from — plausibly half-dead — and `GuardianHttpClient`
+ * applies no request deadline of its own, so a hang here would stall the
+ * switch indefinitely. Mirror of the Rust SDK's `PRE_SWITCH_IMPORT_TIMEOUT`.
+ */
+const PRE_SWITCH_IMPORT_TIMEOUT_MS = 30_000;
+
+/** Race sentinel for the pre-switch import timeout. */
+const PRE_SWITCH_IMPORT_TIMED_OUT = Symbol('pre-switch proposal-note import timed out');
 
 export class Multisig {
   account: Account;
@@ -425,6 +438,11 @@ export class Multisig {
 
   /**
    * Update the GUARDIAN client used by this Multisig instance.
+   *
+   * When repointing to a different GUARDIAN provider after a switch, call
+   * {@link preservePreSwitchProposalNotes} first: pending proposals do not
+   * survive a switch, and the notes embedded in them can only be imported
+   * while the old GUARDIAN is still the current client.
    *
    * @param guardianClient - The new GUARDIAN HTTP client
    */
@@ -733,10 +751,13 @@ export class Multisig {
           existingProposal?.metadata,
           existingProposal?.signatures ?? [],
         );
-        await this.verifyProposalMetadataBinding(proposal);
+        // Stale-nonce check before the binding verification (matching the
+        // Rust listing): the verification re-executes consume proposals in
+        // the VM, which is wasted on proposals already executed/superseded.
         if (currentNonce !== undefined && BigInt(proposal.nonce) <= currentNonce) {
           continue;
         }
+        await this.verifyProposalMetadataBinding(proposal);
         proposals.push(proposal);
       } catch (error) {
         skipped.push({
@@ -1404,6 +1425,108 @@ export class Multisig {
   }
 
   /**
+   * Preserve the pre-switch note context while the old GUARDIAN still
+   * serves it: run the proposal-embedded note import slice of
+   * {@link recoverNotes} so the notes inside pending consume-notes proposals
+   * land in the local store before `this.guardian` is repointed to the new
+   * GUARDIAN. Pending proposals do not survive a guardian switch — the new
+   * GUARDIAN is registered with bare account state — so they are the one
+   * recovery source a later device-loss `recoverNotes` against the new
+   * GUARDIAN can no longer reach.
+   *
+   * Must run before the switch transaction executes: the import re-verifies
+   * each pending proposal's summary binding against local state, which only
+   * reproduces while the account has not advanced past the state the
+   * proposals were built on. Like every listing-based flow, this covers
+   * proposals pending at the next nonce; one superseded at an earlier nonce
+   * (it lost a same-nonce race) is filtered out by the listing and its
+   * embedded notes are not imported here.
+   *
+   * The other primitives are deliberately skipped on the switch path
+   * (issue #417): the switch executes against an intact local store — chain
+   * cursor, transport cursor, and note records all persist — and both the
+   * note transport and the node are configured independently of the
+   * GUARDIAN, so a switch loses nothing the transport drain or the public
+   * backfill rescan. Both remain device-loss recovery tools and work
+   * unchanged against the new GUARDIAN. The verifying sync is skipped too:
+   * the switch flow syncs on its own, and the next normal sync verifies the
+   * imports.
+   *
+   * Best-effort like the rest of the switch's old-GUARDIAN interaction
+   * (mirrors the Rust SDK's `preserve_pre_switch_proposal_notes`): problems
+   * are warned, never thrown — an unreachable old GUARDIAN must not block
+   * the switch. That promise also covers a GUARDIAN that hangs instead of
+   * failing, so the flow is raced against `PRE_SWITCH_IMPORT_TIMEOUT_MS`;
+   * on expiry the switch proceeds and the abandoned import finishes (or
+   * fails) harmlessly in the background.
+   *
+   * {@link executeProposal} runs this automatically on the switch-guardian
+   * path; wallets repointing a follower client by hand (via
+   * {@link setGuardianClient}) can call it first — or pass
+   * `GUARDIAN_SWITCH_RECOVERY_OPTIONS` to {@link recoverNotes} — to get the
+   * same preservation.
+   */
+  async preservePreSwitchProposalNotes(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const flow = this.recoverNotes(GUARDIAN_SWITCH_RECOVERY_OPTIONS);
+      const outcome = await Promise.race([
+        flow,
+        new Promise<typeof PRE_SWITCH_IMPORT_TIMED_OUT>((resolve) => {
+          timer = setTimeout(
+            () => resolve(PRE_SWITCH_IMPORT_TIMED_OUT),
+            PRE_SWITCH_IMPORT_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      if (outcome === PRE_SWITCH_IMPORT_TIMED_OUT) {
+        // The abandoned flow keeps running in the background — it cannot
+        // repoint anything and a late import is a bonus — but its eventual
+        // rejection must not surface as an unhandled rejection.
+        flow.catch(() => {});
+        console.warn(
+          `Pre-switch proposal-note import timed out after ${PRE_SWITCH_IMPORT_TIMEOUT_MS}ms; ` +
+            'notes embedded in pending proposals may be unrecoverable after the ' +
+            'GUARDIAN switch',
+        );
+        return;
+      }
+      for (const problem of outcome.problems) {
+        console.warn(
+          `Pre-switch proposal-note import step '${problem.step}' did not finish; ` +
+            'notes embedded in pending proposals may be unrecoverable after the ' +
+            'GUARDIAN switch',
+          problem.reason,
+        );
+      }
+      // Per-note failures never reach `problems` — and this is the last
+      // moment the notes are reachable, so "retryable" cannot help: the
+      // source is gone once the client repoints. They must be observable now.
+      for (const noteOutcome of outcome.proposalImport ?? []) {
+        if (noteOutcome.status === 'invalid' || noteOutcome.status === 'failed') {
+          console.warn(
+            `Pre-switch import could not preserve embedded note ${noteOutcome.identifier} ` +
+              `(${noteOutcome.status}); it may be unrecoverable after the GUARDIAN switch`,
+            noteOutcome.reason,
+          );
+        }
+      }
+    } catch (error) {
+      // recoverNotes only throws for caller errors (inverted backfill range,
+      // never passed here), but the switch must survive anything.
+      console.warn(
+        'Pre-switch proposal-note import could not run; notes embedded in pending ' +
+          'proposals may be unrecoverable after the GUARDIAN switch',
+        error,
+      );
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  /**
    * Compute the ID of the note a P2ID proposal will create when executed.
    *
    * The P2ID note is rebuilt deterministically from the proposal salt, so the
@@ -1550,6 +1673,13 @@ export class Multisig {
    */
   async executeProposal(proposalId: string): Promise<void> {
     const { metadata, finalRequest, proposal } = await this.prepareProposalExecution(proposalId);
+
+    if (metadata.proposalType === 'switch_guardian') {
+      // #417: import notes embedded in pending proposals from the old
+      // GUARDIAN. Must run before the switch executes and repoints;
+      // best-effort and bounded — see preservePreSwitchProposalNotes.
+      await this.preservePreSwitchProposalNotes();
+    }
 
     // Execute at the proposal's anchored reference block, so the summary the
     // cosigners signed reproduces exactly. The anchor was already checked
