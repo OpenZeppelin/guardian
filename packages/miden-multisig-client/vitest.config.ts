@@ -1,4 +1,5 @@
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 
 import { defineConfig } from 'vitest/config';
 
@@ -6,9 +7,9 @@ import { defineConfig } from 'vitest/config';
 // napi build that the "node" condition resolves, which omits `Poseidon2`/
 // `FeltArray`. Alias the bare specifier to the WASM single-thread entry and
 // initialize its module in `setupFiles`.
-const midenWasmEntry = fileURLToPath(
-  new URL('./node_modules/@miden-sdk/miden-sdk/dist/st/index.js', import.meta.url),
-);
+const require = createRequire(import.meta.url);
+const midenSdkRoot = dirname(require.resolve('@miden-sdk/miden-sdk/package.json'));
+const midenWasmEntry = join(midenSdkRoot, 'dist/st/index.js');
 
 export default defineConfig({
   resolve: {

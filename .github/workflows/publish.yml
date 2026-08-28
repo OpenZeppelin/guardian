@@ -136,6 +136,7 @@ jobs:
         run: rustup toolchain install
 
       - name: Build, test, and publish
+        working-directory: packages
         env:
           PACKAGES: ${{ needs.prepare.outputs.packages }}
           DRY_RUN: ${{ inputs['dry-run'] }}
@@ -165,30 +166,64 @@ jobs:
             local result=$3
             local next_index=$4
             summarize "${package_name}" "${package_version}" "${result}"
-            local remaining remaining_dir
+            local remaining
             for remaining in "${packages[@]:${next_index}}"; do
-              remaining_dir="packages/${remaining}"
-              summarize "$(jq -r '.name' "${remaining_dir}/package.json")" "$(jq -r '.version' "${remaining_dir}/package.json")" "⏭️ Not attempted"
+              summarize "$(jq -r '.name' "${remaining}/package.json")" "$(jq -r '.version' "${remaining}/package.json")" "⏭️ Not attempted"
             done
             exit 1
           }
 
+          if ! npm ci; then
+            abort "$(jq -r '.name' "${packages[0]}/package.json")" "$(jq -r '.version' "${packages[0]}/package.json")" "❌ Dependency installation failed" 1
+          fi
+
+          wait_for_npm() {
+            local package_name=$1
+            local package_version=$2
+            local attempts=0
+            local max_attempts=30
+            while (( attempts < max_attempts )); do
+              if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+                echo "${package_name}@${package_version} is visible on npm."
+                return 0
+              fi
+              attempts=$((attempts + 1))
+              echo "Waiting for ${package_name}@${package_version} on npm (${attempts}/${max_attempts})..."
+              sleep 10
+            done
+            echo "::error::Timed out waiting for ${package_name}@${package_version} on npm"
+            return 1
+          }
+
+          guardian_client_name="@openzeppelin/guardian-client"
+          guardian_client_dependency=$(jq -r '.dependencies["@openzeppelin/guardian-client"]' miden-multisig-client/package.json)
+          guardian_client_version=$(jq -r '.version' guardian-client/package.json)
+          guardian_client_built=false
+
           for index in "${!packages[@]}"; do
             package="${packages[${index}]}"
-            package_dir="packages/${package}"
+            package_dir="${package}"
+            workspace_name="@openzeppelin/${package}"
             package_name=$(jq -r '.name' "${package_dir}/package.json")
             package_version=$(jq -r '.version' "${package_dir}/package.json")
             next_index=$((index + 1))
 
-            if ! (cd "${package_dir}" && npm ci); then
-              abort "${package_name}" "${package_version}" "❌ Dependency installation failed" "${next_index}"
+            if [[ "${package}" == "miden-multisig-client" && "${guardian_client_built}" != "true" ]]; then
+              # npm ci links the local workspace, but the multisig SDK imports
+              # the guardian-client's generated dist output.
+              if ! npm run build -w "${guardian_client_name}"; then
+                abort "${package_name}" "${package_version}" "❌ Workspace dependency build failed" "${next_index}"
+              fi
             fi
 
-            if ! (cd "${package_dir}" && npm run build); then
+            if ! npm run build -w "${workspace_name}"; then
               abort "${package_name}" "${package_version}" "❌ Build failed" "${next_index}"
             fi
+            if [[ "${package}" == "guardian-client" ]]; then
+              guardian_client_built=true
+            fi
 
-            if ! (cd "${package_dir}" && npm test); then
+            if ! npm test -w "${workspace_name}"; then
               abort "${package_name}" "${package_version}" "❌ Tests failed" "${next_index}"
             fi
 
@@ -204,18 +239,38 @@ jobs:
               npm_tag="latest"
             fi
 
+            if [[ "${package}" == "miden-multisig-client" ]]; then
+              if [[ -z "${guardian_client_dependency}" || "${guardian_client_dependency}" == "null" ]]; then
+                abort "${package_name}" "${package_version}" "❌ Missing ${guardian_client_name} dependency" "${next_index}"
+              fi
+              # The published manifest carries a semver range, so the in-repo
+              # guardian-client version must satisfy it or consumers resolve
+              # a different release than the one this SDK was tested against.
+              # Checked in dry runs too so a rehearsal catches it.
+              if ! node -e 'process.exit(require("semver").satisfies(process.argv[1], process.argv[2]) ? 0 : 1)' "${guardian_client_version}" "${guardian_client_dependency}"; then
+                abort "${package_name}" "${package_version}" "❌ ${guardian_client_name}@${guardian_client_version} does not satisfy dependency range ${guardian_client_dependency}" "${next_index}"
+              fi
+            fi
+
             if npm view "${package_name}@${package_version}" version 2>/dev/null; then
               echo "⚠️ ${package_name}@${package_version} is already published, skipping."
               summarize "${package_name}" "${package_version}" "⏭️ Already published"
             elif [[ "${DRY_RUN}" == "true" ]]; then
-              if (cd "${package_dir}" && npm publish --provenance --access public --tag "${npm_tag}" --dry-run); then
+              if npm publish -w "${workspace_name}" --provenance --access public --tag "${npm_tag}" --dry-run; then
                 summarize "${package_name}" "${package_version}" "✅ Dry run succeeded (tag: ${npm_tag})"
               else
                 abort "${package_name}" "${package_version}" "❌ Dry run failed" "${next_index}"
               fi
-            elif (cd "${package_dir}" && npm publish --provenance --access public --tag "${npm_tag}"); then
-              summarize "${package_name}" "${package_version}" "✅ Published (tag: ${npm_tag})"
             else
-              abort "${package_name}" "${package_version}" "❌ Publish failed" "${next_index}"
+              if [[ "${package}" == "miden-multisig-client" ]]; then
+                if ! wait_for_npm "${guardian_client_name}" "${guardian_client_version}"; then
+                  abort "${package_name}" "${package_version}" "❌ ${guardian_client_name}@${guardian_client_version} is not on npm; publish it first or select it in the same run" "${next_index}"
+                fi
+              fi
+              if npm publish -w "${workspace_name}" --provenance --access public --tag "${npm_tag}"; then
+                summarize "${package_name}" "${package_version}" "✅ Published (tag: ${npm_tag})"
+              else
+                abort "${package_name}" "${package_version}" "❌ Publish failed" "${next_index}"
+              fi
             fi
           done

@@ -9,9 +9,14 @@ Map the changed area to the smallest browser smoke workflow that still proves th
 Run validation first:
 
 ```bash
-cd packages/miden-multisig-client && npm test
-cd examples/smoke-web && npm run typecheck && npm run build
-cd examples/web && npm run build
+(
+  cd packages
+  npm ci
+  npm run build -w @openzeppelin/guardian-client
+  npm test -w @openzeppelin/miden-multisig-client
+)
+(cd examples/smoke-web && npm run typecheck && npm run build)
+(cd examples/web && npm run build)
 ```
 
 Primary smoke server commands:
@@ -453,4 +458,3 @@ Use when:
 - thrown auth/unauthenticated error (proof-of-possession metadata regression)
 - recovered `accountId` differs from `originalAccountId` (server-side index regression)
 - `verifyStateCommitment` mismatch after recover + load (state-fetch regression)
-

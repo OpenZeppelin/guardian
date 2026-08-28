@@ -22,8 +22,13 @@ Run the focused checks before manual browser work:
 ```bash
 cargo test -p guardian-server
 cargo test -p guardian-server --features evm
-cd packages/guardian-evm-client && npm test && npm run build
-cd examples/evm-smoke-web && npm run typecheck && npm run build
+(
+  cd packages
+  npm ci
+  npm test -w @openzeppelin/guardian-evm-client
+  npm run build -w @openzeppelin/guardian-evm-client
+)
+(cd examples/evm-smoke-web && npm run typecheck && npm run build)
 ```
 
 Use `git diff -- packages/guardian-client crates/client crates/shared` when the user wants the EVM client isolated from the base clients. Those paths should stay unchanged unless a separate contract change requires them.
@@ -135,7 +140,7 @@ EVM_ENTRYPOINT_ADDRESS=0x433709009b8330fda32311df1c2afa402ed8d009 \
 node .agents/skills/smoke-test-evm-proposal-support/scripts/run-evm-client-smoke.mjs
 ```
 
-The script uses the workspace build output at `packages/guardian-evm-client/dist/index.js`, so run `npm run build` in that package first after TypeScript edits.
+The script uses the workspace build output at `packages/guardian-evm-client/dist/index.js`, so run `npm run build -w @openzeppelin/guardian-evm-client` from `packages/` first after TypeScript edits.
 
 ## Browser Smoke
 

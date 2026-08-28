@@ -73,9 +73,14 @@ When reporting, capture the concrete tool invocation path used (Chrome MCP vs Cl
    - `examples/smoke-web/src/App.tsx`
 2. Run targeted TypeScript validation before manual smoke:
    ```bash
-   cd packages/miden-multisig-client && npm test
-   cd examples/smoke-web && npm run typecheck && npm run build
-   cd examples/web && npm run build
+   (
+     cd packages
+     npm ci
+     npm run build -w @openzeppelin/guardian-client
+     npm test -w @openzeppelin/miden-multisig-client
+   )
+   (cd examples/smoke-web && npm run typecheck && npm run build)
+   (cd examples/web && npm run build)
    ```
 3. Start one GUARDIAN server from the repo root:
    ```bash

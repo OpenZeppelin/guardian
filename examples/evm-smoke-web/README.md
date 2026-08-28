@@ -41,8 +41,16 @@ code at the EntryPoint v0.9 address `0x433709009b8330fda32311df1c2afa402ed8d009`
 
 ## Run The App
 
+Install the shared TypeScript workspace dependencies once from the repository
+root. The example's `dev`, `build`, and `typecheck` commands rebuild the local
+EVM client automatically.
+
 ```bash
-npm install
+cd packages
+npm ci
+
+cd ../examples/evm-smoke-web
+npm ci
 npm run dev
 ```
 
