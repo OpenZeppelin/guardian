@@ -466,6 +466,29 @@ either (a) the origin isn't in the allowlist, or (b) the value still
 contains `*` and the server failed startup — check task logs for the
 `{ALLOWED_ORIGINS_ENV} must use explicit origins` error.
 
+### Transactions rejected on a chain that charges a verification fee
+
+Symptom: custody transactions execute and prove locally but are rejected at
+submission, appearing after a chain is re-genesised or reconfigured with a
+non-zero `verification_base_fee` — with no client change.
+
+Cause: since Miden 0.16 the auth component pays the transaction fee, and
+`AuthGuardedMultisig` — the custody account's auth component — does not. Its
+`guarded_multisig.masm` never imports `miden::standards::fee`, so no `TX_FEE`
+note is created. Nothing in the transaction kernel asserts that a fee was paid,
+which is why this does not fail locally.
+
+What does **not** fix it: committing fee conversion info through the transaction
+auth arg. That commitment is only read by `fee::load_conversion_info`, which this
+component never calls. `miden-client` refuses declared conversion info for any
+auth component other than `AuthSingleSig`/`AuthMultisig`
+(`TransactionRequestError::FeeConversionInfoUnsupported`) for the same reason.
+
+Resolution: run against a zero-`verification_base_fee` chain, or take an upstream
+`miden-standards` change that has `guarded_multisig.masm` pay the fee the way
+`multisig.masm` does. See
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-017x-on-miden-016).
+
 ## Error code reference
 
 All Guardian error responses carry a stable `code` string. Wire strings

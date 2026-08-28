@@ -69,7 +69,7 @@ export {
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
-  summarySalt,
+  summaryAuthArg,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -80,6 +80,7 @@ export {
   type P2idTransactionOptions,
   type P2ideHeightOptions,
 } from './transaction.js';
+export type { SignatureOptions } from './transaction/options.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
 export type { GuardianErrorMeta } from '@openzeppelin/guardian-client';
@@ -168,6 +169,12 @@ export {
   ConsumeNotesMetadataOversizeError,
   LegacyConsumeNotesNoteMissingError,
 } from './multisig/consumeNotesErrors.js';
+
+export {
+  type AuthArgErrorCode,
+  ProposalAuthArgUnresolvableError,
+  ProposalSaltMalformedError,
+} from './multisig/authArgErrors.js';
 
 export {
   noteToBase64,

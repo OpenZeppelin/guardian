@@ -182,6 +182,7 @@ impl ProposalBuilder {
             salt,
             std::iter::empty(),
             key_manager.scheme(),
+            crate::execution::resolve_fee_conversion_info(miden_client).await?,
         )?;
 
         // Execute to get the TransactionSummary
@@ -295,6 +296,7 @@ impl ProposalBuilder {
             salt,
             std::iter::empty(),
             key_manager.scheme(),
+            crate::execution::resolve_fee_conversion_info(miden_client).await?,
         )?;
 
         // Execute to get the TransactionSummary
@@ -395,6 +397,7 @@ impl ProposalBuilder {
             heights,
             salt,
             std::iter::empty(),
+            crate::execution::resolve_fee_conversion_info(miden_client).await?,
         )?;
 
         // Execute to get the TransactionSummary
@@ -496,6 +499,7 @@ impl ProposalBuilder {
             fetched_notes,
             salt,
             std::iter::empty(),
+            crate::execution::resolve_fee_conversion_info(miden_client).await?,
         )?;
 
         let (tx_summary, chain_anchor) =
@@ -603,6 +607,7 @@ impl ProposalBuilder {
             key_manager.scheme(),
             salt,
             std::iter::empty(),
+            crate::execution::resolve_fee_conversion_info(miden_client).await?,
         )?;
 
         // Execute to get the TransactionSummary
@@ -691,6 +696,7 @@ impl ProposalBuilder {
             new_threshold,
             salt,
             std::iter::empty(),
+            crate::execution::resolve_fee_conversion_info(miden_client).await?,
         )?;
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;

@@ -19,6 +19,7 @@ import {
 } from '@miden-sdk/miden-sdk';
 import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
+import { resolveAuthArg } from './feeAuth.js';
 import type { SignatureOptions } from './options.js';
 import type { P2idNoteVisibility } from '../types/proposal.js';
 import { parseP2ideHeight } from '../types/proposal.js';
@@ -166,7 +167,11 @@ export function buildP2idTransactionRequest(
 
   let txBuilder = new TransactionRequestBuilder();
   txBuilder = txBuilder.withOwnOutputNotes(outputNotes);
-  txBuilder = txBuilder.withAuthArg(authSaltForBuilder);
+  const feeAuth = resolveAuthArg(authSaltForBuilder, options.feeFaucetId);
+  txBuilder = txBuilder.withAuthArg(feeAuth.authArg);
+  if (feeAuth.adviceMap) {
+    txBuilder = txBuilder.extendAdviceMap(feeAuth.adviceMap);
+  }
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);

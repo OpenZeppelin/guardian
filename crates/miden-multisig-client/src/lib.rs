@@ -95,6 +95,7 @@ pub use keystore::{
 
 // Proposals
 pub use execution::{SignatureAdvice, build_transfer_asset};
+pub use execution::resolve_fee_conversion_info;
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{
     CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, P2ideHeights, Proposal,

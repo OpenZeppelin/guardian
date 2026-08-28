@@ -9,11 +9,11 @@ import { getRawMidenClient } from '../raw-client.js';
 import { base64ToUint8Array, uint8ArrayToBase64 } from '../utils/encoding.js';
 
 /**
- * Index of the first user param carrying the auth-arg salt. The guarded-multisig
+ * Index of the first user param carrying the auth args. The guarded-multisig
  * auth component zeroes user params 0-2 and fills 3-6 with the auth args, matching
  * `push.0.0.0` ahead of `multisig::auth_tx` in `guarded_multisig.masm`.
  */
-const SALT_USER_PARAM_OFFSET = 3;
+const AUTH_ARG_USER_PARAM_OFFSET = 3;
 
 /**
  * Captures a `ChainAnchor` for the request at the current sync height and
@@ -98,13 +98,19 @@ export function chainAnchorFromBase64(anchorBase64: string): ChainAnchor {
 }
 
 /**
- * Reads the auth-arg salt back out of a transaction summary.
+ * Reads the auth args back out of a transaction summary.
  *
  * Since miden-protocol 0.16-rc the summary binds seven user-defined elements
  * instead of a dedicated salt word. The guarded-multisig auth component zeroes
- * the leading three and passes the auth args as the trailing four, so the salt
- * is the tail of `userParams()`.
+ * the leading three and passes the auth args as the trailing four, so the auth
+ * args are the tail of `userParams()`.
+ *
+ * This is the auth-arg word, *not* the proposal salt. When the request commits
+ * fee conversion info (see `transaction/feeAuth.ts`) the auth arg is the
+ * commitment `hash(CONVERSION_INFO || SALT)`, which is not invertible to the
+ * salt. Keep the salt alongside the proposal — `ProposalMetadata.saltHex` —
+ * rather than trying to recover it from the summary.
  */
-export function summarySalt(summary: TransactionSummary): Word {
-  return Word.newFromFelts(summary.userParams().slice(SALT_USER_PARAM_OFFSET));
+export function summaryAuthArg(summary: TransactionSummary): Word {
+  return Word.newFromFelts(summary.userParams().slice(AUTH_ARG_USER_PARAM_OFFSET));
 }

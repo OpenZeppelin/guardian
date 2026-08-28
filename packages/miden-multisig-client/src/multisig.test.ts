@@ -1,17 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Multisig } from './multisig.js';
 import { GuardianHttpClient, type Signer } from '@openzeppelin/guardian-client';
+import { Endpoint } from '@miden-sdk/miden-sdk';
+import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
 import {
+  buildConsumeNotesTransactionRequest,
+  buildP2idTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
   buildUpdateSignersTransactionRequest,
   chainAnchorFromBase64,
+  detectAuthArgConvention,
   executeForSummary,
   executeForSummaryAt,
+  feeAuthArg,
 } from './transaction.js';
 
 const {
   mockRpcGetAccountDetails,
+  mockRpcGetBlockHeaderByNumber,
+  MOCK_FEE_FAUCET_ID,
+  MOCK_FEE_FAUCET_ID_HEX,
+  DEFAULT_TX_SUMMARY,
+  mockTxSummaryDeserialize,
   mockAccountDeserialize,
   mockDetectConfig,
   mockNoteFileDeserialize,
@@ -19,16 +30,43 @@ const {
   mockGetGuardianCommitment,
   mockImportNotesFromProposals,
   mockBackfillPublicNotesByTag,
-} = vi.hoisted(() => ({
-  mockRpcGetAccountDetails: vi.fn(),
-  mockAccountDeserialize: vi.fn(),
-  mockDetectConfig: vi.fn(),
-  mockNoteFileDeserialize: vi.fn(),
-  mockGetSignerCommitments: vi.fn(),
-  mockGetGuardianCommitment: vi.fn(),
-  mockImportNotesFromProposals: vi.fn(),
-  mockBackfillPublicNotesByTag: vi.fn(),
-}));
+} = vi.hoisted(() => {
+  // The faucet crosses every boundary as hex, so assertions compare hex rather
+  // than handle identity; the handle exists only because a block header hands one
+  // out.
+  const MOCK_FEE_FAUCET_ID_HEX = '0xfee';
+  const MOCK_FEE_FAUCET_ID = { toString: () => MOCK_FEE_FAUCET_ID_HEX, free: () => {} };
+  const DEFAULT_TX_SUMMARY = {
+    toCommitment: () => ({
+      toHex: () => '0x' + 'c'.repeat(64),
+    }),
+    blockCommitment: () => ({
+      toHex: () => '0x' + 'b'.repeat(64),
+    }),
+    userParams: () => [0, 0, 0, 1, 2, 3, 4],
+    serialize: () => new Uint8Array([1, 2, 3]),
+  };
+  return {
+    mockRpcGetAccountDetails: vi.fn(),
+    // getFeeFaucetId reads the chain tip through a block header. No propose path
+    // calls it — the assertions below pin that.
+    mockRpcGetBlockHeaderByNumber: vi.fn().mockResolvedValue({
+      feeFaucetId: () => MOCK_FEE_FAUCET_ID,
+      free: () => {},
+    }),
+    MOCK_FEE_FAUCET_ID,
+    MOCK_FEE_FAUCET_ID_HEX,
+    DEFAULT_TX_SUMMARY,
+    mockTxSummaryDeserialize: vi.fn().mockReturnValue(DEFAULT_TX_SUMMARY),
+    mockAccountDeserialize: vi.fn(),
+    mockDetectConfig: vi.fn(),
+    mockNoteFileDeserialize: vi.fn(),
+    mockGetSignerCommitments: vi.fn(),
+    mockGetGuardianCommitment: vi.fn(),
+    mockImportNotesFromProposals: vi.fn(),
+    mockBackfillPublicNotesByTag: vi.fn(),
+  };
+});
 
 vi.mock('./recovery/proposalNoteImport.js', () => ({
   importNotesFromProposals: mockImportNotesFromProposals,
@@ -43,6 +81,12 @@ const { MOCK_CHAIN_ANCHOR_B64, createMockChainAnchor } = vi.hoisted(() => {
   const createMockChainAnchor = () =>
     ({
       commitment: () => ({ toHex: () => '0x' + 'b'.repeat(64) }),
+      // A proposal's fee faucet is read from the block its anchor pins, not from
+      // the chain, so rebuilding needs no RPC.
+      blockHeader: () => ({
+        feeFaucetId: () => MOCK_FEE_FAUCET_ID,
+        free: () => {},
+      }),
       free: () => {},
       serialize: () => new Uint8Array([9, 9, 9]),
     }) as never;
@@ -55,7 +99,7 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     deserialize: mockAccountDeserialize,
   },
   AccountId: {
-    fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
+    fromHex: vi.fn((hex: string) => ({ toString: () => hex, free: () => {} })),
   },
   NoteType: {
     Private: 0,
@@ -70,16 +114,7 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     deserialize: mockNoteFileDeserialize,
   },
   TransactionSummary: {
-    deserialize: vi.fn().mockReturnValue({
-      toCommitment: () => ({
-        toHex: () => '0x' + 'c'.repeat(64),
-      }),
-      blockCommitment: () => ({
-        toHex: () => '0x' + 'b'.repeat(64),
-      }),
-      userParams: () => [0, 0, 0, 1, 2, 3, 4],
-      serialize: () => new Uint8Array([1, 2, 3]),
-    }),
+    deserialize: mockTxSummaryDeserialize,
   },
   Word: {
     fromHex: vi.fn((hex: string) => ({
@@ -107,18 +142,61 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   Endpoint: vi.fn().mockImplementation((url: string) => ({ url })),
   RpcClient: vi.fn().mockImplementation(() => ({
     getAccountDetails: mockRpcGetAccountDetails,
+    getBlockHeaderByNumber: mockRpcGetBlockHeaderByNumber,
   })),
 }));
 
 // Mock transaction module
-vi.mock('./transaction.js', () => ({
+// `multisig.ts` imports this one builder from its own module rather than the
+// barrel, so mocking the barrel alone leaves the real implementation in place.
+vi.mock('./transaction/consumeNotes.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./transaction/consumeNotes.js')>()),
+  buildConsumeNotesTransactionRequestFromNotes: vi.fn().mockReturnValue({
+    request: {},
+    salt: { toHex: () => '0x' + 'd'.repeat(64) },
+  }),
+}));
+
+vi.mock('./transaction.js', () => {
+  // The auth arg a summary carries is either the bare salt or a fee commitment to
+  // it, and `recoverProposalAuthArg` asks `detectAuthArgConvention` which. Mirrored
+  // here over the mocked hash rather than stubbed to a constant, so a test that
+  // overrides `feeAuthArg` still steers detection the way it steers a rebuild. The
+  // real hash and its operand order are covered by tests/fee-auth-convention.test.ts.
+  const summaryAuthArg = vi.fn(() => ({
+    toHex: () => '0x' + 'a'.repeat(64),
+  }));
+  const feeAuthArg = vi.fn((_conversionInfo: unknown, _salt: unknown) => ({
+    toHex: () => '0x' + 'a'.repeat(64),
+  }));
+  const nativeConversionInfo = vi.fn((_feeFaucetId: unknown) => ({
+    toHex: () => '0x' + 'c'.repeat(64),
+  }));
+  const detectAuthArgConvention = vi.fn(
+    (
+      signedAuthArg: { toHex: () => string },
+      salt: { toHex: () => string },
+      feeFaucetId: unknown,
+    ) => {
+      const signedHex = signedAuthArg.toHex();
+      if (salt.toHex() === signedHex) {
+        return 'bare';
+      }
+      return feeAuthArg(nativeConversionInfo(feeFaucetId), salt).toHex() === signedHex
+        ? 'committed'
+        : 'mismatch';
+    },
+  );
+
+  return {
   executeForSummary: vi.fn(),
   executeForSummaryAt: vi.fn(),
   chainAnchorToBase64: vi.fn(() => MOCK_CHAIN_ANCHOR_B64),
   chainAnchorFromBase64: vi.fn(() => createMockChainAnchor()),
-  summarySalt: vi.fn(() => ({
-    toHex: () => '0x' + 'd'.repeat(64),
-  })),
+  summaryAuthArg,
+  feeAuthArg,
+  nativeConversionInfo,
+  detectAuthArgConvention,
   buildUpdateSignersTransactionRequest: vi.fn().mockResolvedValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
@@ -152,7 +230,8 @@ vi.mock('./transaction.js', () => ({
     throw new Error(`unsupported metadata.noteType '${value}': expected 'public' or 'private'`);
   }),
   p2idNoteTypeToMetadata: vi.fn((noteType?: number) => (noteType === 0 ? 'private' : undefined)),
-}));
+  };
+});
 
 vi.mock('./utils/signature.js', async () => {
   const actual = await vi.importActual<typeof import('./utils/signature.js')>('./utils/signature.js');
@@ -237,6 +316,9 @@ describe('Multisig', () => {
 
   beforeEach(() => {
     mockFetch.mockReset();
+    // One test keys this on the input bytes; restore the default for everyone else.
+    mockTxSummaryDeserialize.mockReset();
+    mockTxSummaryDeserialize.mockReturnValue(DEFAULT_TX_SUMMARY);
     vi.mocked(executeForSummary).mockResolvedValue({
       summary: {
         toCommitment: () => ({
@@ -1392,6 +1474,61 @@ describe('Multisig', () => {
       expect(freed).toHaveBeenCalledTimes(1);
     });
 
+    /// The same rejection for `switch_guardian`, which is verified differently:
+    /// its metadata is never checked by rebuilding, so the anchor check is the
+    /// only thing standing between a served anchor and `submitAt` executing
+    /// against it. That makes the check's position — before the type dispatch,
+    /// not after — load-bearing rather than incidental.
+    it('should reject a switch_guardian whose chain anchor does not match the summary', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [
+            {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: {
+                tx_summary: { data: 'AQID' },
+                signatures: [],
+                metadata: {
+                  proposal_type: 'switch_guardian',
+                  chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+                  new_guardian_pubkey: '0x' + '1'.repeat(64),
+                  new_guardian_endpoint: 'http://new-guardian.com',
+                  description: '',
+                },
+              },
+              status: {
+                status: 'pending',
+                timestamp: '2024-01-01T00:00:00Z',
+                proposer_id: '0x' + 'c'.repeat(64),
+                cosigner_sigs: [],
+              },
+            },
+          ],
+        }),
+      });
+
+      vi.mocked(chainAnchorFromBase64).mockReturnValueOnce({
+        commitment: () => ({ toHex: () => '0x' + 'e'.repeat(64) }),
+        free: vi.fn(),
+        serialize: () => new Uint8Array([9, 9, 9]),
+      } as never);
+
+      await expect(multisig.syncProposals()).rejects.toThrow(
+        'chain anchor does not match the block commitment bound into the tx_summary',
+      );
+    });
+
     it('should reject non-32-byte signer IDs from GUARDIAN proposals', async () => {
       const config = {
         threshold: 1,
@@ -1917,6 +2054,67 @@ describe('Multisig', () => {
       const pushBody = JSON.parse(mockFetch.mock.calls.at(-1)![1].body as string);
       expect('reclaim_height' in pushBody.delta_payload.metadata).toBe(false);
       expect('timelock_height' in pushBody.delta_payload.metadata).toBe(false);
+    });
+
+    /// Options are forwarded wholesale so a note option added later cannot be
+    /// dropped, which also means a structurally compatible object can carry
+    /// `feeFaucetId` into a typed proposal. That would produce a commitment auth
+    /// arg the Rust SDK cannot rebuild, so it is refused rather than ignored —
+    /// silently dropping it would hand back a proposal that is not what was asked
+    /// for.
+    it('refuses feeFaucetId on a typed p2id proposal', async () => {
+      const { executeForSummary } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        summary: {
+          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+        },
+        anchor: createMockChainAnchor(),
+      } as any);
+
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      vi.mocked(buildP2idTransactionRequest).mockClear();
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: {
+              tx_summary: { data: 'AQID' },
+              signatures: [],
+              metadata: {
+                proposal_type: 'p2id',
+                recipient_id: '0xrecipient',
+                faucet_id: '0xfaucet',
+                amount: '100',
+                description: '',
+              },
+            },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      await expect(
+        multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, {
+          nonce: 1,
+          feeFaucetId: MOCK_FEE_FAUCET_ID_HEX,
+        } as never),
+      ).rejects.toThrow(/does not accept feeFaucetId/);
+
+      expect(vi.mocked(buildP2idTransactionRequest)).not.toHaveBeenCalled();
     });
   });
 
@@ -3948,6 +4146,90 @@ describe('Multisig', () => {
       expect(adviceCalls[1][0].toHex()).toBe(config.guardianCommitment);
     });
 
+    it('rejects a re-fetched tx_summary that is not the one the id was verified against', async () => {
+      // Execution re-fetches the delta from GUARDIAN after the binding check, and
+      // that summary decides both the advice keys and the auth-arg convention. A
+      // substituted one must not be trusted just because it arrived over the same
+      // connection.
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'change_threshold',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          targetThreshold: 1,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          description: '',
+        },
+      });
+
+      // Persistent rather than queued: the guard must fire before the ack push, so
+      // no later response should be needed, and a stray earlier fetch must not
+      // consume the delta this test is about.
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            // A different summary than the locally held 'AQID' the binding check
+            // ran against.
+            tx_summary: { data: 'BAUG' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'change_threshold',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+              target_threshold: 1,
+              signer_commitments: ['0x' + 'a'.repeat(64)],
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+
+      const substituted = {
+        toCommitment: () => ({ toHex: () => '0x' + '9'.repeat(64) }),
+        blockCommitment: () => ({ toHex: () => '0x' + 'b'.repeat(64) }),
+        userParams: () => [0, 0, 0, 1, 2, 3, 4],
+        serialize: () => new Uint8Array([4, 5, 6]),
+      };
+      // Keyed on the bytes rather than the call count, which the binding check
+      // already consumed twice.
+      mockTxSummaryDeserialize.mockImplementation((bytes: Uint8Array) =>
+        bytes[0] === 4 ? substituted : DEFAULT_TX_SUMMARY,
+      );
+
+      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
+        /tx_summary commitment 0x9{64} does not match the proposal id it belongs to/,
+      );
+      expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
+    });
+
     it('should execute imported ECDSA proposals with scheme-aware advice', async () => {
       const { buildSignatureAdviceEntry, signatureHexToBytes } = await import('./utils/signature.js');
       vi.mocked(signatureHexToBytes).mockClear();
@@ -4980,7 +5262,7 @@ describe('Multisig', () => {
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 3,
               signer_commitments: ['0xa', '0xb', '0xc'],
-              salt: '0xlegacysalt',
+              salt: '0x' + 'a'.repeat(64),
             },
           },
           status: {
@@ -5032,7 +5314,7 @@ describe('Multisig', () => {
               recipient_id: '0xrecipient',
               faucet_id: '0xfaucet',
               amount: '12345',
-              salt: '0xsalt',
+              salt: '0x' + 'a'.repeat(64),
             },
           },
           status: {
@@ -5088,7 +5370,7 @@ describe('Multisig', () => {
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               new_guardian_pubkey: '0xnewpubkey',
               new_guardian_endpoint: 'http://new-guardian.com',
-              salt: '0xsalt',
+              salt: '0x' + 'a'.repeat(64),
             },
           },
           status: {
@@ -5113,6 +5395,820 @@ describe('Multisig', () => {
         expect(proposals[0].metadata.newGuardianPubkey).toBe('0xnewpubkey');
         expect(proposals[0].metadata.newGuardianEndpoint).toBe('http://new-guardian.com');
       }
+    });
+  });
+
+  describe('auth-arg convention detection', () => {
+    // `summaryAuthArg` is mocked to return 0xaa.., and `feeAuthArg` to return the
+    // same, so a proposal whose recorded salt is 0xaa.. reads as "the auth arg is
+    // the bare salt" and any other salt reads as "the auth arg commits to it".
+    const SIGNED_AUTH_ARG = '0x' + 'a'.repeat(64);
+    // Any salt other than the signed auth arg reads as `committed` under the
+    // mocked hash, which returns that same word.
+    const COMMITTED_SALT = '0x' + 'd'.repeat(64);
+
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    const ADD_SIGNER_METADATA = {
+      proposal_type: 'add_signer',
+      chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+      target_threshold: 1,
+      signer_commitments: ['0x' + 'a'.repeat(64)],
+      description: '',
+    };
+
+    const proposalWithSalt = (
+      salt: string,
+      metadata: Record<string, unknown> = ADD_SIGNER_METADATA,
+    ) => [
+      {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            ...metadata,
+            salt,
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      },
+    ];
+
+    it('rebuilds a proposal with no recorded salt from the signed auth arg', async () => {
+      // Proposals stored before saltHex was persisted. The auth arg is the salt for
+      // anything either SDK creates, so reading it back out of the summary
+      // reproduces the signed request; anything else silently rebuilds a different
+      // transaction.
+      const multisig = createTestMultisig(config);
+      vi.mocked(buildUpdateSignersTransactionRequest).mockClear();
+      const withoutSalt = proposalWithSalt('unused');
+      delete (withoutSalt[0].delta_payload.metadata as { salt?: string }).salt;
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: withoutSalt }),
+      });
+
+      await multisig.syncProposals();
+
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(SIGNED_AUTH_ARG);
+      expect(options).toMatchObject({ feeFaucetId: undefined });
+    });
+
+    it('rebuilds a switch_guardian from the signed summary, not its served salt', async () => {
+      // The one type with no reconstruction check, so nothing binds its metadata
+      // salt. Execution must not depend on the GUARDIAN being switched away from
+      // serving a correct one, or that GUARDIAN could strand a fully signed
+      // switch by rotating the field.
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const newGuardianPubkey = '0x' + '1'.repeat(64);
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          newGuardianPubkey,
+          newGuardianEndpoint: 'http://new-guardian.com',
+          // Belongs to no summary. Resolution has to actually reject it, so the
+          // hash is steered away from the signed auth arg for this test only —
+          // otherwise every salt reads as a valid commitment and the fallback
+          // below is never exercised.
+          saltHex: '0x' + '7'.repeat(64),
+          description: '',
+        },
+      });
+      vi.mocked(feeAuthArg).mockReturnValueOnce({
+        toHex: () => '0x' + '9'.repeat(64),
+      } as never);
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ commitment: newGuardianPubkey }),
+      });
+
+      // Execution runs past the rebuild and only stumbles on post-execution
+      // GUARDIAN registration, which this fixture does not stand up.
+      const error = await multisig.executeProposal(proposalId).then(
+        () => undefined,
+        (thrown: unknown) => thrown as Error,
+      );
+      expect(error?.message ?? '').not.toMatch(/neither its metadata salt/);
+
+      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(SIGNED_AUTH_ARG);
+      expect(options).toMatchObject({ feeFaucetId: undefined });
+    });
+
+    it('keeps a switch_guardian salt that does resolve, with its faucet', async () => {
+      // The fallback above must not become a shortcut past resolution: a
+      // committed switch still needs the faucet, or the rebuild reproduces the
+      // auth arg with the conversion-info preimage missing from the advice map.
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const newGuardianPubkey = '0x' + '1'.repeat(64);
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          newGuardianPubkey,
+          newGuardianEndpoint: 'http://new-guardian.com',
+          saltHex: COMMITTED_SALT,
+          description: '',
+        },
+      });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ commitment: newGuardianPubkey }),
+      });
+
+      await multisig.executeProposal(proposalId).catch(() => undefined);
+
+      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(COMMITTED_SALT);
+      expect(options).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
+    });
+
+    it('rebuilds without conversion info when the auth arg is the bare salt', async () => {
+      // A proposal from a client that passes the salt through as the auth arg —
+      // the Rust SDK, and this package before conversion info was committed.
+      // Committing conversion info on the rebuild would change the auth arg and
+      // the reconstruction check would reject a perfectly valid proposal.
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt(SIGNED_AUTH_ARG) }),
+      });
+
+      await multisig.syncProposals();
+
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls.at(-1)![3];
+      expect(options).toMatchObject({ feeFaucetId: undefined });
+      // The bare case is every proposal the Rust SDK creates, so a salt lost
+      // here breaks cross-SDK sync, not just the opt-in path.
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(SIGNED_AUTH_ARG);
+    });
+
+    it('proposes with a bare auth arg, so the Rust SDK can rebuild it', async () => {
+      // A committed auth arg is inert for a guarded-multisig account and the Rust
+      // SDK cannot reproduce it from salt_hex alone, so the typed create paths
+      // must not commit conversion info. See transaction/feeAuth.ts.
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockClear();
+      vi.mocked(buildUpdateSignersTransactionRequest).mockClear();
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
+          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+        },
+        anchor: createMockChainAnchor(),
+      } as never);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: {
+              tx_summary: { data: 'AQID' },
+              signatures: [],
+              metadata: { proposal_type: 'add_signer', description: '' },
+            },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      await multisig.createAddSignerProposal('0x' + 'e'.repeat(64));
+
+      // The first call is the propose build; a later one would be a rebuild.
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
+      expect(options).not.toHaveProperty('feeFaucetId');
+      expect(mockRpcGetBlockHeaderByNumber).not.toHaveBeenCalled();
+    });
+
+    it('rebuilds with conversion info when the auth arg commits to the salt', async () => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt('0x' + 'd'.repeat(64)) }),
+      });
+
+      await multisig.syncProposals();
+
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls.at(-1)![3];
+      expect(options).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
+      // The recorded salt, not the commitment the summary carries. Rebuilding
+      // from the commitment would reproduce the auth arg and so pass the
+      // reconstruction check, with the conversion-info preimage missing.
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(COMMITTED_SALT);
+    });
+
+    it('rejects a proposal whose auth arg matches neither convention', async () => {
+      vi.mocked(feeAuthArg).mockReturnValueOnce({
+        toHex: () => '0x' + 'f'.repeat(64),
+      } as never);
+
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt('0x' + 'd'.repeat(64)) }),
+      });
+
+      const error = await multisig.syncProposals().then(
+        () => undefined,
+        (thrown: unknown) => thrown as Error,
+      );
+
+      // The message has to name the signed auth arg, the salt and faucet it was
+      // checked against, and the recovery action: the proposal is dead at this
+      // point and the operator has to recreate it.
+      expect(error?.message).toMatch(
+        /auth arg 0xa{64} is neither its metadata salt 0xd{64} nor a fee-conversion commitment to that salt under fee faucet 0xfee/,
+      );
+      expect(error?.message).toMatch(/Recreate the proposal and collect signatures again/);
+    });
+
+    /// A bound type, so the salt is fatal here — the contrast is the
+    /// `switch_guardian` fallback tests below, which recover from the same value.
+    it('rejects a metadata salt that is not hex', async () => {
+      // The salt arrives as untrusted metadata, so a non-hex value should name
+      // the offending field rather than surfacing as a decoding error from
+      // whatever consumes the word later.
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt('0xnotasalt') }),
+      });
+
+      await expect(multisig.syncProposals()).rejects.toThrow(
+        /malformed metadata salt '0xnotasalt': expected a 32-byte hex word/,
+      );
+    });
+
+    it('verifies a committed proposal without touching the chain', async () => {
+      // The faucet comes from the block the proposal's anchor pins, which is
+      // both offline-capable and immune to the chain's answer changing after
+      // the signatures were collected.
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockClear();
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt('0x' + 'd'.repeat(64)) }),
+      });
+
+      await multisig.syncProposals();
+
+      expect(mockRpcGetBlockHeaderByNumber).not.toHaveBeenCalled();
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls.at(-1)![3];
+      expect(options).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(COMMITTED_SALT);
+    });
+
+    // Each proposal type reaches its own builder through its own arm of
+    // `buildTransactionRequestFromMetadata`, so the faucet has to be threaded
+    // through each one separately. Covering only `add_signer` left five arms
+    // where dropping it would strand a committed proposal at rebuild time.
+    const committedArms: Array<{
+      type: string;
+      metadata: Record<string, unknown>;
+      builder: () => { mock: { calls: unknown[][] } };
+      optionsIndex: number;
+    }> = [
+      {
+        type: 'add_signer',
+        metadata: ADD_SIGNER_METADATA,
+        builder: () => vi.mocked(buildUpdateSignersTransactionRequest),
+        optionsIndex: 3,
+      },
+      {
+        type: 'update_procedure_threshold',
+        metadata: {
+          proposal_type: 'update_procedure_threshold',
+          chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+          target_threshold: 1,
+          target_procedure: 'send_asset',
+          description: '',
+        },
+        builder: () => vi.mocked(buildUpdateProcedureThresholdTransactionRequest),
+        optionsIndex: 3,
+      },
+      {
+        type: 'p2id',
+        metadata: {
+          proposal_type: 'p2id',
+          chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+          recipient_id: '0xrecipient',
+          faucet_id: '0xfaucet',
+          amount: '100',
+          description: '',
+        },
+        builder: () => vi.mocked(buildP2idTransactionRequest),
+        optionsIndex: 4,
+      },
+    ];
+
+    for (const { type, metadata, builder, optionsIndex } of committedArms) {
+      it(`threads the faucet through the ${type} rebuild`, async () => {
+        const multisig = createTestMultisig(config);
+        builder().mock.calls.length = 0;
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ proposals: proposalWithSalt(COMMITTED_SALT, metadata) }),
+        });
+
+        await multisig.syncProposals();
+
+        const options = builder().mock.calls.at(-1)![optionsIndex];
+        expect(options).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
+        expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(COMMITTED_SALT);
+      });
+    }
+
+    // The two `consume_notes` arms have no sync-path fixture — v1 is gated and v2
+    // needs embedded notes whose ids match — so they are pinned against the
+    // rebuild directly. Without this, dropping the faucet from either arm is
+    // invisible.
+    for (const { version, builder, noteIds } of [
+      {
+        version: 2,
+        builder: () => vi.mocked(buildConsumeNotesTransactionRequestFromNotes),
+        noteIds: [] as string[],
+      },
+      {
+        version: 1,
+        builder: () => vi.mocked(buildConsumeNotesTransactionRequest),
+        noteIds: ['0xnote1'],
+      },
+    ]) {
+      it(`threads the faucet through the consume_notes v${version} rebuild`, async () => {
+        const multisig = createTestMultisig(config);
+        builder().mock.calls.length = 0;
+
+        await (multisig as any).buildTransactionRequestFromMetadata(
+          {
+            proposalType: 'consume_notes',
+            chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+            noteIds,
+            notes: [],
+            metadataVersion: version,
+            description: '',
+          },
+          {
+            convention: 'committed',
+            salt: { toHex: () => COMMITTED_SALT },
+            feeFaucetIdHex: MOCK_FEE_FAUCET_ID_HEX,
+          },
+        );
+
+        const options = builder().mock.calls.at(-1)!.at(-1);
+        expect(options).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
+        expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(COMMITTED_SALT);
+      });
+    }
+
+    it('resolves the convention on the execute path, not just on sync', async () => {
+      // Execution re-fetches the delta and rebuilds from it, and until this test
+      // every executed fixture happened to carry no salt — so the whole
+      // resolution step could be skipped on the execute path without any test
+      // noticing, while sync-time verification still passed.
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      vi.mocked(buildUpdateSignersTransactionRequest).mockClear();
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'change_threshold',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          targetThreshold: 1,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          saltHex: COMMITTED_SALT,
+          description: '',
+        },
+      });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'change_threshold',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+              target_threshold: 1,
+              signer_commitments: ['0x' + 'a'.repeat(64)],
+              salt: COMMITTED_SALT,
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [],
+          },
+          // The ack push shares this response; execution rebuilds only after it
+          // succeeds.
+          ack_sig: '0x' + 'e'.repeat(128),
+        }),
+      });
+
+      await multisig.executeProposal(proposalId).catch(() => undefined);
+
+      // Two rebuilds: the binding check, then execution. Asserting the count
+      // keeps this test honest — reading only the last call would silently fall
+      // back to the binding check's rebuild if execution never got that far.
+      const calls = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls;
+      expect(calls).toHaveLength(2);
+      for (const call of calls) {
+        expect(call[3]).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
+        expect((call[3] as { salt: { toHex: () => string } }).salt.toHex()).toBe(COMMITTED_SALT);
+      }
+    });
+
+    /// Seeds a fully-signed `switch_guardian` straight into the cache with the
+    /// salt the outgoing GUARDIAN chose to serve. Execution reads the cache, so
+    /// this reaches `switchGuardianAuthArg` without going through sync.
+    const seedSwitchGuardianProposal = (
+      multisig: Multisig,
+      proposalId: string,
+      saltHex: string,
+    ): void => {
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          newGuardianPubkey: '0x' + '1'.repeat(64),
+          newGuardianEndpoint: 'http://new-guardian.com',
+          saltHex,
+          description: '',
+        },
+      });
+    };
+
+    it('falls back for a switch_guardian whose salt cannot be read at all', async () => {
+      // The GUARDIAN being switched away from serves this field and nothing
+      // binds it, so it can make the salt unreadable as easily as it can make it
+      // wrong. Both have to reach the fallback, or that GUARDIAN can strand a
+      // fully signed switch by choosing the shape the client refuses.
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+      seedSwitchGuardianProposal(multisig, proposalId, '0xnotasalt');
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ commitment: '0x' + '1'.repeat(64) }),
+      });
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const error = await multisig.executeProposal(proposalId).then(
+        () => undefined,
+        (thrown: unknown) => thrown as Error,
+      );
+      expect((error as { code?: string } | undefined)?.code).not.toBe('proposal_salt_malformed');
+
+      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(SIGNED_AUTH_ARG);
+
+      // Silently rebuilding differently would hide a contested switch, and the
+      // party that served the bad salt is the one that benefits from the switch
+      // failing. AGENTS 12 requires the fallback be visible.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('proposal_salt_malformed'),
+      );
+      warn.mockRestore();
+    });
+
+    it('falls back for a switch_guardian whose salt is not even a string', async () => {
+      // GUARDIAN's JSON is cast, not validated, so this field arrives as
+      // whatever was served. A non-string must reach the fallback like any other
+      // unusable salt, rather than throwing a TypeError out of the hex helpers.
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+      seedSwitchGuardianProposal(multisig, proposalId, 7 as unknown as string);
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ commitment: '0x' + '1'.repeat(64) }),
+      });
+
+      const error = await multisig.executeProposal(proposalId).then(
+        () => undefined,
+        (thrown: unknown) => thrown as Error,
+      );
+      expect(error).not.toBeInstanceOf(TypeError);
+
+      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(SIGNED_AUTH_ARG);
+    });
+
+    /// The counterpart to the two fallback tests: the recoverable set is exactly
+    /// the salt faults. A hash failure inside detection means the client cannot
+    /// tell which convention it is looking at — not that the salt was bad — and
+    /// no fallback repairs that, so it has to propagate even for the one type
+    /// that routes around an unusable salt.
+    it('does not let a switch_guardian fall back past a hash failure', async () => {
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      seedSwitchGuardianProposal(multisig, proposalId, '0x' + '9'.repeat(64));
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ commitment: '0x' + '1'.repeat(64) }),
+      });
+      vi.mocked(detectAuthArgConvention).mockImplementationOnce(() => {
+        throw new Error('poseidon2 unreachable');
+      });
+
+      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
+        'poseidon2 unreachable',
+      );
+    });
+
+    /// Well-formed hex is not necessarily a readable word — each limb has to be
+    /// below the field modulus, which `Word.fromHex` enforces and this suite's
+    /// mock does not. Driving the decode failure directly covers the branch a
+    /// shape-invalid salt never reaches, and pins that it is classified as a
+    /// salt fault rather than escaping as an opaque decode error.
+    it('classifies an undecodable 32-byte salt as a salt fault', async () => {
+      const multisig = createTestMultisig(config);
+      const { Word } = await import('@miden-sdk/miden-sdk');
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt('0x' + 'f'.repeat(64)) }),
+      });
+      vi.mocked(Word.fromHex).mockImplementationOnce(() => {
+        throw new Error('failed to convert to field element: value >= field modulus');
+      });
+
+      const error = await multisig.syncProposals().then(
+        () => undefined,
+        (thrown: unknown) => thrown as { code?: string; message: string; cause?: unknown },
+      );
+      expect(error?.code).toBe('proposal_salt_malformed');
+      expect(error?.message).toContain('not a readable field element');
+      expect((error?.cause as Error | undefined)?.message).toContain('field modulus');
+    });
+
+    /// Zero-padding is what makes these dangerous: both normalize to the zero
+    /// word, a legal salt, so without an explicit check a proposal whose salt
+    /// field was written empty would be rebuilt against a salt nobody chose.
+    /// Only an absent salt means "predates the field".
+    it.each([
+      ['an empty salt', ''],
+      ['a prefix with no digits', '0x'],
+      // `ensureHexPrefix` accepts either case, so a check written against `0x`
+      // alone would let this one back through to the zero word.
+      ['an uppercase prefix with no digits', '0X'],
+    ])('rejects %s rather than reading it as the zero word', async (_label, saltHex) => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt(saltHex) }),
+      });
+
+      const error = await multisig.syncProposals().then(
+        () => undefined,
+        (thrown: unknown) => thrown as { code?: string; message: string },
+      );
+      expect(error?.code).toBe('proposal_salt_malformed');
+      expect(error?.message).toContain('it is empty');
+    });
+
+    /// The salt is cast, not validated, so its length is attacker-chosen. It has
+    /// to be rejected before `normalizeHexWord` copies and pads the whole thing.
+    /// The pair brackets the bound exactly: a full-length word is the longest
+    /// legal salt, so the cutoff cannot drift either way without failing here.
+    it.each([
+      ['an oversized salt', '0x' + 'a'.repeat(5000), 'got 5002 characters'],
+      ['one character past a full word', '0x' + 'a'.repeat(65), 'got 67 characters'],
+    ])('rejects %s on its length', async (_label, saltHex, expected) => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt(saltHex) }),
+      });
+
+      const error = await multisig.syncProposals().then(
+        () => undefined,
+        (thrown: unknown) => thrown as { code?: string; message: string },
+      );
+      expect(error?.code).toBe('proposal_salt_malformed');
+      expect(error?.message).toContain(expected);
+    });
+
+    /// The other half of the bound: a full-length word must survive the length
+    /// gate and be rejected, if at all, on its content.
+    it('lets a full-length word past the length gate', async () => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt('0x' + 'z'.repeat(64)) }),
+      });
+
+      const error = await multisig.syncProposals().then(
+        () => undefined,
+        (thrown: unknown) => thrown as { code?: string; message: string },
+      );
+      expect(error?.code).toBe('proposal_salt_malformed');
+      expect(error?.message).toContain('expected a 32-byte hex word');
+      expect(error?.message).not.toContain('characters');
+    });
+
+    it('zero-pads a short metadata salt rather than rejecting it', async () => {
+      // Documented leniency, and load-bearing: a producer that emits hex without
+      // padding to 32 bytes would otherwise have every proposal refused at sync.
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt('0xd') }),
+      });
+
+      await multisig.syncProposals();
+
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls.at(-1)![3];
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(
+        '0x' + 'd'.padStart(64, '0'),
+      );
+    });
+
+    it('rejects a metadata salt longer than a word', async () => {
+      // `normalizeHexWord` pads but never truncates, so an over-long salt
+      // reaches the word decoder intact and must be named here rather than
+      // surfacing as an opaque SDK decoding error.
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt('0x' + 'aa'.repeat(33)) }),
+      });
+
+      await expect(multisig.syncProposals()).rejects.toThrow(
+        /malformed metadata salt .*: expected a 32-byte hex word/,
+      );
+    });
+  });
+
+  describe('getFeeFaucetId', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it('reads the header once and caches it for the client lifetime', async () => {
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockClear();
+
+      const [first, second] = await Promise.all([
+        multisig.getFeeFaucetId(),
+        multisig.getFeeFaucetId(),
+      ]);
+      const third = await multisig.getFeeFaucetId();
+
+      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledTimes(1);
+      expect(first).toBe(MOCK_FEE_FAUCET_ID_HEX);
+      expect(second).toBe(MOCK_FEE_FAUCET_ID_HEX);
+      expect(third).toBe(MOCK_FEE_FAUCET_ID_HEX);
+    });
+
+    it('does not cache a failure, and names the endpoint when it fails', async () => {
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockClear();
+      mockRpcGetBlockHeaderByNumber.mockRejectedValueOnce(new Error('connection refused'));
+
+      await expect(multisig.getFeeFaucetId()).rejects.toThrow(
+        /Failed to read the fee faucet from/,
+      );
+
+      // A transient failure must not make every later transaction unbuildable.
+      await expect(multisig.getFeeFaucetId()).resolves.toBe(MOCK_FEE_FAUCET_ID_HEX);
+    });
+
+    it('surfaces the underlying RPC failure in the message, not only the cause', async () => {
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockClear();
+      mockRpcGetBlockHeaderByNumber.mockRejectedValueOnce(new Error('connection refused'));
+
+      await expect(multisig.getFeeFaucetId()).rejects.toThrow(/connection refused/);
+    });
+
+    it('joins concurrent callers on one failure and retries once after', async () => {
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockClear();
+      mockRpcGetBlockHeaderByNumber.mockRejectedValueOnce(new Error('connection refused'));
+
+      const settled = await Promise.allSettled([
+        multisig.getFeeFaucetId(),
+        multisig.getFeeFaucetId(),
+      ]);
+
+      expect(settled.map((entry) => entry.status)).toEqual(['rejected', 'rejected']);
+      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledTimes(1);
+
+      await expect(multisig.getFeeFaucetId()).resolves.toBe(MOCK_FEE_FAUCET_ID_HEX);
+      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledTimes(2);
+    });
+
+    it('reads the chain tip of the configured endpoint', async () => {
+      // Counting calls says nothing about which chain, or which block, was
+      // asked. `FeeParameters` is a per-block header field, and the value is
+      // handed to callers as a fee faucet, so a pinned height or the wrong
+      // endpoint would be a wrong answer rather than a failure.
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockClear();
+      vi.mocked(Endpoint).mockClear();
+
+      await multisig.getFeeFaucetId();
+
+      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledWith();
+      expect(vi.mocked(Endpoint)).toHaveBeenCalledWith(MIDEN_RPC_ENDPOINT);
+    });
+
+    it('retries a rate-limited read rather than surfacing it', async () => {
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockClear();
+      mockRpcGetBlockHeaderByNumber.mockRejectedValueOnce(
+        Object.assign(new Error('rate limited'), { code: 8 }),
+      );
+
+      await expect(multisig.getFeeFaucetId()).resolves.toBe(MOCK_FEE_FAUCET_ID_HEX);
+      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledTimes(2);
     });
   });
 });

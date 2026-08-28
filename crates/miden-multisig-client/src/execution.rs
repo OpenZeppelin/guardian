@@ -13,6 +13,7 @@ use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::TransactionType;
+use miden_standards::account::auth::FeeConversionInfo;
 
 /// Signature advice entry: (key, prepared_signature_values)
 pub type SignatureAdvice = (Word, Vec<Felt>);
@@ -109,6 +110,10 @@ pub async fn build_final_transaction_request(
     metadata_signer_commitments: Option<&[Word]>,
     scheme: SignatureScheme,
 ) -> Result<TransactionRequest> {
+    // Resolve the chain's fee conversion info once. On a chain that charges nothing this is still
+    // committed and simply goes unused, so there is no need to branch on the base fee here.
+    let fee_conversion_info = resolve_fee_conversion_info(client).await?;
+
     match transaction_type {
         TransactionType::P2ID {
             recipient,
@@ -127,6 +132,7 @@ pub async fn build_final_transaction_request(
                 *heights,
                 salt,
                 signature_advice,
+                fee_conversion_info,
             )
         }
         TransactionType::ConsumeNotes {
@@ -163,6 +169,7 @@ pub async fn build_final_transaction_request(
                         decoded,
                         salt,
                         signature_advice,
+                        fee_conversion_info,
                     )
                 }
                 None | Some(1) => {
@@ -173,6 +180,7 @@ pub async fn build_final_transaction_request(
                             note_ids.clone(),
                             salt,
                             signature_advice,
+                            fee_conversion_info,
                         )
                         .await
                     }
@@ -197,6 +205,7 @@ pub async fn build_final_transaction_request(
                 scheme,
                 salt,
                 signature_advice,
+                fee_conversion_info,
             )
         }
         TransactionType::UpdateProcedureThreshold {
@@ -209,6 +218,7 @@ pub async fn build_final_transaction_request(
                     *new_threshold,
                     salt,
                     signature_advice,
+                    fee_conversion_info,
                 )?;
 
             Ok(tx_request)
@@ -229,6 +239,7 @@ pub async fn build_final_transaction_request(
                 salt,
                 signature_advice,
                 scheme,
+                fee_conversion_info,
             )?;
 
             Ok(tx_request)
@@ -316,4 +327,22 @@ mod tests {
         let advice = collect_signature_advice(signatures, &required, msg).expect("valid advice");
         assert_eq!(advice.len(), 1);
     }
+}
+
+/// Reads the chain's native fee asset from the latest block header and returns conversion info
+/// paying the transaction fee in it at rate 1/1.
+///
+/// The multisig auth procedures take the payment asset and rate from the auth args, so this has to
+/// be committed into every request the guardian builds; without it `fee::pay_fee` aborts with
+/// `ERR_FEE_CONVERSION_INFO_MISSING` on any chain with a non-zero verification base fee.
+pub async fn resolve_fee_conversion_info(
+    client: &MidenSdkClient,
+) -> Result<Option<FeeConversionInfo>> {
+    let header = client.get_latest_block_header().await.map_err(|e| {
+        MultisigError::TransactionExecution(format!("failed to read the latest block header: {e}"))
+    })?;
+
+    Ok(Some(FeeConversionInfo::one_to_one(
+        header.fee_parameters().fee_faucet_id(),
+    )))
 }

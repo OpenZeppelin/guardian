@@ -509,6 +509,17 @@ impl MultisigClient {
     }
 
     /// Resets the miden-client by creating a new instance with a fresh database.
+    /// Resolves the chain's fee conversion info: the native fee asset at rate 1/1.
+    ///
+    /// Every request this client builds must commit this via its auth args, because the multisig
+    /// auth procedures take the payment asset and rate from there. Callers that build requests
+    /// themselves need the same value, so it is exposed rather than kept internal.
+    pub async fn fee_conversion_info(
+        &self,
+    ) -> Result<Option<miden_standards::account::auth::FeeConversionInfo>> {
+        crate::execution::resolve_fee_conversion_info(&self.miden_client).await
+    }
+
     pub async fn reset_miden_client(&mut self) -> Result<()> {
         self.miden_client = create_miden_client(
             &self.account_dir,

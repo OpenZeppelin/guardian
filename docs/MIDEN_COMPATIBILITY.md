@@ -84,6 +84,46 @@ moved in several independent ways:
 - **The custody account is now the upstream `miden-standards`
   `AuthGuardedMultisig` component** rather than Guardian's local MASM, and
   `guardianEnabled` is gone: the guardian is always present.
+- **Transaction fees became the auth component's responsibility**, and
+  `AuthGuardedMultisig` does not pay them. The 0.16 auth components that do
+  (`AuthSingleSig`, `AuthMultisig`, `AuthNoAuth`, `AuthNetworkAccount`) call
+  `miden::standards::fee::pay_fee` from their auth scripts; `guarded_multisig.masm`
+  does not import `miden::standards::fee` at all, and neither does
+  `multisig_smart.masm`. Nothing in the transaction
+  kernel enforces payment, so this does not surface as a local execution error —
+  a custody transaction simply pays no fee. On a chain whose
+  `verification_base_fee` is zero that is correct and invisible. On a
+  fee-charging chain expect rejection at submission rather than a local abort.
+  Committing fee conversion info via the auth arg does not change this: the
+  commitment is only read by `fee::load_conversion_info`, which this component
+  never calls, and `miden-client` correspondingly rejects declared conversion
+  info for any auth component other than `AuthSingleSig`/`AuthMultisig`
+  (`TransactionRequestError::FeeConversionInfoUnsupported`). That refusal keys on
+  the declaration API, not on the auth arg, so it does not fire for a request that
+  sets the auth arg and advice entry directly — which is what the TypeScript
+  builders do. Paying fees from a guarded-multisig account requires an upstream
+  change to `guarded_multisig.masm`.
+
+  The TypeScript SDK can build that commitment — `SignatureOptions.feeFaucetId`,
+  verified against the `miden-standards` MASM — but none of its typed
+  `create*Proposal` methods use it, deliberately. Besides being inert until the
+  upstream change lands, a committed auth arg is not interoperable: rebuilding the
+  request requires the same fee faucet, and the Rust SDK has no way to supply one,
+  so it cannot reproduce the signed summary. Opting in through the TypeScript
+  builders produces a custom proposal, which neither SDK reconstructs, so a Rust
+  integration can list, sign and drive it to submission. Neither SDK's
+  `executeProposal` accepts a custom proposal; the route is
+  `prepare_custom_execution`, which verifies the serialized request the caller
+  supplies rather than rebuilding it, followed by the integration's own
+  `submit_transaction`. The request TypeScript built passes that check, as long
+  as the integration keeps those bytes instead of expecting Rust to regenerate
+  them.
+  A typed proposal carrying a committed auth arg — reachable only by assembling
+  one outside the SDK and handing it to `createProposal` — is worse: the Rust
+  SDK's `list_proposals` rebuilds from `salt_hex` and fails for the whole account
+  rather than skipping the one proposal it cannot verify. When
+  `guarded_multisig.masm` starts paying the fee, both SDKs have to adopt the
+  commitment together.
 
 Data effect: full reset, see above. Operator steps:
 [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-016).

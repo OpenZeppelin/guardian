@@ -15,6 +15,43 @@ pub use consume::{
 };
 pub use guardian::build_update_guardian_transaction_request;
 pub use payment::build_p2id_transaction_request;
+pub(crate) use fee::MaybeFeeConversionInfo;
+
+mod fee {
+    use miden_client::Word;
+    use miden_client::transaction::TransactionRequestBuilder;
+    use miden_standards::account::auth::FeeConversionInfo;
+
+    /// Sets the auth args of a multisig request, committing fee conversion info when there is any.
+    ///
+    /// Since protocol 0.16 the multisig auth procedures pay the transaction fee and read the
+    /// conversion info from the auth args, so a request that passes the salt through bare aborts
+    /// in `fee::pay_fee` with `ERR_FEE_CONVERSION_INFO_MISSING` wherever the verification base fee
+    /// is non-zero. Committing keeps the salt's other role intact: the commitment is what the
+    /// summary binds, and distinct salts still produce distinct commitments.
+    ///
+    /// `None` reproduces the pre-fee behaviour and is only valid on a chain that charges nothing.
+    pub(crate) trait MaybeFeeConversionInfo {
+        fn maybe_fee_conversion_info(
+            self,
+            fee_conversion_info: Option<FeeConversionInfo>,
+            salt: Word,
+        ) -> Self;
+    }
+
+    impl MaybeFeeConversionInfo for TransactionRequestBuilder {
+        fn maybe_fee_conversion_info(
+            self,
+            fee_conversion_info: Option<FeeConversionInfo>,
+            salt: Word,
+        ) -> Self {
+            match fee_conversion_info {
+                Some(info) => self.fee_conversion_info(info, salt),
+                None => self.auth_arg(salt),
+            }
+        }
+    }
+}
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;

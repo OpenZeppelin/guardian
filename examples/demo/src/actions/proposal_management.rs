@@ -1058,6 +1058,10 @@ async fn action_create_custom_proposal(
         heights,
         salt,
         std::iter::empty(),
+        client
+            .fee_conversion_info()
+            .await
+            .map_err(|e| format!("failed to resolve fee conversion info: {e}"))?,
     )
     .map_err(|e| format!("failed to build transaction: {}", e))?
     .to_bytes();
@@ -1125,6 +1129,11 @@ async fn action_execute_custom_proposal(
         recipe.heights,
         recipe.salt,
         std::iter::empty(),
+        state
+            .get_client()?
+            .fee_conversion_info()
+            .await
+            .map_err(|e| format!("failed to resolve fee conversion info: {e}"))?,
     )
     .map_err(|e| format!("failed to rebuild transaction: {}", e))?;
 

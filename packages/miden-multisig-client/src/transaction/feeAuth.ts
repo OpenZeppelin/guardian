@@ -1,0 +1,239 @@
+import type { Word } from '@miden-sdk/miden-sdk';
+import {
+  AccountId,
+  AdviceMap,
+  Felt,
+  FeltArray,
+  Poseidon2,
+  Word as WordType,
+} from '@miden-sdk/miden-sdk';
+
+/**
+ * Fee conversion info committed via a transaction's auth args.
+ *
+ * ## Why this exists
+ *
+ * Since protocol 0.16 the auth args of a multisig transaction carry double duty.
+ * `miden::standards::fee::load_conversion_info` requires them to be the
+ * commitment `hash(CONVERSION_INFO || SALT)`, with the preimage supplied through
+ * the advice map; `auth_tx_multisig` then reuses that same word as the
+ * transaction summary salt. See `multisig.masm`:
+ *
+ * > The AUTH_ARGS (= hash(CONVERSION_INFO || SALT)) then continue to serve as
+ * > the transaction summary salt. The uniqueness that replay protection relies
+ * > on originates from the caller-chosen SALT.
+ *
+ * A bare random word satisfies the salt role but not the fee role: the
+ * advice-map lookup misses, conversion info comes back empty, and `pay_fee`
+ * aborts with `ERR_FEE_CONVERSION_INFO_MISSING`.
+ *
+ * ## Opt-in, because this package's accounts do not read it yet
+ *
+ * That abort is reachable from `AuthMultisig`, which calls `fee::pay_fee`. The
+ * component these accounts actually use, `AuthGuardedMultisig`, does not:
+ * `guarded_multisig.masm` imports only `auth::multisig` and `auth::guardian`,
+ * and `auth_tx_guarded_multisig` passes the auth arg straight through as the
+ * transaction summary salt without ever calling `load_conversion_info`. So
+ * committing conversion info is currently inert for a custody account — and it
+ * costs interoperability, because a proposal whose auth arg is a commitment
+ * cannot be rebuilt by a client that assumes the auth arg is the salt (the Rust
+ * SDK does). See `docs/MIDEN_COMPATIBILITY.md`.
+ *
+ * Hence nothing here is applied by default. These helpers exist so that the
+ * moment `guarded_multisig.masm` pays the fee upstream, the commitment is ready
+ * and verified against the MASM; a caller driving the exported builders can opt
+ * in today through `SignatureOptions.feeFaucetId`.
+ *
+ * The commitment does not branch on whether the chain currently charges a fee:
+ * `load_conversion_info` runs before the fee amount is known, and a valid
+ * commitment verifies fine when the fee turns out to be zero — the note is then
+ * simply not created.
+ */
+
+/** Rate numerator/denominator for paying the fee in the native asset 1:1. */
+const NATIVE_RATE_NUM = 1n;
+const NATIVE_RATE_DEN = 1n;
+
+/** Two words — the only length at which `hashElements` equals `merge`. */
+const MERGE_EQUIVALENT_ELEMENTS = 8;
+
+/**
+ * Parses a caller-supplied faucet id, naming the option it came from — several
+ * account ids are parsed while building a request, so the SDK's own message does
+ * not say which one was rejected.
+ */
+function parseFeeFaucetId(feeFaucetId: string): AccountId {
+  try {
+    return AccountId.fromHex(feeFaucetId);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid feeFaucetId '${feeFaucetId}': ${detail}`, { cause: error });
+  }
+}
+
+/**
+ * Builds conversion info paying the fee at rate 1/1 out of the given faucet.
+ *
+ * This mirrors the word layout of `fee::native_conversion_info` and the rate of
+ * `FeeConversionInfo::one_to_one`, but not the faucet: that MASM proc reads the
+ * chain's own fee faucet from the reference block, whereas the faucet here is
+ * whatever the caller passed and is not checked against any chain.
+ *
+ * Word layout is `[faucet_id_suffix, faucet_id_prefix, rate_num, rate_den]`.
+ *
+ * A hex argument is parsed into a handle owned here and released before
+ * returning; an `AccountId` argument stays the caller's to free.
+ */
+export function nativeConversionInfo(feeFaucetId: AccountId | string): Word {
+  if (typeof feeFaucetId !== 'string') {
+    return conversionInfoWord(feeFaucetId);
+  }
+
+  const parsed = parseFeeFaucetId(feeFaucetId);
+  try {
+    return conversionInfoWord(parsed);
+  } finally {
+    parsed.free?.();
+  }
+}
+
+function conversionInfoWord(accountId: AccountId): Word {
+  return WordType.newFromFelts([
+    accountId.suffix(),
+    accountId.prefix(),
+    new Felt(NATIVE_RATE_NUM),
+    new Felt(NATIVE_RATE_DEN),
+  ]);
+}
+
+/**
+ * Computes the auth-arg commitment `hash(CONVERSION_INFO || SALT)`.
+ *
+ * The MASM computes this with `poseidon2::merge`, which the JS bindings do not
+ * expose. `Poseidon2.hashElements` over the same eight elements is equivalent:
+ * `merge` seeds a zero capacity, and `hash_elements` sets
+ * `capacity[0] = len % RATE_WIDTH`, which for exactly eight elements is zero.
+ * Both then absorb one full rate block and apply a single permutation, with no
+ * padding block. Verified against `miden-crypto` — the digests are identical,
+ * and the reversed argument order is not, so the ordering below matters.
+ *
+ * That equivalence holds only at exactly eight elements, which is why the length
+ * is asserted rather than assumed: at any other length `hash_elements` seeds a
+ * non-zero capacity or absorbs a padding block, and would silently stop agreeing
+ * with the MASM.
+ */
+export function feeAuthArg(conversionInfo: Word, salt: Word): Word {
+  const elements = [...conversionInfo.toFelts(), ...salt.toFelts()];
+  if (elements.length !== MERGE_EQUIVALENT_ELEMENTS) {
+    throw new Error(
+      `Fee auth-arg preimage must be exactly ${MERGE_EQUIVALENT_ELEMENTS} elements to match ` +
+        `poseidon2::merge, got ${elements.length}`,
+    );
+  }
+
+  return Poseidon2.hashElements(new FeltArray(elements));
+}
+
+/**
+ * Records the commitment preimage so `load_conversion_info` can recover it.
+ *
+ * Note the ordering asymmetry, which is easy to get wrong: the advice map value
+ * is `SALT ++ CONVERSION_INFO` (the MASM pops the salt word first), while the
+ * commitment hashes `CONVERSION_INFO ++ SALT`.
+ */
+export function insertFeeConversionInfo(
+  adviceMap: AdviceMap,
+  authArg: Word,
+  conversionInfo: Word,
+  salt: Word,
+): void {
+  adviceMap.insert(
+    authArg,
+    new FeltArray([...salt.toFelts(), ...conversionInfo.toFelts()]),
+  );
+}
+
+/**
+ * Resolves the auth arg a request should carry for the given salt.
+ *
+ * With a fee faucet the auth arg becomes the conversion-info commitment and the
+ * returned advice map carries its preimage; both must reach the builder. Without
+ * one the salt is used bare, which is the pre-0.16 behaviour and only valid on a
+ * chain whose `verification_base_fee` is zero.
+ *
+ * The caller keeps the *inner* salt, never the returned auth arg: the commitment
+ * is not invertible, and rebuilding the request at execution time re-derives the
+ * commitment from that salt.
+ *
+ * On the bare path the returned auth arg *is* the salt handle, not a copy, so it
+ * must not be freed separately. Every caller passes a salt it built for this one
+ * call and does not reuse, which is what makes that safe; a caller that needs
+ * its salt afterwards has to pass a copy.
+ */
+export function resolveAuthArg(
+  salt: Word,
+  feeFaucetId?: AccountId | string,
+): { authArg: Word; adviceMap?: AdviceMap } {
+  if (feeFaucetId === undefined) {
+    return { authArg: salt };
+  }
+
+  const conversionInfo = nativeConversionInfo(feeFaucetId);
+  let authArg: Word | undefined;
+  let adviceMap: AdviceMap | undefined;
+  try {
+    authArg = feeAuthArg(conversionInfo, salt);
+    adviceMap = new AdviceMap();
+    insertFeeConversionInfo(adviceMap, authArg, conversionInfo, salt);
+
+    return { authArg, adviceMap };
+  } catch (error) {
+    authArg?.free?.();
+    adviceMap?.free?.();
+    throw error;
+  } finally {
+    conversionInfo.free?.();
+  }
+}
+
+/** Which of the two auth-arg conventions produced a signed auth arg. */
+export type AuthArgConvention = 'bare' | 'committed' | 'mismatch';
+
+/**
+ * Recovers which convention built an auth arg, by reproducing both.
+ *
+ * The inverse of {@link resolveAuthArg}, and the reason a rebuild can reproduce
+ * a proposal it did not create: the commitment is not invertible, so the only
+ * way to tell a bare salt from a commitment to that salt is to compute the
+ * commitment and compare. `mismatch` means the auth arg belongs to neither —
+ * a different salt, or a different fee faucet.
+ *
+ * Kept beside the producer so both can be checked against each other over the
+ * real hash — see `tests/fee-auth-convention.test.ts`. That pairing catches a
+ * detector that disagrees with the producer, but not a change to the hash they
+ * share: swapping its operands moves both sides together and still reads as
+ * `committed`. Operand order is pinned instead by the Rust-computed
+ * `Poseidon2::merge` vector in `feeAuth.test.ts`.
+ */
+export function detectAuthArgConvention(
+  signedAuthArg: Word,
+  salt: Word,
+  feeFaucetId: AccountId | string,
+): AuthArgConvention {
+  const signedHex = signedAuthArg.toHex();
+  if (salt.toHex() === signedHex) {
+    return 'bare';
+  }
+
+  const conversionInfo = nativeConversionInfo(feeFaucetId);
+  try {
+    const commitment = feeAuthArg(conversionInfo, salt);
+    try {
+      return commitment.toHex() === signedHex ? 'committed' : 'mismatch';
+    } finally {
+      commitment.free?.();
+    }
+  } finally {
+    conversionInfo.free?.();
+  }
+}

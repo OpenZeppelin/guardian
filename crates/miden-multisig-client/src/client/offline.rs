@@ -71,6 +71,9 @@ impl MultisigClient {
             self.key_manager.scheme(),
             salt,
             std::iter::empty(),
+            // The offline path has no RPC connection to read the chain's fee faucet from, so it
+            // cannot commit conversion info; such a request is only executable fee-free.
+            None,
         )?;
 
         let (tx_summary, chain_anchor) =

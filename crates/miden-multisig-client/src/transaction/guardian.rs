@@ -14,6 +14,8 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::AuthGuardedMultisig;
 
 use crate::error::{MultisigError, Result};
+use miden_standards::account::auth::FeeConversionInfo;
+use super::MaybeFeeConversionInfo;
 
 /// Builds the update_guardian_public_key transaction script.
 ///
@@ -53,6 +55,7 @@ pub fn build_update_guardian_transaction_request<I>(
     scheme: SignatureScheme,
     salt: Word,
     signature_advice: I,
+    fee_conversion_info: Option<FeeConversionInfo>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -62,7 +65,7 @@ where
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
         .extend_advice_map(signature_advice)
-        .auth_arg(salt)
+        .maybe_fee_conversion_info(fee_conversion_info, salt)
         .build()?;
 
     Ok(request)

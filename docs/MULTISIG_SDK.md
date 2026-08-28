@@ -944,6 +944,7 @@ one implicitly.
 | `getConsumableNotes()` | Get notes that can be consumed |
 | `getSignerPublicKeyCommitments()` | Read the current signer public-key commitments from account storage, ordered by signer index (strict; throws on partial reads) |
 | `getGuardianPublicKeyCommitment()` | Read the current guardian commitment from account storage (strict; throws when the entry is missing — the guarded-multisig always includes a guardian) |
+| `getFeeFaucetId()` | TypeScript only: hex id of the fee faucet at the client's chain tip, for callers driving the exported builders themselves via `SignatureOptions.feeFaucetId`. No `create*Proposal` path uses it, and `createP2idProposal` rejects it rather than dropping it — a committed auth arg is inert for the guarded-multisig component and not reproducible by the Rust SDK ([`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md)) |
 
 #### FalconSigner
 
