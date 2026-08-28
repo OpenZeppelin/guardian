@@ -1175,7 +1175,14 @@ export class Multisig {
     }
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
-    const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes);
+    // Since protocol 0.16 the guarded auth procedure pays the fee, and `fee::pay_fee`
+    // reads the conversion info out of the auth args. Committing it is safe on a
+    // zero-fee chain too: the commitment is verified before the fee amount is known,
+    // and a zero fee simply creates no note.
+    const feeFaucetId = await this.getFeeFaucetId();
+    const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes, {
+      feeFaucetId,
+    });
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
@@ -1235,24 +1242,19 @@ export class Multisig {
       throw new Error('Amount must be greater than 0');
     }
 
-    const {
-      nonce: _nonce,
-      feeFaucetId,
-      ...noteOptions
-    } = options as CreateP2idProposalOptions & { feeFaucetId?: never };
-    if (feeFaucetId !== undefined) {
-      throw new Error(
-        'createP2idProposal does not accept feeFaucetId: a typed proposal carrying a fee ' +
-          'commitment cannot be rebuilt by the Rust SDK. Drive buildP2idTransactionRequest ' +
-          'directly and register the result as a custom proposal instead',
-      );
-    }
+    const { nonce: _nonce, ...noteOptions } = options as CreateP2idProposalOptions;
+    // The fee faucet is the chain's, not the caller's: resolving it here means every
+    // typed proposal commits conversion info, which the guarded auth procedure now
+    // requires before it will pay. `metadata.saltHex` still persists the INNER salt,
+    // so the rebuild path is unchanged.
+    const feeFaucetId = await this.getFeeFaucetId();
+
     const { request, salt } = buildP2idTransactionRequest(
       this._accountId,
       recipientId,
       faucetId,
       amount,
-      noteOptions,
+      { ...noteOptions, feeFaucetId },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);

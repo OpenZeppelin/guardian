@@ -1910,7 +1910,7 @@ describe('Multisig', () => {
         '0xrecipient',
         '0xfaucet',
         100n,
-        { noteType: NoteType.Private },
+        expect.objectContaining({ noteType: NoteType.Private }),
       );
       // ...and the rebuild-from-metadata path parses note_type back to Private.
       const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
@@ -2062,7 +2062,7 @@ describe('Multisig', () => {
     /// arg the Rust SDK cannot rebuild, so it is refused rather than ignored —
     /// silently dropping it would hand back a proposal that is not what was asked
     /// for.
-    it('refuses feeFaucetId on a typed p2id proposal', async () => {
+    it('commits the chain fee faucet on a typed p2id proposal', async () => {
       const { executeForSummary } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
         summary: {
@@ -2107,14 +2107,18 @@ describe('Multisig', () => {
         }),
       });
 
-      await expect(
-        multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, {
-          nonce: 1,
-          feeFaucetId: MOCK_FEE_FAUCET_ID_HEX,
-        } as never),
-      ).rejects.toThrow(/does not accept feeFaucetId/);
+      // The guarded auth procedure pays the fee and reads the conversion info from
+      // the auth args, so the proposal must commit it. The faucet is resolved from
+      // the chain rather than taken from the caller.
+      await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 1 });
 
-      expect(vi.mocked(buildP2idTransactionRequest)).not.toHaveBeenCalled();
+      expect(vi.mocked(buildP2idTransactionRequest)).toHaveBeenCalledWith(
+        expect.anything(),
+        '0xrecipient',
+        '0xfaucet',
+        100n,
+        expect.objectContaining({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX }),
+      );
     });
   });
 
