@@ -20,7 +20,8 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| 0.17.0-rc.1 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.3` | `0.16.0-rc.5` (exact) |
+| 0.17.0-rc.2 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.3` | `0.16.0-rc.5` (exact) |
+| 0.17.0-rc.1 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.2` | `0.16.0-rc.3` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
 | 0.15.x | 0.15 | `0.15.x` | `0.15.0` | `^0.15.0` |
 | 0.14.x | 0.14 | n/a | `0.14.x` | `^0.14.0` |
