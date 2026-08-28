@@ -179,15 +179,12 @@ safety behaviour.
 #### TypeScript Tests
 
 ```bash
-# Install dependencies
-cd packages/guardian-client && npm install
-cd packages/guardian-evm-client && npm install
-cd packages/guardian-operator-client && npm install
-cd packages/miden-multisig-client && npm install
+cd packages
+npm ci
 
-# Run tests
-cd packages/guardian-client && npm test
-cd packages/guardian-evm-client && npm test
-cd packages/guardian-operator-client && npm test
-cd packages/miden-multisig-client && npm test
+npm test -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/guardian-evm-client
+npm test -w @openzeppelin/guardian-operator-client
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
 ```

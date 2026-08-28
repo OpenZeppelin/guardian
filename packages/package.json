@@ -1,0 +1,17 @@
+{
+  "name": "guardian-js",
+  "private": true,
+  "engines": {
+    "node": ">=24",
+    "npm": ">=11"
+  },
+  "devDependencies": {
+    "semver": "^7.8.5"
+  },
+  "workspaces": [
+    "guardian-client",
+    "guardian-evm-client",
+    "guardian-operator-client",
+    "miden-multisig-client"
+  ]
+}

@@ -261,9 +261,6 @@ jobs:
           - guardian-evm-client
           - guardian-operator-client
           - miden-multisig-client
-    defaults:
-      run:
-        working-directory: packages/${{ matrix.package }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
@@ -280,7 +277,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: packages/${{ matrix.package }}/package-lock.json
+          cache-dependency-path: packages/package-lock.json
 
       # The procedure-roots test shells out to
       # `cargo run --example procedure_roots -p miden-multisig-client`,
@@ -307,37 +304,49 @@ jobs:
         working-directory: .
         run: cargo build --quiet --example procedure_roots --example serialized_account -p miden-multisig-client
 
-      # miden-multisig-client must build against the in-repo guardian-client, not
-      # the published one: a PR that changes both (the default for contract
-      # changes per AGENTS.md) would otherwise test a stale pair, and during a
-      # coordinated release the internal dep is bumped before guardian-client is
-      # published, so the registry cannot satisfy it at all and `npm ci` fails
-      # with ETARGET. Resolving the dep at the sibling fixes both cases: it is
-      # the pair that ships together, and it needs no registry entry.
-      #
-      # The package.json edit is scoped to this checkout. Publishing runs from a
-      # clean tree in publish.yml, so the shipped manifest keeps its semver
-      # range. `npm install` rather than `npm ci` because a `file:` dep cannot
-      # live in the committed lockfile without breaking publish.
-      - name: Build the in-repo guardian-client
-        if: matrix.package == 'miden-multisig-client'
-        working-directory: packages/guardian-client
-        run: npm ci && npm run build
-
       - name: Install dependencies
+        working-directory: packages
+        run: npm ci
+
+      - name: Assert miden SDK uses the workspace guardian-client
+        if: matrix.package == 'miden-multisig-client'
+        working-directory: packages
         run: |
-          if [[ "${{ matrix.package }}" == "miden-multisig-client" ]]; then
-            npm pkg set 'dependencies.@openzeppelin/guardian-client=file:../guardian-client'
-            npm install --no-audit --no-fund
-          else
-            npm ci
-          fi
+          node <<'EOF'
+          const lock = require("./package-lock.json");
+          const workspaceEntry = lock.packages["node_modules/@openzeppelin/guardian-client"];
+          const nestedEntry =
+            lock.packages[
+              "miden-multisig-client/node_modules/@openzeppelin/guardian-client"
+            ];
+          if (
+            !workspaceEntry ||
+            workspaceEntry.link !== true ||
+            workspaceEntry.resolved !== "guardian-client" ||
+            nestedEntry
+          ) {
+            console.error(
+              "@openzeppelin/miden-multisig-client must resolve guardian-client from the workspace",
+              { workspaceEntry, nestedEntry },
+            );
+            process.exit(1);
+          }
+          EOF
+
+      # Workspaces link the package sources, but the multisig SDK imports the
+      # guardian-client's generated dist output.
+      - name: Build workspace dependencies
+        if: matrix.package == 'miden-multisig-client'
+        working-directory: packages
+        run: npm run build -w @openzeppelin/guardian-client
 
       - name: Build
-        run: npm run build
+        working-directory: packages
+        run: npm run build -w @openzeppelin/${{ matrix.package }}
 
       - name: Run tests
-        run: npm test
+        working-directory: packages
+        run: npm test -w @openzeppelin/${{ matrix.package }}
 
   contract-behavior:
     name: Contract Behavior Tests
@@ -391,28 +400,25 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: packages/miden-multisig-client/package-lock.json
+          cache-dependency-path: packages/package-lock.json
 
-      # Same reason as the ts-packages job: resolve guardian-client at the
-      # sibling so this gate tests the pair that ships together and does not
-      # depend on the internal dep already being published.
-      - name: Build the in-repo guardian-client
-        working-directory: packages/guardian-client
-        run: npm ci && npm run build
+      - name: Install dependencies
+        working-directory: packages
+        run: npm ci
 
-      - name: Install package dependencies
-        working-directory: packages/miden-multisig-client
-        run: |
-          npm pkg set 'dependencies.@openzeppelin/guardian-client=file:../guardian-client'
-          npm install --no-audit --no-fund
+      # Workspaces link the package sources, but the multisig SDK imports the
+      # guardian-client's generated dist output.
+      - name: Build workspace dependencies
+        working-directory: packages
+        run: npm run build -w @openzeppelin/guardian-client
 
       - name: Build package
-        working-directory: packages/miden-multisig-client
-        run: npm run build
+        working-directory: packages
+        run: npm run build -w @openzeppelin/miden-multisig-client
 
       - name: Run browser determinism gate
-        working-directory: packages/miden-multisig-client
-        run: npm run test:browser
+        working-directory: packages
+        run: npm run test:browser -w @openzeppelin/miden-multisig-client
 
   clippy:
     name: Clippy

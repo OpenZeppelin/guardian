@@ -62,12 +62,15 @@ Default targeted checks:
 
 ```bash
 cargo test -p miden-multisig-client
-cd packages/miden-multisig-client && npm test
+cd packages
+npm ci
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
 ```
 
 Then expand as needed:
 
-- `cargo test -p guardian-client` or `cd packages/guardian-client && npm test` if the change crosses the GUARDIAN client boundary
+- `cargo test -p guardian-client` or `cd packages && npm test -w @openzeppelin/guardian-client` if the change crosses the GUARDIAN client boundary
 - `cargo test -p guardian-demo`
 - `cd examples/smoke-web && npm run typecheck && npm run build`
 - `cd examples/web && npm run build`

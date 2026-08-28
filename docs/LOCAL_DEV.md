@@ -24,7 +24,7 @@ Three decisions when running Guardian locally:
 ## Prerequisites
 
 - Rust toolchain pinned by [`rust-toolchain.toml`](../rust-toolchain.toml).
-- Node 18+ if you will run any TS examples or packages.
+- Node 24+ (bundles npm 11, which the `packages/` workspace lockfile requires) if you will run any TS examples or packages.
 - Docker if you will use `docker-compose.*.yml`.
 - A Miden node — required for almost every flow. Either point at a
   Miden Devnet endpoint or run one locally; configure via
@@ -244,8 +244,11 @@ cargo test -p guardian-server --features integration
 cargo test -p guardian-server --features e2e
 ```
 
-TypeScript packages each carry their own `npm test` — see the root
-[`README.md`](../README.md#typescript-tests).
+TypeScript packages live in an npm workspace under `packages/`. Install
+once from that directory with `npm ci`, then run tests with
+`npm test -w @openzeppelin/<package>`. `miden-multisig-client` depends
+on the in-repo `guardian-client` workspace package — build that first.
+See the root [`README.md`](../README.md#typescript-tests).
 
 Cargo feature gates (`integration`, `e2e`) document what each suite
 needs at the top of the relevant test modules under

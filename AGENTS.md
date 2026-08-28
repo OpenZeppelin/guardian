@@ -160,11 +160,16 @@ cargo test -p guardian-server --features e2e
 
 ### TypeScript
 
+TypeScript packages live in an npm workspace under `packages/`. Install once from that directory, then test with `-w`. `miden-multisig-client` links the in-repo `@openzeppelin/guardian-client`; build that package first.
+
 ```bash
-cd packages/guardian-client && npm test
-cd packages/guardian-operator-client && npm test
-cd packages/guardian-evm-client && npm test
-cd packages/miden-multisig-client && npm test
+cd packages
+npm ci
+npm test -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/guardian-operator-client
+npm test -w @openzeppelin/guardian-evm-client
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
 ```
 
 ### Examples (smoke/integration)
@@ -233,7 +238,7 @@ When docs are not updated after a visible behavior change, note why in the final
 
 - Keep crate/package versions aligned with the active Miden dependency line.
 - Current baseline is the Miden `0.16` pre-release line (exact-pinned pre-releases, currently the `rc` series) across the Rust workspace and `packages/miden-multisig-client`. Changes must remain compatible with that line unless migration is explicit.
-- Pre-release pins are exact and must move together across both SDKs. The pin pair is authoritative: `@miden-sdk/miden-sdk` bundles a WASM built against specific `miden-protocol`/`miden-standards` versions, and only a matching pair produces identical transaction-summary commitments and auth procedure roots. Read the bundled versions with `strings packages/miden-multisig-client/node_modules/@miden-sdk/miden-sdk/dist/st/assets/miden_client_web.wasm | grep -oE "miden-[a-z-]+-[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?" | sort -u` and pin the Rust workspace to exactly those. Ranges are never acceptable here: semver ranges exclude pre-releases, so `0.16.x` resolves to no published version.
+- Pre-release pins are exact and must move together across both SDKs. The pin pair is authoritative: `@miden-sdk/miden-sdk` bundles a WASM built against specific `miden-protocol`/`miden-standards` versions, and only a matching pair produces identical transaction-summary commitments and auth procedure roots. Read the bundled versions with `strings packages/node_modules/@miden-sdk/miden-sdk/dist/st/assets/miden_client_web.wasm | grep -oE "miden-[a-z-]+-[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?" | sort -u` after running `npm ci` in `packages/`, and pin the Rust workspace to exactly those. Ranges are never acceptable here: semver ranges exclude pre-releases, so `0.16.x` resolves to no published version.
 - If a change requires moving to a new Miden line, treat it as a coordinated release task:
   1. Update workspace/dependency constraints.
   2. Update both multisig SDKs and both base clients as needed.

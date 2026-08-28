@@ -24,7 +24,7 @@ Likely surfaces:
 Validation:
 - `cargo test -p guardian-server`
 - `cargo test -p guardian-client`
-- `cd packages/guardian-client && npm test`
+- `cd packages && npm ci && npm test -w @openzeppelin/guardian-client`
 - one upstream smoke when user-visible behavior changes
 
 ## Canonicalization Or State Lifecycle
@@ -85,7 +85,7 @@ Likely surfaces:
 
 Validation:
 - `cargo test -p guardian-client`
-- `cd packages/guardian-client && npm test`
+- `cd packages && npm ci && npm test -w @openzeppelin/guardian-client`
 
 ## Multisig Proposal Lifecycle
 
