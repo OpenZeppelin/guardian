@@ -442,90 +442,101 @@ describe('Multisig', () => {
     });
   });
 
-  describe('importNotesFromProposals (issue #415)', () => {
+  describe('recoverNotes wiring', () => {
     const config = {
       threshold: 1,
       signerCommitments: ['0x' + 'a'.repeat(64)],
       guardianCommitment: '0x' + 'c'.repeat(64),
     };
 
-    it("delegates to the standalone helper with this client's endpoint and rpc settings", async () => {
+    it("wires the strategies with this client's endpoint, rpc settings, and a pre-backfill chain sync", async () => {
       const multisig = createTestMultisig(config);
       const outcomes = [{ identifier: '0x1', source: 'proposal', status: 'imported' }];
       mockImportNotesFromProposals.mockResolvedValue(outcomes);
-      const proposals = [
-        { id: 'p-1', metadata: { proposalType: 'consume_notes', description: '', noteIds: [] } },
-      ];
-
-      const result = await multisig.importNotesFromProposals(proposals as never);
-
-      expect(result).toBe(outcomes);
-      expect(mockImportNotesFromProposals).toHaveBeenCalledWith(mockWebClient, proposals, {
-        midenRpcEndpoint: MIDEN_RPC_ENDPOINT,
-        // Reuses the client's resolved retry budget (default: 2 attempts).
-        rpc: { retry: { maxAttempts: 2 } },
-      });
-    });
-
-    it('syncs proposals from GUARDIAN when none are passed', async () => {
-      const multisig = createTestMultisig(config);
-      mockImportNotesFromProposals.mockResolvedValue([]);
-      const spy = vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
-
-      await multisig.importNotesFromProposals();
-
-      expect(spy).toHaveBeenCalledWith('0x' + 'a'.repeat(30));
-      expect(mockImportNotesFromProposals).toHaveBeenCalledWith(
-        mockWebClient,
-        [],
-        expect.objectContaining({ midenRpcEndpoint: MIDEN_RPC_ENDPOINT }),
-      );
-    });
-  });
-
-  describe('backfillPublicNotesByTag (issue #416)', () => {
-    const config = {
-      threshold: 1,
-      signerCommitments: ['0x' + 'a'.repeat(64)],
-      guardianCommitment: '0x' + 'c'.repeat(64),
-    };
-
-    it("delegates to the standalone helper with this account's id, endpoint, and rpc settings", async () => {
-      const multisig = createTestMultisig(config);
       const report = {
         scannedFrom: 5,
         scannedTo: 9,
         discovered: 0,
         skippedPrivate: 0,
         skippedIrrelevant: 0,
+        skippedUnscreenable: 0,
         outcomes: [],
         uncovered: [],
         retryable: false,
       };
       mockBackfillPublicNotesByTag.mockResolvedValue(report);
+      const proposalsSpy = vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+      mockWebClient.syncChain = vi.fn().mockResolvedValue(undefined);
 
-      const result = await multisig.backfillPublicNotesByTag({ fromBlock: 5, toBlock: 9 });
+      const result = await multisig.recoverNotes({
+        transportDrain: false,
+        syncAfter: false,
+        fromBlock: 5,
+        toBlock: 9,
+      });
 
-      expect(result).toBe(report);
+      expect(proposalsSpy).toHaveBeenCalledWith('0x' + 'a'.repeat(30));
+      expect(mockImportNotesFromProposals).toHaveBeenCalledWith(mockWebClient, [], {
+        midenRpcEndpoint: MIDEN_RPC_ENDPOINT,
+        // Reuses the client's resolved retry budget (default: 2 attempts).
+        rpc: { retry: { maxAttempts: 2 } },
+      });
+      // A store that has never seen the chain cannot import proofs, so the
+      // backfill strategy syncs the chain state first.
+      expect(mockWebClient.syncChain).toHaveBeenCalled();
       expect(mockBackfillPublicNotesByTag).toHaveBeenCalledWith(mockWebClient, {
         accountId: '0x' + 'a'.repeat(30),
         midenRpcEndpoint: MIDEN_RPC_ENDPOINT,
-        // Reuses the client's resolved retry budget (default: 2 attempts).
         rpc: { retry: { maxAttempts: 2 } },
         fromBlock: 5,
         toBlock: 9,
       });
+      expect(result.proposalImport).toEqual(outcomes);
+      expect(result.backfill).toBe(report);
+      expect(result.problems).toEqual([]);
     });
 
-    it('omits unset block bounds so the standalone genesis/tip defaults apply', async () => {
+    it('omits unset block bounds so the backfill genesis/tip defaults apply', async () => {
       const multisig = createTestMultisig(config);
       mockBackfillPublicNotesByTag.mockResolvedValue({ outcomes: [] } as never);
+      mockWebClient.syncChain = vi.fn().mockResolvedValue(undefined);
 
-      await multisig.backfillPublicNotesByTag();
+      await multisig.recoverNotes({
+        transportDrain: false,
+        proposalImport: false,
+        syncAfter: false,
+      });
 
       const options = mockBackfillPublicNotesByTag.mock.calls.at(-1)?.[1] as object;
       expect('fromBlock' in options).toBe(false);
       expect('toBlock' in options).toBe(false);
+    });
+
+    it('isolates a corrupt proposal as an invalid outcome instead of failing the step', async () => {
+      const multisig = createTestMultisig(config);
+      mockImportNotesFromProposals.mockResolvedValue([]);
+      vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([
+        // A payload that cannot even produce a proposal id: the listing must
+        // skip it with a reason instead of throwing away the whole step.
+        { nonce: 3, deltaPayload: { txSummary: { data: '!!! garbage !!!' } } },
+      ] as never);
+
+      const result = await multisig.recoverNotes({
+        transportDrain: false,
+        publicBackfill: false,
+        syncAfter: false,
+      });
+
+      expect(result.problems).toEqual([]);
+      expect(result.proposalImport).toHaveLength(1);
+      expect(result.proposalImport?.[0]?.status).toBe('invalid');
+      expect(result.proposalImport?.[0]?.identifier).toContain('nonce 3');
+      // The healthy remainder (here: none) still reaches the import.
+      expect(mockImportNotesFromProposals).toHaveBeenCalledWith(
+        mockWebClient,
+        [],
+        expect.objectContaining({ midenRpcEndpoint: MIDEN_RPC_ENDPOINT }),
+      );
     });
   });
 

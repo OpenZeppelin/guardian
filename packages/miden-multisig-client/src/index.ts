@@ -49,10 +49,9 @@ export {
   type MultisigClientConfig,
   type RecoveredAccount,
 } from './client.js';
-export {
-  drainPrivateNoteBacklog,
-  type TransportRecoveryReport,
-  type TransportRecoveryStatus,
+export type {
+  TransportRecoveryReport,
+  TransportRecoveryStatus,
 } from './recovery/transportDrain.js';
 export type { ProverConfig, ProverRetryPolicy } from './prover/config.js';
 export type { RpcConfig, RpcRetryPolicy } from './rpc/config.js';
@@ -109,20 +108,16 @@ export type {
 export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
 export type { ConnectivityCategory, UserFacingError } from './connectivity.js';
 
-// Recovery primitives and the wallet-facing recovery flow.
-export { importNotesFromProposals } from './recovery/proposalNoteImport.js';
+// The wallet-facing recovery flow (`Multisig.recoverNotes`) and its report
+// types. The individual strategies are internal — the flow is the one entry
+// point, so callers cannot accidentally skip the required context (tracked
+// account, synced store) or the final verifying sync.
 export type {
-  ImportNotesFromProposalsOptions,
   NoteImportOutcome,
   NoteImportSource,
   NoteImportStatus,
 } from './recovery/proposalNoteImport.js';
-export { backfillPublicNotesByTag, BackfillRangeError } from './recovery/publicNoteBackfill.js';
-export type {
-  BackfillPublicNotesOptions,
-  BlockRange,
-  PublicBackfillReport,
-} from './recovery/publicNoteBackfill.js';
+export type { BlockRange, PublicBackfillReport } from './recovery/publicNoteBackfill.js';
 export type {
   NoteRecoveryReport,
   RecoverNotesOptions,

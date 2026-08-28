@@ -145,6 +145,21 @@ pub(crate) fn test_wallet(seed: u8) -> Account {
         .expect("test wallet builds")
 }
 
+/// A mock chain holding the given output notes in its first post-genesis
+/// block, with the tip advanced a few blocks past it — the note-bearing
+/// block sits strictly below the tip.
+pub(crate) fn chain_with_notes(
+    notes: Vec<miden_protocol::transaction::RawOutputNote>,
+) -> Arc<MockRpcApi> {
+    let mut builder = miden_client::testing::MockChain::builder();
+    for note in notes {
+        builder.add_output_note(note);
+    }
+    let api = Arc::new(MockRpcApi::new(builder.build().expect("mock chain builds")));
+    api.advance_blocks(4);
+    api
+}
+
 /// A distinct (per `seed`) P2ID note addressed at `target` from an unrelated
 /// sender wallet.
 pub(crate) fn p2id_note_for(target: &Account, seed: u32, note_type: NoteType) -> Note {

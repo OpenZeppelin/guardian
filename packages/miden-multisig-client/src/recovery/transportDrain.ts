@@ -80,6 +80,12 @@ export const TRANSPORT_CONNECTION_FRAGMENT = 'connection error';
  */
 export const NODE_RPC_FRAGMENT = 'grpc request failed';
 /**
+ * `RpcError::ConnectionError`'s Display text — the NODE could not be
+ * reached at all, which mid-drain is the same interrupted-import class as
+ * {@link NODE_RPC_FRAGMENT}. Exported for the drift-guard test.
+ */
+export const NODE_CONNECT_FRAGMENT = 'failed to connect to the Miden node';
+/**
  * The covered-tags bookkeeping key, mirror of miden-client's
  * `NOTE_TRANSPORT_COVERED_TAGS_KEY` (the JS surface does not re-export it).
  * Exported for the drift-guard test, which pins it against the shipped WASM
@@ -170,7 +176,7 @@ function classifyDrainFailure(err: unknown): DrainFailure {
   // transport itself was reachable. Mirrors the Rust `ClientError::RpcError`
   // arm: report `failed`, with the shared RPC classifier deciding whether a
   // rerun can help.
-  if (lower.includes(NODE_RPC_FRAGMENT)) {
+  if (lower.includes(NODE_RPC_FRAGMENT) || lower.includes(NODE_CONNECT_FRAGMENT.toLowerCase())) {
     return { status: 'failed', retryable: isTransientRpcError(err), reason, scanned: true };
   }
   // The transport answered with an error — worth retrying once the service
@@ -196,21 +202,29 @@ function classifyDrainFailure(err: unknown): DrainFailure {
 }
 
 /**
- * Best-effort restore after a failed drain: returning the covered-tags
- * value to its pre-drain state keeps a client that synced fine before the
- * attempt syncing fine after it. Unlike the Rust twin — which merges the
- * snapshot with whatever the interrupted backfill re-covered — this
- * restores the snapshot verbatim (the WASM surface exposes the set only as
- * an opaque value); at worst the next successful drain re-covers tags the
- * failed attempt already handled, which is idempotent.
+ * Restores the covered-tags value after a failed drain: returning it to its
+ * pre-drain state keeps a client that synced fine before the attempt
+ * syncing fine after it. Unlike the Rust twin — which merges the snapshot
+ * with whatever the interrupted backfill re-covered — this restores the
+ * snapshot verbatim (the WASM surface exposes the set only as an opaque
+ * value); at worst the next successful drain re-covers tags the failed
+ * attempt already handled, which is idempotent. A failed restoring write
+ * throws: the store is left with its bookkeeping cleared and subsequent
+ * normal syncs may re-drain (and re-fail on) old history — a local-store
+ * environment failure the caller must not fold into a transport report.
  */
-async function restoreCoveredTags(midenClient: MidenClient, snapshot: unknown): Promise<void> {
+async function restoreCoveredTags(
+  midenClient: MidenClient,
+  snapshot: unknown,
+  drainReason: string,
+): Promise<void> {
   if (snapshot === null || snapshot === undefined) return;
   try {
     await midenClient.settings.set(NOTE_TRANSPORT_COVERED_TAGS_KEY, snapshot);
-  } catch {
-    // Best effort: if the store cannot be written the drain error already
-    // describes the failure.
+  } catch (restoreError) {
+    throw new Error(
+      `the transport drain failed (${drainReason}) and restoring the covered-tags bookkeeping also failed (${errorMessage(restoreError)}); subsequent syncs may re-drain old transport history`,
+    );
   }
 }
 
@@ -293,10 +307,10 @@ export async function drainPrivateNoteBacklog(
     if (isLocalStoreError(err)) {
       throw err;
     }
-    if (cleared) {
-      await restoreCoveredTags(midenClient, coveredSnapshot);
-    }
     const { status, retryable, reason, scanned } = classifyDrainFailure(err);
+    if (cleared) {
+      await restoreCoveredTags(midenClient, coveredSnapshot, reason);
+    }
     // Count even when the drain failed: each fetched batch is imported as it
     // arrives, so notes recovered before the failure stay in the store. A
     // disabled transport throws before fetching anything, so skip the
@@ -305,8 +319,9 @@ export async function drainPrivateNoteBacklog(
     if (status === 'unavailable' && imported > 0) {
       // `unavailable` promises "nothing was imported"; a connection lost
       // mid-drain after partial progress is an interrupted drain, so report
-      // it as a retryable failure instead.
-      return { status: 'failed', imported, retryable: true, reason };
+      // it as a failure — keeping the classified retryability, like the
+      // Rust twin.
+      return { status: 'failed', imported, retryable, reason };
     }
     return { status, imported, retryable, reason };
   }

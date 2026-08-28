@@ -65,6 +65,11 @@ pub struct PublicBackfillReport {
     /// account's tag. Like normal sync, only notes the account could
     /// actually consume are imported; the rest are counted here.
     pub skipped_irrelevant: usize,
+    /// Unique public matches no screener could judge. Always `0` in this
+    /// SDK — the execution-based screener judges every note; the TS SDK
+    /// counts its statically unscreenable custom-script notes here so the
+    /// two skip classes stay distinguishable across SDKs.
+    pub skipped_unscreenable: usize,
     /// One outcome per unique public note that passed the relevance screen —
     /// `outcomes.len() == discovered - skipped_private - skipped_irrelevant`.
     /// Screened-out and private matches get no outcome, only their counters.
@@ -102,10 +107,10 @@ impl MultisigClient {
     /// notes, not the range length, which makes genesis an
     /// acceptable default lower bound. The global sync height is never
     /// touched — run normal sync afterwards to verify the imported notes.
-    /// The store must have synced at least once (recovery via
-    /// [`MultisigClient::pull_account`] does this): importing a proof into a
-    /// store that has never seen the chain fails, and such failures surface
-    /// as `Failed` outcomes.
+    /// The store must have synced at least once
+    /// ([`MultisigClient::recover_notes`] syncs the chain before this
+    /// strategy runs): importing a proof into a store that has never seen
+    /// the chain fails, and such failures surface as `Failed` outcomes.
     ///
     /// The scan range comes from `options` (pass `None` for the defaults:
     /// genesis through the current chain tip). Notes are discovered by tag only — a best-effort filter: notes
@@ -126,7 +131,7 @@ impl MultisigClient {
     /// [`PublicBackfillReport::uncovered`] rather than failing the recovery
     /// flow. An `Err` from this method means the scan range itself could not
     /// be established (chain-tip lookup failed, or `from_block > to_block`).
-    pub async fn backfill_public_notes_by_tag(
+    pub(crate) async fn backfill_public_notes_by_tag(
         &mut self,
         account_id: AccountId,
         options: Option<PublicBackfillOptions>,
@@ -404,6 +409,7 @@ impl MultisigClient {
             discovered: discovered.len(),
             skipped_private,
             skipped_irrelevant,
+            skipped_unscreenable: 0,
             outcomes,
             uncovered,
             retryable,
@@ -416,31 +422,18 @@ impl MultisigClient {
 mod tests {
     use std::sync::Arc;
 
-    use miden_client::testing::MockChain;
     use miden_client::testing::mock::MockRpcApi;
     use miden_protocol::account::Account;
     use miden_protocol::transaction::RawOutputNote;
 
     use super::*;
     use crate::client::test_support::{
-        offline_client_with_node, offline_client_with_node_parts, p2id_note_for, test_wallet,
+        chain_with_notes, offline_client_with_node, offline_client_with_node_parts, p2id_note_for,
+        test_wallet,
     };
 
     fn public_note_for(target: &Account, seed: u32) -> Note {
         p2id_note_for(target, seed, NoteType::Public)
-    }
-
-    /// A mock chain holding the given output notes in its first
-    /// post-genesis block, with the tip advanced a few blocks past it — the
-    /// note-bearing block sits strictly below the tip.
-    fn chain_with_notes(notes: Vec<RawOutputNote>) -> Arc<MockRpcApi> {
-        let mut builder = MockChain::builder();
-        for note in notes {
-            builder.add_output_note(note);
-        }
-        let api = Arc::new(MockRpcApi::new(builder.build().expect("mock chain builds")));
-        api.advance_blocks(4);
-        api
     }
 
     /// The dirty-store scenario from #416: tag coverage starts at `H`, a
@@ -582,7 +575,6 @@ mod tests {
             "{report:?}"
         );
         assert_eq!(report.outcomes[0].identifier, own.id().to_hex());
-        let _ = colliding;
         // The screened-out note must not be in the store.
         let records = client
             .miden_client

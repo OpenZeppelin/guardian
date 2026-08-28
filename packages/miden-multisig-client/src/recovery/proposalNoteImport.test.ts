@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { importNotesFromProposals } from './proposalNoteImport.js';
 import type { Proposal } from '../types/proposal.js';
-import { uint8ArrayToBase64 } from '../utils/encoding.js';
+import { base64ToUint8Array, uint8ArrayToBase64 } from '../utils/encoding.js';
 
 const { mockNoteDeserialize, mockGetNotesById } = vi.hoisted(() => ({
   mockNoteDeserialize: vi.fn(),
@@ -12,6 +12,13 @@ const { mockNoteDeserialize, mockGetNotesById } = vi.hoisted(() => ({
 vi.mock('@miden-sdk/miden-sdk', () => ({
   Note: {
     deserialize: mockNoteDeserialize,
+  },
+  InputNoteState: {
+    Expected: 0,
+    Unverified: 1,
+    Committed: 2,
+    Invalid: 3,
+    ConsumedExternal: 8,
   },
   NoteFile: {
     fromInputNote: vi.fn((inputNote: unknown) => ({ kind: 'with-proof', inputNote })),
@@ -103,6 +110,7 @@ function makeRecord(options: {
   detailsOf?: string;
   assetsOf?: string;
   consumed?: boolean;
+  invalid?: boolean;
 }) {
   const detailsSource = options.detailsOf ?? `0x${'ab'.repeat(32)}`;
   const assets = noteAssets(options.assetsOf ?? detailsSource);
@@ -113,6 +121,8 @@ function makeRecord(options: {
       assets: () => assets,
     }),
     isConsumed: () => options.consumed ?? false,
+    // Mirrors the mocked InputNoteState enum: Invalid = 3, Committed = 2.
+    state: () => (options.invalid ? 3 : 2),
   };
 }
 
@@ -126,6 +136,20 @@ function makeFetchedNote(idHex: string, options: { withBody?: boolean } = {}) {
   };
 }
 
+/** Declared note ids by embedded-note name; unknown names (corrupt bytes)
+ * get a placeholder id — the binding check never reaches it because the
+ * bytes fail to decode first. */
+const DECLARED_IDS: Record<string, string> = {
+  'note-1': NOTE_ID_1,
+  'note-2': NOTE_ID_2,
+  'note-3': NOTE_ID_3,
+};
+
+function declaredIdFor(noteB64: string): string {
+  const name = new TextDecoder().decode(base64ToUint8Array(noteB64));
+  return DECLARED_IDS[name] ?? `0x${'dd'.repeat(32)}`;
+}
+
 function makeProposal(
   id: string,
   notes: string[],
@@ -136,7 +160,7 @@ function makeProposal(
     metadata: {
       proposalType: 'consume_notes',
       description: 'test',
-      noteIds: notes.map((_, i) => `0x${String(i).repeat(2)}`),
+      noteIds: notes.map(declaredIdFor),
       ...(metadataVersion === 2 ? { metadataVersion: 2 as const, notes } : {}),
     },
   };
@@ -169,7 +193,7 @@ describe('importNotesFromProposals', () => {
     consumedRecords = [];
     mockWebClient = {
       getInputNotes: vi.fn().mockImplementation(async (filter: { noteType: number }) => {
-        if (filter.noteType === FILTER_ALL) return storeRecords;
+        if (filter.noteType === FILTER_ALL) return [...storeRecords, ...consumedRecords];
         if (filter.noteType === FILTER_CONSUMED) return consumedRecords;
         return [];
       }),
@@ -262,13 +286,15 @@ describe('importNotesFromProposals', () => {
 
   it('classifies notes the store already tracks, including metadata-less records', async () => {
     storeRecords = [
-      // Normal record, matched by note ID.
+      // Normal record, matched by note ID: skipped without re-importing.
       makeRecord({ idHex: NOTE_ID_1 }),
-      // Metadata-less record (no note ID — e.g. consumed-external or an
-      // expected-state details import), matched by recipient digest.
+      // Metadata-less record (no note ID — e.g. consumed-external): a
+      // details-key match is a lossy approximation, so the candidate is NOT
+      // pre-skipped — it re-imports (the upstream import dedupes exactly)
+      // and the post-import check classifies it from the record.
       makeRecord({ detailsOf: NOTE_ID_2, consumed: true }),
     ];
-    mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_3)]);
+    mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_2), makeFetchedNote(NOTE_ID_3)]);
 
     const outcomes = await run([
       makeProposal('p-1', [noteBase64('note-1'), noteBase64('note-2'), noteBase64('note-3')]),
@@ -276,11 +302,41 @@ describe('importNotesFromProposals', () => {
 
     expect(outcomes).toEqual([
       { identifier: NOTE_ID_1, source: 'proposal', status: 'already-present' },
-      { identifier: NOTE_ID_2, source: 'proposal', status: 'already-consumed' },
+      {
+        identifier: NOTE_ID_2,
+        source: 'proposal',
+        status: 'already-consumed',
+        reason: expect.stringContaining('already consumed on chain'),
+      },
       { identifier: NOTE_ID_3, source: 'proposal', status: 'imported' },
     ]);
-    // Already-tracked notes are never re-imported.
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+    // The ID-matched record is never re-imported; the details-key match is.
+    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('demotes an import whose inclusion proof failed verification to failed', async () => {
+    mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
+    // Upstream stores a proof that fails against the authenticated header
+    // as an Invalid record while the import still resolves — the
+    // post-import check must not let it count as recovered. The record only
+    // exists after the import, so the pre-scan sees an empty store.
+    let storeReads = 0;
+    mockWebClient.getInputNotes.mockImplementation(async () => {
+      storeReads += 1;
+      return storeReads === 1 ? [] : [makeRecord({ idHex: NOTE_ID_1, invalid: true })];
+    });
+
+    const outcomes = await run([makeProposal('p-1', [noteBase64('note-1')])]);
+
+    expect(outcomes).toEqual([
+      {
+        identifier: NOTE_ID_1,
+        source: 'proposal',
+        status: 'failed',
+        retryable: false,
+        reason: expect.stringContaining('inclusion proof failed verification'),
+      },
+    ]);
   });
 
   it('does not mistake a same-recipient record with different assets for the candidate', async () => {
@@ -333,10 +389,12 @@ describe('importNotesFromProposals', () => {
     expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a successful import as imported when the consumed-state check fails', async () => {
+  it('keeps a successful import as imported when the post-import state check fails', async () => {
     mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
-    mockWebClient.getInputNotes.mockImplementation(async (filter: { noteType: number }) => {
-      if (filter.noteType === FILTER_ALL) return [];
+    let storeReads = 0;
+    mockWebClient.getInputNotes.mockImplementation(async () => {
+      storeReads += 1;
+      if (storeReads === 1) return [];
       throw new Error('store busy');
     });
 
@@ -347,7 +405,7 @@ describe('importNotesFromProposals', () => {
         identifier: NOTE_ID_1,
         source: 'proposal',
         status: 'imported',
-        reason: expect.stringContaining('consumed-state check failed'),
+        reason: expect.stringContaining('post-import state check failed'),
       },
     ]);
   });

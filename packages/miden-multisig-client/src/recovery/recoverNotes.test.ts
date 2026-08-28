@@ -30,6 +30,7 @@ function backfillReport(overrides: Partial<PublicBackfillReport> = {}): PublicBa
     discovered: 1,
     skippedPrivate: 0,
     skippedIrrelevant: 0,
+    skippedUnscreenable: 0,
     outcomes: [outcome({ source: 'backfill' })],
     uncovered: [],
     retryable: false,

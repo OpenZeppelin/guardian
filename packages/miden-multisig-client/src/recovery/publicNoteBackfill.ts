@@ -75,18 +75,24 @@ function requireBlockNumber(name: string, value: number): void {
   }
 }
 
+/** Verdict of the static relevance screen. */
+export type ScreenVerdict = 'relevant' | 'irrelevant' | 'unscreenable';
+
 /**
  * Static relevance screen for a discovered public note. The Rust SDK screens
  * with the execution-based `NoteScreener` normal sync uses; the WASM surface
  * does not expose it, so this mirrors its verdict for the well-known note
- * scripts: a note is relevant when it is a P2ID/P2IDE note whose target (or
- * P2IDE reclaimer) is the scanned account. Notes with other scripts are
- * conservatively treated as irrelevant — tags are shared, truncated filters,
- * and importing unscreened tag matches would let anyone pollute the store.
- * Exported for the drift-guard test, which pins the root and storage-layout
- * assumptions against real WASM-built notes.
+ * scripts: a note is `relevant` when it is a P2ID/P2IDE note whose target
+ * (or P2IDE reclaimer) is the scanned account, and `irrelevant` when it is
+ * one of those scripts addressed at someone else. Notes with other scripts
+ * are `unscreenable` — this screen cannot judge them, and they are
+ * conservatively not imported (tags are shared, truncated filters, and
+ * importing unscreened tag matches would let anyone pollute the store), but
+ * the report counts them separately so "screened out" and "not screenable"
+ * stay distinguishable. Exported for the drift-guard test, which pins the
+ * root and storage-layout assumptions against real WASM-built notes.
  */
-export function isRelevantToAccount(note: Note, account: AccountId): boolean {
+export function screenNoteForAccount(note: Note, account: AccountId): ScreenVerdict {
   const root = normalizeHexWord(note.script().root().toHex());
   const items = note.recipient().storage().items();
   const prefix = account.prefix().asInt();
@@ -97,14 +103,14 @@ export function isRelevantToAccount(note: Note, account: AccountId): boolean {
     items[index + 1].asInt() === prefix;
   if (root === normalizeHexWord(NoteScript.p2id().root().toHex())) {
     // P2ID note storage: [target.suffix, target.prefix].
-    return accountAt(0);
+    return accountAt(0) ? 'relevant' : 'irrelevant';
   }
   if (root === normalizeHexWord(NoteScript.p2ide().root().toHex())) {
     // P2IDE note storage: [reclaimer.suffix, reclaimer.prefix,
     // target.suffix, target.prefix, reclaim, timelock].
-    return accountAt(2) || accountAt(0);
+    return accountAt(2) || accountAt(0) ? 'relevant' : 'irrelevant';
   }
-  return false;
+  return 'unscreenable';
 }
 
 /** A contiguous block range, inclusive on both ends. */
@@ -140,9 +146,16 @@ export interface PublicBackfillReport {
    * statically against the well-known P2ID/P2IDE scripts; the Rust SDK uses
    * the execution-based screener.) */
   skippedIrrelevant: number;
+  /** Unique public matches this SDK's static screen could not judge (custom
+   * note scripts). They are conservatively not imported, but counted apart
+   * from `skippedIrrelevant` so callers can tell "screened out" from "not
+   * screenable". Always `0` in the Rust SDK, whose execution-based screener
+   * judges every note. */
+  skippedUnscreenable: number;
   /** One outcome per unique public note that passed the relevance screen —
-   * `outcomes.length === discovered - skippedPrivate - skippedIrrelevant`.
-   * Screened-out and private matches get no outcome, only their counters. */
+   * `outcomes.length === discovered - skippedPrivate - skippedIrrelevant -
+   * skippedUnscreenable`. Screened-out, unscreenable, and private matches
+   * get no outcome, only their counters. */
   outcomes: NoteImportOutcome[];
   /** Sub-ranges of `[scannedFrom, scannedTo]` the scan could not cover (RPC
    * failures, or the scan budget ran out while splitting around the node's
@@ -186,9 +199,9 @@ export interface BackfillPublicNotesOptions {
  * range length, which makes genesis an acceptable default lower
  * bound. The global sync height is never touched — run normal sync
  * afterwards to verify the imported notes. The store must have synced at
- * least once (`MultisigClient.load` does this): importing a proof into a
- * store that has never seen the chain fails, and such failures surface as
- * `failed` outcomes.
+ * least once (`Multisig.recoverNotes` syncs the chain before this strategy
+ * runs): importing a proof into a store that has never seen the chain
+ * fails, and such failures surface as `failed` outcomes.
  *
  * Notes are discovered by tag only — a best-effort filter: notes sent with
  * unrelated custom tags are outside this scan's guarantee, and, like normal
@@ -197,7 +210,8 @@ export interface BackfillPublicNotesOptions {
  * `skippedIrrelevant` instead of polluting the store. This SDK screens
  * statically against the well-known P2ID/P2IDE scripts (the WASM surface
  * does not expose the execution-based screener the Rust SDK uses), so notes
- * with custom scripts are conservatively skipped. Only public notes can be
+ * with custom scripts are conservatively not imported and counted as
+ * `skippedUnscreenable`. Only public notes can be
  * rebuilt from chain data; private matches are counted as `skippedPrivate`
  * and are covered by the transport drain and proposal-import primitives
  * instead.
@@ -311,6 +325,7 @@ export async function backfillPublicNotesByTag(
   }
   const skippedPrivate = discovered.size - publicNotes.length;
   let skippedIrrelevant = 0;
+  let skippedUnscreenable = 0;
 
   const outcomes: NoteImportOutcome[] = [];
   const buildReport = (): PublicBackfillReport => {
@@ -327,6 +342,7 @@ export async function backfillPublicNotesByTag(
       discovered: discovered.size,
       skippedPrivate,
       skippedIrrelevant,
+      skippedUnscreenable,
       outcomes,
       uncovered,
       // Rerunning can help when scan ranges were left uncovered OR when any
@@ -425,16 +441,21 @@ export async function backfillPublicNotesByTag(
   }
 
   // Provisionally `imported` outcomes, re-classified in one batched
-  // consumed-state check below.
+  // post-import state check below.
   const screenAccount = AccountId.fromHex(options.accountId);
-  const imported: Array<{ index: number; detailsKey: string }> = [];
+  const imported: Array<{ index: number; idHex: string; detailsKey: string }> = [];
   for (const candidate of pending) {
-    const record = existing.get(candidate.idHex) ?? existing.get(candidate.detailsKey);
-    // Unlike the proposal import, a proof-less (expected) record is NOT
-    // skipped here: this primitive exists because forward sync will never
-    // revisit the note's block, so the freshly fetched proof is applied to
-    // upgrade the record in place (the WASM import handles existing
-    // records).
+    // Skip decisions key on an exact note-ID match only: a details-key
+    // match is a lossy approximation (see {@link detailsKeyOf} in the
+    // proposal-import module), and the upstream import dedupes exactly by
+    // the real details commitment, so importing "again" is safe while
+    // pre-skipping on the approximation could silently drop a genuinely
+    // new note. Unlike the proposal import, a proof-less (expected) record
+    // is NOT skipped here even on an ID match: this primitive exists
+    // because forward sync will never revisit the note's block, so the
+    // freshly fetched proof is applied to upgrade the record in place (the
+    // WASM import handles existing records).
+    const record = existing.get(candidate.idHex);
     if (record && (record.isConsumed() || record.inclusionProof() !== undefined)) {
       outcomes.push({
         identifier: candidate.idHex,
@@ -445,10 +466,18 @@ export async function backfillPublicNotesByTag(
     }
     // Screen genuinely new discoveries for relevance, exactly like normal
     // sync does before it stores a tag match. Records the store already
-    // tracks are material the user chose to track and skip the screen.
-    if (!record && !isRelevantToAccount(candidate.note, screenAccount)) {
-      skippedIrrelevant += 1;
-      continue;
+    // tracks (by ID, or a metadata-less record matching on details) are
+    // material the user chose to track and skip the screen.
+    if (!record && !existing.has(candidate.detailsKey)) {
+      const verdict = screenNoteForAccount(candidate.note, screenAccount);
+      if (verdict === 'irrelevant') {
+        skippedIrrelevant += 1;
+        continue;
+      }
+      if (verdict === 'unscreenable') {
+        skippedUnscreenable += 1;
+        continue;
+      }
     }
     const { outcome, wasImported } = await importNoteWithProof(
       webClient,
@@ -458,7 +487,11 @@ export async function backfillPublicNotesByTag(
       candidate.proof,
     );
     if (wasImported) {
-      imported.push({ index: outcomes.length, detailsKey: candidate.detailsKey });
+      imported.push({
+        index: outcomes.length,
+        idHex: candidate.idHex,
+        detailsKey: candidate.detailsKey,
+      });
     }
     outcomes.push(outcome);
   }

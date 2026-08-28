@@ -10,7 +10,7 @@
 //! verified and ready to consume.
 
 use super::MultisigClient;
-use super::proposal_note_import::{NoteImportOutcome, NoteImportStatus};
+use super::proposal_note_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
 use super::public_note_backfill::{PublicBackfillOptions, PublicBackfillReport};
 use super::recovery::TransportRecoveryReport;
 use crate::error::{MultisigError, Result, error_chain};
@@ -197,10 +197,24 @@ impl MultisigClient {
         }
 
         if options.proposal_import {
-            match self.list_proposals().await {
-                Ok(proposals) => {
-                    report.proposal_import =
-                        Some(self.import_notes_from_proposals(&proposals).await);
+            // The lenient listing isolates per-proposal parse/binding
+            // failures as skip reasons, so one corrupt proposal cannot block
+            // recovering notes from the healthy ones; those skips surface as
+            // `Invalid` outcomes alongside the per-note ones.
+            match self.list_proposals_isolating_failures().await {
+                Ok((proposals, skipped)) => {
+                    let mut outcomes: Vec<NoteImportOutcome> = skipped
+                        .into_iter()
+                        .map(|(identifier, reason)| NoteImportOutcome {
+                            identifier,
+                            source: NoteImportSource::Proposal,
+                            status: NoteImportStatus::Invalid,
+                            retryable: false,
+                            reason: Some(reason),
+                        })
+                        .collect();
+                    outcomes.extend(self.import_notes_from_proposals(&proposals).await);
+                    report.proposal_import = Some(outcomes);
                 }
                 Err(e) => report.problems.push(RecoveryStepProblem {
                     step: RecoveryStep::ProposalImport,
@@ -211,22 +225,42 @@ impl MultisigClient {
         }
 
         if options.public_backfill {
-            match self
-                .backfill_public_notes_by_tag(account_id, Some(options.backfill))
-                .await
-            {
-                Ok(backfill) => report.backfill = Some(backfill),
-                // With the fully-explicit range validated above, an `Err`
-                // here is normally the chain-tip lookup (a node RPC failure,
-                // worth retrying); an invalid-range error against the
-                // resolved tip is a caller error and is not.
+            // Importing a proof into a store that has never seen the chain
+            // fails, and neither key-based recovery nor `pull_account` syncs
+            // on its own — so sync the chain state first. Incremental, so
+            // cheap when the store is already synced.
+            let synced_for_backfill = match self.miden_client.sync_chain().await {
+                Ok(_) => true,
                 Err(e) => {
-                    let retryable = !matches!(e, MultisigError::InvalidConfig(_));
                     report.problems.push(RecoveryStepProblem {
                         step: RecoveryStep::PublicBackfill,
-                        reason: error_chain(&e),
-                        retryable,
+                        reason: format!(
+                            "failed to sync the chain state the backfill imports against: {}",
+                            error_chain(&e)
+                        ),
+                        retryable: true,
                     });
+                    false
+                }
+            };
+            if synced_for_backfill {
+                match self
+                    .backfill_public_notes_by_tag(account_id, Some(options.backfill))
+                    .await
+                {
+                    Ok(backfill) => report.backfill = Some(backfill),
+                    // With the fully-explicit range validated above, an `Err`
+                    // here is normally the chain-tip lookup (a node RPC
+                    // failure, worth retrying); an invalid-range error
+                    // against the resolved tip is a caller error and is not.
+                    Err(e) => {
+                        let retryable = !matches!(e, MultisigError::InvalidConfig(_));
+                        report.problems.push(RecoveryStepProblem {
+                            step: RecoveryStep::PublicBackfill,
+                            reason: error_chain(&e),
+                            retryable,
+                        });
+                    }
                 }
             }
         }

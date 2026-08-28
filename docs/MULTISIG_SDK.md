@@ -519,36 +519,6 @@ console.log('Signers:', detected.signerCommitments);
 console.log('Vault balances:', detected.vaultBalances);
 ```
 
-### Recovering Accounts By Key
-
-Use `recoverByKey` when a wallet has a signing key from an account's
-authorization set but does not know the account ID yet. The helper queries
-Guardian's `/state/lookup` endpoint with proof-of-possession of the key,
-fetches state for each matching account, and returns `(accountId, state)`
-pairs.
-
-```typescript
-const recovered = await client.recoverByKey(signer);
-
-if (recovered.length === 0) {
-  console.log('No account on this Guardian authorizes this key');
-}
-
-for (const { accountId, state } of recovered) {
-  console.log('Recovered account:', accountId);
-  console.log('State commitment:', state.commitment);
-
-  const multisig = await client.load(accountId, signer);
-  // Continue with normal proposal or sync flows.
-}
-```
-
-The signer passed to `recoverByKey` must implement `signLookupMessage`. The
-bundled `FalconSigner`, `EcdsaSigner`, Miden Wallet signer, and Para signer
-support it. Multiple matches are valid: the same key commitment may authorize
-more than one account, and the method returns all matches instead of choosing
-one implicitly.
-
 ### Delta History
 
 Guardian retains the account's canonical delta history, allowing a wallet to
@@ -588,10 +558,13 @@ partial notes) appear with `tag: 'custom'` and no recipient.
 
 Normal forward sync cannot see notes that landed behind the store's
 cursors. After `load()` on a recovered account, `multisig.recoverNotes()`
-runs the three recovery strategies below as one flow — the transport drain,
-the proposal-embedded note import, and the historical public-note backfill —
-and finishes with a normal sync (chain sync plus GUARDIAN state sync) so
-imported notes are verified and ready to consume:
+runs the three recovery strategies as one flow — the private-note transport
+drain, the proposal-embedded note import, and the historical public-note
+backfill — and finishes with a normal sync (transport fetch, chain sync,
+and GUARDIAN state sync) so imported notes are verified and ready to
+consume. The flow is the one public entry point: the strategies are
+internal, so a caller cannot accidentally skip the context they need (a
+tracked account, a synced store) or the final verifying sync.
 
 ```typescript
 const multisig = await client.load(accountId, signer);
@@ -608,49 +581,39 @@ if (report.retryable) {
 }
 ```
 
-Pass `RecoverNotesOptions` to choose strategies (`transportDrain`,
-`proposalImport`, `publicBackfill`), bound the backfill's block range
-(`fromBlock`/`toBlock`), or skip the final sync (`syncAfter: false`). The
-combined `NoteRecoveryReport` carries each strategy's own report
-(`transport`, `proposalImport`, `backfill`) untouched. The three
-strategies are also exposed individually, below.
-
-### Draining the Private-Note Transport Backlog
-
-After recovery on a fresh device the local store has no note-transport
-cursor — and in a store shared with other accounts, sync may have advanced
-the cursor past private notes addressed to the newly recovered account.
-Normal sync then never revisits them. `drainPrivateNoteBacklog` rescans the
-full transport backlog for every tracked note tag, regardless of the stored
-cursor:
+Strategies are individually selectable and the backfill's block range can be
+bounded:
 
 ```typescript
-import { drainPrivateNoteBacklog } from '@openzeppelin/miden-multisig-client';
-
-// Run after load(): the drain only sees note tags tracked in the store,
-// and load() inserting the account is what tracks its tag.
-const multisig = await client.load(accountId, signer);
-
-// Pass the SAME MidenClient instance that was injected into MultisigClient —
-// a different instance has a different store, without the tracked tag.
-const report = await drainPrivateNoteBacklog(midenClient);
-if (report.status === 'completed') {
-  console.log(`Recovered ${report.imported} private note(s) from the transport`);
-} else if (report.status === 'unavailable') {
-  // Transport disabled or unreachable — reported, never thrown, so the rest
-  // of the recovery flow proceeds without transport notes.
-  console.warn('Note transport unavailable:', report.reason);
-} else if (report.retryable) {
-  // 'failed' with retryable: partial progress is kept (already-imported
-  // batches stay imported); rerunning the drain continues where it got to.
-}
+// Rescan only the transport backlog and recent public history, skipping the
+// proposal import and the final verifying sync.
+const report = await multisig.recoverNotes({
+  proposalImport: false,
+  fromBlock: 1_690_000,
+  syncAfter: false,
+});
 ```
 
-The drain is idempotent and never regresses the stored transport cursor, so
-it is safe to run repeatedly and to combine with normal sync. `unavailable`
-always means nothing was imported; a drain interrupted mid-way (connection
-lost after some batches landed) reports `failed` with the partial count
-kept, and rerunning continues it.
+The combined `NoteRecoveryReport` carries each strategy's own report
+(`transport`, `proposalImport`, `backfill`) untouched, plus the `problems`
+list, `synced`, the total `imported` count, and an aggregate `retryable`
+flag.
+
+#### The transport-drain strategy
+
+A fresh store has no note-transport cursor — and in a store shared with
+other accounts, sync may have advanced the cursor past private notes
+addressed to the recovered account. The drain rescans the full transport
+backlog for every tracked note tag (running as many transport syncs as the
+upstream per-sync tag backfill cap requires), regardless of the stored
+cursor, and never regresses it. It is idempotent, and a failed drain
+restores the covered-tags bookkeeping so normal sync keeps working exactly
+as before the attempt.
+
+Transport problems land in `report.transport`, never as exceptions:
+`unavailable` means no transport endpoint is configured or the transport
+could not be reached before anything was imported; `failed` with
+`retryable: true` keeps any partial progress and rerunning continues it.
 
 **Not a backup:** transport recovery is bounded by the transport service's
 retention. Senders may deliver private notes out-of-band without using the
@@ -658,104 +621,55 @@ transport, and relayed blobs are pruned after the retention window. Notes
 outside both are recoverable only from their sender (see the note
 export/import helpers).
 
-### Recovering Notes From Pending Proposals
+#### The proposal-import strategy
 
-After key-based recovery the local Miden store starts empty, so notes the
-account was in the middle of consuming are gone. v2 `consume_notes` proposals
-embed the serialized notes they consume, and
-`multisig.importNotesFromProposals()` turns those embedded bytes back into
-store records: it fetches each note's on-chain inclusion proof
-and imports the note individually, so it works for private notes too — the
-node never needs to hold the note body. The method reuses the client's Miden
-RPC endpoint and retry configuration, and syncs pending proposals from
-GUARDIAN when none are passed.
+v2 `consume_notes` proposals embed the serialized notes they consume, so
+pending proposals are opportunistic recovery material: the strategy syncs
+them from GUARDIAN (isolating per-proposal parse or binding failures as
+`invalid` outcomes instead of failing the whole step), validates each
+embedded note against the proposal's declared note ids, fetches on-chain
+inclusion proofs, and imports per note — so it works for private notes too;
+the node never needs to hold the note body.
 
-```typescript
-const multisig = await client.load(accountId, signer);
-
-const outcomes = await multisig.importNotesFromProposals();
-for (const outcome of outcomes) {
-  console.log(outcome.identifier, outcome.status, outcome.reason ?? '');
-}
-
-await multisig.syncState(); // verifies the imported notes
-```
-
-A standalone `importNotesFromProposals(midenClient, proposals, {
-midenRpcEndpoint, rpc? })` export backs the method for callers holding a raw
-WASM client or proposals from another source.
-
-Each unique embedded note gets its own `NoteImportOutcome` with a `status` of
-`imported`, `already-present`, `already-consumed`, `not-committed`, `invalid`,
-or `failed` — duplicates across proposals fold into one outcome, and a
-malformed or failing note never blocks the others (the helper never throws
-for per-note problems). A `not-committed` note (not yet on chain) is recorded
-as expected with its tag tracked so a later sync picks it up;
-`retryable: true` marks outcomes worth retrying (transient RPC failures
-included).
+Each unique embedded note gets a `NoteImportOutcome` in
+`report.proposalImport` (`imported`, `already-present`, `already-consumed`,
+`not-committed`, `invalid`, or `failed`); duplicates across proposals fold
+into one outcome and no per-note problem blocks the others. A note not yet
+on chain is recorded as expected with its sync-hint tag so a later sync
+picks it up, and an import whose inclusion proof fails verification against
+the authenticated chain is demoted to `failed` rather than counted as
+recovered.
 
 Proposals are opportunistic recovery material, not a backup: v1 proposals
-carry no note bytes, proposals disappear once canonicalized, and the embedded
-bytes are visible to the Guardian operator (existing v2 behavior, not a new
-exposure). Only notes still mid-consumption are recoverable this way.
+carry no note bytes, proposals disappear once canonicalized, and embedded
+note bytes are visible to the GUARDIAN operator (existing v2 behavior, not
+a new exposure).
 
-### Backfilling Historical Public Notes By Tag
+#### The public-backfill strategy
 
-Normal forward sync starts from the store's **global** cursor, so in a store
-shared with other accounts the cursor may already be past blocks containing a
-recovered account's notes, and a fresh store has no efficient path to them at
-all. The standalone `backfillPublicNotesByTag` helper scans a
-historical block range — genesis to the current chain tip by default — for
-public notes addressed at the account's standard note tag and imports them
-with their on-chain inclusion proofs, without ever touching the global sync
-height. The scan is tag-scoped and its cost grows with the number of matching
-notes, not the range length, so a full genesis-to-tip scan is
-fast on an ordinary account.
+Normal forward sync starts from the store's **global** cursor, so in a
+shared store the cursor may already be past blocks containing the recovered
+account's notes. The backfill scans a historical block range — genesis to
+the current chain tip by default — for public notes addressed at the
+account's standard note tag and imports them with their on-chain inclusion
+proofs, without ever touching the global sync height. The scan's cost grows
+with the number of matching notes, not the range length, so a full
+genesis-to-tip scan is fast on an ordinary account. The flow syncs the
+chain state before this strategy runs, so it works on a store that has
+never synced.
 
-```typescript
-const multisig = await client.load(accountId, signer);
-// fromBlock / toBlock bound the scan; they default to genesis and tip.
-const report = await multisig.backfillPublicNotesByTag();
-console.log(report.discovered, 'discovered,', report.skippedPrivate, 'private skipped');
-for (const outcome of report.outcomes) {
-  console.log(outcome.identifier, outcome.status, outcome.reason ?? '');
-}
-
-await multisig.syncState(); // verifies the imported notes
-```
-
-The standalone `backfillPublicNotesByTag(midenClient, { accountId, midenRpcEndpoint, fromBlock?, toBlock?, rpc? })` remains available when no `Multisig` instance is at hand.
-
-The `PublicBackfillReport` carries the requested range (`scannedFrom` /
+`report.backfill` carries the requested range (`scannedFrom` /
 `scannedTo`), the number of unique tag matches (`discovered`), the private
 matches skipped (`skippedPrivate` — the chain holds no body for them; the
-transport drain and proposal import cover those), the matches the relevance
-screen rejected (`skippedIrrelevant`), and one `NoteImportOutcome` per
-screened-in public note (imported or not — `outcomes.length ===
-discovered − skippedPrivate − skippedIrrelevant`) with source `'backfill'`
-and the same statuses as the proposal import. The store must have synced at least once (`load` does this);
-importing into a store that has never seen the chain surfaces as `failed`
-outcomes. A proof-less expected record left by an earlier proposal import is
-upgraded in place with the freshly fetched proof rather than skipped.
-
-Tags are best-effort, truncated filters shared by unrelated notes, so —
-exactly like normal sync — every new discovery is screened for relevance
-before import, and tag-colliding notes the account cannot consume are
-counted as `skippedIrrelevant` instead of polluting the store. This SDK
-screens statically against the well-known P2ID/P2IDE scripts (the WASM
-surface does not expose the execution-based screener), so notes with custom
-scripts are conservatively skipped; the Rust SDK screens by execution and
-covers all scripts. Notes sent with unrelated custom tags remain outside
-this scan's guarantee.
-
-Scan problems are reported, never thrown: a range dense enough to trip the
-node's per-request pagination cap is split client-side and rescanned as
-narrower requests, and any sub-range that still cannot be covered lands in
-`report.uncovered` with `retryable`/`reason` set — a partial scan never
-aborts the rest of a recovery flow. The helper throws only when the scan
-range itself cannot be established (chain-tip lookup failed, a malformed
-account ID, a block bound that is not a u32 integer, or
-`fromBlock > toBlock`).
+other two strategies cover those), the matches the relevance screen
+rejected (`skippedIrrelevant`), the matches this SDK's static screen could
+not judge (`skippedUnscreenable` — custom note scripts; the Rust SDK's
+execution-based screener judges every note and always reports `0` there),
+and one `NoteImportOutcome` per screened-in public note. A proof-less
+expected record left by an earlier proposal import is upgraded in place
+with the freshly fetched proof rather than skipped. Sub-ranges the scan
+could not cover land in `uncovered` with `retryable`/`reason` set, so a
+partial scan never aborts the rest of the flow.
 
 ### Proposal Operations
 
@@ -953,6 +867,36 @@ const signedProposal = multisig.importProposal(signedJson);
 await multisig.executeProposal(signedProposal.id);
 ```
 
+### Recovering Accounts By Key
+
+Use `recoverByKey` when a wallet has a signing key from an account's
+authorization set but does not know the account ID yet. The helper queries
+Guardian's `/state/lookup` endpoint with proof-of-possession of the key,
+fetches state for each matching account, and returns `(accountId, state)`
+pairs.
+
+```typescript
+const recovered = await client.recoverByKey(signer);
+
+if (recovered.length === 0) {
+  console.log('No account on this Guardian authorizes this key');
+}
+
+for (const { accountId, state } of recovered) {
+  console.log('Recovered account:', accountId);
+  console.log('State commitment:', state.commitment);
+
+  const multisig = await client.load(accountId, signer);
+  // Continue with normal proposal or sync flows.
+}
+```
+
+The signer passed to `recoverByKey` must implement `signLookupMessage`. The
+bundled `FalconSigner`, `EcdsaSigner`, Miden Wallet signer, and Para signer
+support it. Multiple matches are valid: the same key commitment may authorize
+more than one account, and the method returns all matches instead of choosing
+one implicitly.
+
 ### API Reference
 
 #### MultisigClient
@@ -963,14 +907,6 @@ await multisig.executeProposal(signedProposal.id);
 | `load(accountId, signer)` | Load existing account from GUARDIAN |
 | `recoverByKey(signer)` | Discover accounts that authorize the signer's key and fetch each current state |
 | `guardianClient` | Access to underlying GUARDIAN HTTP client |
-
-Standalone functions:
-
-| Function | Description |
-|----------|-------------|
-| `drainPrivateNoteBacklog(midenClient)` | Rescan the full private-note transport backlog for tracked tags after recovery; returns a `TransportRecoveryReport` (`completed` / `unavailable` / `failed`) instead of throwing on transport problems |
-| `importNotesFromProposals(midenClient, proposals, { midenRpcEndpoint, rpc? })` | Import notes embedded in v2 consume-notes proposals into the local store; returns per-note `NoteImportOutcome`s |
-| `backfillPublicNotesByTag(midenClient, { accountId, midenRpcEndpoint, fromBlock?, toBlock?, rpc? })` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag, screen them for relevance, and import them with proofs; returns a `PublicBackfillReport`. Prefer `multisig.backfillPublicNotesByTag({ fromBlock?, toBlock? })`, which reuses the client's endpoint and retry configuration |
 
 #### Multisig
 
@@ -994,7 +930,6 @@ Standalone functions:
 | `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
 | `recoverNotes(options?)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
-| `importNotesFromProposals(proposals?)` | Import notes embedded in pending v2 consume-notes proposals, reusing the client's RPC settings; syncs proposals when none are passed |
 | `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
@@ -1112,34 +1047,6 @@ println!("Nonce: {}", account.nonce());
 println!("GUARDIAN commitment: {:?}", account.guardian_commitment()?);
 ```
 
-### Recovering Accounts By Key
-
-Use `recover_by_key` when the configured signer is known but the account ID is
-not. The client signs a lookup-bound authentication message, asks Guardian for
-accounts that authorize the signer's commitment, fetches state for each match,
-and returns `RecoveredAccount` values.
-
-```rust
-let recovered = client.recover_by_key().await?;
-
-if recovered.is_empty() {
-    println!("No account on this Guardian authorizes this key");
-}
-
-for entry in recovered {
-    println!("Recovered account: {}", entry.account_id);
-    println!("State commitment: {}", entry.state.commitment);
-
-    let account_id = AccountId::from_hex(&entry.account_id)?;
-    client.pull_account(account_id).await?;
-    // Continue with normal proposal or sync flows.
-}
-```
-
-An empty list means the key is valid but this Guardian has no account metadata
-that authorizes its commitment. Authentication failures, malformed lookup
-responses, and per-account `get_state` failures are returned as errors.
-
 ### Delta History
 
 Guardian retains the account's canonical delta history, allowing a wallet to
@@ -1179,10 +1086,12 @@ recipient.
 
 Normal forward sync cannot see notes that landed behind the store's
 cursors. After `pull_account` on a recovered account, `recover_notes` runs
-the three recovery strategies below as one flow — the transport drain, the
-proposal-embedded note import, and the historical public-note backfill —
-and finishes with a normal sync so imported notes are verified and ready to
-consume:
+the three recovery strategies as one flow — the private-note transport
+drain, the proposal-embedded note import, and the historical public-note
+backfill — and finishes with a normal sync so imported notes are verified
+and ready to consume. The flow is the one public entry point: the
+strategies are internal, so a caller cannot accidentally skip the context
+they need (a tracked account, a synced store) or the final verifying sync.
 
 ```rust
 client.pull_account(account_id).await?;
@@ -1200,53 +1109,47 @@ if report.retryable {
 }
 ```
 
-Pass `NoteRecoveryOptions` to choose strategies (`transport_drain`,
-`proposal_import`, `public_backfill`), bound the backfill's block range
-(`backfill: PublicBackfillOptions { from_block, to_block }`), or skip the
-final sync (`sync_after: false`). The combined `NoteRecoveryReport` carries
-each strategy's own report (`transport`, `proposal_import`, `backfill`)
-untouched. The three strategies are also exposed individually, below.
-
-### Draining the Private-Note Transport Backlog
-
-After recovery on a fresh device the local store has no note-transport
-cursor — and in a store shared with other accounts, sync may have advanced
-the cursor past private notes addressed to the newly recovered account.
-Normal sync then never revisits them. `drain_private_note_backlog` rescans
-the full transport backlog for every tracked note tag, regardless of the
-stored cursor:
+Strategies are individually selectable and the backfill's block range can be
+bounded:
 
 ```rust
-use miden_multisig_client::TransportRecoveryStatus;
+use miden_multisig_client::{NoteRecoveryOptions, PublicBackfillOptions};
 
-// Run after pull_account(): the drain only sees note tags tracked in the
-// store, and pull_account() inserting the account is what tracks its tag.
-client.pull_account(account_id).await?;
-
-let report = client.drain_private_note_backlog().await?;
-match report.status {
-    TransportRecoveryStatus::Completed => {
-        println!("Recovered {} private note(s) from the transport", report.imported);
-    }
-    TransportRecoveryStatus::Unavailable => {
-        // Transport disabled or unreachable — reported, never returned as an
-        // error, so the rest of the recovery flow proceeds without it.
-        eprintln!("Note transport unavailable: {:?}", report.reason);
-    }
-    TransportRecoveryStatus::Failed if report.retryable => {
-        // Partial progress is kept (already-imported batches stay imported);
-        // rerunning the drain continues where it got to.
-    }
-    TransportRecoveryStatus::Failed => {}
-}
+// Rescan only the transport backlog and recent public history, skipping the
+// proposal import and the final verifying sync.
+let report = client
+    .recover_notes(Some(NoteRecoveryOptions {
+        proposal_import: false,
+        backfill: PublicBackfillOptions {
+            from_block: Some(1_690_000u32.into()),
+            ..Default::default()
+        },
+        sync_after: false,
+        ..Default::default()
+    }))
+    .await?;
 ```
 
-The drain is idempotent and never regresses the stored transport cursor, so
-it is safe to run repeatedly and to combine with normal sync. `Unavailable`
-always means nothing was imported; a drain interrupted mid-way (connection
-lost after some batches landed) reports `Failed` with the partial count
-kept, and rerunning continues it. An `Err` from the method means the local
-store itself failed, not the transport.
+The combined `NoteRecoveryReport` carries each strategy's own report
+(`transport`, `proposal_import`, `backfill`) untouched, plus the `problems`
+list, `synced`, the total `imported` count, and an aggregate `retryable`
+flag.
+
+#### The transport-drain strategy
+
+A fresh store has no note-transport cursor — and in a store shared with
+other accounts, sync may have advanced the cursor past private notes
+addressed to the recovered account. The drain rescans the full transport
+backlog for every tracked note tag (running as many transport syncs as the
+upstream per-sync tag backfill cap requires), regardless of the stored
+cursor, and never regresses it. It is idempotent, and a failed drain
+restores the covered-tags bookkeeping so normal sync keeps working exactly
+as before the attempt.
+
+Transport problems land in `report.transport`, never as errors:
+`Unavailable` means no transport endpoint is configured or the transport
+could not be reached before anything was imported; `Failed` with
+`retryable: true` keeps any partial progress and rerunning continues it.
 
 **Not a backup:** transport recovery is bounded by the transport service's
 retention. Senders may deliver private notes out-of-band without using the
@@ -1254,96 +1157,56 @@ transport, and relayed blobs are pruned after the retention window. Notes
 outside both are recoverable only from their sender (see
 `import_note_from_file`).
 
-### Recovering Notes From Pending Proposals
+#### The proposal-import strategy
 
-After key-based recovery the local Miden store starts empty, so notes the
-account was in the middle of consuming are gone. v2 `consume_notes` proposals
-embed the serialized notes they consume, and
-`import_notes_from_proposals` turns those embedded bytes back into store
-records: it fetches each note's on-chain inclusion proof and
-imports the note individually, so it works for private notes too — the node
-never needs to hold the note body.
+v2 `consume_notes` proposals embed the serialized notes they consume, so
+pending proposals are opportunistic recovery material: the strategy lists
+them from GUARDIAN (isolating per-proposal parse or binding failures as
+`Invalid` outcomes instead of failing the whole step), validates each
+embedded note against the proposal's declared note ids, fetches on-chain
+inclusion proofs, and imports per note — so it works for private notes too;
+the node never needs to hold the note body.
 
-```rust
-let proposals = client.list_proposals().await?;
-let outcomes = client.import_notes_from_proposals(&proposals).await;
-for outcome in &outcomes {
-    println!("{}: {} {:?}", outcome.identifier, outcome.status, outcome.reason);
-}
-client.sync().await?; // verifies the imported notes
-```
-
-Each unique embedded note gets its own `NoteImportOutcome` with a
-`NoteImportStatus` of `Imported`, `AlreadyPresent`, `AlreadyConsumed`,
-`NotCommitted`, `Invalid`, or `Failed` — duplicates across proposals fold
-into one outcome, and a malformed or failing note never blocks the others,
-which is why the method returns a plain `Vec` instead of `Result`. A
-`NotCommitted` note (not yet on chain) is recorded in `Expected` state with
-its tag tracked so a later sync picks it up; `retryable: true` marks
-outcomes worth retrying (transient RPC failures included).
+Each unique embedded note gets a `NoteImportOutcome` in
+`report.proposal_import` (`Imported`, `AlreadyPresent`, `AlreadyConsumed`,
+`NotCommitted`, `Invalid`, or `Failed`); duplicates across proposals fold
+into one outcome and no per-note problem blocks the others. A note not yet
+on chain is recorded in `Expected` state with its sync-hint tag so a later
+sync picks it up, and an import whose inclusion proof fails verification
+against the authenticated chain is demoted to `Failed` rather than counted
+as recovered.
 
 Proposals are opportunistic recovery material, not a backup: v1 proposals
-carry no note bytes, proposals disappear once canonicalized, and the embedded
-bytes are visible to the Guardian operator (existing v2 behavior, not a new
-exposure). Only notes still mid-consumption are recoverable this way.
+carry no note bytes, proposals disappear once canonicalized, and the
+embedded bytes are visible to the GUARDIAN operator (existing v2 behavior,
+not a new exposure).
 
-### Backfilling Historical Public Notes By Tag
+#### The public-backfill strategy
 
-Normal forward sync starts from the store's **global** cursor, so in a store
-shared with other accounts the cursor may already be past blocks containing a
-recovered account's notes, and a fresh store has no efficient path to them at
-all. `backfill_public_notes_by_tag` scans a historical block
-range — genesis to the current chain tip by default — for public notes
-addressed at the account's standard note tag and imports them with their
-on-chain inclusion proofs, without ever touching the global sync height. The
-scan is tag-scoped and its cost grows with the number of matching notes, not
-the range length, so a full genesis-to-tip scan is fast on an
-ordinary account.
+Normal forward sync starts from the store's **global** cursor, so in a
+shared store the cursor may already be past blocks containing the recovered
+account's notes. The backfill scans a historical block range — genesis to
+the current chain tip by default — for public notes addressed at the
+account's standard note tag and imports them with their on-chain inclusion
+proofs, without ever touching the global sync height. The scan's cost grows
+with the number of matching notes, not the range length, so a full
+genesis-to-tip scan is fast on an ordinary account. The flow syncs the
+chain state before this strategy runs, so it works on a store that has
+never synced.
 
-```rust
-// `None` scans genesis to the current chain tip; pass
-// `Some(PublicBackfillOptions { from_block, to_block })` to bound the scan.
-let report = client
-    .backfill_public_notes_by_tag(account_id, None)
-    .await?;
-println!(
-    "scanned [{}, {}]: {} discovered, {} private skipped",
-    report.scanned_from, report.scanned_to, report.discovered, report.skipped_private
-);
-for outcome in &report.outcomes {
-    println!("{}: {} {:?}", outcome.identifier, outcome.status, outcome.reason);
-}
-client.sync().await?; // verifies the imported notes
-```
-
-The `PublicBackfillReport` carries the requested range (`scanned_from` /
+`report.backfill` carries the requested range (`scanned_from` /
 `scanned_to`), the number of unique tag matches (`discovered`), the private
 matches skipped (`skipped_private` — the chain holds no body for them; the
-transport drain and proposal import cover those), the matches the relevance
-screener rejected (`skipped_irrelevant`), and one `NoteImportOutcome` per
-screened-in public note (imported or not — `outcomes.len() ==
-discovered − skipped_private − skipped_irrelevant`) with source `Backfill`
-and the same statuses as the proposal import. The store must have synced at least once (recovery via
-`pull_account` does this, and screening also needs the account tracked in
-the store); importing into a store that has never seen the chain surfaces as
-`Failed` outcomes. A proof-less expected record left by an earlier proposal
+other two strategies cover those), the matches the execution-based
+`NoteScreener` rejected (`skipped_irrelevant` — tags are best-effort,
+truncated filters, and exactly like normal sync only notes the account can
+actually consume are imported), and one `NoteImportOutcome` per screened-in
+public note (`skipped_unscreenable` exists for cross-SDK parity and is
+always `0` here). A proof-less expected record left by an earlier proposal
 import is upgraded in place with the freshly fetched proof rather than
-skipped.
-
-Tags are best-effort, truncated filters shared by unrelated notes, so —
-exactly like normal sync — every new discovery is screened with the
-execution-based `NoteScreener` before import, and tag-colliding notes the
-account cannot consume are counted as `skipped_irrelevant` instead of
-polluting the store. Notes sent with unrelated custom tags remain outside
-this scan's guarantee.
-
-Scan problems are reported, not returned as errors: a range dense enough to
-trip the node's per-request pagination cap is split client-side and rescanned
-as narrower requests, and any sub-range that still cannot be covered lands in
-`report.uncovered` with `retryable`/`reason` set — a partial scan never
-aborts the rest of a recovery flow. An `Err` means only that the scan range
-could not be established (chain-tip lookup failed, or
-`from_block > to_block`).
+skipped. Sub-ranges the scan could not cover land in `uncovered` with
+`retryable`/`reason` set, so a partial scan never aborts the rest of the
+flow.
 
 ### Transaction Types
 
@@ -1509,6 +1372,34 @@ unauthenticated consumption) and rejects the proposal with `metadata does not
 match tx_summary`. The sender's own device heals itself: it already knows the
 full note, so a post-commit sync is enough.
 
+### Recovering Accounts By Key
+
+Use `recover_by_key` when the configured signer is known but the account ID is
+not. The client signs a lookup-bound authentication message, asks Guardian for
+accounts that authorize the signer's commitment, fetches state for each match,
+and returns `RecoveredAccount` values.
+
+```rust
+let recovered = client.recover_by_key().await?;
+
+if recovered.is_empty() {
+    println!("No account on this Guardian authorizes this key");
+}
+
+for entry in recovered {
+    println!("Recovered account: {}", entry.account_id);
+    println!("State commitment: {}", entry.state.commitment);
+
+    let account_id = AccountId::from_hex(&entry.account_id)?;
+    client.pull_account(account_id).await?;
+    // Continue with normal proposal or sync flows.
+}
+```
+
+An empty list means the key is valid but this Guardian has no account metadata
+that authorizes its commitment. Authentication failures, malformed lookup
+responses, and per-account `get_state` failures are returned as errors.
+
 ### API Reference
 
 #### MultisigClient
@@ -1525,7 +1416,6 @@ full note, so a post-commit sync is enough.
 | `user_commitment()` | Get user's key commitment |
 | `user_commitment_hex()` | Get commitment as hex |
 | `recover_by_key()` | Discover accounts that authorize the configured signer and fetch each current state |
-| `drain_private_note_backlog()` | Rescan the full private-note transport backlog for tracked tags after recovery; returns a `TransportRecoveryReport` (`Completed` / `Unavailable` / `Failed`) instead of erroring on transport problems |
 | `propose_transaction(tx)` | Create and submit proposal |
 | `propose_with_fallback(tx)` | Online or offline proposal |
 | `list_proposals()` | List pending proposals |
@@ -1547,8 +1437,6 @@ full note, so a post-commit sync is enough.
 | `import_note_from_file(path)` | Import a note file received out-of-band |
 | `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
 | `recover_notes(options)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
-| `import_notes_from_proposals(&proposals)` | Import notes embedded in v2 consume-notes proposals; returns per-note `NoteImportOutcome`s |
-| `backfill_public_notes_by_tag(account_id, options)` | Scan a historical block range (genesis to tip by default) for public notes addressed at the account's tag, screen them for relevance, and import them with proofs; returns a `PublicBackfillReport` |
 
 #### MultisigAccount
 

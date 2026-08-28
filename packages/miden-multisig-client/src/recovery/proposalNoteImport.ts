@@ -14,6 +14,7 @@ import {
   Endpoint,
   InputNote,
   type InputNoteRecord,
+  InputNoteState,
   Note,
   type NoteAssets,
   NoteDetails,
@@ -197,49 +198,72 @@ export async function importNoteWithProof(
 }
 
 /**
- * Re-classifies provisionally `imported` outcomes whose note the chain had
- * already nullified: upstream stores those as consumption history, not as
- * consumable notes — report that honestly instead of `imported`. One batched
+ * Re-classifies provisionally `imported` outcomes from the records the
+ * import actually left behind. A note the chain had already nullified is
+ * stored as consumption history, not as a consumable note — reported as
+ * `already-consumed`. A note whose inclusion proof failed verification
+ * against the authenticated block header is stored in `Invalid` state by
+ * upstream while the import still resolves — reported as `failed`, because
+ * "recovered" notes that can never be consumed must not count as recovered.
+ * Records are matched by note ID when they expose one, and by the (lossy,
+ * fungible-assets-only) details key otherwise — a chain-consumed record is
+ * stored without metadata, so the approximation is the only join available;
+ * it can only misstate the status here, never skip an import. One batched
  * store read covers every imported note. A failed check downgrades nothing;
  * it flags the outcome's classification as unconfirmed instead.
  */
 export async function reclassifyConsumedImports(
   webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
-  imported: Array<{ index: number; detailsKey: string }>,
+  imported: Array<{ index: number; idHex: string; detailsKey: string }>,
   outcomes: NoteImportOutcome[],
 ): Promise<void> {
   if (imported.length === 0) {
     return;
   }
   try {
-    const consumedRecords = await webClient.getInputNotes(
-      new NoteFilter(NoteFilterTypes.Consumed),
-    );
-    const consumed = new Set(
-      consumedRecords.map((record) => {
+    const records = await webClient.getInputNotes(new NoteFilter(NoteFilterTypes.All));
+    const byId = new Map<string, InputNoteRecord>();
+    const byDetailsKey = new Map<string, InputNoteRecord>();
+    for (const record of records) {
+      const recordId = record.id();
+      if (recordId) {
+        byId.set(normalizeHexWord(recordId.toString()), record);
+      } else {
         const details = record.details();
-        return detailsKeyOf(
-          normalizeHexWord(details.recipient().digest().toHex()),
-          details.assets(),
+        byDetailsKey.set(
+          detailsKeyOf(normalizeHexWord(details.recipient().digest().toHex()), details.assets()),
+          record,
         );
-      }),
-    );
+      }
+    }
     for (const entry of imported) {
-      if (consumed.has(entry.detailsKey)) {
+      const record = byId.get(entry.idHex) ?? byDetailsKey.get(entry.detailsKey);
+      if (!record) {
+        continue;
+      }
+      if (record.isConsumed()) {
         outcomes[entry.index] = {
           ...outcomes[entry.index],
           status: 'already-consumed',
           reason: 'note was already consumed on chain; recorded as consumption history',
         };
+      } else if (record.state() === InputNoteState.Invalid) {
+        outcomes[entry.index] = {
+          ...outcomes[entry.index],
+          status: 'failed',
+          retryable: false,
+          reason:
+            "the note's inclusion proof failed verification against the authenticated block header; the record is stored as invalid and the note is not consumable",
+        };
       }
     }
   } catch (error) {
     // The imports themselves succeeded; stay `imported` but flag that the
-    // consumed-state classification is unknown.
+    // post-import state check is unknown.
     for (const entry of imported) {
       outcomes[entry.index] = {
         ...outcomes[entry.index],
-        reason: `imported, but the consumed-state check failed (${errorDetail(
+        reason: `imported, but the post-import state check failed (${errorDetail(
           error,
         )}); run sync to confirm the note's status`,
       };
@@ -288,13 +312,14 @@ export async function importNotesFromProposals(
 
   const outcomes: NoteImportOutcome[] = [];
 
-  // Decode and deduplicate embedded notes (the same note may be embedded by
-  // several proposals); undecodable entries become isolated `invalid`
-  // outcomes with a positional identifier. Decoding is deliberately
-  // permissive: the strict note-ID binding check belongs to the
-  // verify/execute path — a note is self-validating (its ID derives from its
-  // contents), so importing it is harmless even when the proposal's declared
-  // note IDs disagree.
+  // Decode, validate, and deduplicate embedded notes (the same note may be
+  // embedded by several proposals). Undecodable entries, embeddings past the
+  // declared note-id list, and embeddings whose decoded ID disagrees with
+  // the declared one become isolated `invalid` outcomes with a positional
+  // identifier: recovery runs automatically over synced proposals, so the
+  // per-index ID binding is what keeps a malformed or adversarial proposal
+  // from smuggling arbitrary notes (and, for uncommitted ones, persistent
+  // expected records and tag registrations) into the local store.
   const decoded: DecodedCandidate[] = [];
   const seen = new Set<string>();
   for (const proposal of proposals) {
@@ -303,7 +328,19 @@ export async function importNotesFromProposals(
       continue;
     }
     const embedded = metadata.notes ?? [];
+    const declaredIds = metadata.noteIds ?? [];
     for (let index = 0; index < embedded.length; index += 1) {
+      const identifier = `proposal ${proposal.id} notes[${index}]`;
+      const declaredId = declaredIds[index];
+      if (declaredId === undefined) {
+        outcomes.push({
+          identifier,
+          source: 'proposal',
+          status: 'invalid',
+          reason: "embedded note has no matching entry in the proposal's declared note ids",
+        });
+        continue;
+      }
       // The try covers every per-note WASM accessor, so a payload that
       // deserializes but traps on use is isolated like any other bad note.
       let candidate: DecodedCandidate;
@@ -319,10 +356,19 @@ export async function importNotesFromProposals(
         };
       } catch (error) {
         outcomes.push({
-          identifier: `proposal ${proposal.id} notes[${index}]`,
+          identifier,
           source: 'proposal',
           status: 'invalid',
           reason: `failed to decode embedded note: ${errorDetail(error)}`,
+        });
+        continue;
+      }
+      if (candidate.idHex !== normalizeHexWord(declaredId)) {
+        outcomes.push({
+          identifier,
+          source: 'proposal',
+          status: 'invalid',
+          reason: `embedded note decodes to ${candidate.idHex} but the proposal declares ${declaredId}`,
         });
         continue;
       }
@@ -354,10 +400,16 @@ export async function importNotesFromProposals(
     return outcomes;
   }
 
-  // Skip notes the store already tracks.
+  // Skip notes the store already tracks — but only on an exact note-ID
+  // match. A details-key match is a lossy approximation (see
+  // {@link detailsKeyOf}), so a candidate that only matches a metadata-less
+  // record proceeds to import: the upstream import dedupes exactly by the
+  // real details commitment, upgrading or no-oping in place, so importing
+  // "again" is safe while pre-skipping on the approximation could silently
+  // drop a genuinely new note.
   const pending: DecodedCandidate[] = [];
   for (const candidate of decoded) {
-    const record = existing.get(candidate.idHex) ?? existing.get(candidate.detailsKey);
+    const record = existing.get(candidate.idHex);
     if (record) {
       outcomes.push({
         identifier: candidate.idHex,
@@ -402,8 +454,8 @@ export async function importNotesFromProposals(
   }
 
   // Provisionally `imported` outcomes, re-classified in one batched
-  // consumed-state check below.
-  const imported: Array<{ index: number; detailsKey: string }> = [];
+  // post-import state check below.
+  const imported: Array<{ index: number; idHex: string; detailsKey: string }> = [];
 
   for (const candidate of pending) {
     const proof = proofs.get(candidate.idHex);
@@ -416,7 +468,11 @@ export async function importNotesFromProposals(
         proof,
       );
       if (wasImported) {
-        imported.push({ index: outcomes.length, detailsKey: candidate.detailsKey });
+        imported.push({
+          index: outcomes.length,
+          idHex: candidate.idHex,
+          detailsKey: candidate.detailsKey,
+        });
       }
       outcomes.push(outcome);
     } else {

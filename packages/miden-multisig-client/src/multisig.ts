@@ -692,6 +692,63 @@ export class Multisig {
   }
 
   /**
+   * {@link syncProposals} variant for the recovery flow: per-proposal
+   * failures (a payload that does not parse, a metadata binding that does
+   * not verify) are isolated as skip reasons instead of failing the whole
+   * listing, so one corrupt proposal cannot block recovering notes from the
+   * healthy ones. The strict listing stays the signing-path behavior, where
+   * a malformed proposal must surface loudly. Proposals at or below the
+   * account's committed nonce are dropped (already executed or superseded,
+   * matching the Rust SDK's listing), and the shared proposal cache is left
+   * untouched. GUARDIAN being unreachable still throws — there is nothing
+   * to isolate without a listing.
+   */
+  private async syncProposalsIsolatingFailures(): Promise<{
+    proposals: Proposal[];
+    skipped: Array<{ identifier: string; reason: string }>;
+  }> {
+    const deltas = await this.guardian.getDeltaProposals(this._accountId);
+    const factory = this.proposalFactory();
+
+    let currentNonce: bigint | undefined;
+    try {
+      currentNonce = this.account.nonce().asInt();
+    } catch {
+      currentNonce = undefined;
+    }
+
+    const proposals: Proposal[] = [];
+    const skipped: Array<{ identifier: string; reason: string }> = [];
+    for (let position = 0; position < deltas.length; position += 1) {
+      const delta = deltas[position];
+      const identifier = `proposal at nonce ${delta.nonce} (#${position})`;
+      try {
+        const proposalId = normalizeHexWord(
+          computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
+        );
+        const existingProposal = this.proposals.get(proposalId);
+        const proposal = factory.fromDelta(
+          delta,
+          proposalId,
+          existingProposal?.metadata,
+          existingProposal?.signatures ?? [],
+        );
+        await this.verifyProposalMetadataBinding(proposal);
+        if (currentNonce !== undefined && BigInt(proposal.nonce) <= currentNonce) {
+          continue;
+        }
+        proposals.push(proposal);
+      } catch (error) {
+        skipped.push({
+          identifier,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { proposals, skipped };
+  }
+
+  /**
    * List all known proposals
    */
   listProposals(): Proposal[] {
@@ -1246,41 +1303,27 @@ export class Multisig {
   }
 
   /**
-   * Import the notes embedded in this account's pending v2 consume-notes
-   * proposals into the local Miden store — the recovery
-   * convenience over the standalone
-   * {@link importNotesFromProposalsStandalone | importNotesFromProposals},
-   * reusing this client's Miden RPC endpoint and retry configuration
-   * instead of taking them as parameters.
-   *
-   * When `proposals` is omitted, the pending proposals are synced from
-   * GUARDIAN first. See the standalone function for per-note outcome
-   * semantics; run a sync afterwards so imported notes are verified.
+   * Proposal-import strategy of {@link recoverNotes}: import the notes
+   * embedded in the given v2 consume-notes proposals into the local Miden
+   * store, reusing this client's Miden RPC endpoint and retry
+   * configuration.
    */
-  async importNotesFromProposals(
-    proposals?: ReadonlyArray<Pick<Proposal, 'id' | 'metadata'>>,
+  private async importNotesFromProposals(
+    proposals: ReadonlyArray<Pick<Proposal, 'id' | 'metadata'>>,
   ): Promise<NoteImportOutcome[]> {
-    const source = proposals ?? (await this.syncProposals());
-    return importNotesFromProposalsStandalone(this.midenClient, source, {
+    return importNotesFromProposalsStandalone(this.midenClient, proposals, {
       midenRpcEndpoint: this.getMidenRpcEndpoint(),
       rpc: { retry: { maxAttempts: this.rpcConfig.maxAttempts } },
     });
   }
 
   /**
-   * Scan a historical block range for public notes addressed at this
-   * account's standard note tag and import them with their on-chain
-   * inclusion proofs — the recovery convenience over the
-   * standalone
-   * {@link backfillPublicNotesByTagStandalone | backfillPublicNotesByTag},
-   * reusing this client's Miden RPC endpoint and retry configuration
-   * instead of taking them as parameters.
-   *
-   * `fromBlock`/`toBlock` default to genesis and the current chain tip. See
-   * the standalone function for the report semantics; run a sync afterwards
-   * so imported notes are verified.
+   * Public-backfill strategy of {@link recoverNotes}: scan a historical
+   * block range for public notes addressed at this account's standard note
+   * tag and import them with their on-chain inclusion proofs, reusing this
+   * client's Miden RPC endpoint and retry configuration.
    */
-  async backfillPublicNotesByTag(
+  private async backfillPublicNotesByTag(
     options: { fromBlock?: number; toBlock?: number } = {},
   ): Promise<PublicBackfillReport> {
     return backfillPublicNotesByTagStandalone(this.midenClient, {
@@ -1316,14 +1359,45 @@ export class Multisig {
   async recoverNotes(options: RecoverNotesOptions = {}): Promise<NoteRecoveryReport> {
     return runNoteRecovery(options, {
       transportDrain: () => drainPrivateNoteBacklog(this.midenClient),
-      proposalImport: () => this.importNotesFromProposals(),
-      publicBackfill: () =>
-        this.backfillPublicNotesByTag({
+      proposalImport: async () => {
+        // The lenient listing isolates per-proposal parse/binding failures
+        // as skip reasons, so one corrupt proposal cannot block recovering
+        // notes from the healthy ones; those skips surface as `invalid`
+        // outcomes alongside the per-note ones.
+        const { proposals, skipped } = await this.syncProposalsIsolatingFailures();
+        const outcomes: NoteImportOutcome[] = skipped.map(({ identifier, reason }) => ({
+          identifier,
+          source: 'proposal',
+          status: 'invalid',
+          reason,
+        }));
+        outcomes.push(...(await this.importNotesFromProposals(proposals)));
+        return outcomes;
+      },
+      publicBackfill: async () => {
+        // Importing a proof into a store that has never seen the chain
+        // fails, and neither key-based recovery nor `load()` syncs on its
+        // own — so sync the chain state first. Incremental, so cheap when
+        // the store is already synced.
+        try {
+          await this.midenClient.syncChain();
+        } catch (error) {
+          throw new Error(
+            `failed to sync the chain state the backfill imports against: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        return this.backfillPublicNotesByTag({
           ...(options.fromBlock !== undefined ? { fromBlock: options.fromBlock } : {}),
           ...(options.toBlock !== undefined ? { toBlock: options.toBlock } : {}),
-        }),
+        });
+      },
       sync: async () => {
-        await this.midenClient.syncChain();
+        // Parity with the Rust flow's `sync()`: the transport fetch plus the
+        // chain sync (`MidenClient.sync()` runs both, fail-fast), then the
+        // GUARDIAN state sync.
+        await this.midenClient.sync();
         await this.syncState();
       },
     });

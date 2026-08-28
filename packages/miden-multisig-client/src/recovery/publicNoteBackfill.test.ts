@@ -9,6 +9,13 @@ const { mockSyncNotes, mockGetNotesById, mockGetBlockHeaderByNumber } = vi.hoist
 }));
 
 vi.mock('@miden-sdk/miden-sdk', () => ({
+  InputNoteState: {
+    Expected: 0,
+    Unverified: 1,
+    Committed: 2,
+    Invalid: 3,
+    ConsumedExternal: 8,
+  },
   AccountId: {
     fromHex: vi.fn((hex: string) => {
       if (!hex.startsWith('0x')) {
@@ -153,6 +160,8 @@ function makeRecord(options: {
       assets: () => assets,
     }),
     isConsumed: () => options.consumed ?? false,
+    // Mirrors the WASM InputNoteState enum: Committed = 2.
+    state: () => 2,
     inclusionProof: () =>
       (options.proofBacked ?? true) ? `stored-proof:${detailsSource}` : undefined,
   };
@@ -172,7 +181,7 @@ describe('backfillPublicNotesByTag', () => {
     consumedRecords = [];
     mockWebClient = {
       getInputNotes: vi.fn().mockImplementation(async (filter: { noteType: number }) => {
-        if (filter.noteType === FILTER_ALL) return storeRecords;
+        if (filter.noteType === FILTER_ALL) return [...storeRecords, ...consumedRecords];
         if (filter.noteType === FILTER_CONSUMED) return consumedRecords;
         return [];
       }),
@@ -203,6 +212,7 @@ describe('backfillPublicNotesByTag', () => {
       discovered: 1,
       skippedPrivate: 0,
       skippedIrrelevant: 0,
+      skippedUnscreenable: 0,
       outcomes: [{ identifier: NOTE_ID_1, source: 'backfill', status: 'imported' }],
       uncovered: [],
       retryable: false,
@@ -258,14 +268,16 @@ describe('backfillPublicNotesByTag', () => {
       // A real P2ID note addressed at a different account (tag collision).
       makeFetchedNote(NOTE_ID_2, { targetHex: OTHER_ACCOUNT_ID }),
       // A note with an unknown script: not statically screenable, so it is
-      // conservatively treated as irrelevant.
+      // conservatively not imported — but counted apart from the screened-out
+      // one so the two classes stay distinguishable.
       makeFetchedNote(NOTE_ID_3, { scriptRoot: UNKNOWN_ROOT }),
     ]);
 
     const report = await run();
 
     expect(report.discovered).toBe(3);
-    expect(report.skippedIrrelevant).toBe(2);
+    expect(report.skippedIrrelevant).toBe(1);
+    expect(report.skippedUnscreenable).toBe(1);
     expect(report.outcomes).toEqual([
       { identifier: NOTE_ID_1, source: 'backfill', status: 'imported' },
     ]);
@@ -278,9 +290,12 @@ describe('backfillPublicNotesByTag', () => {
     );
     mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1), makeFetchedNote(NOTE_ID_2)]);
     storeRecords = [
-      // Tracked normally by ID.
+      // Tracked normally by ID: skipped without re-importing.
       makeRecord({ idHex: NOTE_ID_1, detailsOf: NOTE_ID_1 }),
-      // A metadata-less consumed-external record: no ID, matched by details.
+      // A metadata-less consumed-external record: a details-key match is a
+      // lossy approximation, so the candidate is NOT pre-skipped — it
+      // re-imports (the upstream import dedupes exactly) and the
+      // post-import check classifies it from the record.
       makeRecord({ detailsOf: NOTE_ID_2, consumed: true }),
     ];
 
@@ -288,9 +303,15 @@ describe('backfillPublicNotesByTag', () => {
 
     expect(report.outcomes).toEqual([
       { identifier: NOTE_ID_1, source: 'backfill', status: 'already-present' },
-      { identifier: NOTE_ID_2, source: 'backfill', status: 'already-consumed' },
+      {
+        identifier: NOTE_ID_2,
+        source: 'backfill',
+        status: 'already-consumed',
+        reason: expect.stringContaining('already consumed on chain'),
+      },
     ]);
-    expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
+    // The ID-matched record is never re-imported; the details-key match is.
+    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
   });
 
   it('upgrades a proof-less expected record with the fetched proof instead of skipping it', async () => {

@@ -109,17 +109,19 @@ pub struct NoteImportOutcome {
     pub reason: Option<String>,
 }
 
-/// Decodes and deduplicates the embedded notes of v2 `consume_notes`
-/// proposals. Undecodable entries are reported as `Invalid` outcomes with a
-/// positional identifier; a note embedded by several proposals folds into its
-/// first occurrence.
+/// Decodes, validates, and deduplicates the embedded notes of v2
+/// `consume_notes` proposals. Undecodable entries, embeddings past the
+/// declared `note_ids` list, and embeddings whose decoded ID disagrees with
+/// the declared one are reported as `Invalid` outcomes with a positional
+/// identifier; a note embedded by several proposals folds into its first
+/// occurrence.
 ///
-/// Decoding is deliberately permissive: the strict `note.id() == note_ids[i]`
-/// binding check belongs to the verify/execute path (`execution.rs`), where a
-/// mismatch must block signing. Recovery imports whatever real notes the
-/// bytes decode to — a note is self-validating (its ID derives from its
-/// contents), so importing it is harmless even when the proposal's declared
-/// note IDs disagree.
+/// The per-index ID binding is enforced here even though the verify/execute
+/// path checks it again before signing: recovery runs automatically over
+/// synced proposals, so without the binding a malformed or adversarial
+/// proposal could smuggle arbitrary notes (and, for uncommitted ones,
+/// persistent expected records and tag subscriptions) into the local store.
+/// Only notes the signed proposal actually declares are recovery material.
 fn collect_notes<'a>(
     proposals: impl IntoIterator<Item = (&'a str, &'a ProposalMetadata)>,
     outcomes: &mut Vec<NoteImportOutcome>,
@@ -131,14 +133,43 @@ fn collect_notes<'a>(
             continue;
         }
         for (index, serialized) in metadata.consume_notes_notes.iter().enumerate() {
+            let identifier = format!("proposal {} notes[{}]", proposal_id, index);
+            let Some(declared_id) = metadata.note_ids_hex.get(index) else {
+                outcomes.push(NoteImportOutcome {
+                    identifier,
+                    source: NoteImportSource::Proposal,
+                    status: NoteImportStatus::Invalid,
+                    retryable: false,
+                    reason: Some(
+                        "embedded note has no matching entry in the proposal's declared \
+                         note ids"
+                            .to_string(),
+                    ),
+                });
+                continue;
+            };
             match serialized.to_note() {
                 Ok(note) => {
+                    if !crate::utils::hex_body_eq(&note.id().to_hex(), declared_id) {
+                        outcomes.push(NoteImportOutcome {
+                            identifier,
+                            source: NoteImportSource::Proposal,
+                            status: NoteImportStatus::Invalid,
+                            retryable: false,
+                            reason: Some(format!(
+                                "embedded note decodes to {} but the proposal declares {}",
+                                note.id().to_hex(),
+                                declared_id
+                            )),
+                        });
+                        continue;
+                    }
                     if seen.insert(note.id()) {
                         decoded.push(note);
                     }
                 }
                 Err(e) => outcomes.push(NoteImportOutcome {
-                    identifier: format!("proposal {} notes[{}]", proposal_id, index),
+                    identifier,
                     source: NoteImportSource::Proposal,
                     status: NoteImportStatus::Invalid,
                     retryable: false,
@@ -218,17 +249,23 @@ impl MultisigClient {
         }
     }
 
-    /// Re-classifies provisionally `Imported` outcomes whose note the chain
-    /// had already nullified: upstream stores those as consumption history,
-    /// not as consumable notes — report that honestly instead of `Imported`.
-    /// One batched store read covers every imported note. A failed check
-    /// downgrades nothing; it flags the outcome's classification as
-    /// unconfirmed instead.
+    /// Re-classifies provisionally `Imported` outcomes from the records the
+    /// import actually left behind. A note the chain had already nullified
+    /// is stored as consumption history, not as a consumable note — reported
+    /// as `AlreadyConsumed`. A note whose inclusion proof failed
+    /// verification against the authenticated block header is stored in
+    /// `Invalid` state by upstream while the import still returns `Ok` —
+    /// reported as `Failed`, because "recovered" notes that can never be
+    /// consumed must not count as recovered. One batched store read covers
+    /// every imported note. A failed check downgrades nothing; it flags the
+    /// outcome's classification as unconfirmed instead.
     pub(crate) async fn reclassify_consumed_imports(
         &mut self,
         imported: &[(usize, NoteDetailsCommitment)],
         outcomes: &mut [NoteImportOutcome],
     ) {
+        use miden_client::store::InputNoteState;
+
         if imported.is_empty() {
             return;
         }
@@ -240,11 +277,15 @@ impl MultisigClient {
             .await;
         match check {
             Ok(records) => {
-                let consumed: BTreeSet<NoteDetailsCommitment> = records
-                    .iter()
-                    .filter(|record| record.is_consumed())
-                    .map(|record| record.details_commitment())
-                    .collect();
+                let mut consumed: BTreeSet<NoteDetailsCommitment> = BTreeSet::new();
+                let mut invalid: BTreeSet<NoteDetailsCommitment> = BTreeSet::new();
+                for record in &records {
+                    if record.is_consumed() {
+                        consumed.insert(record.details_commitment());
+                    } else if matches!(record.state(), InputNoteState::Invalid(_)) {
+                        invalid.insert(record.details_commitment());
+                    }
+                }
                 for (index, commitment) in imported {
                     if consumed.contains(commitment) {
                         outcomes[*index].status = NoteImportStatus::AlreadyConsumed;
@@ -253,16 +294,25 @@ impl MultisigClient {
                              history"
                                 .to_string(),
                         );
+                    } else if invalid.contains(commitment) {
+                        outcomes[*index].status = NoteImportStatus::Failed;
+                        outcomes[*index].retryable = false;
+                        outcomes[*index].reason = Some(
+                            "the note's inclusion proof failed verification against the \
+                             authenticated block header; the record is stored as invalid \
+                             and the note is not consumable"
+                                .to_string(),
+                        );
                     }
                 }
             }
             Err(e) => {
                 // The imports themselves succeeded; stay `Imported` but
-                // flag that the consumed-state classification is unknown.
+                // flag that the post-import state check is unknown.
                 for (index, _) in imported {
                     outcomes[*index].reason = Some(format!(
-                        "imported, but the consumed-state check failed ({}); run sync to \
-                         confirm the note's status",
+                        "imported, but the post-import state check failed ({}); run sync \
+                         to confirm the note's status",
                         e
                     ));
                 }
@@ -304,7 +354,7 @@ impl MultisigClient {
     /// }
     /// client.sync().await?;
     /// ```
-    pub async fn import_notes_from_proposals(
+    pub(crate) async fn import_notes_from_proposals(
         &mut self,
         proposals: &[Proposal],
     ) -> Vec<NoteImportOutcome> {
@@ -477,27 +527,106 @@ mod tests {
             .into()
     }
 
-    fn v2_metadata(notes: Vec<SerializedNote>) -> ProposalMetadata {
+    /// v2 metadata with explicit `(embedded bytes, declared note id)` pairs,
+    /// for driving the binding check with mismatches and undecodable bytes.
+    fn v2_metadata_entries(entries: Vec<(SerializedNote, String)>) -> ProposalMetadata {
         ProposalMetadata {
             consume_notes_metadata_version: Some(
                 crate::proposal::CONSUME_NOTES_METADATA_VERSION_V2,
             ),
-            consume_notes_notes: notes,
+            note_ids_hex: entries.iter().map(|(_, id)| id.clone()).collect(),
+            consume_notes_notes: entries.into_iter().map(|(note, _)| note).collect(),
             ..Default::default()
         }
+    }
+
+    /// Well-formed v2 metadata: embedded bytes with their real note ids
+    /// declared, the shape proposal creation emits.
+    fn v2_metadata(notes: &[&Note]) -> ProposalMetadata {
+        v2_metadata_entries(
+            notes
+                .iter()
+                .map(|note| (SerializedNote::from_note(note), note.id().to_hex()))
+                .collect(),
+        )
     }
 
     #[test]
     fn collects_decoded_notes_from_v2_metadata() {
         let note = build_test_note(1);
         let expected_id = note.id();
-        let metadata = v2_metadata(vec![SerializedNote::from_note(&note)]);
+        let metadata = v2_metadata(&[&note]);
 
         let mut outcomes = Vec::new();
         let decoded = collect_notes([("p-1", &metadata)], &mut outcomes);
         assert!(outcomes.is_empty());
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].id(), expected_id);
+    }
+
+    /// An embedded note whose decoded ID disagrees with the declared one is
+    /// not recovery material: recovery runs automatically over synced
+    /// proposals, so the binding is what keeps a malformed or adversarial
+    /// proposal from smuggling arbitrary notes into the store.
+    #[test]
+    fn embedded_note_mismatching_the_declared_id_is_invalid() {
+        let declared = build_test_note(1);
+        let smuggled = build_test_note(2);
+        let metadata = v2_metadata_entries(vec![(
+            SerializedNote::from_note(&smuggled),
+            declared.id().to_hex(),
+        )]);
+
+        let mut outcomes = Vec::new();
+        let decoded = collect_notes([("p-1", &metadata)], &mut outcomes);
+        assert!(decoded.is_empty(), "mismatched note must not be collected");
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].status, NoteImportStatus::Invalid);
+        assert!(!outcomes[0].retryable);
+        assert!(outcomes[0].reason.as_deref().unwrap().contains("declares"));
+    }
+
+    /// An embedding past the declared note-id list has no binding to check
+    /// against, so it is rejected rather than trusted.
+    #[test]
+    fn embedded_note_beyond_the_declared_ids_is_invalid() {
+        let declared = build_test_note(1);
+        let extra = build_test_note(2);
+        let mut metadata = v2_metadata(&[&declared]);
+        metadata
+            .consume_notes_notes
+            .push(SerializedNote::from_note(&extra));
+
+        let mut outcomes = Vec::new();
+        let decoded = collect_notes([("p-1", &metadata)], &mut outcomes);
+        assert_eq!(decoded.len(), 1, "the bound note is still collected");
+        assert_eq!(decoded[0].id(), declared.id());
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].identifier, "proposal p-1 notes[1]");
+        assert_eq!(outcomes[0].status, NoteImportStatus::Invalid);
+        assert!(
+            outcomes[0]
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("no matching entry")
+        );
+    }
+
+    /// The binding compares hex bodies, so prefix/case differences in the
+    /// wire form must not reject a genuinely matching note.
+    #[test]
+    fn declared_id_matching_ignores_hex_prefix_and_case() {
+        let note = build_test_note(1);
+        let metadata = v2_metadata_entries(vec![(
+            SerializedNote::from_note(&note),
+            note.id().to_hex().trim_start_matches("0x").to_uppercase(),
+        )]);
+
+        let mut outcomes = Vec::new();
+        let decoded = collect_notes([("p-1", &metadata)], &mut outcomes);
+        assert!(outcomes.is_empty(), "{outcomes:?}");
+        assert_eq!(decoded.len(), 1);
     }
 
     #[test]
@@ -519,9 +648,12 @@ mod tests {
     #[test]
     fn malformed_note_is_isolated_with_positional_identifier() {
         let good = build_test_note(1);
-        let metadata = v2_metadata(vec![
-            SerializedNote::from_base64("!!! not base64 !!!".to_string()),
-            SerializedNote::from_note(&good),
+        let metadata = v2_metadata_entries(vec![
+            (
+                SerializedNote::from_base64("!!! not base64 !!!".to_string()),
+                "0xdead".to_string(),
+            ),
+            (SerializedNote::from_note(&good), good.id().to_hex()),
         ]);
 
         let mut outcomes = Vec::new();
@@ -545,11 +677,8 @@ mod tests {
     fn duplicate_notes_across_proposals_are_deduplicated() {
         let shared = build_test_note(1);
         let other = build_test_note(2);
-        let first = v2_metadata(vec![SerializedNote::from_note(&shared)]);
-        let second = v2_metadata(vec![
-            SerializedNote::from_note(&shared),
-            SerializedNote::from_note(&other),
-        ]);
+        let first = v2_metadata(&[&shared]);
+        let second = v2_metadata(&[&shared, &other]);
 
         let mut outcomes = Vec::new();
         let decoded = collect_notes([("p-1", &first), ("p-2", &second)], &mut outcomes);
@@ -558,7 +687,8 @@ mod tests {
         assert_eq!(ids, vec![shared.id(), other.id()]);
     }
 
-    fn v2_proposal(id: &str, notes: Vec<SerializedNote>) -> Proposal {
+    fn v2_proposal(id: &str, entries: Vec<(SerializedNote, String)>) -> Proposal {
+        let notes: Vec<SerializedNote> = entries.iter().map(|(note, _)| note.clone()).collect();
         let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let delta = AccountDelta::new(
             account_id,
@@ -589,17 +719,16 @@ mod tests {
             status: crate::proposal::ProposalStatus::Pending,
             tx_summary,
             signatures: vec![],
-            metadata: v2_metadata(notes),
+            metadata: v2_metadata_entries(entries),
         }
     }
 
-    /// Exercises the public method end to end against an unreachable node:
+    /// Exercises the method end to end against an unreachable node:
     /// decoding, deduplication, and invalid isolation must all happen before
     /// any network access, and the proof-fetch failure must surface as
     /// per-note retryable outcomes instead of aborting the batch. (The
-    /// success-path branches are covered by the TS unit twin and were
-    /// validated live against testnet; the in-repo scripted node cannot yet
-    /// serve successful note responses.)
+    /// success-path branches are covered by the mock-chain behavioral tests
+    /// below.)
     #[tokio::test]
     async fn unreachable_node_reports_per_note_failures_without_aborting() {
         let dir = tempfile::tempdir().unwrap();
@@ -617,12 +746,18 @@ mod tests {
             v2_proposal(
                 "p-1",
                 vec![
-                    SerializedNote::from_note(&note),
-                    SerializedNote::from_base64("!!! corrupt !!!".to_string()),
+                    (SerializedNote::from_note(&note), note.id().to_hex()),
+                    (
+                        SerializedNote::from_base64("!!! corrupt !!!".to_string()),
+                        "0xdead".to_string(),
+                    ),
                 ],
             ),
             // Duplicate embedding of the same note -> deduplicated.
-            v2_proposal("p-2", vec![SerializedNote::from_note(&note)]),
+            v2_proposal(
+                "p-2",
+                vec![(SerializedNote::from_note(&note), note.id().to_hex())],
+            ),
         ];
 
         let outcomes = client.import_notes_from_proposals(&proposals).await;
@@ -652,6 +787,166 @@ mod tests {
                 .contains("failed to fetch inclusion proofs"),
             "failure must point at the proof fetch"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // behavioral tests against the mock chain: the success-path branches the
+    // public method routes through (committed public/private import,
+    // uncommitted expected recording, store-tracked dedup).
+    // ---------------------------------------------------------------------
+
+    /// Mock-chain client with a synced store, ready for proof imports.
+    async fn behavioral_client(
+        dir: &std::path::Path,
+        api: std::sync::Arc<miden_client::testing::mock::MockRpcApi>,
+    ) -> crate::MultisigClient {
+        let mut client = crate::client::test_support::offline_client_with_node(dir, api).await;
+        client.miden_client.sync_state().await.unwrap();
+        client
+    }
+
+    fn proposal_for(note: &Note) -> Proposal {
+        v2_proposal(
+            "p-live",
+            vec![(SerializedNote::from_note(note), note.id().to_hex())],
+        )
+    }
+
+    /// A committed PUBLIC note imports with its fetched proof and lands as a
+    /// proof-backed consumable record; re-running reports it already
+    /// present (the store-tracked dedup branch).
+    #[tokio::test]
+    async fn imports_a_committed_public_note_and_dedups_on_rerun() {
+        use miden_protocol::note::NoteType as ProtoNoteType;
+        use miden_protocol::transaction::RawOutputNote;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = crate::client::test_support::test_wallet(41);
+        let note = crate::client::test_support::p2id_note_for(&target, 1, ProtoNoteType::Public);
+        let api =
+            crate::client::test_support::chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
+        let mut client = behavioral_client(dir.path(), api).await;
+
+        let outcomes = client
+            .import_notes_from_proposals(&[proposal_for(&note)])
+            .await;
+        assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+        assert_eq!(outcomes[0].status, NoteImportStatus::Imported);
+        assert_eq!(outcomes[0].identifier, note.id().to_hex());
+
+        let records = client
+            .miden_client
+            .get_input_notes(StoreNoteFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0].inclusion_proof().is_some(),
+            "the record must be proof-backed"
+        );
+
+        let rerun = client
+            .import_notes_from_proposals(&[proposal_for(&note)])
+            .await;
+        assert_eq!(rerun.len(), 1);
+        assert_eq!(rerun[0].status, NoteImportStatus::AlreadyPresent);
+    }
+
+    /// A committed PRIVATE note: the chain holds only the header, so the
+    /// locally embedded bytes are the body and the fetched proof makes them
+    /// importable — the branch that makes proposals recovery material for
+    /// private notes at all.
+    #[tokio::test]
+    async fn imports_a_committed_private_note_from_local_bytes() {
+        use miden_protocol::note::NoteType as ProtoNoteType;
+        use miden_protocol::transaction::RawOutputNote;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = crate::client::test_support::test_wallet(42);
+        let note = crate::client::test_support::p2id_note_for(&target, 2, ProtoNoteType::Private);
+        let api =
+            crate::client::test_support::chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
+        let mut client = behavioral_client(dir.path(), api).await;
+
+        let outcomes = client
+            .import_notes_from_proposals(&[proposal_for(&note)])
+            .await;
+        assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+        assert_eq!(outcomes[0].status, NoteImportStatus::Imported);
+
+        let records = client
+            .miden_client
+            .get_input_notes(StoreNoteFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].inclusion_proof().is_some());
+    }
+
+    /// A note the chain does not know yet is recorded in `Expected` state
+    /// with its sync-hint tag and reported `NotCommitted`/retryable.
+    #[tokio::test]
+    async fn uncommitted_note_is_recorded_as_expected_and_retryable() {
+        use miden_protocol::note::NoteType as ProtoNoteType;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = crate::client::test_support::test_wallet(43);
+        let note = crate::client::test_support::p2id_note_for(&target, 3, ProtoNoteType::Private);
+        // Chain with no notes: the proof fetch finds nothing.
+        let api = crate::client::test_support::chain_with_notes(vec![]);
+        let mut client = behavioral_client(dir.path(), api).await;
+
+        let outcomes = client
+            .import_notes_from_proposals(&[proposal_for(&note)])
+            .await;
+        assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+        assert_eq!(outcomes[0].status, NoteImportStatus::NotCommitted);
+        assert!(outcomes[0].retryable);
+
+        let records = client
+            .miden_client
+            .get_input_notes(StoreNoteFilter::Expected)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1, "expected record must exist for sync");
+    }
+
+    /// A note the store already tracks as consumed is reported
+    /// `AlreadyConsumed` without touching the network.
+    #[tokio::test]
+    async fn store_tracked_consumed_note_reports_already_consumed() {
+        use miden_client::store::Store;
+        use miden_client::store::input_note_states::ConsumedExternalNoteState;
+        use miden_protocol::note::NoteType as ProtoNoteType;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = crate::client::test_support::test_wallet(44);
+        let note = crate::client::test_support::p2id_note_for(&target, 4, ProtoNoteType::Private);
+        let api = crate::client::test_support::chain_with_notes(vec![]);
+        let (mut client, store) =
+            crate::client::test_support::offline_client_with_node_parts(dir.path(), api).await;
+        client.miden_client.sync_state().await.unwrap();
+
+        let metadata = *note.metadata();
+        let record = InputNoteRecord::new(
+            note.clone().into(),
+            note.attachments().clone(),
+            None,
+            ConsumedExternalNoteState {
+                nullifier_block_height: BlockNumber::from(1u32),
+                consumer_account: None,
+                consumed_tx_order: None,
+                metadata: Some(metadata),
+            }
+            .into(),
+        );
+        store.upsert_input_notes(&[record]).await.unwrap();
+
+        let outcomes = client
+            .import_notes_from_proposals(&[proposal_for(&note)])
+            .await;
+        assert_eq!(outcomes.len(), 1, "{outcomes:?}");
+        assert_eq!(outcomes[0].status, NoteImportStatus::AlreadyConsumed);
     }
 
     #[test]

@@ -78,7 +78,7 @@ impl MultisigClient {
     /// backfill cap requires to cover every tracked candidate tag, and a
     /// failed drain restores the pre-drain covered-tags bookkeeping so
     /// normal sync keeps working exactly as it did before the attempt.
-    pub async fn drain_private_note_backlog(&mut self) -> Result<TransportRecoveryReport> {
+    pub(crate) async fn drain_private_note_backlog(&mut self) -> Result<TransportRecoveryReport> {
         if !self.miden_client.is_note_transport_enabled() {
             return Ok(TransportRecoveryReport {
                 status: TransportRecoveryStatus::Unavailable,
@@ -134,8 +134,23 @@ impl MultisigClient {
             }
             Err(err) => Err(err),
         };
-        if drain_result.is_err() {
-            self.restore_covered_tags(&covered_snapshot).await;
+        if let Err(drain_err) = &drain_result
+            && let Err(restore_err) = self.restore_covered_tags(&covered_snapshot).await
+        {
+            // The drain failed AND the store write restoring the
+            // covered-tags bookkeeping failed: the store is left altered and
+            // subsequent normal syncs may re-drain (and re-fail on) old
+            // transport history. That is a local-store environment failure
+            // the whole recovery flow must see, not a transport outcome.
+            return Err(crate::error::MultisigError::miden_client_with_context(
+                format!(
+                    "the transport drain failed ({}) and restoring the covered-tags \
+                     bookkeeping also failed; subsequent syncs may re-drain old transport \
+                     history",
+                    error_chain(drain_err)
+                ),
+                restore_err,
+            ));
         }
         // Count even when the drain failed: each fetched batch is imported as
         // it arrives, so notes recovered before the failure stay in the store.
@@ -202,14 +217,20 @@ impl MultisigClient {
         }
     }
 
-    /// Best-effort restore after a failed drain: the pre-drain covered set
-    /// united with whatever the interrupted backfill already re-covered. A
-    /// tag restored here was covered before the drain, so restoring it only
-    /// returns the client to its working pre-drain state; a later successful
-    /// drain re-covers everything from scratch anyway.
-    async fn restore_covered_tags(&mut self, snapshot: &BTreeSet<NoteTag>) {
+    /// Restores the covered-tags set after a failed drain: the pre-drain
+    /// covered set united with whatever the interrupted backfill already
+    /// re-covered. A tag restored here was covered before the drain, so
+    /// restoring it only returns the client to its working pre-drain state;
+    /// a later successful drain re-covers everything from scratch anyway.
+    /// The read of the partial progress is best-effort, but a failed
+    /// restoring write is returned — the caller must not swallow a store
+    /// left with its bookkeeping cleared.
+    async fn restore_covered_tags(
+        &mut self,
+        snapshot: &BTreeSet<NoteTag>,
+    ) -> std::result::Result<(), ClientError> {
         if snapshot.is_empty() {
-            return;
+            return Ok(());
         }
         let current: BTreeSet<NoteTag> = self
             .miden_client
@@ -219,10 +240,9 @@ impl MultisigClient {
             .flatten()
             .unwrap_or_default();
         let merged: BTreeSet<NoteTag> = snapshot.union(&current).copied().collect();
-        let _ = self
-            .miden_client
+        self.miden_client
             .set_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string(), merged)
-            .await;
+            .await
     }
 
     /// Number of tags the transport backfill considers candidates (`User`-

@@ -18,7 +18,7 @@ import {
   NoteType,
 } from '@miden-sdk/miden-sdk';
 
-import { isRelevantToAccount } from '../src/recovery/publicNoteBackfill.js';
+import { screenNoteForAccount } from '../src/recovery/publicNoteBackfill.js';
 
 const SENDER = '0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b';
 const TARGET = '0x1b1b1b1a1b1b1b011b1b1b1b1b1b1b';
@@ -37,7 +37,7 @@ describe('backfill static relevance screen (wasm drift guard)', () => {
       NoteType.Public,
       new NoteAttachment(),
     );
-    expect(isRelevantToAccount(note, id(TARGET))).toBe(true);
+    expect(screenNoteForAccount(note, id(TARGET))).toBe('relevant');
   });
 
   it('rejects a P2ID note addressed at a different account', () => {
@@ -48,7 +48,7 @@ describe('backfill static relevance screen (wasm drift guard)', () => {
       NoteType.Public,
       new NoteAttachment(),
     );
-    expect(isRelevantToAccount(note, id(TARGET))).toBe(false);
+    expect(screenNoteForAccount(note, id(TARGET))).toBe('irrelevant');
   });
 
   it('accepts a P2IDE note by target and by reclaimer, rejects unrelated', () => {
@@ -61,10 +61,10 @@ describe('backfill static relevance screen (wasm drift guard)', () => {
       NoteType.Public,
       new NoteAttachment(),
     );
-    expect(isRelevantToAccount(note, id(TARGET))).toBe(true);
+    expect(screenNoteForAccount(note, id(TARGET))).toBe('relevant');
     // The P2IDE reclaimer (the sender here) can consume after the reclaim
     // height, so the note is relevant to it too.
-    expect(isRelevantToAccount(note, id(SENDER))).toBe(true);
-    expect(isRelevantToAccount(note, id(OTHER))).toBe(false);
+    expect(screenNoteForAccount(note, id(SENDER))).toBe('relevant');
+    expect(screenNoteForAccount(note, id(OTHER))).toBe('irrelevant');
   });
 });
