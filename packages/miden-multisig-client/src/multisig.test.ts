@@ -2333,7 +2333,7 @@ describe('Multisig', () => {
         mockWebClient,
         2,
         config.signerCommitments,
-        { signatureScheme: 'ecdsa' },
+        { signatureScheme: 'ecdsa', feeFaucetId: MOCK_FEE_FAUCET_ID_HEX },
       );
     });
   });
@@ -2391,7 +2391,7 @@ describe('Multisig', () => {
         mockWebClient,
         3,
         [...config.signerCommitments, newCommitment],
-        { signatureScheme: mockSigner.scheme },
+        { signatureScheme: mockSigner.scheme, feeFaucetId: MOCK_FEE_FAUCET_ID_HEX },
       );
     });
 
@@ -2405,7 +2405,7 @@ describe('Multisig', () => {
         mockWebClient,
         config.threshold,
         expect.any(Array),
-        { signatureScheme: mockSigner.scheme },
+        { signatureScheme: mockSigner.scheme, feeFaucetId: MOCK_FEE_FAUCET_ID_HEX },
       );
     });
 
@@ -2419,7 +2419,7 @@ describe('Multisig', () => {
         mockWebClient,
         1,
         [config.signerCommitments[0], config.signerCommitments[1]],
-        { signatureScheme: mockSigner.scheme },
+        { signatureScheme: mockSigner.scheme, feeFaucetId: MOCK_FEE_FAUCET_ID_HEX },
       );
     });
 
@@ -2433,7 +2433,7 @@ describe('Multisig', () => {
         mockWebClient,
         2,
         expect.any(Array),
-        { signatureScheme: mockSigner.scheme },
+        { signatureScheme: mockSigner.scheme, feeFaucetId: MOCK_FEE_FAUCET_ID_HEX },
       );
     });
   });
@@ -2613,7 +2613,7 @@ describe('Multisig', () => {
       expect(buildUpdateGuardianTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
         newGuardianCommitment,
-        { signatureScheme: 'ecdsa' },
+        { signatureScheme: 'ecdsa', feeFaucetId: MOCK_FEE_FAUCET_ID_HEX },
       );
     });
   });
@@ -2675,7 +2675,7 @@ describe('Multisig', () => {
         mockWebClient,
         'send_asset',
         1,
-        { signatureScheme: 'falcon' },
+        { signatureScheme: 'falcon', feeFaucetId: MOCK_FEE_FAUCET_ID_HEX },
       );
       expect(proposal.metadata.proposalType).toBe('update_procedure_threshold');
       if (proposal.metadata.proposalType === 'update_procedure_threshold') {
@@ -2747,7 +2747,7 @@ describe('Multisig', () => {
         mockWebClient,
         'send_asset',
         1,
-        { signatureScheme: 'ecdsa' },
+        { signatureScheme: 'ecdsa', feeFaucetId: MOCK_FEE_FAUCET_ID_HEX },
       );
     });
   });
@@ -5593,10 +5593,20 @@ describe('Multisig', () => {
       expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(SIGNED_AUTH_ARG);
     });
 
-    it('proposes with a bare auth arg, so the Rust SDK can rebuild it', async () => {
-      // A committed auth arg is inert for a guarded-multisig account and the Rust
-      // SDK cannot reproduce it from salt_hex alone, so the typed create paths
-      // must not commit conversion info. See transaction/feeAuth.ts.
+    it('proposes with an auth arg the Rust SDK can rederive from salt_hex', async () => {
+      // This used to assert a BARE auth arg, on the reasoning that a committed one is
+      // inert for a guarded-multisig account and unreproducible from salt_hex alone.
+      // The first half stopped being true with protocol#3765: the guarded auth now calls
+      // `fee::pay_fee` before the summary is built, so a bare arg aborts the create-time
+      // execution with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot be made at
+      // all on a fee-charging chain.
+      //
+      // The second half is answered by committing NATIVE conversion info rather than
+      // arbitrary info: `getFeeFaucetId()` returns the chain's own fee faucet, so the arg
+      // is `hash(native_conversion_info(chain fee faucet) || salt)` -- rederivable by any
+      // SDK holding salt_hex and the reference block, which is what cross-SDK sync needs.
+      // The invariant is therefore weakened deliberately, from "the auth arg IS the salt"
+      // to "the auth arg is DERIVABLE from the salt", and is asserted as such below.
       const multisig = createTestMultisig(config);
       mockRpcGetBlockHeaderByNumber.mockClear();
       vi.mocked(buildUpdateSignersTransactionRequest).mockClear();
@@ -5634,8 +5644,9 @@ describe('Multisig', () => {
 
       // The first call is the propose build; a later one would be a rebuild.
       const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
-      expect(options).not.toHaveProperty('feeFaucetId');
-      expect(mockRpcGetBlockHeaderByNumber).not.toHaveBeenCalled();
+      // The CHAIN's fee faucet specifically. An arbitrary faucet here would commit info no
+      // other SDK could rederive, which is the case the old assertion was protecting.
+      expect(options).toHaveProperty('feeFaucetId', MOCK_FEE_FAUCET_ID_HEX);
     });
 
     it('rebuilds with conversion info when the auth arg commits to the salt', async () => {

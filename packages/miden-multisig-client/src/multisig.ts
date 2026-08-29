@@ -922,11 +922,22 @@ export class Multisig {
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
     this.warnOnOverrideDilution(targetSignerCommitments.length);
 
+    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
+    // is built, so a create-time execution needs the fee conversion info committed in the auth
+    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
+    // even be created on a fee-charging chain.
+    //
+    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
+    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
+    // can rederive from `salt_hex` plus the reference block, exactly as
+    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
+    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
+    const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
       targetThreshold,
       targetSignerCommitments,
-      { signatureScheme: this.signer.scheme },
+      { signatureScheme: this.signer.scheme, feeFaucetId },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -981,11 +992,22 @@ export class Multisig {
       );
     }
 
+    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
+    // is built, so a create-time execution needs the fee conversion info committed in the auth
+    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
+    // even be created on a fee-charging chain.
+    //
+    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
+    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
+    // can rederive from `salt_hex` plus the reference block, exactly as
+    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
+    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
+    const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
       targetThreshold,
       targetSignerCommitments,
-      { signatureScheme: this.signer.scheme },
+      { signatureScheme: this.signer.scheme, feeFaucetId },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1028,11 +1050,22 @@ export class Multisig {
       throw new Error('New threshold is the same as current threshold');
     }
 
+    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
+    // is built, so a create-time execution needs the fee conversion info committed in the auth
+    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
+    // even be created on a fee-charging chain.
+    //
+    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
+    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
+    // can rederive from `salt_hex` plus the reference block, exactly as
+    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
+    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
+    const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
       newThreshold,
       this.signerCommitments,
-      { signatureScheme: this.signer.scheme },
+      { signatureScheme: this.signer.scheme, feeFaucetId },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1077,11 +1110,22 @@ export class Multisig {
       );
     }
 
+    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
+    // is built, so a create-time execution needs the fee conversion info committed in the auth
+    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
+    // even be created on a fee-charging chain.
+    //
+    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
+    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
+    // can rederive from `salt_hex` plus the reference block, exactly as
+    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
+    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
+    const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateProcedureThresholdTransactionRequest(
       webClient,
       targetProcedure,
       targetThreshold,
-      { signatureScheme: this.signer.scheme },
+      { signatureScheme: this.signer.scheme, feeFaucetId },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1121,10 +1165,21 @@ export class Multisig {
     const webClient = await this.getRawClient();
     await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
 
+    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
+    // is built, so a create-time execution needs the fee conversion info committed in the auth
+    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
+    // even be created on a fee-charging chain.
+    //
+    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
+    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
+    // can rederive from `salt_hex` plus the reference block, exactly as
+    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
+    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
+    const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateGuardianTransactionRequest(
       webClient,
       newGuardianPubkey,
-      { signatureScheme: this.signer.scheme },
+      { signatureScheme: this.signer.scheme, feeFaucetId },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
