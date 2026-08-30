@@ -1,7 +1,8 @@
+import type { TransactionRequestBuilder } from '@miden-sdk/miden-sdk';
 import { Felt, FeltArray, Word } from '@miden-sdk/miden-sdk';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { feeAuthArg, nativeConversionInfo, resolveAuthArg } from './feeAuth.js';
+import { applyAuthArg, feeAuthArg, nativeConversionInfo, resolveAuthArg } from './feeAuth.js';
 
 const word = (...values: bigint[]): Word =>
   Word.newFromFelts(values.map((value) => new Felt(value)));
@@ -147,6 +148,23 @@ describe('resolveAuthArg', () => {
     const { authArg } = resolveAuthArg(salt);
 
     expect(authArg).toBe(salt);
+  });
+
+  /**
+   * `applyAuthArg` documents the salt as consumed, and resolution rejects an
+   * unparseable faucet id before it has taken ownership of anything — so the
+   * throw escapes before the cleanup scope that would otherwise release it.
+   */
+  it('frees the salt when resolution rejects the fee faucet', () => {
+    const salt = word(11n, 22n, 33n, 44n);
+    const free = vi.spyOn(salt, 'free');
+    const builder = {
+      withAuthArg: () => builder,
+      extendAdviceMap: () => builder,
+    } as unknown as TransactionRequestBuilder;
+
+    expect(() => applyAuthArg(builder, salt, 'not-a-faucet-id')).toThrow();
+    expect(free).toHaveBeenCalledTimes(1);
   });
 
   it('is deterministic, so a rebuild reproduces the proposer auth arg', () => {

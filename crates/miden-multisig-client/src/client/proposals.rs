@@ -364,6 +364,13 @@ impl MultisigClient {
             proposal.metadata.signer_commitments().ok()
         };
 
+        // Execute and finalize at the proposal's anchored reference block, so
+        // the summary the cosigners signed reproduces exactly. The anchor was
+        // already checked against the summary's block commitment when
+        // `get_proposal` verified the summary binding. It also carries the fee
+        // faucet the committed auth arg was built from.
+        let chain_anchor = proposal.metadata.chain_anchor()?;
+
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
@@ -373,14 +380,10 @@ impl MultisigClient {
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
             self.key_manager.scheme(),
+            &chain_anchor,
         )
         .await?;
 
-        // Execute and finalize at the proposal's anchored reference block, so
-        // the summary the cosigners signed reproduces exactly. The anchor was
-        // already checked against the summary's block commitment when
-        // `get_proposal` verified the summary binding.
-        let chain_anchor = proposal.metadata.chain_anchor()?;
         self.finalize_transaction(
             account_id,
             final_tx_request,

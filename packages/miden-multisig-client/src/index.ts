@@ -81,13 +81,18 @@ export {
   // themselves, but `createCustomProposal` executes caller-supplied request bytes as
   // given and never touches their auth args -- so on a fee-charging chain the caller has
   // to make the same commitment, and until now had no supported way to. Without it a
-  // custom proposal aborts in `fee::pay_fee` with ERR_FEE_CONVERSION_INFO_MISSING, which
-  // is every recallable send for a consumer whose typed p2id path lacks reclaim support.
+  // custom proposal aborts in `fee::pay_fee` with ERR_FEE_CONVERSION_INFO_MISSING.
   //
-  // Note this is deliberately NOT the SDK's `TransactionRequestBuilder.withFeeConversionInfo`:
-  // that flags the request as declaring conversion info, which makes miden-client classify
-  // the account's auth component first and reject a guarded multisig whose procedure roots
-  // it cannot match. Committing the auth arg directly, as the typed builders do, avoids that.
+  // Setting the auth arg directly is the only route here, and the right one. Rust's
+  // `TransactionRequestBuilder::fee_conversion_info` additionally flags the request as
+  // DECLARING conversion info, which makes miden-client classify the account's auth
+  // component and reject a guarded multisig; the Rust SDK avoids it for that reason. The
+  // wasm build installed here exposes no equivalent -- only `withAuthArg` and
+  // `extendAdviceMap` -- so both SDKs converge on the same two calls. That is a fact
+  // about this build, not the binding surface: the pinned websdk source does export
+  // `withFeeConversionInfo`, which an integrator on a stock install must still avoid
+  // on a guarded account.
+  applyAuthArg,
   resolveAuthArg,
   nativeConversionInfo,
   feeAuthArg,
@@ -186,6 +191,7 @@ export {
 
 export {
   type AuthArgErrorCode,
+  FeeFaucetAnchorMismatchError,
   ProposalAuthArgUnresolvableError,
   ProposalSaltMalformedError,
 } from './multisig/authArgErrors.js';

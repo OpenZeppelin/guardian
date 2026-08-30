@@ -13,10 +13,10 @@ use miden_protocol::{Felt, Word};
 use miden_standards::note::{P2idNote, P2ideNote};
 use miden_standards::tx_script::SendNotesTransactionScript;
 
+use super::MaybeFeeConversionInfo;
 use crate::error::{MultisigError, Result};
 use crate::proposal::P2ideHeights;
 use miden_standards::account::auth::FeeConversionInfo;
-use super::MaybeFeeConversionInfo;
 
 /// Builds a P2ID transaction request.
 ///
@@ -25,6 +25,17 @@ use super::MaybeFeeConversionInfo;
 /// constraint, a P2IDE note is created instead of a plain P2ID note (issue
 /// #366); the note's serial number is drawn from the same salt-seeded rng
 /// either way, so cosigners rebuild the identical note.
+///
+/// `fee_conversion_info` decides what the auth arg carries. `Some(info)` commits
+/// `hash(CONVERSION_INFO || SALT)` and supplies the preimage through the advice map, which is
+/// what the guarded auth procedure's `fee::pay_fee` requires; `None` passes the salt through
+/// bare, reproducing the pre-0.16 behaviour, which aborts at proving with
+/// `ERR_FEE_CONVERSION_INFO_MISSING` wherever the verification base fee is non-zero.
+///
+/// Resolve the value with [`crate::resolve_fee_conversion_info`] when building a new request,
+/// or with [`crate::fee_conversion_info_at`] when rebuilding one for an existing proposal —
+/// the auth arg commits it, so a rebuild has to reproduce what was committed rather than what
+/// the chain reports now.
 pub fn build_p2id_transaction_request<I>(
     sender_account: &Account,
     recipient: AccountId,
@@ -114,7 +125,10 @@ mod tests {
     };
 
     /// Builds a guarded multisig account and a fungible faucet for the request builders.
-    fn guarded_account_and_faucet() -> (miden_client::account::Account, miden_client::account::Account) {
+    fn guarded_account_and_faucet() -> (
+        miden_client::account::Account,
+        miden_client::account::Account,
+    ) {
         let secret_key = SecretKey::new();
         let signer_commitment = secret_key.public_key().to_commitment();
         let account = MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
@@ -276,10 +290,6 @@ mod tests {
         assert_ne!(private_request.to_bytes(), public_request.to_bytes());
     }
 
-    /// Presence of a reclaim/timelock height must switch the output note to
-    /// P2IDE (issue #366): the note script and storage change, so the built
-    /// request differs from a plain P2ID request; and the build must stay
-    /// deterministic in the salt so cosigners rebuild the identical note.
     /// A request built with fee conversion info must commit it via the auth args, not pass the
     /// salt through bare.
     ///
@@ -290,7 +300,9 @@ mod tests {
     fn p2id_request_commits_fee_conversion_info() {
         let (account, faucet) = guarded_account_and_faucet();
         let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
-        let asset = miden_protocol::asset::FungibleAsset::new(faucet.id(), 100).unwrap().into();
+        let asset = miden_protocol::asset::FungibleAsset::new(faucet.id(), 100)
+            .unwrap()
+            .into();
         let salt = Word::from([1u32, 2, 3, 4]);
         let conversion_info = FeeConversionInfo::one_to_one(faucet.id());
 
@@ -310,14 +322,25 @@ mod tests {
             commit_fee_conversion_info(conversion_info, salt);
 
         assert_eq!(*request.auth_arg(), Some(expected_auth_arg));
-        assert_ne!(*request.auth_arg(), Some(salt), "the salt must not be passed through bare");
+        assert_ne!(
+            *request.auth_arg(),
+            Some(salt),
+            "the salt must not be passed through bare"
+        );
         assert_eq!(
-            request.advice_map().get(&expected_auth_arg).map(|v| v.to_vec()),
+            request
+                .advice_map()
+                .get(&expected_auth_arg)
+                .map(|v| v.to_vec()),
             Some(expected_preimage),
             "the commitment preimage must be reachable from the advice map"
         );
     }
 
+    /// Presence of a reclaim/timelock height must switch the output note to
+    /// P2IDE (issue #366): the note script and storage change, so the built
+    /// request differs from a plain P2ID request; and the build must stay
+    /// deterministic in the salt so cosigners rebuild the identical note.
     #[test]
     fn build_p2id_transaction_request_heights_select_p2ide() {
         let secret_key = SecretKey::new();

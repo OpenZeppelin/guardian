@@ -13,14 +13,14 @@ pub use configuration::{
 pub use consume::{
     build_consume_notes_transaction_request, build_consume_notes_transaction_request_from_notes,
 };
+pub(crate) use fee::MaybeFeeConversionInfo;
 pub use guardian::build_update_guardian_transaction_request;
 pub use payment::build_p2id_transaction_request;
-pub(crate) use fee::MaybeFeeConversionInfo;
 
 mod fee {
     use miden_client::Word;
     use miden_client::transaction::TransactionRequestBuilder;
-    use miden_standards::account::auth::FeeConversionInfo;
+    use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 
     /// Sets the auth args of a multisig request, committing fee conversion info when there is any.
     ///
@@ -29,6 +29,14 @@ mod fee {
     /// in `fee::pay_fee` with `ERR_FEE_CONVERSION_INFO_MISSING` wherever the verification base fee
     /// is non-zero. Committing keeps the salt's other role intact: the commitment is what the
     /// summary binds, and distinct salts still produce distinct commitments.
+    ///
+    /// The commitment and its advice preimage are applied by hand rather than through
+    /// [`TransactionRequestBuilder::fee_conversion_info`]. That method additionally marks the
+    /// request as *declaring* conversion info, and miden-client refuses such a request before
+    /// execution for every auth component outside `AuthSingleSig`/`AuthMultisig` — which includes
+    /// the `AuthGuardedMultisig` component these accounts use. The auth arg and advice entries
+    /// come out the same either way; the serialized request differs by the declaration flag.
+    /// The TypeScript SDK sets the same two fields the same way.
     ///
     /// `None` reproduces the pre-fee behaviour and is only valid on a chain that charges nothing.
     pub(crate) trait MaybeFeeConversionInfo {
@@ -46,7 +54,11 @@ mod fee {
             salt: Word,
         ) -> Self {
             match fee_conversion_info {
-                Some(info) => self.fee_conversion_info(info, salt),
+                Some(info) => {
+                    let (auth_arg, preimage) = commit_fee_conversion_info(info, salt);
+                    self.auth_arg(auth_arg)
+                        .extend_advice_map([(auth_arg, preimage)])
+                }
                 None => self.auth_arg(salt),
             }
         }
@@ -162,6 +174,155 @@ pub fn word_to_hex(word: &Word) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The commitment must reach the request through `auth_arg` + `extend_advice_map`, never
+    /// through `TransactionRequestBuilder::fee_conversion_info`.
+    ///
+    /// That method also flags the request as declaring conversion info, and miden-client rejects
+    /// such a request before execution for every auth component except `AuthSingleSig` and
+    /// `AuthMultisig`. These accounts run `AuthGuardedMultisig`, so a declaring request builds
+    /// fine and is then rejected during account validation, before execution.
+    #[test]
+    fn committed_fee_conversion_info_does_not_declare_itself() {
+        use miden_client::transaction::TransactionRequestBuilder;
+        use miden_protocol::account::{AccountId, AccountType};
+        use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
+
+        let faucet = AccountId::builder()
+            .account_type(AccountType::Public)
+            .build_with_seed([7u8; 32]);
+        let info = FeeConversionInfo::one_to_one(faucet);
+        let salt = Word::from([1u32, 2, 3, 4]);
+        let (expected_auth_arg, expected_preimage) = commit_fee_conversion_info(info, salt);
+
+        let request = TransactionRequestBuilder::new()
+            .maybe_fee_conversion_info(Some(info), salt)
+            .build()
+            .expect("request should build");
+
+        assert!(
+            !request.declares_fee_conversion_info(),
+            "declaring the conversion info makes miden-client reject the guarded account"
+        );
+        assert_eq!(*request.auth_arg(), Some(expected_auth_arg));
+        assert_eq!(
+            request
+                .advice_map()
+                .get(&expected_auth_arg)
+                .map(|values| values.to_vec()),
+            Some(expected_preimage),
+            "the preimage must be present or `load_conversion_info` finds nothing"
+        );
+    }
+
+    /// Pins the commitment to a literal digest, which is the one value both SDKs must agree on.
+    ///
+    /// Everything else about cross-SDK reconstruction is derivable — the faucet comes from the
+    /// proposal's anchor and the rate is fixed — so this hash is the whole of the shared
+    /// contract. The TypeScript side asserts the same four felts for the same inputs in
+    /// `packages/miden-multisig-client/src/transaction/feeAuth.test.ts`, where it reaches them
+    /// through `Poseidon2.hashElements` rather than `merge`. Asserting it only there would leave
+    /// a swap of the operand order invisible to `cargo test`: the two Rust tests above compute
+    /// their expectation with the same `commit_fee_conversion_info` the code under test calls,
+    /// so they move with it. Change either side and this fails; update it only against a digest
+    /// recomputed independently, never by copying whatever the code now returns.
+    #[test]
+    fn fee_conversion_commitment_matches_the_typescript_vector() {
+        use miden_protocol::Hasher;
+        use miden_protocol::account::{AccountId, AccountType};
+        use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
+
+        let conversion_info = Word::from([0xdeadu32, 0xbeef, 1, 1]);
+        let salt = Word::from([11u32, 22, 33, 44]);
+
+        assert_eq!(
+            Hasher::merge(&[conversion_info, salt]),
+            Word::from(&[
+                Felt::new_unchecked(8229881116367716759),
+                Felt::new_unchecked(4629940889584181757),
+                Felt::new_unchecked(3690706593687614873),
+                Felt::new_unchecked(14641540369284480384),
+            ]),
+            "the auth-arg digest diverged from the TypeScript SDK's pinned vector"
+        );
+
+        let faucet = AccountId::builder()
+            .account_type(AccountType::Public)
+            .build_with_seed([7u8; 32]);
+        let info = FeeConversionInfo::one_to_one(faucet);
+        let (auth_arg, preimage) = commit_fee_conversion_info(info, salt);
+
+        assert_eq!(
+            auth_arg,
+            Hasher::merge(&[info.to_word(), salt]),
+            "the commitment must hash CONVERSION_INFO before SALT"
+        );
+        assert_eq!(
+            preimage,
+            [salt.as_elements(), info.to_word().as_elements()].concat(),
+            "load_conversion_info pops the salt first, so the preimage is SALT ++ CONVERSION_INFO"
+        );
+    }
+
+    /// Pins the felt layout of the conversion-info word itself.
+    ///
+    /// The digest vector above fixes the hash but feeds it a hand-written word, so it says
+    /// nothing about how a *faucet* becomes that word. Rust delegates to
+    /// `FeeConversionInfo::to_word`, while the TypeScript SDK hand-rolls the same four felts in
+    /// `conversionInfoWord`. Only this assertion couples them: without it a reordering inside
+    /// `to_word` would carry Rust along silently, leave TypeScript behind, and still leave both
+    /// suites green while the two SDKs committed different auth args for the same proposal.
+    #[test]
+    fn conversion_info_word_layout_matches_the_typescript_sdk() {
+        use miden_protocol::account::{AccountId, AccountType};
+        use miden_standards::account::auth::FeeConversionInfo;
+
+        let faucet = AccountId::builder()
+            .account_type(AccountType::Public)
+            .build_with_seed([7u8; 32]);
+
+        assert_eq!(
+            FeeConversionInfo::one_to_one(faucet).to_word(),
+            Word::from([
+                faucet.suffix(),
+                faucet.prefix().as_felt(),
+                Felt::new_unchecked(1),
+                Felt::new_unchecked(1),
+            ]),
+            "conversionInfoWord builds [suffix, prefix, 1, 1]; to_word must agree felt for felt"
+        );
+
+        // `one_to_one` sets both rate slots to ONE, which leaves a numerator/denominator
+        // swap indistinguishable. A distinct-rate case separates them. Native fees never
+        // take this branch, but the layout the two SDKs share is the same either way.
+        let skewed = FeeConversionInfo::new(faucet, 2, 3).expect("a 2/3 rate is representable");
+        assert_eq!(
+            skewed.to_word(),
+            Word::from([
+                faucet.suffix(),
+                faucet.prefix().as_felt(),
+                Felt::new_unchecked(2),
+                Felt::new_unchecked(3),
+            ]),
+            "the numerator precedes the denominator"
+        );
+    }
+
+    /// Without conversion info the salt stays the auth arg, and nothing is committed.
+    #[test]
+    fn absent_fee_conversion_info_passes_the_salt_through() {
+        use miden_client::transaction::TransactionRequestBuilder;
+
+        let salt = Word::from([9u32, 8, 7, 6]);
+
+        let request = TransactionRequestBuilder::new()
+            .maybe_fee_conversion_info(None, salt)
+            .build()
+            .expect("request should build");
+
+        assert!(!request.declares_fee_conversion_info());
+        assert_eq!(*request.auth_arg(), Some(salt));
+    }
 
     #[test]
     fn deserialize_transaction_request_rejects_garbage_bytes() {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Multisig } from './multisig.js';
+import { FeeFaucetAnchorMismatchError } from './multisig/authArgErrors.js';
 import { GuardianHttpClient, type Signer } from '@openzeppelin/guardian-client';
 import { Endpoint } from '@miden-sdk/miden-sdk';
 import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
@@ -30,12 +31,24 @@ const {
   mockGetGuardianCommitment,
   mockImportNotesFromProposals,
   mockBackfillPublicNotesByTag,
+  MOCK_OTHER_FEE_FAUCET_ID,
+  MOCK_OTHER_FEE_FAUCET_ID_HEX,
+  MOCK_SYNC_HEIGHT,
 } = vi.hoisted(() => {
   // The faucet crosses every boundary as hex, so assertions compare hex rather
   // than handle identity; the handle exists only because a block header hands one
   // out.
   const MOCK_FEE_FAUCET_ID_HEX = '0xfee';
   const MOCK_FEE_FAUCET_ID = { toString: () => MOCK_FEE_FAUCET_ID_HEX, free: () => {} };
+  // The block a proposal is anchored at is the block its faucet must come from.
+  // Keeping a second, different faucet here means a create path that reads the
+  // wrong block cannot pass: the two would no longer collapse to one constant.
+  const MOCK_OTHER_FEE_FAUCET_ID_HEX = '0xfee2';
+  const MOCK_OTHER_FEE_FAUCET_ID = {
+    toString: () => MOCK_OTHER_FEE_FAUCET_ID_HEX,
+    free: () => {},
+  };
+  const MOCK_SYNC_HEIGHT = 4242;
   const DEFAULT_TX_SUMMARY = {
     toCommitment: () => ({
       toHex: () => '0x' + 'c'.repeat(64),
@@ -48,14 +61,19 @@ const {
   };
   return {
     mockRpcGetAccountDetails: vi.fn(),
-    // getFeeFaucetId reads the chain tip through a block header. No propose path
-    // calls it — the assertions below pin that.
+    // getFeeFaucetId reads the header of the block the client is synced to,
+    // which every typed propose path commits to; the assertions below pin both
+    // the block it asks for and the faucet it commits.
     mockRpcGetBlockHeaderByNumber: vi.fn().mockResolvedValue({
+      blockNum: () => MOCK_SYNC_HEIGHT,
       feeFaucetId: () => MOCK_FEE_FAUCET_ID,
       free: () => {},
     }),
     MOCK_FEE_FAUCET_ID,
     MOCK_FEE_FAUCET_ID_HEX,
+    MOCK_OTHER_FEE_FAUCET_ID,
+    MOCK_OTHER_FEE_FAUCET_ID_HEX,
+    MOCK_SYNC_HEIGHT,
     DEFAULT_TX_SUMMARY,
     mockTxSummaryDeserialize: vi.fn().mockReturnValue(DEFAULT_TX_SUMMARY),
     mockAccountDeserialize: vi.fn(),
@@ -388,6 +406,9 @@ describe('Multisig', () => {
       syncState: vi.fn(),
       getAccount: vi.fn().mockResolvedValue(null),
       newAccount: vi.fn(),
+      // The fee faucet is read from the block the client is synced to, because
+      // that is the block a new request gets anchored at.
+      getSyncHeight: vi.fn().mockResolvedValue(MOCK_SYNC_HEIGHT),
     };
     mockWebClient.transactions.executeRequest.mockImplementation(
       async (accountId: unknown, request: unknown) => {
@@ -1899,13 +1920,22 @@ describe('Multisig', () => {
         }),
       });
 
+      // Cleared so the nth-call assertion below counts from this proposal: the file
+      // does not reset mocks between tests, and earlier cases in this describe block
+      // leave calls on this builder.
+      vi.mocked(buildP2idTransactionRequest).mockClear();
+
       const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, {
         nonce: 1,
         noteType: NoteType.Private,
       });
 
-      // Propose path builds the private note...
-      expect(vi.mocked(buildP2idTransactionRequest)).toHaveBeenCalledWith(
+      // Propose path builds the private note. Asserted on the FIRST call: the flow
+      // builds twice, create then rebuild, and the rebuild also passes Private, so a
+      // plain toHaveBeenCalledWith is satisfied by the rebuild whatever the create
+      // path did.
+      expect(vi.mocked(buildP2idTransactionRequest)).toHaveBeenNthCalledWith(
+        1,
         expect.any(String),
         '0xrecipient',
         '0xfaucet',
@@ -1978,15 +2008,19 @@ describe('Multisig', () => {
         }),
       });
 
+      vi.mocked(buildP2idTransactionRequest).mockClear();
+
       const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, {
         nonce: 1,
         reclaimHeight: 12345,
         timelockHeight: 700,
       });
 
-      // Propose path builds the P2IDE note from the heights...
-      const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
-      expect(lastCall[4]).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
+      // Propose path builds the P2IDE note from the heights. Read call 1, not the last:
+      // the flow builds twice, create then rebuild, and the rebuild passes the same
+      // heights back from metadata, so the last call cannot witness the create path.
+      const createCall = vi.mocked(buildP2idTransactionRequest).mock.calls[0]!;
+      expect(createCall[4]).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
 
       // ...and the pushed wire metadata carries the heights so cosigners
       // rebuild the same P2IDE note at verification/execution.
@@ -2058,10 +2092,9 @@ describe('Multisig', () => {
 
     /// Options are forwarded wholesale so a note option added later cannot be
     /// dropped, which also means a structurally compatible object can carry
-    /// `feeFaucetId` into a typed proposal. That would produce a commitment auth
-    /// arg the Rust SDK cannot rebuild, so it is refused rather than ignored —
-    /// silently dropping it would hand back a proposal that is not what was asked
-    /// for.
+    /// `feeFaucetId` into a typed proposal. It is overridden rather than
+    /// honoured: only the anchored block's faucet is reproducible by a rebuild,
+    /// so a caller-chosen one would collect signatures and never execute.
     it('commits the chain fee faucet on a typed p2id proposal', async () => {
       const { executeForSummary } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
@@ -2107,12 +2140,24 @@ describe('Multisig', () => {
         }),
       });
 
-      // The guarded auth procedure pays the fee and reads the conversion info from
-      // the auth args, so the proposal must commit it. The faucet is resolved from
-      // the chain rather than taken from the caller.
-      await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 1 });
+      // Passing a caller faucet exercises the override rather than merely documenting
+      // it: this is the only typed path that spreads a caller options bag into the
+      // builder, so reversing the spread would silently commit the caller's choice and
+      // produce a proposal that collects signatures and can never be rebuilt.
+      const optionsCarryingAFaucet = { nonce: 1, feeFaucetId: MOCK_OTHER_FEE_FAUCET_ID_HEX };
+      await multisig.createP2idProposal(
+        '0xrecipient',
+        '0xfaucet',
+        100n,
+        optionsCarryingAFaucet,
+      );
 
-      expect(vi.mocked(buildP2idTransactionRequest)).toHaveBeenCalledWith(
+      // The nth form is load-bearing. This flow calls the builder twice -- once to
+      // create and once to rebuild -- and the rebuild passes the chain faucet, so a
+      // plain toHaveBeenCalledWith is satisfied by the rebuild no matter what the
+      // create path committed.
+      expect(vi.mocked(buildP2idTransactionRequest)).toHaveBeenNthCalledWith(
+        1,
         expect.anything(),
         '0xrecipient',
         '0xfaucet',
@@ -5451,10 +5496,11 @@ describe('Multisig', () => {
     ];
 
     it('rebuilds a proposal with no recorded salt from the signed auth arg', async () => {
-      // Proposals stored before saltHex was persisted. The auth arg is the salt for
-      // anything either SDK creates, so reading it back out of the summary
-      // reproduces the signed request; anything else silently rebuilds a different
-      // transaction.
+      // Proposals stored before saltHex was persisted, back when the auth arg was
+      // the bare salt. Reading it back out of the summary reproduces the signed
+      // request; anything else silently rebuilds a different transaction. Typed
+      // paths in both SDKs now commit conversion info instead, so this fallback
+      // covers legacy rows rather than anything either SDK creates today.
       const multisig = createTestMultisig(config);
       vi.mocked(buildUpdateSignersTransactionRequest).mockClear();
       const withoutSalt = proposalWithSalt('unused');
@@ -5462,6 +5508,28 @@ describe('Multisig', () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ proposals: withoutSalt }),
+      });
+
+      await multisig.syncProposals();
+
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
+      expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(SIGNED_AUTH_ARG);
+      expect(options).toMatchObject({ feeFaucetId: undefined });
+    });
+
+    it('treats an explicitly null salt as absent, the same as an omitted one', async () => {
+      // This SDK omits the field — the payload's salt is an Option<String> that
+      // skips serializing — but GUARDIAN stores metadata as opaque JSON, so a
+      // producer whose serializer writes nulls round-trips `"salt": null` to
+      // every reader. Rejecting that spelling as malformed would fail the whole
+      // account's sync, since syncProposals verifies each proposal without skipping.
+      const multisig = createTestMultisig(config);
+      vi.mocked(buildUpdateSignersTransactionRequest).mockClear();
+      const nullSalt = proposalWithSalt('unused');
+      (nullSalt[0].delta_payload.metadata as { salt?: string | null }).salt = null;
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: nullSalt }),
       });
 
       await multisig.syncProposals();
@@ -5575,7 +5643,8 @@ describe('Multisig', () => {
 
     it('rebuilds without conversion info when the auth arg is the bare salt', async () => {
       // A proposal from a client that passes the salt through as the auth arg —
-      // the Rust SDK, and this package before conversion info was committed.
+      // a legacy proposal from either SDK, predating fee conversion commitments,
+      // or a caller driving the exported builders with no fee faucet.
       // Committing conversion info on the rebuild would change the auth arg and
       // the reconstruction check would reject a perfectly valid proposal.
       const multisig = createTestMultisig(config);
@@ -5586,7 +5655,7 @@ describe('Multisig', () => {
 
       await multisig.syncProposals();
 
-      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls.at(-1)![3];
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
       expect(options).toMatchObject({ feeFaucetId: undefined });
       // The bare case is every proposal the Rust SDK creates, so a salt lost
       // here breaks cross-SDK sync, not just the opt-in path.
@@ -5658,7 +5727,7 @@ describe('Multisig', () => {
 
       await multisig.syncProposals();
 
-      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls.at(-1)![3];
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
       expect(options).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
       // The recorded salt, not the commitment the summary carries. Rebuilding
       // from the commitment would reproduce the auth arg and so pass the
@@ -5722,9 +5791,37 @@ describe('Multisig', () => {
       await multisig.syncProposals();
 
       expect(mockRpcGetBlockHeaderByNumber).not.toHaveBeenCalled();
-      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls.at(-1)![3];
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
       expect(options).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
       expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(COMMITTED_SALT);
+    });
+
+    it('rebuilds with the anchor faucet even when the chain now reports another', async () => {
+      // The test above cannot distinguish "read the anchor" from "hardcoded the
+      // one faucet every mock returns", because the tip and the anchor agree by
+      // default. Here they disagree, which is the whole cross-SDK claim: a
+      // rebuilder derives the committed faucet from the anchor that travels with
+      // the proposal, so a faucet change since the signatures were collected
+      // cannot move it.
+      const multisig = createTestMultisig(config);
+      vi.mocked(chainAnchorFromBase64).mockReturnValueOnce({
+        commitment: () => ({ toHex: () => '0x' + 'b'.repeat(64) }),
+        blockHeader: () => ({
+          feeFaucetId: () => MOCK_OTHER_FEE_FAUCET_ID,
+          free: () => {},
+        }),
+        free: () => {},
+        serialize: () => new Uint8Array([9, 9, 9]),
+      } as never);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: proposalWithSalt('0x' + 'd'.repeat(64)) }),
+      });
+
+      await multisig.syncProposals();
+
+      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
+      expect(options).toMatchObject({ feeFaucetId: MOCK_OTHER_FEE_FAUCET_ID_HEX });
     });
 
     // Each proposal type reaches its own builder through its own arm of
@@ -5773,7 +5870,6 @@ describe('Multisig', () => {
     for (const { type, metadata, builder, optionsIndex } of committedArms) {
       it(`threads the faucet through the ${type} rebuild`, async () => {
         const multisig = createTestMultisig(config);
-        builder().mock.calls.length = 0;
         mockFetch.mockResolvedValueOnce({
           ok: true,
           json: async () => ({ proposals: proposalWithSalt(COMMITTED_SALT, metadata) }),
@@ -5786,6 +5882,34 @@ describe('Multisig', () => {
         expect((options as { salt: { toHex: () => string } }).salt.toHex()).toBe(COMMITTED_SALT);
       });
     }
+
+    // The rebuild is what every cosigner runs, and the P2IDE heights are the one
+    // input the arms above do not carry: their p2id fixture is a plain send. A
+    // rebuild that drops them builds P2ID where the proposer built P2IDE, so the
+    // commitment differs and a valid proposal is rejected at verification.
+    it('threads the P2IDE heights back through the p2id rebuild', async () => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: proposalWithSalt(COMMITTED_SALT, {
+            proposal_type: 'p2id',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+            recipient_id: '0xrecipient',
+            faucet_id: '0xfaucet',
+            amount: '100',
+            reclaim_height: 12345,
+            timelock_height: 700,
+            description: '',
+          }),
+        }),
+      });
+
+      await multisig.syncProposals();
+
+      const options = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)![4];
+      expect(options).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
+    });
 
     // The two `consume_notes` arms have no sync-path fixture — v1 is gated and v2
     // needs embedded notes whose ids match — so they are pinned against the
@@ -5805,7 +5929,6 @@ describe('Multisig', () => {
     ]) {
       it(`threads the faucet through the consume_notes v${version} rebuild`, async () => {
         const multisig = createTestMultisig(config);
-        builder().mock.calls.length = 0;
 
         await (multisig as any).buildTransactionRequestFromMetadata(
           {
@@ -6146,23 +6269,39 @@ describe('Multisig', () => {
       guardianCommitment: '0x' + 'c'.repeat(64),
     };
 
-    it('reads the header once and caches it for the client lifetime', async () => {
+    it('reads the block the client is synced to, on the configured endpoint', async () => {
+      // Which block is asked for is the whole correctness question, not how many
+      // times. `FeeParameters` is a per-block header field, and a request built
+      // now is anchored at the synced block, so reading the tip instead would
+      // commit a faucet from a block the proposal is not anchored at and no
+      // rebuild could reproduce the auth arg.
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockClear();
+      vi.mocked(Endpoint).mockClear();
+
+      await multisig.getFeeFaucetId();
+
+      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledWith(MOCK_SYNC_HEIGHT);
+      expect(vi.mocked(Endpoint)).toHaveBeenCalledWith(MIDEN_RPC_ENDPOINT);
+    });
+
+    it('re-reads rather than caching, so a sync cannot leave it stale', async () => {
       const multisig = createTestMultisig(config);
       mockRpcGetBlockHeaderByNumber.mockClear();
 
-      const [first, second] = await Promise.all([
-        multisig.getFeeFaucetId(),
-        multisig.getFeeFaucetId(),
-      ]);
-      const third = await multisig.getFeeFaucetId();
+      await multisig.getFeeFaucetId();
+      mockWebClient.getSyncHeight.mockResolvedValueOnce(MOCK_SYNC_HEIGHT + 1);
+      mockRpcGetBlockHeaderByNumber.mockResolvedValueOnce({
+        blockNum: () => MOCK_SYNC_HEIGHT + 1,
+        feeFaucetId: () => MOCK_OTHER_FEE_FAUCET_ID,
+        free: () => {},
+      });
 
-      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledTimes(1);
-      expect(first).toBe(MOCK_FEE_FAUCET_ID_HEX);
-      expect(second).toBe(MOCK_FEE_FAUCET_ID_HEX);
-      expect(third).toBe(MOCK_FEE_FAUCET_ID_HEX);
+      await expect(multisig.getFeeFaucetId()).resolves.toBe(MOCK_OTHER_FEE_FAUCET_ID_HEX);
+      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenNthCalledWith(2, MOCK_SYNC_HEIGHT + 1);
     });
 
-    it('does not cache a failure, and names the endpoint when it fails', async () => {
+    it('names the endpoint when it fails, and stays usable afterwards', async () => {
       const multisig = createTestMultisig(config);
       mockRpcGetBlockHeaderByNumber.mockClear();
       mockRpcGetBlockHeaderByNumber.mockRejectedValueOnce(new Error('connection refused'));
@@ -6183,38 +6322,6 @@ describe('Multisig', () => {
       await expect(multisig.getFeeFaucetId()).rejects.toThrow(/connection refused/);
     });
 
-    it('joins concurrent callers on one failure and retries once after', async () => {
-      const multisig = createTestMultisig(config);
-      mockRpcGetBlockHeaderByNumber.mockClear();
-      mockRpcGetBlockHeaderByNumber.mockRejectedValueOnce(new Error('connection refused'));
-
-      const settled = await Promise.allSettled([
-        multisig.getFeeFaucetId(),
-        multisig.getFeeFaucetId(),
-      ]);
-
-      expect(settled.map((entry) => entry.status)).toEqual(['rejected', 'rejected']);
-      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledTimes(1);
-
-      await expect(multisig.getFeeFaucetId()).resolves.toBe(MOCK_FEE_FAUCET_ID_HEX);
-      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledTimes(2);
-    });
-
-    it('reads the chain tip of the configured endpoint', async () => {
-      // Counting calls says nothing about which chain, or which block, was
-      // asked. `FeeParameters` is a per-block header field, and the value is
-      // handed to callers as a fee faucet, so a pinned height or the wrong
-      // endpoint would be a wrong answer rather than a failure.
-      const multisig = createTestMultisig(config);
-      mockRpcGetBlockHeaderByNumber.mockClear();
-      vi.mocked(Endpoint).mockClear();
-
-      await multisig.getFeeFaucetId();
-
-      expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledWith();
-      expect(vi.mocked(Endpoint)).toHaveBeenCalledWith(MIDEN_RPC_ENDPOINT);
-    });
-
     it('retries a rate-limited read rather than surfacing it', async () => {
       const multisig = createTestMultisig(config);
       mockRpcGetBlockHeaderByNumber.mockClear();
@@ -6224,6 +6331,67 @@ describe('Multisig', () => {
 
       await expect(multisig.getFeeFaucetId()).resolves.toBe(MOCK_FEE_FAUCET_ID_HEX);
       expect(mockRpcGetBlockHeaderByNumber).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses to publish a proposal whose anchor disagrees with the committed faucet', async () => {
+      // A sync landing between the faucet read and the anchor capture would
+      // otherwise mint a proposal that collects signatures and can never
+      // execute: the auth arg commits one faucet, every rebuild derives the
+      // other from the anchor. It has to fail at creation, not at execution.
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'd'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      mockRpcGetBlockHeaderByNumber.mockResolvedValueOnce({
+        blockNum: () => MOCK_SYNC_HEIGHT,
+        feeFaucetId: () => MOCK_OTHER_FEE_FAUCET_ID,
+        free: () => {},
+      });
+
+      await expect(multisig.createChangeThresholdProposal(2)).rejects.toThrow(
+        FeeFaucetAnchorMismatchError,
+      );
+    });
+
+    it('carries a stable code and both faucets, so a caller can retry on the type', async () => {
+      // The message tells the caller to retry, which only a human can act on
+      // unless the condition is detectable. It is transient and the remedy is
+      // mechanical, so it has to be reachable without matching prose.
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'd'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      mockRpcGetBlockHeaderByNumber.mockResolvedValueOnce({
+        blockNum: () => MOCK_SYNC_HEIGHT,
+        feeFaucetId: () => MOCK_OTHER_FEE_FAUCET_ID,
+        free: () => {},
+      });
+
+      const error = await multisig.createChangeThresholdProposal(2).catch((e) => e);
+
+      expect(error).toBeInstanceOf(FeeFaucetAnchorMismatchError);
+      expect(error.code).toBe('fee_faucet_anchor_mismatch');
+      expect(error.committedFeeFaucetIdHex).toBe(MOCK_OTHER_FEE_FAUCET_ID_HEX);
+      expect(error.anchoredFeeFaucetIdHex).toBe(MOCK_FEE_FAUCET_ID_HEX);
+    });
+
+    it('rejects a header the node returned for a height other than the one asked for', async () => {
+      // This reads through a raw RpcClient, which unlike miden-client's
+      // verifying client does not check that the header it got back is the one
+      // it requested. Only the anchored block's faucet is the right one to
+      // commit, so a header from another height must not be trusted.
+      const multisig = createTestMultisig(config);
+      mockRpcGetBlockHeaderByNumber.mockResolvedValueOnce({
+        blockNum: () => MOCK_SYNC_HEIGHT - 1,
+        feeFaucetId: () => MOCK_FEE_FAUCET_ID,
+        free: () => {},
+      });
+
+      await expect(multisig.getFeeFaucetId()).rejects.toThrow(
+        /requested the block header at height 4242 but the node returned height 4241/,
+      );
     });
   });
 });

@@ -25,7 +25,7 @@ mod proposals;
 mod public_note_backfill;
 mod recovery;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 pub use delta_history::{
     HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,

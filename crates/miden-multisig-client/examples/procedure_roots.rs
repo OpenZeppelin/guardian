@@ -10,7 +10,6 @@
 //! ```
 
 use std::env;
-use std::path::Path;
 
 use miden_protocol::Word;
 use miden_standards::account::wallets::BasicWallet;
@@ -20,12 +19,17 @@ use serde::Serialize;
 /// The auth component MASM this package bundles and builds accounts from.
 ///
 /// Deliberately NOT `miden_standards::account::auth::AuthGuardedMultisig::code()`.
-/// Accounts are assembled in JS from this file, so deriving the pinned roots from
-/// the standards component instead pins a procedure nobody builds: the two agree
-/// only while the MASM is byte-identical AND both compile against the same
-/// standards release. `auth_tx` calls `miden::standards::fee`, so its root moves
-/// with the fee library -- the one procedure where that assumption breaks, and the
-/// one whose mismatch surfaces as "unsupported contract version" at account read.
+/// The two sources agree only while the MASM is byte-identical AND both compile
+/// against the same standards release; `auth_tx` calls `miden::standards::fee`, so
+/// its root moves with the fee library, and they currently do not agree. Its
+/// mismatch surfaces as "unsupported contract version" at account read.
+///
+/// So the roots printed here describe BROWSER-built accounts, which the TypeScript
+/// builder assembles from this file. Rust-built accounts differ:
+/// `MultisigGuardianBuilder` goes through `AuthGuardedMultisig::code()`. Reconciling
+/// the two is the open design question the account-roundtrip failures track — see
+/// the module docs on `crate::procedures`, which must not be allowed to disagree
+/// with this comment.
 const PACKAGE_AUTH_MASM: &str = include_str!(
     "../../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm"
 );

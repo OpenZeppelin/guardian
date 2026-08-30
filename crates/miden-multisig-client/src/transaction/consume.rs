@@ -4,10 +4,10 @@ use miden_client::transaction::{NoteArgs, TransactionRequest, TransactionRequest
 use miden_protocol::note::{Note, NoteId};
 use miden_protocol::{Felt, Word};
 
+use super::MaybeFeeConversionInfo;
 use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 use miden_standards::account::auth::FeeConversionInfo;
-use super::MaybeFeeConversionInfo;
 
 /// Fetches a slice of notes by ID from the client's local Miden store
 /// and converts each `InputNoteRecord` to a `Note`. Returns

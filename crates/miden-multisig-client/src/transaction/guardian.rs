@@ -13,9 +13,9 @@ use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, T
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::AuthGuardedMultisig;
 
+use super::MaybeFeeConversionInfo;
 use crate::error::{MultisigError, Result};
 use miden_standards::account::auth::FeeConversionInfo;
-use super::MaybeFeeConversionInfo;
 
 /// Builds the update_guardian_public_key transaction script.
 ///

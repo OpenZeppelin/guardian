@@ -69,6 +69,7 @@ import {
 } from './multisig/consumeNotesErrors.js';
 import {
   describeWithCause,
+  FeeFaucetAnchorMismatchError,
   ProposalAuthArgUnresolvableError,
   ProposalSaltMalformedError,
 } from './multisig/authArgErrors.js';
@@ -294,45 +295,42 @@ export class Multisig {
     return this.rawClientPromise;
   }
 
-  /** Backs {@link getFeeFaucetId}; see there for why this is cached, and as hex. */
-  private feeFaucetIdHexPromise?: Promise<string>;
-
   /**
-   * The hex id of the faucet whose asset pays transaction fees at this client's
-   * chain tip.
+   * The hex id of the faucet whose asset pays transaction fees for a request
+   * this client builds now.
    *
-   * Nothing inside this client needs it. No proposal it creates commits to fee
-   * conversion info, and rebuilding an existing one reads the faucet from that
-   * proposal's own anchor instead — see {@link proposalFeeFaucetIdHex} — which needs
-   * no network and cannot drift. This exists only for callers driving the
-   * exported transaction builders themselves, who can pass it as
-   * `SignatureOptions.feeFaucetId`.
+   * Every typed create path commits this, because since protocol#3765 the
+   * guarded auth procedure runs `fee::pay_fee` before the summary is built: a
+   * bare salt aborts with `ERR_FEE_CONVERSION_INFO_MISSING`, at creation rather
+   * than execution, on any chain that charges a fee. Committing it costs
+   * nothing in cross-SDK reconstruction, because the value is the chain's own
+   * fee faucet and the committed arg is native conversion info at 1:1 — what
+   * `fee::native_conversion_info` derives. The pre-0.16 invariant "the auth arg
+   * IS the salt" gives way to a weaker one that still holds: the auth arg is
+   * derivable from the salt plus the proposal's anchor.
    *
-   * Such a caller should keep the value alongside the rest of its recipe and
-   * reuse it at execute time rather than calling this again: the answer is read
-   * from the chain tip, whereas the transaction executes against its proposal's
-   * anchored block, and `FeeParameters` is a per-block header field with no
-   * protocol guarantee of constancy. The value is cached for the client's
-   * lifetime, which also means a chain replaced behind the same endpoint — a
-   * devnet re-genesis, say — needs a new client.
+   * Read from the block the client is currently synced to, because that is the
+   * block `chainAnchorForRequest` will pin a new request to. The committed
+   * conversion info and the proposal's own anchor therefore agree by
+   * construction, which is what lets any cosigner re-derive the auth arg from
+   * `salt_hex` alone. Reading the network tip instead would commit a faucet
+   * from a block the proposal is not anchored at, and every rebuild — which
+   * reads the anchor, see {@link proposalFeeFaucetIdHex} — would disagree.
    *
-   * Hex rather than an `AccountId` so there is no WASM handle to own: the
-   * builders accept either, and a cached handle would hand every caller the same
-   * one, where a single `free()` anywhere breaks all later callers.
+   * The answer is deliberately not cached. `FeeParameters` is a per-block
+   * header field with no protocol guarantee of constancy, so a value cached
+   * across a sync would describe the wrong block; one RPC read per proposal is
+   * the cheaper side of that trade. For the same reason a caller driving the
+   * exported builders should pass the value it got here into the matching
+   * execute-time rebuild rather than calling this again.
    *
-   * Rejections are not cached: a transient RPC failure would otherwise leave the
-   * faucet permanently unanswerable for the client's lifetime. The in-flight
-   * promise is cleared only if nothing else has replaced it.
+   * Hex rather than an `AccountId` so there is no WASM handle for the caller to
+   * own or accidentally free.
    */
   async getFeeFaucetId(): Promise<string> {
-    const pending = (this.feeFaucetIdHexPromise ??= this.fetchFeeFaucetIdHex());
-
     try {
-      return await pending;
+      return await this.fetchFeeFaucetIdHex();
     } catch (error) {
-      if (this.feeFaucetIdHexPromise === pending) {
-        this.feeFaucetIdHexPromise = undefined;
-      }
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(
         `Failed to read the fee faucet from ${this.midenRpcEndpoint}: ${detail}`,
@@ -342,13 +340,27 @@ export class Multisig {
   }
 
   private async fetchFeeFaucetIdHex(): Promise<string> {
+    const webClient = await this.getRawClient();
+    const syncHeight = await webClient.getSyncHeight();
     const rpc = new RpcClient(new Endpoint(this.midenRpcEndpoint));
     try {
       const header = await retryRpcRead(
-        () => rpc.getBlockHeaderByNumber(),
+        () => rpc.getBlockHeaderByNumber(syncHeight),
         this.rpcConfig,
       );
       try {
+        // This reads through a raw `RpcClient`, which unlike miden-client's
+        // verifying client does not check that the header it got back is the
+        // one it asked for. The height has to match the anchor's for the
+        // committed faucet to be the anchored block's.
+        const returnedHeight = header.blockNum();
+        if (returnedHeight !== syncHeight) {
+          throw new Error(
+            `requested the block header at height ${syncHeight} but the node returned ` +
+              `height ${returnedHeight}`,
+          );
+        }
+
         const faucet = header.feeFaucetId();
         try {
           return faucet.toString();
@@ -360,6 +372,32 @@ export class Multisig {
       }
     } finally {
       rpc.free?.();
+    }
+  }
+
+  /**
+   * Encodes a freshly created proposal's anchor, first rejecting one whose fee
+   * faucet is not the one the request committed to.
+   *
+   * {@link getFeeFaucetId} reads the synced block and `executeForSummary`
+   * anchors at the synced block, so the two agree unless a sync landed between
+   * them. When that happens the proposal would be unrebuildable by anyone,
+   * including this client — the auth arg commits one faucet while every rebuild
+   * derives the other from the anchor — so it fails loudly here rather than
+   * becoming a proposal that collects signatures and can never execute.
+   */
+  private sealProposalAnchor(anchor: ChainAnchor, committedFeeFaucetIdHex: string): string {
+    try {
+      const anchorFeeFaucetIdHex = this.proposalFeeFaucetIdHex(anchor);
+      if (anchorFeeFaucetIdHex !== committedFeeFaucetIdHex) {
+        throw new FeeFaucetAnchorMismatchError({
+          committedFeeFaucetIdHex,
+          anchoredFeeFaucetIdHex: anchorFeeFaucetIdHex,
+        });
+      }
+      return chainAnchorToBase64(anchor);
+    } finally {
+      anchor.free();
     }
   }
 
@@ -922,16 +960,6 @@ export class Multisig {
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
     this.warnOnOverrideDilution(targetSignerCommitments.length);
 
-    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
-    // is built, so a create-time execution needs the fee conversion info committed in the auth
-    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
-    // even be created on a fee-charging chain.
-    //
-    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
-    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
-    // can rederive from `salt_hex` plus the reference block, exactly as
-    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
-    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
     const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
@@ -941,8 +969,7 @@ export class Multisig {
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
+    const chainAnchor = this.sealProposalAnchor(anchor, feeFaucetId);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
@@ -992,16 +1019,6 @@ export class Multisig {
       );
     }
 
-    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
-    // is built, so a create-time execution needs the fee conversion info committed in the auth
-    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
-    // even be created on a fee-charging chain.
-    //
-    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
-    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
-    // can rederive from `salt_hex` plus the reference block, exactly as
-    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
-    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
     const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
@@ -1011,8 +1028,7 @@ export class Multisig {
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
+    const chainAnchor = this.sealProposalAnchor(anchor, feeFaucetId);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
@@ -1050,16 +1066,6 @@ export class Multisig {
       throw new Error('New threshold is the same as current threshold');
     }
 
-    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
-    // is built, so a create-time execution needs the fee conversion info committed in the auth
-    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
-    // even be created on a fee-charging chain.
-    //
-    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
-    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
-    // can rederive from `salt_hex` plus the reference block, exactly as
-    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
-    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
     const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
@@ -1069,8 +1075,7 @@ export class Multisig {
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
+    const chainAnchor = this.sealProposalAnchor(anchor, feeFaucetId);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
@@ -1110,16 +1115,6 @@ export class Multisig {
       );
     }
 
-    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
-    // is built, so a create-time execution needs the fee conversion info committed in the auth
-    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
-    // even be created on a fee-charging chain.
-    //
-    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
-    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
-    // can rederive from `salt_hex` plus the reference block, exactly as
-    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
-    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
     const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateProcedureThresholdTransactionRequest(
       webClient,
@@ -1129,8 +1124,7 @@ export class Multisig {
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
+    const chainAnchor = this.sealProposalAnchor(anchor, feeFaucetId);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
     const action = targetThreshold === 0
       ? `Clear threshold override for ${targetProcedure}`
@@ -1165,16 +1159,6 @@ export class Multisig {
     const webClient = await this.getRawClient();
     await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
 
-    // Since protocol#3765 the guarded auth procedure calls `fee::pay_fee` BEFORE the summary
-    // is built, so a create-time execution needs the fee conversion info committed in the auth
-    // args -- a bare salt aborts with ERR_FEE_CONVERSION_INFO_MISSING and the proposal cannot
-    // even be created on a fee-charging chain.
-    //
-    // This does not cost cross-SDK reconstruction, because `getFeeFaucetId()` returns the
-    // CHAIN's own fee faucet: the committed arg is native conversion info at 1:1, which any SDK
-    // can rederive from `salt_hex` plus the reference block, exactly as
-    // `fee::native_conversion_info` does. The old invariant ("the auth arg IS the salt") is
-    // replaced by a weaker one that still holds: the auth arg is DERIVABLE from the salt.
     const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = await buildUpdateGuardianTransactionRequest(
       webClient,
@@ -1183,8 +1167,7 @@ export class Multisig {
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
+    const chainAnchor = this.sealProposalAnchor(anchor, feeFaucetId);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
@@ -1240,8 +1223,7 @@ export class Multisig {
     });
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
+    const chainAnchor = this.sealProposalAnchor(anchor, feeFaucetId);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
@@ -1279,10 +1261,12 @@ export class Multisig {
    *   `reclaimHeight`/`timelockHeight` build a P2IDE note (issue #366)
    *
    * Options reach the builder wholesale so a note option added later cannot be
-   * silently dropped. `feeFaucetId` is the exception and is rejected rather than
-   * ignored: a typed proposal carrying a fee commitment is one the Rust SDK
-   * cannot rebuild, and a structurally compatible options object would otherwise
-   * smuggle one in.
+   * silently dropped. `feeFaucetId` is the exception: it is not part of
+   * {@link CreateP2idProposalOptions}, and one arriving anyway through a
+   * structurally compatible object is overridden rather than honoured. The
+   * committed faucet has to be the anchored block's — {@link sealProposalAnchor}
+   * enforces exactly that — so a caller-chosen one would produce a proposal no
+   * rebuild could reproduce.
    */
   async createP2idProposal(
     recipientId: string,
@@ -1313,8 +1297,7 @@ export class Multisig {
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
+    const chainAnchor = this.sealProposalAnchor(anchor, feeFaucetId);
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
 
     const metadata: ProposalMetadata = {
@@ -1606,6 +1589,11 @@ export class Multisig {
    * to the recipient out-of-band.
    *
    * The note ID remains deterministic from the proposal metadata and salt.
+   *
+   * The salt is validated the same way the execution path validates it, rather
+   * than only checked for presence: a value like `'0x'` is truthy but normalizes
+   * to the zero word, which would yield a confidently wrong note id instead of
+   * an error.
    */
   async getP2idNoteId(proposal: Proposal): Promise<string> {
     const metadata = proposal.metadata;
@@ -1614,10 +1602,13 @@ export class Multisig {
       !metadata.recipientId ||
       !metadata.faucetId ||
       !metadata.amount ||
-      !metadata.saltHex
+      metadata.saltHex === undefined ||
+      metadata.saltHex === null
     ) {
       throw new Error('getP2idNoteId requires a P2ID proposal with recipient, faucet, amount, and salt metadata');
     }
+
+    this.parseProposalSalt(proposal.id, metadata.saltHex).free?.();
 
     const note = buildP2idNoteFromMetadata(
       this._accountId,
@@ -2512,9 +2503,19 @@ export class Multisig {
   }
 
   /**
-   * Reads a summary's auth arg as the salt itself, which is what it is for
-   * anything the typed `create*Proposal` methods build in either SDK. Only a
-   * caller who opted a builder into fee conversion info produces otherwise.
+   * Reads a summary's auth arg as the salt itself — the last-resort reading,
+   * used when the recorded salt is unusable and nothing else can be derived.
+   *
+   * It reproduces the signed auth-arg *word*, so the rebuilt summary commitment
+   * matches and verification passes. It does not reproduce the advice preimage,
+   * and cannot: if that word is a commitment, inverting it to recover
+   * `CONVERSION_INFO || SALT` is exactly the thing the hash prevents.
+   *
+   * So the resulting request executes only where the fee is zero. Once the
+   * chain's `verification_base_fee` is non-zero, `load_conversion_info` misses
+   * the advice map, returns the empty word, and `pay_fee` aborts at proving with
+   * `ERR_FEE_CONVERSION_INFO_MISSING`. Callers must treat this as a path that
+   * verifies but may not execute, not as a repair.
    */
   private summaryBareAuthArg(summary: TransactionSummary): ProposalAuthArg {
     const signedAuthArg = summaryAuthArg(summary);
@@ -2538,14 +2539,23 @@ export class Multisig {
    * GUARDIAN being switched away from is free to serve a salt that belongs to no
    * summary — and it is the one party with an interest in the switch failing. So
    * an unresolvable salt falls back to the summary's own auth arg, which
-   * reproduces the signed request for anything either SDK creates and cannot be
-   * influenced by that GUARDIAN.
+   * reproduces the signed request word-for-word and cannot be influenced by that
+   * GUARDIAN.
    *
    * A salt this client cannot read at all is recovered the same way, and for the
    * same reason: that GUARDIAN can make the field unreadable as easily as it can
    * make it wrong, and neither tells the client anything it could act on. An
    * unreadable anchor or a WASM failure still propagates, because each means the
    * client cannot tell what it is executing rather than that the salt was bad.
+   *
+   * The fallback is bounded, and narrowly so since the account began paying its
+   * own fee: {@link summaryBareAuthArg} reproduces the auth-arg word but not the
+   * advice preimage, so the rebuilt transaction proves only where the fee is
+   * zero. On a fee-charging chain a GUARDIAN that corrupts the salt can still
+   * strand the switch — it just gets an `ERR_FEE_CONVERSION_INFO_MISSING` abort
+   * at proving rather than a clean refusal here. The fallback is kept because it
+   * is strictly better than refusing (it costs nothing and still rescues the
+   * zero-fee case), not because it closes the veto.
    *
    * Recovery is attempted before the fallback, so a cooperative GUARDIAN's
    * committed switch keeps the faucet its rebuild needs. See the README's error
@@ -2567,7 +2577,10 @@ export class Multisig {
           `SwitchGuardian proposal ${proposalId}: the salt served for it is unusable ` +
             `(${error.code}), so it is being rebuilt from the signed summary instead. ` +
             'The GUARDIAN being switched away from serves that field and is the party ' +
-            `that benefits from the switch failing. ${describeWithCause(error)}`,
+            'that benefits from the switch failing. The rebuild reproduces the signed ' +
+            'auth arg but not its fee-conversion preimage, so on a chain that charges a ' +
+            'non-zero fee it will still abort at proving with ' +
+            `ERR_FEE_CONVERSION_INFO_MISSING. ${describeWithCause(error)}`,
         );
         return this.summaryBareAuthArg(summary);
       }
@@ -2600,11 +2613,12 @@ export class Multisig {
   /**
    * Recovers how a proposal's auth arg was built, so a rebuild reproduces it.
    *
-   * Two conventions are in circulation. A proposal normally carries the bare
-   * salt as its auth arg — everything this client and the Rust SDK create. A
-   * caller that opted into fee conversion info through the exported builders
-   * instead carries the commitment `hash(CONVERSION_INFO || SALT)`. Which one it
-   * is cannot be assumed, since the commitment is not invertible, so
+   * Two conventions are in circulation. A proposal normally carries the
+   * commitment `hash(CONVERSION_INFO || SALT)` — everything the typed
+   * `create*Proposal` methods build, in either SDK. A caller driving the
+   * exported builders without a `feeFaucetId` instead carries the bare salt,
+   * which only executes on a zero-fee chain. Which one it is cannot be assumed,
+   * since the commitment is not invertible, so
    * {@link detectAuthArgConvention} decides it by reproducing both and comparing
    * against the auth arg bound into the signed summary — authoritative because
    * it is what the cosigners signed.
@@ -2617,16 +2631,21 @@ export class Multisig {
    * `anchor` must already be checked against the summary's block commitment; the
    * faucet is read from it rather than from the chain, so this needs no network.
    *
-   * `committed` is not reachable through the typed `create*Proposal` methods,
-   * which never commit; it exists for a proposal assembled elsewhere and handed
-   * to {@link createProposal} with a typed metadata shape.
+   * A proposal with no recorded salt is read as bare. That reproduces the
+   * signed auth-arg *word*, and so the summary commitment, but not the advice
+   * preimage — the summary binds no advice map, so verification still matches
+   * while execution does not: `pay_fee` sees empty conversion info and aborts
+   * once the chain charges a non-zero fee. See {@link summaryBareAuthArg}.
+   * `p2id` is a further exception, because there the salt also derives the note
+   * serial number.
    *
-   * A proposal with no recorded salt is read as bare, which reproduces the
-   * signed request for anything either SDK creates. A committed proposal that
-   * lost its salt is indistinguishable from one, and is accepted with its
-   * preimage missing — the summary binds no advice map, so the rebuild still
-   * matches. `p2id` is the exception, because there the salt also derives the
-   * note serial number.
+   * `null` counts as "no recorded salt" alongside `undefined`. This SDK omits
+   * the field entirely — `ProposalMetadataPayload.salt` is an `Option<String>`
+   * that skips serializing when absent — but GUARDIAN stores proposal metadata
+   * as opaque JSON, so a producer whose serializer writes nulls round-trips
+   * `"salt": null` back to every reader. Both spellings mean the same thing,
+   * and treating one as malformed would fail the whole account's sync over it,
+   * since `syncProposals()` verifies every proposal without skipping.
    */
   private recoverProposalAuthArg(
     proposalId: string,
@@ -2634,7 +2653,7 @@ export class Multisig {
     summary: TransactionSummary,
     anchor: ChainAnchor,
   ): ProposalAuthArg {
-    if (metadata.saltHex === undefined) {
+    if (metadata.saltHex === undefined || metadata.saltHex === null) {
       return this.summaryBareAuthArg(summary);
     }
 
@@ -2737,8 +2756,29 @@ export class Multisig {
   /**
    * Rebuilds a proposal's transaction request from the convention
    * {@link recoverProposalAuthArg} recovered for it.
+   *
+   * Consumes the recovered salt. Nothing else can: the recovery returns a fresh
+   * `Word` handle in a union no caller unpacks, and the builders read the salt's
+   * hex and allocate their own copies rather than adopting it — so leaving it to
+   * the caller means one leaked handle per proposal per sync.
    */
   private async buildTransactionRequestFromMetadata(
+    metadata: ProposalMetadata,
+    authArg: ProposalAuthArg,
+    signatureAdviceMap?: AdviceMap,
+  ): Promise<TransactionRequest> {
+    try {
+      return await this.dispatchTransactionRequestRebuild(
+        metadata,
+        authArg,
+        signatureAdviceMap,
+      );
+    } finally {
+      authArg.salt.free?.();
+    }
+  }
+
+  private async dispatchTransactionRequestRebuild(
     metadata: ProposalMetadata,
     authArg: ProposalAuthArg,
     signatureAdviceMap?: AdviceMap,

@@ -58,7 +58,7 @@ async fn main() {
         .coordination(coordination)
         .ack(ack)
         .http(true, 3000)
-        .grpc(true, 50061)
+        .grpc(true, 50051)
         .cors(cors_layer)
         .build()
         .await

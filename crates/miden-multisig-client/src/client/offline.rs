@@ -6,6 +6,8 @@
 use std::collections::HashSet;
 
 use guardian_shared::ToJson;
+use miden_client::transaction::TransactionRequest;
+use miden_protocol::Word;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -66,15 +68,9 @@ impl MultisigClient {
             }
         };
 
-        let tx_request = crate::transaction::build_update_guardian_transaction_request(
-            new_commitment,
-            self.key_manager.scheme(),
-            salt,
-            std::iter::empty(),
-            // The offline path has no RPC connection to read the chain's fee faucet from, so it
-            // cannot commit conversion info; such a request is only executable fee-free.
-            None,
-        )?;
+        let tx_request = self
+            .offline_switch_guardian_request(new_commitment, salt)
+            .await?;
 
         let (tx_summary, chain_anchor) =
             crate::transaction::execute_for_summary(&mut self.miden_client, account_id, tx_request)
@@ -111,6 +107,30 @@ impl MultisigClient {
         };
 
         Ok(exported)
+    }
+
+    /// The rotation request an offline `switch_guardian` create is built from.
+    ///
+    /// "Offline" here means "without GUARDIAN", not "without a node": that path already synced
+    /// against the chain and executes for a summary. It must therefore commit conversion info
+    /// exactly like every other create path, because every rebuild of the exported proposal --
+    /// import, sign, execute -- reconstructs a committed auth arg. A bare request here would
+    /// produce a summary no importer could reproduce.
+    async fn offline_switch_guardian_request(
+        &self,
+        new_commitment: Word,
+        salt: Word,
+    ) -> Result<TransactionRequest> {
+        let fee_conversion_info =
+            crate::execution::resolve_fee_conversion_info(&self.miden_client).await?;
+
+        crate::transaction::build_update_guardian_transaction_request(
+            new_commitment,
+            self.key_manager.scheme(),
+            salt,
+            std::iter::empty(),
+            Some(fee_conversion_info),
+        )
     }
 
     /// Signs an imported proposal locally (without GUARDIAN).
@@ -234,6 +254,12 @@ impl MultisigClient {
         // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
 
+        // Execute and finalize at the proposal's anchored reference block; the
+        // anchor was checked against the signed summary's block commitment in
+        // `verify_proposal_summary_binding` above. It also carries the fee
+        // faucet the committed auth arg was built from.
+        let chain_anchor = proposal.metadata.chain_anchor()?;
+
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
@@ -243,13 +269,10 @@ impl MultisigClient {
             None,
             None,
             self.key_manager.scheme(),
+            &chain_anchor,
         )
         .await?;
 
-        // Execute and finalize at the proposal's anchored reference block; the
-        // anchor was checked against the signed summary's block commitment in
-        // `verify_proposal_summary_binding` above.
-        let chain_anchor = proposal.metadata.chain_anchor()?;
         self.finalize_transaction(
             account_id,
             final_tx_request,
@@ -257,5 +280,33 @@ impl MultisigClient {
             chain_anchor,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The offline create path is the one create path with no GUARDIAN round trip, so nothing
+    //! else in the flow would notice a bare auth arg until an importer failed to reproduce the
+    //! summary. Its twin on the online side is the `fee_conversion_info` group in
+    //! `transaction::builder`.
+
+    use miden_protocol::Word;
+
+    use crate::client::test_support::{
+        assert_commits_fee_faucet, chain_fee_faucet, client_at_fee_faucet,
+    };
+
+    #[tokio::test]
+    async fn offline_switch_guardian_request_commits_the_chain_fee_faucet() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let client = client_at_fee_faucet(dir.path(), chain_fee_faucet()).await;
+        let salt = Word::from([1u32, 2, 3, 4]);
+
+        let request = client
+            .offline_switch_guardian_request(Word::from([1u32, 1, 1, 1]), salt)
+            .await
+            .expect("the offline switch-guardian request builds");
+
+        assert_commits_fee_faucet(&request, chain_fee_faucet(), salt);
     }
 }

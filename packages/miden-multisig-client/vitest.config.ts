@@ -20,5 +20,10 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
     setupFiles: ['./tests/setup-wasm.ts'],
+    // Without this, builder-mock call indices leak between tests in a file, so an
+    // assertion reading `mock.calls[0]` can read a neighbouring test's call and pass
+    // even when the code under test never invoked the builder. Three separate review
+    // rounds found assertions that could not fail for that reason.
+    clearMocks: true,
   },
 });

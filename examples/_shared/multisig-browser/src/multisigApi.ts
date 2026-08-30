@@ -380,6 +380,14 @@ export interface CustomProposalRecipe {
   faucetId: string;
   amount: string;
   saltHex: string;
+  /**
+   * The fee faucet committed into the auth arg when the proposal was created.
+   *
+   * Part of the recipe rather than re-read at submit time: the auth arg commits
+   * it, so the rebuild below has to reproduce the same value, and the chain's
+   * fee faucet is a per-block header field that may have moved since.
+   */
+  feeFaucetIdHex: string;
 }
 
 function buildRequestFromRecipe(
@@ -391,7 +399,11 @@ function buildRequestFromRecipe(
     recipe.recipientId,
     recipe.faucetId,
     BigInt(recipe.amount),
-    { salt: Word.fromHex(recipe.saltHex), signatureAdviceMap },
+    {
+      salt: Word.fromHex(recipe.saltHex),
+      signatureAdviceMap,
+      feeFaucetId: recipe.feeFaucetIdHex,
+    },
   ).request;
 }
 
@@ -403,11 +415,17 @@ export async function createCustomP2idProposal(
   label: string,
 ): Promise<{ proposal: Proposal; proposals: Proposal[]; recipe: CustomProposalRecipe }> {
   const senderId = multisig.accountId;
+  // A custom proposal owns its own recipe, so the fee commitment the typed
+  // create* methods make for you has to be made here by hand. Without it the
+  // auth arg carries no conversion info and `fee::pay_fee` aborts as soon as
+  // the chain charges a non-zero fee.
+  const feeFaucetIdHex = await multisig.getFeeFaucetId();
   const { request, salt } = buildP2idTransactionRequest(
     senderId,
     recipientId,
     faucetId,
     amount,
+    { feeFaucetId: feeFaucetIdHex },
   );
 
   const created = await createProposalResult(multisig, () =>
@@ -421,6 +439,7 @@ export async function createCustomP2idProposal(
     faucetId,
     amount: amount.toString(),
     saltHex: salt.toHex(),
+    feeFaucetIdHex,
   };
 
   return { ...created, recipe };

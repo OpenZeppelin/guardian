@@ -382,6 +382,14 @@ Rust and TypeScript**:
   serialized transaction request; the SDK derives the summary and pushes the
   proposal with the custom label. They are **not** stored on the server.
   Cosigners then review and sign through the normal flow.
+
+  The integration builds those bytes, so unlike the typed create paths it must
+  commit the fee conversion info itself — `feeFaucetId: await
+  multisig.getFeeFaucetId()` in TypeScript, `Some(client.fee_conversion_info()
+  .await?)` in Rust. Omitting it leaves the auth arg with no conversion info and
+  `fee::pay_fee` aborts, at *creation* rather than execution, on any chain whose
+  `verification_base_fee` is non-zero. Retain the value in the recipe: the
+  execute-time rebuild below has to reproduce the same auth arg.
 - **Execute** — `prepare_custom_execution(proposal_id, transaction_request_bytes)` (Rust) /
   `prepareCustomExecution(proposalId, transactionRequestBytes)` (TS). The SDK verifies the
   proposal is ready, binding-checks the request against the signed commitment
@@ -944,7 +952,7 @@ one implicitly.
 | `getConsumableNotes()` | Get notes that can be consumed |
 | `getSignerPublicKeyCommitments()` | Read the current signer public-key commitments from account storage, ordered by signer index (strict; throws on partial reads) |
 | `getGuardianPublicKeyCommitment()` | Read the current guardian commitment from account storage (strict; throws when the entry is missing — the guarded-multisig always includes a guardian) |
-| `getFeeFaucetId()` | TypeScript only: hex id of the fee faucet at the client's chain tip, for callers driving the exported builders themselves via `SignatureOptions.feeFaucetId`. No `create*Proposal` path uses it, and `createP2idProposal` rejects it rather than dropping it — a committed auth arg is inert for the guarded-multisig component and not reproducible by the Rust SDK ([`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md)) |
+| `getFeeFaucetId()` | Hex id of the fee faucet named by the block a request built now will be anchored to, for callers driving the exported builders themselves via `SignatureOptions.feeFaucetId`. The Rust equivalent is `fee_conversion_info()`, which returns the whole `FeeConversionInfo` rather than just the faucet. Every *typed* `create*Proposal` path commits this value already — `createCustomProposal` does not, since it executes caller-supplied bytes untouched, so that caller has to commit it themselves. `createP2idProposal` overrides a caller-supplied faucet, since only the anchored block's faucet is reproducible by a rebuild ([`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md)) |
 
 #### FalconSigner
 
@@ -1438,6 +1446,7 @@ responses, and per-account `get_state` failures are returned as errors.
 | `import_note_from_file(path)` | Import a note file received out-of-band |
 | `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
 | `recover_notes(options)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
+| `fee_conversion_info()` | The `FeeConversionInfo` a request built now must commit, read from the synced block. The TypeScript equivalent is `getFeeFaucetId()`. Needed only when building request bytes yourself: the typed `propose_transaction` paths commit it already, while `propose_custom_transaction` passes caller bytes through untouched. `fee_conversion_info()` does not itself sync; it is `propose_custom_transaction` that syncs on entry, *after* you have serialized, so calling `sync()` first narrows the gap between your faucet and the proposal's anchor without closing it |
 
 #### MultisigAccount
 

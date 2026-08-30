@@ -293,13 +293,27 @@ on-chain transaction — the integration owns that recipe and drives execution.
 
 ```rust
 use miden_client::Serializable;
-use miden_multisig_client::{build_p2id_transaction_request, generate_salt};
+use miden_multisig_client::{
+    build_p2id_transaction_request, generate_salt, P2ideHeights,
+};
 use miden_protocol::note::NoteType;
 
 // Producer: build a transaction and propose it under a custom label.
 let salt = generate_salt();
+// Synced first so the faucet comes from as recent a block as possible.
+// `propose_custom_transaction` syncs again on entry, so this narrows the window
+// between the committed faucet and the anchor without closing it.
+client.sync().await?;
+let fee_conversion_info = client.fee_conversion_info().await?;
 let mut request = build_p2id_transaction_request(
-    account.inner(), recipient, vec![asset], NoteType::Public, salt, std::iter::empty(),
+    account.inner(),
+    recipient,
+    vec![asset],
+    NoteType::Public,
+    P2ideHeights::default(),
+    salt,
+    std::iter::empty(),
+    Some(fee_conversion_info),
 )?;
 let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
 
@@ -320,6 +334,38 @@ The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches
 the commitment the cosigners signed.
+
+**The fee conversion info is part of that recipe.** `AuthGuardedMultisig` calls
+`fee::pay_fee` before building the transaction summary, so the auth arg is the
+commitment `hash(CONVERSION_INFO || SALT)` rather than the salt — passing `None`
+yields the pre-0.16 bare auth arg, which aborts at proving with
+`ERR_FEE_CONVERSION_INFO_MISSING` on any chain whose `verification_base_fee` is
+non-zero. Retain the value alongside the salt and pass the same one at execute
+time; do not call `fee_conversion_info()` again, since the fee faucet is a
+per-block header field and the chain may have moved on. Retaining the exact
+value is the only generally correct approach: a custom request may commit any
+faucet and rate, and nothing recorded on the proposal can recover an arbitrary
+one.
+
+If you know the proposal committed the native asset at rate 1/1 — which is what
+every typed SDK path commits, and all `fee_conversion_info_at` constructs — you
+can rebuild it from the proposal's anchor rather than retaining it:
+
+```rust
+use miden_multisig_client::fee_conversion_info_at;
+
+let fee_conversion_info = fee_conversion_info_at(&proposal.metadata.chain_anchor()?);
+```
+
+Note that this derives the native value for that anchor; it does not read back
+what the proposal actually committed.
+
+| Item | Purpose |
+|---|---|
+| `MultisigClient::fee_conversion_info()` | Conversion info for a request built now, read from the block this client is synced to — call `sync()` first |
+| `fee_conversion_info_at(&ChainAnchor)` | The native 1/1 conversion info for an anchor's fee faucet — what typed paths commit. Derived, not read back: it cannot recover a custom proposal's arbitrary commitment. Pure, so it needs neither a client nor a store and works offline |
+| `resolve_fee_conversion_info(&Client)` | The same read against a `miden_client::Client` you own, for a consumer driving the exported builders directly rather than through `MultisigClient` |
+| `FeeConversionInfo` | Re-exported from `miden-standards`, since the builders require it |
 
 ## Delta History
 

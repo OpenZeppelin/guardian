@@ -6,10 +6,19 @@ use miden_protocol::Word;
 
 /// Procedure names that can be used for threshold overrides.
 ///
-/// Roots are sourced from the upstream `AuthGuardedMultisig` + `BasicWallet`
-/// procedures via `cargo run --example procedure_roots -- --json` (typescript_hex
-/// encoding). The upstream component has no standalone `verify_guardian` procedure;
-/// guardian verification is internal to `auth_tx_guarded_multisig`.
+/// Roots come from `cargo run --example procedure_roots -- --json` (typescript_hex
+/// encoding). The auth roots are derived from the auth MASM the TypeScript package
+/// bundles, rather than from `AuthGuardedMultisig::code()`. The two sources agree only
+/// while the MASM is byte-identical *and* both compile against the same standards
+/// release, and `auth_tx` calls `miden::standards::fee`, so its root moves with the fee
+/// library and they currently do not.
+///
+/// Which means these roots describe browser-built accounts: the TypeScript builder
+/// assembles from that MASM, while the Rust `MultisigGuardianBuilder` goes through
+/// `AuthGuardedMultisig::code()`. Reconciling the two is the open design question the
+/// account-roundtrip failures track. The wallet roots come from `BasicWallet` and are
+/// unaffected. Neither source has a standalone `verify_guardian` procedure; guardian
+/// verification is internal to `auth_tx_guarded_multisig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProcedureName {
     UpdateSigners,
@@ -23,7 +32,7 @@ pub enum ProcedureName {
 impl ProcedureName {
     /// Get the procedure root for this procedure name.
     ///
-    /// These roots are deterministic based on the upstream MASM bytecode.
+    /// These roots are deterministic given the MASM they were derived from.
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => procedure_root_word(
@@ -157,42 +166,62 @@ mod tests {
         }
     }
 
-    /// Custody-critical guard: each hardcoded root MUST match the live upstream
-    /// `AuthGuardedMultisig` / `BasicWallet` procedure root. A mismatch means a
-    /// per-procedure threshold override would be stored under the wrong key and
-    /// silently ignored at authentication time.
+    /// Custody-critical guard: a root that does not match the component accounts are
+    /// built from means a per-procedure threshold override is stored under the wrong
+    /// key and silently ignored at authentication time.
+    ///
+    /// The bundled auth MASM every pin here is derived from, and which the TypeScript
+    /// builder assembles browser accounts from. See `examples/procedure_roots.rs`.
+    #[cfg(test)]
+    const PACKAGE_AUTH_MASM: &str = include_str!(
+        "../../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm"
+    );
+
+    fn auth_root_in(code: &miden_protocol::account::AccountComponentCode, masm_name: &str) -> Word {
+        let export = code
+            .exports()
+            .find(|e| e.path.to_string().rsplit("::").next() == Some(masm_name))
+            .unwrap_or_else(|| panic!("procedure `{masm_name}` not found"));
+        code.get_procedure_root_by_path(&*export.path)
+            .expect("root by path")
+            .into()
+    }
+
+    fn upstream_auth_code() -> &'static miden_protocol::account::AccountComponentCode {
+        miden_standards::account::auth::AuthGuardedMultisig::code()
+    }
+
+    fn bundled_auth_code() -> miden_protocol::account::AccountComponentCode {
+        miden_standards::code_builder::CodeBuilder::new()
+            .compile_component_code("guarded_multisig", PACKAGE_AUTH_MASM)
+            .expect("bundled guarded-multisig MASM should compile")
+    }
+
+    /// Custody-critical guard: a root that does not match the component accounts are
+    /// built from means a per-procedure threshold override is stored under the wrong
+    /// key and silently ignored at authentication time.
+    ///
+    /// Covers every procedure whose root the upstream component and the bundled MASM
+    /// agree on. `auth_tx` is deliberately absent — it has its own two tests below,
+    /// because it is the one that diverges and an assertion for it here would abort
+    /// this test before the procedures after it were ever checked.
     #[test]
     fn procedure_roots_match_upstream_component() {
-        use miden_standards::account::auth::AuthGuardedMultisig;
         use miden_standards::account::wallets::BasicWallet;
 
-        let auth_code = AuthGuardedMultisig::code();
-        let upstream_root = |masm_name: &str| -> Word {
-            let export = auth_code
-                .exports()
-                .find(|e| e.path.to_string().rsplit("::").next() == Some(masm_name))
-                .unwrap_or_else(|| panic!("upstream procedure `{masm_name}` not found"));
-            auth_code
-                .get_procedure_root_by_path(&*export.path)
-                .expect("root by path")
-                .into()
-        };
+        let auth_code = upstream_auth_code();
 
         assert_eq!(
             ProcedureName::UpdateSigners.root(),
-            upstream_root("update_signers_and_threshold")
+            auth_root_in(&auth_code, "update_signers_and_threshold")
         );
         assert_eq!(
             ProcedureName::UpdateProcedureThreshold.root(),
-            upstream_root("set_procedure_threshold")
-        );
-        assert_eq!(
-            ProcedureName::AuthTx.root(),
-            upstream_root("auth_tx_guarded_multisig")
+            auth_root_in(&auth_code, "set_procedure_threshold")
         );
         assert_eq!(
             ProcedureName::UpdateGuardian.root(),
-            upstream_root("update_guardian_public_key")
+            auth_root_in(&auth_code, "update_guardian_public_key")
         );
         assert_eq!(
             ProcedureName::SendAsset.root(),
@@ -201,6 +230,33 @@ mod tests {
         assert_eq!(
             ProcedureName::ReceiveAsset.root(),
             Word::from(BasicWallet::receive_asset_root())
+        );
+    }
+
+    /// The `auth_tx` pin against the source it is actually derived from. Since `auth_tx`
+    /// began calling `miden::standards::fee` its root moves with the fee library, so the
+    /// pin tracks the bundled MASM rather than the upstream component.
+    #[test]
+    fn auth_tx_root_matches_the_bundled_masm() {
+        assert_eq!(
+            ProcedureName::AuthTx.root(),
+            auth_root_in(&bundled_auth_code(), "auth_tx_guarded_multisig")
+        );
+    }
+
+    /// Expected red, and the only assertion in this module that is: the upstream
+    /// component and the bundled MASM disagree on `auth_tx`, which is the open design
+    /// question the account-roundtrip failures track.
+    ///
+    /// Do NOT "fix" this by copying whatever root the upstream component reports — that
+    /// would silently repoint the pin away from the MASM accounts are built from. It
+    /// goes green when the two sources are reconciled, at which point this test and
+    /// [`auth_tx_root_matches_the_bundled_masm`] collapse into the test above.
+    #[test]
+    fn auth_tx_root_matches_upstream_component() {
+        assert_eq!(
+            ProcedureName::AuthTx.root(),
+            auth_root_in(&upstream_auth_code(), "auth_tx_guarded_multisig")
         );
     }
 

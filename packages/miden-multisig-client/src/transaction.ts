@@ -11,6 +11,7 @@ export {
 export {
   feeAuthArg,
   nativeConversionInfo,
+  applyAuthArg,
   resolveAuthArg,
   detectAuthArgConvention,
   type AuthArgConvention,

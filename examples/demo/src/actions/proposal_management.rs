@@ -1050,6 +1050,17 @@ async fn action_create_custom_proposal(
     let asset =
         build_transfer_asset(faucet_id, amount).map_err(|e| format!("invalid asset: {}", e))?;
     let salt = generate_salt();
+    // Synced first so the faucet comes from as recent a block as possible.
+    // `propose_custom_transaction` syncs again on entry and anchors at that block, so
+    // this narrows the gap between the committed faucet and the anchor, not closes it.
+    client
+        .sync()
+        .await
+        .map_err(|e| format!("failed to sync before resolving the fee faucet: {e}"))?;
+    let fee_conversion_info = client
+        .fee_conversion_info()
+        .await
+        .map_err(|e| format!("failed to resolve fee conversion info: {e}"))?;
     let transaction_request_bytes = build_p2id_transaction_request(
         account.inner(),
         recipient,
@@ -1058,10 +1069,7 @@ async fn action_create_custom_proposal(
         heights,
         salt,
         std::iter::empty(),
-        client
-            .fee_conversion_info()
-            .await
-            .map_err(|e| format!("failed to resolve fee conversion info: {e}"))?,
+        Some(fee_conversion_info),
     )
     .map_err(|e| format!("failed to build transaction: {}", e))?
     .to_bytes();
@@ -1084,6 +1092,7 @@ async fn action_create_custom_proposal(
             note_type,
             heights,
             salt,
+            fee_conversion_info,
         },
     );
 
@@ -1129,11 +1138,10 @@ async fn action_execute_custom_proposal(
         recipe.heights,
         recipe.salt,
         std::iter::empty(),
-        state
-            .get_client()?
-            .fee_conversion_info()
-            .await
-            .map_err(|e| format!("failed to resolve fee conversion info: {e}"))?,
+        // The value committed at creation, not a fresh read: the auth arg commits
+        // it, so a rebuild that resolved the faucet again would stop reproducing
+        // the summary the cosigners signed if the chain's fee faucet had moved.
+        Some(recipe.fee_conversion_info),
     )
     .map_err(|e| format!("failed to rebuild transaction: {}", e))?;
 

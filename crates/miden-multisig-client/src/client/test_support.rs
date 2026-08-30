@@ -1,7 +1,8 @@
-//! Shared fixtures for the client test modules: fully offline
+//! Shared fixtures for the crate's test modules: fully offline
 //! [`MultisigClient`]s (SQLite store in a temp dir, mock chain RPC, optional
-//! mock note transport) and the account/note builders the recovery test
-//! suites drive them with.
+//! mock note transport), the account/note builders the recovery test
+//! suites drive them with, and the fee-conversion fixtures the create and
+//! rebuild paths are asserted against.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -11,15 +12,24 @@ use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note_transport::NoteTransportClient;
 use miden_client::rpc::{Endpoint, NodeRpcClient};
+use miden_client::testing::account_id::{
+    ACCOUNT_ID_FEE_FAUCET, ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1,
+};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
+use miden_client::transaction::{ChainAnchor, TransactionRequest, TransactionRequestBuilder};
 use miden_client_sqlite_store::SqliteStore;
+use miden_confidential_contracts::multisig_guardian::{
+    MultisigGuardianBuilder, MultisigGuardianConfig,
+};
 use miden_protocol::Word;
-use miden_protocol::account::Account;
 use miden_protocol::account::auth::AuthSecretKey;
+use miden_protocol::account::{Account, AccountId};
 use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::{Note, NoteDetails, NoteType};
+use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::note::P2idNote;
 use miden_tx::utils::sync::RwLock;
 
@@ -158,6 +168,118 @@ pub(crate) fn chain_with_notes(
     let api = Arc::new(MockRpcApi::new(builder.build().expect("mock chain builds")));
     api.advance_blocks(4);
     api
+}
+
+/// The fee faucet the fee-conversion fixtures build their chain at.
+///
+/// Deliberately not [`ACCOUNT_ID_FEE_FAUCET`], which is what `MockChainBuilder` uses when no
+/// faucet is set: a fixture at the default cannot tell a faucet read from the chain apart from
+/// one hardcoded to the default.
+pub(crate) fn chain_fee_faucet() -> AccountId {
+    ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1
+        .try_into()
+        .expect("valid fee faucet id")
+}
+
+/// A second fee faucet, distinct from both [`chain_fee_faucet`] and the builder default.
+///
+/// A fixture where the anchor's faucet and the tip's faucet agree cannot tell "read the anchor"
+/// apart from "read the tip"; giving the two chains different faucets is what separates them.
+pub(crate) fn alternate_fee_faucet() -> AccountId {
+    ACCOUNT_ID_FEE_FAUCET
+        .try_into()
+        .expect("valid fee faucet id")
+}
+
+/// A mock chain whose block headers name `fee_faucet_id` in their fee parameters, with the tip
+/// advanced a couple of blocks past genesis.
+pub(crate) fn chain_at_fee_faucet(fee_faucet_id: AccountId) -> Arc<MockRpcApi> {
+    let chain = miden_client::testing::MockChain::builder()
+        .fee_faucet_id(fee_faucet_id)
+        .build()
+        .expect("mock chain builds");
+    let api = Arc::new(MockRpcApi::new(chain));
+    api.advance_blocks(2);
+    api
+}
+
+/// A [`MultisigClient`] synced to a chain reporting `fee_faucet_id`, so
+/// `resolve_fee_conversion_info` reads that faucet.
+pub(crate) async fn client_at_fee_faucet(dir: &Path, fee_faucet_id: AccountId) -> MultisigClient {
+    let mut client = offline_client_with_node(dir, chain_at_fee_faucet(fee_faucet_id)).await;
+    client
+        .miden_client
+        .sync_state()
+        .await
+        .expect("the mock chain syncs");
+    client
+}
+
+/// A [`ChainAnchor`] captured at the tip of a chain reporting `fee_faucet_id`.
+///
+/// A rebuild reads its faucet from the anchor that travels with the proposal, so an anchor
+/// captured on a different chain than the executing client's is what makes the two sources
+/// distinguishable.
+pub(crate) async fn chain_anchor_at_fee_faucet(
+    dir: &Path,
+    fee_faucet_id: AccountId,
+) -> ChainAnchor {
+    let client = client_at_fee_faucet(dir, fee_faucet_id).await;
+    let request = TransactionRequestBuilder::new()
+        .build()
+        .expect("an empty request builds");
+
+    client
+        .miden_client
+        .chain_anchor_for_request(&request)
+        .await
+        .expect("the mock chain yields an anchor")
+}
+
+/// A guarded-multisig account, the account shape every create path builds requests for.
+pub(crate) fn guarded_multisig_account() -> Account {
+    let signer_commitment = SecretKey::new().public_key().to_commitment();
+
+    MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
+        1,
+        vec![signer_commitment],
+        Word::from([9u32, 8, 7, 6]),
+    ))
+    .build()
+    .expect("guarded multisig account builds")
+}
+
+/// Asserts `request` commits `hash(one_to_one(fee_faucet_id) || salt)` as its auth arg and
+/// carries the commitment's preimage in its advice map.
+///
+/// Both halves matter: the auth arg alone is what the auth procedure checks against, and without
+/// the preimage `load_conversion_info` finds nothing to open it with.
+pub(crate) fn assert_commits_fee_faucet(
+    request: &TransactionRequest,
+    fee_faucet_id: AccountId,
+    salt: Word,
+) {
+    let (expected_auth_arg, expected_preimage) =
+        commit_fee_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id), salt);
+
+    assert_eq!(
+        *request.auth_arg(),
+        Some(expected_auth_arg),
+        "the auth arg must commit the conversion info for {fee_faucet_id}"
+    );
+    assert_ne!(
+        *request.auth_arg(),
+        Some(salt),
+        "the salt must not be passed through bare"
+    );
+    assert_eq!(
+        request
+            .advice_map()
+            .get(&expected_auth_arg)
+            .map(|values| values.to_vec()),
+        Some(expected_preimage),
+        "the commitment preimage must be reachable from the advice map"
+    );
 }
 
 /// A distinct (per `seed`) P2ID note addressed at `target` from an unrelated

@@ -221,6 +221,12 @@ async fn main() -> ClientResult<()> {
         return Ok(());
     }
     println!("  ✓ Account synced with Miden node");
+    println!(
+        "  ! On a chain with a non-zero verification_base_fee, fund this account with the \
+         native fee asset before the first execute below: the guarded auth procedure pays \
+         the fee before the transaction summary exists, so an empty vault aborts with \
+         \"the amount of the asset in the vault is less than the amount to remove\"."
+    );
     println!();
 
     println!("Step 3: Client 1 - Configure account in GUARDIAN...");
@@ -328,11 +334,22 @@ async fn main() -> ClientResult<()> {
             Felt::new_unchecked(0),
         ]);
 
+        // Retained and reused by the rebuild below: the auth arg commits it, so
+        // re-resolving there would break the summary the cosigners signed.
+        let fee_conversion_info = match multisig::resolve_fee_conversion_info(&miden_client).await {
+            Ok(info) => info,
+            Err(err) => {
+                println!("  ✗ Failed to read the chain's fee faucet: {}", err);
+                return Ok(());
+            }
+        };
+
         let (tx_request, _config_hash) = match multisig::build_update_signers_transaction_request(
             3,
             &signer_commitments,
             salt,
             vec![],
+            Some(fee_conversion_info),
         ) {
             Ok(req) => req,
             Err(err) => {
@@ -461,6 +478,7 @@ async fn main() -> ClientResult<()> {
                         &signer_commitments,
                         salt,
                         signature_advice,
+                        Some(fee_conversion_info),
                     ) {
                         Ok(req) => req,
                         Err(err) => {

@@ -1,4 +1,4 @@
-import type { Word } from '@miden-sdk/miden-sdk';
+import type { TransactionRequestBuilder, Word } from '@miden-sdk/miden-sdk';
 import {
   AccountId,
   AdviceMap,
@@ -16,33 +16,37 @@ import {
  * Since protocol 0.16 the auth args of a multisig transaction carry double duty.
  * `miden::standards::fee::load_conversion_info` requires them to be the
  * commitment `hash(CONVERSION_INFO || SALT)`, with the preimage supplied through
- * the advice map; `auth_tx_multisig` then reuses that same word as the
- * transaction summary salt. See `multisig.masm`:
+ * the advice map; the auth procedure then reuses that same word as the
+ * transaction summary salt. See `guarded_multisig.masm`:
  *
  * > The AUTH_ARGS (= hash(CONVERSION_INFO || SALT)) then continue to serve as
  * > the transaction summary salt. The uniqueness that replay protection relies
  * > on originates from the caller-chosen SALT.
  *
  * A bare random word satisfies the salt role but not the fee role: the
- * advice-map lookup misses, conversion info comes back empty, and `pay_fee`
- * aborts with `ERR_FEE_CONVERSION_INFO_MISSING`.
+ * advice-map lookup misses, `load_conversion_info` returns the empty word, and
+ * `pay_fee` aborts with `ERR_FEE_CONVERSION_INFO_MISSING` — but only once the
+ * computed fee is non-zero. On a chain whose `verification_base_fee` is zero the
+ * fee is zero, no fee note is created, and the empty word is accepted.
  *
- * ## Opt-in, because this package's accounts do not read it yet
+ * ## Applied by default, because the account now pays the fee
  *
- * That abort is reachable from `AuthMultisig`, which calls `fee::pay_fee`. The
- * component these accounts actually use, `AuthGuardedMultisig`, does not:
- * `guarded_multisig.masm` imports only `auth::multisig` and `auth::guardian`,
- * and `auth_tx_guarded_multisig` passes the auth arg straight through as the
- * transaction summary salt without ever calling `load_conversion_info`. So
- * committing conversion info is currently inert for a custody account — and it
- * costs interoperability, because a proposal whose auth arg is a commitment
- * cannot be rebuilt by a client that assumes the auth arg is the salt (the Rust
- * SDK does). See `docs/MIDEN_COMPATIBILITY.md`.
+ * `AuthGuardedMultisig` calls `fee::pay_fee` before building the transaction
+ * summary, so the fee note and the vault withdrawal funding it are covered by
+ * the signatures the cosigners produce. That makes the commitment mandatory
+ * rather than optional: every typed `create*Proposal` path commits native
+ * conversion info at rate 1/1 under the chain's own fee faucet.
  *
- * Hence nothing here is applied by default. These helpers exist so that the
- * moment `guarded_multisig.masm` pays the fee upstream, the commitment is ready
- * and verified against the MASM; a caller driving the exported builders can opt
- * in today through `SignatureOptions.feeFaucetId`.
+ * Interoperability survives that because the committed value is derivable
+ * rather than arbitrary. The faucet is read from the block the proposal is
+ * anchored at, which travels with the proposal, and the rate is fixed at 1/1 —
+ * so a rebuilder holding `salt_hex` and the anchor reproduces the auth arg
+ * without being told it. Both SDKs derive it the same way; see
+ * `docs/MIDEN_COMPATIBILITY.md`.
+ *
+ * A caller driving the exported builders directly still chooses, through
+ * `SignatureOptions.feeFaucetId`. Leaving it unset produces the bare auth arg,
+ * which is only executable on a zero-fee chain.
  *
  * The commitment does not branch on whether the chain currently charges a fee:
  * `load_conversion_info` runs before the fee amount is known, and a valid
@@ -193,6 +197,57 @@ export function resolveAuthArg(
     throw error;
   } finally {
     conversionInfo.free?.();
+  }
+}
+
+/**
+ * {@link resolveAuthArg}, extended to own the salt on the failing path.
+ *
+ * Resolution rejects an unparseable faucet id before it has taken ownership of
+ * anything, so without this the salt {@link applyAuthArg} consumes would outlive
+ * the call it was built for.
+ */
+function resolveOwnedAuthArg(
+  salt: Word,
+  feeFaucetId?: AccountId | string,
+): { authArg: Word; adviceMap?: AdviceMap } {
+  try {
+    return resolveAuthArg(salt, feeFaucetId);
+  } catch (error) {
+    salt.free?.();
+    throw error;
+  }
+}
+
+/**
+ * Applies the auth arg for `salt` to a builder, owning every handle involved.
+ *
+ * `withAuthArg` and `extendAdviceMap` borrow their arguments — the generated
+ * glue passes `__wbg_ptr` without taking it — so the auth arg and the advice map
+ * stay the caller's to release once the builder has read them. Doing that at
+ * each call site meant five builders repeating a lifetime that only one of them
+ * has to get wrong to leak, so it lives here instead.
+ *
+ * The salt is consumed, on the failing path too. On the bare path it *is* the
+ * returned auth arg, so the two are freed once; on the committed path it is a
+ * separate handle the commitment has already absorbed. Callers that need the
+ * salt afterwards pass a copy — which every builder does, since it returns one.
+ */
+export function applyAuthArg(
+  builder: TransactionRequestBuilder,
+  salt: Word,
+  feeFaucetId?: AccountId | string,
+): TransactionRequestBuilder {
+  const { authArg, adviceMap } = resolveOwnedAuthArg(salt, feeFaucetId);
+  try {
+    const withArg = builder.withAuthArg(authArg);
+    return adviceMap === undefined ? withArg : withArg.extendAdviceMap(adviceMap);
+  } finally {
+    authArg.free?.();
+    if (authArg !== salt) {
+      salt.free?.();
+    }
+    adviceMap?.free?.();
   }
 }
 

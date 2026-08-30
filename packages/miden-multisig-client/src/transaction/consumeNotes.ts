@@ -14,7 +14,7 @@ import {
 import { LegacyConsumeNotesNoteMissingError } from '../multisig/consumeNotesErrors.js';
 import { getRawMidenClient } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
-import { resolveAuthArg } from './feeAuth.js';
+import { applyAuthArg } from './feeAuth.js';
 import { randomWord } from '../utils/random.js';
 import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
 
@@ -40,11 +40,7 @@ export function buildConsumeNotesTransactionRequestFromNotes(
 
   let txBuilder = new TransactionRequestBuilder();
   txBuilder = txBuilder.withInputNotes(noteAndArgsArray);
-  const feeAuth = resolveAuthArg(authSaltForBuilder, options.feeFaucetId);
-  txBuilder = txBuilder.withAuthArg(feeAuth.authArg);
-  if (feeAuth.adviceMap) {
-    txBuilder = txBuilder.extendAdviceMap(feeAuth.adviceMap);
-  }
+  txBuilder = applyAuthArg(txBuilder, authSaltForBuilder, options.feeFaucetId);
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);

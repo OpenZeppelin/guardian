@@ -85,45 +85,101 @@ moved in several independent ways:
   `AuthGuardedMultisig` component** rather than Guardian's local MASM, and
   `guardianEnabled` is gone: the guardian is always present.
 - **Transaction fees became the auth component's responsibility**, and
-  `AuthGuardedMultisig` does not pay them. The 0.16 auth components that do
-  (`AuthSingleSig`, `AuthMultisig`, `AuthNoAuth`, `AuthNetworkAccount`) call
-  `miden::standards::fee::pay_fee` from their auth scripts; `guarded_multisig.masm`
-  does not import `miden::standards::fee` at all, and neither does
-  `multisig_smart.masm`. Nothing in the transaction
-  kernel enforces payment, so this does not surface as a local execution error —
-  a custody transaction simply pays no fee. On a chain whose
-  `verification_base_fee` is zero that is correct and invisible. On a
-  fee-charging chain expect rejection at submission rather than a local abort.
-  Committing fee conversion info via the auth arg does not change this: the
-  commitment is only read by `fee::load_conversion_info`, which this component
-  never calls, and `miden-client` correspondingly rejects declared conversion
-  info for any auth component other than `AuthSingleSig`/`AuthMultisig`
-  (`TransactionRequestError::FeeConversionInfoUnsupported`). That refusal keys on
-  the declaration API, not on the auth arg, so it does not fire for a request that
-  sets the auth arg and advice entry directly — which is what the TypeScript
-  builders do. Paying fees from a guarded-multisig account requires an upstream
-  change to `guarded_multisig.masm`.
+  `AuthGuardedMultisig` now pays them. Its auth procedure calls
+  `miden::standards::fee::pay_fee` *before* building the transaction summary, so
+  the fee note and the vault withdrawal funding it fall inside what the cosigners
+  sign rather than being appended afterwards.
 
-  The TypeScript SDK can build that commitment — `SignatureOptions.feeFaucetId`,
-  verified against the `miden-standards` MASM — but none of its typed
-  `create*Proposal` methods use it, deliberately. Besides being inert until the
-  upstream change lands, a committed auth arg is not interoperable: rebuilding the
-  request requires the same fee faucet, and the Rust SDK has no way to supply one,
-  so it cannot reproduce the signed summary. Opting in through the TypeScript
-  builders produces a custom proposal, which neither SDK reconstructs, so a Rust
-  integration can list, sign and drive it to submission. Neither SDK's
-  `executeProposal` accepts a custom proposal; the route is
-  `prepare_custom_execution`, which verifies the serialized request the caller
-  supplies rather than rebuilding it, followed by the integration's own
-  `submit_transaction`. The request TypeScript built passes that check, as long
-  as the integration keeps those bytes instead of expecting Rust to regenerate
-  them.
-  A typed proposal carrying a committed auth arg — reachable only by assembling
-  one outside the SDK and handing it to `createProposal` — is worse: the Rust
-  SDK's `list_proposals` rebuilds from `salt_hex` and fails for the whole account
-  rather than skipping the one proposal it cannot verify. When
-  `guarded_multisig.masm` starts paying the fee, both SDKs have to adopt the
-  commitment together.
+  That makes the auth arg carry double duty. `fee::load_conversion_info` reads it
+  as the commitment `hash(CONVERSION_INFO || SALT)` and looks the preimage up in
+  the advice map; the same word then serves as the transaction summary salt. A
+  bare salt still satisfies the salt role but not the fee role: the lookup
+  misses, conversion info comes back empty, and `pay_fee` aborts with
+  `ERR_FEE_CONVERSION_INFO_MISSING` — though only once the computed fee is
+  non-zero, so a zero-`verification_base_fee` chain never notices.
+
+  **Every typed `create*Proposal` path in both SDKs therefore commits native
+  conversion info**, at rate 1/1 under the chain's own fee faucet. This is the
+  invariant change: a proposal's auth arg is no longer its salt.
+
+  Cross-SDK reconstruction survives because the committed value is *derived*, not
+  chosen. The faucet is read from the block the proposal is anchored at — the
+  anchor travels with the proposal and is checked against the summary's block
+  commitment before use — and the rate is fixed at 1/1. So a rebuilder holding
+  `salt_hex` and the anchor reproduces the auth arg without being told it, and
+  both SDKs derive it identically: `fee_conversion_info_at()` in Rust,
+  `proposalFeeFaucetIdHex()` in TypeScript. Reading the *chain tip's* faucet
+  instead would break this, since fee parameters are a per-block header field;
+  both SDKs read the anchor, and the TypeScript create path additionally asserts
+  the committed faucet against the anchor it sealed.
+
+  Two consequences worth knowing:
+
+  - `miden-client` rejects *declared* conversion info for any auth component
+    other than `AuthSingleSig`/`AuthMultisig`
+    (`TransactionRequestError::FeeConversionInfoUnsupported`). That refusal keys
+    on Rust's `TransactionRequestBuilder::fee_conversion_info`, not on the auth
+    arg, so the Rust SDK deliberately avoids that method and sets the auth arg
+    and advice entry directly.
+
+    That refusal rests on a rationale protocol#3765 falsifies. `miden-client`'s
+    `validate_fee_conversion_info_support` allowlists only
+    `AuthSingleSig`/`AuthMultisig`, documenting that `AuthGuardedMultisig` "does
+    not reach `miden::standards::fee` at all". Since #3765 it does — that is the
+    whole point of this change. **The allowlist has to gain
+    `AuthGuardedMultisig` in the same upstream train as #3765.** Until it does,
+    the commitment is implemented three times: once upstream in
+    `TransactionRequestBuilder::fee_conversion_info`, once in the Rust SDK's
+    `MaybeFeeConversionInfo`, and once from scratch in TypeScript's
+    `feeAuthArg`. A future change to the commitment scheme updates one and
+    silently diverges the other two, which is what the pinned cross-SDK digest
+    vectors exist to catch. Once the allowlist lands, the Rust SDK should switch
+    to the upstream builder method and keep TypeScript pinned to it by vector.
+
+    On the TypeScript side this is a *version* fact, not a structural guarantee.
+    The bindings this repo currently installs expose no declaring method — only
+    `withAuthArg` and `extendAdviceMap` — so both SDKs make the same two calls
+    and neither can trip the refusal. Newer websdk builds do add a
+    conversion-info builder method and a block-header accessor for the
+    verification base fee. An integrator on such a build must not use the
+    declaring method on a guarded account until the allowlist above changes;
+    it yields `FeeConversionInfoUnsupported`.
+  - `pay_fee` spends the faucet and rate the committed conversion info names, so
+    what a guarded account must hold follows from what it commits. The built-in
+    typed proposal paths always commit the chain-native asset at rate 1/1, so on
+    a fee-charging chain an account driving them needs that native asset in its
+    vault or `pay_fee` aborts before the summary exists — and guardian-assisted
+    recovery cannot route around it, since it takes the same path. A custom
+    request that commits a different fee asset must instead fund *that* asset:
+    holding only it is enough to execute through fee payment, provided the
+    request needs no other assets. Whether the resulting transaction is then
+    *included* is a separate question — the batch builder decides what fee
+    asset and rate it accepts.
+  - Every transaction with a non-zero computed fee carries a `TX_FEE` output
+    note; a zero-fee chain emits none. Dashboard delta
+    listings exclude it from `note_counts.output`, from the asset summary, and
+    from the note-count topology that infers a category when no proposal
+    metadata is present — otherwise a fee would read as an asset transfer, an
+    admin operation such as `switch_guardian` would show a native withdrawal,
+    and every consume would recategorise as a transfer. The delta *detail* view
+    still shows the fee note, tagged `custom`.
+
+  A caller driving the exported builders directly still chooses, in either SDK:
+  `SignatureOptions.feeFaucetId` in TypeScript, the `Option<FeeConversionInfo>`
+  parameter in Rust. Omitting it produces the pre-0.16 bare auth arg, which
+  executes only on a zero-fee chain. The difference between the SDKs is on the
+  *rebuild* side, not the build side: TypeScript's `detectAuthArgConvention`
+  reproduces either convention, while Rust assumes committed and has no
+  convention detector, so a bare typed proposal fails Rust's binding check.
+
+  Note what that costs during a rolling upgrade, when pre-0.16 proposals are
+  still in flight. Every one of them carries a bare auth arg, so every one fails
+  that check for a Rust cosigner — and `MultisigClient::list_proposals`
+  propagates the first such failure, hiding the account's whole pending list,
+  whereas `sync_proposals` collects it into `skipped` and continues. Prefer
+  `sync_proposals` until the pre-upgrade proposals have been dropped
+  server-side. TypeScript does not fail at all here: it detects `bare` and
+  proceeds, so the proposal verifies and only aborts later at proving.
 
 Data effect: full reset, see above. Operator steps:
 [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-016).

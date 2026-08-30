@@ -9,8 +9,8 @@ use miden_standards::StandardsLib;
 
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
-use miden_standards::account::auth::FeeConversionInfo;
 use crate::transaction::MaybeFeeConversionInfo;
+use miden_standards::account::auth::FeeConversionInfo;
 
 /// Builds the multisig configuration advice map entry.
 ///

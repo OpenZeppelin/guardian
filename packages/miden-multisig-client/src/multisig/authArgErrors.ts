@@ -1,7 +1,8 @@
 /** Stable error identifiers for auth-arg recovery failures. */
 export type AuthArgErrorCode =
   | 'proposal_auth_arg_unresolvable'
-  | 'proposal_salt_malformed';
+  | 'proposal_salt_malformed'
+  | 'fee_faucet_anchor_mismatch';
 
 /** How much of an untrusted salt an error message will quote. */
 const MAX_QUOTED_SALT_CHARS = 80;
@@ -102,7 +103,10 @@ export class ProposalSaltMalformedError extends Error {
 
 /**
  * A proposal's signed auth arg is neither its recorded salt nor a fee-conversion
- * commitment to that salt, so no rebuild can reproduce the signed summary.
+ * commitment to that salt, so no reconstruction from the recorded salt succeeds.
+ * `switch_guardian` is the exception, and deliberately so: it rebuilds from the
+ * summary's own auth arg, which reproduces the signed word but not the fee
+ * preimage behind it, so it executes only on a zero-fee chain.
  *
  * Coded because one caller acts on it rather than reporting it:
  * `switch_guardian` recovery falls back to the summary's own auth arg when it
@@ -144,5 +148,35 @@ export class ProposalAuthArgUnresolvableError extends Error {
     this.saltHex = details.saltHex;
     this.feeFaucetIdHex = details.feeFaucetIdHex;
     this.diagnosis = diagnosis;
+  }
+}
+
+/**
+ * The chain's fee faucet changed while a proposal was being built, so the
+ * faucet its auth arg committed to is not the one its anchored block reports.
+ *
+ * Raised at creation, before the proposal is offered for signing. Nobody could
+ * rebuild such a proposal — every rebuild derives the faucet from the anchor
+ * while the auth arg commits the other one — so it is refused rather than
+ * allowed to collect signatures it can never execute with.
+ *
+ * Coded because it is transient and the remedy is mechanical: build the
+ * proposal again against the now-current faucet. Callers that retry should do
+ * so on this type rather than by matching the message.
+ */
+export class FeeFaucetAnchorMismatchError extends Error {
+  readonly code: AuthArgErrorCode = 'fee_faucet_anchor_mismatch';
+  readonly committedFeeFaucetIdHex: string;
+  readonly anchoredFeeFaucetIdHex: string;
+
+  constructor(details: { committedFeeFaucetIdHex: string; anchoredFeeFaucetIdHex: string }) {
+    super(
+      `Fee faucet moved while the proposal was being built: committed ` +
+        `${details.committedFeeFaucetIdHex} but the anchored block reports ` +
+        `${details.anchoredFeeFaucetIdHex}. Retry the proposal.`,
+    );
+    this.name = 'FeeFaucetAnchorMismatchError';
+    this.committedFeeFaucetIdHex = details.committedFeeFaucetIdHex;
+    this.anchoredFeeFaucetIdHex = details.anchoredFeeFaucetIdHex;
   }
 }

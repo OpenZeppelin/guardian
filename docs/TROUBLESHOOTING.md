@@ -466,27 +466,75 @@ either (a) the origin isn't in the allowlist, or (b) the value still
 contains `*` and the server failed startup — check task logs for the
 `{ALLOWED_ORIGINS_ENV} must use explicit origins` error.
 
-### Transactions rejected on a chain that charges a verification fee
+### `ERR_FEE_CONVERSION_INFO_MISSING` when executing a proposal
 
-Symptom: custody transactions execute and prove locally but are rejected at
-submission, appearing after a chain is re-genesised or reconfigured with a
-non-zero `verification_base_fee` — with no client change.
+Symptom: a proposal verifies and its signatures are accepted, but execution
+aborts during proving with `paying a non-zero fee requires conversion info
+committed via the auth args`. Only on a chain whose `verification_base_fee` is
+non-zero; the same proposal executes fine on a zero-fee chain.
 
-Cause: since Miden 0.16 the auth component pays the transaction fee, and
-`AuthGuardedMultisig` — the custody account's auth component — does not. Its
-`guarded_multisig.masm` never imports `miden::standards::fee`, so no `TX_FEE`
-note is created. Nothing in the transaction kernel asserts that a fee was paid,
-which is why this does not fail locally.
+Cause: `AuthGuardedMultisig` calls `fee::pay_fee`, which needs the auth arg to be
+the commitment `hash(CONVERSION_INFO || SALT)` *and* needs the preimage in the
+advice map. The transaction being executed has the right auth-arg word — that is
+why verification passed — but no advice entry, so `load_conversion_info` returns
+the empty word and `pay_fee` refuses to pay a non-zero fee with it.
 
-What does **not** fix it: committing fee conversion info through the transaction
-auth arg. That commitment is only read by `fee::load_conversion_info`, which this
-component never calls. `miden-client` refuses declared conversion info for any
-auth component other than `AuthSingleSig`/`AuthMultisig`
-(`TransactionRequestError::FeeConversionInfoUnsupported`) for the same reason.
+Three ways to get there:
 
-Resolution: run against a zero-`verification_base_fee` chain, or take an upstream
-`miden-standards` change that has `guarded_multisig.masm` pay the fee the way
-`multisig.masm` does. See
+- **The proposal's `salt_hex` is missing or unusable.** What happens depends on
+  both *how* it is unusable and *which* proposal type is being rebuilt:
+
+  | | absent (`null` / omitted) | malformed (present, not a decodable word) | mismatched (decodable, reproduces nothing) |
+  |---|---|---|---|
+  | typed, non-`p2id` | falls back to the signed auth arg | `proposal_salt_malformed` | `proposal_auth_arg_unresolvable` |
+  | typed `p2id` | falls back, then fails note binding | `proposal_salt_malformed` | `proposal_auth_arg_unresolvable` |
+  | `switch_guardian` | falls back | falls back, with a warning | falls back, with a warning |
+  | custom | n/a — the integration rebuilds, not the SDK | n/a | n/a |
+
+  The fallback reads the signed auth arg verbatim as the salt. That reproduces
+  the word but cannot reproduce the preimage — inverting the commitment is what
+  the hash prevents — so on a fee-charging chain it still reaches this symptom.
+  For `switch_guardian` that is the point: the outgoing GUARDIAN serves this
+  field and would otherwise hold a veto over its own replacement, so the client
+  warns and tries anyway rather than treating a bad value as fatal.
+
+  `p2id` has a further wrinkle in the absent case: the salt also derives the
+  note's serial number, so falling back changes the note ID and the failure
+  surfaces as a recipient-binding mismatch rather than as a fee problem.
+- **An execute-time rebuild dropped the faucet the create-time build committed.**
+  A custom-proposal recipe that resolves `feeFaucetId` when it creates the request
+  but does not retain it for the rebuild produces exactly this symptom: creation
+  succeeds and signatures are collected against the committed auth arg, then the
+  rebuild reconstructs a bare one. Retain the value and pass it to both builds.
+  Note that omitting `SignatureOptions.feeFaucetId` on the *creating* build does
+  not produce this symptom on a fee-charging chain — `createCustomProposal`
+  executes the request for a summary, and `fee::pay_fee` runs before the summary
+  is built, so that aborts at creation and never reaches signing.
+- **The vault does not hold the asset the conversion info commits.** A different
+  abort, same root. `pay_fee` spends the faucet the commitment names, and the
+  built-in typed paths always commit the chain-native asset, so for those: fund
+  the vault with the native asset. A vault holding only some other asset fails
+  identically *for those paths* — but a custom request that commits that other
+  asset would have paid from it, so match the funding to what the request
+  commits rather than assuming native. The message names neither the fee nor the
+  procedure, so searching logs for either finds nothing. The VM assertion inside
+  it reads, on one line:
+
+  ```
+  failed to remove the fungible asset from the vault since the amount of the asset in the vault is less than the amount to remove
+  ```
+
+  The executor wraps it, so what is actually printed begins `failed to execute
+  transaction kernel program:` and `assertion failed with error message:`.
+
+  This one usually arrives at *creation*, not execution: `create*Proposal`
+  executes the request for a summary, and `pay_fee` runs before that summary
+  exists. Seeing it at execution means the vault was drained after the proposal
+  was created. Guardian-assisted recovery cannot route around it either, for the
+  same reason.
+
+Resolution: recreate the proposal through a typed `create*Proposal` method, which
+always commits the anchored block's faucet. See
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-017x-on-miden-016).
 
 ## Error code reference
