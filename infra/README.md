@@ -25,6 +25,14 @@ Resources created:
 - Security groups for the ALB, server task, and database
 - CloudWatch log groups
 - IAM roles for ECS task execution and runtime
+- ADOT Collector sidecar in the server task exporting Guardian Prometheus metrics to CloudWatch (EMF)
+- CloudWatch dashboard (`<stack>-server`) and alarms (error rate, latency, canonicalization, metrics pipeline, ECS saturation)
+
+The Guardian metrics endpoint binds loopback inside the task's shared network
+namespace; only the sidecar can reach it — it is never exposed via the ALB or
+security groups. See `observability.tf` and
+[`docs/SERVER_AWS_DEPLOY.md`](../docs/SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms)
+for details and verification steps.
 
 ## Usage
 
@@ -266,6 +274,14 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_canonicalization_fast_promotion_enabled` | `true` | Enables the recent-candidate promotion-only pass in the ECS task definition |
 | `guardian_log_format` | `json` | Log format for `GUARDIAN_LOG_FORMAT` (`text`, `json`, `compact`) |
 | `log_retention_days` | `7` | CloudWatch log retention in days |
+| `metrics_enabled` | `true` | Guardian metrics endpoint + ADOT sidecar + CloudWatch dashboard/alarms |
+| `adot_image` | pinned ADOT Collector release | Digest-pinned sidecar image |
+| `metrics_namespace` | `<Title(stack_name)>/Server` | CloudWatch namespace for application metrics |
+| `alarm_actions` | `[]` | ARNs (e.g. SNS topics) notified on alarm/ok transitions |
+| `alarm_error_rate_threshold_percent` | `5` | HTTP 5xx / gRPC error-rate alarm threshold |
+| `alarm_latency_threshold_seconds` | `1` | Average HTTP latency alarm threshold |
+| `alarm_cpu_threshold_percent` | `85` | ECS CPU saturation alarm threshold |
+| `alarm_memory_threshold_percent` | `90` | ECS memory saturation alarm threshold |
 
 ## Outputs
 
@@ -298,6 +314,10 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_max_replicas` | Effective `GUARDIAN_MAX_REPLICAS` after clamping to steady-state capacity |
 | `guardian_dashboard_commitment_rate_burst_per_sec` | Effective fleet-wide dashboard per-commitment burst budget |
 | `guardian_dashboard_commitment_rate_per_min` | Effective fleet-wide dashboard per-commitment sustained budget |
+| `metrics_enabled` | Whether the metrics sidecar, dashboard, and alarms are deployed |
+| `metrics_namespace` | CloudWatch namespace receiving Guardian application metrics |
+| `metrics_dashboard_name` | CloudWatch dashboard name |
+| `metrics_emf_log_group` | Log group the ADOT sidecar writes EMF metric events into |
 
 ## Stage Profiles
 

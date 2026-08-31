@@ -80,6 +80,16 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # Optional: CloudWatch log retention
 # log_retention_days = 7
 
+# Optional: application metrics (ADOT sidecar + CloudWatch dashboard/alarms).
+# Enabled by default; the metrics endpoint stays private to the ECS task.
+# metrics_enabled = true
+# metrics_namespace = "Guardian/Server"
+# alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
+# alarm_error_rate_threshold_percent = 5
+# alarm_latency_threshold_seconds = 1
+# alarm_cpu_threshold_percent = 85
+# alarm_memory_threshold_percent = 90
+
 # Optional: Task resource configuration
 # server_cpu    = 512
 # server_memory = 1024

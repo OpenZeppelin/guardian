@@ -189,6 +189,23 @@ resource "aws_ecs_task_definition" "server" {
             value = local.ack_ecdsa_secret_name
           }
           ],
+          var.metrics_enabled ? [
+            {
+              name  = "GUARDIAN_METRICS_ENABLED"
+              value = "true"
+            },
+            {
+              # Loopback on purpose: Fargate awsvpc containers share one
+              # network namespace, so the ADOT sidecar scrapes 127.0.0.1
+              # while nothing outside the task can reach the endpoint.
+              name  = "GUARDIAN_METRICS_ADDR"
+              value = local.metrics_bind_addr
+            },
+            {
+              name  = "GUARDIAN_METRICS_PATH"
+              value = local.metrics_path
+            }
+          ] : [],
           var.guardian_cors_allowed_origins != "" ? [
             {
               name  = "GUARDIAN_CORS_ALLOWED_ORIGINS"
@@ -254,7 +271,52 @@ resource "aws_ecs_task_definition" "server" {
           }
         }
       }
-    ]
+    ],
+    var.metrics_enabled ? [
+      {
+        name  = local.adot_container_name
+        image = var.adot_image
+        # Non-essential: the collector dying must not take down the
+        # serving container. The metrics-missing alarm catches a dead
+        # pipeline instead.
+        essential = false
+        # Hard memory cap so a collector leak is OOM-killed alone
+        # instead of competing with the essential server container for
+        # the task envelope.
+        memoryReservation = 64
+        memory            = 256
+
+        environment = [
+          {
+            name  = "AOT_CONFIG_CONTENT"
+            value = local.adot_config
+          },
+          {
+            # The awsemf exporter needs an explicit region; Fargate does
+            # not inject one into the container environment.
+            name  = "AWS_REGION"
+            value = var.aws_region
+          }
+        ]
+
+        healthCheck = {
+          command     = ["CMD", "/healthcheck"]
+          interval    = 30
+          timeout     = 5
+          retries     = 3
+          startPeriod = 10
+        }
+
+        logConfiguration = {
+          logDriver = "awslogs"
+          options = {
+            "awslogs-group"         = aws_cloudwatch_log_group.server.name
+            "awslogs-region"        = var.aws_region
+            "awslogs-stream-prefix" = "adot"
+          }
+        }
+      }
+    ] : []
   ))
 }
 

@@ -247,3 +247,23 @@ output "cluster_log_group" {
   description = "CloudWatch log group for ECS execute command"
   value       = aws_cloudwatch_log_group.cluster.name
 }
+
+output "metrics_enabled" {
+  description = "Whether the ADOT metrics sidecar, dashboard, and alarms are deployed"
+  value       = var.metrics_enabled
+}
+
+output "metrics_namespace" {
+  description = "CloudWatch namespace receiving Guardian application metrics"
+  value       = var.metrics_enabled ? local.metrics_namespace : ""
+}
+
+output "metrics_dashboard_name" {
+  description = "CloudWatch dashboard name for the Guardian server"
+  value       = var.metrics_enabled ? aws_cloudwatch_dashboard.server[0].dashboard_name : ""
+}
+
+output "metrics_emf_log_group" {
+  description = "CloudWatch log group the ADOT sidecar writes EMF metric events into"
+  value       = var.metrics_enabled ? aws_cloudwatch_log_group.emf[0].name : ""
+}

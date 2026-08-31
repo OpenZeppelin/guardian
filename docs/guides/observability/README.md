@@ -124,6 +124,14 @@ Never expose `/metrics`, Prometheus, or this Grafana to a public network — the
 ports here are bound to `127.0.0.1` and Grafana runs anonymous-admin precisely
 because it is local-only.
 
+## AWS deployment
+
+The Terraform reference deployment ships this metric surface to **CloudWatch**
+instead of Prometheus/Grafana: an ADOT Collector sidecar in the ECS task scrapes
+the loopback-only endpoint and exports selected metrics via EMF, with a
+Terraform-managed dashboard and alarms. See
+[`SERVER_AWS_DEPLOY.md`](../../SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms).
+
 ## Out of scope
 
 Alert and recording rules and runbooks are not shipped here. The

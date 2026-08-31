@@ -12,6 +12,13 @@
 //! proto definition, static operation names, and small closed enums.
 //! Account IDs, nonces, commitments, pubkeys, client IPs, and error
 //! strings must never become label values.
+//!
+//! Downstream consumers re-list parts of this taxonomy and do not track
+//! it automatically: the CloudWatch export allowlist in
+//! `infra/observability.tf` (metrics absent there never reach
+//! CloudWatch) and the Grafana dashboard in
+//! `docs/guides/observability/grafana/dashboards/guardian.json`. Adding
+//! or renaming a metric here means revisiting both.
 
 // --- HTTP request path -------------------------------------------------
 

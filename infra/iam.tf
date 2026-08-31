@@ -176,6 +176,37 @@ resource "aws_iam_role_policy" "ecs_task_operator_public_keys_secret" {
   })
 }
 
+# The ADOT sidecar publishes metrics as EMF log events using the task
+# role, so it needs only stream-level write access on the
+# Terraform-managed EMF log group. Deliberately no CreateLogGroup or
+# PutRetentionPolicy: Terraform stays authoritative for the group and
+# its retention, and a group deleted out of band surfaces via awsemf
+# export errors in the sidecar log plus the metrics-missing alarm.
+resource "aws_iam_role_policy" "ecs_task_adot_metrics" {
+  count = var.metrics_enabled ? 1 : 0
+
+  name = "${var.stack_name}-ecs-task-adot-metrics"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:DescribeLogStreams",
+          "logs:PutLogEvents"
+        ]
+        Resource = [
+          aws_cloudwatch_log_group.emf[0].arn,
+          "${aws_cloudwatch_log_group.emf[0].arn}:*"
+        ]
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy" "ecs_task_execute_command" {
   name = "${var.stack_name}-ecs-task-execute-command"
   role = aws_iam_role.ecs_task.id
