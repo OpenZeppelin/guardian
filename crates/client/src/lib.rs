@@ -47,7 +47,7 @@ mod error;
 pub mod keystore;
 mod transaction;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 pub use auth::{Auth, EcdsaSigner, FalconRpoSigner};

@@ -15,6 +15,7 @@
  */
 
 import { errorMessage } from '../connectivity.js';
+import { RecoveryCancelledError } from './proposalNoteImport.js';
 import type { NoteImportOutcome } from './proposalNoteImport.js';
 import { BackfillRangeError, type PublicBackfillReport } from './publicNoteBackfill.js';
 import type { TransportRecoveryReport } from './transportDrain.js';
@@ -154,12 +155,22 @@ function countImported(outcomes: readonly NoteImportOutcome[]): number {
  * import, public backfill, final sync — folding each strategy-level throw
  * into a {@link RecoveryStepProblem} so no step failure aborts the flow.
  *
+ * The optional `cancelled` token makes the run cooperatively cancellable
+ * (used by the pre-switch import's timeout): the orchestrator checks it
+ * before starting each step, and a {@link RecoveryCancelledError} thrown
+ * from inside a step — the steps thread the same token into their inner
+ * loops — is recorded as a single non-retryable problem on the interrupted
+ * step, after which no further step runs. Cancellation is never folded into
+ * the ordinary failure reasons, so it cannot masquerade as a GUARDIAN or
+ * node outage.
+ *
  * Throws only for an inverted backfill range (a caller error). See
  * `Multisig.recoverNotes` for the wallet-facing entry point.
  */
 export async function runNoteRecovery(
   options: RecoverNotesOptions,
   steps: NoteRecoverySteps,
+  cancelled?: () => boolean,
 ): Promise<NoteRecoveryReport> {
   if (
     options.fromBlock !== undefined &&
@@ -178,58 +189,94 @@ export async function runNoteRecovery(
     retryable: false,
   };
 
-  if (options.transportDrain !== false) {
+  // Set once a cancellation is observed (token flipped, or a
+  // RecoveryCancelledError surfaced from a step): the remaining steps are
+  // skipped and exactly one problem records the interruption point.
+  let stopped = false;
+  const interrupted = (step: RecoveryStep, err: unknown): boolean => {
+    if (!(err instanceof RecoveryCancelledError)) {
+      return false;
+    }
+    report.problems.push({ step, reason: errorMessage(err), retryable: false });
+    stopped = true;
+    return true;
+  };
+  const startStep = (step: RecoveryStep): boolean => {
+    if (stopped) {
+      return false;
+    }
+    if (cancelled?.()) {
+      report.problems.push({
+        step,
+        reason: 'note recovery stopped before completion by its caller',
+        retryable: false,
+      });
+      stopped = true;
+      return false;
+    }
+    return true;
+  };
+
+  if (options.transportDrain !== false && startStep('transport-drain')) {
     try {
       report.transport = await steps.transportDrain();
     } catch (err) {
-      // The drain's contract: a throw means the local store itself failed,
-      // which a rerun is unlikely to fix.
-      report.problems.push({
-        step: 'transport-drain',
-        reason: errorMessage(err),
-        retryable: false,
-      });
+      if (!interrupted('transport-drain', err)) {
+        // The drain's contract: a throw means the local store itself failed,
+        // which a rerun is unlikely to fix.
+        report.problems.push({
+          step: 'transport-drain',
+          reason: errorMessage(err),
+          retryable: false,
+        });
+      }
     }
   }
 
-  if (options.proposalImport !== false) {
+  if (options.proposalImport !== false && startStep('proposal-import')) {
     try {
       report.proposalImport = await steps.proposalImport();
     } catch (err) {
-      report.problems.push({
-        step: 'proposal-import',
-        reason: `failed to list pending proposals: ${errorMessage(err)}`,
-        retryable: true,
-      });
+      if (!interrupted('proposal-import', err)) {
+        report.problems.push({
+          step: 'proposal-import',
+          reason: `failed to list pending proposals: ${errorMessage(err)}`,
+          retryable: true,
+        });
+      }
     }
   }
 
-  if (options.publicBackfill !== false) {
+  if (options.publicBackfill !== false && startStep('public-backfill')) {
     try {
       report.backfill = await steps.publicBackfill();
     } catch (err) {
-      // With the fully-explicit range validated above, a throw here is
-      // normally the chain-tip lookup (a node RPC failure, worth retrying);
-      // an invalid range against the resolved tip is a caller error and is
-      // not — mirroring the Rust orchestrator's `InvalidConfig` check.
-      report.problems.push({
-        step: 'public-backfill',
-        reason: errorMessage(err),
-        retryable: !(err instanceof BackfillRangeError),
-      });
+      if (!interrupted('public-backfill', err)) {
+        // With the fully-explicit range validated above, a throw here is
+        // normally the chain-tip lookup (a node RPC failure, worth retrying);
+        // an invalid range against the resolved tip is a caller error and is
+        // not — mirroring the Rust orchestrator's `InvalidConfig` check.
+        report.problems.push({
+          step: 'public-backfill',
+          reason: errorMessage(err),
+          retryable: !(err instanceof BackfillRangeError),
+        });
+      }
     }
   }
 
-  if (options.syncAfter !== false) {
+  if (options.syncAfter !== false && startStep('sync')) {
     try {
       await steps.sync();
       report.synced = true;
     } catch (err) {
-      report.problems.push({
-        step: 'sync',
-        reason: `recovery imports succeeded but the verifying sync failed; rerun a sync: ${errorMessage(err)}`,
-        retryable: true,
-      });
+      if (!interrupted('sync', err)) {
+        report.problems.push({
+          step: 'sync',
+          reason: `recovery imports succeeded but the verifying sync failed; rerun a sync: ${errorMessage(err)}`,
+          retryable: true,
+        });
+      }
     }
   }
 

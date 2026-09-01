@@ -671,6 +671,39 @@ with the freshly fetched proof rather than skipped. Sub-ranges the scan
 could not cover land in `uncovered` with `retryable`/`reason` set, so a
 partial scan never aborts the rest of the flow.
 
+### Preserving Notes Across a Guardian Switch
+
+Pending proposals do not survive a guardian switch: the new GUARDIAN is
+registered with bare account state, so once the client repoints, the notes
+embedded in the old GUARDIAN's pending consume-notes proposals are the one
+recovery source `recoverNotes` can no longer reach. `executeProposal` runs
+the proposal-import slice of the flow automatically on the switch-guardian
+path — against the old GUARDIAN, before the switch transaction executes —
+so those notes land in the local store while they are still reachable
+(issue #417). The step is best-effort and bounded by a 30s timeout with
+cooperative cancellation: an unreachable or hung old GUARDIAN is warned
+about, never allowed to block the switch.
+
+The transport drain and public backfill deliberately do not run on the
+switch path: a switch executes against an intact local store, and both the
+note transport and the node are configured independently of the GUARDIAN,
+so a switch loses nothing they rescan. They remain device-loss recovery
+tools and work unchanged against the new GUARDIAN.
+
+A wallet repointing a follower client by hand should request the same
+preservation before switching clients:
+
+```typescript
+// Before setGuardianClient(newGuardian):
+const report = await multisig.preservePreSwitchProposalNotes();
+// — or equivalently, with the exported preset:
+await multisig.recoverNotes(GUARDIAN_SWITCH_RECOVERY_OPTIONS);
+```
+
+`preservePreSwitchProposalNotes` returns the slice's `NoteRecoveryReport`
+(or `undefined` when the flow could not run or timed out) and never
+throws.
+
 ### Proposal Operations
 
 Every `create*Proposal` method takes a single trailing options object (issue
@@ -930,6 +963,7 @@ one implicitly.
 | `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
 | `recoverNotes(options?)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
+| `preservePreSwitchProposalNotes()` | Pre-switch slice of the flow (issue #417): import notes embedded in the old GUARDIAN's pending proposals before repointing; run automatically by `executeProposal` on the switch path; returns the report or `undefined` |
 | `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
@@ -1208,6 +1242,44 @@ skipped. Sub-ranges the scan could not cover land in `uncovered` with
 `retryable`/`reason` set, so a partial scan never aborts the rest of the
 flow.
 
+### Preserving Notes Across a Guardian Switch
+
+Pending proposals do not survive a guardian switch: the new GUARDIAN is
+registered with bare account state, so once the client repoints, the notes
+embedded in the old GUARDIAN's pending consume-notes proposals are the one
+recovery source `recover_notes` can no longer reach. `execute_proposal`
+runs the proposal-import slice of the flow automatically on the
+switch-guardian path — against the old GUARDIAN, before the switch
+transaction executes — so those notes land in the local store while they
+are still reachable (issue #417). The step is best-effort and bounded by a
+30s timeout: an unreachable or hung old GUARDIAN is warned about, never
+allowed to block the switch.
+
+The transport drain and public backfill deliberately do not run on the
+switch path: a switch executes against an intact local store, and both the
+note transport and the node are configured independently of the GUARDIAN,
+so a switch loses nothing they rescan. They remain device-loss recovery
+tools and work unchanged against the new GUARDIAN. The offline switch flow
+(`execute_imported_proposal`) also skips the import — it exists to avoid
+contacting the GUARDIAN at all — so when the old GUARDIAN is in fact still
+reachable, run the preservation explicitly before executing offline.
+
+A wallet repointing a follower client by hand should request the same
+preservation before `set_guardian_endpoint`:
+
+```rust
+// Before set_guardian_endpoint(new_endpoint, true):
+let report = client.preserve_pre_switch_proposal_notes().await;
+// — or equivalently, via the options preset:
+let report = client
+    .recover_notes(Some(NoteRecoveryOptions::for_guardian_switch()))
+    .await?;
+```
+
+`preserve_pre_switch_proposal_notes` returns the slice's
+`NoteRecoveryReport` (`None` when the flow could not run or timed out) and
+never errors.
+
 ### Transaction Types
 
 ```rust
@@ -1437,6 +1509,7 @@ responses, and per-account `get_state` failures are returned as errors.
 | `import_note_from_file(path)` | Import a note file received out-of-band |
 | `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
 | `recover_notes(options)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
+| `preserve_pre_switch_proposal_notes()` | Pre-switch slice of the flow (issue #417): import notes embedded in the old GUARDIAN's pending proposals before repointing; run automatically by `execute_proposal` on the switch path; returns `Option<NoteRecoveryReport>` |
 
 #### MultisigAccount
 

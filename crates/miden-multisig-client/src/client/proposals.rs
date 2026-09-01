@@ -328,8 +328,15 @@ impl MultisigClient {
                 )
                 .await?;
             signature_advice.push(guardian_advice);
-        } else {
-            // SwitchGuardian, both steps best-effort against the old GUARDIAN.
+        } else if matches!(
+            proposal.transaction_type,
+            TransactionType::SwitchGuardian { .. }
+        ) {
+            // Ack-less today means SwitchGuardian, but the two concepts are
+            // not the same — the guard above keys these switch-only side
+            // effects on the type itself, so a future ack-less transaction
+            // type does not inherit them. Both steps are best-effort against
+            // the old GUARDIAN.
             //
             // #417 first: import notes embedded in pending proposals. Must
             // run before the switch executes and `finalize_transaction`

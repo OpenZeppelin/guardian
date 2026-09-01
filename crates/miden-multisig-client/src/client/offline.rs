@@ -252,6 +252,15 @@ impl MultisigClient {
         )
         .await?;
 
+        // The pre-switch proposal-note import is deliberately skipped here
+        // (see the method docs) — make the skip observable rather than a
+        // silent loss when the old GUARDIAN was in fact still reachable.
+        tracing::warn!(
+            "offline switch execution skips the pre-switch proposal-note import; if the \
+             old GUARDIAN is still reachable, call preserve_pre_switch_proposal_notes \
+             before executing to keep notes embedded in its pending proposals"
+        );
+
         // Execute and finalize at the proposal's anchored reference block; the
         // anchor was checked against the signed summary's block commitment in
         // `verify_proposal_summary_binding` above.

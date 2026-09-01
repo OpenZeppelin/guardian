@@ -87,6 +87,7 @@ import { ProposalMetadataCodec } from './proposal/metadata.js';
 import { ProposalSignatures } from './proposal/signatures.js';
 import {
   importNotesFromProposals as importNotesFromProposalsStandalone,
+  throwIfCancelled,
   type NoteImportOutcome,
 } from './recovery/proposalNoteImport.js';
 import {
@@ -98,6 +99,7 @@ import {
   GUARDIAN_SWITCH_RECOVERY_OPTIONS,
   runNoteRecovery,
   type NoteRecoveryReport,
+  type NoteRecoverySteps,
   type RecoverNotesOptions,
 } from './recovery/recoverNotes.js';
 import {
@@ -220,6 +222,16 @@ const PRE_SWITCH_IMPORT_TIMEOUT_MS = 30_000;
 
 /** Race sentinel for the pre-switch import timeout. */
 const PRE_SWITCH_IMPORT_TIMED_OUT = Symbol('pre-switch proposal-note import timed out');
+
+/**
+ * After the pre-switch import times out, how long the switch waits for the
+ * cancelled flow's single in-flight operation to settle before proceeding.
+ * Cooperative cancellation cannot interrupt a WASM call or an RPC attempt
+ * already in flight; this bounded grace lets it finish so it does not
+ * overlap the switch transaction's execution on the shared client. A flow
+ * that outlasts even this is abandoned for real.
+ */
+const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 
 export class Multisig {
   account: Account;
@@ -721,7 +733,7 @@ export class Multisig {
    * untouched. GUARDIAN being unreachable still throws — there is nothing
    * to isolate without a listing.
    */
-  private async syncProposalsIsolatingFailures(): Promise<{
+  private async syncProposalsIsolatingFailures(cancelled?: () => boolean): Promise<{
     proposals: Proposal[];
     skipped: Array<{ identifier: string; reason: string }>;
   }> {
@@ -738,6 +750,7 @@ export class Multisig {
     const proposals: Proposal[] = [];
     const skipped: Array<{ identifier: string; reason: string }> = [];
     for (let position = 0; position < deltas.length; position += 1) {
+      throwIfCancelled(cancelled);
       const delta = deltas[position];
       const identifier = `proposal at nonce ${delta.nonce} (#${position})`;
       try {
@@ -1331,10 +1344,12 @@ export class Multisig {
    */
   private async importNotesFromProposals(
     proposals: ReadonlyArray<Pick<Proposal, 'id' | 'metadata'>>,
+    cancelled?: () => boolean,
   ): Promise<NoteImportOutcome[]> {
     return importNotesFromProposalsStandalone(this.midenClient, proposals, {
       midenRpcEndpoint: this.getMidenRpcEndpoint(),
       rpc: { retry: { maxAttempts: this.rpcConfig.maxAttempts } },
+      cancelled,
     });
   }
 
@@ -1378,21 +1393,36 @@ export class Multisig {
    * simply be retried. Throws only for an inverted backfill range.
    */
   async recoverNotes(options: RecoverNotesOptions = {}): Promise<NoteRecoveryReport> {
-    return runNoteRecovery(options, {
+    return runNoteRecovery(options, this.buildNoteRecoverySteps(options));
+  }
+
+  /**
+   * The strategy implementations {@link recoverNotes} hands to
+   * `runNoteRecovery`. The optional `cancelled` token is the pre-switch
+   * import's cooperative cancellation: `runNoteRecovery` checks it before
+   * starting each step, and the proposal-import step threads it into its
+   * listing and import loops so they stop at their next checkpoint too.
+   */
+  private buildNoteRecoverySteps(
+    options: RecoverNotesOptions,
+    cancelled?: () => boolean,
+  ): NoteRecoverySteps {
+    return {
       transportDrain: () => drainPrivateNoteBacklog(this.midenClient),
       proposalImport: async () => {
         // The lenient listing isolates per-proposal parse/binding failures
         // as skip reasons, so one corrupt proposal cannot block recovering
         // notes from the healthy ones; those skips surface as `invalid`
         // outcomes alongside the per-note ones.
-        const { proposals, skipped } = await this.syncProposalsIsolatingFailures();
+        const { proposals, skipped } = await this.syncProposalsIsolatingFailures(cancelled);
         const outcomes: NoteImportOutcome[] = skipped.map(({ identifier, reason }) => ({
           identifier,
           source: 'proposal',
           status: 'invalid',
           reason,
         }));
-        outcomes.push(...(await this.importNotesFromProposals(proposals)));
+        throwIfCancelled(cancelled);
+        outcomes.push(...(await this.importNotesFromProposals(proposals, cancelled)));
         return outcomes;
       },
       publicBackfill: async () => {
@@ -1421,7 +1451,7 @@ export class Multisig {
         await this.midenClient.sync();
         await this.syncState();
       },
-    });
+    };
   }
 
   /**
@@ -1453,12 +1483,22 @@ export class Multisig {
    * imports.
    *
    * Best-effort like the rest of the switch's old-GUARDIAN interaction
-   * (mirrors the Rust SDK's `preserve_pre_switch_proposal_notes`): problems
-   * are warned, never thrown — an unreachable old GUARDIAN must not block
-   * the switch. That promise also covers a GUARDIAN that hangs instead of
-   * failing, so the flow is raced against `PRE_SWITCH_IMPORT_TIMEOUT_MS`;
-   * on expiry the switch proceeds and the abandoned import finishes (or
-   * fails) harmlessly in the background.
+   * (mirrors the Rust SDK's `preserve_pre_switch_proposal_notes`, including
+   * the `NoteRecoveryReport | undefined` result — `undefined` when the flow
+   * could not run or timed out): problems are warned, never thrown — an
+   * unreachable old GUARDIAN must not block the switch. That promise also
+   * covers a GUARDIAN that hangs instead of failing, so the flow runs under
+   * `PRE_SWITCH_IMPORT_TIMEOUT_MS` with cooperative cancellation: on expiry
+   * a token flips, `runNoteRecovery` starts no further step, and the
+   * listing/import loops stop at their next checkpoint (including between
+   * RPC retry attempts), so no NEW guardian read, VM execution, or store
+   * write begins past the deadline — a resumed flow can never observe the
+   * repointed client. Cancellation cannot interrupt the single operation
+   * already in flight when the timer fires (one VM re-execution, store
+   * call, or RPC attempt — WASM is non-preemptive), so the switch then
+   * waits up to `PRE_SWITCH_SETTLE_GRACE_MS` for the flow to settle before
+   * proceeding, keeping that leftover from overlapping the switch
+   * transaction on the shared client.
    *
    * {@link executeProposal} runs this automatically on the switch-guardian
    * path; wallets repointing a follower client by hand (via
@@ -1466,30 +1506,44 @@ export class Multisig {
    * `GUARDIAN_SWITCH_RECOVERY_OPTIONS` to {@link recoverNotes} — to get the
    * same preservation.
    */
-  async preservePreSwitchProposalNotes(): Promise<void> {
+  async preservePreSwitchProposalNotes(): Promise<NoteRecoveryReport | undefined> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     try {
-      const flow = this.recoverNotes(GUARDIAN_SWITCH_RECOVERY_OPTIONS);
+      const cancelled = () => timedOut;
+      const flow = runNoteRecovery(
+        GUARDIAN_SWITCH_RECOVERY_OPTIONS,
+        this.buildNoteRecoverySteps(GUARDIAN_SWITCH_RECOVERY_OPTIONS, cancelled),
+        cancelled,
+      );
       const outcome = await Promise.race([
         flow,
         new Promise<typeof PRE_SWITCH_IMPORT_TIMED_OUT>((resolve) => {
-          timer = setTimeout(
-            () => resolve(PRE_SWITCH_IMPORT_TIMED_OUT),
-            PRE_SWITCH_IMPORT_TIMEOUT_MS,
-          );
+          timer = setTimeout(() => {
+            timedOut = true;
+            resolve(PRE_SWITCH_IMPORT_TIMED_OUT);
+          }, PRE_SWITCH_IMPORT_TIMEOUT_MS);
         }),
       ]);
       if (outcome === PRE_SWITCH_IMPORT_TIMED_OUT) {
-        // The abandoned flow keeps running in the background — it cannot
-        // repoint anything and a late import is a bonus — but its eventual
-        // rejection must not surface as an unhandled rejection.
-        flow.catch(() => {});
         console.warn(
-          `Pre-switch proposal-note import timed out after ${PRE_SWITCH_IMPORT_TIMEOUT_MS}ms; ` +
-            'notes embedded in pending proposals may be unrecoverable after the ' +
-            'GUARDIAN switch',
+          `Pre-switch proposal-note import timed out after ${PRE_SWITCH_IMPORT_TIMEOUT_MS}ms ` +
+            'and was cancelled; notes embedded in pending proposals may be ' +
+            'unrecoverable after the GUARDIAN switch',
         );
-        return;
+        // The token is set, so the flow does no new work — but its single
+        // in-flight operation cannot be interrupted. Give it a bounded
+        // grace to settle so it does not overlap the switch transaction on
+        // the shared client; its result is unobserved either way, and a
+        // rejection must not surface as an unhandled rejection.
+        await Promise.race([
+          flow.catch(() => {}),
+          new Promise<void>((resolve) => {
+            graceTimer = setTimeout(resolve, PRE_SWITCH_SETTLE_GRACE_MS);
+          }),
+        ]);
+        return undefined;
       }
       for (const problem of outcome.problems) {
         console.warn(
@@ -1511,17 +1565,22 @@ export class Multisig {
           );
         }
       }
+      return outcome;
     } catch (error) {
-      // recoverNotes only throws for caller errors (inverted backfill range,
-      // never passed here), but the switch must survive anything.
+      // runNoteRecovery only throws for caller errors (inverted backfill
+      // range, never passed here), but the switch must survive anything.
       console.warn(
         'Pre-switch proposal-note import could not run; notes embedded in pending ' +
           'proposals may be unrecoverable after the GUARDIAN switch',
         error,
       );
+      return undefined;
     } finally {
       if (timer !== undefined) {
         clearTimeout(timer);
+      }
+      if (graceTimer !== undefined) {
+        clearTimeout(graceTimer);
       }
     }
   }

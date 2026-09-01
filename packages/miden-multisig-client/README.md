@@ -522,6 +522,25 @@ can plausibly recover more. In brief:
 For the full report semantics see
 [`docs/MULTISIG_SDK.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MULTISIG_SDK.md).
 
+### Preserving notes across a guardian switch
+
+Pending proposals do not survive a guardian switch — the new GUARDIAN is
+registered with bare account state — so the notes embedded in the old
+GUARDIAN's pending consume-notes proposals are the one recovery source
+`recoverNotes` can no longer reach after the repoint. `executeProposal`
+runs the proposal-import slice automatically on the switch-guardian path
+(against the old GUARDIAN, before the switch transaction executes),
+best-effort and bounded by a 30s timeout with cooperative cancellation;
+the transport drain and public backfill deliberately do not run there (an
+intact local store loses nothing they rescan). When repointing a client by
+hand via `setGuardianClient`, request the same preservation first:
+
+```typescript
+const report = await multisig.preservePreSwitchProposalNotes();
+// — or via the exported preset:
+await multisig.recoverNotes(GUARDIAN_SWITCH_RECOVERY_OPTIONS);
+```
+
 ## Transaction Utilities
 
 The package also exports utility functions for building transactions:
