@@ -543,14 +543,28 @@ variable "guardian_log_format" {
   }
 }
 
-variable "metrics_enabled" {
+variable "guardian_metrics_enabled" {
   description = <<-EOT
-    Whether the deployment ships application metrics to CloudWatch: enables the
-    Guardian Prometheus endpoint inside the ECS task, runs the ADOT Collector
-    sidecar that scrapes it and exports EMF metrics, and creates the CloudWatch
-    dashboard and alarms. The metrics endpoint binds loopback inside the task's
-    network namespace and is never reachable via the ALB or security groups.
-    Disabling skips all of it (no sidecar, no dashboard, no alarms).
+    Whether the Guardian server exposes its Prometheus metrics endpoint inside
+    the ECS task. The endpoint binds loopback inside the task's network
+    namespace and is never reachable via the ALB or security groups; an
+    externally scraped setup would additionally require an explicit bind
+    address, restricted security-group access, and a bearer token — none of
+    which this module configures. Disabling also disables the CloudWatch
+    export pipeline (there is nothing to scrape).
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "cloudwatch_metrics_enabled" {
+  description = <<-EOT
+    Whether the deployment ships the metrics endpoint's data to CloudWatch:
+    runs the ADOT Collector sidecar that scrapes it and exports EMF metrics,
+    and creates the EMF log group, IAM policy, CloudWatch dashboard, and
+    alarms. Requires guardian_metrics_enabled. Disable to keep the Prometheus
+    endpoint for a different metrics backend without publishing CloudWatch
+    custom metrics.
   EOT
   type        = bool
   default     = true
@@ -562,11 +576,15 @@ variable "adot_image" {
     digest-pinned for supply-chain consistency with the server Dockerfile.
     Refresh the digest with:
     `docker manifest inspect public.ecr.aws/aws-observability/aws-otel-collector:<tag>`.
-    When bumping, verify the release keeps the
-    `pkg.translator.prometheus.NormalizeName` feature gate disabled (or
-    disable it explicitly): with normalization on, counters lose their
-    `_total` suffix and no metric matches the awsemf declarations, so
-    every widget goes blank and the metrics-missing alarm fires.
+    When bumping, verify metric-name normalization stays off (the
+    receiver config pins `trim_metric_suffixes = false`; check the gate
+    has not been renamed or force-enabled): with normalization on,
+    counters lose their `_total` suffix and stop matching the awsemf
+    declarations, silently blanking counter widgets and starving every
+    notBreaching alarm — while `guardian_build_info` (a gauge, no
+    suffix) keeps the metrics-missing heartbeat green. Verify with
+    `aws cloudwatch list-metrics` after any image bump; metrics-missing
+    does NOT catch partial selection drift.
   EOT
   type        = string
   default     = "public.ecr.aws/aws-observability/aws-otel-collector:v0.49.0@sha256:d2bdfff2c377c3d71d78bd5d9ce9862fd535b12134a5739d87a07801297cf9fd"

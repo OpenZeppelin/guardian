@@ -43,6 +43,13 @@ resource "aws_ecs_task_definition" "server" {
     operating_system_family = "LINUX"
   }
 
+  lifecycle {
+    precondition {
+      condition     = var.guardian_metrics_enabled || !var.cloudwatch_metrics_enabled
+      error_message = "cloudwatch_metrics_enabled requires guardian_metrics_enabled: the ADOT sidecar has nothing to scrape without the server metrics endpoint."
+    }
+  }
+
   dynamic "volume" {
     for_each = local.ca_bundle_enabled ? [1] : []
     content {
@@ -189,7 +196,7 @@ resource "aws_ecs_task_definition" "server" {
             value = local.ack_ecdsa_secret_name
           }
           ],
-          var.metrics_enabled ? [
+          var.guardian_metrics_enabled ? [
             {
               name  = "GUARDIAN_METRICS_ENABLED"
               value = "true"
@@ -272,17 +279,18 @@ resource "aws_ecs_task_definition" "server" {
         }
       }
     ],
-    var.metrics_enabled ? [
+    var.cloudwatch_metrics_enabled ? [
       {
         name  = local.adot_container_name
         image = var.adot_image
-        # Non-essential: the collector dying must not take down the
-        # serving container. The metrics-missing alarm catches a dead
-        # pipeline instead.
+        # Non-essential: the collector exiting must not stop the task.
+        # The metrics-missing alarm catches a dead pipeline instead.
         essential = false
-        # Hard memory cap so a collector leak is OOM-killed alone
-        # instead of competing with the essential server container for
-        # the task envelope.
+        # Bounds the collector's worst-case share of the shared task
+        # memory envelope at 256 MiB (a leak is OOM-killed at this cap).
+        # This is a bound, not isolation: both containers still draw
+        # from the task's total, so size server_memory with this
+        # headroom in mind.
         memoryReservation = 64
         memory            = 256
 

@@ -204,7 +204,8 @@ aws_region = "us-east-1"
 
 # Optional: application metrics (ADOT sidecar + CloudWatch dashboard/alarms).
 # Enabled by default; see "Metrics, Dashboard, And Alarms".
-# metrics_enabled = true
+# guardian_metrics_enabled = true   # server Prometheus endpoint (loopback-only)
+# cloudwatch_metrics_enabled = true # ADOT sidecar + dashboard + alarms
 # metrics_namespace = "Guardian/Server"
 # alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
 # alarm_error_rate_threshold_percent = 5
@@ -478,13 +479,27 @@ grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.
 
 ## Metrics, Dashboard, And Alarms
 
-Application metrics ship to CloudWatch by default (`metrics_enabled = true`):
+Application metrics ship to CloudWatch by default. Two independent switches
+control this: `guardian_metrics_enabled` turns on the server's Prometheus
+endpoint, and `cloudwatch_metrics_enabled` deploys the ADOT sidecar, EMF
+log group, IAM policy, dashboard, and alarms on top of it. Disable only the
+latter to keep the endpoint for a different metrics backend (your own
+Prometheus, Amazon Managed Prometheus, another OTel collector) without
+publishing CloudWatch custom metrics; enabling CloudWatch export without the
+endpoint is rejected at plan time.
 
 - The server runs with `GUARDIAN_METRICS_ENABLED=true`, serving the Prometheus
   exposition on `127.0.0.1:9464/metrics`. Fargate `awsvpc` containers share one
   network namespace, so the endpoint is **loopback-only**: the sidecar reaches
   it on `127.0.0.1` while nothing outside the task can — it is never exposed via
-  the ALB, target groups, or security groups.
+  the ALB, target groups, or security groups. An externally scraped setup would
+  additionally require an explicit bind address, restricted security-group
+  ingress, and `GUARDIAN_METRICS_BEARER_TOKEN`; this module deliberately
+  configures none of that.
+- Latency and other duration metrics are **windowed**: the collector
+  delta-converts the Prometheus histograms (the awsemf exporter does not do
+  this for histograms on its own), so CloudWatch `Average` over a 5-minute
+  period reflects that period, not the process lifetime.
 - An **AWS Distro for OpenTelemetry (ADOT) Collector sidecar** in the server
   task scrapes the endpoint every 60s and exports a curated selection of
   metrics to CloudWatch as EMF log events (log group `/ecs/<service>/emf`).
@@ -501,12 +516,16 @@ Application metrics ship to CloudWatch by default (`metrics_enabled = true`):
   loopback-only listener inside the task) is the first defense layer described
   in [the observability guide](./guides/observability/README.md#protecting-the-endpoint-production),
   and no other network path to the endpoint exists.
-- The sidecar is **non-essential** and memory-capped at 256 MB inside the task
-  envelope: if it leaks or dies, the server keeps serving and the
-  `metrics-missing` alarm fires on the fleet going dark. With more than one
-  task, a single dead sidecar is not detected by that alarm — the remaining
-  tasks keep the metrics alive and the fleet's Sums/Averages skew until the
-  next deployment; per-task detection is a possible follow-up.
+- The sidecar is **non-essential** (its exit does not stop the task) and its
+  memory is capped at 256 MiB, which bounds its worst-case share of the shared
+  task envelope — it is a bound, not isolation: both containers still draw
+  from the task's `server_memory` total, so size that with ~256 MiB of
+  headroom in mind. If the collector leaks it is OOM-killed at its cap, the
+  server keeps serving, and the `metrics-missing` alarm fires on the fleet
+  going dark. With more than one task, a single dead sidecar is not detected
+  by that alarm — the remaining tasks keep the metrics alive and the fleet's
+  Sums/Averages skew until the next deployment; per-task detection is a
+  possible follow-up.
 - Terraform creates a CloudWatch **dashboard** named `<stack>-server` (request
   volume, error rate, latency, proposal/delta lifecycle, canonicalization
   health, storage and DB-pool health, Miden RPC, ECS CPU/memory/tasks) and
@@ -514,8 +533,8 @@ Application metrics ship to CloudWatch by default (`metrics_enabled = true`):
 
 | Alarm | Fires when |
 |-------|------------|
-| `<stack>-http-5xx-rate` | HTTP 5xx responses (500/501/502/503/504) exceed `alarm_error_rate_threshold_percent` (default 5%) of requests for 15 min |
-| `<stack>-grpc-error-rate` | gRPC server-fault responses (`internal`, `unavailable`, `unknown`, `data_loss`, `deadline_exceeded`) exceed the same threshold for 15 min |
+| `<stack>-http-5xx-rate` | HTTP 5xx responses (500/501/502/503/504) exceed `alarm_error_rate_threshold_percent` (default 5%) of requests for 15 min. ALB health checks count as successful requests and dilute the rate on low-traffic multi-task fleets — treat as a sustained-fault signal |
+| `<stack>-grpc-error-rate` | gRPC server-fault responses (`internal`, `unavailable`, `unknown`, `data_loss`, `deadline_exceeded`) exceed the same threshold for 15 min; the same health-check dilution applies |
 | `<stack>-http-latency` | Average HTTP latency exceeds `alarm_latency_threshold_seconds` (default 1s) for 15 min. Fleet average across all routes — continuous ALB health-check probes dilute it on low-traffic stacks, so treat it as a sustained-degradation signal |
 | `<stack>-canonicalization-failures` | Canonicalization passes (full, fast, or reconcile) report `error` or `partial` (some accounts failed) outcomes for 10 min |
 | `<stack>-metrics-missing` | Application metrics stop arriving — the constant `guardian_build_info` heartbeat disappears (metrics endpoint down, sidecar dead, or scrape failing) |
@@ -529,15 +548,28 @@ To receive notifications, point the alarms at one or more SNS topics:
 alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
 ```
 
-Set `metrics_enabled = false` to turn the whole pipeline off (no metrics env
-vars, no sidecar, no dashboard, no alarms).
+This stack does **not** provision the SNS topic or a chat integration. The
+supported notification path is: CloudWatch alarm → an existing **same-region
+SNS topic** (listed in `alarm_actions`) → [Amazon Q Developer in chat
+applications](https://docs.aws.amazon.com/chatbot/latest/adminguide/what-is.html)
+(formerly AWS Chatbot) subscribed to that topic → Slack channel. Create the
+topic and the chat subscription out of band, then pass the topic ARN here;
+alarms fire both `alarm_actions` and `ok_actions`, so the channel sees
+recovery too.
+
+Set `guardian_metrics_enabled = false` to turn everything off (no metrics env
+vars, no sidecar, no dashboard, no alarms), or only
+`cloudwatch_metrics_enabled = false` to keep the loopback endpoint without
+any CloudWatch export.
 
 ### Verify metrics after a deploy
 
 ```bash
-# The namespace and dashboard name are per stack; read them from outputs.
+# Every name below is per stack; read them all from Terraform outputs.
 NS=$(terraform -chdir=infra output -raw metrics_namespace)
 DASH=$(terraform -chdir=infra output -raw metrics_dashboard_name)
+LOG_GROUP=$(terraform -chdir=infra output -raw server_log_group)
+ALARM=$(terraform -chdir=infra output -raw metrics_missing_alarm_name)
 
 # 1. Metrics arriving in the namespace (allow ~2 minutes after task start)
 aws cloudwatch list-metrics --namespace "$NS" --output table | head -40
@@ -548,10 +580,10 @@ aws cloudwatch get-dashboard --dashboard-name "$DASH" --query DashboardName
 
 # 3. Sidecar logs — scrape failures surface here as
 #    "Failed to scrape Prometheus endpoint"
-aws logs tail /ecs/guardian-server --log-stream-name-prefix adot --since 15m
+aws logs tail "$LOG_GROUP" --log-stream-name-prefix adot --since 15m
 
 # 4. Exercise one alarm notification path end to end
-aws cloudwatch set-alarm-state --alarm-name guardian-metrics-missing \
+aws cloudwatch set-alarm-state --alarm-name "$ALARM" \
   --state-value ALARM --state-reason "notification path test"
 # the next evaluation returns it to OK automatically
 ```
@@ -644,6 +676,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `metrics_namespace` | CloudWatch namespace receiving Guardian application metrics |
 | `metrics_dashboard_name` | CloudWatch dashboard name |
 | `metrics_emf_log_group` | Log group the ADOT sidecar writes EMF metric events into |
+| `metrics_missing_alarm_name` | Name of the metrics-pipeline heartbeat alarm for this stack |
 
 ## Stage Profiles
 

@@ -82,7 +82,8 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 
 # Optional: application metrics (ADOT sidecar + CloudWatch dashboard/alarms).
 # Enabled by default; the metrics endpoint stays private to the ECS task.
-# metrics_enabled = true
+# guardian_metrics_enabled = true   # server Prometheus endpoint (loopback-only)
+# cloudwatch_metrics_enabled = true # ADOT sidecar + dashboard + alarms
 # metrics_namespace = "Guardian/Server"
 # alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
 # alarm_error_rate_threshold_percent = 5

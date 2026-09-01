@@ -19,8 +19,35 @@ locals {
   # "error rate" means. gRPC `aborted` and `resource_exhausted` are
   # deliberately excluded: they signal client-retryable conflicts and
   # rate-limit pressure, not server faults.
+  #
+  # Denominator caveat: ALB health checks (HTTP GET / and gRPC GetPubkey,
+  # every 30s per task) count as successful requests, so on a
+  # low-traffic multi-task fleet they dilute the observed rate — e.g.
+  # six tasks contribute ~60 successful probes per 5-minute period, so
+  # three real failures read as ~4.8% and stay under the default 5%
+  # threshold. Treat the rate alarms as sustained-fault signals; an
+  # absolute server-error alarm is the follow-up if low-volume
+  # detection is needed.
   http_error_statuses = ["500", "501", "502", "503", "504"]
   grpc_error_codes    = ["internal", "unavailable", "unknown", "data_loss", "deadline_exceeded"]
+
+  # The eight Prometheus histograms. The awsemf exporter delta-converts
+  # cumulative counters but NOT histograms (their sum/count would be
+  # republished as process-lifetime totals every scrape, making
+  # CloudWatch Average lifetime-weighted — hours of cheap health checks
+  # would mask a real latency regression). The cumulativetodelta
+  # processor below converts exactly these to per-interval deltas so
+  # per-period Average reflects the current window.
+  histogram_metrics = [
+    "guardian_http_request_duration_seconds",
+    "guardian_grpc_request_duration_seconds",
+    "guardian_storage_operation_duration_seconds",
+    "guardian_miden_rpc_duration_seconds",
+    "guardian_canonicalization_run_duration_seconds",
+    "guardian_canonicalization_fast_run_duration_seconds",
+    "guardian_canonicalization_reconcile_run_duration_seconds",
+    "guardian_canonicalization_candidate_age_seconds",
+  ]
 
   http_error_rate_expression = "100 * (${join(" + ", [for s in local.http_error_statuses : "FILL(h${s}, 0)"])}) / FILL(hall, 1)"
   grpc_error_rate_expression = "100 * (${join(" + ", [for c in local.grpc_error_codes : "FILL(g${replace(c, "_", "")}, 0)"])}) / FILL(gall, 1)"
@@ -57,6 +84,9 @@ locals {
     }
     receivers = {
       prometheus = {
+        # Pin the current default explicitly: with suffix trimming on,
+        # counters lose `_total` and no metric_name_selector matches.
+        trim_metric_suffixes = false
         config = {
           scrape_configs = [
             {
@@ -79,6 +109,15 @@ locals {
         detectors = ["ecs"]
         timeout   = "5s"
       }
+      # Histograms only — see local.histogram_metrics. Counters keep
+      # their cumulative temporality and are delta-converted inside
+      # awsemf (where retain_initial_value_of_delta_metric applies).
+      cumulativetodelta = {
+        include = {
+          match_type = "strict"
+          metrics    = local.histogram_metrics
+        }
+      }
       batch = {}
     }
     exporters = {
@@ -87,12 +126,14 @@ locals {
         log_group_name          = local.emf_log_group_name
         log_stream_name         = "emf/{TaskId}"
         dimension_rollup_option = "NoDimensionRollup"
-        # Without this, the exporter's cumulative-to-delta conversion
-        # swallows the first datapoint of any newly-appearing series.
-        # Rare-event counters (canonicalization outcome=error, refresh
-        # failures) are born at their first failure, so dropping that
-        # initial value would hide exactly the events the alarms exist
-        # for. The cost is a small spike on counter series at task start.
+        # Counters only (histograms are delta-converted upstream by the
+        # cumulativetodelta processor): without this, the exporter's
+        # cumulative-to-delta conversion swallows the first datapoint of
+        # any newly-appearing counter series. Rare-event counters
+        # (canonicalization outcome=error, refresh failures) are born at
+        # their first failure, so dropping that initial value would hide
+        # exactly the events the alarms exist for. The cost is a small
+        # spike on counter series at task start.
         retain_initial_value_of_delta_metric = true
         # Only metrics matching a declaration are exported; everything
         # else the scrape returns (process_*, etc.) is dropped here.
@@ -208,7 +249,7 @@ locals {
       pipelines = {
         metrics = {
           receivers  = ["prometheus"]
-          processors = ["resourcedetection", "batch"]
+          processors = ["resourcedetection", "cumulativetodelta", "batch"]
           exporters  = ["awsemf"]
         }
       }
@@ -221,7 +262,7 @@ locals {
 # guardian-prod -> Guardian-Prod/Server) are invalid as unquoted tokens.
 
 resource "aws_cloudwatch_dashboard" "server" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   dashboard_name = local.dashboard_name
 
@@ -474,7 +515,7 @@ resource "aws_cloudwatch_dashboard" "server" {
 # going dark (server metrics disabled, sidecar dead, or scrape failing).
 
 resource "aws_cloudwatch_metric_alarm" "http_error_rate" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-http-5xx-rate"
   alarm_description   = "Guardian HTTP 5xx responses exceed ${var.alarm_error_rate_threshold_percent}% of requests"
@@ -519,7 +560,7 @@ resource "aws_cloudwatch_metric_alarm" "http_error_rate" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "grpc_error_rate" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-grpc-error-rate"
   alarm_description   = "Guardian gRPC server-fault responses (${join(", ", local.grpc_error_codes)}) exceed ${var.alarm_error_rate_threshold_percent}% of requests"
@@ -568,7 +609,7 @@ resource "aws_cloudwatch_metric_alarm" "grpc_error_rate" {
 # sustained-degradation signal, not a per-request SLO. Per-route latency
 # needs the route dimension exported (deliberately not, for cost).
 resource "aws_cloudwatch_metric_alarm" "http_latency" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-http-latency"
   alarm_description   = "Guardian average HTTP request latency exceeds ${var.alarm_latency_threshold_seconds}s (fleet average across all routes, including ALB health checks)"
@@ -586,7 +627,7 @@ resource "aws_cloudwatch_metric_alarm" "http_latency" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "canonicalization_failures" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-canonicalization-failures"
   alarm_description   = "Guardian canonicalization passes (full, fast, or reconcile) are erroring or completing with failed accounts"
@@ -628,7 +669,7 @@ resource "aws_cloudwatch_metric_alarm" "canonicalization_failures" {
 # dark; one dead sidecar in a multi-task fleet only lowers the metric's
 # SampleCount and is not detected here.
 resource "aws_cloudwatch_metric_alarm" "metrics_missing" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-metrics-missing"
   alarm_description   = "Guardian application metrics stopped arriving in CloudWatch (metrics endpoint down, ADOT sidecar dead, or scrape failing — check the adot log stream)"
@@ -646,7 +687,7 @@ resource "aws_cloudwatch_metric_alarm" "metrics_missing" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "metrics_refresh_failures" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-metrics-refresh-failures"
   alarm_description   = "Guardian slow-aggregate metrics refresher attempts are failing; delta/proposal/account gauges are stale"
@@ -669,7 +710,7 @@ resource "aws_cloudwatch_metric_alarm" "metrics_refresh_failures" {
 # the per-period Maximum by ~300 each period; DIFF <= 0 for two periods
 # means no successful refresh for >= 10 minutes.
 resource "aws_cloudwatch_metric_alarm" "metrics_refresh_stale" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-metrics-refresh-stale"
   alarm_description   = "Guardian slow-aggregate refresh timestamp stopped advancing; delta/proposal/account gauges are stale (hung or dead refresher)"
@@ -700,7 +741,7 @@ resource "aws_cloudwatch_metric_alarm" "metrics_refresh_stale" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "ecs_cpu_high" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name        = "${var.stack_name}-ecs-cpu-high"
   alarm_description = "Guardian ECS service average CPU utilization exceeds ${var.alarm_cpu_threshold_percent}%"
@@ -732,7 +773,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_cpu_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "ecs_memory_high" {
-  count = var.metrics_enabled ? 1 : 0
+  count = var.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name        = "${var.stack_name}-ecs-memory-high"
   alarm_description = "Guardian ECS service average memory utilization exceeds ${var.alarm_memory_threshold_percent}%"

@@ -274,7 +274,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_canonicalization_fast_promotion_enabled` | `true` | Enables the recent-candidate promotion-only pass in the ECS task definition |
 | `guardian_log_format` | `json` | Log format for `GUARDIAN_LOG_FORMAT` (`text`, `json`, `compact`) |
 | `log_retention_days` | `7` | CloudWatch log retention in days |
-| `metrics_enabled` | `true` | Guardian metrics endpoint + ADOT sidecar + CloudWatch dashboard/alarms |
+| `guardian_metrics_enabled` | `true` | Guardian Prometheus metrics endpoint (loopback-only inside the task) |
+| `cloudwatch_metrics_enabled` | `true` | ADOT sidecar + EMF export + CloudWatch dashboard/alarms (requires the endpoint) |
 | `adot_image` | pinned ADOT Collector release | Digest-pinned sidecar image |
 | `metrics_namespace` | `<Title(stack_name)>/Server` | CloudWatch namespace for application metrics |
 | `alarm_actions` | `[]` | ARNs (e.g. SNS topics) notified on alarm/ok transitions |
@@ -314,7 +315,9 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_max_replicas` | Effective `GUARDIAN_MAX_REPLICAS` after clamping to steady-state capacity |
 | `guardian_dashboard_commitment_rate_burst_per_sec` | Effective fleet-wide dashboard per-commitment burst budget |
 | `guardian_dashboard_commitment_rate_per_min` | Effective fleet-wide dashboard per-commitment sustained budget |
-| `metrics_enabled` | Whether the metrics sidecar, dashboard, and alarms are deployed |
+| `guardian_metrics_enabled` | Whether the Guardian Prometheus metrics endpoint is enabled |
+| `cloudwatch_metrics_enabled` | Whether the metrics sidecar, dashboard, and alarms are deployed |
+| `metrics_missing_alarm_name` | Name of the metrics-pipeline heartbeat alarm |
 | `metrics_namespace` | CloudWatch namespace receiving Guardian application metrics |
 | `metrics_dashboard_name` | CloudWatch dashboard name |
 | `metrics_emf_log_group` | Log group the ADOT sidecar writes EMF metric events into |

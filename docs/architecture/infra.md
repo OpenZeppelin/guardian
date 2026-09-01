@@ -151,7 +151,10 @@ Mapping AWS resources to the Terraform files that own them:
 | ACK secrets policy | [`iam.tf:70`](../../infra/iam.tf#L70) | Gated on `local.is_prod` — dev never reads ACK secrets. |
 | Operator pubkeys policy | [`iam.tf:93`](../../infra/iam.tf#L93) | Created if user supplies an existing ARN or a managed list. |
 | RDS Proxy role | [`iam.tf:136`](../../infra/iam.tf#L136) | Reads the proxy's credentials secret. |
-| CloudWatch log groups | [`logs.tf`](../../infra/logs.tf) | `server` group and `cluster` (ECS Exec) group. |
+| CloudWatch log groups | [`logs.tf`](../../infra/logs.tf) | `server` group, `cluster` (ECS Exec) group, and the EMF metrics group when CloudWatch metrics are enabled. |
+| ADOT metrics sidecar + collector config | [`ecs.tf`](../../infra/ecs.tf), [`observability.tf`](../../infra/observability.tf) | Non-essential container in the server task; config injected via `AOT_CONFIG_CONTENT`. |
+| CloudWatch dashboard + alarms | [`observability.tf`](../../infra/observability.tf) | `<stack>-server` dashboard; error-rate, latency, canonicalization, metrics-pipeline, and ECS saturation alarms. |
+| ADOT EMF log-write policy | [`iam.tf`](../../infra/iam.tf) | Task-role, stream-level writes on the EMF group only. |
 | Route 53 alias | [`dns.tf:12`](../../infra/dns.tf#L12) | Created when `route53_zone_id` is set; hostname migrations may temporarily add a second record. |
 | Cloudflare CNAME | [`dns.tf:27`](../../infra/dns.tf#L27) | Created when `cloudflare_zone_id` is set; can be proxied, with the same temporary migration support. |
 | Variables / locals | [`variables.tf`](../../infra/variables.tf), [`data.tf`](../../infra/data.tf) | `local.is_prod`, `effective_*` locals derive the stage profile. |
@@ -260,10 +263,19 @@ in use.
 ## Observability surface
 
 Today: CloudWatch container logs ([`logs.tf`](../../infra/logs.tf)),
-Container Insights metrics ([`ecs.tf:6`](../../infra/ecs.tf#L6)), and
-ECS Exec session logging ([`ecs.tf:10`](../../infra/ecs.tf#L10)). There are
-no Terraform-managed dashboards, alarms, or tracing exporters yet — that
-remains an open production-hardening gap.
+Container Insights metrics ([`ecs.tf:6`](../../infra/ecs.tf#L6)),
+ECS Exec session logging ([`ecs.tf:10`](../../infra/ecs.tf#L10)), and
+Terraform-managed application metrics
+([`observability.tf`](../../infra/observability.tf)): an ADOT Collector
+sidecar in the server task scrapes Guardian's loopback-only Prometheus
+endpoint and exports selected metrics to CloudWatch via EMF under a
+per-stack namespace, with a `<stack>-server` dashboard and alarms for
+error rate, latency, canonicalization failures, metrics-pipeline health,
+and ECS saturation. Gated by `guardian_metrics_enabled` (the endpoint)
+and `cloudwatch_metrics_enabled` (the export pipeline), both on by
+default; enablement and verification live in
+[`SERVER_AWS_DEPLOY.md`](../SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms).
+Tracing exporters remain an open gap.
 
 ## Things that are deliberately not here
 
