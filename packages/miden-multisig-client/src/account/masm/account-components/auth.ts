@@ -94,7 +94,12 @@ pub proc auth_tx_guarded_multisig(auth_args: word)
     exec.signature::estimate_multisig_authentication_cycles
     # => [num_extra_cycles, CONVERSION_INFO, AUTH_ARGS, num_output_notes_before_fee]
 
-    exec.fee::estimate_fee swap drop
+    exec.fee::estimate_fee
+    # => [fee_amount, CONVERSION_INFO, AUTH_ARGS, num_output_notes_before_fee]
+
+    # settle the sponsorship obligation first, in pay_fee's order; the bound below guards the
+    # host-supplied rate, which the sponsorship amounts do not depend on
+    exec.fee::pay_network_note_sponsorships drop
     # => [fee_amount, CONVERSION_INFO, AUTH_ARGS, num_output_notes_before_fee]
 
     dup movdn.5
