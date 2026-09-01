@@ -593,6 +593,27 @@ export class Multisig {
     }
   }
 
+  /**
+   * Sync the local store with the Miden node, then reload the cached account
+   * and multisig config from it (mirrors the Rust `sync_network_only`).
+   * Without the refresh, a summary would be built against the freshly synced
+   * store while readiness thresholds and signature validation still read the
+   * stale cached config. Returns the store-backed account, or `null` when the
+   * store has no record for this account (the cached config is then kept, as
+   * in `getStoreAccount`); callers that require the account decide how to
+   * fail.
+   */
+  private async syncNetworkOnly(): Promise<Account | null> {
+    const webClient = await this.getRawClient();
+    await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
+    const account = await retryRpcRead(
+      () => webClient.getAccount(AccountId.fromHex(this._accountId)),
+      this.rpcConfig,
+    );
+    this.refreshConfigFromAccount(account ?? null);
+    return account ?? null;
+  }
+
   private refreshConfigFromAccount(account: Account | null): void {
     if (!account) {
       return;
@@ -1005,12 +1026,12 @@ export class Multisig {
   ): Promise<ExportedProposal> {
     const proposalNonce = resolveProposalNonce('createSwitchGuardianProposalOffline', options);
 
-    // Sync with the Miden node before building (mirrors the Rust
-    // `sync_network_only`): with no GUARDIAN push to reject a stale delta at
-    // creation, a summary built from stale local state would only fail at
-    // execution — after the whole side-channel cosigning ceremony.
-    const webClient = await this.getRawClient();
-    await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
+    // Sync with the Miden node and refresh the cached account/config before
+    // building (mirrors the Rust `sync_network_only`): with no GUARDIAN push
+    // to reject a stale delta at creation, a summary built from stale local
+    // state — or a readiness threshold read from stale config — would only
+    // fail at execution, after the whole side-channel cosigning ceremony.
+    await this.syncNetworkOnly();
 
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
@@ -1501,13 +1522,7 @@ export class Multisig {
       }
 
       try {
-        const webClient = await this.getRawClient();
-        await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
-
-        const updatedAccount = await retryRpcRead(
-          () => webClient.getAccount(accountId),
-          this.rpcConfig,
-        );
+        const updatedAccount = await this.syncNetworkOnly();
         if (!updatedAccount) {
           throw new Error(
             `Updated account ${this._accountId} is missing from local client`

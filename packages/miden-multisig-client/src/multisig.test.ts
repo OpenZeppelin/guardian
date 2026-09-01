@@ -2317,10 +2317,11 @@ describe('Multisig', () => {
       newGuardianResponses: Record<string, unknown> = {},
     ): void {
       mockFetch.mockImplementation(async (url: string) => {
-        if (!url.startsWith(NEW_GUARDIAN_ENDPOINT)) {
+        const parsed = new URL(url);
+        if (parsed.origin !== NEW_GUARDIAN_ENDPOINT) {
           throw new Error(`current GUARDIAN unreachable: ${url}`);
         }
-        if (url.startsWith(`${NEW_GUARDIAN_ENDPOINT}/pubkey`)) {
+        if (parsed.pathname === '/pubkey') {
           return { ok: true, json: async () => ({ commitment: newGuardianPubkey }) };
         }
         return {
@@ -2376,6 +2377,40 @@ describe('Multisig', () => {
       expect(cached).toHaveLength(1);
       expect(cached[0].id).toBe(exported.commitment);
       expect(cached[0].status).toBe('ready');
+    });
+
+    it('picks up an on-chain threshold change during the pre-build sync (PR #436 review)', async () => {
+      const signerB = '0x' + '8'.repeat(64);
+      const config = {
+        threshold: 1,
+        signerCommitments: [mockSigner.commitment, signerB],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      stubFetchWithDeadCurrentGuardian();
+
+      // The synced store reports the threshold now at 2; with the stale
+      // cached config (threshold 1) the proposal would flip to 'ready' on the
+      // proposer's signature alone and fail only at submission.
+      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 1));
+      mockDetectConfig.mockReturnValueOnce({
+        threshold: 2,
+        numSigners: 2,
+        signerCommitments: [mockSigner.commitment, signerB],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      const exported = await multisig.createSwitchGuardianProposalOffline(
+        NEW_GUARDIAN_ENDPOINT,
+        newGuardianPubkey,
+        { nonce: 9 },
+      );
+
+      expect(exported.metadata.requiredSignatures).toBe(2);
+      expect(exported.signatures).toHaveLength(1);
+      expect(multisig.listProposals()[0].status).toBe('pending');
     });
 
     it('rejects when the new endpoint commitment does not match, before building or signing', async () => {
