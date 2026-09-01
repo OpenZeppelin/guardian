@@ -8,10 +8,13 @@ use miden_protocol::Word;
 ///
 /// Roots come from `cargo run --example procedure_roots -- --json` (typescript_hex
 /// encoding). The auth roots are derived from the auth MASM the TypeScript package
-/// bundles, rather than from `AuthGuardedMultisig::code()`. The two sources agree only
-/// while the MASM is byte-identical *and* both compile against the same standards
-/// release, and `auth_tx` calls `miden::standards::fee`, so its root moves with the fee
-/// library and they currently do not.
+/// bundles, rather than from `AuthGuardedMultisig::code()`. The MASM is byte-identical to
+/// upstream's component, but the two build paths link the standards package differently:
+/// `CodeBuilder` (which both the TypeScript builder and the example go through) links it
+/// dynamically, while the component's project manifest links it statically. Static linking
+/// inlines the callee's MAST, so `auth_tx` — the one export that calls
+/// `miden::standards::fee` — hashes differently. The other five roots are identical under
+/// either linkage.
 ///
 /// Which means these roots describe browser-built accounts: the TypeScript builder
 /// assembles from that MASM, while the Rust `MultisigGuardianBuilder` goes through
@@ -197,14 +200,57 @@ mod tests {
             .expect("bundled guarded-multisig MASM should compile")
     }
 
+    /// The bundled MASM compiled the way upstream's component is built: with the standards
+    /// package linked statically.
+    ///
+    /// [`CodeBuilder`](miden_standards::code_builder::CodeBuilder) hard-codes
+    /// `Linkage::Dynamic` for the standards package, whereas the component project manifest
+    /// that produces [`upstream_auth_code`] declares `miden-standards = { linkage = "static" }`.
+    /// Static linking inlines the callee's MAST into the caller, dynamic leaves an external
+    /// reference, and the two hash differently. `auth_tx_guarded_multisig` is the only export
+    /// that reaches into `miden::standards::fee`, which is why it is the only root the two
+    /// paths disagree on — the other exports are byte-identical under either linkage.
+    ///
+    /// This reproduces `compile_component_code` exactly except for that one linkage argument,
+    /// so the comparison below isolates the MASM rather than the build.
+    fn bundled_auth_code_statically_linked() -> miden_protocol::account::AccountComponentCode {
+        use std::sync::Arc;
+
+        use miden_protocol::assembly::{
+            DefaultSourceManager, Linkage, Module, ModuleKind, ModuleParser, Path as MasmPath,
+        };
+        use miden_protocol::transaction::TransactionKernel;
+        use miden_standards::StandardsLib;
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let mut assembler =
+            TransactionKernel::assembler_with_source_manager(source_manager.clone());
+        assembler
+            .link_package(StandardsLib::default().package(), Linkage::Static)
+            .expect("linking the standards package statically should work");
+
+        let module = ModuleParser::new(Some(ModuleKind::Library))
+            .parse_str(
+                Some(MasmPath::new("guarded_multisig")),
+                PACKAGE_AUTH_MASM,
+                source_manager,
+            )
+            .expect("bundled guarded-multisig MASM should parse");
+
+        let package = assembler
+            .assemble_library("account-component", module, None::<Box<Module>>)
+            .expect("bundled guarded-multisig MASM should assemble");
+
+        miden_protocol::account::AccountComponentCode::from(*package)
+    }
+
     /// Custody-critical guard: a root that does not match the component accounts are
     /// built from means a per-procedure threshold override is stored under the wrong
     /// key and silently ignored at authentication time.
     ///
-    /// Covers every procedure whose root the upstream component and the bundled MASM
-    /// agree on. `auth_tx` is deliberately absent — it has its own two tests below,
-    /// because it is the one that diverges and an assertion for it here would abort
-    /// this test before the procedures after it were ever checked.
+    /// Covers every procedure whose root is the same under both linkages, so the pin can
+    /// be compared against the upstream component directly. `auth_tx` is deliberately
+    /// absent — it is linkage-sensitive and has its own two tests below.
     #[test]
     fn procedure_roots_match_upstream_component() {
         use miden_standards::account::wallets::BasicWallet;
@@ -244,18 +290,31 @@ mod tests {
         );
     }
 
-    /// Expected red, and the only assertion in this module that is: the upstream
-    /// component and the bundled MASM disagree on `auth_tx`, which is the open design
-    /// question the account-roundtrip failures track.
+    /// Equivalence check: guardian's bundled MASM is the same code as the upstream
+    /// component, `auth_tx` included.
     ///
-    /// Do NOT "fix" this by copying whatever root the upstream component reports — that
-    /// would silently repoint the pin away from the MASM accounts are built from. It
-    /// goes green when the two sources are reconciled, at which point this test and
-    /// [`auth_tx_root_matches_the_bundled_masm`] collapse into the test above.
+    /// Compiled under matched linkage the two agree exactly; compiled the way
+    /// [`bundled_auth_code`] does it — [`CodeBuilder`](miden_standards::code_builder::CodeBuilder)
+    /// links the standards package dynamically, the upstream component's manifest links it
+    /// statically — only `auth_tx_guarded_multisig` diverges, because it is the sole export
+    /// that calls into `miden::standards::fee`. See [`bundled_auth_code_statically_linked`].
+    ///
+    /// The pin is deliberately NOT one side of this comparison. It tracks the dynamic
+    /// compile, which is what the browser builder produces and therefore what deployed
+    /// accounts carry; [`auth_tx_root_matches_the_bundled_masm`] is the test that guards it.
+    /// Do NOT "fix" a failure here by repointing the pin at the upstream root — that would
+    /// silently move the pin away from the code accounts are actually built from. That the
+    /// Rust `MultisigGuardianBuilder` (upstream component, static) and the TypeScript builder
+    /// (bundled MASM, dynamic) end up with different `auth_tx` roots is the open design
+    /// question the account-roundtrip failures track; this test does not paper over it, it
+    /// establishes that the linkage is the whole of the difference.
     #[test]
     fn auth_tx_root_matches_upstream_component() {
         assert_eq!(
-            ProcedureName::AuthTx.root(),
+            auth_root_in(
+                &bundled_auth_code_statically_linked(),
+                "auth_tx_guarded_multisig"
+            ),
             auth_root_in(&upstream_auth_code(), "auth_tx_guarded_multisig")
         );
     }
