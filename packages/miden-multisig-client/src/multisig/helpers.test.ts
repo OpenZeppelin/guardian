@@ -43,6 +43,18 @@ describe('multisig helpers', () => {
 
       expect(commitment.startsWith('0x')).toBe(true);
     });
+
+    it('normalizes case and padding so results compare directly with proposal ids (issue #433)', async () => {
+      const { TransactionSummary } = await import('@miden-sdk/miden-sdk');
+      vi.mocked(TransactionSummary.deserialize).mockReturnValueOnce({
+        toCommitment: () => ({ toHex: () => '0x' + 'C'.repeat(63) }),
+      } as any);
+
+      const base64 = btoa(String.fromCharCode(...new Uint8Array([1])));
+      const commitment = computeCommitmentFromTxSummary(base64);
+
+      expect(commitment).toBe('0x0' + 'c'.repeat(63));
+    });
   });
 
   describe('accountIdToHex', () => {

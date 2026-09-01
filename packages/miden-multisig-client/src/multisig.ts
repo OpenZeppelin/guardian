@@ -607,6 +607,27 @@ export class Multisig {
     }
   }
 
+  /**
+   * Sync the local store with the Miden node, then reload the cached account
+   * and multisig config from it (mirrors the Rust `sync_network_only`).
+   * Without the refresh, a summary would be built against the freshly synced
+   * store while readiness thresholds and signature validation still read the
+   * stale cached config. Returns the store-backed account, or `null` when the
+   * store has no record for this account (the cached config is then kept, as
+   * in `getStoreAccount`); callers that require the account decide how to
+   * fail.
+   */
+  private async syncNetworkOnly(): Promise<Account | null> {
+    const webClient = await this.getRawClient();
+    await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
+    const account = await retryRpcRead(
+      () => webClient.getAccount(AccountId.fromHex(this._accountId)),
+      this.rpcConfig,
+    );
+    this.refreshConfigFromAccount(account ?? null);
+    return account ?? null;
+  }
+
   private refreshConfigFromAccount(account: Account | null): void {
     if (!account) {
       return;
@@ -996,6 +1017,27 @@ export class Multisig {
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     const proposalNonce = resolveProposalNonce('createSwitchGuardianProposal', options);
+    const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
+      newGuardianEndpoint,
+      newGuardianPubkey,
+    );
+
+    // SwitchGuardian is a regular delta proposal; push it to GUARDIAN so
+    // sign/execute (which fetch from GUARDIAN) can find it. To leave an
+    // unreachable GUARDIAN, use createSwitchGuardianProposalOffline instead.
+    return this.createProposal(proposalNonce, summaryBase64, metadata);
+  }
+
+  /**
+   * Shared build step for both switch-GUARDIAN creation paths: verify the new
+   * endpoint's `/pubkey` commitment, then execute the update-guardian request
+   * for its summary and metadata. Kept in one place so the online and offline
+   * proposals for the same operation can never drift apart.
+   */
+  private async buildSwitchGuardianSummary(
+    newGuardianEndpoint: string,
+    newGuardianPubkey: string,
+  ): Promise<{ summaryBase64: string; metadata: ProposalMetadata }> {
     const webClient = await this.getRawClient();
     await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
 
@@ -1020,9 +1062,68 @@ export class Multisig {
       description: `Switch GUARDIAN to ${newGuardianEndpoint}`,
     };
 
-    // SwitchGuardian is a regular delta proposal; push it to GUARDIAN so
-    // sign/execute (which fetch from GUARDIAN) can find it.
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    return { summaryBase64, metadata };
+  }
+
+  /**
+   * Create a "switch GUARDIAN" proposal fully offline — nothing is pushed to
+   * the current GUARDIAN, so an account can leave an unreachable operator
+   * (issue #433; mirrors the Rust `create_proposal_offline`).
+   *
+   * The transaction summary is built and signed locally, the proposal is
+   * cached for `signProposalOffline` / `executeProposal`, and the returned
+   * `ExportedProposal` (which already includes the proposer's signature) can
+   * be `JSON.stringify`-ed and shared with cosigners for `importProposal`.
+   *
+   * Only switch-GUARDIAN proposals can be created offline: every other
+   * proposal type requires a GUARDIAN acknowledgment at execution, so a
+   * proposal the GUARDIAN never saw could collect signatures but never
+   * execute. The new endpoint must be reachable — its `/pubkey` commitment
+   * is verified before anything is built or signed.
+   *
+   * Note: executeProposal's best-effort canonicalization push cannot reach a
+   * proposal the current GUARDIAN never received, so even if that GUARDIAN is
+   * back up at execution time it keeps serving the account until background
+   * reconciliation (issue #305) — same outcome as executing while it is down.
+   *
+   * @param newGuardianEndpoint - The new GUARDIAN server endpoint URL
+   * @param newGuardianPubkey - The new GUARDIAN server's public key commitment (hex)
+   * @param options - Optional settings: `nonce`
+   */
+  async createSwitchGuardianProposalOffline(
+    newGuardianEndpoint: string,
+    newGuardianPubkey: string,
+    options: CreateProposalOptions = {},
+  ): Promise<ExportedProposal> {
+    const proposalNonce = resolveProposalNonce('createSwitchGuardianProposalOffline', options);
+
+    // Sync with the Miden node and refresh the cached account/config before
+    // building (mirrors the Rust `sync_network_only`): with no GUARDIAN push
+    // to reject a stale delta at creation, a summary built from stale local
+    // state — or a readiness threshold read from stale config — would only
+    // fail at execution, after the whole side-channel cosigning ceremony.
+    await this.syncNetworkOnly();
+
+    const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
+      newGuardianEndpoint,
+      newGuardianPubkey,
+    );
+
+    const exported: ExportedProposal = {
+      accountId: this._accountId,
+      nonce: proposalNonce,
+      commitment: computeCommitmentFromTxSummary(summaryBase64),
+      txSummaryBase64: summaryBase64,
+      signatures: [],
+      metadata,
+    };
+
+    // Reuse the cosigner-side machinery end to end: importProposal validates
+    // and caches exactly as it would on a cosigner's client, and
+    // signProposalOffline adds the proposer's signature and re-exports.
+    const proposal = await this.importProposal(JSON.stringify(exported));
+    const signedJson = await this.signProposalOffline(proposal.id);
+    return JSON.parse(signedJson) as ExportedProposal;
   }
 
   /**
@@ -1593,13 +1694,7 @@ export class Multisig {
       }
 
       try {
-        const webClient = await this.getRawClient();
-        await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
-
-        const updatedAccount = await retryRpcRead(
-          () => webClient.getAccount(accountId),
-          this.rpcConfig,
-        );
+        const updatedAccount = await this.syncNetworkOnly();
         if (!updatedAccount) {
           throw new Error(
             `Updated account ${this._accountId} is missing from local client`

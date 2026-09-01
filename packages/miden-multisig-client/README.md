@@ -356,6 +356,37 @@ const signedJson = await multisig.signProposalOffline(imported.id);
 console.log(signedJson);
 ```
 
+### Leave an Unreachable Guardian (Offline Switch)
+
+A switch-Guardian proposal can be created fully offline — nothing is pushed to
+the current Guardian, so an account can leave an operator that is down
+(mirrors the Rust `create_proposal_offline`). Only switch-Guardian proposals
+support this: every other type needs a Guardian acknowledgment at execution.
+The new endpoint must be reachable; its `/pubkey` commitment is verified
+before anything is signed.
+
+```typescript
+// Proposer: build, sign, and cache locally — the current Guardian is never contacted.
+const exported = await multisig.createSwitchGuardianProposalOffline(
+  'https://new-guardian.example',
+  newGuardianPubkey,
+);
+const json = JSON.stringify(exported); // share with cosigners side-channel
+
+// Cosigner: import, sign, send the updated JSON back.
+const imported = await cosigner.importProposal(json);
+const signedJson = await cosigner.signProposalOffline(imported.id);
+
+// Proposer: import the cosigned proposal and execute. The push to the old
+// Guardian is best-effort; registration happens on the new Guardian.
+const ready = await multisig.importProposal(signedJson);
+await multisig.executeProposal(ready.id);
+```
+
+For hand-rolled export/import flows, `computeCommitmentFromTxSummary` is
+exported: a proposal's `commitment` is its transaction summary's commitment,
+recomputed from the serialized summary.
+
 ### Custom Proposal Types
 
 GUARDIAN accepts any non-empty `proposalType`, so an integration can propose a
