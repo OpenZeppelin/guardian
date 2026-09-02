@@ -96,6 +96,10 @@ pub fn build_transfer_asset(faucet_id: AccountId, amount: u64) -> Result<Fungibl
 }
 
 /// Builds the final transaction request based on transaction type.
+///
+/// The fee conversion info comes from the proposal's own anchor, never the chain tip:
+/// reading the tip would silently stop reproducing the signed summary the moment a chain
+/// changed its fee faucet between a proposal's anchor and its execution.
 #[expect(
     clippy::too_many_arguments,
     reason = "execution needs transaction metadata and signature scheme to stay explicit"
@@ -111,11 +115,6 @@ pub async fn build_final_transaction_request(
     scheme: SignatureScheme,
     chain_anchor: &ChainAnchor,
 ) -> Result<TransactionRequest> {
-    // Take the fee conversion info from the proposal's own anchor rather than from the chain tip.
-    // The anchor is the block the cosigners signed over and the block this request re-executes
-    // against, so the faucet it reports is the one the committed auth arg was built from. Reading
-    // the tip instead would silently stop reproducing the signed summary the moment the chain's
-    // fee faucet changed between a proposal's anchor and its execution.
     let fee_conversion_info = Some(fee_conversion_info_at(chain_anchor));
 
     match transaction_type {

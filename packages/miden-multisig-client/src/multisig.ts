@@ -299,15 +299,9 @@ export class Multisig {
    * The hex id of the faucet whose asset pays transaction fees for a request
    * this client builds now.
    *
-   * Every typed create path commits this, because since protocol#3765 the
-   * guarded auth procedure runs `fee::pay_fee` before the summary is built: a
-   * bare salt aborts with `ERR_FEE_CONVERSION_INFO_MISSING`, at creation rather
-   * than execution, on any chain that charges a fee. Committing it costs
-   * nothing in cross-SDK reconstruction, because the value is the chain's own
-   * fee faucet and the committed arg is native conversion info at 1:1 — what
-   * `fee::native_conversion_info` derives. The pre-0.16 invariant "the auth arg
-   * IS the salt" gives way to a weaker one that still holds: the auth arg is
-   * derivable from the salt plus the proposal's anchor.
+   * Every typed create path commits this; see the module doc of
+   * `transaction/feeAuth.ts` for why the commitment is mandatory and why it
+   * stays reproducible across SDKs.
    *
    * Read from the block the client is currently synced to, because that is the
    * block `chainAnchorForRequest` will pin a new request to. The committed
@@ -339,6 +333,12 @@ export class Multisig {
     }
   }
 
+  /**
+   * Reads the fee faucet from the synced block's header through a raw
+   * `RpcClient`, which unlike miden-client's verifying client does not check
+   * that the header it got back is the one it asked for — so the height is
+   * matched here. Only the anchored block's faucet is the one to commit.
+   */
   private async fetchFeeFaucetIdHex(): Promise<string> {
     const webClient = await this.getRawClient();
     const syncHeight = await webClient.getSyncHeight();
@@ -349,10 +349,6 @@ export class Multisig {
         this.rpcConfig,
       );
       try {
-        // This reads through a raw `RpcClient`, which unlike miden-client's
-        // verifying client does not check that the header it got back is the
-        // one it asked for. The height has to match the anchor's for the
-        // committed faucet to be the anchored block's.
         const returnedHeight = header.blockNum();
         if (returnedHeight !== syncHeight) {
           throw new Error(
@@ -1213,10 +1209,6 @@ export class Multisig {
     }
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
-    // Since protocol 0.16 the guarded auth procedure pays the fee, and `fee::pay_fee`
-    // reads the conversion info out of the auth args. Committing it is safe on a
-    // zero-fee chain too: the commitment is verified before the fee amount is known,
-    // and a zero fee simply creates no note.
     const feeFaucetId = await this.getFeeFaucetId();
     const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes, {
       feeFaucetId,
@@ -1282,10 +1274,6 @@ export class Multisig {
     }
 
     const { nonce: _nonce, ...noteOptions } = options as CreateP2idProposalOptions;
-    // The fee faucet is the chain's, not the caller's: resolving it here means every
-    // typed proposal commits conversion info, which the guarded auth procedure now
-    // requires before it will pay. `metadata.saltHex` still persists the INNER salt,
-    // so the rebuild path is unchanged.
     const feeFaucetId = await this.getFeeFaucetId();
 
     const { request, salt } = buildP2idTransactionRequest(
@@ -2538,28 +2526,18 @@ export class Multisig {
    * `verifyProposalMetadataBinding` has no such check for this type, so the
    * GUARDIAN being switched away from is free to serve a salt that belongs to no
    * summary — and it is the one party with an interest in the switch failing. So
-   * an unresolvable salt falls back to the summary's own auth arg, which
-   * reproduces the signed request word-for-word and cannot be influenced by that
-   * GUARDIAN.
-   *
-   * A salt this client cannot read at all is recovered the same way, and for the
-   * same reason: that GUARDIAN can make the field unreadable as easily as it can
-   * make it wrong, and neither tells the client anything it could act on. An
-   * unreadable anchor or a WASM failure still propagates, because each means the
-   * client cannot tell what it is executing rather than that the salt was bad.
+   * either salt fault falls back to the summary's own auth arg, which reproduces
+   * the signed request word-for-word and cannot be influenced by that GUARDIAN;
+   * nothing else does. See {@link ProposalAuthArgUnresolvableError} for the
+   * boundary of that recoverable set.
    *
    * The fallback is bounded, and narrowly so since the account began paying its
    * own fee: {@link summaryBareAuthArg} reproduces the auth-arg word but not the
    * advice preimage, so the rebuilt transaction proves only where the fee is
    * zero. On a fee-charging chain a GUARDIAN that corrupts the salt can still
    * strand the switch — it just gets an `ERR_FEE_CONVERSION_INFO_MISSING` abort
-   * at proving rather than a clean refusal here. The fallback is kept because it
-   * is strictly better than refusing (it costs nothing and still rescues the
-   * zero-fee case), not because it closes the veto.
-   *
-   * Recovery is attempted before the fallback, so a cooperative GUARDIAN's
-   * committed switch keeps the faucet its rebuild needs. See the README's error
-   * taxonomy for what this does not cover.
+   * at proving rather than a clean refusal here. It is kept because it is
+   * strictly better than refusing, not because it closes the veto.
    */
   private switchGuardianAuthArg(
     proposalId: string,

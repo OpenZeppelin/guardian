@@ -11,47 +11,26 @@ import {
 /**
  * Fee conversion info committed via a transaction's auth args.
  *
- * ## Why this exists
- *
  * Since protocol 0.16 the auth args of a multisig transaction carry double duty.
  * `miden::standards::fee::load_conversion_info` requires them to be the
  * commitment `hash(CONVERSION_INFO || SALT)`, with the preimage supplied through
  * the advice map; the auth procedure then reuses that same word as the
- * transaction summary salt. See `guarded_multisig.masm`:
+ * transaction summary salt (see `guarded_multisig.masm`).
  *
- * > The AUTH_ARGS (= hash(CONVERSION_INFO || SALT)) then continue to serve as
- * > the transaction summary salt. The uniqueness that replay protection relies
- * > on originates from the caller-chosen SALT.
- *
- * A bare random word satisfies the salt role but not the fee role: the
- * advice-map lookup misses, `load_conversion_info` returns the empty word, and
- * `pay_fee` aborts with `ERR_FEE_CONVERSION_INFO_MISSING` — but only once the
- * computed fee is non-zero. On a chain whose `verification_base_fee` is zero the
- * fee is zero, no fee note is created, and the empty word is accepted.
- *
- * ## Applied by default, because the account now pays the fee
- *
- * `AuthGuardedMultisig` calls `fee::pay_fee` before building the transaction
- * summary, so the fee note and the vault withdrawal funding it are covered by
- * the signatures the cosigners produce. That makes the commitment mandatory
- * rather than optional: every typed `create*Proposal` path commits native
- * conversion info at rate 1/1 under the chain's own fee faucet.
- *
- * Interoperability survives that because the committed value is derivable
- * rather than arbitrary. The faucet is read from the block the proposal is
- * anchored at, which travels with the proposal, and the rate is fixed at 1/1 —
- * so a rebuilder holding `salt_hex` and the anchor reproduces the auth arg
- * without being told it. Both SDKs derive it the same way; see
- * `docs/MIDEN_COMPATIBILITY.md`.
- *
- * A caller driving the exported builders directly still chooses, through
- * `SignatureOptions.feeFaucetId`. Leaving it unset produces the bare auth arg,
- * which is only executable on a zero-fee chain.
- *
- * The commitment does not branch on whether the chain currently charges a fee:
+ * A bare random word satisfies the salt role but not the fee role, and fails
+ * late: the advice-map lookup misses, `load_conversion_info` returns the empty
+ * word, and `pay_fee` aborts with `ERR_FEE_CONVERSION_INFO_MISSING` — but only
+ * once the computed fee is non-zero. On a chain whose `verification_base_fee` is
+ * zero the bare word is accepted, so the fault appears on the chain that
+ * charges, not in development. The commitment is therefore unconditional:
  * `load_conversion_info` runs before the fee amount is known, and a valid
- * commitment verifies fine when the fee turns out to be zero — the note is then
- * simply not created.
+ * commitment verifies fine when the fee turns out to be zero.
+ *
+ * Interoperability survives that because the committed value is derivable rather
+ * than arbitrary. The faucet is read from the block the proposal is anchored at,
+ * which travels with the proposal, and the rate is fixed at 1/1 — so a rebuilder
+ * holding `salt_hex` and the anchor reproduces the auth arg without being told
+ * it. Both SDKs derive it the same way; see `docs/MIDEN_COMPATIBILITY.md`.
  */
 
 /** Rate numerator/denominator for paying the fee in the native asset 1:1. */

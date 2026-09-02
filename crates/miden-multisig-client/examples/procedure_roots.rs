@@ -18,18 +18,12 @@ use serde::Serialize;
 
 /// The auth component MASM this package bundles and builds accounts from.
 ///
-/// Deliberately NOT `miden_standards::account::auth::AuthGuardedMultisig::code()`.
-/// The two sources agree only while the MASM is byte-identical AND both compile
-/// against the same standards release; `auth_tx` calls `miden::standards::fee`, so
-/// its root moves with the fee library, and they currently do not agree. Its
-/// mismatch surfaces as "unsupported contract version" at account read.
-///
-/// So the roots printed here describe BROWSER-built accounts, which the TypeScript
-/// builder assembles from this file. Rust-built accounts differ:
-/// `MultisigGuardianBuilder` goes through `AuthGuardedMultisig::code()`. Reconciling
-/// the two is the open design question the account-roundtrip failures track — see
-/// the module docs on `crate::procedures`, which must not be allowed to disagree
-/// with this comment.
+/// Deliberately NOT `miden_standards::account::auth::AuthGuardedMultisig::code()`:
+/// `auth_tx` calls `miden::standards::fee`, so its root moves with how the standards
+/// package is linked and the two build paths link it differently. The roots printed
+/// here therefore describe BROWSER-built accounts. The module docs on
+/// `crate::procedures` carry the mechanism and the open design question, and are the
+/// authority this must not be allowed to disagree with.
 const PACKAGE_AUTH_MASM: &str = include_str!(
     "../../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm"
 );

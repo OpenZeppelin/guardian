@@ -77,21 +77,14 @@ export {
   buildP2idTransactionRequest,
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
-  // Exported for CUSTOM proposals. The typed builders above commit fee conversion info
-  // themselves, but `createCustomProposal` executes caller-supplied request bytes as
-  // given and never touches their auth args -- so on a fee-charging chain the caller has
-  // to make the same commitment, and until now had no supported way to. Without it a
-  // custom proposal aborts in `fee::pay_fee` with ERR_FEE_CONVERSION_INFO_MISSING.
-  //
-  // Setting the auth arg directly is the only route here, and the right one. Rust's
-  // `TransactionRequestBuilder::fee_conversion_info` additionally flags the request as
-  // DECLARING conversion info, which makes miden-client classify the account's auth
-  // component and reject a guarded multisig; the Rust SDK avoids it for that reason. The
-  // wasm build installed here exposes no equivalent -- only `withAuthArg` and
-  // `extendAdviceMap` -- so both SDKs converge on the same two calls. That is a fact
-  // about this build, not the binding surface: the pinned websdk source does export
-  // `withFeeConversionInfo`, which an integrator on a stock install must still avoid
-  // on a guarded account.
+  // Exported so a custom proposal can commit fee conversion info itself; see the
+  // README's custom-proposal recipe for why it has to. Setting the auth arg
+  // directly is the only route: `TransactionRequestBuilder::fee_conversion_info`
+  // also flags the request as DECLARING conversion info, which makes miden-client
+  // classify the account's auth component and reject a guarded multisig -- the
+  // Rust SDK avoids it for that reason. This wasm build exposes no equivalent,
+  // but the pinned websdk source does export `withFeeConversionInfo`, which an
+  // integrator on a stock install must still avoid on a guarded account.
   applyAuthArg,
   resolveAuthArg,
   nativeConversionInfo,
