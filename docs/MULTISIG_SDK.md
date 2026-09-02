@@ -696,13 +696,21 @@ preservation before switching clients:
 ```typescript
 // Before setGuardianClient(newGuardian):
 const report = await multisig.preservePreSwitchProposalNotes();
-// — or equivalently, with the exported preset:
-await multisig.recoverNotes(GUARDIAN_SWITCH_RECOVERY_OPTIONS);
 ```
 
-`preservePreSwitchProposalNotes` returns the slice's `NoteRecoveryReport`
-(or `undefined` when the flow could not run or timed out) and never
-throws.
+`preservePreSwitchProposalNotes` is the one public entry point for switch
+preservation — it wraps the import slice in the switch-specific safety
+contract, so there is no equivalent way to request it through
+`recoverNotes` options. It returns the slice's `NoteRecoveryReport` (or
+`undefined` when the flow could not run or timed out) and never throws.
+On timeout a cancellation token stops every step and inner loop at its
+next checkpoint (including between RPC retry attempts), and the switch
+waits a short bounded grace for the one uninterruptible in-flight
+operation to settle so it cannot overlap the switch transaction. Imported
+notes are verified by the next normal sync. Like every listing-based flow
+this covers proposals pending at the next nonce; one superseded at an
+earlier nonce (it lost a same-nonce race) is filtered out and its embedded
+notes are not imported here.
 
 ### Proposal Operations
 
@@ -1270,15 +1278,18 @@ preservation before `set_guardian_endpoint`:
 ```rust
 // Before set_guardian_endpoint(new_endpoint, true):
 let report = client.preserve_pre_switch_proposal_notes().await;
-// — or equivalently, via the options preset:
-let report = client
-    .recover_notes(Some(NoteRecoveryOptions::for_guardian_switch()))
-    .await?;
 ```
 
-`preserve_pre_switch_proposal_notes` returns the slice's
-`NoteRecoveryReport` (`None` when the flow could not run or timed out) and
-never errors.
+`preserve_pre_switch_proposal_notes` is the one public entry point for
+switch preservation — it wraps the import slice in the switch-specific
+safety contract (timeout, cancellation, warnings), so there is no
+equivalent way to request it through `recover_notes` options. It returns
+the slice's `NoteRecoveryReport` (`None` when the flow could not run or
+timed out) and never errors; on timeout the in-flight flow is cancelled
+and the switch proceeds. Imported notes are verified by the next normal
+sync. Like every listing-based flow this covers proposals pending at the
+next nonce; one superseded at an earlier nonce (it lost a same-nonce
+race) is filtered out and its embedded notes are not imported here.
 
 ### Transaction Types
 

@@ -17,13 +17,9 @@ use super::public_note_backfill::{PublicBackfillOptions, PublicBackfillReport};
 use super::recovery::TransportRecoveryReport;
 use crate::error::{MultisigError, Result, error_chain};
 
-/// Upper bound on [`MultisigClient::preserve_pre_switch_proposal_notes`].
-/// The pre-switch import sits on the switch-guardian critical path against a
-/// GUARDIAN that is being switched away from — plausibly half-dead — and
-/// neither the gRPC nor the HTTP guardian client applies a request deadline
-/// of its own, so a hang here would stall the switch indefinitely. Generous
-/// enough for the listing plus per-proposal summary re-verification of a
-/// realistic pending set; the mirror of the TS SDK's
+/// Deadline for [`MultisigClient::preserve_pre_switch_proposal_notes`]: no
+/// client in the stack applies request deadlines, and a half-dead old
+/// GUARDIAN must not stall the switch. Mirror of the TS SDK's
 /// `PRE_SWITCH_IMPORT_TIMEOUT_MS`.
 pub const PRE_SWITCH_IMPORT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -63,14 +59,12 @@ impl Default for NoteRecoveryOptions {
 
 impl NoteRecoveryOptions {
     /// The guardian-switch slice of the flow: only the proposal-embedded
-    /// note import runs. See
-    /// [`MultisigClient::preserve_pre_switch_proposal_notes`] for why the
-    /// other strategies do not apply on the switch path.
-    ///
-    /// Every field is listed on purpose (no `..Default::default()`): adding
-    /// a strategy to [`NoteRecoveryOptions`] must force a compile-time
-    /// decision on whether it belongs on the switch path.
-    pub fn for_guardian_switch() -> Self {
+    /// note import runs. Internal — the public entry point is
+    /// [`MultisigClient::preserve_pre_switch_proposal_notes`], which adds
+    /// the switch-specific safety contract around this slice. Every field
+    /// is listed on purpose (no `..Default::default()`): adding a strategy
+    /// must force a compile-time decision about the switch path.
+    pub(crate) fn for_guardian_switch() -> Self {
         Self {
             transport_drain: false,
             proposal_import: true,
@@ -334,47 +328,22 @@ impl MultisigClient {
         Ok(report)
     }
 
-    /// Preserves the pre-switch note context while the old GUARDIAN still
-    /// serves it: runs the proposal-embedded note import (the
-    /// [`NoteRecoveryOptions::for_guardian_switch`] slice of
-    /// [`MultisigClient::recover_notes`]) so the notes inside pending
-    /// consume-notes proposals land in the local store before the client
-    /// repoints to the new GUARDIAN. Pending proposals do not survive a
-    /// guardian switch — the new GUARDIAN is registered with bare account
-    /// state — so they are the one recovery source a later device-loss
-    /// `recover_notes` against the new GUARDIAN can no longer reach.
+    /// Imports the notes embedded in the old GUARDIAN's pending
+    /// consume-notes proposals while they are still reachable: pending
+    /// proposals do not survive a guardian switch, making them the one
+    /// recovery source [`MultisigClient::recover_notes`] loses once the
+    /// client repoints (issue #417).
     ///
-    /// Must run before the switch transaction executes: the import
-    /// re-verifies each pending proposal's summary binding against local
-    /// state, which only reproduces while the account has not advanced past
-    /// the state the proposals were built on. Like every listing-based
-    /// flow, this covers proposals pending at the next nonce; one superseded
-    /// at an earlier nonce (it lost a same-nonce race) is filtered out by
-    /// the listing and its embedded notes are not imported here.
-    ///
-    /// The other primitives are deliberately skipped on the switch path
-    /// (issue #417): the switch executes against an intact local store —
-    /// chain cursor, transport cursor, and note records all persist — and
-    /// both the note transport and the node are configured independently of
-    /// the GUARDIAN, so a switch loses nothing the transport drain or the
-    /// public backfill rescan. Both remain device-loss recovery tools and
-    /// work unchanged against the new GUARDIAN. The verifying sync is
-    /// skipped too: the switch flow syncs on its own, and the next normal
-    /// sync verifies the imports.
-    ///
-    /// Best-effort like the rest of the switch's old-GUARDIAN interaction:
-    /// problems are logged and folded into the returned report (`None` only
-    /// when the flow could not run at all), never raised — an unreachable
-    /// old GUARDIAN must not block the switch. That promise also covers a
-    /// GUARDIAN that hangs instead of failing (neither client stack applies
-    /// its own request deadline), so the whole flow runs under
-    /// [`PRE_SWITCH_IMPORT_TIMEOUT`]; on expiry the import is cancelled,
-    /// logged, and the switch proceeds.
-    ///
-    /// [`MultisigClient::execute_proposal`] runs this automatically on the
-    /// switch-guardian path; wallets repointing a follower client by hand
-    /// (via [`MultisigClient::set_guardian_endpoint`]) can call it first to
-    /// get the same preservation.
+    /// Run automatically by [`MultisigClient::execute_proposal`] on the
+    /// switch path, before the switch transaction executes; call it
+    /// yourself before repointing a client by hand via
+    /// [`MultisigClient::set_guardian_endpoint`]. Best-effort by contract:
+    /// problems are logged and folded into the returned report, never
+    /// raised, and the flow runs under [`PRE_SWITCH_IMPORT_TIMEOUT`] (on
+    /// expiry it is cancelled and the switch proceeds), so a hung old
+    /// GUARDIAN cannot block the switch. Returns `None` when the flow could
+    /// not run or timed out. Full rationale and semantics: "Preserving
+    /// Notes Across a Guardian Switch" in docs/MULTISIG_SDK.md.
     pub async fn preserve_pre_switch_proposal_notes(&mut self) -> Option<NoteRecoveryReport> {
         let flow = self.recover_notes(Some(NoteRecoveryOptions::for_guardian_switch()));
         match tokio::time::timeout(PRE_SWITCH_IMPORT_TIMEOUT, flow).await {

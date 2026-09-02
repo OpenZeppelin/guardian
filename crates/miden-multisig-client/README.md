@@ -429,10 +429,6 @@ GUARDIAN is still reachable — request the same preservation first:
 
 ```rust
 let report = client.preserve_pre_switch_proposal_notes().await;
-// — or via the options preset:
-let report = client
-    .recover_notes(Some(NoteRecoveryOptions::for_guardian_switch()))
-    .await?;
 ```
 
 ## Consume-notes metadata versions

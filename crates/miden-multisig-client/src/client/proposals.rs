@@ -245,12 +245,10 @@ impl MultisigClient {
     /// switch happens later in `finalize_transaction`), but its delta is still
     /// pushed to the pre-switch GUARDIAN so it canonicalizes like any other
     /// proposal. That push is best-effort: an unreachable GUARDIAN must not block
-    /// the switch, so the ack and any error are discarded. The notes embedded
-    /// in pending consume-notes proposals are then imported from the
-    /// pre-switch GUARDIAN before the switch executes (equally best-effort,
-    /// see [`MultisigClient::preserve_pre_switch_proposal_notes`]): pending
-    /// proposals do not survive the switch, so their embedded notes must land
-    /// in the local store while the old GUARDIAN still serves them.
+    /// the switch, so the ack and any error are discarded. Before the switch
+    /// executes, notes embedded in pending proposals are imported from the
+    /// pre-switch GUARDIAN — equally best-effort, see
+    /// [`MultisigClient::preserve_pre_switch_proposal_notes`].
     pub async fn execute_proposal(&mut self, proposal_id: &str) -> Result<()> {
         // Sync with the network before executing to ensure we have latest state
         self.sync().await?;
@@ -332,17 +330,11 @@ impl MultisigClient {
             proposal.transaction_type,
             TransactionType::SwitchGuardian { .. }
         ) {
-            // Ack-less today means SwitchGuardian, but the two concepts are
-            // not the same — the guard above keys these switch-only side
-            // effects on the type itself, so a future ack-less transaction
-            // type does not inherit them. Both steps are best-effort against
-            // the old GUARDIAN.
-            //
-            // #417 first: import notes embedded in pending proposals. Must
-            // run before the switch executes and `finalize_transaction`
-            // repoints — and before the delta push below, so the pending
-            // listing is read before anything switch-related lands on the
-            // old GUARDIAN — see `preserve_pre_switch_proposal_notes`.
+            // Keyed on the type, not on "ack-less", so a future ack-less
+            // transaction type does not inherit these switch-only side
+            // effects. Both steps are best-effort against the old GUARDIAN;
+            // the #417 import runs first, before anything switch-related
+            // lands there and before the switch executes.
             let _ = self.preserve_pre_switch_proposal_notes().await;
 
             // Then push the delta to the pre-switch GUARDIAN so it

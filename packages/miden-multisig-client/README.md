@@ -537,8 +537,6 @@ hand via `setGuardianClient`, request the same preservation first:
 
 ```typescript
 const report = await multisig.preservePreSwitchProposalNotes();
-// — or via the exported preset:
-await multisig.recoverNotes(GUARDIAN_SWITCH_RECOVERY_OPTIONS);
 ```
 
 ## Transaction Utilities

@@ -115,21 +115,18 @@ export interface RecoverNotesOptions {
 
 /**
  * The guardian-switch slice of {@link RecoverNotesOptions}: only the
- * proposal-embedded note import runs. Every strategy flag is listed
- * explicitly so a newly added strategy cannot silently join the switch path
- * — the TS counterpart of the Rust SDK's
- * `NoteRecoveryOptions::for_guardian_switch`. See
- * `Multisig.preservePreSwitchProposalNotes` for why the other strategies do
- * not apply on the switch path.
+ * proposal-embedded note import runs. Internal — the public entry point is
+ * `Multisig.preservePreSwitchProposalNotes`, which adds the switch-specific
+ * safety contract (timeout, cancellation, warnings) around this slice. The
+ * `satisfies` clause forces every non-range option to be listed, so adding
+ * a recovery strategy fails to compile until the switch path decides on it.
  */
-export const GUARDIAN_SWITCH_RECOVERY_OPTIONS: Readonly<
-  Required<Pick<RecoverNotesOptions, 'transportDrain' | 'proposalImport' | 'publicBackfill' | 'syncAfter'>>
-> = {
+export const GUARDIAN_SWITCH_RECOVERY_OPTIONS = {
   transportDrain: false,
   proposalImport: true,
   publicBackfill: false,
   syncAfter: false,
-};
+} satisfies Required<Omit<RecoverNotesOptions, 'fromBlock' | 'toBlock'>>;
 
 /**
  * The strategy implementations `runNoteRecovery` orchestrates. `Multisig`
@@ -155,14 +152,11 @@ function countImported(outcomes: readonly NoteImportOutcome[]): number {
  * import, public backfill, final sync — folding each strategy-level throw
  * into a {@link RecoveryStepProblem} so no step failure aborts the flow.
  *
- * The optional `cancelled` token makes the run cooperatively cancellable
- * (used by the pre-switch import's timeout): the orchestrator checks it
- * before starting each step, and a {@link RecoveryCancelledError} thrown
- * from inside a step — the steps thread the same token into their inner
- * loops — is recorded as a single non-retryable problem on the interrupted
- * step, after which no further step runs. Cancellation is never folded into
- * the ordinary failure reasons, so it cannot masquerade as a GUARDIAN or
- * node outage.
+ * The optional `cancelled` token makes the run cooperatively cancellable:
+ * the orchestrator checks it before each step, and a
+ * {@link RecoveryCancelledError} from inside a step is recorded as one
+ * non-retryable problem on the interrupted step, after which no further
+ * step runs — cancellation never masquerades as a GUARDIAN or node outage.
  *
  * Throws only for an inverted backfill range (a caller error). See
  * `Multisig.recoverNotes` for the wallet-facing entry point.

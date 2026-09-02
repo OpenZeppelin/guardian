@@ -91,22 +91,18 @@ export interface ImportNotesFromProposalsOptions {
   /** Node RPC read-retry configuration (defaults match the rest of the SDK). */
   rpc?: RpcConfig;
   /**
-   * Cooperative cancellation: checked before each network attempt and each
-   * store write. Once it returns `true` the import throws
-   * {@link RecoveryCancelledError} instead of starting further work — used
-   * by the pre-switch import's timeout so an abandoned flow stops touching
-   * the shared client at its next checkpoint.
+   * Cooperative cancellation, checked before each network attempt and store
+   * write: once `true`, the import throws {@link RecoveryCancelledError}
+   * instead of starting further work.
    */
   cancelled?: () => boolean;
 }
 
 /**
- * Thrown by the cooperative cancellation checkpoints across the recovery
- * primitives; `runNoteRecovery` recognizes it and stops the remaining steps
- * instead of misreporting the interruption as a step failure. The message
- * deliberately avoids retryable-sounding wording ('cancelled', 'timeout'):
- * the RPC retry classifier treats those fragments as transient, and a
- * cancellation must never be retried.
+ * Thrown by the recovery cancellation checkpoints; `runNoteRecovery` stops
+ * on it instead of misreporting a step failure. The message avoids
+ * 'cancelled'/'timeout' wording on purpose — the RPC retry classifier
+ * treats those fragments as transient, and cancellation must not retry.
  */
 export class RecoveryCancelledError extends Error {
   constructor() {
@@ -463,10 +459,9 @@ export async function importNotesFromProposals(
   throwIfCancelled(options.cancelled);
   try {
     const rpcClient = new RpcClient(new Endpoint(midenRpcEndpoint));
-    // The checkpoint sits inside the retried closure so a token that flips
-    // between attempts stops the retry loop (the error's wording is
-    // non-transient by design) instead of letting backoff attempts run past
-    // the deadline.
+    // Inside the retried closure, so a token flip between attempts stops
+    // the retry loop instead of letting backoff attempts outlive the
+    // deadline.
     const fetchedNotes = await retryRpcRead(() => {
       throwIfCancelled(options.cancelled);
       return rpcClient.getNotesById(pending.map((candidate) => candidate.note.id()));

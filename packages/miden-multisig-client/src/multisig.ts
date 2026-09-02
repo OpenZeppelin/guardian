@@ -212,11 +212,9 @@ function resolveProposalNonce(
 }
 
 /**
- * Upper bound on `Multisig.preservePreSwitchProposalNotes`. The pre-switch
- * import sits on the switch-guardian critical path against a GUARDIAN that is
- * being switched away from — plausibly half-dead — and `GuardianHttpClient`
- * applies no request deadline of its own, so a hang here would stall the
- * switch indefinitely. Mirror of the Rust SDK's `PRE_SWITCH_IMPORT_TIMEOUT`.
+ * Deadline for `Multisig.preservePreSwitchProposalNotes`: no client in the
+ * stack applies request deadlines, and a half-dead old GUARDIAN must not
+ * stall the switch. Mirror of the Rust SDK's `PRE_SWITCH_IMPORT_TIMEOUT`.
  */
 const PRE_SWITCH_IMPORT_TIMEOUT_MS = 30_000;
 
@@ -224,12 +222,9 @@ const PRE_SWITCH_IMPORT_TIMEOUT_MS = 30_000;
 const PRE_SWITCH_IMPORT_TIMED_OUT = Symbol('pre-switch proposal-note import timed out');
 
 /**
- * After the pre-switch import times out, how long the switch waits for the
- * cancelled flow's single in-flight operation to settle before proceeding.
- * Cooperative cancellation cannot interrupt a WASM call or an RPC attempt
- * already in flight; this bounded grace lets it finish so it does not
- * overlap the switch transaction's execution on the shared client. A flow
- * that outlasts even this is abandoned for real.
+ * How long the switch waits after the timeout for the cancelled flow's one
+ * uninterruptible in-flight operation to settle, so it cannot overlap the
+ * switch transaction on the shared client.
  */
 const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 
@@ -1455,56 +1450,21 @@ export class Multisig {
   }
 
   /**
-   * Preserve the pre-switch note context while the old GUARDIAN still
-   * serves it: run the proposal-embedded note import slice of
-   * {@link recoverNotes} so the notes inside pending consume-notes proposals
-   * land in the local store before `this.guardian` is repointed to the new
-   * GUARDIAN. Pending proposals do not survive a guardian switch — the new
-   * GUARDIAN is registered with bare account state — so they are the one
-   * recovery source a later device-loss `recoverNotes` against the new
-   * GUARDIAN can no longer reach.
+   * Import the notes embedded in the old GUARDIAN's pending consume-notes
+   * proposals while they are still reachable: pending proposals do not
+   * survive a guardian switch, making them the one recovery source
+   * {@link recoverNotes} loses once the client repoints (issue #417).
    *
-   * Must run before the switch transaction executes: the import re-verifies
-   * each pending proposal's summary binding against local state, which only
-   * reproduces while the account has not advanced past the state the
-   * proposals were built on. Like every listing-based flow, this covers
-   * proposals pending at the next nonce; one superseded at an earlier nonce
-   * (it lost a same-nonce race) is filtered out by the listing and its
-   * embedded notes are not imported here.
-   *
-   * The other primitives are deliberately skipped on the switch path
-   * (issue #417): the switch executes against an intact local store — chain
-   * cursor, transport cursor, and note records all persist — and both the
-   * note transport and the node are configured independently of the
-   * GUARDIAN, so a switch loses nothing the transport drain or the public
-   * backfill rescan. Both remain device-loss recovery tools and work
-   * unchanged against the new GUARDIAN. The verifying sync is skipped too:
-   * the switch flow syncs on its own, and the next normal sync verifies the
-   * imports.
-   *
-   * Best-effort like the rest of the switch's old-GUARDIAN interaction
-   * (mirrors the Rust SDK's `preserve_pre_switch_proposal_notes`, including
-   * the `NoteRecoveryReport | undefined` result — `undefined` when the flow
-   * could not run or timed out): problems are warned, never thrown — an
-   * unreachable old GUARDIAN must not block the switch. That promise also
-   * covers a GUARDIAN that hangs instead of failing, so the flow runs under
-   * `PRE_SWITCH_IMPORT_TIMEOUT_MS` with cooperative cancellation: on expiry
-   * a token flips, `runNoteRecovery` starts no further step, and the
-   * listing/import loops stop at their next checkpoint (including between
-   * RPC retry attempts), so no NEW guardian read, VM execution, or store
-   * write begins past the deadline — a resumed flow can never observe the
-   * repointed client. Cancellation cannot interrupt the single operation
-   * already in flight when the timer fires (one VM re-execution, store
-   * call, or RPC attempt — WASM is non-preemptive), so the switch then
-   * waits up to `PRE_SWITCH_SETTLE_GRACE_MS` for the flow to settle before
-   * proceeding, keeping that leftover from overlapping the switch
-   * transaction on the shared client.
-   *
-   * {@link executeProposal} runs this automatically on the switch-guardian
-   * path; wallets repointing a follower client by hand (via
-   * {@link setGuardianClient}) can call it first — or pass
-   * `GUARDIAN_SWITCH_RECOVERY_OPTIONS` to {@link recoverNotes} — to get the
-   * same preservation.
+   * Run automatically by {@link executeProposal} on the switch path, before
+   * the switch transaction executes; call it yourself before repointing a
+   * client by hand via {@link setGuardianClient}. Best-effort by contract:
+   * problems are warned, never thrown, and the flow runs under a timeout
+   * with cooperative cancellation plus a bounded settle grace, so a hung
+   * old GUARDIAN can neither block the switch nor overlap it on the shared
+   * client. Returns the recovery report, or `undefined` when the flow could
+   * not run or timed out. Mirror of the Rust SDK's
+   * `preserve_pre_switch_proposal_notes`; full rationale and semantics in
+   * "Preserving Notes Across a Guardian Switch" (docs/MULTISIG_SDK.md).
    */
   async preservePreSwitchProposalNotes(): Promise<NoteRecoveryReport | undefined> {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1532,11 +1492,9 @@ export class Multisig {
             'and was cancelled; notes embedded in pending proposals may be ' +
             'unrecoverable after the GUARDIAN switch',
         );
-        // The token is set, so the flow does no new work — but its single
-        // in-flight operation cannot be interrupted. Give it a bounded
-        // grace to settle so it does not overlap the switch transaction on
-        // the shared client; its result is unobserved either way, and a
-        // rejection must not surface as an unhandled rejection.
+        // The token stops all new work; give the one uninterruptible
+        // in-flight operation a bounded grace to settle. The result is
+        // unobserved, and a rejection must not go unhandled.
         await Promise.race([
           flow.catch(() => {}),
           new Promise<void>((resolve) => {
