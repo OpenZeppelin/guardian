@@ -183,7 +183,7 @@ resource "aws_iam_role_policy" "ecs_task_operator_public_keys_secret" {
 # its retention, and a group deleted out of band surfaces via awsemf
 # export errors in the sidecar log plus the metrics-missing alarm.
 resource "aws_iam_role_policy" "ecs_task_adot_metrics" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   name = "${var.stack_name}-ecs-task-adot-metrics"
   role = aws_iam_role.ecs_task.id

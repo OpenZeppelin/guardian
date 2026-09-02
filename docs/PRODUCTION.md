@@ -123,12 +123,15 @@ Before treating a deployment as production-ready:
   metrics to CloudWatch dashboards and alarms — no external exposure, no
   bearer token needed. See
   [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms).
-- If you scrape Prometheus yourself instead (self-managed deployments, or
-  `cloudwatch_metrics_enabled = false` with your own collector), set
+- If you scrape Prometheus yourself in a **self-managed deployment**, set
   `GUARDIAN_METRICS_ENABLED=true`, bind an explicitly routable
   `GUARDIAN_METRICS_ADDR` only if the scraper lives outside the host or task,
   keep the port reachable only from the scraper's network, and set
-  `GUARDIAN_METRICS_BEARER_TOKEN`. See the
+  `GUARDIAN_METRICS_BEARER_TOKEN`. Note the AWS reference Terraform hard-binds
+  the listener to `127.0.0.1` and exposes no bind-address, security-group, or
+  token knobs — `cloudwatch_metrics_enabled = false` there leaves a
+  loopback-only endpoint that only an in-task collector (added by customizing
+  the module) can reach, not an external scraper. See the
   [Observability guide](./guides/observability/README.md) for scraping and a
   Grafana dashboard stack, and
   [`CONFIGURATION.md`](./CONFIGURATION.md#runtime--metrics-prometheus) for

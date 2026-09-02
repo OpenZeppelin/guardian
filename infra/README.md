@@ -275,7 +275,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_log_format` | `json` | Log format for `GUARDIAN_LOG_FORMAT` (`text`, `json`, `compact`) |
 | `log_retention_days` | `7` | CloudWatch log retention in days |
 | `guardian_metrics_enabled` | `true` | Guardian Prometheus metrics endpoint (loopback-only inside the task) |
-| `cloudwatch_metrics_enabled` | `true` | ADOT sidecar + EMF export + CloudWatch dashboard/alarms (requires the endpoint) |
+| `cloudwatch_metrics_enabled` | `true` | ADOT sidecar + EMF export + CloudWatch dashboard/alarms (cascades off when the endpoint is disabled) |
 | `adot_image` | pinned ADOT Collector release | Digest-pinned sidecar image |
 | `metrics_namespace` | `<Title(stack_name)>/Server` | CloudWatch namespace for application metrics |
 | `alarm_actions` | `[]` | ARNs (e.g. SNS topics) notified on alarm/ok transitions |

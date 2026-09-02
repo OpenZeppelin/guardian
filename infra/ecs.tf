@@ -43,13 +43,6 @@ resource "aws_ecs_task_definition" "server" {
     operating_system_family = "LINUX"
   }
 
-  lifecycle {
-    precondition {
-      condition     = var.guardian_metrics_enabled || !var.cloudwatch_metrics_enabled
-      error_message = "cloudwatch_metrics_enabled requires guardian_metrics_enabled: the ADOT sidecar has nothing to scrape without the server metrics endpoint."
-    }
-  }
-
   dynamic "volume" {
     for_each = local.ca_bundle_enabled ? [1] : []
     content {
@@ -279,7 +272,7 @@ resource "aws_ecs_task_definition" "server" {
         }
       }
     ],
-    var.cloudwatch_metrics_enabled ? [
+    local.cloudwatch_metrics_enabled ? [
       {
         name  = local.adot_container_name
         image = var.adot_image

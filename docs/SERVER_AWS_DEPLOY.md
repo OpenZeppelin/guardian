@@ -479,14 +479,16 @@ grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.
 
 ## Metrics, Dashboard, And Alarms
 
-Application metrics ship to CloudWatch by default. Two independent switches
-control this: `guardian_metrics_enabled` turns on the server's Prometheus
-endpoint, and `cloudwatch_metrics_enabled` deploys the ADOT sidecar, EMF
-log group, IAM policy, dashboard, and alarms on top of it. Disable only the
-latter to keep the endpoint for a different metrics backend (your own
-Prometheus, Amazon Managed Prometheus, another OTel collector) without
-publishing CloudWatch custom metrics; enabling CloudWatch export without the
-endpoint is rejected at plan time.
+Application metrics ship to CloudWatch by default. Two switches control
+this: `guardian_metrics_enabled` turns on the server's Prometheus endpoint,
+and `cloudwatch_metrics_enabled` deploys the ADOT sidecar, EMF log group,
+IAM policy, dashboard, and alarms on top of it. The export pipeline
+cascades off with the endpoint, so `guardian_metrics_enabled = false` alone
+turns everything off. Disabling only `cloudwatch_metrics_enabled` keeps the
+endpoint without publishing CloudWatch custom metrics — but note the
+endpoint stays **loopback-only**, so that mode is useful only for an
+alternative in-task collector you add by customizing the module; the stack
+exposes no knobs for a routable bind address.
 
 - The server runs with `GUARDIAN_METRICS_ENABLED=true`, serving the Prometheus
   exposition on `127.0.0.1:9464/metrics`. Fargate `awsvpc` containers share one
@@ -558,9 +560,10 @@ alarms fire both `alarm_actions` and `ok_actions`, so the channel sees
 recovery too.
 
 Set `guardian_metrics_enabled = false` to turn everything off (no metrics env
-vars, no sidecar, no dashboard, no alarms), or only
-`cloudwatch_metrics_enabled = false` to keep the loopback endpoint without
-any CloudWatch export.
+vars, no sidecar, no dashboard, no alarms — the CloudWatch flag cascades off
+with it), or only `cloudwatch_metrics_enabled = false` to keep the
+loopback-only endpoint without any CloudWatch export (see the caveat above
+about what that mode is useful for).
 
 ### Verify metrics after a deploy
 

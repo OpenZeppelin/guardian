@@ -262,7 +262,7 @@ locals {
 # guardian-prod -> Guardian-Prod/Server) are invalid as unquoted tokens.
 
 resource "aws_cloudwatch_dashboard" "server" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   dashboard_name = local.dashboard_name
 
@@ -515,7 +515,7 @@ resource "aws_cloudwatch_dashboard" "server" {
 # going dark (server metrics disabled, sidecar dead, or scrape failing).
 
 resource "aws_cloudwatch_metric_alarm" "http_error_rate" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-http-5xx-rate"
   alarm_description   = "Guardian HTTP 5xx responses exceed ${var.alarm_error_rate_threshold_percent}% of requests"
@@ -560,7 +560,7 @@ resource "aws_cloudwatch_metric_alarm" "http_error_rate" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "grpc_error_rate" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-grpc-error-rate"
   alarm_description   = "Guardian gRPC server-fault responses (${join(", ", local.grpc_error_codes)}) exceed ${var.alarm_error_rate_threshold_percent}% of requests"
@@ -609,7 +609,7 @@ resource "aws_cloudwatch_metric_alarm" "grpc_error_rate" {
 # sustained-degradation signal, not a per-request SLO. Per-route latency
 # needs the route dimension exported (deliberately not, for cost).
 resource "aws_cloudwatch_metric_alarm" "http_latency" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-http-latency"
   alarm_description   = "Guardian average HTTP request latency exceeds ${var.alarm_latency_threshold_seconds}s (fleet average across all routes, including ALB health checks)"
@@ -627,7 +627,7 @@ resource "aws_cloudwatch_metric_alarm" "http_latency" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "canonicalization_failures" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-canonicalization-failures"
   alarm_description   = "Guardian canonicalization passes (full, fast, or reconcile) are erroring or completing with failed accounts"
@@ -669,7 +669,7 @@ resource "aws_cloudwatch_metric_alarm" "canonicalization_failures" {
 # dark; one dead sidecar in a multi-task fleet only lowers the metric's
 # SampleCount and is not detected here.
 resource "aws_cloudwatch_metric_alarm" "metrics_missing" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-metrics-missing"
   alarm_description   = "Guardian application metrics stopped arriving in CloudWatch (metrics endpoint down, ADOT sidecar dead, or scrape failing — check the adot log stream)"
@@ -687,7 +687,7 @@ resource "aws_cloudwatch_metric_alarm" "metrics_missing" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "metrics_refresh_failures" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-metrics-refresh-failures"
   alarm_description   = "Guardian slow-aggregate metrics refresher attempts are failing; delta/proposal/account gauges are stale"
@@ -710,7 +710,7 @@ resource "aws_cloudwatch_metric_alarm" "metrics_refresh_failures" {
 # the per-period Maximum by ~300 each period; DIFF <= 0 for two periods
 # means no successful refresh for >= 10 minutes.
 resource "aws_cloudwatch_metric_alarm" "metrics_refresh_stale" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-metrics-refresh-stale"
   alarm_description   = "Guardian slow-aggregate refresh timestamp stopped advancing; delta/proposal/account gauges are stale (hung or dead refresher)"
@@ -741,7 +741,7 @@ resource "aws_cloudwatch_metric_alarm" "metrics_refresh_stale" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "ecs_cpu_high" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name        = "${var.stack_name}-ecs-cpu-high"
   alarm_description = "Guardian ECS service average CPU utilization exceeds ${var.alarm_cpu_threshold_percent}%"
@@ -773,7 +773,7 @@ resource "aws_cloudwatch_metric_alarm" "ecs_cpu_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "ecs_memory_high" {
-  count = var.cloudwatch_metrics_enabled ? 1 : 0
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
 
   alarm_name        = "${var.stack_name}-ecs-memory-high"
   alarm_description = "Guardian ECS service average memory utilization exceeds ${var.alarm_memory_threshold_percent}%"

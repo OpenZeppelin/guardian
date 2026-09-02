@@ -562,9 +562,13 @@ variable "cloudwatch_metrics_enabled" {
     Whether the deployment ships the metrics endpoint's data to CloudWatch:
     runs the ADOT Collector sidecar that scrapes it and exports EMF metrics,
     and creates the EMF log group, IAM policy, CloudWatch dashboard, and
-    alarms. Requires guardian_metrics_enabled. Disable to keep the Prometheus
-    endpoint for a different metrics backend without publishing CloudWatch
-    custom metrics.
+    alarms. Effective only while guardian_metrics_enabled is true — the
+    export pipeline cascades off with the endpoint, so disabling the
+    endpoint alone turns everything off. Disable just this flag to keep the
+    (loopback-only) endpoint without publishing CloudWatch custom metrics —
+    useful only for an alternative in-task collector unless the module is
+    customized with a routable bind address, security-group access, and a
+    bearer token.
   EOT
   type        = bool
   default     = true
@@ -628,12 +632,22 @@ variable "alarm_cpu_threshold_percent" {
   description = "ECS service average CPU utilization percentage above which the saturation alarm fires. Keep above the autoscaling CPU target so scaling reacts first."
   type        = number
   default     = 85
+
+  validation {
+    condition     = var.alarm_cpu_threshold_percent > 0 && var.alarm_cpu_threshold_percent <= 100
+    error_message = "alarm_cpu_threshold_percent must be in (0, 100]."
+  }
 }
 
 variable "alarm_memory_threshold_percent" {
   description = "ECS service average memory utilization percentage above which the saturation alarm fires. Keep above the autoscaling memory target so scaling reacts first."
   type        = number
   default     = 90
+
+  validation {
+    condition     = var.alarm_memory_threshold_percent > 0 && var.alarm_memory_threshold_percent <= 100
+    error_message = "alarm_memory_threshold_percent must be in (0, 100]."
+  }
 }
 
 # Resource naming
