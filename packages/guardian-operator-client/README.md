@@ -114,6 +114,23 @@ optional — absent fields mean "not derivable from this row" (EVM
 deltas, pre-feature-007 historical rows whose proposal was already
 deleted, or undecodable payloads).
 
+A transaction whose computed fee is non-zero also emits a protocol fee
+note. It is not one of the transaction's own outputs, so `assets`,
+`noteCounts.output` and `category` all exclude it — otherwise a fee
+would read as an asset transfer and every note consumption would be
+classified as one. The delta *detail* view keeps the fee note, so on
+those transactions `noteCounts.output` is deliberately one lower than
+`outputNotes.length` there; the detail view tags it `custom` rather
+than identifying it as a fee.
+
+The excluded fee is reported separately as `fee`, so it is held out of
+the asset list without going missing. Read it: a transaction commits its
+own fee conversion rate, and the amount is bounded only by the account's
+vault, so a large `fee` beside an empty `assets` is a meaningful signal
+rather than routine overhead. `fee` is absent when no fee note was
+identified — which includes the ambiguous case where a transaction
+emitted more than one, in which case the extra notes stay in `assets`.
+
 ```typescript
 const page = await client.listAccountDeltas('0x...', { limit: 50 });
 for (const entry of page.items) {
