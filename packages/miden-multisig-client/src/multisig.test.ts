@@ -19,6 +19,7 @@ const {
   mockGetGuardianCommitment,
   mockImportNotesFromProposals,
   mockBackfillPublicNotesByTag,
+  mockNoteDeserialize,
 } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
@@ -28,11 +29,17 @@ const {
   mockGetGuardianCommitment: vi.fn(),
   mockImportNotesFromProposals: vi.fn(),
   mockBackfillPublicNotesByTag: vi.fn(),
+  mockNoteDeserialize: vi.fn(),
 }));
 
-vi.mock('./recovery/proposalNoteImport.js', () => ({
-  importNotesFromProposals: mockImportNotesFromProposals,
-}));
+vi.mock('./recovery/proposalNoteImport.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('./recovery/proposalNoteImport.js')>();
+  return {
+    ...actual,
+    importNotesFromProposals: mockImportNotesFromProposals,
+  };
+});
 
 vi.mock('./recovery/publicNoteBackfill.js', () => ({
   backfillPublicNotesByTag: mockBackfillPublicNotesByTag,
@@ -69,17 +76,23 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   NoteFile: {
     deserialize: mockNoteFileDeserialize,
   },
+  Note: {
+    deserialize: mockNoteDeserialize,
+  },
   TransactionSummary: {
-    deserialize: vi.fn().mockReturnValue({
+    // Input-sensitive: 4-byte summary data commits to 0xdd…, so a test can
+    // model a second, non-aliasing proposal alongside the shared 0xcc…
+    // commitment every 3-byte ('AQID') summary produces.
+    deserialize: vi.fn((bytes: Uint8Array) => ({
       toCommitment: () => ({
-        toHex: () => '0x' + 'c'.repeat(64),
+        toHex: () => (bytes.length === 4 ? '0x' + 'd'.repeat(64) : '0x' + 'c'.repeat(64)),
       }),
       blockCommitment: () => ({
         toHex: () => '0x' + 'b'.repeat(64),
       }),
       userParams: () => [0, 0, 0, 1, 2, 3, 4],
       serialize: () => new Uint8Array([1, 2, 3]),
-    }),
+    })),
   },
   Word: {
     fromHex: vi.fn((hex: string) => ({
@@ -107,6 +120,15 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   Endpoint: vi.fn().mockImplementation((url: string) => ({ url })),
   RpcClient: vi.fn().mockImplementation(() => ({
     getAccountDetails: mockRpcGetAccountDetails,
+  })),
+}));
+
+// The consume-notes v2 binding path rebuilds the request from embedded
+// notes; stub the builder so re-execution can run under the mocked SDK.
+vi.mock('./transaction/consumeNotes.js', () => ({
+  buildConsumeNotesTransactionRequestFromNotes: vi.fn(() => ({
+    request: {},
+    salt: { toHex: () => '0x' + 'd'.repeat(64) },
   })),
 }));
 
@@ -510,6 +532,81 @@ describe('Multisig', () => {
       const options = mockBackfillPublicNotesByTag.mock.calls.at(-1)?.[1] as object;
       expect('fromBlock' in options).toBe(false);
       expect('toBlock' in options).toBe(false);
+    });
+
+    it('merges a listing delta with the cached proposal it aliases: listing nonce wins, cached metadata is inherited', async () => {
+      // The listing computes each delta's id from its summary; when that id
+      // matches a cached proposal, the factory reuses the cached metadata
+      // while the listing's nonce wins — and the merged proposal must still
+      // clear the stale-nonce filter on the listing nonce, not the cached
+      // one. This is the branch the pre-switch import crosses when the
+      // GUARDIAN re-serves a proposal this client already knows.
+      const cachedId = '0x' + 'c'.repeat(64);
+      const accountWithNonce = {
+        ...mockAccount,
+        nonce: () => ({ asInt: () => BigInt(1) }),
+      };
+      const multisig = new Multisig(
+        accountWithNonce,
+        config,
+        guardian,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        MIDEN_RPC_ENDPOINT,
+      );
+      (multisig as any).proposals.set(cachedId, {
+        id: cachedId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [],
+        metadata: {
+          proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          newGuardianPubkey: '0x' + '1'.repeat(64),
+          newGuardianEndpoint: 'http://new-guardian.com',
+          description: '',
+        },
+      });
+      // 'AQID' (3 bytes) computes the cached id; the listing serves it at
+      // nonce 2 (above the account's nonce 1) with no metadata of its own.
+      vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([
+        {
+          accountId: multisig.accountId,
+          nonce: 2,
+          prevCommitment: '0x' + 'b'.repeat(64),
+          deltaPayload: { txSummary: { data: 'AQID' }, signatures: [], metadata: {} },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposerId: '0x' + 'a'.repeat(64),
+            cosignerSigs: [],
+          },
+        },
+      ] as never);
+      mockImportNotesFromProposals.mockReset();
+      mockImportNotesFromProposals.mockResolvedValue([]);
+
+      const result = await multisig.recoverNotes({
+        transportDrain: false,
+        publicBackfill: false,
+        syncAfter: false,
+      });
+
+      expect(result.problems).toEqual([]);
+      expect(mockImportNotesFromProposals).toHaveBeenCalledWith(
+        mockWebClient,
+        [
+          expect.objectContaining({
+            id: cachedId,
+            nonce: 2,
+            metadata: expect.objectContaining({ proposalType: 'switch_guardian' }),
+          }),
+        ],
+        expect.objectContaining({ midenRpcEndpoint: MIDEN_RPC_ENDPOINT }),
+      );
     });
 
     it('isolates a corrupt proposal as an invalid outcome instead of failing the step', async () => {
@@ -4342,6 +4439,11 @@ describe('Multisig', () => {
           ack_scheme: 'falcon',
         }),
       });
+      // #417 pre-switch note import: the old-GUARDIAN proposal listing (no
+      // pending proposals here) runs off the fetch queue via the spy.
+      vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+      mockImportNotesFromProposals.mockReset();
+      mockImportNotesFromProposals.mockResolvedValue([]);
       mockWebClient.getAccount.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
       });
@@ -4395,6 +4497,11 @@ describe('Multisig', () => {
       });
       // getDeltaProposal against the old GUARDIAN fails — must be swallowed.
       mockFetch.mockRejectedValueOnce(new Error('pre-switch GUARDIAN unreachable'));
+      // #417 pre-switch note import: the old-GUARDIAN proposal listing (no
+      // pending proposals here) runs off the fetch queue via the spy.
+      vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+      mockImportNotesFromProposals.mockReset();
+      mockImportNotesFromProposals.mockResolvedValue([]);
       mockWebClient.getAccount.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
       });
@@ -4407,6 +4514,274 @@ describe('Multisig', () => {
       expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(1);
       expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
       expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('imports notes embedded in pending proposals from the pre-switch GUARDIAN before repointing (#417)', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const newGuardianPubkey = '0x' + '1'.repeat(64);
+      const consumeProposalId = '0x' + 'd'.repeat(64);
+      const noteId = '0x' + '9'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          newGuardianPubkey,
+          newGuardianEndpoint: 'http://new-guardian.com',
+          description: '',
+        },
+      });
+
+      // A genuine consume-notes v2 proposal still pending on the old
+      // GUARDIAN at switch time, with a distinct summary ('AQIDBA==', 4
+      // bytes -> the factory mock's 0xdd… commitment) so its computed id
+      // cannot alias the cached switch proposal: it must flow through the
+      // real listing -> metadata parse -> binding re-execution -> import
+      // pipeline.
+      mockNoteDeserialize.mockReturnValue({
+        id: () => ({ toString: () => noteId }),
+      });
+      // The consume binding re-execution must reproduce the consume
+      // proposal's summary commitment.
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+        toCommitment: () => ({ toHex: () => consumeProposalId }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      } as never);
+
+      const pendingConsumeDelta = {
+        accountId: multisig.accountId,
+        nonce: 2,
+        prevCommitment: '0x' + 'b'.repeat(64),
+        deltaPayload: {
+          txSummary: { data: 'AQIDBA==' },
+          signatures: [],
+          metadata: {
+            proposalType: 'consume_notes',
+            consumeNotesMetadataVersion: 2,
+            noteIds: [noteId],
+            consumeNotesNotes: ['bm90ZQ=='],
+            chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposerId: '0x' + 'a'.repeat(64),
+          cosignerSigs: [],
+        },
+      };
+      const listingSpy = vi
+        .spyOn(guardian, 'getDeltaProposals')
+        .mockResolvedValue([pendingConsumeDelta as never]);
+
+      const events: string[] = [];
+      mockImportNotesFromProposals.mockReset();
+      mockImportNotesFromProposals.mockImplementation(async () => {
+        events.push('import');
+        return [
+          {
+            identifier: noteId,
+            source: 'proposal',
+            status: 'imported',
+            retryable: false,
+          },
+          // A per-note failure at this point is a permanent loss (the old
+          // GUARDIAN is about to be left behind), so it must be warned even
+          // though it is not a step-level problem.
+          {
+            identifier: '0x' + '8'.repeat(64),
+            source: 'proposal',
+            status: 'failed',
+            retryable: true,
+            reason: 'node RPC hiccup fetching the inclusion proof',
+          },
+        ];
+      });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ commitment: newGuardianPubkey }),
+      });
+      // Pre-switch canonicalization push: getDeltaProposal then pushDelta.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'switch_guardian',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+              new_guardian_pubkey: newGuardianPubkey,
+              new_guardian_endpoint: 'http://new-guardian.com',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          ack_sig: '0x' + '6'.repeat(130),
+          ack_pubkey: '0x' + 'f'.repeat(64),
+          ack_scheme: 'falcon',
+        }),
+      });
+      mockWebClient.getAccount.mockResolvedValueOnce({
+        serialize: () => new Uint8Array([1, 2, 3]),
+      });
+      // The switch transaction submit — the import must precede it, because
+      // summary-binding re-verification only reproduces before the account
+      // state advances.
+      mockWebClient.submitProvenTransaction.mockImplementationOnce(async () => {
+        events.push('execute');
+        return undefined;
+      });
+      // Registration on the new GUARDIAN — must happen after the import.
+      mockFetch.mockImplementationOnce(async () => {
+        events.push('register');
+        return {
+          ok: true,
+          json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
+        };
+      });
+
+      try {
+        await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+
+        // The listing ran against the OLD guardian client (this instance is
+        // replaced by the repoint), and the consume-notes proposal flowed
+        // through metadata parsing and binding verification into the import.
+        expect(listingSpy).toHaveBeenCalledWith(multisig.accountId);
+        expect(mockImportNotesFromProposals).toHaveBeenCalledTimes(1);
+        expect(mockImportNotesFromProposals).toHaveBeenCalledWith(
+          mockWebClient,
+          [
+            expect.objectContaining({
+              id: consumeProposalId,
+              nonce: 2,
+              metadata: expect.objectContaining({
+                proposalType: 'consume_notes',
+                metadataVersion: 2,
+                noteIds: [noteId],
+              }),
+            }),
+          ],
+          expect.objectContaining({ midenRpcEndpoint: MIDEN_RPC_ENDPOINT }),
+        );
+        // The embedded notes were in the local store before the switch
+        // transaction executed, and long before the client repointed and
+        // registered on the new GUARDIAN.
+        expect(events).toEqual(['import', 'execute', 'register']);
+        // The per-note failure was surfaced — it is the last moment the note
+        // is reachable, so it must not disappear into the discarded report.
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining(`could not preserve embedded note ${'0x' + '8'.repeat(64)}`),
+          'node RPC hiccup fetching the inclusion proof',
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('should still switch GUARDIAN when the pre-switch note import cannot run (#417)', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const newGuardianPubkey = '0x' + '1'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          newGuardianPubkey,
+          newGuardianEndpoint: 'http://new-guardian.com',
+          description: '',
+        },
+      });
+
+      // The old GUARDIAN cannot list pending proposals — the import step must
+      // fold into a warning, never block the switch.
+      vi.spyOn(guardian, 'getDeltaProposals').mockRejectedValue(
+        new Error('old GUARDIAN listing failed'),
+      );
+      mockImportNotesFromProposals.mockReset();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ commitment: newGuardianPubkey }),
+        });
+        // getDeltaProposal against the old GUARDIAN fails — must be swallowed.
+        mockFetch.mockRejectedValueOnce(new Error('pre-switch GUARDIAN unreachable'));
+        mockWebClient.getAccount.mockResolvedValueOnce({
+          serialize: () => new Uint8Array([1, 2, 3]),
+        });
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
+        });
+
+        await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+
+        expect(mockImportNotesFromProposals).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Pre-switch proposal-note import step 'proposal-import'"),
+          expect.anything(),
+        );
+        expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
     it('should reject switch_guardian execution when endpoint commitment mismatches', async () => {
@@ -4545,6 +4920,71 @@ describe('Multisig', () => {
       await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
         'Duplicate advice-map key detected',
       );
+    });
+  });
+
+  describe('preservePreSwitchProposalNotes (#417)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it('returns the recovery report on success (mirror of the Rust Option<NoteRecoveryReport>)', async () => {
+      const multisig = createTestMultisig(config);
+      vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+      mockImportNotesFromProposals.mockReset();
+      mockImportNotesFromProposals.mockResolvedValue([]);
+
+      const report = await multisig.preservePreSwitchProposalNotes();
+
+      expect(report).toBeDefined();
+      expect(report?.proposalImport).toEqual([]);
+      expect(report?.problems).toEqual([]);
+      // The switch slice never runs the other strategies or the sync.
+      expect(report?.transport).toBeUndefined();
+      expect(report?.backfill).toBeUndefined();
+      expect(report?.synced).toBe(false);
+    });
+
+    it('cancels the flow on timeout: returns undefined and does no work after the deadline', async () => {
+      const multisig = createTestMultisig(config);
+
+      // A listing that hangs past the deadline, releasable later to prove
+      // the cancellation token stops the resumed flow at its next
+      // checkpoint instead of letting it import against the shared client.
+      let releaseListing!: (deltas: never[]) => void;
+      vi.spyOn(guardian, 'getDeltaProposals').mockReturnValue(
+        new Promise<never[]>((resolve) => {
+          releaseListing = resolve;
+        }) as never,
+      );
+      mockImportNotesFromProposals.mockReset();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.useFakeTimers();
+
+      try {
+        const pending = multisig.preservePreSwitchProposalNotes();
+        // 30s deadline, then the bounded settle grace for the hung listing.
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.advanceTimersByTimeAsync(5_000);
+        const report = await pending;
+
+        expect(report).toBeUndefined();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('timed out after 30000ms and was cancelled'),
+        );
+
+        // The hung listing resolving later must not restart work: with the
+        // token set, the flow throws at the post-listing checkpoint and the
+        // import never runs.
+        releaseListing([]);
+        await vi.runAllTimersAsync();
+        expect(mockImportNotesFromProposals).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+        vi.useRealTimers();
+      }
     });
   });
 

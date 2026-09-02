@@ -176,6 +176,12 @@ impl MultisigClient {
     ///
     /// Only `SwitchGuardian` transactions are supported in this mode.
     ///
+    /// Deliberately skips the pre-switch proposal-note import (issue #417):
+    /// it would contact the very GUARDIAN this flow exists to avoid. When
+    /// the old GUARDIAN is in fact still reachable, call
+    /// [`MultisigClient::preserve_pre_switch_proposal_notes`] before
+    /// executing.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -242,6 +248,14 @@ impl MultisigClient {
             self.key_manager.scheme(),
         )
         .await?;
+
+        // Make the deliberate import skip observable rather than a silent
+        // loss when the old GUARDIAN was in fact still reachable.
+        tracing::warn!(
+            "offline switch execution skips the pre-switch proposal-note import; if the \
+             old GUARDIAN is still reachable, call preserve_pre_switch_proposal_notes \
+             before executing to keep notes embedded in its pending proposals"
+        );
 
         // Execute and finalize at the proposal's anchored reference block; the
         // anchor was checked against the signed summary's block commitment in

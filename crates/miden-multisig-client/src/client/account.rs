@@ -515,6 +515,11 @@ impl MultisigClient {
 
     /// Changes the GUARDIAN endpoint and optionally registers the account on the new server.
     ///
+    /// When repointing to a different GUARDIAN provider after a switch, call
+    /// [`MultisigClient::preserve_pre_switch_proposal_notes`] first — notes
+    /// embedded in pending proposals are only importable while the old
+    /// GUARDIAN is still the configured endpoint.
+    ///
     /// # Arguments
     ///
     /// * `new_endpoint` - The new GUARDIAN server endpoint URL

@@ -90,6 +90,32 @@ export interface ImportNotesFromProposalsOptions {
   midenRpcEndpoint: string;
   /** Node RPC read-retry configuration (defaults match the rest of the SDK). */
   rpc?: RpcConfig;
+  /**
+   * Cooperative cancellation, checked before each network attempt and store
+   * write: once `true`, the import throws {@link RecoveryCancelledError}
+   * instead of starting further work.
+   */
+  cancelled?: () => boolean;
+}
+
+/**
+ * Thrown by the recovery cancellation checkpoints; `runNoteRecovery` stops
+ * on it instead of misreporting a step failure. The message avoids
+ * 'cancelled'/'timeout' wording on purpose — the RPC retry classifier
+ * treats those fragments as transient, and cancellation must not retry.
+ */
+export class RecoveryCancelledError extends Error {
+  constructor() {
+    super('note recovery stopped before completion by its caller');
+    this.name = 'RecoveryCancelledError';
+  }
+}
+
+/** Throws {@link RecoveryCancelledError} when the token reports cancelled. */
+export function throwIfCancelled(cancelled?: () => boolean): void {
+  if (cancelled?.()) {
+    throw new RecoveryCancelledError();
+  }
 }
 
 /** Shared by the recovery primitives (proposal import and backfill). */
@@ -308,6 +334,7 @@ export async function importNotesFromProposals(
 ): Promise<NoteImportOutcome[]> {
   const midenRpcEndpoint = requireMidenRpcEndpoint(options.midenRpcEndpoint);
   const rpcConfig = resolveRpcConfig(options.rpc);
+  throwIfCancelled(options.cancelled);
   const webClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
 
   const outcomes: NoteImportOutcome[] = [];
@@ -429,16 +456,23 @@ export async function importNotesFromProposals(
   // The node returns proofs for private notes too, so the locally-held bytes
   // are the only body this path ever needs.
   const proofs = new Map<string, NoteInclusionProof>();
+  throwIfCancelled(options.cancelled);
   try {
     const rpcClient = new RpcClient(new Endpoint(midenRpcEndpoint));
-    const fetchedNotes = await retryRpcRead(
-      () => rpcClient.getNotesById(pending.map((candidate) => candidate.note.id())),
-      rpcConfig,
-    );
+    // Inside the retried closure, so a token flip between attempts stops
+    // the retry loop instead of letting backoff attempts outlive the
+    // deadline.
+    const fetchedNotes = await retryRpcRead(() => {
+      throwIfCancelled(options.cancelled);
+      return rpcClient.getNotesById(pending.map((candidate) => candidate.note.id()));
+    }, rpcConfig);
     for (const fetched of fetchedNotes) {
       proofs.set(normalizeHexWord(fetched.noteId.toString()), fetched.inclusionProof);
     }
   } catch (error) {
+    if (error instanceof RecoveryCancelledError) {
+      throw error;
+    }
     const retryable = isTransientRpcError(error);
     const reason = `failed to fetch inclusion proofs: ${errorDetail(error)}`;
     for (const candidate of pending) {
@@ -458,6 +492,7 @@ export async function importNotesFromProposals(
   const imported: Array<{ index: number; idHex: string; detailsKey: string }> = [];
 
   for (const candidate of pending) {
+    throwIfCancelled(options.cancelled);
     const proof = proofs.get(candidate.idHex);
     if (proof) {
       const { outcome, wasImported } = await importNoteWithProof(
@@ -506,6 +541,7 @@ export async function importNotesFromProposals(
     }
   }
 
+  throwIfCancelled(options.cancelled);
   await reclassifyConsumedImports(webClient, imported, outcomes);
 
   return outcomes;

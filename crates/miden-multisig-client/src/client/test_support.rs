@@ -40,6 +40,19 @@ pub(crate) async fn offline_client_parts(
     node: Arc<dyn NodeRpcClient>,
     transport: Option<Arc<dyn NoteTransportClient>>,
 ) -> (MultisigClient, Arc<SqliteStore>) {
+    offline_client_parts_with_keystore(dir, node, transport, Arc::new(GuardianKeyStore::generate()))
+        .await
+}
+
+/// [`offline_client_parts`] with an injected keystore, for tests that need
+/// the client's signer commitment known up front (e.g. to build a multisig
+/// account whose cosigner set contains this client's key).
+pub(crate) async fn offline_client_parts_with_keystore(
+    dir: &Path,
+    node: Arc<dyn NodeRpcClient>,
+    transport: Option<Arc<dyn NoteTransportClient>>,
+    keystore: Arc<GuardianKeyStore>,
+) -> (MultisigClient, Arc<SqliteStore>) {
     let store = Arc::new(
         SqliteStore::new(dir.join("store.sqlite3"))
             .await
@@ -60,7 +73,7 @@ pub(crate) async fn offline_client_parts(
 
     let client = MultisigClient::new(
         miden_client,
-        Arc::new(GuardianKeyStore::generate()),
+        keystore,
         "http://localhost:1".to_string(),
         dir.to_path_buf(),
         Endpoint::localhost(),

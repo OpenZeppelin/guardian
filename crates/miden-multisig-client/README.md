@@ -412,6 +412,25 @@ can plausibly recover more. In brief:
 For the full report semantics see
 [`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md).
 
+### Preserving notes across a guardian switch
+
+Pending proposals do not survive a guardian switch — the new GUARDIAN is
+registered with bare account state — so the notes embedded in the old
+GUARDIAN's pending consume-notes proposals are the one recovery source
+`recover_notes` can no longer reach after the repoint. `execute_proposal`
+runs the proposal-import slice automatically on the switch-guardian path
+(against the old GUARDIAN, before the switch transaction executes),
+best-effort and bounded by a 30s timeout; the transport drain and public
+backfill deliberately do not run there (an intact local store loses
+nothing they rescan), and the offline switch flow skips the import
+entirely (it exists to avoid contacting the GUARDIAN). When repointing a
+client by hand — or before executing an offline switch while the old
+GUARDIAN is still reachable — request the same preservation first:
+
+```rust
+let report = client.preserve_pre_switch_proposal_notes().await;
+```
+
 ## Consume-notes metadata versions
 
 `consume_notes` proposals come in two metadata shapes. The discriminator
