@@ -172,6 +172,21 @@ locals {
   database_sslparams       = local.ca_bundle_enabled ? "sslmode=verify-full&sslrootcert=${local.ca_bundle_container_path}" : "sslmode=require"
   database_url             = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}?${local.database_sslparams}"
 
+  # Observability: ADOT sidecar scraping the in-task Prometheus endpoint into
+  # CloudWatch EMF. The endpoint binds loopback: Fargate awsvpc containers
+  # share one network namespace, so the sidecar reaches it on 127.0.0.1 while
+  # nothing outside the task can, regardless of security-group contents.
+  metrics_port      = 9464
+  metrics_path      = "/metrics"
+  metrics_bind_addr = "127.0.0.1:${local.metrics_port}"
+  # CloudWatch export cascades off with the endpoint: without it the
+  # sidecar has nothing to scrape, so one flag turns everything off.
+  cloudwatch_metrics_enabled = var.cloudwatch_metrics_enabled && var.guardian_metrics_enabled
+  metrics_namespace          = var.metrics_namespace != "" ? var.metrics_namespace : "${title(var.stack_name)}/Server"
+  adot_container_name        = "adot-collector"
+  emf_log_group_name         = "${local.server_log_group_name}/emf"
+  dashboard_name             = "${var.stack_name}-server"
+
   # Custom domain configuration
   domain_enabled      = var.domain_name != ""
   service_fqdn        = var.domain_name == "" ? "" : (var.subdomain != "" ? "${var.subdomain}.${var.domain_name}" : var.domain_name)

@@ -543,6 +543,113 @@ variable "guardian_log_format" {
   }
 }
 
+variable "guardian_metrics_enabled" {
+  description = <<-EOT
+    Whether the Guardian server exposes its Prometheus metrics endpoint inside
+    the ECS task. The endpoint binds loopback inside the task's network
+    namespace and is never reachable via the ALB or security groups; an
+    externally scraped setup would additionally require an explicit bind
+    address, restricted security-group access, and a bearer token — none of
+    which this module configures. Disabling also disables the CloudWatch
+    export pipeline (there is nothing to scrape).
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "cloudwatch_metrics_enabled" {
+  description = <<-EOT
+    Whether the deployment ships the metrics endpoint's data to CloudWatch:
+    runs the ADOT Collector sidecar that scrapes it and exports EMF metrics,
+    and creates the EMF log group, IAM policy, CloudWatch dashboard, and
+    alarms. Effective only while guardian_metrics_enabled is true — the
+    export pipeline cascades off with the endpoint, so disabling the
+    endpoint alone turns everything off. Disable just this flag to keep the
+    (loopback-only) endpoint without publishing CloudWatch custom metrics —
+    useful only for an alternative in-task collector unless the module is
+    customized with a routable bind address, security-group access, and a
+    bearer token.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "adot_image" {
+  description = <<-EOT
+    AWS Distro for OpenTelemetry Collector image for the metrics sidecar,
+    digest-pinned for supply-chain consistency with the server Dockerfile.
+    Refresh the digest with:
+    `docker manifest inspect public.ecr.aws/aws-observability/aws-otel-collector:<tag>`.
+    When bumping, verify metric-name normalization stays off (the
+    receiver config pins `trim_metric_suffixes = false`; check the gate
+    has not been renamed or force-enabled): with normalization on,
+    counters lose their `_total` suffix and stop matching the awsemf
+    declarations, silently blanking counter widgets and starving every
+    notBreaching alarm — while `guardian_build_info` (a gauge, no
+    suffix) keeps the metrics-missing heartbeat green. Verify with
+    `aws cloudwatch list-metrics` after any image bump; metrics-missing
+    does NOT catch partial selection drift.
+  EOT
+  type        = string
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector:v0.49.0@sha256:d2bdfff2c377c3d71d78bd5d9ce9862fd535b12134a5739d87a07801297cf9fd"
+}
+
+variable "metrics_namespace" {
+  description = "CloudWatch namespace for Guardian application metrics. Defaults to <Title(stack_name)>/Server (e.g. Guardian/Server), keeping stacks in the same account separate."
+  type        = string
+  default     = ""
+}
+
+variable "alarm_actions" {
+  description = "ARNs (e.g. SNS topics) notified when a Guardian CloudWatch alarm transitions to ALARM or back to OK. Empty leaves alarms visible in the console only."
+  type        = list(string)
+  default     = []
+}
+
+variable "alarm_error_rate_threshold_percent" {
+  description = "Error-rate percentage above which the HTTP 5xx and gRPC error alarms fire"
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.alarm_error_rate_threshold_percent > 0 && var.alarm_error_rate_threshold_percent <= 100
+    error_message = "alarm_error_rate_threshold_percent must be in (0, 100]."
+  }
+}
+
+variable "alarm_latency_threshold_seconds" {
+  description = "Average HTTP request latency in seconds above which the latency alarm fires"
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.alarm_latency_threshold_seconds > 0
+    error_message = "alarm_latency_threshold_seconds must be positive."
+  }
+}
+
+variable "alarm_cpu_threshold_percent" {
+  description = "ECS service average CPU utilization percentage above which the saturation alarm fires. Keep above the autoscaling CPU target so scaling reacts first."
+  type        = number
+  default     = 85
+
+  validation {
+    condition     = var.alarm_cpu_threshold_percent > 0 && var.alarm_cpu_threshold_percent <= 100
+    error_message = "alarm_cpu_threshold_percent must be in (0, 100]."
+  }
+}
+
+variable "alarm_memory_threshold_percent" {
+  description = "ECS service average memory utilization percentage above which the saturation alarm fires. Keep above the autoscaling memory target so scaling reacts first."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.alarm_memory_threshold_percent > 0 && var.alarm_memory_threshold_percent <= 100
+    error_message = "alarm_memory_threshold_percent must be in (0, 100]."
+  }
+}
+
 # Resource naming
 variable "cluster_name" {
   description = "ECS cluster name"

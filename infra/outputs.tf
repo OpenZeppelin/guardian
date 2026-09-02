@@ -247,3 +247,33 @@ output "cluster_log_group" {
   description = "CloudWatch log group for ECS execute command"
   value       = aws_cloudwatch_log_group.cluster.name
 }
+
+output "guardian_metrics_enabled" {
+  description = "Whether the Guardian Prometheus metrics endpoint is enabled in the ECS task"
+  value       = var.guardian_metrics_enabled
+}
+
+output "cloudwatch_metrics_enabled" {
+  description = "Whether the ADOT metrics sidecar, dashboard, and alarms are deployed (cascades off with the metrics endpoint)"
+  value       = local.cloudwatch_metrics_enabled
+}
+
+output "metrics_namespace" {
+  description = "CloudWatch namespace receiving Guardian application metrics"
+  value       = local.cloudwatch_metrics_enabled ? local.metrics_namespace : ""
+}
+
+output "metrics_dashboard_name" {
+  description = "CloudWatch dashboard name for the Guardian server"
+  value       = local.cloudwatch_metrics_enabled ? aws_cloudwatch_dashboard.server[0].dashboard_name : ""
+}
+
+output "metrics_emf_log_group" {
+  description = "CloudWatch log group the ADOT sidecar writes EMF metric events into"
+  value       = local.cloudwatch_metrics_enabled ? aws_cloudwatch_log_group.emf[0].name : ""
+}
+
+output "metrics_missing_alarm_name" {
+  description = "Name of the metrics-pipeline heartbeat alarm for this stack"
+  value       = local.cloudwatch_metrics_enabled ? aws_cloudwatch_metric_alarm.metrics_missing[0].alarm_name : ""
+}

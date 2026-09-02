@@ -118,10 +118,20 @@ Before treating a deployment as production-ready:
   confirm a second machine on a different address is unaffected, then
   confirm a forged `X-Forwarded-For` prefix from the exhausted machine
   stays throttled. Owned by whoever runs the deploy.
-- If Prometheus scraping is wanted, set `GUARDIAN_METRICS_ENABLED=true`,
-  bind `GUARDIAN_METRICS_ADDR=0.0.0.0:9464` (containers), keep the port
-  reachable only from the scraper's network, and set
-  `GUARDIAN_METRICS_BEARER_TOKEN`. See the
+- On the AWS reference deployment, metrics are on by default: the endpoint
+  binds loopback inside the ECS task and an ADOT sidecar exports selected
+  metrics to CloudWatch dashboards and alarms — no external exposure, no
+  bearer token needed. See
+  [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms).
+- If you scrape Prometheus yourself in a **self-managed deployment**, set
+  `GUARDIAN_METRICS_ENABLED=true`, bind an explicitly routable
+  `GUARDIAN_METRICS_ADDR` only if the scraper lives outside the host or task,
+  keep the port reachable only from the scraper's network, and set
+  `GUARDIAN_METRICS_BEARER_TOKEN`. Note the AWS reference Terraform hard-binds
+  the listener to `127.0.0.1` and exposes no bind-address, security-group, or
+  token knobs — `cloudwatch_metrics_enabled = false` there leaves a
+  loopback-only endpoint that only an in-task collector (added by customizing
+  the module) can reach, not an external scraper. See the
   [Observability guide](./guides/observability/README.md) for scraping and a
   Grafana dashboard stack, and
   [`CONFIGURATION.md`](./CONFIGURATION.md#runtime--metrics-prometheus) for
