@@ -492,7 +492,6 @@ mod tests {
             assets: Vec::new(),
             counterparty: None,
             note_counts: crate::delta_summary::NoteCounts::default(),
-            fee: None,
             proposal: None,
         });
         let state = build_state(Ok(Some(falcon_metadata())), Ok(delta.clone())).await;

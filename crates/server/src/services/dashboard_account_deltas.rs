@@ -81,10 +81,6 @@ pub struct DashboardDeltaEntry {
     pub counterparty: Option<CounterpartySummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note_counts: Option<NoteCounts>,
-    /// The fee this transaction paid, kept out of `assets` so it does not read
-    /// as a transfer. Reported rather than dropped: the fee is a real outflow.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fee: Option<AssetSummary>,
 }
 
 /// Decode a [`DeltaStatus`] into the dashboard wire triple
@@ -158,7 +154,6 @@ impl DashboardDeltaEntry {
             assets: Vec::new(),
             counterparty: None,
             note_counts: None,
-            fee: None,
         };
         if let Some(meta) = delta.metadata.as_ref() {
             spread_metadata_into_entry(meta, &mut entry);
@@ -175,7 +170,6 @@ fn spread_metadata_into_entry(meta: &DeltaMetadata, entry: &mut DashboardDeltaEn
     if meta.note_counts.input > 0 || meta.note_counts.output > 0 {
         entry.note_counts = Some(meta.note_counts.clone());
     }
-    entry.fee = meta.fee.clone();
 }
 
 /// List the persisted delta feed for `account_id`, paginated
@@ -340,7 +334,6 @@ mod tests {
                 input: 0,
                 output: 1,
             },
-            fee: None,
             proposal: Some(ProposalMetadata {
                 proposal_type: "p2id".to_string(),
                 ..ProposalMetadata::default()
@@ -366,7 +359,6 @@ mod tests {
                 input: 0,
                 output: 0,
             },
-            fee: None,
             proposal: Some(ProposalMetadata {
                 proposal_type: "remove_signer".to_string(),
                 ..ProposalMetadata::default()

@@ -1978,17 +1978,6 @@
               }
             ]
           },
-          "fee": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/AssetSummary",
-                "description": "The fee this transaction paid, kept out of `assets` so it does not read\nas a transfer. Reported rather than dropped: the fee is a real outflow."
-              }
-            ]
-          },
           "new_commitment": {
             "type": [
               "string",
@@ -2123,17 +2112,6 @@
               },
               {
                 "$ref": "#/components/schemas/CounterpartySummary"
-              }
-            ]
-          },
-          "fee": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/AssetSummary",
-                "description": "The fee this transaction paid, kept out of `assets` so it does not read\nas a transfer. Reported rather than dropped: the fee is a real outflow."
               }
             ]
           },
@@ -2533,7 +2511,6 @@
       },
       "NoteCounts": {
         "type": "object",
-        "description": "Notes the transaction itself consumed and created. `output` excludes the\nfee note the protocol injects, so it does not grow by one on a fee-charging\nchain; the fee note is still visible in the delta detail view.",
         "properties": {
           "input": {
             "type": "integer",
@@ -2739,17 +2716,6 @@
                     }
                   ]
                 },
-                "fee": {
-                  "oneOf": [
-                    {
-                      "type": "null"
-                    },
-                    {
-                      "$ref": "#/components/schemas/AssetSummary",
-                      "description": "The fee this transaction paid, kept out of `assets` so it does not read\nas a transfer. Reported rather than dropped: the fee is a real outflow."
-                    }
-                  ]
-                },
                 "new_commitment": {
                   "type": [
                     "string",
@@ -2861,17 +2827,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/CounterpartySummary"
-                    }
-                  ]
-                },
-                "fee": {
-                  "oneOf": [
-                    {
-                      "type": "null"
-                    },
-                    {
-                      "$ref": "#/components/schemas/AssetSummary",
-                      "description": "The fee this transaction paid, kept out of `assets` so it does not read\nas a transfer. Reported rather than dropped: the fee is a real outflow."
                     }
                   ]
                 },

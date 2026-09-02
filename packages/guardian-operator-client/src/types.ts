@@ -292,11 +292,6 @@ export interface DashboardDeltaCounterpartySummary {
 
 export interface DashboardDeltaNoteCounts {
   input: number;
-  /**
-   * Notes the transaction itself created. Excludes the fee note the protocol
-   * injects, so it does not grow by one on a fee-charging chain and will not
-   * match `DashboardDeltaDetail.outputNotes.length`, which keeps that note.
-   */
   output: number;
 }
 
@@ -467,23 +462,15 @@ export interface DashboardDeltaEntry {
   /** Operator intent label (`metadata.proposal.proposal_type` only). */
   proposalType?: string;
   /**
-   * Every asset surfaced from the transaction's own notes (or, for `p2id`
+   * Every asset surfaced from the transaction's notes (or, for `p2id`
    * multisig with no decodable summary, the proposal's single declared
    * asset). Multi-asset transactions populate every entry so a one-line
    * row does not show a misleading single-asset summary. Omitted when
-   * empty. The protocol's fee note is not one of the transaction's own
-   * notes, so the fee never appears here as a transferred asset.
+   * empty.
    */
   assets?: DashboardDeltaAssetSummary[];
   counterparty?: DashboardDeltaCounterpartySummary;
   noteCounts?: DashboardDeltaNoteCounts;
-  /**
-   * The fee this transaction paid, held out of {@link assets} so it does not
-   * read as a transfer. Reported rather than dropped, because a transaction
-   * commits its own fee conversion rate and the fee is a real outflow that can
-   * be arbitrarily large. Absent when no fee note was identified.
-   */
-  fee?: DashboardDeltaAssetSummary;
 }
 
 export interface DashboardProposalEntry {

@@ -5,7 +5,6 @@
 use miden_protocol::transaction::TransactionSummary;
 
 use super::DashboardDeltaCategory;
-use super::projection::user_output_notes;
 
 /// Map an operator-declared `proposal_type` string to its dashboard
 /// `category`. Unknown strings fall back to `Custom` — the original
@@ -24,12 +23,10 @@ pub fn category_from_proposal_type(proposal_type: &str) -> DashboardDeltaCategor
 
 /// Infer `category` from the `TransactionSummary` alone, used when no
 /// proposal metadata is available. Note-count topology dominates;
-/// account-state-only changes land in `account_storage_change`. The
-/// protocol's fee note is not part of that topology — counting it would
-/// recategorise every consume as a transfer on a fee-charging chain.
+/// account-state-only changes land in `account_storage_change`.
 pub fn infer_category_from_summary(summary: &TransactionSummary) -> DashboardDeltaCategory {
     let has_input = summary.input_notes().num_notes() > 0;
-    let has_output = user_output_notes(summary).next().is_some();
+    let has_output = summary.output_notes().num_notes() > 0;
     match (has_input, has_output) {
         (true, true) => DashboardDeltaCategory::AssetTransfer,
         (true, false) => DashboardDeltaCategory::NoteConsumption,
