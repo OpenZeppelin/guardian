@@ -50,6 +50,16 @@ pub struct DeltaMetadata {
     #[serde(default)]
     pub note_counts: NoteCounts,
 
+    /// The asset moved by the fee note excluded from [`Self::assets`], when one
+    /// was excluded. Keeping the fee out of the asset list stops it reading as a
+    /// transfer, but dropping it entirely would make the listing a place where
+    /// value disappears: the fee is a real outflow, and a transaction may commit
+    /// a conversion rate that makes it an arbitrarily large one. Reporting it
+    /// separately gives an operator both — an uncluttered asset list and no
+    /// unaccounted movement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee: Option<AssetSummary>,
+
     /// Multisig proposal intent lifted from the matching
     /// `delta_proposals` row at push time. Absent for single-key
     /// `push_delta`, EVM deltas, and pushes where no proposal matched.
@@ -116,6 +126,9 @@ pub enum CounterpartyDirection {
     In,
 }
 
+/// Notes the transaction itself consumed and created. `output` excludes the
+/// fee note the protocol injects, so it does not grow by one on a fee-charging
+/// chain; the fee note is still visible in the delta detail view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct NoteCounts {
     #[serde(default)]

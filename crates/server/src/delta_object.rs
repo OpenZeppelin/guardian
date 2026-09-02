@@ -644,6 +644,7 @@ mod tests {
                 assets: Vec::new(),
                 counterparty: None,
                 note_counts: NoteCounts::default(),
+                fee: None,
                 proposal: Some(ProposalMetadata {
                     proposal_type: "p2id".to_string(),
                     ..ProposalMetadata::default()
@@ -688,6 +689,7 @@ mod tests {
                 assets: Vec::new(),
                 counterparty: None,
                 note_counts: NoteCounts::default(),
+                fee: None,
                 proposal: Some(ProposalMetadata {
                     proposal_type: "p2id".to_string(),
                     ..ProposalMetadata::default()
