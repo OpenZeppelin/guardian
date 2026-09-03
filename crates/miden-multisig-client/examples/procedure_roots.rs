@@ -20,10 +20,10 @@ use serde::Serialize;
 ///
 /// Deliberately NOT `miden_standards::account::auth::AuthGuardedMultisig::code()`:
 /// `auth_tx` calls `miden::standards::fee`, so its root moves with how the standards
-/// package is linked and the two build paths link it differently. The roots printed
-/// here therefore describe BROWSER-built accounts. The module docs on
-/// `crate::procedures` carry the mechanism and the open design question, and are the
-/// authority this must not be allowed to disagree with.
+/// package is linked, and that component is linked statically while `CodeBuilder` links
+/// dynamically. Both SDK builders produce the dynamic build, so the roots printed here
+/// describe every guardian account. The module docs on `crate::procedures` carry the
+/// mechanism and are the authority this must not be allowed to disagree with.
 const PACKAGE_AUTH_MASM: &str = include_str!(
     "../../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm"
 );

@@ -13,10 +13,11 @@
 //! every cross-SDK vector agreeing on a layout the kernel rejects. Executing the MASM is what
 //! separates those two cases.
 //!
-//! Every case runs against both the upstream `AuthGuardedMultisig` component used by the Rust
-//! builder and the independently compiled MASM source bundled with the browser SDK. Their
-//! procedure roots currently differ by design, so these tests require behavioral parity without
-//! asserting root parity.
+//! Every case runs against both linkages of the one shared auth MASM: the dynamically linked
+//! build both SDK builders produce, and upstream's statically linked `AuthGuardedMultisig`
+//! component. Only their `auth_tx` roots differ (dynamic leaves an external reference to
+//! `miden::standards::fee`, static inlines it), so these tests are what establish that the
+//! difference is confined to the root and does not reach behavior.
 
 use anyhow::Context;
 use guardian_shared::SignatureScheme;
@@ -39,7 +40,6 @@ use miden_standards::account::auth::{
     AuthGuardedMultisig, FeeConversionInfo, commit_fee_conversion_info,
 };
 use miden_standards::account::wallets::BasicWallet;
-use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::TxFeeNote;
 use miden_testing::MockChainBuilder;
 use miden_tx::TransactionExecutorError;
@@ -50,18 +50,18 @@ use rand_chacha::ChaCha20Rng;
 const NUM_APPROVERS: usize = 2;
 const VERIFICATION_BASE_FEE: u32 = 500;
 const FEE_FUNDING_AMOUNT: u64 = 1_000_000;
-const BUNDLED_GUARDED_MULTISIG_MASM: &str = include_str!(
-    "../../../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm"
-);
-
+/// Which linkage of the shared auth MASM the account under test carries.
 #[derive(Debug, Clone, Copy)]
 enum GuardedAccountSource {
-    Upstream,
-    Bundled,
+    /// What [`MultisigGuardianBuilder`] and the TypeScript builder produce: the standards
+    /// package linked dynamically.
+    Dynamic,
+    /// Upstream's `AuthGuardedMultisig` component: the same source, standards linked statically.
+    Static,
 }
 
 impl GuardedAccountSource {
-    const ALL: [Self; 2] = [Self::Upstream, Self::Bundled];
+    const ALL: [Self; 2] = [Self::Dynamic, Self::Static];
 }
 
 /// A guarded-multisig account whose approvers and guardian can all sign.
@@ -73,12 +73,12 @@ struct GuardedFixture {
     guardian_auth: BasicAuthenticator,
 }
 
-fn bundled_guarded_account(upstream_account: &Account) -> anyhow::Result<Account> {
-    let code = CodeBuilder::new()
-        .compile_component_code("guarded_multisig", BUNDLED_GUARDED_MULTISIG_MASM)?;
+/// The same account with upstream's statically linked component code swapped in, leaving the
+/// storage untouched. Only `auth_tx`'s root changes.
+fn statically_linked_guarded_account(dynamic_account: &Account) -> anyhow::Result<Account> {
     let component = AccountComponent::new(
-        code,
-        upstream_account.storage().slots().to_vec(),
+        AuthGuardedMultisig::code().clone(),
+        dynamic_account.storage().slots().to_vec(),
         AuthGuardedMultisig::component_metadata(),
     )?;
 
@@ -115,10 +115,10 @@ fn guarded_fixture(account_source: GuardedAccountSource) -> anyhow::Result<Guard
     .with_account_type(AccountType::Public)
     .with_signature_scheme(SignatureScheme::Falcon);
 
-    let upstream_account = MultisigGuardianBuilder::new(config).build_existing()?;
+    let dynamic_account = MultisigGuardianBuilder::new(config).build_existing()?;
     let account = match account_source {
-        GuardedAccountSource::Upstream => upstream_account,
-        GuardedAccountSource::Bundled => bundled_guarded_account(&upstream_account)?,
+        GuardedAccountSource::Dynamic => dynamic_account,
+        GuardedAccountSource::Static => statically_linked_guarded_account(&dynamic_account)?,
     };
 
     Ok(GuardedFixture {
@@ -350,8 +350,7 @@ async fn reversed_advice_preimage_is_rejected_for(
 
     let error = execute_fee_paying_transaction(account_source, auth_args, Some(reversed), false)
         .await?
-        .err()
-        .expect("a preimage that does not open the commitment must abort");
+        .expect_err("a preimage that does not open the commitment must abort");
 
     assert!(
         error
@@ -382,8 +381,7 @@ async fn bare_auth_arg_is_rejected_when_the_fee_is_non_zero_for(
 
     let error = execute_fee_paying_transaction(account_source, salt, None, false)
         .await?
-        .err()
-        .expect("a bare auth arg must abort on a fee-charging chain");
+        .expect_err("a bare auth arg must abort on a fee-charging chain");
 
     assert!(
         error
