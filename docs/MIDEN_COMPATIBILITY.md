@@ -167,22 +167,14 @@ moved in several independent ways:
     *included* is a separate question — the batch builder decides what fee
     asset and rate it accepts.
 
-  A caller driving the exported builders directly still chooses, in either SDK:
-  `SignatureOptions.feeFaucetId` in TypeScript, the `Option<FeeConversionInfo>`
-  parameter in Rust. Omitting it produces the pre-0.16 bare auth arg, which
-  executes only on a zero-fee chain. The difference between the SDKs is on the
-  *rebuild* side, not the build side: TypeScript's `detectAuthArgConvention`
-  reproduces either convention, while Rust assumes committed and has no
-  convention detector, so a bare typed proposal fails Rust's binding check.
-
-  Note what that costs during a rolling upgrade, when pre-0.16 proposals are
-  still in flight. Every one of them carries a bare auth arg, so every one fails
-  that check for a Rust cosigner — and `MultisigClient::list_proposals`
-  propagates the first such failure, hiding the account's whole pending list,
-  whereas `sync_proposals` collects it into `skipped` and continues. Prefer
-  `sync_proposals` until the pre-upgrade proposals have been dropped
-  server-side. TypeScript does not fail at all here: it detects `bare` and
-  proceeds, so the proposal verifies and only aborts later at proving.
+  A caller driving the exported builders directly can still decline to commit, in
+  either SDK: omit `SignatureOptions.feeFaucetId` in TypeScript, pass `None` for
+  the `Option<FeeConversionInfo>` parameter in Rust. That produces the pre-0.16
+  bare auth arg, which executes only on a zero-fee chain. Neither SDK reads one
+  back: both rebuild every typed proposal from `salt_hex` as committed, and a
+  bare one fails their binding check. Register such a request as a *custom*
+  proposal, which neither SDK reconstructs, rather than under a typed metadata
+  shape.
 
 Data effect: full reset, see above. Operator steps:
 [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-016).

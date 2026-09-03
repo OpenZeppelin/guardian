@@ -491,10 +491,9 @@ four. `summaryAuthArg` reads that convention, so prefer it over indexing
 > Either SDK's exported builders can still *decline* to commit — omit
 > `SignatureOptions.feeFaucetId` in TypeScript, or pass `None` for the
 > `Option<FeeConversionInfo>` parameter in Rust. That yields the pre-0.16 bare
-> auth arg, which only executes on a zero-fee chain. The SDKs differ on the
-> rebuild side instead: TypeScript's `detectAuthArgConvention` reproduces either
-> convention, while Rust assumes committed. Doing so normally produces a custom
-> proposal — and neither
+> auth arg, which only executes on a zero-fee chain. Neither SDK reads one back:
+> both rebuild every typed proposal from `salt_hex` as committed. Doing so
+> normally produces a custom proposal — and neither
 > SDK reconstructs those, so both can list, sign and drive one to submission.
 > Note that neither SDK's `executeProposal` accepts a custom proposal; submission
 > goes through the custom-execution path. `prepare_custom_execution` takes the
@@ -504,10 +503,10 @@ four. `summaryAuthArg` reads that convention, so prefer it over indexing
 > Retain the request bytes rather than expecting to regenerate them.
 >
 > Registering a bare-auth-arg request under a typed metadata shape instead — via
-> `createProposal` — is worse, and not merely uninteroperable: the Rust SDK's
-> `list_proposals` rebuilds every typed proposal from `salt_hex`, always as
-> committed, and fails for the whole account rather than skipping the one it
-> cannot verify.
+> `createProposal` — is worse, and not merely uninteroperable: `list_proposals`
+> rebuilds every typed proposal from `salt_hex`, always as committed, and the
+> Rust SDK fails for the whole account rather than skipping the one it cannot
+> verify.
 
 ### Recover An Account By Key
 
@@ -683,7 +682,7 @@ table.
 | `UnsupportedMetadataVersionError` | `consume_notes_unsupported_metadata_version` | Unrecognized version (including v1 on a cut-over build) |
 | `ConsumeNotesMetadataOversizeError` | `consume_notes_metadata_oversize` | v2 metadata serialization exceeds 256 KiB at creation |
 | `LegacyConsumeNotesNoteMissingError` | `consume_notes_legacy_note_missing` | v1 path: local store does not contain the referenced note |
-| `ProposalAuthArgUnresolvableError` | `proposal_auth_arg_unresolvable` | A proposal's signed auth arg is neither its recorded salt nor a fee-conversion commitment to it, so no reconstruction from the recorded salt succeeds. `switch_guardian` instead rebuilds from the summary's own auth arg, reproducing the signed word but not its fee preimage, so it executes only on a zero-fee chain |
+| `ProposalAuthArgUnresolvableError` | `proposal_auth_arg_unresolvable` | A proposal's signed auth arg is not the fee-conversion commitment its recorded salt and anchored fee faucet derive, so no reconstruction from that salt succeeds |
 | `ProposalSaltMalformedError` | `proposal_salt_malformed` | A proposal's recorded salt is not a readable 32-byte word |
 | `FeeFaucetAnchorMismatchError` | `fee_faucet_anchor_mismatch` | The chain's fee faucet changed mid-build, so the faucet the auth arg committed is not the one the proposal's anchored block reports |
 
@@ -697,41 +696,33 @@ it: `ProposalBuilder::build_*` holds `&mut MidenSdkClient` across both the
 faucet read and the anchor capture, so the borrow checker forbids the
 interleaving sync that opens the window in JavaScript.
 
-The two proposal-recovery errors above it carry no Rust code. `proposal_auth_arg_unresolvable` has no
-Rust counterpart at all, because the Rust SDK has no convention detector
-to fail: it derives the conversion info from the proposal's anchor and
-rebuilds as committed unconditionally, so a bare typed proposal trips the
-generic binding check instead. `proposal_salt_malformed` does have a Rust
+The two proposal-recovery errors above it carry no Rust code, and both are
+fatal: the proposal has to be recreated. `proposal_auth_arg_unresolvable`
+has no Rust counterpart at all, because Rust derives the conversion info
+from the proposal's anchor and rebuilds as committed without a separate
+check, so a salt that does not derive the signed auth arg trips the generic
+binding check instead. `proposal_salt_malformed` does have a Rust
 behavioural equivalent — `Proposal::salt()` fails there on the same
-input — but it surfaces as an uncoded `InvalidConfig`. Both are
-recoverable for a
-`switch_guardian`, whose salt the GUARDIAN being switched away from
-serves and nothing binds — that one type falls back to the summary's own
-auth arg rather than letting an outgoing GUARDIAN strand a fully signed
-switch. For every other type both are fatal, and the proposal has to be
-recreated.
+input — but it surfaces as an uncoded `InvalidConfig`.
 
-Two limits on that fallback are worth knowing. It only helps a proposal
-the client already holds: `syncProposals()` verifies everything GUARDIAN
-serves and rejects the whole call on the first proposal it cannot
-verify, so an outgoing GUARDIAN can still keep a switch out of a *fresh*
-client's cache by serving one unverifiable proposal alongside it. That
-predates fee conversion info and the Rust `list_proposals` has the same
-shape, so closing it belongs to a coordinated change in both SDKs.
-Second, keeping the fee advice on a committed switch is a courtesy to a
-cooperative GUARDIAN, not a guarantee: serving the auth arg itself as
-the salt classifies as `bare` and drops the faucet without ever reaching
-the fallback. Since the guarded auth procedure began paying its own fee,
-that is no longer free — a dropped faucet aborts at proving with
-`ERR_FEE_CONVERSION_INFO_MISSING` on any chain that charges one. It still
-fails closed rather than producing a wrong transaction, but an outgoing
-GUARDIAN can use it to strand a switch on a fee-charging chain.
+`switch_guardian` is the type to watch. It is the one
+`verifyProposalMetadataBinding` does not rebuild, so the derivation check
+is the only thing binding its salt — and that salt is served by the
+GUARDIAN being switched away from, the party with an interest in the
+switch failing. A corrupted salt therefore fails loudly here rather than
+aborting at proving with `ERR_FEE_CONVERSION_INFO_MISSING`, but an
+outgoing GUARDIAN can still strand a fully signed switch that way.
+Related: `syncProposals()` verifies everything GUARDIAN serves and rejects
+the whole call on the first proposal it cannot verify, so one unverifiable
+proposal served alongside a switch keeps it out of a *fresh* client's
+cache. That predates fee conversion info and the Rust `list_proposals` has
+the same shape, so closing it belongs to a coordinated change in both SDKs.
 
 `ProposalSaltMalformedError.saltHex` is typed `unknown`, because GUARDIAN's
 JSON response is cast rather than validated and the field arrives as
 whatever was served. It is non-enumerable, so it stays out of
-`util.inspect` and `JSON.stringify` output; use `.quotedSalt` for a
-bounded, printable rendering.
+`util.inspect` and `JSON.stringify` output; the error's own message quotes
+a bounded, printable rendering of it.
 
 ### Cut-over policy
 

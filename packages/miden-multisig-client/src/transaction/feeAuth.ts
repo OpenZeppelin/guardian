@@ -37,9 +37,6 @@ import {
 const NATIVE_RATE_NUM = 1n;
 const NATIVE_RATE_DEN = 1n;
 
-/** Two words — the only length at which `hashElements` equals `merge`. */
-const MERGE_EQUIVALENT_ELEMENTS = 8;
-
 /**
  * Parses a caller-supplied faucet id, naming the option it came from — several
  * account ids are parsed while building a request, so the SDK's own message does
@@ -64,29 +61,20 @@ function parseFeeFaucetId(feeFaucetId: string): AccountId {
  *
  * Word layout is `[faucet_id_suffix, faucet_id_prefix, rate_num, rate_den]`.
  *
- * A hex argument is parsed into a handle owned here and released before
- * returning; an `AccountId` argument stays the caller's to free.
+ * The parsed id is a handle owned here and released before returning.
  */
-export function nativeConversionInfo(feeFaucetId: AccountId | string): Word {
-  if (typeof feeFaucetId !== 'string') {
-    return conversionInfoWord(feeFaucetId);
-  }
-
-  const parsed = parseFeeFaucetId(feeFaucetId);
+export function nativeConversionInfo(feeFaucetId: string): Word {
+  const accountId = parseFeeFaucetId(feeFaucetId);
   try {
-    return conversionInfoWord(parsed);
+    return WordType.newFromFelts([
+      accountId.suffix(),
+      accountId.prefix(),
+      new Felt(NATIVE_RATE_NUM),
+      new Felt(NATIVE_RATE_DEN),
+    ]);
   } finally {
-    parsed.free?.();
+    accountId.free?.();
   }
-}
-
-function conversionInfoWord(accountId: AccountId): Word {
-  return WordType.newFromFelts([
-    accountId.suffix(),
-    accountId.prefix(),
-    new Felt(NATIVE_RATE_NUM),
-    new Felt(NATIVE_RATE_DEN),
-  ]);
 }
 
 /**
@@ -100,21 +88,15 @@ function conversionInfoWord(accountId: AccountId): Word {
  * padding block. Verified against `miden-crypto` — the digests are identical,
  * and the reversed argument order is not, so the ordering below matters.
  *
- * That equivalence holds only at exactly eight elements, which is why the length
- * is asserted rather than assumed: at any other length `hash_elements` seeds a
- * non-zero capacity or absorbs a padding block, and would silently stop agreeing
- * with the MASM.
+ * That equivalence holds only at exactly eight elements. Two `Word`s are always
+ * exactly that, which is why the preimage is typed as two of them: at any other
+ * length `hash_elements` seeds a non-zero capacity or absorbs a padding block,
+ * and would silently stop agreeing with the MASM.
  */
 export function feeAuthArg(conversionInfo: Word, salt: Word): Word {
-  const elements = [...conversionInfo.toFelts(), ...salt.toFelts()];
-  if (elements.length !== MERGE_EQUIVALENT_ELEMENTS) {
-    throw new Error(
-      `Fee auth-arg preimage must be exactly ${MERGE_EQUIVALENT_ELEMENTS} elements to match ` +
-        `poseidon2::merge, got ${elements.length}`,
-    );
-  }
-
-  return Poseidon2.hashElements(new FeltArray(elements));
+  return Poseidon2.hashElements(
+    new FeltArray([...conversionInfo.toFelts(), ...salt.toFelts()]),
+  );
 }
 
 /**
@@ -155,7 +137,7 @@ export function insertFeeConversionInfo(
  */
 export function resolveAuthArg(
   salt: Word,
-  feeFaucetId?: AccountId | string,
+  feeFaucetId?: string,
 ): { authArg: Word; adviceMap?: AdviceMap } {
   if (feeFaucetId === undefined) {
     return { authArg: salt };
@@ -180,25 +162,6 @@ export function resolveAuthArg(
 }
 
 /**
- * {@link resolveAuthArg}, extended to own the salt on the failing path.
- *
- * Resolution rejects an unparseable faucet id before it has taken ownership of
- * anything, so without this the salt {@link applyAuthArg} consumes would outlive
- * the call it was built for.
- */
-function resolveOwnedAuthArg(
-  salt: Word,
-  feeFaucetId?: AccountId | string,
-): { authArg: Word; adviceMap?: AdviceMap } {
-  try {
-    return resolveAuthArg(salt, feeFaucetId);
-  } catch (error) {
-    salt.free?.();
-    throw error;
-  }
-}
-
-/**
  * Applies the auth arg for `salt` to a builder, owning every handle involved.
  *
  * `withAuthArg` and `extendAdviceMap` borrow their arguments — the generated
@@ -207,17 +170,28 @@ function resolveOwnedAuthArg(
  * each call site meant five builders repeating a lifetime that only one of them
  * has to get wrong to leak, so it lives here instead.
  *
- * The salt is consumed, on the failing path too. On the bare path it *is* the
- * returned auth arg, so the two are freed once; on the committed path it is a
- * separate handle the commitment has already absorbed. Callers that need the
- * salt afterwards pass a copy — which every builder does, since it returns one.
+ * The salt is consumed, on the failing path too. Resolution rejects an
+ * unparseable faucet id before it has taken ownership of anything, so that throw
+ * escapes the cleanup scope below and the salt is released alongside it. On the
+ * bare path the salt *is* the returned auth arg, so the two are freed once; on
+ * the committed path it is a separate handle the commitment has already
+ * absorbed. Callers that need the salt afterwards pass a copy — which every
+ * builder does, since it returns one.
  */
 export function applyAuthArg(
   builder: TransactionRequestBuilder,
   salt: Word,
-  feeFaucetId?: AccountId | string,
+  feeFaucetId?: string,
 ): TransactionRequestBuilder {
-  const { authArg, adviceMap } = resolveOwnedAuthArg(salt, feeFaucetId);
+  let resolved;
+  try {
+    resolved = resolveAuthArg(salt, feeFaucetId);
+  } catch (error) {
+    salt.free?.();
+    throw error;
+  }
+
+  const { authArg, adviceMap } = resolved;
   try {
     const withArg = builder.withAuthArg(authArg);
     return adviceMap === undefined ? withArg : withArg.extendAdviceMap(adviceMap);
@@ -227,47 +201,5 @@ export function applyAuthArg(
       salt.free?.();
     }
     adviceMap?.free?.();
-  }
-}
-
-/** Which of the two auth-arg conventions produced a signed auth arg. */
-export type AuthArgConvention = 'bare' | 'committed' | 'mismatch';
-
-/**
- * Recovers which convention built an auth arg, by reproducing both.
- *
- * The inverse of {@link resolveAuthArg}, and the reason a rebuild can reproduce
- * a proposal it did not create: the commitment is not invertible, so the only
- * way to tell a bare salt from a commitment to that salt is to compute the
- * commitment and compare. `mismatch` means the auth arg belongs to neither —
- * a different salt, or a different fee faucet.
- *
- * Kept beside the producer so both can be checked against each other over the
- * real hash — see `tests/fee-auth-convention.test.ts`. That pairing catches a
- * detector that disagrees with the producer, but not a change to the hash they
- * share: swapping its operands moves both sides together and still reads as
- * `committed`. Operand order is pinned instead by the Rust-computed
- * `Poseidon2::merge` vector in `feeAuth.test.ts`.
- */
-export function detectAuthArgConvention(
-  signedAuthArg: Word,
-  salt: Word,
-  feeFaucetId: AccountId | string,
-): AuthArgConvention {
-  const signedHex = signedAuthArg.toHex();
-  if (salt.toHex() === signedHex) {
-    return 'bare';
-  }
-
-  const conversionInfo = nativeConversionInfo(feeFaucetId);
-  try {
-    const commitment = feeAuthArg(conversionInfo, salt);
-    try {
-      return commitment.toHex() === signedHex ? 'committed' : 'mismatch';
-    } finally {
-      commitment.free?.();
-    }
-  } finally {
-    conversionInfo.free?.();
   }
 }

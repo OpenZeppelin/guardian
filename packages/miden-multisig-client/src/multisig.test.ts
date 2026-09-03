@@ -11,7 +11,6 @@ import {
   buildUpdateGuardianTransactionRequest,
   buildUpdateSignersTransactionRequest,
   chainAnchorFromBase64,
-  detectAuthArgConvention,
   executeForSummary,
   executeForSummaryAt,
   feeAuthArg,
@@ -176,11 +175,11 @@ vi.mock('./transaction/consumeNotes.js', async (importOriginal) => ({
 }));
 
 vi.mock('./transaction.js', () => {
-  // The auth arg a summary carries is either the bare salt or a fee commitment to
-  // it, and `recoverProposalAuthArg` asks `detectAuthArgConvention` which. Mirrored
-  // here over the mocked hash rather than stubbed to a constant, so a test that
-  // overrides `feeAuthArg` still steers detection the way it steers a rebuild. The
-  // real hash and its operand order are covered by tests/fee-auth-convention.test.ts.
+  // `recoverProposalAuthArg` derives the auth arg with `feeAuthArg` and checks it
+  // against the one `summaryAuthArg` reads off the signed summary, so both are
+  // mocked to the same word: every recorded salt derives back to the signed arg
+  // unless a test overrides `feeAuthArg` to steer it away. The real hash and its
+  // operand order are covered by src/transaction/feeAuth.test.ts.
   const summaryAuthArg = vi.fn(() => ({
     toHex: () => '0x' + 'a'.repeat(64),
   }));
@@ -190,21 +189,6 @@ vi.mock('./transaction.js', () => {
   const nativeConversionInfo = vi.fn((_feeFaucetId: unknown) => ({
     toHex: () => '0x' + 'c'.repeat(64),
   }));
-  const detectAuthArgConvention = vi.fn(
-    (
-      signedAuthArg: { toHex: () => string },
-      salt: { toHex: () => string },
-      feeFaucetId: unknown,
-    ) => {
-      const signedHex = signedAuthArg.toHex();
-      if (salt.toHex() === signedHex) {
-        return 'bare';
-      }
-      return feeAuthArg(nativeConversionInfo(feeFaucetId), salt).toHex() === signedHex
-        ? 'committed'
-        : 'mismatch';
-    },
-  );
 
   return {
   executeForSummary: vi.fn(),
@@ -214,7 +198,6 @@ vi.mock('./transaction.js', () => {
   summaryAuthArg,
   feeAuthArg,
   nativeConversionInfo,
-  detectAuthArgConvention,
   buildUpdateSignersTransactionRequest: vi.fn().mockResolvedValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
@@ -1303,6 +1286,7 @@ describe('Multisig', () => {
             signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -1355,6 +1339,7 @@ describe('Multisig', () => {
             signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -1408,6 +1393,7 @@ describe('Multisig', () => {
                 signatures: [],
                 metadata: {
                   proposal_type: 'add_signer',
+                  salt: '0x' + 'd'.repeat(64),
                   chain_anchor: MOCK_CHAIN_ANCHOR_B64,
                   target_threshold: 1,
                   signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -1461,6 +1447,7 @@ describe('Multisig', () => {
                 signatures: [],
                 metadata: {
                   proposal_type: 'add_signer',
+                  salt: '0x' + 'd'.repeat(64),
                   chain_anchor: MOCK_CHAIN_ANCHOR_B64,
                   target_threshold: 1,
                   signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -1522,6 +1509,7 @@ describe('Multisig', () => {
                 signatures: [],
                 metadata: {
                   proposal_type: 'switch_guardian',
+                  salt: '0x' + 'd'.repeat(64),
                   chain_anchor: MOCK_CHAIN_ANCHOR_B64,
                   new_guardian_pubkey: '0x' + '1'.repeat(64),
                   new_guardian_endpoint: 'http://new-guardian.com',
@@ -1569,6 +1557,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -1617,6 +1606,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 2,
               signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -1701,6 +1691,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'add_signer',
+        saltHex: '0x' + 'd'.repeat(64),
         chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 1,
         targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -1747,6 +1738,7 @@ describe('Multisig', () => {
       await expect(
         multisig.createProposal(1, 'AQID', {
           proposalType: 'add_signer',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -1799,6 +1791,7 @@ describe('Multisig', () => {
       await expect(
         multisig.createProposal(1, 'AQID', {
           proposalType: 'add_signer',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -1838,6 +1831,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'p2id',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             recipient_id: '0xrecipient',
             faucet_id: '0xfaucet',
@@ -1896,6 +1890,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'p2id',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             recipient_id: '0xrecipient',
             faucet_id: '0xfaucet',
@@ -1984,6 +1979,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'p2id',
+            salt: '0x' + 'd'.repeat(64),
             recipient_id: '0xrecipient',
             faucet_id: '0xfaucet',
             amount: '100',
@@ -2061,6 +2057,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'p2id',
+            salt: '0x' + 'd'.repeat(64),
             recipient_id: '0xrecipient',
             faucet_id: '0xfaucet',
             amount: '100',
@@ -2123,6 +2120,7 @@ describe('Multisig', () => {
               signatures: [],
               metadata: {
                 proposal_type: 'p2id',
+                salt: '0x' + 'd'.repeat(64),
                 recipient_id: '0xrecipient',
                 faucet_id: '0xfaucet',
                 amount: '100',
@@ -2350,6 +2348,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'change_threshold',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 2,
             description: '',
@@ -2692,6 +2691,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'update_procedure_threshold',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             target_procedure: 'send_asset',
@@ -2764,6 +2764,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'update_procedure_threshold',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             target_procedure: 'send_asset',
@@ -2834,6 +2835,7 @@ describe('Multisig', () => {
 
       await multisig.createProposal(1, 'AQID', {
         proposalType: 'add_signer',
+        saltHex: '0x' + 'd'.repeat(64),
         chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 1,
         targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -2858,6 +2860,7 @@ describe('Multisig', () => {
           ...mockDelta.delta_payload,
           metadata: {
             proposal_type: 'add_signer',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             description: '',
             target_threshold: 1,
@@ -2913,6 +2916,7 @@ describe('Multisig', () => {
 
       await multisig.createProposal(1, 'AQID', {
         proposalType: 'add_signer',
+        saltHex: '0x' + 'd'.repeat(64),
         chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 1,
         targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -2953,6 +2957,7 @@ describe('Multisig', () => {
                 signatures: [],
                 metadata: {
                   proposal_type: 'add_signer',
+                  salt: '0x' + 'd'.repeat(64),
                   chain_anchor: MOCK_CHAIN_ANCHOR_B64,
                   description: '',
                   target_threshold: 1,
@@ -3003,6 +3008,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposalType: 'add_signer',
+              saltHex: '0x' + 'd'.repeat(64),
               chainAnchor: MOCK_CHAIN_ANCHOR_B64,
               targetThreshold: 1,
               targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3039,6 +3045,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposalType: 'add_signer',
+            saltHex: '0x' + 'd'.repeat(64),
             chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 1,
             targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3049,6 +3056,7 @@ describe('Multisig', () => {
 
       proposal.metadata = {
         proposalType: 'add_signer',
+        saltHex: '0x' + 'd'.repeat(64),
         chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 2,
         targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3087,6 +3095,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               description: '',
               target_threshold: 1,
@@ -3143,6 +3152,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               description: '',
               target_threshold: 2,
@@ -3234,6 +3244,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'add_signer' as const,
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3273,6 +3284,7 @@ describe('Multisig', () => {
           ],
           metadata: {
             proposalType: 'change_threshold',
+            saltHex: '0x' + 'd'.repeat(64),
             chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 1,
             targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3319,6 +3331,7 @@ describe('Multisig', () => {
             ],
             metadata: {
               proposalType: 'change_threshold',
+              saltHex: '0x' + 'd'.repeat(64),
               chainAnchor: MOCK_CHAIN_ANCHOR_B64,
               targetThreshold: 1,
               targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3346,6 +3359,7 @@ describe('Multisig', () => {
         signatures: [],
         metadata: {
           proposalType: 'add_signer' as const,
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 2,
           targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -3422,6 +3436,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'change_threshold',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3440,6 +3455,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -3537,6 +3553,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey,
           newGuardianEndpoint: 'http://new-guardian.com',
@@ -3591,6 +3608,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               description: '',
               target_threshold: 2,
@@ -3655,6 +3673,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'change_threshold',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3693,6 +3712,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
@@ -3741,6 +3761,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
@@ -3822,6 +3843,7 @@ describe('Multisig', () => {
           ],
           metadata: {
             proposalType: 'change_threshold',
+            saltHex: '0x' + 'd'.repeat(64),
             chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 1,
             targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -3840,6 +3862,7 @@ describe('Multisig', () => {
               signatures: [],
               metadata: {
                 proposal_type: 'change_threshold',
+                salt: '0x' + 'd'.repeat(64),
                 chain_anchor: MOCK_CHAIN_ANCHOR_B64,
                 target_threshold: 1,
                 signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -3915,6 +3938,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
@@ -3963,6 +3987,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               description: '',
               target_threshold: 2,
@@ -4015,6 +4040,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             description: '',
             target_threshold: 1,
@@ -4108,6 +4134,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'change_threshold',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -4126,6 +4153,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -4197,7 +4225,8 @@ describe('Multisig', () => {
 
     it('rejects a re-fetched tx_summary that is not the one the id was verified against', async () => {
       // Execution re-fetches the delta from GUARDIAN after the binding check, and
-      // that summary decides both the advice keys and the auth-arg convention. A
+      // that summary decides both the advice keys and the auth arg the rebuild is
+      // checked against. A
       // substituted one must not be trusted just because it arrived over the same
       // connection.
       const config = {
@@ -4224,6 +4253,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'change_threshold',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -4247,6 +4277,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -4321,6 +4352,7 @@ describe('Multisig', () => {
           ],
           metadata: {
             proposalType: 'change_threshold',
+            saltHex: '0x' + 'd'.repeat(64),
             chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 1,
             targetSignerCommitments: ['0x' + 'a'.repeat(64)],
@@ -4340,6 +4372,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'change_threshold',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 1,
               signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -4425,6 +4458,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey,
           newGuardianEndpoint: 'http://new-guardian.com',
@@ -4448,6 +4482,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'switch_guardian',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               new_guardian_pubkey: newGuardianPubkey,
               new_guardian_endpoint: 'http://new-guardian.com',
@@ -4511,6 +4546,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey,
           newGuardianEndpoint: 'http://new-guardian.com',
@@ -4563,6 +4599,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
@@ -4611,6 +4648,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
@@ -4664,6 +4702,7 @@ describe('Multisig', () => {
         ],
         metadata: {
           proposalType: 'switch_guardian',
+          saltHex: '0x' + 'd'.repeat(64),
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           newGuardianPubkey: '0x' + '1'.repeat(64),
           newGuardianEndpoint: 'http://new-guardian.com',
@@ -4711,6 +4750,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'b2agg',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               description: '',
             },
@@ -4756,6 +4796,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: proposalType,
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             description: '',
           },
@@ -4790,6 +4831,7 @@ describe('Multisig', () => {
       };
       builtinDelta.delta_payload.metadata = {
         proposal_type: 'change_threshold',
+        salt: '0x' + 'd'.repeat(64),
         chain_anchor: MOCK_CHAIN_ANCHOR_B64,
         description: '',
         target_threshold: 1,
@@ -4898,6 +4940,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 2,
             signer_commitments: ['0x1', '0x2'],
@@ -4921,6 +4964,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'add_signer',
+        saltHex: '0x' + 'd'.repeat(64),
         chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         targetThreshold: 2,
         targetSignerCommitments: ['0x1', '0x2'],
@@ -4963,6 +5007,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'p2id',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               recipient_id: '0xrecipient',
               faucet_id: '0xfaucet',
@@ -5009,6 +5054,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 2,
             signer_commitments: ['0x1', '0x2'],
@@ -5033,6 +5079,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'consume_notes',
+        saltHex: '0x' + 'd'.repeat(64),
         chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         noteIds: ['0xnote1', '0xnote2'],
         description: '',
@@ -5059,6 +5106,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposal_type: 'add_signer',
+            salt: '0x' + 'd'.repeat(64),
             chain_anchor: MOCK_CHAIN_ANCHOR_B64,
             target_threshold: 1,
             signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -5083,6 +5131,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'p2id',
+        saltHex: '0x' + 'd'.repeat(64),
         chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         recipientId: '0xrecipient',
         faucetId: '0xfaucet',
@@ -5111,6 +5160,7 @@ describe('Multisig', () => {
           signatures: [],
           metadata: {
             proposalType: 'add_signer',
+            saltHex: '0x' + 'd'.repeat(64),
             chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             targetThreshold: 2,
             targetSignerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -5135,6 +5185,7 @@ describe('Multisig', () => {
 
       const proposal = await multisig.createProposal(1, 'AQID', {
         proposalType: 'switch_guardian',
+        saltHex: '0x' + 'd'.repeat(64),
         chainAnchor: MOCK_CHAIN_ANCHOR_B64,
         newGuardianPubkey: '0xnewpubkey',
         newGuardianEndpoint: 'http://new-guardian.com',
@@ -5166,6 +5217,7 @@ describe('Multisig', () => {
             signatures: [],
             metadata: {
               proposal_type: 'add_signer',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 2,
               signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -5203,6 +5255,7 @@ describe('Multisig', () => {
             ...mockProposalsPending[0].delta_payload,
             metadata: {
               proposal_type: 'add_signer',
+              salt: '0x' + 'd'.repeat(64),
               chain_anchor: MOCK_CHAIN_ANCHOR_B64,
               target_threshold: 2,
               signer_commitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
@@ -5447,13 +5500,10 @@ describe('Multisig', () => {
     });
   });
 
-  describe('auth-arg convention detection', () => {
-    // `summaryAuthArg` is mocked to return 0xaa.., and `feeAuthArg` to return the
-    // same, so a proposal whose recorded salt is 0xaa.. reads as "the auth arg is
-    // the bare salt" and any other salt reads as "the auth arg commits to it".
-    const SIGNED_AUTH_ARG = '0x' + 'a'.repeat(64);
-    // Any salt other than the signed auth arg reads as `committed` under the
-    // mocked hash, which returns that same word.
+  describe('auth-arg derivation', () => {
+    // `summaryAuthArg` and `feeAuthArg` are both mocked to 0xaa.., so any recorded
+    // salt derives back to the signed auth arg and resolves — unless a test steers
+    // `feeAuthArg` elsewhere, which is how the mismatch case is reached.
     const COMMITTED_SALT = '0x' + 'd'.repeat(64);
 
     const config = {
@@ -5464,6 +5514,7 @@ describe('Multisig', () => {
 
     const ADD_SIGNER_METADATA = {
       proposal_type: 'add_signer',
+      salt: '0x' + 'd'.repeat(64),
       chain_anchor: MOCK_CHAIN_ANCHOR_B64,
       target_threshold: 1,
       signer_commitments: ['0x' + 'a'.repeat(64)],
@@ -5532,8 +5583,6 @@ describe('Multisig', () => {
         metadata: { chainAnchor: MOCK_CHAIN_ANCHOR_B64, description: '', ...metadata },
       });
     };
-    // The salt is the one the outgoing GUARDIAN chose to serve, which is what
-    // `switchGuardianAuthArg` has to survive being given.
     const seedSwitchGuardianProposal = (
       multisig: Multisig,
       proposalId: string,
@@ -5552,73 +5601,32 @@ describe('Multisig', () => {
       });
     };
 
-    // A salt that is not there, however it is spelled, means "predates the field",
-    // so the auth arg is read back out of the summary and the rebuild is bare.
-    // Anything else silently rebuilds a different transaction.
-    const rebuildsBare = async (unsetSalt: (m: { salt?: string | null }) => void) => {
+    // Nothing can derive a commitment without the salt, so an absent one is
+    // malformed metadata rather than an older shape to read around. `null` has to
+    // land the same way as an omitted field: this SDK omits it, but GUARDIAN stores
+    // metadata as opaque JSON, so a producer whose serializer writes nulls
+    // round-trips `"salt": null` to every reader.
+    it.each([
+      ['an omitted salt', (m: { salt?: string | null }) => delete m.salt],
+      ['an explicitly null salt', (m: { salt?: string | null }) => {
+        m.salt = null;
+      }],
+    ])('rejects a proposal with %s', async (_label, unsetSalt) => {
       const multisig = createTestMultisig(config);
-      vi.mocked(buildUpdateSignersTransactionRequest).mockClear();
       const proposals = proposalWithSalt('unused');
       unsetSalt(proposals[0].delta_payload.metadata as { salt?: string | null });
       serveProposals(proposals);
 
-      await multisig.syncProposals();
-
-      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
-      expect(saltHexOf(options)).toBe(SIGNED_AUTH_ARG);
-      expect(options).toMatchObject({ feeFaucetId: undefined });
-    };
-
-    it('rebuilds a proposal with no recorded salt from the signed auth arg', async () => {
-      // Proposals stored before saltHex was persisted, when the auth arg was the
-      // bare salt. Typed paths in both SDKs commit conversion info now, so this
-      // covers legacy rows rather than anything either SDK creates today.
-      await rebuildsBare((metadata) => delete metadata.salt);
+      const error = await caught(multisig.syncProposals());
+      expect(error?.code).toBe('proposal_salt_malformed');
+      expect(error?.message).toContain('expected a hex string');
     });
 
-    it('treats an explicitly null salt as absent, the same as an omitted one', async () => {
-      // This SDK omits the field — an Option<String>, skipped on serialize — but
-      // GUARDIAN stores metadata as opaque JSON, so a producer whose serializer
-      // writes nulls round-trips `"salt": null` to every reader. Rejecting that
-      // spelling would fail the whole account's sync, since syncProposals
-      // verifies each proposal without skipping.
-      await rebuildsBare((metadata) => {
-        metadata.salt = null;
-      });
-    });
-
-    it('rebuilds a switch_guardian from the signed summary, not its served salt', async () => {
-      // The one type with no reconstruction check, so nothing binds its metadata
-      // salt. Execution must not depend on the GUARDIAN being switched away from
-      // serving a correct one, or that GUARDIAN could strand a fully signed
-      // switch by rotating the field.
-      const multisig = createTestMultisig(config);
-      const proposalId = '0x' + 'c'.repeat(64);
-      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
-      // A salt belonging to no summary. Resolution has to actually reject it, so
-      // the hash is steered away from the signed auth arg for this test only —
-      // otherwise every salt reads as a valid commitment and the fallback below
-      // is never exercised.
-      seedSwitchGuardianProposal(multisig, proposalId, '0x' + '7'.repeat(64));
-      vi.mocked(feeAuthArg).mockReturnValueOnce({
-        toHex: () => '0x' + '9'.repeat(64),
-      } as never);
-      serveGuardianCommitment();
-
-      // Execution runs past the rebuild and only stumbles on post-execution
-      // GUARDIAN registration, which this fixture does not stand up.
-      const error = await caught(multisig.executeProposal(proposalId));
-      expect(error?.message ?? '').not.toMatch(/neither its metadata salt/);
-
-      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
-      expect(saltHexOf(options)).toBe(SIGNED_AUTH_ARG);
-      expect(options).toMatchObject({ feeFaucetId: undefined });
-    });
-
-    it('keeps a switch_guardian salt that does resolve, with its faucet', async () => {
-      // The fallback above must not become a shortcut past resolution: a
-      // committed switch still needs the faucet, or the rebuild reproduces the
-      // auth arg with the conversion-info preimage missing from the advice map.
+    it('keeps a switch_guardian salt that resolves, with its faucet', async () => {
+      // `verifyProposalMetadataBinding` does not rebuild this type, so the
+      // derivation check is the only thing binding its salt — and the faucet has
+      // to reach the rebuild, or it reproduces the auth arg with the
+      // conversion-info preimage missing from the advice map.
       const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
       vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
@@ -5630,24 +5638,6 @@ describe('Multisig', () => {
       const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
       expect(saltHexOf(options)).toBe(COMMITTED_SALT);
       expect(options).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
-    });
-
-    it('rebuilds without conversion info when the auth arg is the bare salt', async () => {
-      // A proposal from a client that passes the salt through as the auth arg —
-      // a legacy proposal from either SDK, predating fee conversion commitments,
-      // or a caller driving the exported builders with no fee faucet.
-      // Committing conversion info on the rebuild would change the auth arg and
-      // the reconstruction check would reject a perfectly valid proposal.
-      const multisig = createTestMultisig(config);
-      serveProposal(SIGNED_AUTH_ARG);
-
-      await multisig.syncProposals();
-
-      const options = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0]![3];
-      expect(options).toMatchObject({ feeFaucetId: undefined });
-      // The bare case is every proposal the Rust SDK creates, so a salt lost
-      // here breaks cross-SDK sync, not just the opt-in path.
-      expect(saltHexOf(options)).toBe(SIGNED_AUTH_ARG);
     });
 
     it('proposes with an auth arg the Rust SDK can rederive from salt_hex', async () => {
@@ -5699,7 +5689,7 @@ describe('Multisig', () => {
       expect(options).toHaveProperty('feeFaucetId', MOCK_FEE_FAUCET_ID_HEX);
     });
 
-    it('rebuilds with conversion info when the auth arg commits to the salt', async () => {
+    it('rebuilds with the conversion info the salt and anchor derive', async () => {
       const multisig = createTestMultisig(config);
       serveProposal('0x' + 'd'.repeat(64));
 
@@ -5713,7 +5703,10 @@ describe('Multisig', () => {
       expect(saltHexOf(options)).toBe(COMMITTED_SALT);
     });
 
-    it('rejects a proposal whose auth arg matches neither convention', async () => {
+    it('rejects a proposal whose salt does not derive the signed auth arg', async () => {
+      // The derivation check is what turns a wrong `salt_hex` into a named
+      // failure here rather than an ERR_FEE_CONVERSION_INFO_MISSING abort at
+      // proving, so steer the hash away from the signed arg to reach it.
       vi.mocked(feeAuthArg).mockReturnValueOnce({
         toHex: () => '0x' + 'f'.repeat(64),
       } as never);
@@ -5725,14 +5718,13 @@ describe('Multisig', () => {
 
       // The proposal is dead at this point, so the message has to name what was
       // checked against what, and the recovery action.
+      expect(error?.code).toBe('proposal_auth_arg_unresolvable');
       expect(error?.message).toMatch(
-        /auth arg 0xa{64} is neither its metadata salt 0xd{64} nor a fee-conversion commitment to that salt under fee faucet 0xfee/,
+        /auth arg 0xa{64} is not the fee-conversion commitment to its metadata salt 0xd{64} under fee faucet 0xfee/,
       );
       expect(error?.message).toMatch(/Recreate the proposal and collect signatures again/);
     });
 
-    // A bound type, so the salt is fatal here — the contrast is the
-    // `switch_guardian` fallback tests below, which recover from the same value.
     it('rejects a metadata salt that is not hex', async () => {
       // The salt arrives as untrusted metadata, so a non-hex value should name
       // the offending field rather than surfacing as a decoding error from
@@ -5806,6 +5798,7 @@ describe('Multisig', () => {
         type: 'update_procedure_threshold',
         metadata: {
           proposal_type: 'update_procedure_threshold',
+          salt: '0x' + 'd'.repeat(64),
           chain_anchor: MOCK_CHAIN_ANCHOR_B64,
           target_threshold: 1,
           target_procedure: 'send_asset',
@@ -5818,6 +5811,7 @@ describe('Multisig', () => {
         type: 'p2id',
         metadata: {
           proposal_type: 'p2id',
+          salt: '0x' + 'd'.repeat(64),
           chain_anchor: MOCK_CHAIN_ANCHOR_B64,
           recipient_id: '0xrecipient',
           faucet_id: '0xfaucet',
@@ -5850,6 +5844,7 @@ describe('Multisig', () => {
       const multisig = createTestMultisig(config);
       serveProposal(COMMITTED_SALT, {
         proposal_type: 'p2id',
+        salt: '0x' + 'd'.repeat(64),
         chain_anchor: MOCK_CHAIN_ANCHOR_B64,
         recipient_id: '0xrecipient',
         faucet_id: '0xfaucet',
@@ -5887,6 +5882,7 @@ describe('Multisig', () => {
         await (multisig as any).buildTransactionRequestFromMetadata(
           {
             proposalType: 'consume_notes',
+            saltHex: '0x' + 'd'.repeat(64),
             chainAnchor: MOCK_CHAIN_ANCHOR_B64,
             noteIds,
             notes: [],
@@ -5894,7 +5890,6 @@ describe('Multisig', () => {
             description: '',
           },
           {
-            convention: 'committed',
             salt: { toHex: () => COMMITTED_SALT },
             feeFaucetIdHex: MOCK_FEE_FAUCET_ID_HEX,
           },
@@ -5906,10 +5901,10 @@ describe('Multisig', () => {
       });
     }
 
-    it('resolves the convention on the execute path, not just on sync', async () => {
+    it('derives the auth arg on the execute path, not just on sync', async () => {
       // Execution re-fetches the delta and rebuilds from it, and until this test
       // every executed fixture happened to carry no salt — so the whole
-      // resolution step could be skipped on the execute path without any test
+      // derivation step could be skipped on the execute path without any test
       // noticing, while sync-time verification still passed.
       const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
@@ -5964,72 +5959,6 @@ describe('Multisig', () => {
       }
     });
 
-    it('falls back for a switch_guardian whose salt cannot be read at all', async () => {
-      // The GUARDIAN being switched away from serves this field and nothing
-      // binds it, so it can make the salt unreadable as easily as it can make it
-      // wrong. Both have to reach the fallback, or that GUARDIAN can strand a
-      // fully signed switch by choosing the shape the client refuses.
-      const multisig = createTestMultisig(config);
-      const proposalId = '0x' + 'c'.repeat(64);
-      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
-      seedSwitchGuardianProposal(multisig, proposalId, '0xnotasalt');
-
-      serveGuardianCommitment();
-
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const error = await caught(multisig.executeProposal(proposalId));
-      expect((error as { code?: string } | undefined)?.code).not.toBe('proposal_salt_malformed');
-
-      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
-      expect(saltHexOf(options)).toBe(SIGNED_AUTH_ARG);
-
-      // Silently rebuilding differently would hide a contested switch, and the
-      // party that served the bad salt is the one that benefits from the switch
-      // failing. AGENTS 12 requires the fallback be visible.
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('proposal_salt_malformed'),
-      );
-      warn.mockRestore();
-    });
-
-    it('falls back for a switch_guardian whose salt is not even a string', async () => {
-      // GUARDIAN's JSON is cast, not validated, so this field arrives as
-      // whatever was served. A non-string must reach the fallback like any other
-      // unusable salt, rather than throwing a TypeError out of the hex helpers.
-      const multisig = createTestMultisig(config);
-      const proposalId = '0x' + 'c'.repeat(64);
-      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
-      seedSwitchGuardianProposal(multisig, proposalId, 7 as unknown as string);
-
-      serveGuardianCommitment();
-
-      const error = await caught(multisig.executeProposal(proposalId));
-      expect(error).not.toBeInstanceOf(TypeError);
-
-      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
-      expect(saltHexOf(options)).toBe(SIGNED_AUTH_ARG);
-    });
-
-    // The counterpart to the two fallback tests: the recoverable set is exactly
-    // the salt faults. A hash failure inside detection means the client cannot
-    // tell which convention it is looking at — not that the salt was bad — and
-    // no fallback repairs that, so it has to propagate even for the one type
-    // that routes around an unusable salt.
-    it('does not let a switch_guardian fall back past a hash failure', async () => {
-      const multisig = createTestMultisig(config);
-      const proposalId = '0x' + 'c'.repeat(64);
-      seedSwitchGuardianProposal(multisig, proposalId, '0x' + '9'.repeat(64));
-
-      serveGuardianCommitment();
-      vi.mocked(detectAuthArgConvention).mockImplementationOnce(() => {
-        throw new Error('poseidon2 unreachable');
-      });
-
-      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
-        'poseidon2 unreachable',
-      );
-    });
-
     // Well-formed hex is not necessarily a readable word — each limb has to be
     // below the field modulus, which `Word.fromHex` enforces and this suite's
     // mock does not. Driving the decode failure directly covers the branch a
@@ -6052,7 +5981,6 @@ describe('Multisig', () => {
     // Zero-padding is what makes these dangerous: both normalize to the zero
     // word, a legal salt, so without an explicit check a proposal whose salt
     // field was written empty would be rebuilt against a salt nobody chose.
-    // Only an absent salt means "predates the field".
     it.each([
       ['an empty salt', ''],
       ['a prefix with no digits', '0x'],

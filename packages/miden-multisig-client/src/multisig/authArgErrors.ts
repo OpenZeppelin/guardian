@@ -28,25 +28,6 @@ function quoteSalt(saltHex: unknown): string {
     : printable(asString);
 }
 
-/**
- * Renders an error with the reason underneath it, which for a salt that failed
- * to decode is the SDK's own message and the only place the actual cause
- * appears. Both parts are generated here or by the SDK, so neither is unbounded.
- *
- * The WASM SDK rejects with a bare string rather than an `Error`, so narrowing
- * to `Error` would discard the cause on the one path this exists for.
- */
-export function describeWithCause(
-  error: ProposalAuthArgUnresolvableError | ProposalSaltMalformedError,
-): string {
-  const described = error instanceof ProposalAuthArgUnresolvableError ? error.diagnosis : error.message;
-  const { cause } = error;
-  if (cause === undefined) {
-    return described;
-  }
-  return `${described}: ${cause instanceof Error ? cause.message : coerceForMessage(cause)}`;
-}
-
 function coerceForMessage(value: unknown): string {
   if (typeof value === 'string') {
     return value;
@@ -63,11 +44,10 @@ function coerceForMessage(value: unknown): string {
  * A proposal's recorded salt is not a readable 32-byte word, so no rebuild can
  * use it.
  *
- * Coded for the same reason as {@link ProposalAuthArgUnresolvableError}, and
- * recoverable in the same one place: a `switch_guardian`'s salt is served by the
- * GUARDIAN being switched away from, which can make it unreadable as easily as
- * it can make it wrong. Treating only the latter as recoverable would leave that
- * GUARDIAN able to strand a fully signed switch.
+ * Coded for the same reason as {@link ProposalAuthArgUnresolvableError}: the
+ * salt arrives as GUARDIAN-served JSON that is cast rather than validated, so a
+ * caller has to be able to tell a bad proposal from a transport or WASM failure
+ * without matching on the message.
  */
 export class ProposalSaltMalformedError extends Error {
   readonly code: AuthArgErrorCode = 'proposal_salt_malformed';
@@ -76,7 +56,7 @@ export class ProposalSaltMalformedError extends Error {
    * Exactly what GUARDIAN served, so not necessarily a string and not
    * necessarily bounded. Non-enumerable, because the default logging paths
    * (`util.inspect`, `JSON.stringify`) would otherwise re-expose the unbounded
-   * value the message deliberately truncates. Use {@link quotedSalt} to print.
+   * value the message deliberately truncates. The message quotes it already.
    */
   readonly saltHex: unknown;
 
@@ -94,24 +74,17 @@ export class ProposalSaltMalformedError extends Error {
       writable: false,
     });
   }
-
-  /** The bounded, printable form of {@link saltHex}, safe to log. */
-  get quotedSalt(): string {
-    return quoteSalt(this.saltHex);
-  }
 }
 
 /**
- * A proposal's signed auth arg is neither its recorded salt nor a fee-conversion
- * commitment to that salt, so no reconstruction from the recorded salt succeeds.
- * `switch_guardian` is the exception, and deliberately so: it rebuilds from the
- * summary's own auth arg, which reproduces the signed word but not the fee
- * preimage behind it, so it executes only on a zero-fee chain.
+ * A proposal's signed auth arg is not the fee-conversion commitment its recorded
+ * salt and anchored fee faucet derive, so no reconstruction from that salt
+ * succeeds. Raised before the rebuild, so the proposal fails on the value that is
+ * actually wrong rather than on an `ERR_FEE_CONVERSION_INFO_MISSING` abort at
+ * proving.
  *
- * Coded because one caller acts on it rather than reporting it:
- * `switch_guardian` recovery falls back to the summary's own auth arg when it
- * sees this or {@link ProposalSaltMalformedError}, and must not extend that
- * treatment to an unreadable anchor or a WASM failure.
+ * Coded so a caller can tell this from a transport or WASM failure: this one says
+ * the proposal itself is dead and names what has to be recreated.
  */
 export class ProposalAuthArgUnresolvableError extends Error {
   readonly code: AuthArgErrorCode = 'proposal_auth_arg_unresolvable';
@@ -119,12 +92,6 @@ export class ProposalAuthArgUnresolvableError extends Error {
   readonly signedAuthArgHex: string;
   readonly saltHex: string;
   readonly feeFaucetIdHex: string;
-  /**
-   * What was observed, without the remediation the message appends. The
-   * remediation is only true where this is fatal; `switch_guardian` recovers
-   * from it and executes the proposal anyway, so its warning quotes this.
-   */
-  readonly diagnosis: string;
 
   constructor(details: {
     proposalId: string;
@@ -132,22 +99,19 @@ export class ProposalAuthArgUnresolvableError extends Error {
     saltHex: string;
     feeFaucetIdHex: string;
   }) {
-    const diagnosis =
-      `Proposal ${details.proposalId} auth arg ${details.signedAuthArgHex} is neither its ` +
-      `metadata salt ${details.saltHex} nor a fee-conversion commitment to that salt under ` +
-      `fee faucet ${details.feeFaucetIdHex}, so the signed transaction summary cannot be ` +
-      'reproduced from that salt';
     super(
-      `${diagnosis}, and the proposal cannot be executed. Recreate the proposal and collect ` +
-        'signatures again, and have the original dropped server-side — while GUARDIAN keeps ' +
-        'serving it, syncing this account keeps failing on it',
+      `Proposal ${details.proposalId} auth arg ${details.signedAuthArgHex} is not the ` +
+        `fee-conversion commitment to its metadata salt ${details.saltHex} under fee faucet ` +
+        `${details.feeFaucetIdHex}, so the signed transaction summary cannot be reproduced ` +
+        'from that salt, and the proposal cannot be executed. Recreate the proposal and ' +
+        'collect signatures again, and have the original dropped server-side — while ' +
+        'GUARDIAN keeps serving it, syncing this account keeps failing on it',
     );
     this.name = 'ProposalAuthArgUnresolvableError';
     this.proposalId = details.proposalId;
     this.signedAuthArgHex = details.signedAuthArgHex;
     this.saltHex = details.saltHex;
     this.feeFaucetIdHex = details.feeFaucetIdHex;
-    this.diagnosis = diagnosis;
   }
 }
 

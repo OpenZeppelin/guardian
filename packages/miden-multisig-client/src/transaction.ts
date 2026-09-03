@@ -13,8 +13,6 @@ export {
   nativeConversionInfo,
   applyAuthArg,
   resolveAuthArg,
-  detectAuthArgConvention,
-  type AuthArgConvention,
 } from './transaction/feeAuth.js';
 export {
   buildP2idNoteFromMetadata,

@@ -1,4 +1,4 @@
-import type { AccountId, AdviceMap, Word } from '@miden-sdk/miden-sdk';
+import type { AdviceMap, Word } from '@miden-sdk/miden-sdk';
 import type { SignatureScheme } from '../types.js';
 
 export interface SignatureOptions {
@@ -25,16 +25,14 @@ export interface SignatureOptions {
    * For a proposal this SDK will rebuild, only the fee faucet of the proposal's
    * anchored block resolves: recovery derives its one candidate from that header
    * and assumes rate 1/1. A commitment under any other faucet, or a non-native
-   * rate, is unrecoverable. For every type but `switch_guardian` that proposal
-   * then cannot be synced, imported, signed or executed — and because
+   * rate, is unrecoverable — that proposal cannot be synced, imported, signed or
+   * executed, and because
    * `syncProposals()` verifies each proposal without skipping, one such proposal
    * fails the whole account's sync for as long as GUARDIAN serves it. Only
    * `exportProposal()` still works, since it reads GUARDIAN's copy without
    * rebuilding anything.
-   * `switch_guardian` executes without the fee advice instead, rather than
-   * handing the outgoing GUARDIAN a veto.
    */
-  feeFaucetId?: AccountId | string;
+  feeFaucetId?: string;
   signatureAdviceMap?: AdviceMap;
   signatureScheme?: SignatureScheme;
   midenRpcEndpoint?: string;

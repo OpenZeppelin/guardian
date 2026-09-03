@@ -1,8 +1,11 @@
 import type { TransactionRequestBuilder } from '@miden-sdk/miden-sdk';
-import { Felt, FeltArray, Word } from '@miden-sdk/miden-sdk';
+import { AccountId, Felt, FeltArray, Word } from '@miden-sdk/miden-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import { applyAuthArg, feeAuthArg, nativeConversionInfo, resolveAuthArg } from './feeAuth.js';
+
+// The account id the Rust cross-SDK parity test pins.
+const FEE_FAUCET = '0xade67f7701e9e9c12493c6206bc46e';
 
 const word = (...values: bigint[]): Word =>
   Word.newFromFelts(values.map((value) => new Felt(value)));
@@ -55,12 +58,14 @@ describe('feeAuthArg', () => {
 
 describe('nativeConversionInfo', () => {
   it('lays out [suffix, prefix, 1, 1] to match fee::native_conversion_info', () => {
-    const faucet = {
-      prefix: () => new Felt(0xaaan),
-      suffix: () => new Felt(0xbbbn),
-    } as never;
+    const faucet = AccountId.fromHex(FEE_FAUCET);
 
-    expect(felts(nativeConversionInfo(faucet))).toEqual([0xbbbn, 0xaaan, 1n, 1n]);
+    expect(felts(nativeConversionInfo(FEE_FAUCET))).toEqual([
+      faucet.suffix().asInt(),
+      faucet.prefix().asInt(),
+      1n,
+      1n,
+    ]);
   });
 
   /**
@@ -75,27 +80,8 @@ describe('nativeConversionInfo', () => {
   });
 });
 
-describe('feeAuthArg preimage length', () => {
-  /**
-   * `hashElements` equals the MASM's `poseidon2::merge` only at exactly eight
-   * elements. A word that yields a different count would silently switch sponge
-   * parameters, so the guard has to fire rather than hash something the VM will
-   * not reproduce.
-   */
-  it('refuses a preimage that is not two words', () => {
-    const shortWord = { toFelts: () => [new Felt(1n), new Felt(2n)] } as never;
-
-    expect(() => feeAuthArg(shortWord, word(1n, 2n, 3n, 4n))).toThrow(
-      /must be exactly 8 elements to match poseidon2::merge, got 6/,
-    );
-  });
-});
-
 describe('resolveAuthArg', () => {
-  const faucet = {
-    prefix: () => new Felt(0xaaan),
-    suffix: () => new Felt(0xbbbn),
-  } as never;
+  const faucet = FEE_FAUCET;
 
   it('commits to the conversion info when a fee faucet is given', () => {
     const salt = word(11n, 22n, 33n, 44n);
