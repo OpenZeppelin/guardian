@@ -1741,6 +1741,15 @@ one:
 - **TypeScript**: the `@miden-sdk/miden-sdk` pin, whose bundled WASM embeds the
   matching upstream `miden-standards` guarded-multisig component
 
+Matching versions is necessary but not sufficient: the *linkage* has to match too.
+`auth_tx` calls `miden::standards::fee`, so its procedure root depends on whether the
+standards package is linked statically (the callee's MAST is inlined) or dynamically (an
+external reference is left). Upstream's component manifest links statically; every
+`CodeBuilder` — the WASM one the TypeScript builder uses, and the Rust one — links
+dynamically. Both SDKs therefore build the auth component through `CodeBuilder`, from the
+one vendored copy of upstream's MASM, and the pinned `auth_tx` root describes that build.
+Nothing else in the component is linkage-sensitive.
+
 The exact versions for each Guardian release are in
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix); they are not
 repeated here so there is one place to update.

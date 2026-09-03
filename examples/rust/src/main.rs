@@ -85,6 +85,8 @@ async fn create_miden_client(
         .map_err(|err| format!("Failed to create Miden client: {err}"))
 }
 
+// The Err variant is upstream's `miden_client::ClientError`, propagated verbatim.
+#[allow(clippy::result_large_err)]
 async fn add_account_and_sync(
     client: &mut Client<FilesystemKeyStore>,
     account: &Account,
@@ -111,8 +113,8 @@ async fn main() -> ClientResult<()> {
     let (_client2_full_pubkey_hex, client2_commitment_hex, client2_secret_key) =
         falcon::generate_falcon_keypair(&keystore);
 
-    println!("  ✓ Client 1 commitment: {}...", &client1_commitment_hex);
-    println!("  ✓ Client 2 commitment: {}...", &client2_commitment_hex);
+    println!("  ✓ Client 1 commitment: {client1_commitment_hex}...");
+    println!("  ✓ Client 2 commitment: {client2_commitment_hex}...");
     println!();
 
     let miden_endpoint = match args.network {

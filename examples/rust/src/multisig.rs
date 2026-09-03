@@ -194,6 +194,7 @@ pub fn build_signature_advice_entry(
 /// Executes the provided transaction request against the given account. If authentication fails
 /// with `Unauthorized`, the contained `TransactionSummary` is returned. Any other execution
 /// result (including success) is surfaced as an error.
+#[allow(clippy::result_large_err)]
 pub async fn execute_transaction_for_summary<AUTH>(
     client: &mut Client<AUTH>,
     account_id: AccountId,
