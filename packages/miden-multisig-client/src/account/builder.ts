@@ -9,7 +9,6 @@ import {
   AccountComponent,
   AccountStorageMode,
   AuthGuardedMultisigConfig,
-  AuthScheme,
   ProcedureThreshold,
   Word,
   createAuthGuardedMultisig,
@@ -18,6 +17,17 @@ import {
 import { getProcedureRoot } from "../procedures.js";
 import type { MultisigConfig, CreateAccountResult } from "../types.js";
 import { normalizeSignerCommitment } from "../utils/signature.js";
+
+/**
+ * Discriminants of the SDK's wasm `AuthScheme` enum, which `AuthGuardedMultisigConfig` takes.
+ *
+ * They are inlined rather than imported because the package root exports two different things
+ * named `AuthScheme`: the wasm enum, and a string-valued convenience const from `api-types`
+ * that is re-exported second and therefore wins. Importing the name yields the string const,
+ * whose members are `undefined` here, and the constructor rejects that as an invalid enum value.
+ * Source: `crates/web-client/src/models/auth_scheme.rs`.
+ */
+const AUTH_SCHEME = { ecdsa: 1, falcon: 2 } as const;
 
 /**
  * Builds the guarded-multisig component from the upstream standard component.
@@ -43,9 +53,7 @@ function buildGuardedMultisigComponent(
     normalizeSignerCommitment(config.guardianCommitment),
   );
   const scheme =
-    config.signatureScheme === "ecdsa"
-      ? AuthScheme.AuthEcdsaK256Keccak
-      : AuthScheme.AuthRpoFalcon512;
+    AUTH_SCHEME[config.signatureScheme === "ecdsa" ? "ecdsa" : "falcon"];
 
   const baseConfig = new AuthGuardedMultisigConfig(
     approvers,

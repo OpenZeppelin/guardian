@@ -32,11 +32,11 @@
   ],
   "scripts": {
     "build": "tsc",
-    "dev": "npm run generate:masm && tsc --watch",
-    "typecheck": "npm run generate:masm && tsc --noEmit",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "test": "vitest run",
-    "test:watch": "npm run generate:masm && vitest",
+    "test:watch": "vitest",
     "test:browser": "playwright test --config playwright.config.ts"
   },
   "dependencies": {
