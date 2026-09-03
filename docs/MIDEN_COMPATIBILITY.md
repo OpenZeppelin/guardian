@@ -166,14 +166,6 @@ moved in several independent ways:
     request needs no other assets. Whether the resulting transaction is then
     *included* is a separate question — the batch builder decides what fee
     asset and rate it accepts.
-  - Every transaction with a non-zero computed fee carries a `TX_FEE` output
-    note; a zero-fee chain emits none. Dashboard delta
-    listings exclude it from `note_counts.output`, from the asset summary, and
-    from the note-count topology that infers a category when no proposal
-    metadata is present — otherwise a fee would read as an asset transfer, an
-    admin operation such as `switch_guardian` would show a native withdrawal,
-    and every consume would recategorise as a transfer. The delta *detail* view
-    still shows the fee note, tagged `custom`.
 
   A caller driving the exported builders directly still chooses, in either SDK:
   `SignatureOptions.feeFaucetId` in TypeScript, the `Option<FeeConversionInfo>`
