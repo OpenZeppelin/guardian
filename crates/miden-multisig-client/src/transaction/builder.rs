@@ -155,34 +155,15 @@ impl ProposalBuilder {
         )))
     }
 
-    /// The signer-update request an `add_cosigner` proposal is created from.
+    /// The signer-update request an `add_cosigner` or `remove_cosigner` proposal is created
+    /// from. The two differ only in the signer set their caller assembles.
     ///
     /// Every create path resolves its conversion info from the block the client is synced to,
     /// which is the block [`execute_for_summary`] will anchor the request at. Committing it is
     /// what lets the auth procedure's `fee::pay_fee` run, and resolving it here rather than at
     /// the chain tip on some later rebuild is what keeps the anchor and the committed faucet
     /// from disagreeing.
-    async fn add_cosigner_request(
-        miden_client: &MidenSdkClient,
-        new_threshold: u64,
-        signers: &[Word],
-        salt: Word,
-        scheme: SignatureScheme,
-    ) -> Result<TransactionRequest> {
-        let (tx_request, _config_hash) = build_update_signers_transaction_request(
-            new_threshold,
-            signers,
-            salt,
-            std::iter::empty(),
-            scheme,
-            Some(crate::execution::resolve_fee_conversion_info(miden_client).await?),
-        )?;
-
-        Ok(tx_request)
-    }
-
-    /// The signer-update request a `remove_cosigner` proposal is created from.
-    async fn remove_cosigner_request(
+    async fn signer_update_request(
         miden_client: &MidenSdkClient,
         new_threshold: u64,
         signers: &[Word],
@@ -293,7 +274,7 @@ impl ProposalBuilder {
         let salt = generate_salt();
 
         // Build the transaction request (without signatures - we just want the summary)
-        let tx_request = Self::add_cosigner_request(
+        let tx_request = Self::signer_update_request(
             miden_client,
             new_threshold,
             &current_signers,
@@ -407,7 +388,7 @@ impl ProposalBuilder {
         let salt = generate_salt();
 
         // Build the transaction request
-        let tx_request = Self::remove_cosigner_request(
+        let tx_request = Self::signer_update_request(
             miden_client,
             new_threshold,
             &new_signers,
@@ -964,11 +945,11 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn add_cosigner_request_commits_the_chain_fee_faucet() {
+        async fn signer_update_request_commits_the_chain_fee_faucet() {
             let dir = tempfile::tempdir().expect("temp dir");
             let client = client_at_fee_faucet(dir.path(), chain_fee_faucet()).await;
 
-            let request = ProposalBuilder::add_cosigner_request(
+            let request = ProposalBuilder::signer_update_request(
                 &client.miden_client,
                 1,
                 &[Word::from([5u32, 6, 7, 8])],
@@ -976,25 +957,7 @@ mod tests {
                 SignatureScheme::Falcon,
             )
             .await
-            .expect("the add-cosigner request builds");
-
-            assert_commits_fee_faucet(&request, chain_fee_faucet(), salt());
-        }
-
-        #[tokio::test]
-        async fn remove_cosigner_request_commits_the_chain_fee_faucet() {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let client = client_at_fee_faucet(dir.path(), chain_fee_faucet()).await;
-
-            let request = ProposalBuilder::remove_cosigner_request(
-                &client.miden_client,
-                1,
-                &[Word::from([5u32, 6, 7, 8])],
-                salt(),
-                SignatureScheme::Falcon,
-            )
-            .await
-            .expect("the remove-cosigner request builds");
+            .expect("the signer-update request builds");
 
             assert_commits_fee_faucet(&request, chain_fee_faucet(), salt());
         }
