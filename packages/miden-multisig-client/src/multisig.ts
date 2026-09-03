@@ -43,7 +43,7 @@ import {
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
-  summarySalt,
+  summaryAuthArg,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -2187,7 +2187,7 @@ export class Multisig {
 
     const txSummaryBytes = base64ToUint8Array(txSummaryBase64);
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
-    const saltHex = summarySalt(txSummary).toHex();
+    const saltHex = summaryAuthArg(txSummary).toHex();
     const txCommitmentHex = txSummary.toCommitment().toHex();
     const normalizedTxCommitmentHex = normalizeHexWord(txCommitmentHex);
     const normalizedSignerCommitments = new Set(
@@ -2501,7 +2501,7 @@ export class Multisig {
 
       const salt = proposal.metadata.saltHex
         ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
-        : summarySalt(summary);
+        : summaryAuthArg(summary);
 
       const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
       const webClient = await this.getRawClient();

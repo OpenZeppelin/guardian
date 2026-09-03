@@ -138,7 +138,7 @@ vi.mock('./transaction.js', () => ({
   executeForSummaryAt: vi.fn(),
   chainAnchorToBase64: vi.fn(() => MOCK_CHAIN_ANCHOR_B64),
   chainAnchorFromBase64: vi.fn(() => createMockChainAnchor()),
-  summarySalt: vi.fn(() => ({
+  summaryAuthArg: vi.fn(() => ({
     toHex: () => '0x' + 'd'.repeat(64),
   })),
   buildUpdateSignersTransactionRequest: vi.fn().mockResolvedValue({
