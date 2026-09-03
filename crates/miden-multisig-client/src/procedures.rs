@@ -167,11 +167,6 @@ mod tests {
         }
     }
 
-    /// Custody-critical guard: a root that does not match the component accounts are
-    /// built from means a per-procedure threshold override is stored under the wrong
-    /// key and silently ignored at authentication time.
-    ///
-
     fn auth_root_in(code: &miden_protocol::account::AccountComponentCode, masm_name: &str) -> Word {
         let export = code
             .exports()
@@ -190,9 +185,9 @@ mod tests {
     /// built from means a per-procedure threshold override is stored under the wrong
     /// key and silently ignored at authentication time.
     ///
-    /// Covers every procedure whose root is the same under both linkages, so the pin can
-    /// be compared against the upstream component directly. `auth_tx` is deliberately
-    /// absent — it is linkage-sensitive and has its own two tests below.
+    /// Every pinned root is compared against the upstream component. `auth_tx` needed
+    /// special handling while the MASM was vendored — it links `miden::standards::fee`,
+    /// so a locally compiled copy rooted differently. Building from upstream removes that.
     #[test]
     fn procedure_roots_match_upstream_component() {
         use miden_standards::account::wallets::BasicWallet;
@@ -202,6 +197,10 @@ mod tests {
         assert_eq!(
             ProcedureName::UpdateSigners.root(),
             auth_root_in(auth_code, "update_signers_and_threshold")
+        );
+        assert_eq!(
+            ProcedureName::AuthTx.root(),
+            auth_root_in(auth_code, "auth_tx_guarded_multisig")
         );
         assert_eq!(
             ProcedureName::UpdateProcedureThreshold.root(),
@@ -220,10 +219,6 @@ mod tests {
             Word::from(BasicWallet::receive_asset_root())
         );
     }
-
-    /// The `auth_tx` pin against the source it is actually derived from. Since `auth_tx`
-    /// began calling `miden::standards::fee` its root moves with the fee library, so the
-    /// pin tracks the bundled MASM rather than the upstream component.
 
     /// The regression guard for the divergence itself: an account built the Rust way must
     /// carry the pinned `auth_tx` root, or every root-keyed threshold read against it fails
