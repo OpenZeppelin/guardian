@@ -253,6 +253,45 @@ pub async fn build_final_transaction_request(
     }
 }
 
+/// Reads the chain's native fee asset from the block the client is synced to and returns
+/// conversion info paying the transaction fee in it at rate 1/1.
+///
+/// The multisig auth procedures take the payment asset and rate from the auth args, so this has to
+/// be committed into every request the guardian builds; without it `fee::pay_fee` aborts with
+/// `ERR_FEE_CONVERSION_INFO_MISSING` on any chain with a non-zero verification base fee.
+///
+/// This is the *creation*-side resolver, and it deliberately reads the synced block rather than
+/// the network tip: that is the same block `chain_anchor_at_tip` pins the new request to, so the
+/// committed faucet and the proposal's anchor cannot disagree. Rebuilds use
+/// [`fee_conversion_info_at`] against the proposal's stored anchor instead.
+pub async fn resolve_fee_conversion_info(client: &MidenSdkClient) -> Result<FeeConversionInfo> {
+    let header = client.get_latest_block_header().await.map_err(|e| {
+        MultisigError::miden_client_with_context(
+            "failed to read the synced block header while resolving the fee faucet",
+            e,
+        )
+    })?;
+
+    Ok(FeeConversionInfo::one_to_one(
+        header.fee_parameters().fee_faucet_id(),
+    ))
+}
+
+/// The native 1/1 conversion info for the fee faucet `chain_anchor` reports.
+///
+/// Fee parameters are a per-block header field, so a proposal's faucet is whatever its anchored
+/// reference block reported — not whatever the chain reports now. Deriving it from the anchor is
+/// what lets a cosigner reproduce a committed auth arg from `salt_hex` alone, offline, and lets
+/// the Rust and TypeScript SDKs agree on the same proposal.
+///
+/// This *derives* the value every typed path commits; it does not read back what a request
+/// actually committed. A custom request may commit any faucet and rate, and nothing recorded on
+/// the proposal can recover an arbitrary one — such integrations must retain the exact
+/// [`FeeConversionInfo`] they built with.
+pub fn fee_conversion_info_at(chain_anchor: &ChainAnchor) -> FeeConversionInfo {
+    FeeConversionInfo::one_to_one(chain_anchor.header().fee_parameters().fee_faucet_id())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,43 +531,4 @@ mod tests {
             assert_commits_fee_faucet(&request, alternate_fee_faucet(), Word::from(SALT));
         }
     }
-}
-
-/// Reads the chain's native fee asset from the block the client is synced to and returns
-/// conversion info paying the transaction fee in it at rate 1/1.
-///
-/// The multisig auth procedures take the payment asset and rate from the auth args, so this has to
-/// be committed into every request the guardian builds; without it `fee::pay_fee` aborts with
-/// `ERR_FEE_CONVERSION_INFO_MISSING` on any chain with a non-zero verification base fee.
-///
-/// This is the *creation*-side resolver, and it deliberately reads the synced block rather than
-/// the network tip: that is the same block `chain_anchor_at_tip` pins the new request to, so the
-/// committed faucet and the proposal's anchor cannot disagree. Rebuilds use
-/// [`fee_conversion_info_at`] against the proposal's stored anchor instead.
-pub async fn resolve_fee_conversion_info(client: &MidenSdkClient) -> Result<FeeConversionInfo> {
-    let header = client.get_latest_block_header().await.map_err(|e| {
-        MultisigError::miden_client_with_context(
-            "failed to read the synced block header while resolving the fee faucet",
-            e,
-        )
-    })?;
-
-    Ok(FeeConversionInfo::one_to_one(
-        header.fee_parameters().fee_faucet_id(),
-    ))
-}
-
-/// The native 1/1 conversion info for the fee faucet `chain_anchor` reports.
-///
-/// Fee parameters are a per-block header field, so a proposal's faucet is whatever its anchored
-/// reference block reported — not whatever the chain reports now. Deriving it from the anchor is
-/// what lets a cosigner reproduce a committed auth arg from `salt_hex` alone, offline, and lets
-/// the Rust and TypeScript SDKs agree on the same proposal.
-///
-/// This *derives* the value every typed path commits; it does not read back what a request
-/// actually committed. A custom request may commit any faucet and rate, and nothing recorded on
-/// the proposal can recover an arbitrary one — such integrations must retain the exact
-/// [`FeeConversionInfo`] they built with.
-pub fn fee_conversion_info_at(chain_anchor: &ChainAnchor) -> FeeConversionInfo {
-    FeeConversionInfo::one_to_one(chain_anchor.header().fee_parameters().fee_faucet_id())
 }

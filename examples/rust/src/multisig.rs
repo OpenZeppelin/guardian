@@ -201,6 +201,9 @@ where
 ///
 /// The faucet is a per-block header field, so this is resolved once and the value retained —
 /// re-reading it at rebuild time would commit a different faucet if the chain had moved on.
+// `MultisigError::Client` wraps upstream's `ClientError` verbatim; boxing it would only
+// move the cost to the caller's `?`.
+#[allow(clippy::result_large_err)]
 pub async fn resolve_fee_conversion_info<AUTH>(
     client: &Client<AUTH>,
 ) -> Result<FeeConversionInfo, MultisigError>
@@ -232,6 +235,7 @@ pub fn build_signature_advice_entry(
 /// Executes the provided transaction request against the given account. If authentication fails
 /// with `Unauthorized`, the contained `TransactionSummary` is returned. Any other execution
 /// result (including success) is surfaced as an error.
+#[allow(clippy::result_large_err)]
 pub async fn execute_transaction_for_summary<AUTH>(
     client: &mut Client<AUTH>,
     account_id: AccountId,

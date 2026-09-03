@@ -36,6 +36,9 @@ use miden_standards::account::auth::FeeConversionInfo;
 /// or with [`crate::fee_conversion_info_at`] when rebuilding one for an existing proposal —
 /// the auth arg commits it, so a rebuild has to reproduce what was committed rather than what
 /// the chain reports now.
+// Every argument is an independent input to the request; grouping them into a struct would
+// only rename the same parameter list. Matches `TransactionBuilder::build_p2id`.
+#[allow(clippy::too_many_arguments)]
 pub fn build_p2id_transaction_request<I>(
     sender_account: &Account,
     recipient: AccountId,
