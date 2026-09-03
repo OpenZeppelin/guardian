@@ -1,7 +1,7 @@
 # Build stage
 # For reproducible builds across machines, specify --platform:
 #   docker build --platform linux/amd64 ...
-FROM rust:1.96.1-bookworm as base-builder
+FROM rust:1.98.0-bookworm as base-builder
 
 # Install protobuf compiler (pinned to upstream 3.21.12; the Debian
 # packaging revision floats so point-release rebuilds don't break the build)

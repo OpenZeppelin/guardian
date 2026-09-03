@@ -20,7 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| 0.17.0-rc.2 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.3` | `0.16.0-rc.5` (exact) |
+| 0.17.0-rc.2 | 0.16 (rc) | `=0.16.0-rc.9` | `=0.16.0-rc.3` | `0.16.0-rc.5` (exact) |
 | 0.17.0-rc.1 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.2` | `0.16.0-rc.3` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
 | 0.15.x | 0.15 | `0.15.x` | `0.15.0` | `^0.15.0` |
@@ -37,6 +37,17 @@ Rust and npm pins must move together: nothing at build time verifies that the np
 SDK's embedded `miden-standards` matches the Rust pin, so the CI parity gates are
 what catch drift. See
 [`MULTISIG_SDK.md`](./MULTISIG_SDK.md#contract-version-pinning).
+
+**The 0.17.0-rc.2 row is mid-move.** The guarded-multisig auth component now pays the
+transaction fee, which needs `miden::standards::fee` procedures that first ship in
+`miden-standards` 0.16.0-rc.9 — so the Rust pin is there. The newest published
+`@miden-sdk/miden-sdk` is still 0.16.0-rc.5, which embeds an older `miden-standards`: it
+cannot assemble the current auth MASM, and its `AccountInterface` does not recognise an
+account built from it. Until an rc.9-embedding web SDK is published, the browser builder
+and anything reading a current account through that SDK are held back — the
+`account-roundtrip` case that calls straight into the SDK
+(`Account.getPublicKeyCommitments`) and the Playwright browser determinism gate both
+fail on the version gap, not on a Guardian defect.
 
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
