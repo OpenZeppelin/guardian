@@ -6,8 +6,14 @@ export {
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
-  summarySalt,
+  summaryAuthArg,
 } from './transaction/summary.js';
+export {
+  feeAuthArg,
+  nativeConversionInfo,
+  applyAuthArg,
+  resolveAuthArg,
+} from './transaction/feeAuth.js';
 export {
   buildP2idNoteFromMetadata,
   buildP2idTransactionRequest,
