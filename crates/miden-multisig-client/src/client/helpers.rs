@@ -266,6 +266,7 @@ impl MultisigClient {
             proposal.metadata.new_threshold,
             Some(signer_commitments.as_slice()),
             self.key_manager.scheme(),
+            &chain_anchor,
         )
         .await?;
 
@@ -506,6 +507,36 @@ impl MultisigClient {
             })?;
 
         Ok(())
+    }
+
+    /// Resolves the chain's fee conversion info: the native fee asset at rate 1/1.
+    ///
+    /// Every request this client builds must commit this via its auth args, because the multisig
+    /// auth procedures take the payment asset and rate from there. Callers that build requests
+    /// themselves need the same value, so it is exposed rather than kept internal.
+    ///
+    /// The value is read from the block this client is synced to, which is the block a request
+    /// built now would be anchored at. A caller holding an existing proposal should derive the
+    /// faucet from that proposal's anchor instead, since fee parameters are a per-block field.
+    ///
+    /// The typed create paths resolve this themselves, after their own sync, so their committed
+    /// faucet and their anchor always come from the same block.
+    ///
+    /// [`Self::propose_custom_transaction`] cannot offer that guarantee. It syncs on entry —
+    /// after the caller has already resolved the faucet and serialized the request — so a sync
+    /// that advances the chain past a fee-faucet change leaves the request committing one
+    /// faucet and the proposal anchored at a block naming another. Calling [`Self::sync`] first
+    /// narrows the window but cannot close it, because the internal sync still runs afterwards.
+    /// The proposal then collects signatures and fails to pay.
+    ///
+    /// That is accepted rather than sealed. The committed value is recoverable — the request is
+    /// deserialized anyway, and the preimage sits in its advice map under the auth arg — but the
+    /// caller's *intent* is not: a deliberately non-native faucet and a stale read look the
+    /// same, so a seal would reject the legitimate case along with the mistake.
+    pub async fn fee_conversion_info(
+        &self,
+    ) -> Result<miden_standards::account::auth::FeeConversionInfo> {
+        crate::execution::resolve_fee_conversion_info(&self.miden_client).await
     }
 
     /// Resets the miden-client by creating a new instance with a fresh database.

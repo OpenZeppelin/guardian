@@ -179,6 +179,12 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
         .expect("tx script compiles");
     let salt = Word::from([Felt::new_unchecked(7); 4]);
 
+    // Bare salt rather than a fee-conversion commitment: `MockChain` defaults
+    // `verification_base_fee` to 0, so `fee::pay_fee` creates no note and accepts
+    // it. Both SDKs commit `hash(CONVERSION_INFO || SALT)` instead, so this
+    // fixture deliberately exercises the zero-fee path. Candidate abandonment is
+    // what is under test and only needs *a* summary.
+
     let abort_summary = match mock_chain
         .build_transaction(multisig_account.id())
         .authenticator(None)

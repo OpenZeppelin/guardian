@@ -108,7 +108,10 @@ request, proposes it via `createCustomProposal`, and after threshold calls
 `prepareCustomExecution` to get the validated advice, which the harness injects
 into a rebuilt request before submitting on-chain. The `recipe` returned by
 `createCustomProposal` is what the producer keeps to reproduce the exact
-transaction at execute time (request inputs + salt).
+transaction at execute time (request inputs, salt, and the fee faucet the
+create-time build committed). The fee faucet is part of the recipe because the
+auth arg commits to it: a rebuild that drops it reproduces a bare salt, which
+verifies against nothing the cosigners signed.
 
 ```js
 // Producer tab: create
