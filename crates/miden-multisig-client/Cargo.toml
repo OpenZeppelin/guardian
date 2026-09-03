@@ -11,9 +11,9 @@ description = "High-level SDK for interacting with multisig accounts on Miden vi
 
 [dependencies]
 # Internal crates
-guardian-client = { version = "=0.17.0-rc.2", path = "../client" }
-guardian-shared = { version = "=0.17.0-rc.2", path = "../shared" }
-miden-confidential-contracts = { version = "=0.17.0-rc.2", path = "../contracts" }
+guardian-client = { version = "=0.17.0-rc.3", path = "../client" }
+guardian-shared = { version = "=0.17.0-rc.3", path = "../shared" }
+miden-confidential-contracts = { version = "=0.17.0-rc.3", path = "../contracts" }
 
 # Miden
 miden-client = { workspace = true, features = ["tonic"] }
@@ -54,6 +54,6 @@ legacy-consume-notes = []
 [dev-dependencies]
 guardian-client = { version = "=0.17.0-rc.2", path = "../client", features = ["testing"] }
 tempfile = { workspace = true }
-miden-confidential-contracts = { version = "=0.17.0-rc.2", path = "../contracts", features = ["testing"] }
+miden-confidential-contracts = { version = "=0.17.0-rc.3", path = "../contracts", features = ["testing"] }
 miden-client = { workspace = true, features = ["tonic", "testing"] }
 miden-rpc-client = { path = "../miden-rpc-client", features = ["scripted-node"] }

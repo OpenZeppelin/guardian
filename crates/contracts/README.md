@@ -4,12 +4,11 @@ Builder facade for Guardian's custody accounts on [Miden](https://miden.xyz).
 
 Since the adoption of the audited upstream `AuthGuardedMultisig` component from
 [`miden-standards`](https://crates.io/crates/miden-standards), this crate authors no
-MASM of its own. It builds the upstream component's storage and metadata, and compiles
-its auth code from the copy of upstream's source that
-`packages/miden-multisig-client` vendors — the same bytes the TypeScript builder
-assembles, with the standards package linked the same way, so both SDKs produce
-byte-identical accounts. See `GUARDED_MULTISIG_AUTH_MASM` for why the linkage rather
-than the source is what had to be reconciled. It provides:
+MASM of its own and compiles none. It calls `AuthGuardedMultisig::new` and builds the
+component's storage and metadata around the result, so the procedure roots are upstream's
+by construction rather than by a pin that has to be kept in step. The TypeScript builder
+calls the same component through the web SDK, so both SDKs produce byte-identical
+accounts. It provides:
 
 - `MultisigGuardianConfig` / `MultisigGuardianBuilder` — the single source of truth
   for constructing guarded-multisig accounts (validation, storage layout, signature

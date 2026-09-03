@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-client"
-version = "0.17.0-rc.2"
+version = "0.17.0-rc.3"
 dependencies = [
  "chrono",
  "guardian-shared",
@@ -3471,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-server"
-version = "0.17.0-rc.2"
+version = "0.17.0-rc.3"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -3561,7 +3561,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-shared"
-version = "0.17.0-rc.2"
+version = "0.17.0-rc.3"
 dependencies = [
  "async-trait",
  "base64",
@@ -4786,9 +4786,9 @@ dependencies = [
 
 [[package]]
 name = "miden-client"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78d816a15bf81d52673b668be0e2d41c681cb861478c07480418f48705862c5d"
+checksum = "bd8933e2531948e3e6ec40ae23c90b97ead9a8aa2a6b51f5f0fd8af028fa0ce8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4825,9 +4825,9 @@ dependencies = [
 
 [[package]]
 name = "miden-client-sqlite-store"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8729075614f4d993e53bcd1fe74e712f3dd1b46644842261dbb2abb081a3f211"
+checksum = "9fab9c9c2e81e0e6c0288d270219538778bd3145508a19da9982d24cbecc3579"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4840,11 +4840,12 @@ dependencies = [
  "rusqlite_migration",
  "thiserror 2.0.19",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "miden-confidential-contracts"
-version = "0.17.0-rc.2"
+version = "0.17.0-rc.3"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -5128,7 +5129,7 @@ dependencies = [
 
 [[package]]
 name = "miden-multisig-client"
-version = "0.17.0-rc.2"
+version = "0.17.0-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5157,9 +5158,9 @@ dependencies = [
 
 [[package]]
 name = "miden-node-proto-build"
-version = "0.16.0-rc.3"
+version = "0.16.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95d4ad1fbf4904ea2f211f54ff53439f9a3ecb06842a5751982f0143cf79b991"
+checksum = "be898c22d3f1f398658925cb31d18871c239cc9b7004ee3d8099d74efc70e1e6"
 dependencies = [
  "build-rs",
  "codegen",
@@ -5342,7 +5343,7 @@ dependencies = [
 
 [[package]]
 name = "miden-rpc-client"
-version = "0.17.0-rc.2"
+version = "0.17.0-rc.3"
 dependencies = [
  "async-trait",
  "guardian-shared",

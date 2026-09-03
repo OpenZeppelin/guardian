@@ -20,7 +20,8 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| 0.17.0-rc.2 | 0.16 (rc) | `=0.16.0-rc.9` | `=0.16.0-rc.3` | `0.16.0-rc.5` (exact) |
+| 0.17.0-rc.3 | 0.16 (rc) | `=0.16.0-rc.9` | `=0.16.0-rc.4` | `0.16.0-rc.7` (exact) |
+| 0.17.0-rc.2 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.3` | `0.16.0-rc.5` (exact) |
 | 0.17.0-rc.1 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.2` | `0.16.0-rc.3` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
 | 0.15.x | 0.15 | `0.15.x` | `0.15.0` | `^0.15.0` |
@@ -38,16 +39,15 @@ SDK's embedded `miden-standards` matches the Rust pin, so the CI parity gates ar
 what catch drift. See
 [`MULTISIG_SDK.md`](./MULTISIG_SDK.md#contract-version-pinning).
 
-**The 0.17.0-rc.2 row is mid-move.** The guarded-multisig auth component now pays the
-transaction fee, which needs `miden::standards::fee` procedures that first ship in
-`miden-standards` 0.16.0-rc.9 — so the Rust pin is there. The newest published
-`@miden-sdk/miden-sdk` is still 0.16.0-rc.5, which embeds an older `miden-standards`: it
-cannot assemble the current auth MASM, and its `AccountInterface` does not recognise an
-account built from it. Until an rc.9-embedding web SDK is published, the browser builder
-and anything reading a current account through that SDK are held back — the
-`account-roundtrip` case that calls straight into the SDK
-(`Account.getPublicKeyCommitments`) and the Playwright browser determinism gate both
-fail on the version gap, not on a Guardian defect.
+**0.17.0-rc.3 is a breaking contract bump.** The guarded-multisig auth component now pays
+the transaction fee, so it calls `miden::standards::fee` procedures that first ship in
+`miden-standards` 0.16.0-rc.9, and it is built from that release's standard
+`AuthGuardedMultisig` component rather than from a copy compiled here. Both move the
+`auth_tx` procedure root, so an account created by 0.17.0-rc.2 does not carry the root
+0.17.0-rc.3 pins: `assertPinnedContractVersion` rejects it, and reads through
+`AccountInspector` fail with `UnsupportedContractVersion`. There is no in-place migration —
+accounts must be recreated on the new contract version. See
+[`MULTISIG_SDK.md`](./MULTISIG_SDK.md#contract-version-pinning).
 
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
