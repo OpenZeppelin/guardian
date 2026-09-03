@@ -396,10 +396,10 @@ mod tests {
         // Cross-SDK parity: the TypeScript builder must derive these same identity
         // values from the same pinned miden-standards version; regenerate both if
         // the pin changes.
-        assert_eq!(account.id().to_hex(), "0x912a25b8dccd678172ade0b9ac8f40");
+        assert_eq!(account.id().to_hex(), "0xbe7041e78ee3f1410aa5b790fa9c11");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0x2f42130aaa99dbfba7e4786c44a1cd55983fc03b44a47b6e8385dcb36f246289"
+            "0xa7c22bff9e22a6463124355881a7f24b9862bfebb41ae2b11f540aaf0ddb10bb"
         );
     }
 }
