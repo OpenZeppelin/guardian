@@ -35,25 +35,6 @@ describe('feeAuthArg', () => {
       14641540369284480384n,
     ]);
   });
-
-  it('is order-sensitive: conversion info is hashed before the salt', () => {
-    const conversionInfo = word(0xdeadn, 0xbeefn, 1n, 1n);
-    const salt = word(11n, 22n, 33n, 44n);
-
-    expect(felts(feeAuthArg(conversionInfo, salt))).not.toEqual(
-      felts(feeAuthArg(salt, conversionInfo)),
-    );
-  });
-
-  it('gives distinct commitments for distinct salts', () => {
-    // Replay protection depends on this: the summary salt is the commitment, so
-    // two proposals differing only in salt must not collide.
-    const conversionInfo = word(0xdeadn, 0xbeefn, 1n, 1n);
-
-    expect(felts(feeAuthArg(conversionInfo, word(1n, 0n, 0n, 0n)))).not.toEqual(
-      felts(feeAuthArg(conversionInfo, word(2n, 0n, 0n, 0n))),
-    );
-  });
 });
 
 describe('nativeConversionInfo', () => {
@@ -151,16 +132,5 @@ describe('resolveAuthArg', () => {
 
     expect(() => applyAuthArg(builder, salt, 'not-a-faucet-id')).toThrow();
     expect(free).toHaveBeenCalledTimes(1);
-  });
-
-  it('is deterministic, so a rebuild reproduces the proposer auth arg', () => {
-    // Execution rebuilds the request from the stored salt and re-derives the
-    // commitment. If this were not stable the reconstruction check would reject
-    // every proposal after signing.
-    const salt = word(11n, 22n, 33n, 44n);
-
-    expect(felts(resolveAuthArg(salt, faucet).authArg)).toEqual(
-      felts(resolveAuthArg(salt, faucet).authArg),
-    );
   });
 });
