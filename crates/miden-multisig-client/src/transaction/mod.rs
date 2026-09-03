@@ -31,7 +31,7 @@ mod fee {
     /// summary binds, and distinct salts still produce distinct commitments.
     ///
     /// The commitment and its advice preimage are applied by hand rather than through
-    /// [`TransactionRequestBuilder::fee_conversion_info`]. That method additionally marks the
+    /// [`TransactionRequestBuilder::fee_conversion_salt`]. That method additionally marks the
     /// request as *declaring* conversion info, and miden-client refuses such a request before
     /// execution for every auth component outside `AuthSingleSig`/`AuthMultisig` — which includes
     /// the `AuthGuardedMultisig` component these accounts use. The auth arg and advice entries
@@ -201,7 +201,7 @@ mod tests {
             .expect("request should build");
 
         assert!(
-            !request.declares_fee_conversion_info(),
+            request.fee_conversion_salt().is_none(),
             "declaring the conversion info makes miden-client reject the guarded account"
         );
         assert_eq!(*request.auth_arg(), Some(expected_auth_arg));
@@ -320,7 +320,7 @@ mod tests {
             .build()
             .expect("request should build");
 
-        assert!(!request.declares_fee_conversion_info());
+        assert!(request.fee_conversion_salt().is_none());
         assert_eq!(*request.auth_arg(), Some(salt));
     }
 
