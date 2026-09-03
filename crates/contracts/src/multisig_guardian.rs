@@ -4,63 +4,18 @@
 //! `BasicWallet`. Guardian rotation requires the procedure's multisig threshold,
 //! without a current-guardian signature.
 
-use std::sync::LazyLock;
-
 use anyhow::{Result, anyhow};
 use miden_protocol::Word;
 use miden_protocol::account::auth::{AuthScheme, PublicKeyCommitment};
 use miden_protocol::account::{
-    Account, AccountBuilder, AccountComponent, AccountComponentCode, AccountProcedureRoot,
-    AccountType,
+    Account, AccountBuilder, AccountComponent, AccountProcedureRoot, AccountType,
 };
 use miden_standards::account::auth::{
     Approver, ApproverSet, AuthGuardedMultisig, AuthGuardedMultisigConfig, GuardianConfig,
 };
 use miden_standards::account::wallets::BasicWallet;
-use miden_standards::code_builder::CodeBuilder;
 
 use guardian_shared::SignatureScheme;
-
-/// The guarded-multisig auth MASM, byte-identical to the upstream component source that
-/// [`AuthGuardedMultisig::code()`] is compiled from, and shared verbatim with the TypeScript
-/// package that assembles browser accounts from it.
-///
-/// The source is the same; the *linkage* is not, and that is why this constant exists rather
-/// than a plain `AuthGuardedMultisig::code()` call. `auth_tx_guarded_multisig` is the only
-/// export that calls `miden::standards::fee`, so it is the only one whose root moves with how
-/// the standards package is linked: upstream's component manifest declares
-/// `miden-standards = { linkage = "static" }` and inlines the callee's MAST, while
-/// [`CodeBuilder`] links it dynamically and leaves an external reference. Building through
-/// [`CodeBuilder`] here is what makes a Rust-built account carry the same `auth_tx` root as a
-/// browser-built one — the root `miden_multisig_client::ProcedureName::AuthTx` pins, and the
-/// key the per-procedure threshold overrides map is keyed by.
-/// A crate-local copy of the TypeScript package's MASM. It cannot be an `include_str!` reaching
-/// into `packages/`: `cargo publish` packages only files under the crate root, so an escaping
-/// path builds in the workspace and then fails to compile from the published tarball.
-/// `vendored_masm_matches_the_typescript_package` keeps the two byte-identical.
-pub const GUARDED_MULTISIG_AUTH_MASM: &str =
-    include_str!("../masm/account_components/auth/guarded_multisig.masm");
-
-/// Assembled once, like upstream's own `AuthGuardedMultisig::code()`: the source is a constant,
-/// so the result is too, and account builds are not rare (the load generator makes thousands).
-static DYNAMICALLY_LINKED_AUTH_CODE: LazyLock<std::result::Result<AccountComponentCode, String>> =
-    LazyLock::new(|| {
-        CodeBuilder::new()
-            .compile_component_code("guarded_multisig", GUARDED_MULTISIG_AUTH_MASM)
-            .map_err(|e| format!("failed to compile the guarded-multisig auth MASM: {e}"))
-    });
-
-/// The guarded-multisig auth component code every guardian account carries: the shared MASM
-/// compiled with the standards package linked dynamically.
-///
-/// This is the code both SDKs build accounts from, so it is the code the pinned procedure roots
-/// describe. See [`GUARDED_MULTISIG_AUTH_MASM`] for why the linkage is load-bearing.
-pub fn dynamically_linked_auth_code() -> Result<AccountComponentCode> {
-    DYNAMICALLY_LINKED_AUTH_CODE
-        .as_ref()
-        .map(Clone::clone)
-        .map_err(|e| anyhow!(e.clone()))
-}
 
 /// Configuration for creating a MultisigGuardian account.
 #[derive(Debug, Clone)]
@@ -219,19 +174,9 @@ impl MultisigGuardianBuilder {
                 .map_err(|e| anyhow!("invalid procedure thresholds: {e}"))?;
         }
 
-        let component: AccountComponent = AuthGuardedMultisig::new(cfg)
+        Ok(AuthGuardedMultisig::new(cfg)
             .map_err(|e| anyhow!("failed to build guarded-multisig component: {e}"))?
-            .into();
-
-        // Same storage and metadata as the upstream component; only the code is swapped, for
-        // the dynamically linked build of the identical source. See
-        // [`GUARDED_MULTISIG_AUTH_MASM`].
-        AccountComponent::new(
-            dynamically_linked_auth_code()?,
-            component.storage_slots().to_vec(),
-            component.metadata().clone(),
-        )
-        .map_err(|e| anyhow!("failed to build guarded-multisig component: {e}"))
+            .into())
     }
 
     fn validate_config(&self) -> Result<()> {
@@ -455,30 +400,6 @@ mod tests {
         assert_eq!(
             account.to_commitment().into_hex(),
             "0x2f42130aaa99dbfba7e4786c44a1cd55983fc03b44a47b6e8385dcb36f246289"
-        );
-    }
-}
-
-#[cfg(test)]
-mod vendored_masm_tests {
-    use super::GUARDED_MULTISIG_AUTH_MASM;
-
-    /// The TypeScript package owns the canonical MASM (`generate-masm.mjs` vendors it into
-    /// `auth.ts`); this crate must carry its own copy to stay publishable. Skipped when the
-    /// sibling tree is absent, which is the published-tarball case.
-    #[test]
-    fn vendored_masm_matches_the_typescript_package() {
-        let canonical = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm");
-        if !canonical.exists() {
-            return;
-        }
-        let expected = std::fs::read_to_string(&canonical).expect("read canonical MASM");
-        assert_eq!(
-            expected,
-            GUARDED_MULTISIG_AUTH_MASM,
-            "crates/contracts/masm copy has drifted from {}",
-            canonical.display()
         );
     }
 }

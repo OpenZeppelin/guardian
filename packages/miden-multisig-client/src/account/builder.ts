@@ -8,28 +8,61 @@ import {
   AccountBuilder,
   AccountComponent,
   AccountStorageMode,
+  AuthGuardedMultisigConfig,
+  AuthScheme,
+  ProcedureThreshold,
+  Word,
+  createAuthGuardedMultisig,
   type MidenClient,
-  type WasmWebClient,
 } from '@miden-sdk/miden-sdk';
 import type { MultisigConfig, CreateAccountResult } from '../types.js';
-import { getRawMidenClient } from '../raw-client.js';
-import { buildMultisigStorageSlots, buildGuardianStorageSlots } from './storage.js';
-import { GUARDED_MULTISIG_ACCOUNT_COMPONENT_MASM } from './masm/account-components/auth.js';
 import { normalizeSignerCommitment } from '../utils/signature.js';
 
-/** Builds the guarded-multisig component without relinking assembler-provided libraries. */
-function buildGuardedMultisigComponent(
-  authBuilder: Awaited<ReturnType<WasmWebClient['createCodeBuilder']>>,
-  config: MultisigConfig,
-): AccountComponent {
-  const authSlots = [
-    ...buildMultisigStorageSlots(config),
-    ...buildGuardianStorageSlots(config),
-  ];
-  const authComponentCode = authBuilder.compileAccountComponentCode(
-    GUARDED_MULTISIG_ACCOUNT_COMPONENT_MASM,
+/**
+ * Builds the guarded-multisig component from the upstream standard component.
+ *
+ * Compiling an equivalent MASM source ourselves would link the standards package dynamically and
+ * yield a different `auth_tx` root, which `AccountComponentInterface::from_procedures` cannot
+ * classify — the client then declines to attach fee conversion info and every transaction fails
+ * on a fee-charging chain.
+ *
+ * Per-procedure thresholds are keyed by procedure root, and the roots are a property of the
+ * component. The component is therefore built twice: once to read the roots off, once with the
+ * thresholds those roots key.
+ */
+function buildGuardedMultisigComponent(config: MultisigConfig): AccountComponent {
+  const approvers = config.signerCommitments.map((commitment) =>
+    Word.fromHex(normalizeSignerCommitment(commitment)),
   );
-  return AccountComponent.compile(authComponentCode, authSlots).withSupportsAllTypes();
+  const guardian = Word.fromHex(normalizeSignerCommitment(config.guardianCommitment));
+  const scheme =
+    config.signatureScheme === 'ecdsa'
+      ? AuthScheme.AuthEcdsaK256Keccak
+      : AuthScheme.AuthRpoFalcon512;
+
+  const baseConfig = new AuthGuardedMultisigConfig(
+    approvers,
+    config.threshold,
+    guardian,
+    scheme,
+  );
+
+  if (!config.procedureThresholds?.length) {
+    return createAuthGuardedMultisig(baseConfig).withSupportsAllTypes();
+  }
+
+  const probe = createAuthGuardedMultisig(baseConfig);
+  const thresholds = config.procedureThresholds.map(
+    (entry) =>
+      new ProcedureThreshold(
+        Word.fromHex(probe.getProcedureHash(entry.procedure)),
+        entry.threshold,
+      ),
+  );
+
+  return createAuthGuardedMultisig(
+    baseConfig.withProcThresholds(thresholds),
+  ).withSupportsAllTypes();
 }
 
 /**
@@ -46,10 +79,7 @@ export async function createMultisigAccount(
   midenRpcEndpoint: string,
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
-  const rawClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
-
-  const authBuilder = await rawClient.createCodeBuilder();
-  const authComponent = buildGuardedMultisigComponent(authBuilder, config);
+  const authComponent = buildGuardedMultisigComponent(config);
 
   let seed = config.seed;
   // Generate random seed if not provided

@@ -13,7 +13,7 @@
 export const PROCEDURE_ROOTS = {
   update_signers: '0xa261cfd3c8791ac5abe1e78e14eade2f20789d73ab1c23c430418de59bc3380e',
   update_procedure_threshold: '0x97587c61d49313b1d5a3c8b7437e0080e67ed9bd9d3e7206bcae562f934ccd03',
-  auth_tx: '0xcbb56b0f5b5eb426303fa69d6bfd51541db1d2fd26e6279214e10745fd0dece2',
+  auth_tx: '0xcd2cee82d17af1c8228563808507bf50ea661259e8f74b60bf497efed9029665',
   update_guardian: '0x0a614ff7c81a561cbd2a4c2d9482031a7a841ca5de33349daed23a9d871b3675',
   send_asset: '0x595bc83258726a66bd904912cfd5186c07cbd902dfbc115b7d6bc8105efc57e3',
   receive_asset: '0x34a56dd18f6fe5aab63198b9dcfc6467e793ebabb37d56b994b902504635da13',
