@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMultisigAccount, validateMultisigConfig } from './builder.js';
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createMultisigAccount, validateMultisigConfig } from "./builder.js";
+import { PROCEDURE_ROOTS } from "../procedures.js";
 
 const {
   withSupportsAllTypes,
@@ -10,7 +11,6 @@ const {
   const withSupportsAllTypes = vi.fn((component) => component);
   const createAuthGuardedMultisig = vi.fn((config) => ({
     config,
-    getProcedureHash: (name: string) => '0x' + name.length.toString(16).padStart(64, '0'),
     withSupportsAllTypes: () => withSupportsAllTypes({ config }),
   }));
   class MockAuthGuardedMultisigConfig {
@@ -22,7 +22,12 @@ const {
     ) {}
     withProcThresholds(thresholds: unknown[]) {
       return Object.assign(
-        new MockAuthGuardedMultisigConfig(this.approvers, this.threshold, this.guardian, this.scheme),
+        new MockAuthGuardedMultisigConfig(
+          this.approvers,
+          this.threshold,
+          this.guardian,
+          this.scheme,
+        ),
         { thresholds },
       );
     }
@@ -51,13 +56,13 @@ const {
 
     build() {
       return {
-        account: { id: () => ({ toString: () => '0x' + 'a'.repeat(30) }) },
+        account: { id: () => ({ toString: () => "0x" + "a".repeat(30) }) },
       };
     }
 
     buildWithoutSchemaCommitment() {
       return {
-        account: { id: () => ({ toString: () => '0x' + 'a'.repeat(30) }) },
+        account: { id: () => ({ toString: () => "0x" + "a".repeat(30) }) },
       };
     }
   }
@@ -70,24 +75,27 @@ const {
   };
 });
 
-vi.mock('@miden-sdk/miden-sdk', () => ({
+vi.mock("@miden-sdk/miden-sdk", () => ({
   AccountBuilder: MockAccountBuilder,
   AuthGuardedMultisigConfig: MockAuthGuardedMultisigConfig,
   AuthScheme: { AuthEcdsaK256Keccak: 1, AuthRpoFalcon512: 2 },
   ProcedureThreshold: class {
-    constructor(public procRoot: unknown, public threshold: number) {}
+    constructor(
+      public procRoot: unknown,
+      public threshold: number,
+    ) {}
   },
   Word: { fromHex: (hex: string) => ({ hex }) },
   createAuthGuardedMultisig,
   AccountStorageMode: {
-    public: () => 'public',
-    private: () => 'private',
+    public: () => "public",
+    private: () => "private",
   },
 }));
 
-describe('createMultisigAccount', () => {
+describe("createMultisigAccount", () => {
   beforeEach(() => {
-    vi.stubGlobal('crypto', {
+    vi.stubGlobal("crypto", {
       getRandomValues(buffer: Uint8Array) {
         return buffer;
       },
@@ -105,17 +113,17 @@ describe('createMultisigAccount', () => {
     return { webClient };
   }
 
-  it('builds the guarded component from the upstream standard component (Falcon)', async () => {
+  it("builds the guarded component from the upstream standard component (Falcon)", async () => {
     const { webClient } = makeClient();
 
     await createMultisigAccount(
       webClient as never,
       {
         threshold: 1,
-        signerCommitments: ['0x' + '1'.repeat(64)],
-        guardianCommitment: '0x' + '2'.repeat(64),
+        signerCommitments: ["0x" + "1".repeat(64)],
+        guardianCommitment: "0x" + "2".repeat(64),
       },
-      'http://localhost:57291',
+      "http://localhost:57291",
     );
 
     // The component must come from the SDK, not from MASM compiled here: a locally compiled
@@ -126,18 +134,18 @@ describe('createMultisigAccount', () => {
     expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
   });
 
-  it('passes the ECDSA scheme through to the component', async () => {
+  it("passes the ECDSA scheme through to the component", async () => {
     const { webClient } = makeClient();
 
     await createMultisigAccount(
       webClient as never,
       {
         threshold: 1,
-        signerCommitments: ['0x' + '1'.repeat(64)],
-        guardianCommitment: '0x' + '2'.repeat(64),
-        signatureScheme: 'ecdsa',
+        signerCommitments: ["0x" + "1".repeat(64)],
+        guardianCommitment: "0x" + "2".repeat(64),
+        signatureScheme: "ecdsa",
       },
-      'http://localhost:57291',
+      "http://localhost:57291",
     );
 
     // The scheme is no longer implicit in the MASM — it is an explicit parameter, and the
@@ -146,12 +154,40 @@ describe('createMultisigAccount', () => {
     expect(createAuthGuardedMultisig.mock.calls[0][0].scheme).toBe(1);
     expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
   });
+  it("keys per-procedure thresholds by the pinned root, not the component export name", async () => {
+    const { webClient } = makeClient();
+
+    await createMultisigAccount(
+      webClient as never,
+      {
+        threshold: 2,
+        signerCommitments: ["0x" + "1".repeat(64), "0x" + "2".repeat(64)],
+        guardianCommitment: "0x" + "9".repeat(64),
+        procedureThresholds: [
+          { procedure: "send_asset", threshold: 2 },
+          { procedure: "update_signers", threshold: 2 },
+        ],
+      } as never,
+      "http://localhost",
+    );
+
+    // `send_asset` and `update_signers` are this package's names. The component exports
+    // `move_asset_to_note` (on BasicWallet, not the auth component at all) and
+    // `update_signers_and_threshold` — so a root read off the component would be wrong or throw.
+    const built = createAuthGuardedMultisig.mock.calls.at(-1)?.[0] as {
+      thresholds: Array<{ procRoot: { hex: string }; threshold: number }>;
+    };
+    expect(built.thresholds.map((t) => t.procRoot.hex)).toEqual([
+      PROCEDURE_ROOTS.send_asset,
+      PROCEDURE_ROOTS.update_signers,
+    ]);
+  });
 });
 
-describe('validateMultisigConfig', () => {
-  const signer = '0x' + '1'.repeat(64);
+describe("validateMultisigConfig", () => {
+  const signer = "0x" + "1".repeat(64);
 
-  it('rejects a guardian commitment equal to a signer (matches upstream Rust invariant)', () => {
+  it("rejects a guardian commitment equal to a signer (matches upstream Rust invariant)", () => {
     expect(() =>
       validateMultisigConfig({
         threshold: 1,
@@ -161,19 +197,22 @@ describe('validateMultisigConfig', () => {
     ).toThrow(/different from all signer commitments/);
   });
 
-  it('accepts a distinct guardian commitment', () => {
+  it("accepts a distinct guardian commitment", () => {
     expect(() =>
       validateMultisigConfig({
         threshold: 1,
         signerCommitments: [signer],
-        guardianCommitment: '0x' + '2'.repeat(64),
+        guardianCommitment: "0x" + "2".repeat(64),
       }),
     ).not.toThrow();
   });
 
-  describe('procedure threshold overrides vs update_procedure_threshold', () => {
-    const signers = Array.from({ length: 5 }, (_, i) => '0x' + String(i + 1).repeat(64));
-    const guardian = '0x' + '9'.repeat(64);
+  describe("procedure threshold overrides vs update_procedure_threshold", () => {
+    const signers = Array.from(
+      { length: 5 },
+      (_, i) => "0x" + String(i + 1).repeat(64),
+    );
+    const guardian = "0x" + "9".repeat(64);
 
     const config = (
       threshold: number,
@@ -186,51 +225,59 @@ describe('validateMultisigConfig', () => {
         procedureThresholds,
       }) as Parameters<typeof validateMultisigConfig>[0];
 
-    it('rejects an override above the default threshold that guards the setter', () => {
+    it("rejects an override above the default threshold that guards the setter", () => {
       expect(() =>
-        validateMultisigConfig(config(2, [{ procedure: 'send_asset', threshold: 4 }])),
-      ).toThrow(/exceeds the threshold of 2 that guards update_procedure_threshold/);
+        validateMultisigConfig(
+          config(2, [{ procedure: "send_asset", threshold: 4 }]),
+        ),
+      ).toThrow(
+        /exceeds the threshold of 2 that guards update_procedure_threshold/,
+      );
     });
 
-    it('accepts the same override once the setter is raised to match', () => {
+    it("accepts the same override once the setter is raised to match", () => {
       expect(() =>
         validateMultisigConfig(
           config(2, [
-            { procedure: 'send_asset', threshold: 4 },
-            { procedure: 'update_procedure_threshold', threshold: 4 },
+            { procedure: "send_asset", threshold: 4 },
+            { procedure: "update_procedure_threshold", threshold: 4 },
           ]),
         ),
       ).not.toThrow();
     });
 
-    it('rejects an override above an explicitly raised setter', () => {
+    it("rejects an override above an explicitly raised setter", () => {
       expect(() =>
         validateMultisigConfig(
           config(2, [
-            { procedure: 'send_asset', threshold: 4 },
-            { procedure: 'update_procedure_threshold', threshold: 3 },
+            { procedure: "send_asset", threshold: 4 },
+            { procedure: "update_procedure_threshold", threshold: 3 },
           ]),
         ),
-      ).toThrow(/exceeds the threshold of 3 that guards update_procedure_threshold/);
+      ).toThrow(
+        /exceeds the threshold of 3 that guards update_procedure_threshold/,
+      );
     });
 
-    it('accepts overrides at or below the default threshold', () => {
+    it("accepts overrides at or below the default threshold", () => {
       expect(() =>
         validateMultisigConfig(
           config(3, [
-            { procedure: 'send_asset', threshold: 3 },
-            { procedure: 'receive_asset', threshold: 1 },
+            { procedure: "send_asset", threshold: 3 },
+            { procedure: "receive_asset", threshold: 1 },
           ]),
         ),
       ).not.toThrow();
     });
 
-    it('allows the setter override to exceed the default threshold', () => {
+    it("allows the setter override to exceed the default threshold", () => {
       // Raising only the setter is always safe: it makes overrides harder to
       // edit, never easier.
       expect(() =>
         validateMultisigConfig(
-          config(2, [{ procedure: 'update_procedure_threshold', threshold: 5 }]),
+          config(2, [
+            { procedure: "update_procedure_threshold", threshold: 5 },
+          ]),
         ),
       ).not.toThrow();
     });
