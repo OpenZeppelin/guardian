@@ -34,7 +34,9 @@ use guardian_shared::SignatureScheme;
 /// [`CodeBuilder`] here is what makes a Rust-built account carry the same `auth_tx` root as a
 /// browser-built one — the root `miden_multisig_client::ProcedureName::AuthTx` pins, and the
 /// key the per-procedure threshold overrides map is keyed by.
-const GUARDED_MULTISIG_AUTH_MASM: &str = include_str!(
+/// Must stay the TypeScript package's MASM — `generate-masm.mjs` vendors this same file into
+/// `auth.ts`, so it is the anchor the cross-SDK root parity checks rely on.
+pub const GUARDED_MULTISIG_AUTH_MASM: &str = include_str!(
     "../../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm"
 );
 

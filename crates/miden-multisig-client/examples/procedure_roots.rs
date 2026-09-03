@@ -24,9 +24,7 @@ use serde::Serialize;
 /// dynamically. Both SDK builders produce the dynamic build, so the roots printed here
 /// describe every guardian account. The module docs on `crate::procedures` carry the
 /// mechanism and are the authority this must not be allowed to disagree with.
-const PACKAGE_AUTH_MASM: &str = include_str!(
-    "../../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm"
-);
+use miden_confidential_contracts::multisig_guardian::GUARDED_MULTISIG_AUTH_MASM as PACKAGE_AUTH_MASM;
 
 #[derive(Debug, Serialize)]
 struct ProcedureRootRecord {
