@@ -4,8 +4,10 @@ use miden_client::transaction::{NoteArgs, TransactionRequest, TransactionRequest
 use miden_protocol::note::{Note, NoteId};
 use miden_protocol::{Felt, Word};
 
+use super::MaybeFeeConversionInfo;
 use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
+use miden_standards::account::auth::FeeConversionInfo;
 
 /// Fetches a slice of notes by ID from the client's local Miden store
 /// and converts each `InputNoteRecord` to a `Note`. Returns
@@ -45,6 +47,7 @@ pub fn build_consume_notes_transaction_request_from_notes<I>(
     notes: Vec<Note>,
     salt: Word,
     signature_advice: I,
+    fee_conversion_info: Option<FeeConversionInfo>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -60,7 +63,7 @@ where
 
     let mut builder = TransactionRequestBuilder::new()
         .input_notes(note_and_args)
-        .auth_arg(salt);
+        .maybe_fee_conversion_info(fee_conversion_info, salt);
 
     for (key, values) in signature_advice {
         builder = builder.extend_advice_map([(key, values)]);
@@ -85,6 +88,7 @@ pub async fn build_consume_notes_transaction_request<I>(
     note_ids: Vec<NoteId>,
     salt: Word,
     signature_advice: I,
+    fee_conversion_info: Option<FeeConversionInfo>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -96,5 +100,10 @@ where
     }
 
     let notes = fetch_notes_from_store(client, &note_ids).await?;
-    build_consume_notes_transaction_request_from_notes(notes, salt, signature_advice)
+    build_consume_notes_transaction_request_from_notes(
+        notes,
+        salt,
+        signature_advice,
+        fee_conversion_info,
+    )
 }

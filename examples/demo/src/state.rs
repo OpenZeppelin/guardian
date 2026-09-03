@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
-    ExportedProposal, MultisigClient, P2ideHeights, ProverConfig, RpcConfig, SignatureScheme,
+    ExportedProposal, FeeConversionInfo, MultisigClient, P2ideHeights, ProverConfig, RpcConfig,
+    SignatureScheme,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -22,6 +23,12 @@ pub struct CustomProposalRecipe {
     /// P2IDE heights (issue #366); the default => plain P2ID note.
     pub heights: P2ideHeights,
     pub salt: Word,
+    /// The conversion info committed when the proposal was created.
+    ///
+    /// Kept here rather than re-resolved at execute time: the auth arg commits
+    /// it, so the rebuild has to reproduce the same value, and the chain's fee
+    /// faucet is a per-block header field that may have moved since.
+    pub fee_conversion_info: FeeConversionInfo,
 }
 
 /// Simplified session state using the MultisigClient SDK.
