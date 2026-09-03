@@ -34,11 +34,12 @@ use guardian_shared::SignatureScheme;
 /// [`CodeBuilder`] here is what makes a Rust-built account carry the same `auth_tx` root as a
 /// browser-built one — the root `miden_multisig_client::ProcedureName::AuthTx` pins, and the
 /// key the per-procedure threshold overrides map is keyed by.
-/// Must stay the TypeScript package's MASM — `generate-masm.mjs` vendors this same file into
-/// `auth.ts`, so it is the anchor the cross-SDK root parity checks rely on.
-pub const GUARDED_MULTISIG_AUTH_MASM: &str = include_str!(
-    "../../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm"
-);
+/// A crate-local copy of the TypeScript package's MASM. It cannot be an `include_str!` reaching
+/// into `packages/`: `cargo publish` packages only files under the crate root, so an escaping
+/// path builds in the workspace and then fails to compile from the published tarball.
+/// `vendored_masm_matches_the_typescript_package` keeps the two byte-identical.
+pub const GUARDED_MULTISIG_AUTH_MASM: &str =
+    include_str!("../masm/account_components/auth/guarded_multisig.masm");
 
 /// Assembled once, like upstream's own `AuthGuardedMultisig::code()`: the source is a constant,
 /// so the result is too, and account builds are not rare (the load generator makes thousands).
@@ -454,6 +455,29 @@ mod tests {
         assert_eq!(
             account.to_commitment().into_hex(),
             "0x2f42130aaa99dbfba7e4786c44a1cd55983fc03b44a47b6e8385dcb36f246289"
+        );
+    }
+}
+
+#[cfg(test)]
+mod vendored_masm_tests {
+    use super::GUARDED_MULTISIG_AUTH_MASM;
+
+    /// The TypeScript package owns the canonical MASM (`generate-masm.mjs` vendors it into
+    /// `auth.ts`); this crate must carry its own copy to stay publishable. Skipped when the
+    /// sibling tree is absent, which is the published-tarball case.
+    #[test]
+    fn vendored_masm_matches_the_typescript_package() {
+        let canonical = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packages/miden-multisig-client/masm/account_components/auth/guarded_multisig.masm");
+        if !canonical.exists() {
+            return;
+        }
+        let expected = std::fs::read_to_string(&canonical).expect("read canonical MASM");
+        assert_eq!(
+            expected, GUARDED_MULTISIG_AUTH_MASM,
+            "crates/contracts/masm copy has drifted from {}",
+            canonical.display()
         );
     }
 }
