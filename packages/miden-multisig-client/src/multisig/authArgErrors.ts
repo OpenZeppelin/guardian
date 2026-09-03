@@ -1,15 +1,27 @@
+//! Typed failures for auth-arg recovery.
+//!
+//! The surface lands here deliberately ahead of the code that raises it: nothing in this
+//! change constructs these, and the proposal paths that do arrive in the PR that commits
+//! the anchored fee faucet. Landing the codes first keeps them out of that PR's diff and
+//! lets a caller pin `code` before the raiser exists — `public-api.test.ts` covers the
+//! barrel so a dropped re-export is caught either way.
+
 /** Stable error identifiers for auth-arg recovery failures. */
 export type AuthArgErrorCode =
   | 'proposal_auth_arg_unresolvable'
   | 'proposal_salt_malformed'
   | 'fee_faucet_anchor_mismatch';
 
-/** How much of an untrusted salt an error message will quote. */
-const MAX_QUOTED_SALT_CHARS = 80;
+/** How much of an untrusted value an error message will quote. */
+const MAX_QUOTED_CHARS = 80;
 
 /**
- * Quotes a rejected salt without letting an unbounded metadata string into the
+ * Quotes a GUARDIAN-served value without letting an unbounded string into the
  * message. Control characters would otherwise reach a log verbatim.
+ *
+ * Applied to every served field these errors interpolate, not only the salt:
+ * proposal ids, auth args, faucet ids and the reason text all arrive in the same
+ * unvalidated JSON, so sanitising one and not the rest only narrows the hole.
  *
  * The value is whatever GUARDIAN served, so it is not necessarily a string and
  * its own `toString` may throw; a value that cannot even be described must not
@@ -20,11 +32,11 @@ const MAX_QUOTED_SALT_CHARS = 80;
  * oversized value is never copied at full length just to render 80 characters
  * of it.
  */
-function quoteSalt(saltHex: unknown): string {
-  const asString = coerceForMessage(saltHex);
+function quoteUntrusted(value: unknown): string {
+  const asString = coerceForMessage(value);
   const printable = (chunk: string) => chunk.replace(/[^\x20-\x7e]/g, '.');
-  return asString.length > MAX_QUOTED_SALT_CHARS
-    ? `${printable(asString.slice(0, MAX_QUOTED_SALT_CHARS))}... (${asString.length} code units)`
+  return asString.length > MAX_QUOTED_CHARS
+    ? `${printable(asString.slice(0, MAX_QUOTED_CHARS))}... (${asString.length} code units)`
     : printable(asString);
 }
 
@@ -63,8 +75,8 @@ export class ProposalSaltMalformedError extends Error {
 
   constructor(details: { proposalId: string; saltHex: unknown; reason: string; cause?: unknown }) {
     super(
-      `Proposal ${details.proposalId} has a malformed metadata salt ` +
-        `'${quoteSalt(details.saltHex)}': ${details.reason}`,
+      `Proposal ${quoteUntrusted(details.proposalId)} has a malformed metadata salt ` +
+        `'${quoteUntrusted(details.saltHex)}': ${quoteUntrusted(details.reason)}`,
       details.cause === undefined ? undefined : { cause: details.cause },
     );
     this.name = 'ProposalSaltMalformedError';
@@ -107,9 +119,11 @@ export class ProposalAuthArgUnresolvableError extends Error {
     feeFaucetIdHex: string;
   }) {
     super(
-      `Proposal ${details.proposalId} auth arg ${details.signedAuthArgHex} is not the ` +
-        `fee-conversion commitment to its metadata salt ${details.saltHex} under fee faucet ` +
-        `${details.feeFaucetIdHex}, so the signed transaction summary cannot be reproduced ` +
+      `Proposal ${quoteUntrusted(details.proposalId)} auth arg ` +
+        `${quoteUntrusted(details.signedAuthArgHex)} is not the fee-conversion commitment to ` +
+        `its metadata salt ${quoteUntrusted(details.saltHex)} under fee faucet ` +
+        `${quoteUntrusted(details.feeFaucetIdHex)}, so the signed transaction summary cannot ` +
+        `be reproduced ` +
         'from that salt, and the proposal cannot be executed. Recreate the proposal and ' +
         'collect signatures again, and have the original dropped server-side — while ' +
         'GUARDIAN keeps serving it, syncing this account keeps failing on it',
@@ -143,8 +157,8 @@ export class FeeFaucetAnchorMismatchError extends Error {
   constructor(details: { committedFeeFaucetIdHex: string; anchoredFeeFaucetIdHex: string }) {
     super(
       `Fee faucet moved while the proposal was being built: committed ` +
-        `${details.committedFeeFaucetIdHex} but the anchored block reports ` +
-        `${details.anchoredFeeFaucetIdHex}. Retry the proposal.`,
+        `${quoteUntrusted(details.committedFeeFaucetIdHex)} but the anchored block reports ` +
+        `${quoteUntrusted(details.anchoredFeeFaucetIdHex)}. Retry the proposal.`,
     );
     this.name = 'FeeFaucetAnchorMismatchError';
     this.committedFeeFaucetIdHex = details.committedFeeFaucetIdHex;
