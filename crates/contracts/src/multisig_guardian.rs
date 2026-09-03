@@ -475,7 +475,8 @@ mod vendored_masm_tests {
         }
         let expected = std::fs::read_to_string(&canonical).expect("read canonical MASM");
         assert_eq!(
-            expected, GUARDED_MULTISIG_AUTH_MASM,
+            expected,
+            GUARDED_MULTISIG_AUTH_MASM,
             "crates/contracts/masm copy has drifted from {}",
             canonical.display()
         );
