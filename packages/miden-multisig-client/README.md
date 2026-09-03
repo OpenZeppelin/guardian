@@ -200,7 +200,7 @@ console.log('Signatures:', signedProposal.signatures.length);
 
 ### Sync Proposals
 
-Fetches proposals from the GUARDIAN server and reconciles local state — proposals GUARDIAN no longer reports (executed, canonicalized, or abandoned) are pruned from the cache:
+Fetches proposals from the GUARDIAN server and reconciles local state — a proposal GUARDIAN reported on an earlier sync but no longer reports (executed, canonicalized, or abandoned) is pruned from the cache. Proposals GUARDIAN has never reported to this client — freshly created, or imported and not yet synced — are left untouched:
 
 ```typescript
 const proposals = await multisig.syncProposals();

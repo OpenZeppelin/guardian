@@ -160,9 +160,7 @@ export class Multisig {
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
-  // Proposal ids GUARDIAN returned on the most recent syncProposals. Only these
-  // are eligible for pruning on the next sync, so a locally created/imported
-  // proposal GUARDIAN has not yet reported is never evicted (see syncProposals).
+  /** Ids GUARDIAN returned on the most recent sync; only these are prunable. */
   private lastReportedProposalIds: Set<string> = new Set();
 
   constructor(
@@ -552,12 +550,12 @@ export class Multisig {
    *
    * Only proposals GUARDIAN has actually reported are eligible for pruning. A
    * proposal that is in the cache but that GUARDIAN has not (yet) returned in a
-   * response is left untouched. This keeps two flows correct: (1) a
-   * `createProposal` immediately followed by a sync is not evicted if GUARDIAN's
-   * read-your-writes lags and omits the just-pushed proposal; (2) the offline
-   * export/import flow — `importProposal` caches a proposal this client has not
-   * synced yet — is not evicted before GUARDIAN first reports it. A proposal is
-   * only dropped once GUARDIAN reported it and then stopped (executed / abandoned).
+   * response is left untouched, so a `createProposal` immediately followed by a
+   * sync survives a GUARDIAN read-your-writes lag that omits the just-pushed
+   * proposal, and the offline export/import flow — `importProposal` caches a
+   * proposal this client has not synced yet — survives until GUARDIAN first
+   * reports it. A proposal is only dropped once GUARDIAN reported it and then
+   * stopped (executed / abandoned).
    *
    * Nonce-based staleness hiding — a proposal the account has already advanced
    * past, which GUARDIAN may still briefly report as pending before it prunes it
@@ -591,9 +589,6 @@ export class Multisig {
       reportedIds.add(proposal.id);
     }
 
-    // Prune proposals GUARDIAN reported before but no longer reports (executed /
-    // canonicalized / abandoned). Proposals GUARDIAN has never reported to this
-    // client (freshly created, or imported and not yet synced) are left alone.
     for (const id of this.lastReportedProposalIds) {
       if (!reportedIds.has(id)) {
         this.proposals.delete(id);
