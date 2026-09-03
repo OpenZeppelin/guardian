@@ -44,10 +44,11 @@ function coerceForMessage(value: unknown): string {
  * A proposal's recorded salt is not a readable 32-byte word, so no rebuild can
  * use it.
  *
- * Coded for the same reason as {@link ProposalAuthArgUnresolvableError}: the
- * salt arrives as GUARDIAN-served JSON that is cast rather than validated, so a
- * caller has to be able to tell a bad proposal from a transport or WASM failure
- * without matching on the message.
+ * Coded for the same reason as {@link ProposalAuthArgUnresolvableError}, and
+ * recoverable in the same one place: a `switch_guardian`'s salt is served by the
+ * GUARDIAN being switched away from, which can make it unreadable as easily as
+ * it can make it wrong. Treating only the latter as recoverable would leave that
+ * GUARDIAN able to strand a fully signed switch.
  */
 export class ProposalSaltMalformedError extends Error {
   readonly code: AuthArgErrorCode = 'proposal_salt_malformed';
@@ -83,8 +84,14 @@ export class ProposalSaltMalformedError extends Error {
  * actually wrong rather than on an `ERR_FEE_CONVERSION_INFO_MISSING` abort at
  * proving.
  *
- * Coded so a caller can tell this from a transport or WASM failure: this one says
- * the proposal itself is dead and names what has to be recreated.
+ * `switch_guardian` is the exception, and deliberately so: it rebuilds from the
+ * summary's own auth arg, which reproduces the signed word but not the fee
+ * preimage behind it, so it executes only on a zero-fee chain.
+ *
+ * Coded because one caller acts on it rather than reporting it:
+ * `switch_guardian` recovery falls back to the summary's own auth arg when it
+ * sees this or {@link ProposalSaltMalformedError}, and must not extend that
+ * treatment to an unreadable anchor or a WASM failure.
  */
 export class ProposalAuthArgUnresolvableError extends Error {
   readonly code: AuthArgErrorCode = 'proposal_auth_arg_unresolvable';

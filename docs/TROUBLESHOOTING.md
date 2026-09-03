@@ -486,9 +486,9 @@ Three ways to get there:
 
   | | absent (`null` / omitted) | malformed (present, not a decodable word) | mismatched (decodable, reproduces nothing) |
   |---|---|---|---|
-  | typed, non-`p2id` | falls back to the signed auth arg | `proposal_salt_malformed` | `proposal_auth_arg_unresolvable` |
-  | typed `p2id` | falls back, then fails note binding | `proposal_salt_malformed` | `proposal_auth_arg_unresolvable` |
-  | `switch_guardian` | falls back | falls back, with a warning | falls back, with a warning |
+  | typed, non-`p2id` | `proposal_salt_malformed` | `proposal_salt_malformed` | `proposal_auth_arg_unresolvable` |
+  | typed `p2id` | `proposal_salt_malformed` | `proposal_salt_malformed` | `proposal_auth_arg_unresolvable` |
+  | `switch_guardian` | falls back, with a warning | falls back, with a warning | falls back, with a warning |
   | custom | n/a — the integration rebuilds, not the SDK | n/a | n/a |
 
   The fallback reads the signed auth arg verbatim as the salt. That reproduces
@@ -498,9 +498,6 @@ Three ways to get there:
   field and would otherwise hold a veto over its own replacement, so the client
   warns and tries anyway rather than treating a bad value as fatal.
 
-  `p2id` has a further wrinkle in the absent case: the salt also derives the
-  note's serial number, so falling back changes the note ID and the failure
-  surfaces as a recipient-binding mismatch rather than as a fee problem.
 - **An execute-time rebuild dropped the faucet the create-time build committed.**
   A custom-proposal recipe that resolves `feeFaucetId` when it creates the request
   but does not retain it for the rebuild produces exactly this symptom: creation

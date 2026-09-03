@@ -5505,6 +5505,9 @@ describe('Multisig', () => {
     // salt derives back to the signed auth arg and resolves — unless a test steers
     // `feeAuthArg` elsewhere, which is how the mismatch case is reached.
     const COMMITTED_SALT = '0x' + 'd'.repeat(64);
+    // The word `summaryAuthArg` reads off the signed summary, and so the salt a
+    // `switch_guardian` rebuild carries when it falls back to that summary.
+    const SIGNED_AUTH_ARG = '0x' + 'a'.repeat(64);
 
     const config = {
       threshold: 1,
@@ -5583,6 +5586,8 @@ describe('Multisig', () => {
         metadata: { chainAnchor: MOCK_CHAIN_ANCHOR_B64, description: '', ...metadata },
       });
     };
+    // The salt is the one the outgoing GUARDIAN chose to serve, which is what
+    // `switchGuardianAuthArg` has to survive being given.
     const seedSwitchGuardianProposal = (
       multisig: Multisig,
       proposalId: string,
@@ -5638,6 +5643,140 @@ describe('Multisig', () => {
       const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
       expect(saltHexOf(options)).toBe(COMMITTED_SALT);
       expect(options).toMatchObject({ feeFaucetId: MOCK_FEE_FAUCET_ID_HEX });
+    });
+
+    it('rebuilds a switch_guardian from the signed summary, not its served salt', async () => {
+      // The one type with no reconstruction check, so nothing binds its metadata
+      // salt. Execution must not depend on the GUARDIAN being switched away from
+      // serving a correct one, or that GUARDIAN could strand a fully signed
+      // switch by rotating the field.
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+      // A salt belonging to no summary. Derivation has to actually reject it, so
+      // the hash is steered away from the signed auth arg for this test only —
+      // otherwise every salt derives back to it and the fallback below is never
+      // exercised.
+      seedSwitchGuardianProposal(multisig, proposalId, '0x' + '7'.repeat(64));
+      vi.mocked(feeAuthArg).mockReturnValueOnce({
+        toHex: () => '0x' + '9'.repeat(64),
+      } as never);
+      serveGuardianCommitment();
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // Execution runs past the rebuild and only stumbles on post-execution
+      // GUARDIAN registration, which this fixture does not stand up.
+      const error = await caught(multisig.executeProposal(proposalId));
+      expect(error?.code).not.toBe('proposal_auth_arg_unresolvable');
+
+      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
+      expect(saltHexOf(options)).toBe(SIGNED_AUTH_ARG);
+      expect(options).toMatchObject({ feeFaucetId: undefined });
+
+      // The operator has to be told which salt was refused and what it costs, or
+      // the switch quietly becomes a proving-time ERR_FEE_CONVERSION_INFO_MISSING
+      // with nothing naming the party that caused it. AGENTS "No Silent
+      // Fallbacks" requires this one be visible.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('proposal_auth_arg_unresolvable'),
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('ERR_FEE_CONVERSION_INFO_MISSING'),
+      );
+      warn.mockRestore();
+    });
+
+    it('falls back for a switch_guardian whose salt cannot be read at all', async () => {
+      // The GUARDIAN being switched away from serves this field and nothing
+      // binds it, so it can make the salt unreadable as easily as it can make it
+      // wrong. Both have to reach the fallback, or that GUARDIAN can strand a
+      // fully signed switch by choosing the shape the client refuses.
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+      seedSwitchGuardianProposal(multisig, proposalId, '0xnotasalt');
+
+      serveGuardianCommitment();
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const error = await caught(multisig.executeProposal(proposalId));
+      expect(error?.code).not.toBe('proposal_salt_malformed');
+
+      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
+      expect(saltHexOf(options)).toBe(SIGNED_AUTH_ARG);
+
+      // Silently rebuilding differently would hide a contested switch, and the
+      // party that served the bad salt is the one that benefits from the switch
+      // failing.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('proposal_salt_malformed'),
+      );
+      warn.mockRestore();
+    });
+
+    it('falls back for a switch_guardian whose salt is not even a string', async () => {
+      // GUARDIAN's JSON is cast, not validated, so this field arrives as
+      // whatever was served. A non-string must reach the fallback like any other
+      // unusable salt, rather than throwing a TypeError out of the hex helpers.
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+      seedSwitchGuardianProposal(multisig, proposalId, 7 as unknown as string);
+
+      serveGuardianCommitment();
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const error = await caught(multisig.executeProposal(proposalId));
+      expect(error).not.toBeInstanceOf(TypeError);
+
+      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
+      expect(saltHexOf(options)).toBe(SIGNED_AUTH_ARG);
+      warn.mockRestore();
+    });
+
+    it('falls back for a switch_guardian whose salt will not decode, naming why', async () => {
+      // The third shape of salt fault: well-formed hex whose limbs are not field
+      // elements. The SDK's own message is the only place that reason appears,
+      // and the error is swallowed here, so the warning has to carry it or the
+      // operator sees a fallback with no stated cause.
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const { Word } = await import('@miden-sdk/miden-sdk');
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+      seedSwitchGuardianProposal(multisig, proposalId, '0x' + 'f'.repeat(64));
+      serveGuardianCommitment();
+      vi.mocked(Word.fromHex).mockImplementationOnce(() => {
+        throw new Error('failed to convert to field element: value >= field modulus');
+      });
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const error = await caught(multisig.executeProposal(proposalId));
+      expect(error?.code).not.toBe('proposal_salt_malformed');
+
+      const [, , options] = vi.mocked(buildUpdateGuardianTransactionRequest).mock.calls[0]!;
+      expect(saltHexOf(options)).toBe(SIGNED_AUTH_ARG);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('field modulus'));
+      warn.mockRestore();
+    });
+
+    // The counterpart to the four fallback tests: the recoverable set is exactly
+    // the salt faults. A hash failure inside derivation means the client cannot
+    // tell what the proposal committed to — not that the salt was bad — and no
+    // fallback repairs that, so it has to propagate even for the one type that
+    // routes around an unusable salt.
+    it('does not let a switch_guardian fall back past a hash failure', async () => {
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      seedSwitchGuardianProposal(multisig, proposalId, '0x' + '9'.repeat(64));
+
+      serveGuardianCommitment();
+      vi.mocked(feeAuthArg).mockImplementationOnce(() => {
+        throw new Error('poseidon2 unreachable');
+      });
+
+      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
+        'poseidon2 unreachable',
+      );
     });
 
     it('proposes with an auth arg the Rust SDK can rederive from salt_hex', async () => {

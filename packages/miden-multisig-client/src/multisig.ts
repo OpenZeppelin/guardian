@@ -149,8 +149,13 @@ export interface AccountStateVerificationResult {
  *
  * The faucet travels as hex, not an `AccountId`, because a WASM handle would
  * have to survive every throw between recovery and the rebuild that consumes it.
+ *
+ * It is `string | undefined` rather than optional so no construction site can
+ * silently omit it: omitting the faucet changes the auth arg and so changes the
+ * summary commitment. The one caller that means to omit it is
+ * {@link Multisig.summaryBareAuthArg}, which has to spell the `undefined` out.
  */
-type ProposalAuthArg = { salt: Word; feeFaucetIdHex: string };
+type ProposalAuthArg = { salt: Word; feeFaucetIdHex: string | undefined };
 
 /**
  * Options shared by the `create*Proposal` family (issue #387). Every optional
@@ -2133,7 +2138,9 @@ export class Multisig {
       );
     }
 
-    const executionAuthArg = this.recoverExecutionAuthArg(proposalId, metadata, txSummary);
+    const executionAuthArg = isSwitchGuardian
+      ? this.switchGuardianAuthArg(proposalId, metadata, txSummary)
+      : this.recoverExecutionAuthArg(proposalId, metadata, txSummary);
 
     const normalizedSignerCommitments = new Set(
       this.signerCommitments.map((commitment) => normalizeHexWord(commitment)),
@@ -2486,6 +2493,115 @@ export class Multisig {
   }
 
   /**
+   * Reads a summary's auth arg as the salt itself — the last-resort reading,
+   * used when the recorded salt is unusable and nothing else can be derived.
+   *
+   * It reproduces the signed auth-arg *word*, so the rebuilt summary commitment
+   * matches and verification passes. It does not reproduce the advice preimage,
+   * and cannot: if that word is a commitment, inverting it to recover
+   * `CONVERSION_INFO || SALT` is exactly the thing the hash prevents.
+   *
+   * So the resulting request executes only where the fee is zero. Once the
+   * chain's `verification_base_fee` is non-zero, `load_conversion_info` misses
+   * the advice map, returns the empty word, and `pay_fee` aborts at proving with
+   * `ERR_FEE_CONVERSION_INFO_MISSING`. Callers must treat this as a path that
+   * verifies but may not execute, not as a repair.
+   */
+  private summaryBareAuthArg(summary: TransactionSummary): ProposalAuthArg {
+    const signedAuthArg = summaryAuthArg(summary);
+    try {
+      return {
+        salt: Word.fromHex(normalizeHexWord(signedAuthArg.toHex())),
+        feeFaucetIdHex: undefined,
+      };
+    } finally {
+      signedAuthArg.free?.();
+    }
+  }
+
+  /**
+   * {@link recoverProposalAuthArg} for a `switch_guardian`, whose metadata salt
+   * nothing binds.
+   *
+   * Every other type is checked by rebuilding the transaction and comparing
+   * commitments, which makes a wrong served salt fatal and detectable.
+   * `verifyProposalMetadataBinding` has no such check for this type, so the
+   * GUARDIAN being switched away from is free to serve a salt that belongs to no
+   * summary — and it is the one party with an interest in the switch failing. So
+   * either salt fault falls back to the summary's own auth arg, which reproduces
+   * the signed request word-for-word and cannot be influenced by that GUARDIAN;
+   * nothing else does. See {@link ProposalAuthArgUnresolvableError} for the
+   * boundary of that recoverable set.
+   *
+   * The fallback is bounded, and narrowly so since the account began paying its
+   * own fee: {@link summaryBareAuthArg} reproduces the auth-arg word but not the
+   * advice preimage, so the rebuilt transaction proves only where the fee is
+   * zero. On a fee-charging chain a GUARDIAN that corrupts the salt can still
+   * strand the switch — it just gets an `ERR_FEE_CONVERSION_INFO_MISSING` abort
+   * at proving rather than a clean refusal here. It is kept because it is
+   * strictly better than refusing, not because it closes the veto.
+   */
+  private switchGuardianAuthArg(
+    proposalId: string,
+    metadata: ProposalMetadata,
+    summary: TransactionSummary,
+  ): ProposalAuthArg {
+    try {
+      return this.recoverExecutionAuthArg(proposalId, metadata, summary);
+    } catch (error) {
+      if (
+        error instanceof ProposalAuthArgUnresolvableError ||
+        error instanceof ProposalSaltMalformedError
+      ) {
+        console.warn(
+          `SwitchGuardian proposal ${proposalId}: the salt served for it is unusable ` +
+            `(${error.code}), so it is being rebuilt from the signed summary instead. ` +
+            'The GUARDIAN being switched away from serves that field and is the party ' +
+            'that benefits from the switch failing. The rebuild reproduces the signed ' +
+            'auth arg but not its fee-conversion preimage, so on a chain that charges a ' +
+            'non-zero fee it will still abort at proving with ' +
+            `ERR_FEE_CONVERSION_INFO_MISSING. ${this.describeUnusableSalt(error)}`,
+        );
+        return this.summaryBareAuthArg(summary);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Renders an unusable salt for the warning above, bounded and printable.
+   *
+   * The unresolvable case is rebuilt from the error's fields rather than its
+   * message, because that message ends in the "recreate the proposal" remedy —
+   * true where it is fatal, wrong here, where the switch goes ahead anyway.
+   *
+   * `ProposalSaltMalformedError` already quotes the served value safely and
+   * bounded, so its message is used as-is, plus its cause: for a salt that
+   * failed to decode that reason is the SDK's own and the only place the actual
+   * fault appears, and the error is swallowed here rather than rethrown. The
+   * WASM SDK rejects with a bare string as readily as an `Error`, so both are
+   * read; anything else is dropped rather than coerced, since `String(value)`
+   * can itself throw and losing a line of diagnostics must not turn this
+   * recovery into a crash.
+   */
+  private describeUnusableSalt(
+    error: ProposalAuthArgUnresolvableError | ProposalSaltMalformedError,
+  ): string {
+    if (error instanceof ProposalAuthArgUnresolvableError) {
+      return (
+        `Its salt ${error.saltHex} does not derive the signed auth arg ` +
+        `${error.signedAuthArgHex} under fee faucet ${error.feeFaucetIdHex}.`
+      );
+    }
+
+    const { cause } = error;
+    if (cause instanceof Error) {
+      return `${error.message}: ${cause.message}`;
+    }
+    return typeof cause === 'string' ? `${error.message}: ${cause}` : error.message;
+  }
+
+  /**
    * {@link recoverProposalAuthArg} against the proposal's own anchor, which is
    * only needed to read the fee faucet and so is released immediately.
    *
@@ -2524,7 +2640,10 @@ export class Multisig {
    * is what makes a wrong `salt_hex` a named failure rather than an
    * `ERR_FEE_CONVERSION_INFO_MISSING` abort at proving, and it is the only such
    * check for `switch_guardian`, the one type `verifyProposalMetadataBinding`
-   * does not rebuild.
+   * does not rebuild — which is why that type routes through
+   * {@link switchGuardianAuthArg} rather than calling this directly: nothing
+   * binds the salt an outgoing GUARDIAN serves, so a failure here is not
+   * necessarily the proposal's fault.
    *
    * A proposal missing `salt_hex` is malformed, not legacy: nothing can derive
    * its commitment. `parseProposalSalt` rejects it on the type check, which also
@@ -2591,6 +2710,12 @@ export class Multisig {
    * field is JSON the GUARDIAN serves and the response is cast rather than
    * validated, so `undefined`, `null` and anything else non-string reach here and
    * would otherwise throw a `TypeError` out of the hex helpers.
+   *
+   * Every rejection has to be a {@link ProposalSaltMalformedError}, the type
+   * check included, for `switch_guardian` recovery to survive it: an outgoing
+   * GUARDIAN can make the salt unreadable as easily as it can make it wrong, and
+   * a `TypeError` escaping here would let it strand a signed switch by picking
+   * the shape the client refuses. See {@link switchGuardianAuthArg}.
    */
   private parseProposalSalt(proposalId: string, saltHex: unknown): Word {
     if (typeof saltHex !== 'string') {
