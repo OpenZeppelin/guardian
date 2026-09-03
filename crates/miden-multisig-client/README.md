@@ -338,7 +338,7 @@ the commitment the cosigners signed.
 **The fee conversion info is part of that recipe.** `AuthGuardedMultisig` calls
 `fee::pay_fee` before building the transaction summary, so the auth arg is the
 commitment `hash(CONVERSION_INFO || SALT)` rather than the salt — passing `None`
-yields the pre-0.16 bare auth arg, which aborts at proving with
+yields the pre-0.16 bare auth arg, which aborts during execution with
 `ERR_FEE_CONVERSION_INFO_MISSING` on any chain whose `verification_base_fee` is
 non-zero. Retain the value alongside the salt and pass the same one at execute
 time; do not call `fee_conversion_info()` again, since the fee faucet is a
