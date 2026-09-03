@@ -164,7 +164,9 @@ describe("createMultisigAccount", () => {
         signerCommitments: ["0x" + "1".repeat(64), "0x" + "2".repeat(64)],
         guardianCommitment: "0x" + "9".repeat(64),
         procedureThresholds: [
-          { procedure: "send_asset", threshold: 2 },
+          // Distinct thresholds deliberately: with both set to the same value the assertion
+          // below cannot tell a correct pairing from one that swapped the two roots.
+          { procedure: "send_asset", threshold: 1 },
           { procedure: "update_signers", threshold: 2 },
         ],
       } as never,
@@ -177,10 +179,13 @@ describe("createMultisigAccount", () => {
     const built = createAuthGuardedMultisig.mock.calls.at(-1)?.[0] as {
       thresholds: Array<{ procRoot: { hex: string }; threshold: number }>;
     };
-    expect(built.thresholds.map((t) => t.procRoot.hex)).toEqual([
-      PROCEDURE_ROOTS.send_asset,
-      PROCEDURE_ROOTS.update_signers,
-    ]);
+    expect(built.thresholds.map((t) => [t.procRoot.hex, t.threshold])).toEqual(
+      expect.arrayContaining([
+        [PROCEDURE_ROOTS.send_asset, 1],
+        [PROCEDURE_ROOTS.update_signers, 2],
+      ]),
+    );
+    expect(built.thresholds).toHaveLength(2);
   });
 });
 
