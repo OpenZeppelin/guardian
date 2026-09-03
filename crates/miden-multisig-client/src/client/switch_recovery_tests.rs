@@ -8,6 +8,7 @@
 //! served by a mock pre-switch GUARDIAN, listed, binding-verified, and its
 //! embedded note imported into a store that never held it, then shown to
 //! survive the repoint to a new GUARDIAN that serves nothing.
+use miden_client::transaction::TransactionRequestBuilder;
 
 use std::sync::Arc;
 
@@ -145,6 +146,17 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
     let salt = Word::from([5u32, 6, 7, 8]);
     let tx_type =
         TransactionType::consume_notes_v2(vec![note.id()], vec![SerializedNote::from_note(&note)]);
+    // The anchor the request is built against: since the fee is paid inside the auth
+    // procedure, `build_final_transaction_request` reads the fee faucet off it.
+    let chain_anchor = author
+        .miden_client
+        .chain_anchor_for_request(
+            &TransactionRequestBuilder::new()
+                .build()
+                .expect("empty request builds"),
+        )
+        .await
+        .expect("the mock chain yields an anchor");
     let tx_request = build_final_transaction_request(
         &author.miden_client,
         &tx_type,
@@ -154,6 +166,7 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
         None,
         Some(&[]),
         author.key_manager.scheme(),
+        &chain_anchor,
     )
     .await
     .unwrap();
