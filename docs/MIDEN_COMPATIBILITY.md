@@ -49,6 +49,19 @@ the transaction fee, so it calls `miden::standards::fee` procedures that first s
 accounts must be recreated on the new contract version. See
 [`MULTISIG_SDK.md`](./MULTISIG_SDK.md#contract-version-pinning).
 
+**Drain pending proposals before upgrading.** The rebuild now commits fee conversion info
+unconditionally, and every proposal's auth arg is the commitment `hash(CONVERSION_INFO || SALT)`
+rather than the bare salt. A proposal still pending from 0.17.0-rc.1 or rc.2 therefore cannot be
+reproduced: the Rust client fails `verify_proposal_summary_binding` with "metadata does not match
+tx_summary", and the TypeScript client raises `proposal_auth_arg_unresolvable`. The blast radius is
+wider than the one proposal — strict `list_proposals` / `syncProposals` fail for the whole account
+while GUARDIAN keeps serving it, and the isolating recovery sync skips it silently, so notes
+embedded in it are never imported.
+
+Execute or cancel every pending proposal on the old version, and have GUARDIAN drop any that
+cannot be executed, before upgrading. Recreating the account (above) does not clear proposals
+served for the old one.
+
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
 
