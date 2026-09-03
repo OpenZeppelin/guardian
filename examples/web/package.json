@@ -14,7 +14,7 @@
   "dependencies": {
     "@demox-labs/miden-wallet-adapter-base": "^0.10.0",
     "@demox-labs/miden-wallet-adapter-miden": "^0.10.0",
-    "@miden-sdk/miden-sdk": "0.16.0-rc.5",
+    "@miden-sdk/miden-sdk": "0.16.0-rc.6",
     "@openzeppelin/miden-multisig-client": "file:../../packages/miden-multisig-client",
     "@openzeppelin/guardian-client": "file:../../packages/guardian-client",
     "@radix-ui/react-checkbox": "^1.3.3",
