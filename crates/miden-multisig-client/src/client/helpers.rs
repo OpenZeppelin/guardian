@@ -527,12 +527,18 @@ impl MultisigClient {
     /// that advances the chain past a fee-faucet change leaves the request committing one
     /// faucet and the proposal anchored at a block naming another. Calling [`Self::sync`] first
     /// narrows the window but cannot close it, because the internal sync still runs afterwards.
-    /// The proposal then collects signatures and fails to pay.
     ///
-    /// That is accepted rather than sealed. The committed value is recoverable — the request is
-    /// deserialized anyway, and the preimage sits in its advice map under the auth arg — but the
-    /// caller's *intent* is not: a deliberately non-native faucet and a stale read look the
-    /// same, so a seal would reject the legitimate case along with the mistake.
+    /// The failure is loud and early, not silent: the guarded auth calls
+    /// `fee::assert_fee_bound`, which asserts the payment faucet equals
+    /// `tx::get_fee_faucet_id` and otherwise aborts with `ERR_FEE_PAYMENT_FAUCET_NOT_NATIVE`.
+    /// That runs inside this method's own `execute_for_summary`, so a stale read fails while
+    /// the proposal is being created — it never reaches cosigners.
+    ///
+    /// Unsealed for now rather than by necessity. A seal is expressible: the request is
+    /// deserialized here anyway and the preimage sits in its advice map under the auth arg, so
+    /// the committed faucet can be compared to the captured anchor's. What once argued against
+    /// it — that a deliberately non-native faucet is a legitimate case a seal would reject —
+    /// does not hold, since `assert_fee_bound` accepts only the native faucet.
     pub async fn fee_conversion_info(
         &self,
     ) -> Result<miden_standards::account::auth::FeeConversionInfo> {

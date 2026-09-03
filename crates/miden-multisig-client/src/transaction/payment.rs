@@ -29,7 +29,7 @@ use miden_standards::account::auth::FeeConversionInfo;
 /// `fee_conversion_info` decides what the auth arg carries. `Some(info)` commits
 /// `hash(CONVERSION_INFO || SALT)` and supplies the preimage through the advice map, which is
 /// what the guarded auth procedure's `fee::pay_fee` requires; `None` passes the salt through
-/// bare, reproducing the pre-0.16 behaviour, which aborts at proving with
+/// bare, reproducing the pre-0.16 behaviour, which aborts during execution with
 /// `ERR_FEE_CONVERSION_INFO_MISSING` wherever the verification base fee is non-zero.
 ///
 /// Resolve the value with [`crate::resolve_fee_conversion_info`] when building a new request,
