@@ -14,7 +14,7 @@ import { nativeConversionInfo, resolveAuthArg } from '../src/transaction/feeAuth
  *
  * The remaining untested link is the VM itself. Nothing here executes MASM, so
  * an operand order that disagrees with `load_conversion_info` still round trips
- * — see the note in `fee-auth-convention.test.ts`.
+ * — see the note on the Rust-computed digest in `src/transaction/feeAuth.test.ts`.
  */
 const FEE_FAUCET = '0xade67f7701e9e9c12493c6206bc46e';
 const SALT = Word.fromHex('0x' + '11'.repeat(32));

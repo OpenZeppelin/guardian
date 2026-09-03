@@ -21,8 +21,8 @@ import { resolveAuthArg } from '../src/transaction/feeAuth.js';
  * `Word.fromHex` returns one felt array for every input, so note ids cannot
  * differ there.
  */
-// Well-formed ids differing only in their leading nibble, as in
-// `fee-auth-convention.test.ts`.
+// Well-formed ids differing only in their leading nibble, built on the faucet
+// `src/transaction/feeAuth.test.ts` pins against the Rust cross-SDK vector.
 const SENDER = '0xcde67f7701e9e9c12493c6206bc46e';
 const RECIPIENT = '0xbde67f7701e9e9c12493c6206bc46e';
 const FAUCET = '0xade67f7701e9e9c12493c6206bc46e';
