@@ -31,12 +31,11 @@
     "!src/**/*.test.ts"
   ],
   "scripts": {
-    "generate:masm": "node ./scripts/generate-masm.mjs",
-    "build": "npm run generate:masm && tsc",
+    "build": "tsc",
     "dev": "npm run generate:masm && tsc --watch",
     "typecheck": "npm run generate:masm && tsc --noEmit",
     "clean": "rm -rf dist",
-    "test": "npm run generate:masm && vitest run",
+    "test": "vitest run",
     "test:watch": "npm run generate:masm && vitest",
     "test:browser": "playwright test --config playwright.config.ts"
   },
