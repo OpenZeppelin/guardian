@@ -13,10 +13,8 @@ use miden_protocol::{Felt, Word};
 use miden_standards::note::{P2idNote, P2ideNote};
 use miden_standards::tx_script::SendNotesTransactionScript;
 
-use super::MaybeFeeConversionInfo;
 use crate::error::{MultisigError, Result};
 use crate::proposal::P2ideHeights;
-use miden_standards::account::auth::FeeConversionInfo;
 
 /// Builds a P2ID transaction request.
 ///
@@ -25,20 +23,6 @@ use miden_standards::account::auth::FeeConversionInfo;
 /// constraint, a P2IDE note is created instead of a plain P2ID note (issue
 /// #366); the note's serial number is drawn from the same salt-seeded rng
 /// either way, so cosigners rebuild the identical note.
-///
-/// `fee_conversion_info` decides what the auth arg carries. `Some(info)` commits
-/// `hash(CONVERSION_INFO || SALT)` and supplies the preimage through the advice map, which is
-/// what the guarded auth procedure's `fee::pay_fee` requires; `None` passes the salt through
-/// bare, reproducing the pre-0.16 behaviour, which aborts during execution with
-/// `ERR_FEE_CONVERSION_INFO_MISSING` wherever the verification base fee is non-zero.
-///
-/// Resolve the value with [`crate::resolve_fee_conversion_info`] when building a new request,
-/// or with [`crate::fee_conversion_info_at`] when rebuilding one for an existing proposal —
-/// the auth arg commits it, so a rebuild has to reproduce what was committed rather than what
-/// the chain reports now.
-// Every argument is an independent input to the request; grouping them into a struct would
-// only rename the same parameter list. Matches `TransactionBuilder::build_p2id`.
-#[allow(clippy::too_many_arguments)]
 pub fn build_p2id_transaction_request<I>(
     sender_account: &Account,
     recipient: AccountId,
@@ -47,7 +31,6 @@ pub fn build_p2id_transaction_request<I>(
     heights: P2ideHeights,
     salt: Word,
     signature_advice: I,
-    fee_conversion_info: Option<FeeConversionInfo>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -100,7 +83,7 @@ where
         .script_arg(send_notes_script.tx_script_args())
         .expected_output_recipients(vec![note.recipient().clone()])
         .extend_advice_map(signature_advice)
-        .maybe_fee_conversion_info(fee_conversion_info, salt)
+        .fee_conversion_salt(salt)
         .build()?;
 
     Ok(request)
@@ -117,57 +100,13 @@ mod tests {
     use miden_protocol::account::{AccountId, AccountType};
     use miden_protocol::asset::{AssetAmount, TokenSymbol};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_standards::account::auth::{
-        Approver, AuthSingleSig, FeeConversionInfo, commit_fee_conversion_info,
-    };
+    use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::account::faucets::{
         FungibleFaucet, TokenName, create_singlesig_user_fungible_faucet,
     };
     use miden_standards::account::policies::{
         BurnPolicy, MintPolicy, TokenPolicyManager, TransferPolicy,
     };
-
-    /// Builds a guarded multisig account and a fungible faucet for the request builders.
-    fn guarded_account_and_faucet() -> (
-        miden_client::account::Account,
-        miden_client::account::Account,
-    ) {
-        let secret_key = SecretKey::new();
-        let signer_commitment = secret_key.public_key().to_commitment();
-        let account = MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
-            1,
-            vec![signer_commitment],
-            Word::from([9u32, 8, 7, 6]),
-        ))
-        .build()
-        .unwrap();
-        let faucet_definition = FungibleFaucet::builder()
-            .name(TokenName::new("test token").unwrap())
-            .symbol(TokenSymbol::try_from("TST").unwrap())
-            .decimals(8)
-            .max_supply(AssetAmount::from(1_000_000u32))
-            .build()
-            .unwrap();
-        let auth_component = AuthSingleSig::new(Approver::new(
-            secret_key.public_key().to_commitment().into(),
-            AuthScheme::Falcon512Poseidon2,
-        ));
-        let policy_manager = TokenPolicyManager::builder()
-            .active_mint_policy(MintPolicy::allow_all())
-            .active_burn_policy(BurnPolicy::allow_all())
-            .active_send_policy(TransferPolicy::allow_all())
-            .active_receive_policy(TransferPolicy::allow_all())
-            .build();
-        let faucet = create_singlesig_user_fungible_faucet(
-            [5u8; 32],
-            faucet_definition,
-            auth_component,
-            policy_manager,
-            AccountType::Public,
-        )
-        .unwrap();
-        (account, faucet)
-    }
 
     #[test]
     fn build_p2id_transaction_request_uses_custom_send_script() {
@@ -218,7 +157,6 @@ mod tests {
             P2ideHeights::default(),
             Word::from([1u32, 2, 3, 4]),
             std::iter::empty::<(Word, Vec<Felt>)>(),
-            None,
         )
         .unwrap();
 
@@ -279,7 +217,6 @@ mod tests {
                 P2ideHeights::default(),
                 salt,
                 std::iter::empty::<(Word, Vec<Felt>)>(),
-                None,
             )
             .unwrap()
         };
@@ -291,53 +228,6 @@ mod tests {
         // parameterized public and private requests must not be identical.
         use miden_protocol::utils::serde::Serializable;
         assert_ne!(private_request.to_bytes(), public_request.to_bytes());
-    }
-
-    /// A request built with fee conversion info must commit it via the auth args, not pass the
-    /// salt through bare.
-    ///
-    /// Since protocol 0.16 the guarded multisig auth procedure pays the transaction fee and reads
-    /// the conversion info from the auth args, so a bare salt aborts in `fee::pay_fee` with
-    /// `ERR_FEE_CONVERSION_INFO_MISSING` on any chain with a non-zero verification base fee.
-    #[test]
-    fn p2id_request_commits_fee_conversion_info() {
-        let (account, faucet) = guarded_account_and_faucet();
-        let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
-        let asset = miden_protocol::asset::FungibleAsset::new(faucet.id(), 100)
-            .unwrap()
-            .into();
-        let salt = Word::from([1u32, 2, 3, 4]);
-        let conversion_info = FeeConversionInfo::one_to_one(faucet.id());
-
-        let request = build_p2id_transaction_request(
-            &account,
-            recipient,
-            vec![asset],
-            NoteType::Public,
-            P2ideHeights::default(),
-            salt,
-            std::iter::empty::<(Word, Vec<Felt>)>(),
-            Some(conversion_info),
-        )
-        .unwrap();
-
-        let (expected_auth_arg, expected_preimage) =
-            commit_fee_conversion_info(conversion_info, salt);
-
-        assert_eq!(*request.auth_arg(), Some(expected_auth_arg));
-        assert_ne!(
-            *request.auth_arg(),
-            Some(salt),
-            "the salt must not be passed through bare"
-        );
-        assert_eq!(
-            request
-                .advice_map()
-                .get(&expected_auth_arg)
-                .map(|v| v.to_vec()),
-            Some(expected_preimage),
-            "the commitment preimage must be reachable from the advice map"
-        );
     }
 
     /// Presence of a reclaim/timelock height must switch the output note to
@@ -398,7 +288,6 @@ mod tests {
                 heights,
                 salt,
                 std::iter::empty::<(Word, Vec<Felt>)>(),
-                None,
             )
             .unwrap()
         };

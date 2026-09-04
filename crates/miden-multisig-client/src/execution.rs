@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
-use miden_client::transaction::{ChainAnchor, TransactionRequest};
+use miden_client::transaction::TransactionRequest;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::{Felt, Word};
@@ -13,7 +13,6 @@ use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::TransactionType;
-use miden_standards::account::auth::FeeConversionInfo;
 
 /// Signature advice entry: (key, prepared_signature_values)
 pub type SignatureAdvice = (Word, Vec<Felt>);
@@ -97,9 +96,6 @@ pub fn build_transfer_asset(faucet_id: AccountId, amount: u64) -> Result<Fungibl
 
 /// Builds the final transaction request based on transaction type.
 ///
-/// The fee conversion info comes from the proposal's own anchor, never the chain tip:
-/// reading the tip would silently stop reproducing the signed summary the moment a chain
-/// changed its fee faucet between a proposal's anchor and its execution.
 #[expect(
     clippy::too_many_arguments,
     reason = "execution needs transaction metadata and signature scheme to stay explicit"
@@ -113,10 +109,7 @@ pub async fn build_final_transaction_request(
     metadata_threshold: Option<u64>,
     metadata_signer_commitments: Option<&[Word]>,
     scheme: SignatureScheme,
-    chain_anchor: &ChainAnchor,
 ) -> Result<TransactionRequest> {
-    let fee_conversion_info = Some(fee_conversion_info_at(chain_anchor));
-
     match transaction_type {
         TransactionType::P2ID {
             recipient,
@@ -135,7 +128,6 @@ pub async fn build_final_transaction_request(
                 *heights,
                 salt,
                 signature_advice,
-                fee_conversion_info,
             )
         }
         TransactionType::ConsumeNotes {
@@ -172,7 +164,6 @@ pub async fn build_final_transaction_request(
                         decoded,
                         salt,
                         signature_advice,
-                        fee_conversion_info,
                     )
                 }
                 None | Some(1) => {
@@ -183,7 +174,6 @@ pub async fn build_final_transaction_request(
                             note_ids.clone(),
                             salt,
                             signature_advice,
-                            fee_conversion_info,
                         )
                         .await
                     }
@@ -208,7 +198,6 @@ pub async fn build_final_transaction_request(
                 scheme,
                 salt,
                 signature_advice,
-                fee_conversion_info,
             )
         }
         TransactionType::UpdateProcedureThreshold {
@@ -221,7 +210,6 @@ pub async fn build_final_transaction_request(
                     *new_threshold,
                     salt,
                     signature_advice,
-                    fee_conversion_info,
                 )?;
 
             Ok(tx_request)
@@ -242,7 +230,6 @@ pub async fn build_final_transaction_request(
                 salt,
                 signature_advice,
                 scheme,
-                fee_conversion_info,
             )?;
 
             Ok(tx_request)
@@ -251,45 +238,6 @@ pub async fn build_final_transaction_request(
             "cannot build a transaction for a custom proposal type".to_string(),
         )),
     }
-}
-
-/// Reads the chain's native fee asset from the block the client is synced to and returns
-/// conversion info paying the transaction fee in it at rate 1/1.
-///
-/// The multisig auth procedures take the payment asset and rate from the auth args, so this has to
-/// be committed into every request the guardian builds; without it `fee::pay_fee` aborts with
-/// `ERR_FEE_CONVERSION_INFO_MISSING` on any chain with a non-zero verification base fee.
-///
-/// This is the *creation*-side resolver, and it deliberately reads the synced block rather than
-/// the network tip: that is the same block `chain_anchor_at_tip` pins the new request to, so the
-/// committed faucet and the proposal's anchor cannot disagree. Rebuilds use
-/// [`fee_conversion_info_at`] against the proposal's stored anchor instead.
-pub async fn resolve_fee_conversion_info(client: &MidenSdkClient) -> Result<FeeConversionInfo> {
-    let header = client.get_latest_block_header().await.map_err(|e| {
-        MultisigError::miden_client_with_context(
-            "failed to read the synced block header while resolving the fee faucet",
-            e,
-        )
-    })?;
-
-    Ok(FeeConversionInfo::one_to_one(
-        header.fee_parameters().fee_faucet_id(),
-    ))
-}
-
-/// The native 1/1 conversion info for the fee faucet `chain_anchor` reports.
-///
-/// Fee parameters are a per-block header field, so a proposal's faucet is whatever its anchored
-/// reference block reported — not whatever the chain reports now. Deriving it from the anchor is
-/// what lets a cosigner reproduce a committed auth arg from `salt_hex` alone, offline, and lets
-/// the Rust and TypeScript SDKs agree on the same proposal.
-///
-/// This *derives* the value every typed path commits; it does not read back what a request
-/// actually committed. A custom request may commit any faucet and rate, and nothing recorded on
-/// the proposal can recover an arbitrary one — such integrations must retain the exact
-/// [`FeeConversionInfo`] they built with.
-pub fn fee_conversion_info_at(chain_anchor: &ChainAnchor) -> FeeConversionInfo {
-    FeeConversionInfo::one_to_one(chain_anchor.header().fee_parameters().fee_faucet_id())
 }
 
 #[cfg(test)]
@@ -368,167 +316,5 @@ mod tests {
 
         let advice = collect_signature_advice(signatures, &required, msg).expect("valid advice");
         assert_eq!(advice.len(), 1);
-    }
-
-    mod rebuild_fee_conversion_info {
-        //! [`build_final_transaction_request`] must reproduce the faucet the proposal's anchor
-        //! reports, not the one its executing client is synced to.
-        //!
-        //! The two agree on every other fixture in this crate, which is exactly what makes the
-        //! distinction invisible: reading the tip instead of the anchor keeps passing until a
-        //! chain changes its fee faucet between a proposal's anchor and its execution, at which
-        //! point every committed proposal stops reproducing its signed summary. These cases put
-        //! the anchor and the tip on different faucets so the two sources are separable, and they
-        //! mirror `rebuilds with the anchor faucet even when the chain now reports another` in
-        //! `packages/miden-multisig-client/src/multisig.test.ts`.
-
-        use super::*;
-        use crate::client::MultisigClient;
-        use crate::client::test_support::{
-            alternate_fee_faucet, assert_commits_fee_faucet, chain_anchor_at_fee_faucet,
-            chain_fee_faucet, client_at_fee_faucet, guarded_multisig_account,
-        };
-        use crate::procedures::ProcedureName;
-        use crate::proposal::P2ideHeights;
-        use miden_protocol::note::NoteType;
-
-        const SALT: [u32; 4] = [1, 2, 3, 4];
-
-        /// A client synced to [`chain_fee_faucet`] paired with an anchor from a chain reporting
-        /// [`alternate_fee_faucet`].
-        async fn client_and_divergent_anchor(
-            client_dir: &std::path::Path,
-            anchor_dir: &std::path::Path,
-        ) -> (MultisigClient, ChainAnchor) {
-            let client = client_at_fee_faucet(client_dir, chain_fee_faucet()).await;
-            let anchor = chain_anchor_at_fee_faucet(anchor_dir, alternate_fee_faucet()).await;
-
-            assert_ne!(
-                anchor.header().fee_parameters().fee_faucet_id(),
-                chain_fee_faucet(),
-                "the fixture only separates anchor from tip while their faucets differ"
-            );
-
-            (client, anchor)
-        }
-
-        async fn rebuild(
-            client: &MultisigClient,
-            anchor: &ChainAnchor,
-            transaction_type: &TransactionType,
-            metadata_threshold: Option<u64>,
-            metadata_signer_commitments: Option<&[Word]>,
-        ) -> TransactionRequest {
-            build_final_transaction_request(
-                &client.miden_client,
-                transaction_type,
-                &guarded_multisig_account(),
-                Word::from(SALT),
-                Vec::new(),
-                metadata_threshold,
-                metadata_signer_commitments,
-                SignatureScheme::Falcon,
-                anchor,
-            )
-            .await
-            .expect("the rebuilt request builds")
-        }
-
-        #[tokio::test]
-        async fn rebuilds_with_the_anchor_faucet_even_when_the_chain_now_reports_another() {
-            let client_dir = tempfile::tempdir().expect("temp dir");
-            let anchor_dir = tempfile::tempdir().expect("temp dir");
-            let (client, anchor) =
-                client_and_divergent_anchor(client_dir.path(), anchor_dir.path()).await;
-
-            let request = rebuild(
-                &client,
-                &anchor,
-                &TransactionType::SwitchGuardian {
-                    new_endpoint: "http://localhost:1".to_string(),
-                    new_commitment: Word::from([1u32, 1, 1, 1]),
-                },
-                None,
-                None,
-            )
-            .await;
-
-            assert_commits_fee_faucet(&request, alternate_fee_faucet(), Word::from(SALT));
-        }
-
-        /// Each transaction type reaches its own builder through its own arm of the dispatch, so
-        /// the anchor's faucet has to be threaded through each one separately. Covering only
-        /// `switch_guardian` would leave the arms below free to drop it and strand a committed
-        /// proposal at rebuild time.
-        #[tokio::test]
-        async fn threads_the_anchor_faucet_through_the_p2id_arm() {
-            let client_dir = tempfile::tempdir().expect("temp dir");
-            let anchor_dir = tempfile::tempdir().expect("temp dir");
-            let (client, anchor) =
-                client_and_divergent_anchor(client_dir.path(), anchor_dir.path()).await;
-            let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b")
-                .expect("valid recipient id");
-
-            let request = rebuild(
-                &client,
-                &anchor,
-                &TransactionType::P2ID {
-                    recipient,
-                    faucet_id: alternate_fee_faucet(),
-                    amount: 100,
-                    note_type: NoteType::Public,
-                    heights: P2ideHeights::default(),
-                },
-                None,
-                None,
-            )
-            .await;
-
-            assert_commits_fee_faucet(&request, alternate_fee_faucet(), Word::from(SALT));
-        }
-
-        #[tokio::test]
-        async fn threads_the_anchor_faucet_through_the_update_procedure_threshold_arm() {
-            let client_dir = tempfile::tempdir().expect("temp dir");
-            let anchor_dir = tempfile::tempdir().expect("temp dir");
-            let (client, anchor) =
-                client_and_divergent_anchor(client_dir.path(), anchor_dir.path()).await;
-
-            let request = rebuild(
-                &client,
-                &anchor,
-                &TransactionType::UpdateProcedureThreshold {
-                    procedure: ProcedureName::SendAsset,
-                    new_threshold: 2,
-                },
-                None,
-                None,
-            )
-            .await;
-
-            assert_commits_fee_faucet(&request, alternate_fee_faucet(), Word::from(SALT));
-        }
-
-        #[tokio::test]
-        async fn threads_the_anchor_faucet_through_the_signer_update_arm() {
-            let client_dir = tempfile::tempdir().expect("temp dir");
-            let anchor_dir = tempfile::tempdir().expect("temp dir");
-            let (client, anchor) =
-                client_and_divergent_anchor(client_dir.path(), anchor_dir.path()).await;
-            let signers = [Word::from([5u32, 6, 7, 8])];
-
-            let request = rebuild(
-                &client,
-                &anchor,
-                &TransactionType::AddCosigner {
-                    new_commitment: signers[0],
-                },
-                Some(1),
-                Some(&signers),
-            )
-            .await;
-
-            assert_commits_fee_faucet(&request, alternate_fee_faucet(), Word::from(SALT));
-        }
     }
 }
