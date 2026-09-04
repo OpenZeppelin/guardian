@@ -136,32 +136,3 @@ export class ProposalAuthArgUnresolvableError extends Error {
   }
 }
 
-/**
- * The chain's fee faucet changed while a proposal was being built, so the
- * faucet its auth arg committed to is not the one its anchored block reports.
- *
- * Raised at creation, before the proposal is offered for signing. Nobody could
- * rebuild such a proposal — every rebuild derives the faucet from the anchor
- * while the auth arg commits the other one — so it is refused rather than
- * allowed to collect signatures it can never execute with.
- *
- * Coded because it is transient and the remedy is mechanical: build the
- * proposal again against the now-current faucet. Callers that retry should do
- * so on this type rather than by matching the message.
- */
-export class FeeFaucetAnchorMismatchError extends Error {
-  readonly code: AuthArgErrorCode = 'fee_faucet_anchor_mismatch';
-  readonly committedFeeFaucetIdHex: string;
-  readonly anchoredFeeFaucetIdHex: string;
-
-  constructor(details: { committedFeeFaucetIdHex: string; anchoredFeeFaucetIdHex: string }) {
-    super(
-      `Fee faucet moved while the proposal was being built: committed ` +
-        `${quoteUntrusted(details.committedFeeFaucetIdHex)} but the anchored block reports ` +
-        `${quoteUntrusted(details.anchoredFeeFaucetIdHex)}. Retry the proposal.`,
-    );
-    this.name = 'FeeFaucetAnchorMismatchError';
-    this.committedFeeFaucetIdHex = details.committedFeeFaucetIdHex;
-    this.anchoredFeeFaucetIdHex = details.anchoredFeeFaucetIdHex;
-  }
-}
