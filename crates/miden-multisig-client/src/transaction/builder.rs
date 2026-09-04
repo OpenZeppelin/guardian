@@ -1,13 +1,10 @@
 //! Proposal builder for multisig transactions.
 
 use guardian_client::GuardianClient;
-use guardian_shared::{SignatureScheme, ToJson};
-use miden_client::account::Account;
-use miden_client::transaction::TransactionRequest;
+use guardian_shared::ToJson;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::Asset;
-use miden_protocol::note::{Note, NoteId, NoteType};
+use miden_protocol::note::{NoteId, NoteType};
 
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
@@ -155,101 +152,6 @@ impl ProposalBuilder {
         )))
     }
 
-    /// The signer-update request an `add_cosigner` or `remove_cosigner` proposal is created
-    /// from. The two differ only in the signer set their caller assembles.
-    ///
-    /// Every create path resolves its conversion info from the block the client is synced to,
-    /// which is the block [`execute_for_summary`] will anchor the request at. Committing it is
-    /// what lets the auth procedure's `fee::pay_fee` run, and resolving it here rather than at
-    /// the chain tip on some later rebuild is what keeps the anchor and the committed faucet
-    /// from disagreeing.
-    async fn signer_update_request(
-        miden_client: &MidenSdkClient,
-        new_threshold: u64,
-        signers: &[Word],
-        salt: Word,
-        scheme: SignatureScheme,
-    ) -> Result<TransactionRequest> {
-        let (tx_request, _config_hash) = build_update_signers_transaction_request(
-            new_threshold,
-            signers,
-            salt,
-            std::iter::empty(),
-            scheme,
-            Some(crate::execution::resolve_fee_conversion_info(miden_client).await?),
-        )?;
-
-        Ok(tx_request)
-    }
-
-    /// The payment request a `p2id` proposal is created from.
-    async fn p2id_request(
-        miden_client: &MidenSdkClient,
-        account: &Account,
-        recipient: AccountId,
-        assets: Vec<Asset>,
-        note_type: NoteType,
-        heights: P2ideHeights,
-        salt: Word,
-    ) -> Result<TransactionRequest> {
-        build_p2id_transaction_request(
-            account,
-            recipient,
-            assets,
-            note_type,
-            heights,
-            salt,
-            std::iter::empty(),
-            Some(crate::execution::resolve_fee_conversion_info(miden_client).await?),
-        )
-    }
-
-    /// The consumption request a `consume_notes` proposal is created from.
-    async fn consume_notes_request(
-        miden_client: &MidenSdkClient,
-        notes: Vec<Note>,
-        salt: Word,
-    ) -> Result<TransactionRequest> {
-        crate::transaction::build_consume_notes_transaction_request_from_notes(
-            notes,
-            salt,
-            std::iter::empty(),
-            Some(crate::execution::resolve_fee_conversion_info(miden_client).await?),
-        )
-    }
-
-    /// The rotation request a `switch_guardian` proposal is created from.
-    async fn switch_guardian_request(
-        miden_client: &MidenSdkClient,
-        new_guardian_pubkey: Word,
-        scheme: SignatureScheme,
-        salt: Word,
-    ) -> Result<TransactionRequest> {
-        build_update_guardian_transaction_request(
-            new_guardian_pubkey,
-            scheme,
-            salt,
-            std::iter::empty(),
-            Some(crate::execution::resolve_fee_conversion_info(miden_client).await?),
-        )
-    }
-
-    /// The threshold request an `update_procedure_threshold` proposal is created from.
-    async fn update_procedure_threshold_request(
-        miden_client: &MidenSdkClient,
-        procedure: ProcedureName,
-        new_threshold: u32,
-        salt: Word,
-    ) -> Result<TransactionRequest> {
-        build_update_procedure_threshold_transaction_request(
-            procedure,
-            new_threshold,
-            salt,
-            std::iter::empty(),
-            Some(crate::execution::resolve_fee_conversion_info(miden_client).await?),
-        )
-    }
-
     async fn build_add_cosigner(
         &self,
         miden_client: &mut MidenSdkClient,
@@ -274,14 +176,13 @@ impl ProposalBuilder {
         let salt = generate_salt();
 
         // Build the transaction request (without signatures - we just want the summary)
-        let tx_request = Self::signer_update_request(
-            miden_client,
+        let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
             &current_signers,
             salt,
+            std::iter::empty(),
             key_manager.scheme(),
-        )
-        .await?;
+        )?;
 
         // Execute to get the TransactionSummary
         let (tx_summary, chain_anchor) =
@@ -388,14 +289,13 @@ impl ProposalBuilder {
         let salt = generate_salt();
 
         // Build the transaction request
-        let tx_request = Self::signer_update_request(
-            miden_client,
+        let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
             &new_signers,
             salt,
+            std::iter::empty(),
             key_manager.scheme(),
-        )
-        .await?;
+        )?;
 
         // Execute to get the TransactionSummary
         let (tx_summary, chain_anchor) =
@@ -487,16 +387,15 @@ impl ProposalBuilder {
         let salt = generate_salt();
 
         // Build the P2ID transaction request (no signature advice needed for proposal)
-        let tx_request = Self::p2id_request(
-            miden_client,
+        let tx_request = build_p2id_transaction_request(
             account.inner(),
             recipient,
             vec![asset.into()],
             note_type,
             heights,
             salt,
-        )
-        .await?;
+            std::iter::empty(),
+        )?;
 
         // Execute to get the TransactionSummary
         let (tx_summary, chain_anchor) =
@@ -593,7 +492,11 @@ impl ProposalBuilder {
             .map(crate::proposal::SerializedNote::from_note)
             .collect();
 
-        let tx_request = Self::consume_notes_request(miden_client, fetched_notes, salt).await?;
+        let tx_request = crate::transaction::build_consume_notes_transaction_request_from_notes(
+            fetched_notes,
+            salt,
+            std::iter::empty(),
+        )?;
 
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;
@@ -695,13 +598,12 @@ impl ProposalBuilder {
         let salt = generate_salt();
 
         // Build the GUARDIAN update transaction request (no signatures for proposal)
-        let tx_request = Self::switch_guardian_request(
-            miden_client,
+        let tx_request = build_update_guardian_transaction_request(
             new_guardian_pubkey,
             key_manager.scheme(),
             salt,
-        )
-        .await?;
+            std::iter::empty(),
+        )?;
 
         // Execute to get the TransactionSummary
         let (tx_summary, chain_anchor) =
@@ -784,9 +686,12 @@ impl ProposalBuilder {
             as usize;
 
         let salt = generate_salt();
-        let tx_request =
-            Self::update_procedure_threshold_request(miden_client, procedure, new_threshold, salt)
-                .await?;
+        let tx_request = build_update_procedure_threshold_transaction_request(
+            procedure,
+            new_threshold,
+            salt,
+            std::iter::empty(),
+        )?;
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
@@ -922,114 +827,93 @@ mod tests {
         );
     }
 
-    mod fee_conversion_info {
-        //! Every typed create path must commit the chain's own fee conversion info.
-        //!
-        //! The primitive is covered where it is applied (`transaction::mod`, `payment`), but
-        //! those callers pass an explicit `Some(info)`, so they say nothing about whether a real
-        //! create path passes one at all. These cases are what makes the *decision* observable:
-        //! dropping the conversion info on any single path leaves a proposal whose auth arg the
-        //! guarded auth procedure rejects at `fee::pay_fee`, and only the path's own case sees
-        //! it. They mirror the ten TypeScript cases around `commits the chain fee faucet on a
-        //! typed p2id proposal` in `packages/miden-multisig-client/src/multisig.test.ts`.
-
+    mod fee_conversion_salt {
         use super::*;
-        use crate::client::test_support::{
-            assert_commits_fee_faucet, chain_fee_faucet, client_at_fee_faucet,
-            guarded_multisig_account, p2id_note_for, test_wallet,
-        };
+        use crate::client::test_support::{guarded_multisig_account, p2id_note_for, test_wallet};
+        use guardian_shared::SignatureScheme;
+        use miden_client::transaction::TransactionRequest;
         use miden_protocol::asset::FungibleAsset;
 
         fn salt() -> Word {
             Word::from([1u32, 2, 3, 4])
         }
 
-        #[tokio::test]
-        async fn signer_update_request_commits_the_chain_fee_faucet() {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let client = client_at_fee_faucet(dir.path(), chain_fee_faucet()).await;
+        fn assert_declares_salt(request: &TransactionRequest) {
+            assert_eq!(request.fee_conversion_salt(), Some(salt()));
+            assert_eq!(*request.auth_arg(), None);
+        }
 
-            let request = ProposalBuilder::signer_update_request(
-                &client.miden_client,
+        #[test]
+        fn signer_update_request_declares_the_fee_conversion_salt() {
+            let (request, _) = build_update_signers_transaction_request(
                 1,
                 &[Word::from([5u32, 6, 7, 8])],
                 salt(),
+                std::iter::empty(),
                 SignatureScheme::Falcon,
             )
-            .await
             .expect("the signer-update request builds");
 
-            assert_commits_fee_faucet(&request, chain_fee_faucet(), salt());
+            assert_declares_salt(&request);
         }
 
-        #[tokio::test]
-        async fn p2id_request_commits_the_chain_fee_faucet() {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let client = client_at_fee_faucet(dir.path(), chain_fee_faucet()).await;
+        #[test]
+        fn p2id_request_declares_the_fee_conversion_salt() {
             let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b")
                 .expect("valid recipient id");
 
-            let request = ProposalBuilder::p2id_request(
-                &client.miden_client,
+            let request = build_p2id_transaction_request(
                 &guarded_multisig_account(),
                 recipient,
                 vec![FungibleAsset::mock(100)],
                 NoteType::Public,
                 P2ideHeights::default(),
                 salt(),
+                std::iter::empty(),
             )
-            .await
             .expect("the p2id request builds");
 
-            assert_commits_fee_faucet(&request, chain_fee_faucet(), salt());
+            assert_declares_salt(&request);
         }
 
-        #[tokio::test]
-        async fn consume_notes_request_commits_the_chain_fee_faucet() {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let client = client_at_fee_faucet(dir.path(), chain_fee_faucet()).await;
+        #[test]
+        fn consume_notes_request_declares_the_fee_conversion_salt() {
             let note = p2id_note_for(&test_wallet(1), 1, NoteType::Public);
 
-            let request =
-                ProposalBuilder::consume_notes_request(&client.miden_client, vec![note], salt())
-                    .await
-                    .expect("the consume-notes request builds");
+            let request = crate::transaction::build_consume_notes_transaction_request_from_notes(
+                vec![note],
+                salt(),
+                std::iter::empty(),
+            )
+            .expect("the consume-notes request builds");
 
-            assert_commits_fee_faucet(&request, chain_fee_faucet(), salt());
+            assert_declares_salt(&request);
         }
 
-        #[tokio::test]
-        async fn switch_guardian_request_commits_the_chain_fee_faucet() {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let client = client_at_fee_faucet(dir.path(), chain_fee_faucet()).await;
-
-            let request = ProposalBuilder::switch_guardian_request(
-                &client.miden_client,
+        #[test]
+        fn switch_guardian_request_declares_the_fee_conversion_salt() {
+            let request = build_update_guardian_transaction_request(
                 Word::from([1u32, 1, 1, 1]),
                 SignatureScheme::Falcon,
                 salt(),
+                std::iter::empty(),
             )
-            .await
             .expect("the switch-guardian request builds");
 
-            assert_commits_fee_faucet(&request, chain_fee_faucet(), salt());
+            assert_declares_salt(&request);
         }
 
-        #[tokio::test]
-        async fn update_procedure_threshold_request_commits_the_chain_fee_faucet() {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let client = client_at_fee_faucet(dir.path(), chain_fee_faucet()).await;
-
-            let request = ProposalBuilder::update_procedure_threshold_request(
-                &client.miden_client,
+        #[test]
+        fn update_procedure_threshold_request_declares_the_fee_conversion_salt() {
+            let request = build_update_procedure_threshold_transaction_request(
                 ProcedureName::SendAsset,
                 2,
                 salt(),
+                std::iter::empty(),
             )
-            .await
             .expect("the procedure-threshold request builds");
 
-            assert_commits_fee_faucet(&request, chain_fee_faucet(), salt());
+            assert_declares_salt(&request);
         }
     }
 }

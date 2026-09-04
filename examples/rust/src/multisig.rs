@@ -15,7 +15,6 @@ use miden_protocol::account::auth::Signature;
 use miden_protocol::account::AccountId;
 use miden_protocol::assembly::Package;
 use miden_protocol::{Felt, Hasher};
-use miden_standards::account::auth::{commit_fee_conversion_info, FeeConversionInfo};
 use miden_standards::StandardsLib;
 
 #[allow(dead_code)]
@@ -157,20 +156,11 @@ pub fn build_update_signers_script() -> Result<TransactionScript, String> {
 /// Builds a `TransactionRequest` that executes `update_signers_and_threshold` using the
 /// provided multisig configuration. Returns the request together with the advice map key
 /// (`MULTISIG_CONFIG_HASH`) so it can be reused elsewhere (e.g. for signature lookups).
-///
-/// `fee_conversion_info` is committed into the auth arg rather than passed through the
-/// builder's `fee_conversion_info` method: that method also marks the request as *declaring*
-/// conversion info, which miden-client refuses for every auth component outside
-/// `AuthSingleSig`/`AuthMultisig` — including the `AuthGuardedMultisig` this account uses.
-/// `None` reproduces the pre-fee behaviour and only works where the verification base fee is
-/// zero. Both the summary build and the final rebuild must pass the same value, since the
-/// auth arg the cosigners signed commits it.
 pub fn build_update_signers_transaction_request<I>(
     threshold: u64,
     signer_commitments: &[Word],
     salt: Word,
     extra_advice: I,
-    fee_conversion_info: Option<FeeConversionInfo>,
 ) -> Result<(TransactionRequest, Word), MultisigError>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -178,46 +168,15 @@ where
     let (config_hash, config_values) = build_multisig_config_advice(threshold, signer_commitments);
     let script = build_update_signers_script().map_err(MultisigError::Assembly)?;
 
-    let builder = TransactionRequestBuilder::new()
+    let request = TransactionRequestBuilder::new()
         .custom_script(script)
         .script_arg(config_hash)
         .extend_advice_map([(config_hash, config_values)])
-        .extend_advice_map(extra_advice);
+        .extend_advice_map(extra_advice)
+        .fee_conversion_salt(salt)
+        .build()?;
 
-    let builder = match fee_conversion_info {
-        Some(info) => {
-            let (auth_arg, preimage) = commit_fee_conversion_info(info, salt);
-            builder
-                .auth_arg(auth_arg)
-                .extend_advice_map([(auth_arg, preimage)])
-        }
-        None => builder.auth_arg(salt),
-    };
-
-    Ok((builder.build()?, config_hash))
-}
-
-/// Reads the chain's own fee faucet and pays in it at rate 1/1.
-///
-/// The faucet is a per-block header field, so this is resolved once and the value retained —
-/// re-reading it at rebuild time would commit a different faucet if the chain had moved on.
-// `MultisigError::Client` wraps upstream's `ClientError` verbatim; boxing it would only
-// move the cost to the caller's `?`.
-#[allow(clippy::result_large_err)]
-pub async fn resolve_fee_conversion_info<AUTH>(
-    client: &Client<AUTH>,
-) -> Result<FeeConversionInfo, MultisigError>
-where
-    AUTH: TransactionAuthenticator + Sync + 'static,
-{
-    let header = client
-        .get_latest_block_header()
-        .await
-        .map_err(MultisigError::Client)?;
-
-    Ok(FeeConversionInfo::one_to_one(
-        header.fee_parameters().fee_faucet_id(),
-    ))
+    Ok((request, config_hash))
 }
 
 #[allow(dead_code)]

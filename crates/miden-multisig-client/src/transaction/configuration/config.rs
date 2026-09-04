@@ -9,8 +9,6 @@ use miden_standards::StandardsLib;
 
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
-use crate::transaction::MaybeFeeConversionInfo;
-use miden_standards::account::auth::FeeConversionInfo;
 
 /// Builds the multisig configuration advice map entry.
 ///
@@ -86,7 +84,6 @@ pub fn build_update_signers_transaction_request<I>(
     salt: Word,
     extra_advice: I,
     scheme: SignatureScheme,
-    fee_conversion_info: Option<FeeConversionInfo>,
 ) -> Result<(TransactionRequest, Word)>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -100,7 +97,7 @@ where
         .script_arg(config_hash)
         .extend_advice_map([(config_hash, config_values)])
         .extend_advice_map(extra_advice)
-        .maybe_fee_conversion_info(fee_conversion_info, salt)
+        .fee_conversion_salt(salt)
         .build()?;
 
     Ok((request, config_hash))
@@ -148,7 +145,6 @@ pub fn build_update_procedure_threshold_transaction_request<I>(
     threshold: u32,
     salt: Word,
     extra_advice: I,
-    fee_conversion_info: Option<FeeConversionInfo>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -158,7 +154,7 @@ where
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
         .extend_advice_map(extra_advice)
-        .maybe_fee_conversion_info(fee_conversion_info, salt)
+        .fee_conversion_salt(salt)
         .build()?;
 
     Ok(request)

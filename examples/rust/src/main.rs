@@ -336,22 +336,11 @@ async fn main() -> ClientResult<()> {
             Felt::new_unchecked(0),
         ]);
 
-        // Retained and reused by the rebuild below: the auth arg commits it, so
-        // re-resolving there would break the summary the cosigners signed.
-        let fee_conversion_info = match multisig::resolve_fee_conversion_info(&miden_client).await {
-            Ok(info) => info,
-            Err(err) => {
-                println!("  ✗ Failed to read the chain's fee faucet: {}", err);
-                return Ok(());
-            }
-        };
-
         let (tx_request, _config_hash) = match multisig::build_update_signers_transaction_request(
             3,
             &signer_commitments,
             salt,
             vec![],
-            Some(fee_conversion_info),
         ) {
             Ok(req) => req,
             Err(err) => {
@@ -480,7 +469,6 @@ async fn main() -> ClientResult<()> {
                         &signer_commitments,
                         salt,
                         signature_advice,
-                        Some(fee_conversion_info),
                     ) {
                         Ok(req) => req,
                         Err(err) => {

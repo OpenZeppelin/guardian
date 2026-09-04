@@ -95,11 +95,6 @@ pub use keystore::{
 
 // Proposals
 pub use execution::{SignatureAdvice, build_transfer_asset};
-pub use execution::{fee_conversion_info_at, resolve_fee_conversion_info};
-// Re-exported because it is a required parameter of the public
-// `build_p2id_transaction_request`, so a consumer cannot call it without naming
-// this type.
-pub use miden_standards::account::auth::FeeConversionInfo;
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{
     CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, P2ideHeights, Proposal,
