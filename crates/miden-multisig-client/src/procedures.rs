@@ -246,6 +246,49 @@ mod tests {
         );
     }
 
+    /// The salt path's single point of failure.
+    ///
+    /// The request builders declare only a `fee_conversion_salt` and leave miden-client to
+    /// commit the conversion info. The client does that only for an account it can classify:
+    /// `AuthGuardedMultisig` maps to `FeeAuth::CallerChosenSalt`, while an account it cannot
+    /// place is `FeeAuth::Ignored`, and `Ignored` plus a declared salt is a hard
+    /// `FeeConversionInfoUnsupported` — every guarded transaction on a fee-charging chain
+    /// fails, not just the fee.
+    ///
+    /// Pinning `auth_tx` alone does not cover this: `extract_component` matches only when
+    /// EVERY one of the component's roots is present, so a standards bump that changes any
+    /// other export silently drops the classification while the root test above stays green.
+    #[test]
+    fn rust_built_accounts_classify_as_guarded_multisig() {
+        use miden_confidential_contracts::multisig_guardian::{
+            MultisigGuardianBuilder, MultisigGuardianConfig,
+        };
+        use miden_standards::account::interface::{
+            AccountComponentInterface, AccountComponentInterfaceExt,
+        };
+
+        let config = MultisigGuardianConfig::new(
+            1,
+            vec![Word::from([1u32, 0, 0, 0])],
+            Word::from([9u32, 0, 0, 0]),
+        );
+        let account = MultisigGuardianBuilder::new(config)
+            .with_seed([7u8; 32])
+            .build_existing()
+            .expect("account builds");
+
+        let procedures: Vec<_> = account.code().procedures().to_vec();
+        let components = AccountComponentInterface::from_procedures(&procedures);
+
+        assert!(
+            components.iter().any(|component| matches!(
+                component,
+                AccountComponentInterface::AuthGuardedMultisig
+            )),
+            "miden-client must classify the built account as AuthGuardedMultisig, got {components:?}"
+        );
+    }
+
     #[test]
     fn parse_unknown_returns_error() {
         let result: Result<ProcedureName, _> = "unknown_proc".parse();
