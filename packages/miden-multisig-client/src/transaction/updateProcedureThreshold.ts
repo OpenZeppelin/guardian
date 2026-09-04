@@ -13,7 +13,6 @@ import {
 import { getProcedureRoot, type ProcedureName } from '../procedures.js';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
-import { applyAuthArg } from './feeAuth.js';
 import { randomWord } from '../utils/random.js';
 import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
 
@@ -94,7 +93,7 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
 
   let txBuilder = new TransactionRequestBuilder();
   txBuilder = txBuilder.withCustomScript(script);
-  txBuilder = applyAuthArg(txBuilder, authSalt, options.feeFaucetId);
+  txBuilder = txBuilder.withFeeConversionSalt(authSalt);
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);

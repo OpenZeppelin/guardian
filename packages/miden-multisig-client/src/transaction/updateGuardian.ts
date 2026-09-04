@@ -9,7 +9,6 @@ import {
 } from '@miden-sdk/miden-sdk';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
-import { applyAuthArg } from './feeAuth.js';
 import { randomWord } from '../utils/random.js';
 import { authSchemeId } from '../utils/signature.js';
 import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
@@ -70,7 +69,7 @@ export async function buildUpdateGuardianTransactionRequest(
 
   let txBuilder = new TransactionRequestBuilder();
   txBuilder = txBuilder.withCustomScript(script);
-  txBuilder = applyAuthArg(txBuilder, authSaltForBuilder, options.feeFaucetId);
+  txBuilder = txBuilder.withFeeConversionSalt(authSaltForBuilder);
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);

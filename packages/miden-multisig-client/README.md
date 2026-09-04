@@ -432,6 +432,13 @@ const { request: finalRequest } = buildP2idTransactionRequest(
 await multisig.submitTransaction(proposal.id, finalRequest);
 ```
 
+The exported transaction builders declare the proposal salt through
+`TransactionRequestBuilder.withFeeConversionSalt`. Miden-client derives the
+native 1:1 conversion info from the execution reference header. Integrations
+that build a request directly must retain the original salt and call
+`withFeeConversionSalt(salt)` on their builder when they create and rebuild the
+request.
+
 The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches the
@@ -443,8 +450,7 @@ recipe that was not retained cannot be reconstructed from the signed summary —
 keep the salt, or read it from the proposal's `saltHex` metadata, which is what
 the SDK's own execution path does.
 
-What the summary still yields is the committed auth arg itself, which is what a
-rebuild must reproduce:
+The summary exposes the committed auth argument for inspection:
 
 ```typescript
 import { summaryAuthArg } from '@openzeppelin/miden-multisig-client';
@@ -452,6 +458,10 @@ import { TransactionSummary } from '@miden-sdk/miden-sdk';
 
 const signedAuthArg = summaryAuthArg(TransactionSummary.deserialize(bytes));
 ```
+
+Do not use `signedAuthArg` as the salt when rebuilding the request.
+`withFeeConversionSalt` would derive and commit a second value from it, and the
+rebuilt summary would not match the summary that the cosigners signed.
 
 On the Miden 0.16 pre-release line a summary binds seven user-defined elements,
 and the guarded-multisig auth component zeroes the leading three and passes the
