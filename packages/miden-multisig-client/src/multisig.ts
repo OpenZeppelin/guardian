@@ -16,6 +16,7 @@ import type {
   ProposalSignatureEntry,
   ProposalType,
 } from './types.js';
+import { ProposalSaltMalformedError } from './multisig/authArgErrors.js';
 import type { ProcedureName } from './procedures.js';
 import type {
   MidenClient,
@@ -40,7 +41,6 @@ import {
 } from '@miden-sdk/miden-sdk';
 import {
   chainAnchorFromBase64,
-  summaryAuthArg,
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
@@ -227,6 +227,9 @@ const PRE_SWITCH_IMPORT_TIMED_OUT = Symbol('pre-switch proposal-note import time
  * switch transaction on the shared client.
  */
 const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
+
+/** A `Word` is four field elements: 64 hex digits. Anything longer is not a salt. */
+const MAX_SALT_HEX_DIGITS = 64;
 
 export class Multisig {
   account: Account;
@@ -1666,6 +1669,12 @@ export class Multisig {
       throw new Error('getP2idNoteId requires a P2ID proposal with recipient, faucet, amount, and salt metadata');
     }
 
+    // Validate before deriving. Unlike the rebuild paths there is no commitment check
+    // downstream of this note id -- it goes straight out to a recipient — so a salt that
+    // silently padded to the zero word would produce a plausible id for a note that does
+    // not exist, with nothing to catch it.
+    this.requireProposalSaltHex(proposal.id, metadata);
+
     const note = buildP2idNoteFromMetadata(
       this._accountId,
       metadata.recipientId,
@@ -2190,6 +2199,20 @@ export class Multisig {
     const saltHex = this.requireProposalSaltHex(proposalId, metadata);
     const txCommitmentHex = txSummary.toCommitment().toHex();
     const normalizedTxCommitmentHex = normalizeHexWord(txCommitmentHex);
+
+    // This summary was re-fetched from GUARDIAN, not taken from the verified proposal:
+    // `ensureProposalCommitmentMatchesSummary` pins the CACHED `proposal.txSummary` to the
+    // id, and nothing pinned this one. It goes on to key the advice map and drive the
+    // rebuild, so an unrelated summary served here would have signatures collected against
+    // one transaction and advice assembled for another. On an ECDSA roster the
+    // recoverability check would notice; on a Falcon roster nothing else compares them.
+    if (normalizedTxCommitmentHex !== normalizeHexWord(proposalId)) {
+      throw new Error(
+        `Proposal ${proposalId} tx_summary commitment ${normalizedTxCommitmentHex} ` +
+          'does not match the proposal id it belongs to',
+      );
+    }
+
     const normalizedSignerCommitments = new Set(
       this.signerCommitments.map((commitment) => normalizeHexWord(commitment)),
     );
@@ -2294,12 +2317,15 @@ export class Multisig {
       await this.verifyGuardianEndpointCommitment(metadata.newGuardianEndpoint, metadata.newGuardianPubkey);
     }
 
+    // The builders read `.toHex()` and allocate their own Word, so this handle stays
+    // ours; without the release it leaks once per execute.
     const executionSalt = Word.fromHex(normalizeHexWord(saltHex));
-    const finalRequest = await this.buildTransactionRequestFromMetadata(
-      metadata,
-      executionSalt,
-      adviceMap,
-    );
+    let finalRequest;
+    try {
+      finalRequest = await this.buildTransactionRequestFromMetadata(metadata, executionSalt, adviceMap);
+    } finally {
+      executionSalt.free?.();
+    }
 
     return { finalRequest, metadata, proposal };
   }
@@ -2499,9 +2525,9 @@ export class Multisig {
         return txSummaryCommitment;
       }
 
-      const salt = proposal.metadata.saltHex
-        ? Word.fromHex(normalizeHexWord(proposal.metadata.saltHex))
-        : summaryAuthArg(summary);
+      const salt = Word.fromHex(
+        normalizeHexWord(this.requireProposalSaltHex(proposal.id, proposal.metadata)),
+      );
 
       const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
       const webClient = await this.getRawClient();
@@ -2539,14 +2565,42 @@ export class Multisig {
    * on a chain that charges nothing exactly as on one that charges.
    */
   private requireProposalSaltHex(proposalId: string, metadata: ProposalMetadata): string {
-    if (!metadata.saltHex) {
+    const saltHex: unknown = metadata.saltHex;
+
+    if (saltHex === undefined || saltHex === null || saltHex === '') {
       throw new Error(
         `Proposal ${proposalId} has no salt; its request cannot be rebuilt because ` +
           'the auth arg commits hash(CONVERSION_INFO || SALT) and is not invertible ' +
           'to the salt',
       );
     }
-    return metadata.saltHex;
+
+    // GUARDIAN serves this field and the response is cast, not parsed, so everything
+    // below is untrusted input. A truthiness test is not enough: `normalizeHexWord`
+    // left-pads, so `'0x'` and `'0X'` are truthy and pad to the ZERO word -- a salt
+    // nobody chose, which rebuilds a different request and reports itself as a summary
+    // mismatch. A non-string throws out of the hex helpers instead, and an unbounded
+    // string is a logging hazard the error type already guards against.
+    if (typeof saltHex !== 'string') {
+      throw new ProposalSaltMalformedError({
+        proposalId,
+        saltHex,
+        reason: `expected a hex string, got ${typeof saltHex}`,
+      });
+    }
+    const digits = saltHex.replace(/^0[xX]/, '');
+    if (digits.length === 0 || digits.length > MAX_SALT_HEX_DIGITS || !/^[0-9a-fA-F]+$/.test(digits)) {
+      throw new ProposalSaltMalformedError({
+        proposalId,
+        saltHex,
+        reason:
+          digits.length === 0
+            ? 'a hex prefix with no digits is the zero word, not a salt'
+            : `expected 1 to ${MAX_SALT_HEX_DIGITS} hex digits`,
+      });
+    }
+
+    return saltHex;
   }
 
   private requireProposalAnchor(proposalId: string, metadata: ProposalMetadata): ChainAnchor {

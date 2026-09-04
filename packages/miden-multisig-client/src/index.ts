@@ -177,7 +177,6 @@ export {
 
 export {
   type AuthArgErrorCode,
-  FeeFaucetAnchorMismatchError,
   ProposalAuthArgUnresolvableError,
   ProposalSaltMalformedError,
 } from './multisig/authArgErrors.js';

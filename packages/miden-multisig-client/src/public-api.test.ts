@@ -32,9 +32,5 @@ describe('package entry point', () => {
       saltHex: '0xnope',
       reason: 'expected a 32-byte hex word',
     }).code).toBe(codes[1]);
-    expect(new api.FeeFaucetAnchorMismatchError({
-      committedFeeFaucetIdHex: '0xaa',
-      anchoredFeeFaucetIdHex: '0xbb',
-    }).code).toBe(codes[2]);
   });
 });
