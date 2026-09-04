@@ -173,7 +173,7 @@ where
         .script_arg(config_hash)
         .extend_advice_map([(config_hash, config_values)])
         .extend_advice_map(extra_advice)
-        .auth_arg(salt)
+        .fee_conversion_salt(salt)
         .build()?;
 
     Ok((request, config_hash))

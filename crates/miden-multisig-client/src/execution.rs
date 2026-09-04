@@ -95,6 +95,7 @@ pub fn build_transfer_asset(faucet_id: AccountId, amount: u64) -> Result<Fungibl
 }
 
 /// Builds the final transaction request based on transaction type.
+///
 #[expect(
     clippy::too_many_arguments,
     reason = "execution needs transaction metadata and signature scheme to stay explicit"

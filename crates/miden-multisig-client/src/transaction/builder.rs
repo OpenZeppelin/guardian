@@ -826,4 +826,94 @@ mod tests {
                 .contains("transaction summary commitment")
         );
     }
+
+    mod fee_conversion_salt {
+        use super::*;
+        use crate::client::test_support::{guarded_multisig_account, p2id_note_for, test_wallet};
+        use guardian_shared::SignatureScheme;
+        use miden_client::transaction::TransactionRequest;
+        use miden_protocol::asset::FungibleAsset;
+
+        fn salt() -> Word {
+            Word::from([1u32, 2, 3, 4])
+        }
+
+        fn assert_declares_salt(request: &TransactionRequest) {
+            assert_eq!(request.fee_conversion_salt(), Some(salt()));
+            assert_eq!(*request.auth_arg(), None);
+        }
+
+        #[test]
+        fn signer_update_request_declares_the_fee_conversion_salt() {
+            let (request, _) = build_update_signers_transaction_request(
+                1,
+                &[Word::from([5u32, 6, 7, 8])],
+                salt(),
+                std::iter::empty(),
+                SignatureScheme::Falcon,
+            )
+            .expect("the signer-update request builds");
+
+            assert_declares_salt(&request);
+        }
+
+        #[test]
+        fn p2id_request_declares_the_fee_conversion_salt() {
+            let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b")
+                .expect("valid recipient id");
+
+            let request = build_p2id_transaction_request(
+                &guarded_multisig_account(),
+                recipient,
+                vec![FungibleAsset::mock(100)],
+                NoteType::Public,
+                P2ideHeights::default(),
+                salt(),
+                std::iter::empty(),
+            )
+            .expect("the p2id request builds");
+
+            assert_declares_salt(&request);
+        }
+
+        #[test]
+        fn consume_notes_request_declares_the_fee_conversion_salt() {
+            let note = p2id_note_for(&test_wallet(1), 1, NoteType::Public);
+
+            let request = crate::transaction::build_consume_notes_transaction_request_from_notes(
+                vec![note],
+                salt(),
+                std::iter::empty(),
+            )
+            .expect("the consume-notes request builds");
+
+            assert_declares_salt(&request);
+        }
+
+        #[test]
+        fn switch_guardian_request_declares_the_fee_conversion_salt() {
+            let request = build_update_guardian_transaction_request(
+                Word::from([1u32, 1, 1, 1]),
+                SignatureScheme::Falcon,
+                salt(),
+                std::iter::empty(),
+            )
+            .expect("the switch-guardian request builds");
+
+            assert_declares_salt(&request);
+        }
+
+        #[test]
+        fn update_procedure_threshold_request_declares_the_fee_conversion_salt() {
+            let request = build_update_procedure_threshold_transaction_request(
+                ProcedureName::SendAsset,
+                2,
+                salt(),
+                std::iter::empty(),
+            )
+            .expect("the procedure-threshold request builds");
+
+            assert_declares_salt(&request);
+        }
+    }
 }

@@ -83,7 +83,7 @@ where
         .script_arg(send_notes_script.tx_script_args())
         .expected_output_recipients(vec![note.recipient().clone()])
         .extend_advice_map(signature_advice)
-        .auth_arg(salt)
+        .fee_conversion_salt(salt)
         .build()?;
 
     Ok(request)

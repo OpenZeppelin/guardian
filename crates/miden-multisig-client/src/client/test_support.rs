@@ -14,10 +14,14 @@ use miden_client::rpc::{Endpoint, NodeRpcClient};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
 use miden_client_sqlite_store::SqliteStore;
+use miden_confidential_contracts::multisig_guardian::{
+    MultisigGuardianBuilder, MultisigGuardianConfig,
+};
 use miden_protocol::Word;
 use miden_protocol::account::Account;
 use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::{Note, NoteDetails, NoteType};
 use miden_standards::note::P2idNote;
@@ -171,6 +175,19 @@ pub(crate) fn chain_with_notes(
     let api = Arc::new(MockRpcApi::new(builder.build().expect("mock chain builds")));
     api.advance_blocks(4);
     api
+}
+
+/// A guarded-multisig account, the account shape every create path builds requests for.
+pub(crate) fn guarded_multisig_account() -> Account {
+    let signer_commitment = SecretKey::new().public_key().to_commitment();
+
+    MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
+        1,
+        vec![signer_commitment],
+        Word::from([9u32, 8, 7, 6]),
+    ))
+    .build()
+    .expect("guarded multisig account builds")
 }
 
 /// A distinct (per `seed`) P2ID note addressed at `target` from an unrelated

@@ -44,6 +44,10 @@ impl MultisigClient {
 
     /// Creates a new multisig account.
     ///
+    /// On a fee-charging network, fund the new account with the native fee asset before creating
+    /// regular proposals. A `consume_notes` proposal can consume the funding note and pay its own
+    /// fee.
+    ///
     /// # Arguments
     /// * `threshold` - Minimum number of signatures required (default threshold)
     /// * `signer_commitments` - Public key commitments of all signers
@@ -59,6 +63,10 @@ impl MultisigClient {
     }
 
     /// Creates a new multisig account with per-procedure threshold overrides.
+    ///
+    /// On a fee-charging network, fund the new account with the native fee asset before creating
+    /// regular proposals. A `consume_notes` proposal can consume the funding note and pay its own
+    /// fee.
     ///
     /// # Arguments
     /// * `threshold` - Minimum number of signatures required (default threshold)

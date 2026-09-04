@@ -343,9 +343,10 @@ impl NetworkClient for MidenNetworkClient {
             format!("Failed to create aggregated output notes: {e}")
         })?;
 
-        // Carry the reference block, expiration delta and user params (which hold the
-        // auth-arg salt) from the last TransactionSummary, matching the pre-existing
-        // salt convention.
+        // Carry the reference block, expiration delta and user params from the last
+        // TransactionSummary. The user params hold the auth arg, which since
+        // protocol#3765 is the fee-conversion commitment rather than the bare salt;
+        // it is carried through opaquely either way.
         let last = tx_summaries.last().unwrap();
         let block_commitment = last.block_commitment();
         let expiration_delta = last.expiration_delta();

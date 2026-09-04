@@ -62,7 +62,7 @@ where
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
         .extend_advice_map(signature_advice)
-        .auth_arg(salt)
+        .fee_conversion_salt(salt)
         .build()?;
 
     Ok(request)

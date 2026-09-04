@@ -60,7 +60,7 @@ where
 
     let mut builder = TransactionRequestBuilder::new()
         .input_notes(note_and_args)
-        .auth_arg(salt);
+        .fee_conversion_salt(salt);
 
     for (key, values) in signature_advice {
         builder = builder.extend_advice_map([(key, values)]);

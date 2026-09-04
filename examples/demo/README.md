@@ -2,6 +2,11 @@
 
 Interactive CLI that exercises the `miden-multisig-client` SDK end-to-end: generate keys, create/register multisig accounts, list notes, coordinate proposals, export/import offline files, and execute transactions.
 
+On a fee-charging chain (`verification_base_fee` non-zero) fund the demo account with the
+native fee asset before the first execute: the guarded auth procedure pays the fee before
+the transaction summary exists, so an unfunded vault aborts there rather than reaching
+signing.
+
 ## Requirements
 
 - Guardian server (default `http://localhost:50051`)

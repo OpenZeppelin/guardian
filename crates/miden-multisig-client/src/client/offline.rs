@@ -5,8 +5,6 @@
 
 use std::collections::HashSet;
 
-use guardian_shared::ToJson;
-
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
@@ -14,6 +12,7 @@ use crate::export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, Exported
 use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::proposal_public_key_hex;
 use crate::proposal::TransactionType;
+use guardian_shared::ToJson;
 
 impl MultisigClient {
     /// Creates a proposal offline without pushing to GUARDIAN.
@@ -237,6 +236,12 @@ impl MultisigClient {
         // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
 
+        // Execute and finalize at the proposal's anchored reference block; the
+        // anchor was checked against the signed summary's block commitment in
+        // `verify_proposal_summary_binding` above. It also carries the fee
+        // faucet used to derive native fee conversion info during execution.
+        let chain_anchor = proposal.metadata.chain_anchor()?;
+
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
@@ -257,10 +262,6 @@ impl MultisigClient {
              before executing to keep notes embedded in its pending proposals"
         );
 
-        // Execute and finalize at the proposal's anchored reference block; the
-        // anchor was checked against the signed summary's block commitment in
-        // `verify_proposal_summary_binding` above.
-        let chain_anchor = proposal.metadata.chain_anchor()?;
         self.finalize_transaction(
             account_id,
             final_tx_request,

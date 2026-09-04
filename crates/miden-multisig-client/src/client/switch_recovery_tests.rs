@@ -8,7 +8,6 @@
 //! served by a mock pre-switch GUARDIAN, listed, binding-verified, and its
 //! embedded note imported into a store that never held it, then shown to
 //! survive the repoint to a new GUARDIAN that serves nothing.
-
 use std::sync::Arc;
 
 use base64::Engine as _;

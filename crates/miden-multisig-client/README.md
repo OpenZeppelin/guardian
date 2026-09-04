@@ -67,6 +67,13 @@ println!("Account registered on GUARDIAN endpoint: {}", client.guardian_endpoint
 # }
 ```
 
+On a network with a non-zero `verification_base_fee`, a new account needs the
+native fee asset before it can create or execute regular proposals. Send the
+account a note funded by the faucet identified in the block header's
+`fee_parameters.fee_faucet_id`, then consume that note through a
+`consume_notes` proposal. The bootstrap transaction can pay its fee from the
+note it consumes.
+
 ## Configuration
 
 Beyond the endpoints and the account directory, the builder carries three
@@ -293,13 +300,21 @@ on-chain transaction — the integration owns that recipe and drives execution.
 
 ```rust
 use miden_client::Serializable;
-use miden_multisig_client::{build_p2id_transaction_request, generate_salt};
+use miden_multisig_client::{
+    build_p2id_transaction_request, generate_salt, P2ideHeights,
+};
 use miden_protocol::note::NoteType;
 
 // Producer: build a transaction and propose it under a custom label.
 let salt = generate_salt();
 let mut request = build_p2id_transaction_request(
-    account.inner(), recipient, vec![asset], NoteType::Public, salt, std::iter::empty(),
+    account.inner(),
+    recipient,
+    vec![asset],
+    NoteType::Public,
+    P2ideHeights::default(),
+    salt,
+    std::iter::empty(),
 )?;
 let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
 
@@ -320,6 +335,13 @@ The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches
 the commitment the cosigners signed.
+
+Every exported transaction builder declares the recipe's salt with
+`TransactionRequestBuilder::fee_conversion_salt`. When the request executes,
+`miden-client` derives the native 1/1 conversion info from that execution's
+reference header and commits it into the auth argument. A producer assembling a
+different custom request directly with `TransactionRequestBuilder` must declare
+its salt the same way.
 
 ## Delta History
 

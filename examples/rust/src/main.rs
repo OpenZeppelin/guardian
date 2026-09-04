@@ -223,6 +223,12 @@ async fn main() -> ClientResult<()> {
         return Ok(());
     }
     println!("  ✓ Account synced with Miden node");
+    println!(
+        "  ! On a chain with a non-zero verification_base_fee, fund this account with the \
+         native fee asset before the first execute below: the guarded auth procedure pays \
+         the fee before the transaction summary exists, so an empty vault aborts with \
+         \"the amount of the asset in the vault is less than the amount to remove\"."
+    );
     println!();
 
     println!("Step 3: Client 1 - Configure account in GUARDIAN...");
