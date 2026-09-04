@@ -40,10 +40,10 @@ import {
 } from '@miden-sdk/miden-sdk';
 import {
   chainAnchorFromBase64,
+  summaryAuthArg,
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
-  summaryAuthArg,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -2187,7 +2187,7 @@ export class Multisig {
 
     const txSummaryBytes = base64ToUint8Array(txSummaryBase64);
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
-    const saltHex = metadata.saltHex ?? summaryAuthArg(txSummary).toHex();
+    const saltHex = this.requireProposalSaltHex(proposalId, metadata);
     const txCommitmentHex = txSummary.toCommitment().toHex();
     const normalizedTxCommitmentHex = normalizeHexWord(txCommitmentHex);
     const normalizedSignerCommitments = new Set(
@@ -2524,6 +2524,31 @@ export class Multisig {
    * cannot be reproduced, verified, or executed. The caller owns the returned
    * anchor and must `free()` it once done.
    */
+  /**
+   * Reads a proposal's salt. Throws when absent, because there is nothing to fall
+   * back to.
+   *
+   * The request declares this salt through `withFeeConversionSalt`, and miden-client
+   * commits `hash(CONVERSION_INFO || SALT)` into the auth arg from it. The summary
+   * therefore carries the COMMITMENT, and a commitment is not invertible to the salt
+   * it was built from -- so `summaryAuthArg(summary)` cannot stand in here. It used
+   * to: before the request declared a salt the auth arg WAS the bare salt, which is
+   * why the fallback this replaces was correct when it was written.
+   *
+   * A declared salt also bypasses miden-client's zero-fee early return, so this holds
+   * on a chain that charges nothing exactly as on one that charges.
+   */
+  private requireProposalSaltHex(proposalId: string, metadata: ProposalMetadata): string {
+    if (!metadata.saltHex) {
+      throw new Error(
+        `Proposal ${proposalId} has no salt; its request cannot be rebuilt because ` +
+          'the auth arg commits hash(CONVERSION_INFO || SALT) and is not invertible ' +
+          'to the salt',
+      );
+    }
+    return metadata.saltHex;
+  }
+
   private requireProposalAnchor(proposalId: string, metadata: ProposalMetadata): ChainAnchor {
     if (!metadata.chainAnchor) {
       throw new Error(

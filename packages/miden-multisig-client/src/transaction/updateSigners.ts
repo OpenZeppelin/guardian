@@ -124,6 +124,9 @@ export async function buildUpdateSignersTransactionRequest(
   txBuilder = txBuilder.withScriptArg(configHashForScript);
   txBuilder = txBuilder.extendAdviceMap(advice);
   txBuilder = txBuilder.withFeeConversionSalt(authSaltForBuilder);
+  // Borrows rather than consumes: the glue passes `__wbg_ptr` without taking it,
+  // so the handle stays ours to release once the builder has read it.
+  authSaltForBuilder.free?.();
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
