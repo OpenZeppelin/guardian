@@ -48,7 +48,7 @@ pub fn print_warning(message: &str) {
 
 pub fn print_account_info(account: &MultisigAccount, network_id: NetworkId) {
     print_section("Account Information");
-    println!("  Account ID:     {}", &account.id().to_hex());
+    println!("  Account ID:     {}", account.id().to_hex());
     println!(
         "  Address:        {}",
         account.inner().id().to_bech32(network_id)

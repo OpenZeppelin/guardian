@@ -225,6 +225,8 @@ impl MultisigClient {
     /// The read of the partial progress is best-effort, but a failed
     /// restoring write is returned — the caller must not swallow a store
     /// left with its bookkeeping cleared.
+    // See `existing_records_by_commitment`: the Err variant is upstream's `ClientError`.
+    #[allow(clippy::result_large_err)]
     async fn restore_covered_tags(
         &mut self,
         snapshot: &BTreeSet<NoteTag>,

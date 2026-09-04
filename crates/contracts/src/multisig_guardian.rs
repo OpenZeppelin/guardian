@@ -174,9 +174,9 @@ impl MultisigGuardianBuilder {
                 .map_err(|e| anyhow!("invalid procedure thresholds: {e}"))?;
         }
 
-        let component = AuthGuardedMultisig::new(cfg)
-            .map_err(|e| anyhow!("failed to build guarded-multisig component: {e}"))?;
-        Ok(component.into())
+        Ok(AuthGuardedMultisig::new(cfg)
+            .map_err(|e| anyhow!("failed to build guarded-multisig component: {e}"))?
+            .into())
     }
 
     fn validate_config(&self) -> Result<()> {
@@ -396,10 +396,10 @@ mod tests {
         // Cross-SDK parity: the TypeScript builder must derive these same identity
         // values from the same pinned miden-standards version; regenerate both if
         // the pin changes.
-        assert_eq!(account.id().to_hex(), "0xade67f7701e9e9c12493c6206bc46e");
+        assert_eq!(account.id().to_hex(), "0xbe7041e78ee3f1410aa5b790fa9c11");
         assert_eq!(
             account.to_commitment().into_hex(),
-            "0x0efd2d9b391c608de6814b57339894f448e3b2645609976b531bfa9c7ada3ca5"
+            "0xa7c22bff9e22a6463124355881a7f24b9862bfebb41ae2b11f540aaf0ddb10bb"
         );
     }
 }

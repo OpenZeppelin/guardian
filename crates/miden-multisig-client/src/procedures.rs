@@ -6,10 +6,20 @@ use miden_protocol::Word;
 
 /// Procedure names that can be used for threshold overrides.
 ///
-/// Roots are sourced from the upstream `AuthGuardedMultisig` + `BasicWallet`
-/// procedures via `cargo run --example procedure_roots -- --json` (typescript_hex
-/// encoding). The upstream component has no standalone `verify_guardian` procedure;
-/// guardian verification is internal to `auth_tx_guarded_multisig`.
+/// Roots come from `cargo run --example procedure_roots -- --json` (typescript_hex
+/// encoding). The auth roots come from the upstream `AuthGuardedMultisig` component
+/// (`AuthGuardedMultisig::code()`), which is what both builders now assemble accounts from:
+/// the Rust `MultisigGuardianBuilder` uses the component directly, and the TypeScript builder
+/// gets it from the web SDK's `createAuthGuardedMultisig`.
+///
+/// Neither builder compiles the MASM itself any more. Doing so linked the standards package
+/// dynamically while upstream's component manifest links it statically, and the two hash
+/// differently for `auth_tx` — the sole export that calls `miden::standards::fee`. An account
+/// carrying the dynamic root cannot be classified by `AccountComponentInterface`, so the client
+/// attaches no fee conversion info and the transaction fails on a fee-charging chain.
+///
+/// The wallet roots come from `BasicWallet` and are unaffected. Neither source has a standalone
+/// `verify_guardian` procedure; guardian verification is internal to `auth_tx_guarded_multisig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProcedureName {
     UpdateSigners,
@@ -23,7 +33,7 @@ pub enum ProcedureName {
 impl ProcedureName {
     /// Get the procedure root for this procedure name.
     ///
-    /// These roots are deterministic based on the upstream MASM bytecode.
+    /// These roots are deterministic given the MASM they were derived from.
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => procedure_root_word(
@@ -33,7 +43,7 @@ impl ProcedureName {
                 "0x97587c61d49313b1d5a3c8b7437e0080e67ed9bd9d3e7206bcae562f934ccd03",
             ),
             ProcedureName::AuthTx => procedure_root_word(
-                "0xa6aa6f69d9358535272ba433cd48d20628a5c69598e00c6dd01a22e83a5f15df",
+                "0xcd2cee82d17af1c8228563808507bf50ea661259e8f74b60bf497efed9029665",
             ),
             ProcedureName::UpdateGuardian => procedure_root_word(
                 "0x0a614ff7c81a561cbd2a4c2d9482031a7a841ca5de33349daed23a9d871b3675",
@@ -157,42 +167,48 @@ mod tests {
         }
     }
 
-    /// Custody-critical guard: each hardcoded root MUST match the live upstream
-    /// `AuthGuardedMultisig` / `BasicWallet` procedure root. A mismatch means a
-    /// per-procedure threshold override would be stored under the wrong key and
-    /// silently ignored at authentication time.
+    fn auth_root_in(code: &miden_protocol::account::AccountComponentCode, masm_name: &str) -> Word {
+        let export = code
+            .exports()
+            .find(|e| e.path.to_string().rsplit("::").next() == Some(masm_name))
+            .unwrap_or_else(|| panic!("procedure `{masm_name}` not found"));
+        code.get_procedure_root_by_path(&*export.path)
+            .expect("root by path")
+            .into()
+    }
+
+    fn upstream_auth_code() -> &'static miden_protocol::account::AccountComponentCode {
+        miden_standards::account::auth::AuthGuardedMultisig::code()
+    }
+
+    /// Custody-critical guard: a root that does not match the component accounts are
+    /// built from means a per-procedure threshold override is stored under the wrong
+    /// key and silently ignored at authentication time.
+    ///
+    /// Every pinned root is compared against the upstream component. `auth_tx` needed
+    /// special handling while the MASM was vendored — it links `miden::standards::fee`,
+    /// so a locally compiled copy rooted differently. Building from upstream removes that.
     #[test]
     fn procedure_roots_match_upstream_component() {
-        use miden_standards::account::auth::AuthGuardedMultisig;
         use miden_standards::account::wallets::BasicWallet;
 
-        let auth_code = AuthGuardedMultisig::code();
-        let upstream_root = |masm_name: &str| -> Word {
-            let export = auth_code
-                .exports()
-                .find(|e| e.path.to_string().rsplit("::").next() == Some(masm_name))
-                .unwrap_or_else(|| panic!("upstream procedure `{masm_name}` not found"));
-            auth_code
-                .get_procedure_root_by_path(&*export.path)
-                .expect("root by path")
-                .into()
-        };
+        let auth_code = upstream_auth_code();
 
         assert_eq!(
             ProcedureName::UpdateSigners.root(),
-            upstream_root("update_signers_and_threshold")
-        );
-        assert_eq!(
-            ProcedureName::UpdateProcedureThreshold.root(),
-            upstream_root("set_procedure_threshold")
+            auth_root_in(auth_code, "update_signers_and_threshold")
         );
         assert_eq!(
             ProcedureName::AuthTx.root(),
-            upstream_root("auth_tx_guarded_multisig")
+            auth_root_in(auth_code, "auth_tx_guarded_multisig")
+        );
+        assert_eq!(
+            ProcedureName::UpdateProcedureThreshold.root(),
+            auth_root_in(auth_code, "set_procedure_threshold")
         );
         assert_eq!(
             ProcedureName::UpdateGuardian.root(),
-            upstream_root("update_guardian_public_key")
+            auth_root_in(auth_code, "update_guardian_public_key")
         );
         assert_eq!(
             ProcedureName::SendAsset.root(),
@@ -201,6 +217,32 @@ mod tests {
         assert_eq!(
             ProcedureName::ReceiveAsset.root(),
             Word::from(BasicWallet::receive_asset_root())
+        );
+    }
+
+    /// The regression guard for the divergence itself: an account built the Rust way must
+    /// carry the pinned `auth_tx` root, or every root-keyed threshold read against it fails
+    /// with `UnsupportedContractVersion` (and, worse, an account built by one SDK could not
+    /// be configured by the other).
+    #[test]
+    fn rust_built_accounts_carry_the_pinned_auth_tx_root() {
+        use miden_confidential_contracts::multisig_guardian::{
+            MultisigGuardianBuilder, MultisigGuardianConfig,
+        };
+
+        let config = MultisigGuardianConfig::new(
+            1,
+            vec![Word::from([1u32, 0, 0, 0])],
+            Word::from([9u32, 0, 0, 0]),
+        );
+        let account = MultisigGuardianBuilder::new(config)
+            .with_seed([7u8; 32])
+            .build_existing()
+            .expect("account builds");
+
+        assert!(
+            account.code().has_procedure(ProcedureName::AuthTx.root()),
+            "the Rust builder must produce the same auth_tx root the browser builder does"
         );
     }
 

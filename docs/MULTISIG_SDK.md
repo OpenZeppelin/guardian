@@ -27,7 +27,7 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.5
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.7
 ```
 
 **Rust (Cargo.toml)**
@@ -1740,6 +1740,16 @@ one:
 - **Rust**: the `miden-standards` pin in the workspace `Cargo.toml`
 - **TypeScript**: the `@miden-sdk/miden-sdk` pin, whose bundled WASM embeds the
   matching upstream `miden-standards` guarded-multisig component
+
+Matching versions is what makes the roots match, because neither SDK compiles the auth
+component any more: both ask `miden-standards` for its `AuthGuardedMultisig` and use what
+it returns. That settles the linkage question that used to matter here. `auth_tx` calls
+`miden::standards::fee`, so its root depends on whether the standards package is linked
+statically (the callee's MAST is inlined) or dynamically (an external reference is left) —
+compiling an equivalent source locally links dynamically and roots differently, which is
+why a locally built component could not be classified by `AccountComponentInterface::from_procedures`
+and never had fee conversion info attached. Taking the component from upstream removes the
+choice, so the pinned roots describe upstream's build and nothing else.
 
 The exact versions for each Guardian release are in
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix); they are not

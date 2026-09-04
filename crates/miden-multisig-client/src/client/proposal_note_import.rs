@@ -195,6 +195,9 @@ impl MultisigClient {
     /// observed as consumed on chain) have no note ID, and an ID lookup
     /// would keep re-importing them forever. Shared by the recovery
     /// primitives (proposal import and public backfill).
+    // The Err variant is upstream's `miden_client::ClientError`, which this crate propagates
+    // verbatim; boxing it here would only move the cost to the caller's `?`.
+    #[allow(clippy::result_large_err)]
     pub(crate) async fn existing_records_by_commitment(
         &mut self,
         commitments: Vec<NoteDetailsCommitment>,

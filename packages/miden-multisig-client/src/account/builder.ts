@@ -8,28 +8,75 @@ import {
   AccountBuilder,
   AccountComponent,
   AccountStorageMode,
+  AuthGuardedMultisigConfig,
+  ProcedureThreshold,
+  Word,
+  createAuthGuardedMultisig,
   type MidenClient,
-  type WasmWebClient,
-} from '@miden-sdk/miden-sdk';
-import type { MultisigConfig, CreateAccountResult } from '../types.js';
-import { getRawMidenClient } from '../raw-client.js';
-import { buildMultisigStorageSlots, buildGuardianStorageSlots } from './storage.js';
-import { GUARDED_MULTISIG_ACCOUNT_COMPONENT_MASM } from './masm/account-components/auth.js';
-import { normalizeSignerCommitment } from '../utils/signature.js';
+} from "@miden-sdk/miden-sdk";
+import { getProcedureRoot } from "../procedures.js";
+import type { MultisigConfig, CreateAccountResult } from "../types.js";
+import { normalizeSignerCommitment } from "../utils/signature.js";
 
-/** Builds the guarded-multisig component without relinking assembler-provided libraries. */
+/**
+ * Discriminants of the SDK's wasm `AuthScheme` enum, which `AuthGuardedMultisigConfig` takes.
+ *
+ * They are inlined rather than imported because the package root exports two different things
+ * named `AuthScheme`: the wasm enum, and a string-valued convenience const from `api-types`
+ * that is re-exported second and therefore wins. Importing the name yields the string const,
+ * whose members are `undefined` here, and the constructor rejects that as an invalid enum value.
+ * Source: `crates/web-client/src/models/auth_scheme.rs`.
+ */
+const AUTH_SCHEME = { ecdsa: 1, falcon: 2 } as const;
+
+/**
+ * Builds the guarded-multisig component from the upstream standard component.
+ *
+ * Compiling an equivalent MASM source ourselves would link the standards package dynamically and
+ * yield a different `auth_tx` root, which `AccountComponentInterface::from_procedures` cannot
+ * classify — the client then declines to attach fee conversion info and every transaction fails
+ * on a fee-charging chain.
+ *
+ * Per-procedure thresholds are keyed by procedure root. The roots come from the pinned table,
+ * not from the component: a `ProcedureName` is this package's own vocabulary and does not match
+ * the component's MASM export names (`update_signers` is exported as `update_signers_and_threshold`),
+ * and `send_asset`/`receive_asset` are `BasicWallet` procedures that the auth component never
+ * exports at all. `procedure_roots_match_upstream_component` pins the table to the component.
+ */
 function buildGuardedMultisigComponent(
-  authBuilder: Awaited<ReturnType<WasmWebClient['createCodeBuilder']>>,
   config: MultisigConfig,
 ): AccountComponent {
-  const authSlots = [
-    ...buildMultisigStorageSlots(config),
-    ...buildGuardianStorageSlots(config),
-  ];
-  const authComponentCode = authBuilder.compileAccountComponentCode(
-    GUARDED_MULTISIG_ACCOUNT_COMPONENT_MASM,
+  const approvers = config.signerCommitments.map((commitment) =>
+    Word.fromHex(normalizeSignerCommitment(commitment)),
   );
-  return AccountComponent.compile(authComponentCode, authSlots).withSupportsAllTypes();
+  const guardian = Word.fromHex(
+    normalizeSignerCommitment(config.guardianCommitment),
+  );
+  const scheme =
+    AUTH_SCHEME[config.signatureScheme === "ecdsa" ? "ecdsa" : "falcon"];
+
+  const baseConfig = new AuthGuardedMultisigConfig(
+    approvers,
+    config.threshold,
+    guardian,
+    scheme,
+  );
+
+  if (!config.procedureThresholds?.length) {
+    return createAuthGuardedMultisig(baseConfig).withSupportsAllTypes();
+  }
+
+  const thresholds = config.procedureThresholds.map(
+    (entry) =>
+      new ProcedureThreshold(
+        Word.fromHex(getProcedureRoot(entry.procedure)),
+        entry.threshold,
+      ),
+  );
+
+  return createAuthGuardedMultisig(
+    baseConfig.withProcThresholds(thresholds),
+  ).withSupportsAllTypes();
 }
 
 /**
@@ -46,10 +93,7 @@ export async function createMultisigAccount(
   midenRpcEndpoint: string,
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
-  const rawClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
-
-  const authBuilder = await rawClient.createCodeBuilder();
-  const authComponent = buildGuardedMultisigComponent(authBuilder, config);
+  const authComponent = buildGuardedMultisigComponent(config);
 
   let seed = config.seed;
   // Generate random seed if not provided
@@ -57,9 +101,10 @@ export async function createMultisigAccount(
     seed = crypto.getRandomValues(new Uint8Array(32));
   }
 
-  const storageMode = config.storageMode === 'public'
-    ? AccountStorageMode.public()
-    : AccountStorageMode.private();
+  const storageMode =
+    config.storageMode === "public"
+      ? AccountStorageMode.public()
+      : AccountStorageMode.private();
 
   // Miden 0.15: the account-ID no longer encodes account type; visibility is set
   // via `storageMode()`, so the former `.accountType(...)` call is gone.
@@ -70,7 +115,10 @@ export async function createMultisigAccount(
 
   const result = accountBuilder.buildWithoutSchemaCommitment();
 
-  await midenClient.accounts.insert({ account: result.account, overwrite: false });
+  await midenClient.accounts.insert({
+    account: result.account,
+    overwrite: false,
+  });
 
   return {
     account: result.account,
@@ -86,10 +134,10 @@ export async function createMultisigAccount(
  */
 export function validateMultisigConfig(config: MultisigConfig): void {
   if (config.threshold === 0) {
-    throw new Error('threshold must be greater than 0');
+    throw new Error("threshold must be greater than 0");
   }
   if (config.signerCommitments.length === 0) {
-    throw new Error('at least one signer commitment is required');
+    throw new Error("at least one signer commitment is required");
   }
 
   const signerCommitments = new Set<string>();
@@ -103,14 +151,18 @@ export function validateMultisigConfig(config: MultisigConfig): void {
 
   if (config.threshold > config.signerCommitments.length) {
     throw new Error(
-      `threshold (${config.threshold}) cannot exceed number of signers (${config.signerCommitments.length})`
+      `threshold (${config.threshold}) cannot exceed number of signers (${config.signerCommitments.length})`,
     );
   }
   if (!config.guardianCommitment) {
-    throw new Error('GUARDIAN commitment is required');
+    throw new Error("GUARDIAN commitment is required");
   }
-  if (signerCommitments.has(normalizeSignerCommitment(config.guardianCommitment))) {
-    throw new Error('GUARDIAN commitment must be different from all signer commitments');
+  if (
+    signerCommitments.has(normalizeSignerCommitment(config.guardianCommitment))
+  ) {
+    throw new Error(
+      "GUARDIAN commitment must be different from all signer commitments",
+    );
   }
 
   // Validate procedure thresholds if provided
@@ -118,11 +170,11 @@ export function validateMultisigConfig(config: MultisigConfig): void {
     const seen = new Set<string>();
     for (const pt of config.procedureThresholds) {
       if (pt.threshold < 1) {
-        throw new Error('procedure threshold must be at least 1');
+        throw new Error("procedure threshold must be at least 1");
       }
       if (pt.threshold > config.signerCommitments.length) {
         throw new Error(
-          `procedure threshold (${pt.threshold}) cannot exceed number of signers (${config.signerCommitments.length})`
+          `procedure threshold (${pt.threshold}) cannot exceed number of signers (${config.signerCommitments.length})`,
         );
       }
 
@@ -140,7 +192,7 @@ export function validateMultisigConfig(config: MultisigConfig): void {
     // Mirrors `AuthMultisig::new` in miden-standards, which rejects the same
     // shape, so Rust cannot build an account TypeScript would otherwise allow.
     const setterOverride = config.procedureThresholds.find(
-      (pt) => pt.procedure === 'update_procedure_threshold'
+      (pt) => pt.procedure === "update_procedure_threshold",
     )?.threshold;
     const setterThreshold = setterOverride ?? config.threshold;
 
@@ -150,7 +202,7 @@ export function validateMultisigConfig(config: MultisigConfig): void {
           `procedure threshold override for ${pt.procedure} (${pt.threshold}) exceeds the ` +
             `threshold of ${setterThreshold} that guards update_procedure_threshold; such an ` +
             `override can be removed by a smaller quorum. Raise the update_procedure_threshold ` +
-            `override to at least ${pt.threshold} to make it enforceable`
+            `override to at least ${pt.threshold} to make it enforceable`,
         );
       }
     }

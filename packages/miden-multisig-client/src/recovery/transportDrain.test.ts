@@ -392,6 +392,10 @@ describe('drainPrivateNoteBacklog', () => {
  * u64 bytes — the same representation the Rust cursor test pins.
  */
 const CURSOR_KEY = 'note_transport_cursor';
+// The settings store is keyed by [scope, key] since miden-client 0.16.0-rc.4.
+// `note_transport_cursor` is written by the client itself, so it lives in the
+// Client scope (SettingScope::Client == 0), not the caller-facing User scope.
+const CURSOR_SCOPE = 0;
 
 async function withSettingsStore<T>(
   mode: IDBTransactionMode,
@@ -414,12 +418,14 @@ async function withSettingsStore<T>(
 }
 
 async function seedRawCursor(bytes: Uint8Array): Promise<void> {
-  await withSettingsStore('readwrite', (store) => store.put({ key: CURSOR_KEY, value: bytes }));
+  await withSettingsStore('readwrite', (store) =>
+    store.put({ scope: CURSOR_SCOPE, key: CURSOR_KEY, value: bytes }),
+  );
 }
 
 async function readRawCursor(): Promise<Uint8Array | undefined> {
   const row = await withSettingsStore<{ value?: Uint8Array } | undefined>('readonly', (store) =>
-    store.get(CURSOR_KEY),
+    store.get([CURSOR_SCOPE, CURSOR_KEY]),
   );
   return row?.value;
 }
