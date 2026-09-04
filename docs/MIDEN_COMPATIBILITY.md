@@ -53,8 +53,9 @@ accounts must be recreated on the new contract version. See
 unconditionally, and every proposal's auth arg is the commitment `hash(CONVERSION_INFO || SALT)`
 rather than the bare salt. A proposal still pending from 0.17.0-rc.1 or rc.2 therefore cannot be
 reproduced: the Rust client fails `verify_proposal_summary_binding` with "metadata does not match
-tx_summary", and the TypeScript client raises `proposal_auth_arg_unresolvable`. The blast radius is
-wider than the one proposal — strict `list_proposals` / `syncProposals` fail for the whole account
+tx_summary", and the TypeScript client reports that the metadata does not match the transaction
+summary. The blast radius is wider than the one proposal — strict `list_proposals` /
+`syncProposals` fail for the whole account
 while GUARDIAN keeps serving it, and the isolating recovery sync skips it silently, so notes
 embedded in it are never imported.
 
@@ -129,45 +130,19 @@ moved in several independent ways:
   Cross-SDK reconstruction survives because the committed value is *derived*, not
   chosen. The faucet is read from the block the proposal is anchored at — the
   anchor travels with the proposal and is checked against the summary's block
-  commitment before use — and the rate is fixed at 1/1. So a rebuilder holding
-  `salt_hex` and the anchor reproduces the auth arg without being told it, and
-  both SDKs derive it identically: `fee_conversion_info_at()` in Rust,
-  `proposalFeeFaucetIdHex()` in TypeScript. Reading the *chain tip's* faucet
-  instead would break this, since fee parameters are a per-block header field;
-  both SDKs read the anchor, and the TypeScript create path additionally asserts
-  the committed faucet against the anchor it sealed.
+  commitment before use — and the rate is fixed at 1/1. Both SDKs declare the
+  stored proposal salt on their transaction request builders:
+  `fee_conversion_salt(salt)` in Rust and `withFeeConversionSalt(salt)` in
+  TypeScript. The pinned Miden clients then derive and commit the same native
+  conversion info from the reference header used for execution.
 
   Two consequences worth knowing:
 
-  - `miden-client` rejects *declared* conversion info for any auth component
-    other than `AuthSingleSig`/`AuthMultisig`
-    (`TransactionRequestError::FeeConversionInfoUnsupported`). That refusal keys
-    on Rust's `TransactionRequestBuilder::fee_conversion_info`, not on the auth
-    arg, so the Rust SDK deliberately avoids that method and sets the auth arg
-    and advice entry directly.
-
-    That refusal rests on a rationale protocol#3765 falsifies. `miden-client`'s
-    `validate_fee_conversion_info_support` allowlists only
-    `AuthSingleSig`/`AuthMultisig`, documenting that `AuthGuardedMultisig` "does
-    not reach `miden::standards::fee` at all". Since #3765 it does — that is the
-    whole point of this change. **The allowlist has to gain
-    `AuthGuardedMultisig` in the same upstream train as #3765.** Until it does,
-    the commitment is implemented three times: once upstream in
-    `TransactionRequestBuilder::fee_conversion_info`, once in the Rust SDK's
-    `MaybeFeeConversionInfo`, and once from scratch in TypeScript's
-    `feeAuthArg`. A future change to the commitment scheme updates one and
-    silently diverges the other two, which is what the pinned cross-SDK digest
-    vectors exist to catch. Once the allowlist lands, the Rust SDK should switch
-    to the upstream builder method and keep TypeScript pinned to it by vector.
-
-    On the TypeScript side this is a *version* fact, not a structural guarantee.
-    The bindings this repo currently installs expose no declaring method — only
-    `withAuthArg` and `extendAdviceMap` — so both SDKs make the same two calls
-    and neither can trip the refusal. Newer websdk builds do add a
-    conversion-info builder method and a block-header accessor for the
-    verification base fee. An integrator on such a build must not use the
-    declaring method on a guarded account until the allowlist above changes;
-    it yields `FeeConversionInfoUnsupported`.
+  - The pinned Miden clients classify `AuthGuardedMultisig` as
+    `CallerChosenSalt`. A request declares a salt, and the client commits the
+    chain-native conversion info under that salt. Components that do not read
+    fee conversion info still fail with
+    `TransactionRequestError::FeeConversionInfoUnsupported`.
   - `pay_fee` spends the faucet and rate the committed conversion info names, so
     what a guarded account must hold follows from what it commits. The built-in
     typed proposal paths always commit the chain-native asset at rate 1/1, so on
@@ -180,14 +155,10 @@ moved in several independent ways:
     *included* is a separate question — the batch builder decides what fee
     asset and rate it accepts.
 
-  A caller driving the exported builders directly can still decline to commit, in
-  either SDK: omit `SignatureOptions.feeFaucetId` in TypeScript, pass `None` for
-  the `Option<FeeConversionInfo>` parameter in Rust. That produces the pre-0.16
-  bare auth arg, which executes only on a zero-fee chain. Neither SDK reads one
-  back: both rebuild every typed proposal from `salt_hex` as committed, and a
-  bare one fails their binding check. Register such a request as a *custom*
-  proposal, which neither SDK reconstructs, rather than under a typed metadata
-  shape.
+  The exported builders always declare the fee conversion salt. A caller
+  assembling a raw custom request can omit it, but the resulting request works
+  only on a zero-fee chain. Typed proposal reconstruction always declares the
+  stored `salt_hex`.
 
 Data effect: full reset, see above. Operator steps:
 [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-016).

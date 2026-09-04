@@ -77,18 +77,6 @@ export {
   buildP2idTransactionRequest,
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
-  // Exported so a custom proposal can commit fee conversion info itself; see the
-  // README's custom-proposal recipe for why it has to. Setting the auth arg
-  // directly is the only route: `TransactionRequestBuilder::fee_conversion_info`
-  // also flags the request as DECLARING conversion info, which makes miden-client
-  // classify the account's auth component and reject a guarded multisig -- the
-  // Rust SDK avoids it for that reason. This wasm build exposes no equivalent,
-  // but the pinned websdk source does export `withFeeConversionInfo`, which an
-  // integrator on a stock install must still avoid on a guarded account.
-  applyAuthArg,
-  resolveAuthArg,
-  nativeConversionInfo,
-  feeAuthArg,
   type P2idTransactionOptions,
   type P2ideHeightOptions,
 } from './transaction.js';

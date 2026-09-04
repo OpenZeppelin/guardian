@@ -2187,7 +2187,7 @@ export class Multisig {
 
     const txSummaryBytes = base64ToUint8Array(txSummaryBase64);
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
-    const saltHex = summaryAuthArg(txSummary).toHex();
+    const saltHex = metadata.saltHex ?? summaryAuthArg(txSummary).toHex();
     const txCommitmentHex = txSummary.toCommitment().toHex();
     const normalizedTxCommitmentHex = normalizeHexWord(txCommitmentHex);
     const normalizedSignerCommitments = new Set(

@@ -383,14 +383,14 @@ Rust and TypeScript**:
   proposal with the custom label. They are **not** stored on the server.
   Cosigners then review and sign through the normal flow.
 
-  On a chain whose `verification_base_fee` is non-zero the producer must commit the
-  fee conversion info itself: these bytes are passed through untouched, and the
-  guarded auth reads the faucet and rate from the transaction's auth args. Build the
-  request with `fee_conversion_info()` (Rust) / `getFeeFaucetId()` (TS) and set the
-  auth arg plus its advice preimage. Omitting it aborts during execution with
-  `ERR_FEE_CONVERSION_INFO_MISSING`; committing a faucet other than the chain's
-  native one aborts with `ERR_FEE_PAYMENT_FAUCET_NOT_NATIVE`. The typed create paths
-  do this for you.
+  On a chain whose `verification_base_fee` is non-zero, the request must declare
+  its fee conversion salt. Call `fee_conversion_salt(salt)` in Rust or
+  `withFeeConversionSalt(salt)` in TypeScript. The Miden client derives the native
+  1:1 conversion info from the execution reference header and commits it to the
+  auth argument. The typed proposal builders do this for you. A custom producer
+  must retain the original salt and use it again when rebuilding the request.
+  Do not pass `summaryAuthArg(summary)` to `withFeeConversionSalt`: the summary
+  contains the derived commitment, not the original salt.
 - **Execute** — `prepare_custom_execution(proposal_id, transaction_request_bytes)` (Rust) /
   `prepareCustomExecution(proposalId, transactionRequestBytes)` (TS). The SDK verifies the
   proposal is ready, binding-checks the request against the signed commitment

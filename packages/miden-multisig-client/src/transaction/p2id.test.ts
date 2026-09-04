@@ -3,7 +3,7 @@ import type { Word } from '@miden-sdk/miden-sdk';
 
 const {
   mockFungibleAssetConstructor,
-  mockWithAuthArg,
+  mockWithFeeConversionSalt,
   mockExtendAdviceMap,
   mockHashElements,
   mockNormalizeHexWord,
@@ -23,15 +23,13 @@ const {
 
   return {
     mockFungibleAssetConstructor: vi.fn(),
-    mockWithAuthArg: vi.fn(),
+    mockWithFeeConversionSalt: vi.fn(),
     mockExtendAdviceMap: vi.fn(),
     noteMetadataCalls: [] as unknown[][],
     noteRecipientCalls: [] as unknown[][],
     noteStorageCalls: [] as unknown[][],
     mockHashElements: vi.fn().mockReturnValue({
       toString: () => 'serial',
-      // Also stands in for the fee-auth commitment, which must be distinguishable
-      // from the bare salt the default path passes.
       toHex: () => '0xcommitment',
       toFelts: () => [{ id: 'h-0' }, { id: 'h-1' }, { id: 'h-2' }, { id: 'h-3' }],
     }),
@@ -76,14 +74,6 @@ vi.mock('@miden-sdk/miden-sdk', () => {
 
   class NoteAssets {
     constructor(_assets: unknown[]) {}
-  }
-
-  class AdviceMap {
-    readonly entries: Array<[unknown, unknown]> = [];
-
-    insert(key: unknown, value: unknown): void {
-      this.entries.push([key, value]);
-    }
   }
 
   class NoteStorage {
@@ -135,8 +125,8 @@ vi.mock('@miden-sdk/miden-sdk', () => {
       return this;
     }
 
-    withAuthArg(authArg: unknown): this {
-      mockWithAuthArg(authArg);
+    withFeeConversionSalt(salt: unknown): this {
+      mockWithFeeConversionSalt(salt);
       return this;
     }
 
@@ -187,14 +177,9 @@ vi.mock('@miden-sdk/miden-sdk', () => {
     Poseidon2: {
       hashElements: mockHashElements,
     },
-    AdviceMap,
     TransactionRequestBuilder,
     Word: {
       fromHex: mockWordFromHex,
-      newFromFelts: vi.fn(() => ({
-        toHex: () => '0xconversioninfo',
-        toFelts: () => [{ id: 'conv-0' }, { id: 'conv-1' }, { id: 'conv-2' }, { id: 'conv-3' }],
-      })),
     },
   };
 });
@@ -215,7 +200,7 @@ const FAUCET_ID = '0x7bfb0f38b0fafa103f86a805594171';
 describe('buildP2idTransactionRequest', () => {
   beforeEach(() => {
     mockFungibleAssetConstructor.mockClear();
-    mockWithAuthArg.mockClear();
+    mockWithFeeConversionSalt.mockClear();
     mockExtendAdviceMap.mockClear();
     mockHashElements.mockClear();
     mockNormalizeHexWord.mockClear();
@@ -226,7 +211,7 @@ describe('buildP2idTransactionRequest', () => {
     noteStorageCalls.length = 0;
   });
 
-  it('passes the bare salt as the auth arg and adds no fee advice by default', () => {
+  it('declares the proposal salt for fee conversion', () => {
     const salt = { toHex: () => '0x' + '11'.repeat(32) } as unknown as Word;
 
     buildP2idTransactionRequest(
@@ -237,53 +222,11 @@ describe('buildP2idTransactionRequest', () => {
       { salt },
     );
 
-    expect(mockWithAuthArg).toHaveBeenCalledTimes(1);
-    const [authArg] = mockWithAuthArg.mock.calls[0] as [{ toHex: () => string }];
-    expect(authArg.toHex()).toBe(salt.toHex());
+    expect(mockWithFeeConversionSalt).toHaveBeenCalledTimes(1);
+    const [feeSalt] = mockWithFeeConversionSalt.mock.calls[0] as [{ toHex: () => string }];
+    expect(feeSalt.toHex()).toBe(salt.toHex());
     expect(mockExtendAdviceMap).not.toHaveBeenCalled();
-  });
-
-  it('commits to conversion info and adds its preimage when given a fee faucet', () => {
-    // The only user-facing effect of SignatureOptions.feeFaucetId. Dropping the
-    // advice entry while keeping the commitment would abort on-chain with
-    // ERR_FEE_CONVERSION_INFO_MISSING rather than fail here.
-    const salt = { toHex: () => '0x' + '11'.repeat(32) } as unknown as Word;
-
-    buildP2idTransactionRequest(
-      '0x7bfb0f38b0fafa103f86a805594170',
-      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
-      FAUCET_ID,
-      10n,
-      { salt, feeFaucetId: FAUCET_ID },
-    );
-
-    expect(mockWithAuthArg).toHaveBeenCalledTimes(1);
-    const [authArg] = mockWithAuthArg.mock.calls[0] as [{ toHex: () => string }];
-    expect(authArg.toHex()).toBe('0xcommitment');
-
-    // The note must still come from the salt. The commitment goes to the auth
-    // arg only; routing it into the note builder as well would change the output
-    // note — see tests/p2id-fee-note-binding.test.ts for what that costs.
     expect(mockWordFromHex).toHaveBeenCalledWith(salt.toHex());
-    expect(mockWordFromHex).not.toHaveBeenCalledWith('0xcommitment');
-
-    expect(mockExtendAdviceMap).toHaveBeenCalledTimes(1);
-    const [adviceMap] = mockExtendAdviceMap.mock.calls[0] as [
-      { entries: Array<[{ toHex: () => string }, { values: Array<{ id: string }> }]> },
-    ];
-    expect(adviceMap.entries).toHaveLength(1);
-    const [key, preimage] = adviceMap.entries[0];
-    expect(key.toHex()).toBe('0xcommitment');
-    expect(preimage.values.map((felt) => felt.id)).toEqual([
-      'felt-0',
-      'felt-1',
-      'felt-2',
-      'felt-3',
-      'conv-0',
-      'conv-1',
-      'conv-2',
-      'conv-3',
-    ]);
   });
 
   it('derives serial number from salt felts plus four zero felts', () => {

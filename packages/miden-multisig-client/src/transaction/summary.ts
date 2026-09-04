@@ -105,11 +105,11 @@ export function chainAnchorFromBase64(anchorBase64: string): ChainAnchor {
  * the leading three and passes the auth args as the trailing four, so the auth
  * args are the tail of `userParams()`.
  *
- * This is the auth-arg word, *not* the proposal salt. When the request commits
- * fee conversion info (see `transaction/feeAuth.ts`) the auth arg is the
- * commitment `hash(CONVERSION_INFO || SALT)`, which is not invertible to the
- * salt. Keep the salt alongside the proposal — `ProposalMetadata.saltHex` —
- * rather than trying to recover it from the summary.
+ * This is the auth-arg word, *not* the proposal salt. When the request declares
+ * a fee conversion salt, miden-client uses it to commit the native conversion
+ * info under `hash(CONVERSION_INFO || SALT)`. That commitment is not invertible
+ * to the salt. Keep the salt alongside the proposal — `ProposalMetadata.saltHex`
+ * — rather than trying to recover it from the summary.
  */
 export function summaryAuthArg(summary: TransactionSummary): Word {
   return Word.newFromFelts(summary.userParams().slice(AUTH_ARG_USER_PARAM_OFFSET));

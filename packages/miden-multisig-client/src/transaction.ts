@@ -9,12 +9,6 @@ export {
   summaryAuthArg,
 } from './transaction/summary.js';
 export {
-  feeAuthArg,
-  nativeConversionInfo,
-  applyAuthArg,
-  resolveAuthArg,
-} from './transaction/feeAuth.js';
-export {
   buildP2idNoteFromMetadata,
   buildP2idTransactionRequest,
   parseP2idNoteType,

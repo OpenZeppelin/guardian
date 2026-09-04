@@ -3441,6 +3441,7 @@ describe('Multisig', () => {
       const ackPubkey = '0x' + '4'.repeat(66);
       const cosignerSignature = '0x' + '5'.repeat(130);
       const ackSignature = '0x' + '6'.repeat(130);
+      const saltHex = '0x' + '7'.repeat(64);
       const finalRequest = { kind: 'final-change-threshold-request' };
 
       vi.mocked(buildUpdateSignersTransactionRequest)
@@ -3477,6 +3478,7 @@ describe('Multisig', () => {
           chainAnchor: MOCK_CHAIN_ANCHOR_B64,
           targetThreshold: 1,
           targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          saltHex,
           description: '',
         },
       });
@@ -3548,6 +3550,8 @@ describe('Multisig', () => {
       const adviceCalls = vi.mocked(buildSignatureAdviceEntry).mock.calls;
       expect(adviceCalls[0][0].toHex()).toBe(config.signerCommitments[0]);
       expect(adviceCalls[1][0].toHex()).toBe(config.guardianCommitment);
+      const executionOptions = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls.at(-1)?.[3];
+      expect(executionOptions?.salt?.toHex()).toBe(saltHex);
       expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.proveTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.submitProvenTransaction).not.toHaveBeenCalled();
