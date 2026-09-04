@@ -432,26 +432,42 @@ const { request: finalRequest } = buildP2idTransactionRequest(
 await multisig.submitTransaction(proposal.id, finalRequest);
 ```
 
+The exported transaction builders declare the proposal salt through
+`TransactionRequestBuilder.withFeeConversionSalt`. Miden-client derives the
+native 1:1 conversion info from the execution reference header. Integrations
+that build a request directly must retain the original salt and call
+`withFeeConversionSalt(salt)` on their builder when they create and rebuild the
+request.
+
 The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches the
 commitment the cosigners signed.
 
-If a recipe was not retained, recover the salt from the proposal's transaction
-summary with `summarySalt`:
+The salt cannot be recovered from the summary. Once the auth arg became the
+commitment `hash(CONVERSION_INFO || SALT)` it stopped being invertible, so a
+recipe that was not retained cannot be reconstructed from the signed summary —
+keep the salt, or read it from the proposal's `saltHex` metadata, which is what
+the SDK's own execution path does.
+
+The summary exposes the committed auth argument for inspection:
 
 ```typescript
-import { summarySalt } from '@openzeppelin/miden-multisig-client';
+import { summaryAuthArg } from '@openzeppelin/miden-multisig-client';
 import { TransactionSummary } from '@miden-sdk/miden-sdk';
 
-const salt = summarySalt(TransactionSummary.deserialize(bytes));
+const signedAuthArg = summaryAuthArg(TransactionSummary.deserialize(bytes));
 ```
 
-On the Miden 0.16 pre-release line a summary no longer carries a dedicated salt
-word: it binds seven user-defined elements, and the guarded-multisig auth
-component zeroes the leading three and passes the auth-arg salt as the trailing
-four. `summarySalt` reads that convention, so prefer it over indexing
-`userParams()` by hand.
+Do not use `signedAuthArg` as the salt when rebuilding the request.
+`withFeeConversionSalt` would derive and commit a second value from it, and the
+rebuilt summary would not match the summary that the cosigners signed.
+
+On the Miden 0.16 pre-release line a summary binds seven user-defined elements,
+and the guarded-multisig auth component zeroes the leading three and passes the
+auth arg as the trailing four. `summaryAuthArg` reads that convention, so prefer
+it over indexing `userParams()` by hand. It replaced `summarySalt`, whose name
+claimed an inversion that no longer exists.
 
 > **Rust ↔ TS parity:** both SDKs expose the same producer surface —
 > `createCustomProposal` / `propose_custom_transaction`, `prepareCustomExecution` /

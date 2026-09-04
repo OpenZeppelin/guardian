@@ -3,6 +3,8 @@ import type { Word } from '@miden-sdk/miden-sdk';
 
 const {
   mockFungibleAssetConstructor,
+  mockWithFeeConversionSalt,
+  mockExtendAdviceMap,
   mockHashElements,
   mockNormalizeHexWord,
   mockRandomWord,
@@ -21,10 +23,16 @@ const {
 
   return {
     mockFungibleAssetConstructor: vi.fn(),
+    mockWithFeeConversionSalt: vi.fn(),
+    mockExtendAdviceMap: vi.fn(),
     noteMetadataCalls: [] as unknown[][],
     noteRecipientCalls: [] as unknown[][],
     noteStorageCalls: [] as unknown[][],
-    mockHashElements: vi.fn().mockReturnValue({ toString: () => 'serial' }),
+    mockHashElements: vi.fn().mockReturnValue({
+      toString: () => 'serial',
+      toHex: () => '0xcommitment',
+      toFelts: () => [{ id: 'h-0' }, { id: 'h-1' }, { id: 'h-2' }, { id: 'h-3' }],
+    }),
     mockNormalizeHexWord: vi.fn((hex: string) => hex),
     mockRandomWord: vi.fn().mockReturnValue({
       toHex: () => '0x' + 'aa'.repeat(32),
@@ -117,11 +125,13 @@ vi.mock('@miden-sdk/miden-sdk', () => {
       return this;
     }
 
-    withAuthArg(_authArg: unknown): this {
+    withFeeConversionSalt(salt: unknown): this {
+      mockWithFeeConversionSalt(salt);
       return this;
     }
 
-    extendAdviceMap(_adviceMap: unknown): this {
+    extendAdviceMap(adviceMap: unknown): this {
+      mockExtendAdviceMap(adviceMap);
       return this;
     }
 
@@ -190,6 +200,8 @@ const FAUCET_ID = '0x7bfb0f38b0fafa103f86a805594171';
 describe('buildP2idTransactionRequest', () => {
   beforeEach(() => {
     mockFungibleAssetConstructor.mockClear();
+    mockWithFeeConversionSalt.mockClear();
+    mockExtendAdviceMap.mockClear();
     mockHashElements.mockClear();
     mockNormalizeHexWord.mockClear();
     mockRandomWord.mockClear();
@@ -197,6 +209,24 @@ describe('buildP2idTransactionRequest', () => {
     noteMetadataCalls.length = 0;
     noteRecipientCalls.length = 0;
     noteStorageCalls.length = 0;
+  });
+
+  it('declares the proposal salt for fee conversion', () => {
+    const salt = { toHex: () => '0x' + '11'.repeat(32) } as unknown as Word;
+
+    buildP2idTransactionRequest(
+      '0x7bfb0f38b0fafa103f86a805594170',
+      '0x8a65fc5a39e4cd106d648e3eb4ab5f',
+      FAUCET_ID,
+      10n,
+      { salt },
+    );
+
+    expect(mockWithFeeConversionSalt).toHaveBeenCalledTimes(1);
+    const [feeSalt] = mockWithFeeConversionSalt.mock.calls[0] as [{ toHex: () => string }];
+    expect(feeSalt.toHex()).toBe(salt.toHex());
+    expect(mockExtendAdviceMap).not.toHaveBeenCalled();
+    expect(mockWordFromHex).toHaveBeenCalledWith(salt.toHex());
   });
 
   it('derives serial number from salt felts plus four zero felts', () => {

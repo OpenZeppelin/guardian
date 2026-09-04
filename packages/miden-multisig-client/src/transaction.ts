@@ -6,7 +6,7 @@ export {
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
-  summarySalt,
+  summaryAuthArg,
 } from './transaction/summary.js';
 export {
   buildP2idNoteFromMetadata,

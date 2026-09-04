@@ -11,15 +11,15 @@ vi.mock('../raw-client.js', () => ({
   getRawMidenClient: vi.fn(),
 }));
 
-const { summarySalt } = await import('./summary.js');
+const { summaryAuthArg } = await import('./summary.js');
 
-describe('summarySalt', () => {
-  it('reads the salt from the trailing four user params', () => {
+describe('summaryAuthArg', () => {
+  it('reads the auth arg from the trailing four user params', () => {
     const summary = {
       userParams: () => [0, 0, 0, 11, 22, 33, 44],
     } as never;
 
-    expect(summarySalt(summary)).toEqual({ felts: [11, 22, 33, 44] });
+    expect(summaryAuthArg(summary)).toEqual({ felts: [11, 22, 33, 44] });
   });
 
   it('ignores the leading three user params the auth component zeroes', () => {
@@ -27,6 +27,6 @@ describe('summarySalt', () => {
       userParams: () => [7, 8, 9, 11, 22, 33, 44],
     } as never;
 
-    expect(summarySalt(summary)).toEqual({ felts: [11, 22, 33, 44] });
+    expect(summaryAuthArg(summary)).toEqual({ felts: [11, 22, 33, 44] });
   });
 });

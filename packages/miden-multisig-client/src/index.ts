@@ -69,7 +69,7 @@ export {
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
-  summarySalt,
+  summaryAuthArg,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -85,6 +85,7 @@ export {
 // serialized summary exactly as import verification does. Returns normalized
 // hex, directly comparable to `ExportedProposal.commitment` / `Proposal.id`.
 export { computeCommitmentFromTxSummary } from './multisig/helpers.js';
+export type { SignatureOptions } from './transaction/options.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
 export type { GuardianErrorMeta } from '@openzeppelin/guardian-client';
@@ -173,6 +174,13 @@ export {
   ConsumeNotesMetadataOversizeError,
   LegacyConsumeNotesNoteMissingError,
 } from './multisig/consumeNotesErrors.js';
+
+export {
+  type AuthArgErrorCode,
+  FeeFaucetAnchorMismatchError,
+  ProposalAuthArgUnresolvableError,
+  ProposalSaltMalformedError,
+} from './multisig/authArgErrors.js';
 
 export {
   noteToBase64,

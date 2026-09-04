@@ -9,6 +9,7 @@ use guardian_client::DeltaObject;
 use guardian_shared::FromJson;
 use guardian_shared::hex::FromHex;
 use guardian_shared::{ProposalSignature, SignatureScheme};
+use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
@@ -17,7 +18,6 @@ use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as Poseidon2Falc
 use miden_protocol::note::{Note, NoteId, NoteType};
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
-use miden_protocol::{Felt, Word};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -402,11 +402,21 @@ impl ProposalMetadata {
     }
 
     /// Converts salt hex to Word.
+    ///
+    /// Errors when absent, for the same reason [`Self::chain_anchor`] does. The request
+    /// declares this salt and miden-client commits `hash(CONVERSION_INFO || SALT)` into
+    /// the auth arg from it, so a substituted zero would be committed just as happily as
+    /// the real one and reproduce a summary no cosigner signed.
     pub fn salt(&self) -> Result<Word> {
-        match &self.salt_hex {
-            Some(value) => word_from_hex(value).map_err(MultisigError::InvalidConfig),
-            None => Ok(Word::from([Felt::new_unchecked(0); 4])),
-        }
+        let value = self.salt_hex.as_deref().ok_or_else(|| {
+            MultisigError::InvalidConfig(
+                "proposal metadata has no salt; its request cannot be rebuilt because \
+                 the auth arg commits hash(CONVERSION_INFO || SALT) and is not \
+                 invertible to the salt"
+                    .to_string(),
+            )
+        })?;
+        word_from_hex(value).map_err(MultisigError::InvalidConfig)
     }
 
     /// Converts signer commitments to Words.
@@ -903,6 +913,8 @@ fn word_to_bytes(word: &Word) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::Felt;
+
     use super::*;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
@@ -1368,11 +1380,18 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_salt_none_returns_default() {
+    fn test_metadata_salt_none_is_an_error() {
+        // It used to answer `Word::default()`. The request now declares this salt and
+        // miden-client commits `hash(CONVERSION_INFO || SALT)` from it, so a substituted
+        // zero would be committed as readily as the real one and reproduce a summary no
+        // cosigner ever signed. Absent has no correct answer; say so.
         let metadata = ProposalMetadata::default();
 
-        let salt = metadata.salt().expect("salt should return default");
-        assert_eq!(salt, Word::default());
+        let error = metadata.salt().expect_err("an absent salt has no default");
+        assert!(
+            error.to_string().contains("no salt"),
+            "the error must name the missing salt, got: {error}"
+        );
     }
 
     #[test]
