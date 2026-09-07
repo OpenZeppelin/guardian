@@ -980,11 +980,11 @@ one implicitly.
 | `signerCommitments` | Get list of signer commitments |
 | `fetchState()` | Fetch latest state from GUARDIAN |
 | `registerOnGuardian()` | Register new account with GUARDIAN |
-| `syncProposals()` | Sync proposals from GUARDIAN, pruning ones it no longer reports |
+| `syncProposals()` | Sync proposals from GUARDIAN, pruning ones it no longer reports (TS-only cache reconciliation; the Rust `list_proposals` builds a fresh list per call and has no cache to prune) |
 | `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
 | `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
 | `deltaHistory({ limit?, cursor? }?)` | One page of canonical delta history, newest-first, with decoded note summaries |
-| `listProposals()` | Get proposals cached by the most recent sync |
+| `listProposals()` | Get proposals from the most recent sync plus not-yet-reported local creates/imports |
 | `createP2idProposal(recipient, faucet, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`; presence of `reclaimHeight`/`timelockHeight` creates a P2IDE note, issue #366) |
 | `createConsumeNotesProposal(noteIds, { nonce }?)` | Create note consumption proposal |
 | `getP2idNoteId(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |

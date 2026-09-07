@@ -1367,11 +1367,13 @@ describe('Multisig', () => {
       expect(multisig.listProposals().length).toBe(1);
     });
 
-    it('should not prune a locally-created proposal GUARDIAN has not reported yet', async () => {
+    it('should keep a locally-created proposal for one lagging listing, then prune it', async () => {
       // createProposal pushes to GUARDIAN then caches. If GUARDIAN's
       // read-your-writes lags and the immediately-following sync omits the
-      // just-pushed proposal, it must NOT be evicted: GUARDIAN never reported
-      // it to this client, so it is not a prune candidate.
+      // just-pushed proposal, it must NOT be evicted on that first listing.
+      // A second consecutive omission means GUARDIAN genuinely does not have
+      // it as pending (the #404 creator path: another signer executed it
+      // before this client ever saw it listed), so it is pruned.
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -1416,6 +1418,56 @@ describe('Multisig', () => {
       expect(synced.length).toBe(1);
       expect(synced[0].id).toBe(created.id);
       expect(multisig.listProposals().length).toBe(1);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const second = await multisig.syncProposals();
+      expect(second).toEqual([]);
+      expect(multisig.listProposals()).toEqual([]);
+    });
+
+    it('should prune an imported proposal GUARDIAN never reports after the grace listing', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config, mockSigner, '0x' + 'a'.repeat(30));
+
+      const imported = await multisig.importProposal(
+        JSON.stringify({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          commitment: '0x' + 'c'.repeat(64),
+          txSummaryBase64: 'AQID',
+          signatures: [],
+          metadata: {
+            proposalType: 'add_signer',
+            chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+            saltHex: MOCK_SALT_HEX,
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        })
+      );
+      expect(multisig.listProposals().map((p) => p.id)).toEqual([imported.id]);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const first = await multisig.syncProposals();
+      expect(first.map((p) => p.id)).toEqual([imported.id]);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      expect(await multisig.syncProposals()).toEqual([]);
+      expect(multisig.listProposals()).toEqual([]);
     });
 
     it('should leave the cache and pruning state untouched when a listing fails verification', async () => {
@@ -1448,6 +1500,101 @@ describe('Multisig', () => {
         json: async () => ({ proposals: [] }),
       });
       await expect(multisig.syncProposals()).resolves.toEqual([]);
+    });
+
+    it('should keep a seeded reported proposal cached and prunable across a failed listing', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const seeded = await multisig.syncProposals();
+      expect(seeded.length).toBe(1);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [pendingDeltaProposal('AQID'), pendingDeltaProposal('AQIDBA==', 2)],
+        }),
+      });
+      await expect(multisig.syncProposals()).rejects.toThrow(
+        'metadata does not match tx_summary'
+      );
+      expect(multisig.listProposals().map((p) => p.id)).toEqual(['0x' + 'c'.repeat(64)]);
+
+      // The failed listing did not disturb the pruning state: the seeded
+      // proposal is still recorded as reported, so the next listing that
+      // omits it prunes it immediately.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      await expect(multisig.syncProposals()).resolves.toEqual([]);
+    });
+
+    it('should abandon an in-flight sync when the GUARDIAN client is replaced', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      let releaseListing!: (value: unknown) => void;
+      mockFetch.mockImplementationOnce(
+        () => new Promise((resolve) => { releaseListing = resolve; })
+      );
+      const sync = multisig.syncProposals();
+      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+      multisig.setGuardianClient(new GuardianHttpClient('http://other-guardian:3000'));
+
+      releaseListing({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      await expect(sync).rejects.toThrow('GUARDIAN client was replaced');
+      expect(multisig.listProposals()).toEqual([]);
+    });
+
+    it('should not prune from the old GUARDIAN reported set after a repoint', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const onOldGuardian = await multisig.syncProposals();
+      expect(onOldGuardian.length).toBe(1);
+
+      multisig.setGuardianClient(new GuardianHttpClient('http://other-guardian:3000'));
+
+      // The new GUARDIAN's reported set starts empty, so its first listing
+      // must not prune on the strength of what the old GUARDIAN reported;
+      // the survivor is now unreported and falls to the bounded grace.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const first = await multisig.syncProposals();
+      expect(first.length).toBe(1);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      expect(await multisig.syncProposals()).toEqual([]);
     });
 
     it('should share one in-flight sync between overlapping callers', async () => {

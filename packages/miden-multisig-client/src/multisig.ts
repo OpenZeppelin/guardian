@@ -231,6 +231,16 @@ const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 /** A `Word` is four field elements: 64 hex digits. Anything longer is not a salt. */
 const MAX_SALT_HEX_DIGITS = 64;
 
+/**
+ * How many consecutive successful listings may omit a proposal GUARDIAN has
+ * never reported to this client before the sync prunes it. One tolerated miss
+ * absorbs a read-your-writes lag right after `createProposal` or an
+ * `importProposal` that raced execution; a second consecutive omission means
+ * GUARDIAN genuinely does not have it as pending (executed, abandoned, or
+ * never accepted), and keeping it would pin it as pending forever.
+ */
+const UNREPORTED_LISTING_MISS_LIMIT = 2;
+
 export class Multisig {
   account: Account;
   threshold: number;
@@ -248,8 +258,15 @@ export class Multisig {
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
-  /** Ids GUARDIAN returned on the most recent sync; only these are prunable. */
+  /** Ids GUARDIAN returned on the most recent sync; these prune immediately when dropped. */
   private lastReportedProposalIds: Set<string> = new Set();
+  /**
+   * Consecutive successful listings that omitted a cached proposal GUARDIAN
+   * has never reported; at {@link UNREPORTED_LISTING_MISS_LIMIT} it is pruned.
+   */
+  private unreportedMissCounts: Map<string, number> = new Map();
+  /** Bumped by {@link setGuardianClient}; a sync spanning a bump aborts unapplied. */
+  private syncGeneration = 0;
   /** Pending sync shared by overlapping {@link syncProposals} callers. */
   private syncProposalsInFlight?: Promise<Proposal[]>;
 
@@ -458,11 +475,22 @@ export class Multisig {
    * survive a switch, and the notes embedded in them can only be imported
    * while the old GUARDIAN is still the current client.
    *
+   * Repointing invalidates the sync-reconciliation state: a
+   * {@link syncProposals} still in flight against the previous GUARDIAN is
+   * abandoned (it rejects instead of applying that GUARDIAN's listing), and
+   * the reported-proposal bookkeeping resets so listings from the new
+   * GUARDIAN never prune from, or grant grace based on, what the old one
+   * reported.
+   *
    * @param guardianClient - The new GUARDIAN HTTP client
    */
   setGuardianClient(guardianClient: GuardianHttpClient): void {
     this.guardian = guardianClient;
     this.guardian.setSigner(this.signer);
+    this.syncGeneration += 1;
+    this.syncProposalsInFlight = undefined;
+    this.lastReportedProposalIds = new Set();
+    this.unreportedMissCounts = new Map();
   }
 
   /**
@@ -729,13 +757,18 @@ export class Multisig {
    * does not linger locally and keep showing as pending forever (e.g. a
    * co-signer's browser after another signer executed the transaction).
    *
-   * Only proposals GUARDIAN has actually reported are eligible for pruning. A
-   * proposal that is in the cache but that GUARDIAN has not (yet) returned in
-   * a response is left untouched, so a `createProposal` immediately followed
-   * by a sync survives a GUARDIAN read-your-writes lag that omits the
-   * just-pushed proposal, and an `importProposal` from the offline flow
-   * survives until GUARDIAN first reports it. A proposal is only dropped once
-   * GUARDIAN reported it and then stopped (executed / abandoned).
+   * A proposal GUARDIAN reported and then stopped reporting is pruned on the
+   * first listing that omits it. A proposal GUARDIAN has never reported to
+   * this client (a `createProposal` GUARDIAN's read-your-writes has not
+   * caught up with, or an `importProposal` from the offline flow) is granted
+   * a bounded grace instead: it survives the first successful listing that
+   * omits it and is pruned once {@link UNREPORTED_LISTING_MISS_LIMIT}
+   * consecutive listings have omitted it, so the creator of an
+   * already-executed proposal converges to the same empty view as every
+   * other signer instead of keeping it pinned as pending forever. Only
+   * proposals already cached when the sync started participate: a proposal
+   * created while a listing was in flight is never counted against by that
+   * older listing.
    *
    * The whole response is verified before the cache or the pruning state is
    * touched: a listing containing a proposal that fails metadata-binding
@@ -743,7 +776,10 @@ export class Multisig {
    * proposals it carried cannot become cached-but-never-reported entries that
    * no later sync could prune. Overlapping callers share a single in-flight
    * sync (they receive the same promise), so a slow sync applied late cannot
-   * prune proposals a newer overlapping sync had just reported.
+   * prune proposals a newer overlapping sync had just reported. A sync that
+   * spans a {@link setGuardianClient} repoint rejects without applying its
+   * listing, so one GUARDIAN's response is never reconciled against
+   * another's state.
    *
    * Nonce-based staleness hiding, for a proposal the account has already
    * advanced past that GUARDIAN may still briefly report as pending, is
@@ -770,6 +806,8 @@ export class Multisig {
   }
 
   private async reconcileProposals(): Promise<Proposal[]> {
+    const generation = this.syncGeneration;
+    const candidateIds = new Set(this.proposals.keys());
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
@@ -789,14 +827,32 @@ export class Multisig {
       reported.set(proposal.id, proposal);
     }
 
+    if (generation !== this.syncGeneration) {
+      throw new Error(
+        'Sync aborted: the GUARDIAN client was replaced while the sync was in flight'
+      );
+    }
+
     for (const proposal of reported.values()) {
       this.proposals.set(proposal.id, proposal);
     }
-    for (const id of this.lastReportedProposalIds) {
-      if (!reported.has(id)) {
+    const missCounts = new Map<string, number>();
+    for (const id of candidateIds) {
+      if (reported.has(id) || !this.proposals.has(id)) {
+        continue;
+      }
+      if (this.lastReportedProposalIds.has(id)) {
         this.proposals.delete(id);
+        continue;
+      }
+      const misses = (this.unreportedMissCounts.get(id) ?? 0) + 1;
+      if (misses >= UNREPORTED_LISTING_MISS_LIMIT) {
+        this.proposals.delete(id);
+      } else {
+        missCounts.set(id, misses);
       }
     }
+    this.unreportedMissCounts = missCounts;
     this.lastReportedProposalIds = new Set(reported.keys());
 
     return Array.from(this.proposals.values());
@@ -866,7 +922,8 @@ export class Multisig {
   /**
    * Returns the proposals cached by the most recent {@link syncProposals}
    * call, plus any locally created or imported proposals GUARDIAN has not
-   * reported yet.
+   * reported yet (those are retained for a bounded number of listings, see
+   * {@link syncProposals}).
    *
    * This is that sync's reconciled set, not a durable log: proposals GUARDIAN
    * no longer reports were pruned, so do not treat the result as an
