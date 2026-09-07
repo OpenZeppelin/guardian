@@ -4,18 +4,25 @@ name: AWS Deploy
 # Deploys an already-published ghcr.io/openzeppelin/guardian release image to an
 # AWS ECS stack. The `validate` job resolves the version tag to an immutable
 # digest and verifies that digest against the SLSA provenance attestation signed
-# by docker-publish.yml (prod additionally requires the build to have run from
-# the release tag). The `deploy` job then mirrors that exact digest into the
-# stack's ECR repository (also moving the `latest` tag, which scripts/aws-deploy.sh
-# resolves), registers a new revision of the task definition the service is
-# currently running with the new image, and waits for the rollout. AWS access
-# uses GitHub OIDC with role chaining only; no long-lived keys.
+# by docker-publish.yml. Every environment except devnet is release-only: the
+# version must be a full release and the attestation must show the build ran
+# from that release tag. The `deploy` job then mirrors that exact digest into
+# the stack's ECR repository (also moving the `latest` tag, which
+# scripts/aws-deploy.sh resolves), registers a new revision of the task
+# definition the service is currently running with the new image, and waits for
+# the rollout. AWS access uses GitHub OIDC with role chaining only; no
+# long-lived keys.
 #
-# Each GitHub environment (stg, prod) must define these variables:
+# GitHub environments are named after the Miden network they serve (devnet,
+# testnet, eventually mainnet) and map onto AWS stacks through variables, so the
+# infrastructure profile is never inferred from the environment name. Each
+# environment must restrict deployment branches to `main` (otherwise a dispatch
+# of an edited workflow on a feature branch obtains the environment's OIDC
+# identity) and define these variables:
 #   AWS_REGION      - AWS region of the stack (e.g. us-east-1)
 #   ROLE_FOR_OIDC   - IAM role ARN trusted for GitHub OIDC (bootstrap role)
 #   ROLE_TO_ASSUME  - IAM deploy role ARN assumed via role chaining
-#   STACK_NAME      - Terraform stack_name (guardian for stg, guardian-prod for prod)
+#   STACK_NAME      - Terraform stack_name (guardian for devnet, guardian-prod for testnet)
 #
 # Resource names assume the infra/data.tf defaults derived from stack_name:
 # ECR repository, ECS service, task family, and container `<stack>-server`, ECS
@@ -31,14 +38,14 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target environment"
+        description: "Target network environment"
         type: choice
         required: true
         options:
-          - stg
-          - prod
+          - devnet
+          - testnet
       version:
-        description: "Published image version to deploy, e.g. v1.2.3 (stg also accepts pre-releases like v1.2.3-rc.1)"
+        description: "Published image version to deploy, e.g. v1.2.3 (devnet also accepts pre-releases like v1.2.3-rc.1)"
         type: string
         required: true
 
@@ -56,12 +63,15 @@ env:
 
 jobs:
   # Runs before the target environment's protection rules so an invalid or
-  # unverifiable version is rejected without paging prod reviewers, and so
-  # reviewers approve an already-verified digest.
+  # unverifiable version is rejected without paging reviewers, and so reviewers
+  # approve an already-verified digest.
   validate:
     name: Validate ${{ inputs.version }}
     runs-on: ubuntu-latest
     if: github.repository_owner == 'OpenZeppelin'
+    permissions:
+      contents: read
+      attestations: read
     outputs:
       digest: ${{ steps.source.outputs.digest }}
     steps:
@@ -76,8 +86,8 @@ jobs:
             echo "::error::Invalid version '$VERSION'. Expected a tag like v1.2.3 or a pre-release like v1.2.3-rc.1."
             exit 1
           fi
-          if [[ "$TARGET_ENV" == "prod" && "$VERSION" == *-* ]]; then
-            echo "::error::Refusing to deploy pre-release '$VERSION' to prod. Deploy a full release like v1.2.3."
+          if [[ "$TARGET_ENV" != "devnet" && "$VERSION" == *-* ]]; then
+            echo "::error::Refusing to deploy pre-release '$VERSION' to ${TARGET_ENV}. Only devnet accepts pre-releases; deploy a full release like v1.2.3."
             exit 1
           fi
 
@@ -105,7 +115,7 @@ jobs:
             --predicate-type https://slsa.dev/provenance/v1
             --signer-workflow "${SOURCE_REPO}/.github/workflows/docker-publish.yml"
           )
-          if [[ "$TARGET_ENV" == "prod" ]]; then
+          if [[ "$TARGET_ENV" != "devnet" ]]; then
             verify_args+=(--source-ref "refs/tags/${VERSION}")
           fi
           gh attestation verify "oci://${GHCR_IMAGE}@${SOURCE_DIGEST}" "${verify_args[@]}"

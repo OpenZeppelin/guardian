@@ -69,22 +69,32 @@ changes and first-time stack setup.
 ## Deploying a published image from GitHub Actions
 
 The **AWS Deploy** workflow (`.github/workflows/aws-deploy.yml`) deploys a
-published GHCR version to the `stg` or `prod` stack without local AWS
-credentials or Terraform state. Run it from the Actions tab with:
+published GHCR version to a Guardian stack without local AWS credentials or
+Terraform state. GitHub environments are named after the Miden network they
+serve and map onto AWS stacks through environment variables, so stack names and
+infrastructure profiles stay explicit settings rather than being inferred from
+the environment name:
 
-- `environment`: `stg` or `prod`
-- `version`: a published tag such as `v1.2.3`. `stg` also accepts pre-releases
-  like `v1.2.3-rc.1`; `prod` refuses them.
+| Environment | Network | Stack (`STACK_NAME`) | Profile | Hostname |
+|---|---|---|---|---|
+| `devnet` | MidenDevnet | `guardian` | dev | `guardian-stg.openzeppelin.com` |
+| `testnet` | MidenTestnet | `guardian-prod` | prod | `guardian.openzeppelin.com` |
+
+Run it from the Actions tab with:
+
+- `environment`: `devnet` or `testnet`
+- `version`: a published tag such as `v1.2.3`. Only `devnet` accepts
+  pre-releases like `v1.2.3-rc.1`; every other environment is release-only.
 
 What a run does:
 
 1. Resolves the version tag to an immutable digest and verifies that digest
    against the SLSA provenance attestation signed by the Docker Publish
-   workflow. For `prod` the attestation must also show the build ran from the
-   `refs/tags/<version>` release tag, so a manually dispatched build of another
-   branch cannot ship to prod under a release version. This happens before the
-   environment's protection rules, so `prod` reviewers are only asked to approve
-   an already-verified digest.
+   workflow. For release-only environments the attestation must also show the
+   build ran from the `refs/tags/<version>` release tag, so a manually
+   dispatched build of another branch cannot ship under a release version. This
+   happens before the environment's protection rules, so reviewers are only
+   asked to approve an already-verified digest.
 2. Authenticates to AWS with GitHub OIDC (bootstrap role, then role chaining to
    the deploy role) and checks the stack's ECR repository and ECS service exist.
 3. Mirrors the verified digest into `<stack>-server` in ECR, tagged both
@@ -110,12 +120,15 @@ release images are built with the `postgres` feature only.
 
 One-time setup per target (infra):
 
-- A GitHub environment named `stg` / `prod` with variables `AWS_REGION`,
-  `ROLE_FOR_OIDC` (role trusted for GitHub OIDC), `ROLE_TO_ASSUME` (deploy role
-  reached via role chaining), and `STACK_NAME` (`guardian` / `guardian-prod`).
-  Add required reviewers on `prod`.
+- A GitHub environment named after the network (`devnet` / `testnet`) with
+  variables `AWS_REGION`, `ROLE_FOR_OIDC` (role trusted for GitHub OIDC),
+  `ROLE_TO_ASSUME` (deploy role reached via role chaining), and `STACK_NAME`
+  (`guardian` / `guardian-prod`). Add required reviewers on `testnet`.
+- Each environment must restrict **deployment branches** to `main`. Without
+  that, anyone able to dispatch the workflow could run an edited copy of it
+  from a feature branch and obtain the environment's AWS OIDC identity.
 - The OIDC role's trust policy must accept this repository's environment
-  subject claims (`repo:OpenZeppelin/guardian:environment:stg` / `:prod`).
+  subject claims (`repo:OpenZeppelin/guardian:environment:devnet` / `:testnet`).
 - The deploy role needs ECR push/pull on `<stack>-server`
   (`ecr:GetAuthorizationToken`, `ecr:DescribeRepositories`,
   `ecr:BatchCheckLayerAvailability`, `ecr:BatchGetImage`,
