@@ -1553,6 +1553,82 @@ describe('Multisig', () => {
       expect(multisig.listProposals()).toEqual([]);
     });
 
+    it('should not prune a proposal replaced by online signing while a stale listing was in flight', async () => {
+      // signProposal(P) succeeding mid-sync means GUARDIAN re-acknowledged P
+      // after the in-flight (empty) listing was served, so that listing must
+      // not delete the freshly signed cache entry.
+      const config = {
+        threshold: 2,
+        signerCommitments: [mockSigner.commitment, '0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config, mockSigner, '0x' + 'a'.repeat(30));
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const [seeded] = await multisig.syncProposals();
+      expect(seeded.signatures).toHaveLength(1);
+
+      let releaseListing!: (value: unknown) => void;
+      mockFetch.mockImplementationOnce(
+        () => new Promise((resolve) => { releaseListing = resolve; })
+      );
+      const sync = multisig.syncProposals();
+      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'add_signer',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+              salt: MOCK_SALT_HEX,
+              target_threshold: 1,
+              signer_commitments: ['0x' + 'a'.repeat(64)],
+              description: '',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [
+              {
+                signer_id: '0x' + 'a'.repeat(64),
+                signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+                timestamp: '2024-01-01T00:00:00Z',
+              },
+              {
+                signer_id: mockSigner.commitment,
+                signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+                timestamp: '2024-01-01T01:00:00Z',
+              },
+            ],
+          },
+        }),
+      });
+      const signed = await multisig.signProposal('0x' + 'c'.repeat(64));
+      expect(signed.signatures).toHaveLength(2);
+
+      releaseListing({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const synced = await sync;
+      expect(synced.map((p) => p.id)).toEqual(['0x' + 'c'.repeat(64)]);
+      expect(
+        multisig.listProposals().find((p) => p.id === '0x' + 'c'.repeat(64))?.signatures
+      ).toHaveLength(2);
+    });
+
     it('should preserve a signature added while the listing was being verified', async () => {
       // signProposalOffline(A) completing while the sync stalls verifying B
       // must not be clobbered when the sync applies its pre-signing snapshot

@@ -759,7 +759,8 @@ export class Multisig {
    * `createSwitchGuardianProposalOffline`) are not pruned by listings; an
    * import graduates to the pruned classes once GUARDIAN acknowledges it
    * (listed, or a successful online `signProposal`).
-   * Proposals cached after the sync started are not evaluated by it.
+   * Proposals cached or replaced after the sync started are not evaluated
+   * by it.
    *
    * The response is verified in full before the cache or the pruning state
    * changes; a listing that fails metadata-binding verification throws and
@@ -790,7 +791,7 @@ export class Multisig {
 
   private async reconcileProposals(): Promise<Proposal[]> {
     const generation = this.syncGeneration;
-    const candidateIds = new Set(this.proposals.keys());
+    const candidates = new Map(this.proposals);
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
@@ -831,8 +832,8 @@ export class Multisig {
     }
 
     const missCounts = new Map<string, number>();
-    for (const id of candidateIds) {
-      if (reported.has(id) || !this.proposals.has(id)) {
+    for (const [id, snapshot] of candidates) {
+      if (reported.has(id) || this.proposals.get(id) !== snapshot) {
         continue;
       }
       if (this.lastReportedProposalIds.has(id)) {
