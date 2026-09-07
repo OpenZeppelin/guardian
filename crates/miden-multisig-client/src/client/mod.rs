@@ -14,6 +14,8 @@
 //! - `helpers` - Internal GUARDIAN client helpers
 
 mod account;
+#[cfg(test)]
+mod anchor_binding_tests;
 mod delta_history;
 mod helpers;
 mod io;
