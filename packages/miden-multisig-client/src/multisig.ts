@@ -232,12 +232,9 @@ const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 const MAX_SALT_HEX_DIGITS = 64;
 
 /**
- * How many consecutive successful listings may omit a proposal GUARDIAN has
- * never reported to this client before the sync prunes it. One tolerated miss
- * absorbs a read-your-writes lag right after `createProposal` or an
- * `importProposal` that raced execution; a second consecutive omission means
- * GUARDIAN genuinely does not have it as pending (executed, abandoned, or
- * never accepted), and keeping it would pin it as pending forever.
+ * Consecutive successful listings that must omit a cached proposal GUARDIAN
+ * has never reported (a fresh create during read-your-writes lag, or an
+ * offline import) before the sync prunes it.
  */
 const UNREPORTED_LISTING_MISS_LIMIT = 2;
 
@@ -475,12 +472,9 @@ export class Multisig {
    * survive a switch, and the notes embedded in them can only be imported
    * while the old GUARDIAN is still the current client.
    *
-   * Repointing invalidates the sync-reconciliation state: a
-   * {@link syncProposals} still in flight against the previous GUARDIAN is
-   * abandoned (it rejects instead of applying that GUARDIAN's listing), and
-   * the reported-proposal bookkeeping resets so listings from the new
-   * GUARDIAN never prune from, or grant grace based on, what the old one
-   * reported.
+   * Repointing abandons a {@link syncProposals} still in flight (it rejects
+   * without applying its listing) and resets the sync-reconciliation
+   * bookkeeping.
    *
    * @param guardianClient - The new GUARDIAN HTTP client
    */
@@ -747,50 +741,27 @@ export class Multisig {
   }
 
   /**
-   * Sync proposals from the GUARDIAN server.
+   * Sync proposals from the GUARDIAN server, reconciling the local cache to
+   * the response. GUARDIAN reports only pending proposals, so a proposal it
+   * reported on an earlier sync and now omits is pruned immediately. A
+   * proposal it has never reported to this client (a fresh `createProposal`
+   * its read-your-writes has not caught up with, or an offline
+   * `importProposal`) is pruned only after
+   * {@link UNREPORTED_LISTING_MISS_LIMIT} consecutive listings omit it.
+   * Proposals cached after the sync started are not evaluated by it.
    *
-   * The GUARDIAN response is authoritative for the set of pending proposals:
-   * the server only reports proposals whose status is still pending and drops
-   * them once they are executed and canonicalized. The local cache is
-   * therefore reconciled to the response, pruning any proposal GUARDIAN
-   * reported on a previous sync but no longer reports, so a stale proposal
-   * does not linger locally and keep showing as pending forever (e.g. a
-   * co-signer's browser after another signer executed the transaction).
+   * The response is verified in full before the cache or the pruning state
+   * changes; a listing that fails metadata-binding verification throws and
+   * leaves both untouched. Overlapping callers share the same in-flight
+   * promise. A sync that spans a {@link setGuardianClient} repoint rejects
+   * without applying its listing.
    *
-   * A proposal GUARDIAN reported and then stopped reporting is pruned on the
-   * first listing that omits it. A proposal GUARDIAN has never reported to
-   * this client (a `createProposal` GUARDIAN's read-your-writes has not
-   * caught up with, or an `importProposal` from the offline flow) is granted
-   * a bounded grace instead: it survives the first successful listing that
-   * omits it and is pruned once {@link UNREPORTED_LISTING_MISS_LIMIT}
-   * consecutive listings have omitted it, so the creator of an
-   * already-executed proposal converges to the same empty view as every
-   * other signer instead of keeping it pinned as pending forever. Only
-   * proposals already cached when the sync started participate: a proposal
-   * created while a listing was in flight is never counted against by that
-   * older listing.
-   *
-   * The whole response is verified before the cache or the pruning state is
-   * touched: a listing containing a proposal that fails metadata-binding
-   * verification throws and leaves both exactly as they were, so the valid
-   * proposals it carried cannot become cached-but-never-reported entries that
-   * no later sync could prune. Overlapping callers share a single in-flight
-   * sync (they receive the same promise), so a slow sync applied late cannot
-   * prune proposals a newer overlapping sync had just reported. A sync that
-   * spans a {@link setGuardianClient} repoint rejects without applying its
-   * listing, so one GUARDIAN's response is never reconciled against
-   * another's state.
-   *
-   * Nonce-based staleness hiding, for a proposal the account has already
-   * advanced past that GUARDIAN may still briefly report as pending, is
-   * intentionally left to callers' own visible-proposal filter (see the
-   * examples' `filterVisibleProposals`). The Rust client applies a
-   * `proposal.nonce <= account.nonce()` filter directly, but it owns a single
-   * nonce convention end to end; this shared client serves callers that
-   * disagree on what the proposal `nonce` means (some store the pre-execution
-   * account nonce, others the next nonce), so it cannot safely apply that
-   * comparison here and defers it to the caller. This is an intentional
-   * TS/Rust surface difference.
+   * Nonce-based staleness hiding is the caller's job (see the examples'
+   * `filterVisibleProposals`): callers of this shared client disagree on
+   * whether a proposal's `nonce` is the pre-execution or the next account
+   * nonce, so the Rust client's `proposal.nonce <= account.nonce()` filter
+   * cannot be applied here. This is an intentional TS/Rust surface
+   * difference.
    */
   async syncProposals(): Promise<Proposal[]> {
     if (this.syncProposalsInFlight) {
@@ -922,12 +893,9 @@ export class Multisig {
   /**
    * Returns the proposals cached by the most recent {@link syncProposals}
    * call, plus any locally created or imported proposals GUARDIAN has not
-   * reported yet (those are retained for a bounded number of listings, see
-   * {@link syncProposals}).
-   *
-   * This is that sync's reconciled set, not a durable log: proposals GUARDIAN
-   * no longer reports were pruned, so do not treat the result as an
-   * ever-growing history of every proposal ever seen.
+   * reported yet (retained for a bounded number of listings, see
+   * {@link syncProposals}). Not a durable history: proposals GUARDIAN no
+   * longer reports were pruned.
    */
   listProposals(): Proposal[] {
     return Array.from(this.proposals.values());
