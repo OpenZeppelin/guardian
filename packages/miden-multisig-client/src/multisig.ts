@@ -232,9 +232,9 @@ const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 const MAX_SALT_HEX_DIGITS = 64;
 
 /**
- * Consecutive successful listings that must omit a cached proposal GUARDIAN
- * has never reported (a fresh create during read-your-writes lag, or an
- * offline import) before the sync prunes it.
+ * Consecutive successful listings that must omit a guardian-known proposal
+ * not yet listed (a fresh create during read-your-writes lag, or one
+ * orphaned by a GUARDIAN repoint) before the sync prunes it.
  */
 const UNREPORTED_LISTING_MISS_LIMIT = 2;
 
@@ -258,8 +258,14 @@ export class Multisig {
   /** Ids GUARDIAN returned on the most recent sync; these prune immediately when dropped. */
   private lastReportedProposalIds: Set<string> = new Set();
   /**
-   * Consecutive successful listings that omitted a cached proposal GUARDIAN
-   * has never reported; at {@link UNREPORTED_LISTING_MISS_LIMIT} it is pruned.
+   * Ids GUARDIAN is known to hold: acknowledged `createProposal` pushes plus
+   * every listed id. Only these are subject to miss-based pruning; offline
+   * creations and imports GUARDIAN never received are exempt.
+   */
+  private guardianKnownProposalIds: Set<string> = new Set();
+  /**
+   * Consecutive successful listings that omitted a guardian-known proposal
+   * not yet listed; at {@link UNREPORTED_LISTING_MISS_LIMIT} it is pruned.
    */
   private unreportedMissCounts: Map<string, number> = new Map();
   /** Bumped by {@link setGuardianClient}; a sync spanning a bump aborts unapplied. */
@@ -744,17 +750,20 @@ export class Multisig {
    * Sync proposals from the GUARDIAN server, reconciling the local cache to
    * the response. GUARDIAN reports only pending proposals, so a proposal it
    * reported on an earlier sync and now omits is pruned immediately. A
-   * proposal it has never reported to this client (a fresh `createProposal`
-   * its read-your-writes has not caught up with, or an offline
-   * `importProposal`) is pruned only after
+   * proposal GUARDIAN holds but has not listed yet (a fresh `createProposal`
+   * its read-your-writes has not caught up with, or a proposal orphaned by a
+   * {@link setGuardianClient} repoint) is pruned only after
    * {@link UNREPORTED_LISTING_MISS_LIMIT} consecutive listings omit it.
+   * Proposals GUARDIAN never received (an `importProposal`, or a
+   * `createSwitchGuardianProposalOffline`) are not pruned by listings.
    * Proposals cached after the sync started are not evaluated by it.
    *
    * The response is verified in full before the cache or the pruning state
    * changes; a listing that fails metadata-binding verification throws and
-   * leaves both untouched. Overlapping callers share the same in-flight
-   * promise. A sync that spans a {@link setGuardianClient} repoint rejects
-   * without applying its listing.
+   * leaves both untouched. Signatures added to a cached proposal while the
+   * sync was verifying are preserved by its apply. Overlapping callers share
+   * the same in-flight promise. A sync that spans a
+   * {@link setGuardianClient} repoint rejects without applying its listing.
    *
    * Nonce-based staleness hiding is the caller's job (see the examples'
    * `filterVisibleProposals`): callers of this shared client disagree on
@@ -763,7 +772,7 @@ export class Multisig {
    * cannot be applied here. This is an intentional TS/Rust surface
    * difference.
    */
-  async syncProposals(): Promise<Proposal[]> {
+  syncProposals(): Promise<Proposal[]> {
     if (this.syncProposalsInFlight) {
       return this.syncProposalsInFlight;
     }
@@ -782,7 +791,7 @@ export class Multisig {
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
-    const reported = new Map<string, Proposal>();
+    const reported = new Map<string, { delta: (typeof deltas)[number]; verified: Proposal }>();
     for (const delta of deltas) {
       const proposalId = normalizeHexWord(
         computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
@@ -795,7 +804,7 @@ export class Multisig {
         existingProposal?.signatures ?? [],
       );
       await this.verifyProposalMetadataBinding(proposal);
-      reported.set(proposal.id, proposal);
+      reported.set(proposal.id, { delta, verified: proposal });
     }
 
     if (generation !== this.syncGeneration) {
@@ -804,9 +813,20 @@ export class Multisig {
       );
     }
 
-    for (const proposal of reported.values()) {
-      this.proposals.set(proposal.id, proposal);
+    const applied: Proposal[] = [];
+    for (const { delta, verified } of reported.values()) {
+      const current = this.proposals.get(verified.id);
+      applied.push(
+        current === undefined
+          ? verified
+          : factory.fromDelta(delta, verified.id, verified.metadata, current.signatures)
+      );
     }
+    for (const proposal of applied) {
+      this.proposals.set(proposal.id, proposal);
+      this.guardianKnownProposalIds.add(proposal.id);
+    }
+
     const missCounts = new Map<string, number>();
     for (const id of candidateIds) {
       if (reported.has(id) || !this.proposals.has(id)) {
@@ -814,11 +834,16 @@ export class Multisig {
       }
       if (this.lastReportedProposalIds.has(id)) {
         this.proposals.delete(id);
+        this.guardianKnownProposalIds.delete(id);
+        continue;
+      }
+      if (!this.guardianKnownProposalIds.has(id)) {
         continue;
       }
       const misses = (this.unreportedMissCounts.get(id) ?? 0) + 1;
       if (misses >= UNREPORTED_LISTING_MISS_LIMIT) {
         this.proposals.delete(id);
+        this.guardianKnownProposalIds.delete(id);
       } else {
         missCounts.set(id, misses);
       }
@@ -893,9 +918,8 @@ export class Multisig {
   /**
    * Returns the proposals cached by the most recent {@link syncProposals}
    * call, plus any locally created or imported proposals GUARDIAN has not
-   * reported yet (retained for a bounded number of listings, see
-   * {@link syncProposals}). Not a durable history: proposals GUARDIAN no
-   * longer reports were pruned.
+   * reported yet (see {@link syncProposals} for their retention). Not a
+   * durable history: proposals GUARDIAN no longer reports were pruned.
    */
   listProposals(): Proposal[] {
     return Array.from(this.proposals.values());
@@ -924,6 +948,7 @@ export class Multisig {
     const proposal = this.proposalFactory().fromDelta(response.delta, response.commitment, metadata);
     await this.verifyProposalMetadataBinding(proposal);
     this.proposals.set(proposal.id, proposal);
+    this.guardianKnownProposalIds.add(proposal.id);
 
     return proposal;
   }

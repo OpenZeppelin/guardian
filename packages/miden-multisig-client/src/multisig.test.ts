@@ -1428,7 +1428,10 @@ describe('Multisig', () => {
       expect(multisig.listProposals()).toEqual([]);
     });
 
-    it('should prune an imported proposal GUARDIAN never reports after the grace listing', async () => {
+    it('should keep an imported proposal GUARDIAN never lists (offline flow)', async () => {
+      // importProposal is the offline side channel: GUARDIAN may never have
+      // received the proposal (e.g. an offline guardian switch), so listing
+      // omissions must not expire it.
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -1466,8 +1469,61 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ proposals: [] }),
       });
-      expect(await multisig.syncProposals()).toEqual([]);
-      expect(multisig.listProposals()).toEqual([]);
+      const second = await multisig.syncProposals();
+      expect(second.map((p) => p.id)).toEqual([imported.id]);
+      expect(multisig.listProposals().map((p) => p.id)).toEqual([imported.id]);
+    });
+
+    it('should preserve a signature added while the listing was being verified', async () => {
+      // signProposalOffline(A) completing while the sync stalls verifying B
+      // must not be clobbered when the sync applies its pre-signing snapshot
+      // of A.
+      const config = {
+        threshold: 2,
+        signerCommitments: [mockSigner.commitment, '0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config, mockSigner, '0x' + 'a'.repeat(30));
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const [seeded] = await multisig.syncProposals();
+      expect(seeded.signatures).toHaveLength(1);
+
+      let releaseVerify: (() => void) | undefined;
+      vi.mocked(executeForSummaryAt)
+        .mockResolvedValueOnce({
+          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+        } as any)
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              releaseVerify = () =>
+                resolve({
+                  toCommitment: () => ({ toHex: () => '0x' + 'd'.repeat(64) }),
+                } as any);
+            })
+        );
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [pendingDeltaProposal('AQID'), pendingDeltaProposal('AQIDBA==', 2)],
+        }),
+      });
+      const sync = multisig.syncProposals();
+      await vi.waitFor(() => expect(releaseVerify).toBeTruthy());
+
+      await multisig.signProposalOffline('0x' + 'c'.repeat(64));
+
+      releaseVerify!();
+      const synced = await sync;
+      const signedA = synced.find((p) => p.id === '0x' + 'c'.repeat(64));
+      expect(signedA?.signatures).toHaveLength(2);
+      expect(
+        multisig.listProposals().find((p) => p.id === '0x' + 'c'.repeat(64))?.signatures
+      ).toHaveLength(2);
     });
 
     it('should leave the cache and pruning state untouched when a listing fails verification', async () => {
@@ -1615,6 +1671,7 @@ describe('Multisig', () => {
       );
       const syncA = multisig.syncProposals();
       const syncB = multisig.syncProposals();
+      expect(syncB).toBe(syncA);
       await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
 
       // While the listing is in flight, a proposal is created locally (the
@@ -2942,6 +2999,33 @@ describe('Multisig', () => {
         };
       });
     }
+
+    it('keeps the cached offline proposal across listings that cannot include it', async () => {
+      // The current GUARDIAN never received this proposal, so its listings
+      // omit it forever; syncs must not expire it before export/execution.
+      const config = {
+        threshold: 1,
+        signerCommitments: [mockSigner.commitment],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      stubFetchWithDeadCurrentGuardian();
+
+      const exported = await multisig.createSwitchGuardianProposalOffline(
+        NEW_GUARDIAN_ENDPOINT,
+        newGuardianPubkey,
+        { nonce: 7 },
+      );
+
+      mockFetch.mockImplementation(async () => ({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      }));
+      await multisig.syncProposals();
+      const second = await multisig.syncProposals();
+      expect(second.map((p) => p.id)).toEqual([exported.commitment]);
+      expect(multisig.listProposals().map((p) => p.id)).toEqual([exported.commitment]);
+    });
 
     it('creates, signs, and caches the proposal without contacting the current GUARDIAN', async () => {
       const config = {
