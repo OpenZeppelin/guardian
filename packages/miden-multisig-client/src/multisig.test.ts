@@ -1474,6 +1474,85 @@ describe('Multisig', () => {
       expect(multisig.listProposals().map((p) => p.id)).toEqual([imported.id]);
     });
 
+    it('should prune an imported proposal once GUARDIAN acknowledged it via online signing', async () => {
+      // A successful signDeltaProposal response returns GUARDIAN's own copy
+      // of the delta, so the imported proposal is provably guardian-held and
+      // listing omissions fall under the bounded grace instead of the
+      // offline exemption.
+      const config = {
+        threshold: 2,
+        signerCommitments: [mockSigner.commitment, '0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config, mockSigner, '0x' + 'a'.repeat(30));
+
+      const imported = await multisig.importProposal(
+        JSON.stringify({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          commitment: '0x' + 'c'.repeat(64),
+          txSummaryBase64: 'AQID',
+          signatures: [],
+          metadata: {
+            proposalType: 'add_signer',
+            chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+            saltHex: MOCK_SALT_HEX,
+            targetThreshold: 1,
+            targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        })
+      );
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'add_signer',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+              salt: MOCK_SALT_HEX,
+              target_threshold: 1,
+              signer_commitments: ['0x' + 'a'.repeat(64)],
+              description: '',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [
+              {
+                signer_id: mockSigner.commitment,
+                signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+                timestamp: '2024-01-01T01:00:00Z',
+              },
+            ],
+          },
+        }),
+      });
+      await multisig.signProposal(imported.id);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const first = await multisig.syncProposals();
+      expect(first.map((p) => p.id)).toEqual([imported.id]);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      expect(await multisig.syncProposals()).toEqual([]);
+      expect(multisig.listProposals()).toEqual([]);
+    });
+
     it('should preserve a signature added while the listing was being verified', async () => {
       // signProposalOffline(A) completing while the sync stalls verifying B
       // must not be clobbered when the sync applies its pre-signing snapshot

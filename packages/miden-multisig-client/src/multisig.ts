@@ -258,9 +258,10 @@ export class Multisig {
   /** Ids GUARDIAN returned on the most recent sync; these prune immediately when dropped. */
   private lastReportedProposalIds: Set<string> = new Set();
   /**
-   * Ids GUARDIAN is known to hold: acknowledged `createProposal` pushes plus
-   * every listed id. Only these are subject to miss-based pruning; offline
-   * creations and imports GUARDIAN never received are exempt.
+   * Ids GUARDIAN is known to hold: acknowledged `createProposal` pushes,
+   * acknowledged `signProposal` signatures, plus every listed id. Only these
+   * are subject to miss-based pruning; offline creations and imports GUARDIAN
+   * never received are exempt.
    */
   private guardianKnownProposalIds: Set<string> = new Set();
   /**
@@ -755,7 +756,9 @@ export class Multisig {
    * {@link setGuardianClient} repoint) is pruned only after
    * {@link UNREPORTED_LISTING_MISS_LIMIT} consecutive listings omit it.
    * Proposals GUARDIAN never received (an `importProposal`, or a
-   * `createSwitchGuardianProposalOffline`) are not pruned by listings.
+   * `createSwitchGuardianProposalOffline`) are not pruned by listings; an
+   * import graduates to the pruned classes once GUARDIAN acknowledges it
+   * (listed, or a successful online `signProposal`).
    * Proposals cached after the sync started are not evaluated by it.
    *
    * The response is verified in full before the cache or the pruning state
@@ -1889,6 +1892,7 @@ export class Multisig {
     await this.verifyProposalMetadataBinding(signedProposal);
 
     this.proposals.set(signedProposal.id, signedProposal);
+    this.guardianKnownProposalIds.add(signedProposal.id);
 
     return signedProposal;
   }
