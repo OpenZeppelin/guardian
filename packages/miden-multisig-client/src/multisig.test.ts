@@ -1499,6 +1499,75 @@ describe('Multisig', () => {
       expect(freed).toHaveBeenCalledTimes(1);
     });
 
+    /// Issue #409: a cosigner syncing at a later block than the proposer must
+    /// still reproduce the signed summary. Verification therefore re-executes
+    /// at the anchor decoded from the proposal's own metadata — never at this
+    /// client's sync height — and releases that anchor once done.
+    it('should re-execute a pending proposal at the anchor from its metadata, not the sync height (issue #409)', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [
+            {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: {
+                tx_summary: { data: 'AQID' },
+                signatures: [],
+                metadata: {
+                  proposal_type: 'add_signer',
+                  chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+                  salt: MOCK_SALT_HEX,
+                  target_threshold: 1,
+                  signer_commitments: ['0x' + 'a'.repeat(64)],
+                  description: '',
+                },
+              },
+              status: {
+                status: 'pending',
+                timestamp: '2024-01-01T00:00:00Z',
+                proposer_id: '0x' + 'c'.repeat(64),
+                cosigner_sigs: [],
+              },
+            },
+          ],
+        }),
+      });
+
+      // The anchor decoded from this proposal's metadata, pinned to the block
+      // bound into the summary (mock summary blockCommitment is 'b' * 64).
+      const freed = vi.fn();
+      const proposalAnchor = {
+        commitment: () => ({ toHex: () => '0x' + 'b'.repeat(64) }),
+        free: freed,
+        serialize: () => new Uint8Array([9, 9, 9]),
+      };
+      vi.mocked(chainAnchorFromBase64).mockClear();
+      vi.mocked(chainAnchorFromBase64).mockReturnValueOnce(proposalAnchor as never);
+      vi.mocked(executeForSummary).mockClear();
+      vi.mocked(executeForSummaryAt).mockClear();
+
+      const proposals = await multisig.syncProposals();
+      expect(proposals).toHaveLength(1);
+
+      expect(chainAnchorFromBase64).toHaveBeenCalledWith(MOCK_CHAIN_ANCHOR_B64);
+      // Re-executed exactly once, at that decoded anchor object — not a
+      // freshly captured one, and never via the sync-height variant.
+      expect(executeForSummaryAt).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(executeForSummaryAt).mock.calls[0][3]).toBe(proposalAnchor);
+      expect(executeForSummary).not.toHaveBeenCalled();
+      expect(freed).toHaveBeenCalledTimes(1);
+    });
+
     it('should reject non-32-byte signer IDs from GUARDIAN proposals', async () => {
       const config = {
         threshold: 1,
