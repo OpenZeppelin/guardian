@@ -1284,6 +1284,246 @@ describe('Multisig', () => {
   });
 
   describe('syncProposals', () => {
+    function pendingDeltaProposal(txSummaryData: string, nonce = 1) {
+      return {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: txSummaryData },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+            salt: MOCK_SALT_HEX,
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [
+            {
+              signer_id: '0x' + 'a'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+    }
+
+    it('should prune proposals GUARDIAN no longer reports (executed/canonicalized)', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const first = await multisig.syncProposals();
+      expect(first.length).toBe(1);
+
+      // Another signer executed the proposal, so GUARDIAN pruned it and now
+      // returns an empty list. The cache must reconcile to empty rather than
+      // keep returning the stale (still-pending-looking) proposal forever.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const second = await multisig.syncProposals();
+      expect(second).toEqual([]);
+      expect(multisig.listProposals()).toEqual([]);
+    });
+
+    it('should keep proposals GUARDIAN still reports across syncs', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const first = await multisig.syncProposals();
+      expect(first.length).toBe(1);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const second = await multisig.syncProposals();
+      expect(second.length).toBe(1);
+      expect(multisig.listProposals().length).toBe(1);
+    });
+
+    it('should not prune a locally-created proposal GUARDIAN has not reported yet', async () => {
+      // createProposal pushes to GUARDIAN then caches. If GUARDIAN's
+      // read-your-writes lags and the immediately-following sync omits the
+      // just-pushed proposal, it must NOT be evicted: GUARDIAN never reported
+      // it to this client, so it is not a prune candidate.
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: { tx_summary: { data: 'AQID' }, signatures: [] },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+      const created = await multisig.createProposal(1, 'AQID', {
+        proposalType: 'add_signer',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+        saltHex: MOCK_SALT_HEX,
+        targetThreshold: 1,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      });
+      expect(multisig.listProposals().length).toBe(1);
+
+      // GUARDIAN's next getDeltaProposals lags and returns [].
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const synced = await multisig.syncProposals();
+      expect(synced.length).toBe(1);
+      expect(synced[0].id).toBe(created.id);
+      expect(multisig.listProposals().length).toBe(1);
+    });
+
+    it('should leave the cache and pruning state untouched when a listing fails verification', async () => {
+      // A response of [valid, malformed] must not cache the valid proposal
+      // before throwing on the malformed one: a proposal cached that way was
+      // never recorded as reported, so no later sync could ever prune it and
+      // it would show as pending forever (the same shape as issue #404).
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      // The 4-byte summary commits to 0xdd… while the default re-execution
+      // mock reconstructs 0xcc…, so the second proposal fails the binding.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [pendingDeltaProposal('AQID'), pendingDeltaProposal('AQIDBA==', 2)],
+        }),
+      });
+      await expect(multisig.syncProposals()).rejects.toThrow(
+        'metadata does not match tx_summary'
+      );
+      expect(multisig.listProposals()).toEqual([]);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      await expect(multisig.syncProposals()).resolves.toEqual([]);
+    });
+
+    it('should share one in-flight sync between overlapping callers', async () => {
+      // Without dedupe, a stalled sync applied late prunes with a stale view:
+      // sync A fetches [P] and stalls, createProposal(Q) caches Q, sync B
+      // fetches [P, Q] and completes, then A applies and deletes Q. Sharing
+      // the in-flight sync removes the overlap entirely.
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+
+      let releaseListing!: (value: unknown) => void;
+      mockFetch.mockImplementationOnce(
+        () => new Promise((resolve) => { releaseListing = resolve; })
+      );
+      const syncA = multisig.syncProposals();
+      const syncB = multisig.syncProposals();
+      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+      // While the listing is in flight, a proposal is created locally (the
+      // 4-byte summary commits to 0xdd…, distinct from the listing's 0xcc…).
+      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+        toCommitment: () => ({ toHex: () => '0x' + 'd'.repeat(64) }),
+      } as any);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 2,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: { tx_summary: { data: 'AQIDBA==' }, signatures: [] },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'd'.repeat(64),
+        }),
+      });
+      const created = await multisig.createProposal(2, 'AQIDBA==', {
+        proposalType: 'add_signer',
+        chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+        saltHex: MOCK_SALT_HEX,
+        targetThreshold: 1,
+        targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        description: '',
+      });
+
+      releaseListing({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const [resultA, resultB] = await Promise.all([syncA, syncB]);
+      expect(resultB).toBe(resultA);
+      expect(resultA.map((p) => p.id).sort()).toEqual([
+        '0x' + 'c'.repeat(64),
+        '0x' + 'd'.repeat(64),
+      ]);
+      expect(multisig.listProposals().map((p) => p.id)).toContain(created.id);
+
+      // The next sync starts fresh: the reported proposal is pruned once
+      // GUARDIAN drops it, while the never-reported local one survives.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const after = await multisig.syncProposals();
+      expect(after.map((p) => p.id)).toEqual([created.id]);
+    });
+
     it('should sync proposals from GUARDIAN', async () => {
       const config = {
         threshold: 2,

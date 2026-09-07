@@ -248,6 +248,10 @@ export class Multisig {
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
+  /** Ids GUARDIAN returned on the most recent sync; only these are prunable. */
+  private lastReportedProposalIds: Set<string> = new Set();
+  /** Pending sync shared by overlapping {@link syncProposals} callers. */
+  private syncProposalsInFlight?: Promise<Proposal[]>;
 
   constructor(
     account: Account,
@@ -716,11 +720,60 @@ export class Multisig {
 
   /**
    * Sync proposals from the GUARDIAN server.
+   *
+   * The GUARDIAN response is authoritative for the set of pending proposals:
+   * the server only reports proposals whose status is still pending and drops
+   * them once they are executed and canonicalized. The local cache is
+   * therefore reconciled to the response, pruning any proposal GUARDIAN
+   * reported on a previous sync but no longer reports, so a stale proposal
+   * does not linger locally and keep showing as pending forever (e.g. a
+   * co-signer's browser after another signer executed the transaction).
+   *
+   * Only proposals GUARDIAN has actually reported are eligible for pruning. A
+   * proposal that is in the cache but that GUARDIAN has not (yet) returned in
+   * a response is left untouched, so a `createProposal` immediately followed
+   * by a sync survives a GUARDIAN read-your-writes lag that omits the
+   * just-pushed proposal, and an `importProposal` from the offline flow
+   * survives until GUARDIAN first reports it. A proposal is only dropped once
+   * GUARDIAN reported it and then stopped (executed / abandoned).
+   *
+   * The whole response is verified before the cache or the pruning state is
+   * touched: a listing containing a proposal that fails metadata-binding
+   * verification throws and leaves both exactly as they were, so the valid
+   * proposals it carried cannot become cached-but-never-reported entries that
+   * no later sync could prune. Overlapping callers share a single in-flight
+   * sync (they receive the same promise), so a slow sync applied late cannot
+   * prune proposals a newer overlapping sync had just reported.
+   *
+   * Nonce-based staleness hiding, for a proposal the account has already
+   * advanced past that GUARDIAN may still briefly report as pending, is
+   * intentionally left to callers' own visible-proposal filter (see the
+   * examples' `filterVisibleProposals`). The Rust client applies a
+   * `proposal.nonce <= account.nonce()` filter directly, but it owns a single
+   * nonce convention end to end; this shared client serves callers that
+   * disagree on what the proposal `nonce` means (some store the pre-execution
+   * account nonce, others the next nonce), so it cannot safely apply that
+   * comparison here and defers it to the caller. This is an intentional
+   * TS/Rust surface difference.
    */
   async syncProposals(): Promise<Proposal[]> {
+    if (this.syncProposalsInFlight) {
+      return this.syncProposalsInFlight;
+    }
+    const inFlight = this.reconcileProposals().finally(() => {
+      if (this.syncProposalsInFlight === inFlight) {
+        this.syncProposalsInFlight = undefined;
+      }
+    });
+    this.syncProposalsInFlight = inFlight;
+    return inFlight;
+  }
+
+  private async reconcileProposals(): Promise<Proposal[]> {
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
+    const reported = new Map<string, Proposal>();
     for (const delta of deltas) {
       const proposalId = normalizeHexWord(
         computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
@@ -733,9 +786,18 @@ export class Multisig {
         existingProposal?.signatures ?? [],
       );
       await this.verifyProposalMetadataBinding(proposal);
+      reported.set(proposal.id, proposal);
+    }
 
+    for (const proposal of reported.values()) {
       this.proposals.set(proposal.id, proposal);
     }
+    for (const id of this.lastReportedProposalIds) {
+      if (!reported.has(id)) {
+        this.proposals.delete(id);
+      }
+    }
+    this.lastReportedProposalIds = new Set(reported.keys());
 
     return Array.from(this.proposals.values());
   }
@@ -802,7 +864,13 @@ export class Multisig {
   }
 
   /**
-   * List all known proposals
+   * Returns the proposals cached by the most recent {@link syncProposals}
+   * call, plus any locally created or imported proposals GUARDIAN has not
+   * reported yet.
+   *
+   * This is that sync's reconciled set, not a durable log: proposals GUARDIAN
+   * no longer reports were pruned, so do not treat the result as an
+   * ever-growing history of every proposal ever seen.
    */
   listProposals(): Proposal[] {
     return Array.from(this.proposals.values());
