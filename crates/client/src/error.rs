@@ -5,6 +5,11 @@ use thiserror::Error;
 /// A Result type alias for GUARDIAN client operations.
 pub type ClientResult<T> = Result<T, ClientError>;
 
+/// Stable code the server attaches to a replay-protection rejection
+/// (`authentication_replay`, issue #367): the request was correctly signed
+/// but its timestamp did not win the per-signer monotonicity check.
+pub const AUTHENTICATION_REPLAY_CODE: &str = "authentication_replay";
+
 /// Errors that can occur when using the GUARDIAN client.
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -90,6 +95,44 @@ impl ClientError {
             _ => false,
         }
     }
+
+    /// Whether the server classified this error as a replay-protection
+    /// rejection ([`AUTHENTICATION_REPLAY_CODE`]). Safe to retry with a
+    /// fresh timestamp and signature over the identical payload; every
+    /// other authentication failure is terminal and must not be retried.
+    pub fn is_replay_rejection(&self) -> bool {
+        self.guardian_code().as_deref() == Some(AUTHENTICATION_REPLAY_CODE)
+    }
+
+    /// Whether the server marked this error safe to retry: `meta.retryable`
+    /// from the structured details, falling back to the status-code class
+    /// (`ResourceExhausted` rejections happen before any handler runs).
+    pub fn is_retryable(&self) -> bool {
+        if let Some(meta) = self.guardian_meta()
+            && let Some(retryable) = meta.get("retryable").and_then(|v| v.as_bool())
+        {
+            return retryable;
+        }
+        matches!(
+            self,
+            ClientError::Status(status) if status.code() == tonic::Code::ResourceExhausted
+        )
+    }
+
+    /// Server-provided backoff hint: the `retry-after` status metadata
+    /// (decimal seconds), falling back to `meta.retry_after_secs`.
+    /// Unparseable values mean no hint; classification is unaffected.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        if let ClientError::Status(status) = self
+            && let Some(value) = status.metadata().get("retry-after")
+            && let Ok(text) = value.to_str()
+            && let Ok(secs) = text.trim().parse::<u64>()
+        {
+            return Some(std::time::Duration::from_secs(secs));
+        }
+        let secs = self.guardian_meta()?.get("retry_after_secs")?.as_u64()?;
+        Some(std::time::Duration::from_secs(secs))
+    }
 }
 
 #[cfg(test)]
@@ -135,10 +178,97 @@ mod tests {
     }
 
     #[test]
+    fn replay_rejection_is_classified_only_from_the_stable_code() {
+        let replay_details = serde_json::json!({
+            "code": "authentication_replay",
+            "message": "Guardian received this request out of order. Please try again.",
+            "meta": { "retryable": true }
+        })
+        .to_string()
+        .into_bytes();
+        let replay: ClientError = tonic::Status::with_details(
+            tonic::Code::Unauthenticated,
+            "test",
+            replay_details.into(),
+        )
+        .into();
+        assert!(replay.is_replay_rejection());
+        assert!(replay.is_retryable());
+
+        let terminal_details = serde_json::json!({
+            "code": "authentication_failed",
+            "message": "Guardian could not authenticate this request.",
+            "meta": { "retryable": false }
+        })
+        .to_string()
+        .into_bytes();
+        let terminal: ClientError = tonic::Status::with_details(
+            tonic::Code::Unauthenticated,
+            "test",
+            terminal_details.into(),
+        )
+        .into();
+        assert!(!terminal.is_replay_rejection());
+        assert!(!terminal.is_retryable());
+
+        let bare: ClientError =
+            tonic::Status::new(tonic::Code::Unauthenticated, "Replay attack detected").into();
+        assert!(
+            !bare.is_replay_rejection(),
+            "message text must never classify a replay"
+        );
+    }
+
+    #[test]
     fn is_not_found_detects_grpc_not_found_and_legacy_message() {
         let status: ClientError = tonic::Status::new(tonic::Code::NotFound, "x").into();
         assert!(status.is_not_found());
         assert!(ClientError::ServerError("Delta not found for account".into()).is_not_found());
         assert!(!ClientError::ServerError("boom".into()).is_not_found());
+    }
+
+    #[test]
+    fn retry_classification_matches_shared_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/guardian-client/rate-limit-policy.json"
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+
+        for case in fixture["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let grpc = &case["grpc"];
+            let code = tonic::Code::from_i32(grpc["code"].as_i64().unwrap() as i32);
+            let mut status = if case["body"].is_null() {
+                tonic::Status::new(code, "plain failure")
+            } else {
+                tonic::Status::with_details(
+                    code,
+                    "test",
+                    case["body"].to_string().into_bytes().into(),
+                )
+            };
+            if let Some(hint) = grpc["retryAfterMetadata"].as_str() {
+                status.metadata_mut().insert(
+                    "retry-after",
+                    hint.parse().expect("fixture hints are ASCII"),
+                );
+            }
+
+            let err: ClientError = status.into();
+            assert_eq!(
+                err.is_retryable(),
+                case["expected"]["retryable"].as_bool().unwrap(),
+                "retryable mismatch: {name}"
+            );
+            assert_eq!(
+                err.retry_after(),
+                case["expected"]["retryAfterSecs"]
+                    .as_u64()
+                    .map(std::time::Duration::from_secs),
+                "retry hint mismatch: {name}"
+            );
+        }
     }
 }

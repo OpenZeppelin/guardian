@@ -515,7 +515,15 @@ Technical assertions carry verification tags:
 - **[READ]**: Verified against dependency source code in `Cargo.lock`.
 - **[INFERRED]**: Reasoned from protocol specifications.
 
-### A.2 Dependency Versions (from `Cargo.lock`)
+### A.2 Dependency versions used for the original spike
+
+The table below records the historical 0.15 validation environment. After merging
+`main`, the workspace uses its exact-pinned Miden 0.16 RC dependencies. The spike now
+converts locally generated RPC types and implements the 0.16 data-store interfaces.
+The remote-prover live test uses `miden_client::remote_prover::RemoteTransactionProver`
+under `e2e`; `proving` alone enables `miden-tx` and does not depend on `miden-client`.
+Historical live results do not establish compatibility with the current public prover.
+
 
 | Crate | Version | Crate | Version |
 |---|---|---|---|

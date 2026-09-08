@@ -15,6 +15,22 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 2. Cosigners fetch pending deltas, verify details locally, sign the transaction summary, and push signatures back to GUARDIAN.
 3. Once ready, any cosigner builds the final transaction using all cosigner signatures + the GUARDIAN ack, executes it on-chain.
 
+## Miden compatibility
+
+This package's version and Miden's are **not** aligned. Pick the release that
+matches your Miden node:
+
+| This package | Miden protocol |
+|---|---|
+| 0.17.x | 0.16.x (pre-release) |
+| 0.16.x | 0.15.x |
+| 0.15.x | 0.15.x |
+
+Adopting a new Miden line has twice required an irreversible reset of
+Guardian-stored account data, so an upgrade is not a drop-in. Full matrix, the
+breaking changes per line, and what each upgrade does to stored data:
+[MIDEN_COMPATIBILITY.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/MIDEN_COMPATIBILITY.md).
+
 ## Installation
 
 Add the crate to your workspace (already available in this repo). From another project:
@@ -36,7 +52,7 @@ let signer1: Word = /* your RPO Falcon commitment */ Word::default();
 let signer2: Word = Word::default();
 
 let mut client = MultisigClient::builder()
-    .miden_endpoint(Endpoint::new("http://localhost:57291"))
+    .miden_endpoint(Endpoint::try_from("http://localhost:57291")?)
     .guardian_endpoint("http://localhost:50051")
     // Directory where the underlying miden-client SQLite store will live
     .account_dir("/tmp/multisig")
@@ -49,6 +65,93 @@ let account = client.create_account(2, vec![signer1, signer2]).await?;
 println!("Account registered on GUARDIAN endpoint: {}", client.guardian_endpoint());
 # Ok(())
 # }
+```
+
+On a network with a non-zero `verification_base_fee`, a new account needs the
+native fee asset before it can create or execute regular proposals. Send the
+account a note funded by the faucet identified in the block header's
+`fee_parameters.fee_faucet_id`, then consume that note through a
+`consume_notes` proposal. The bootstrap transaction can pay its fee from the
+note it consumes.
+
+## Configuration
+
+Beyond the endpoints and the account directory, the builder carries three
+optional configuration surfaces. The cross-SDK reference, including the
+TypeScript equivalents, is
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md).
+
+### Miden node RPC (`rpc_config`)
+
+`RpcConfig` sets the per-request gRPC deadline and the retry budget for
+idempotent node reads. The policy wraps the node client itself, so every read
+this SDK or the underlying `miden-client` issues (syncs, account, note, and
+block lookups) is covered.
+
+```rust
+use miden_multisig_client::{RpcConfig, RpcRetryPolicy};
+
+let rpc_config = RpcConfig::new()
+    .with_timeout_ms(15_000)?
+    .with_retry_policy(RpcRetryPolicy::new(3));
+
+let mut client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::devnet())
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig")
+    .rpc_config(rpc_config)
+    .generate_key()
+    .build()
+    .await?;
+```
+
+The defaults are a 10-second deadline and two total attempts (one classified,
+jittered retry); `RpcRetryPolicy::new(1)` opts out. Rate limiting and
+transport-shaped connection failures retry. Permanent failures (invalid
+argument, not found, authentication, TLS or certificate problems, invalid
+endpoint) return immediately without consuming the budget, and once the
+budget is exhausted the final upstream error is returned unchanged.
+
+**Transaction submission is never retried** under any configuration: a
+submission whose outcome is unknown could execute twice if re-sent. The same
+policy covers the note transport, where fetches and stream establishment
+retry but note sends are never retried in-call (the client's relay outbox
+re-sends undelivered notes on later syncs).
+
+### Note transport endpoint (`note_transport_endpoint`)
+
+Private notes are relayed through a note transport service that is separate
+from the node RPC. The testnet and devnet presets derive the transport
+endpoint automatically; a custom node endpoint has no derivable transport
+service, so private-note relay stays disabled until this is set explicitly.
+
+```rust
+let mut client = MultisigClient::builder()
+    .miden_endpoint(Endpoint::try_from("https://my-node.internal:57291")?)
+    .note_transport_endpoint("https://my-transport.internal")
+    .guardian_endpoint("http://localhost:50051")
+    .account_dir("/tmp/multisig")
+    .generate_key()
+    .build()
+    .await?;
+```
+
+### Remote prover (`prover_config`)
+
+`ProverConfig` overrides the remote prover endpoint and the proof retry
+policy. Without it, the devnet and testnet presets use their public provers
+and every other endpoint proves locally. A custom URL must be absolute
+HTTP(S) and never falls back to a default endpoint. Remote proving gets two
+total attempts by default and local proving is never retried; retries apply
+only to transient proof failures, so transaction execution, submission, local
+state application, and GUARDIAN calls each run once.
+
+```rust
+use miden_multisig_client::{ProverConfig, ProverRetryPolicy};
+
+let prover_config = ProverConfig::new()
+    .with_url("https://prover.example")?
+    .with_retry_policy(ProverRetryPolicy::new(4));
 ```
 
 ## Core Workflow Examples
@@ -68,6 +171,21 @@ let tx = TransactionType::transfer(recipient, faucet, 1_000);
 // `transfer_with_note_type`. `NoteType` is re-exported from `miden_protocol::note`.
 use miden_protocol::note::NoteType;
 let tx = TransactionType::transfer_with_note_type(recipient, faucet, 1_000, NoteType::Private);
+
+// For a reclaimable and/or timelocked send use `transfer_p2ide` (issue #366):
+// presence of either height creates a P2IDE note instead of a plain P2ID note.
+// `P2ideHeights` uses `NonZeroU32` — the invalid zero height ("no constraint"
+// on-chain) is unrepresentable.
+use std::num::NonZeroU32;
+use miden_multisig_client::P2ideHeights;
+
+let tx = TransactionType::transfer_p2ide(
+    recipient, faucet, 1_000, NoteType::Public,
+    P2ideHeights {
+        reclaim: NonZeroU32::new(500_000), // sender may reclaim from this block on
+        timelock: None,                    // no consume-not-before constraint
+    },
+);
 
 // Proposer creates the delta on GUARDIAN
 let proposal = client.propose_transaction(tx).await?;
@@ -167,7 +285,6 @@ let filter = NoteFilter::by_faucet_min_amount(faucet, 5_000);
 let spendable = client.list_consumable_notes_filtered(filter).await?;
 ```
 
-
 ### Custom Proposal Types
 
 GUARDIAN accepts any non-empty `proposal_type`, so an integration can propose a
@@ -183,13 +300,21 @@ on-chain transaction — the integration owns that recipe and drives execution.
 
 ```rust
 use miden_client::Serializable;
-use miden_multisig_client::{build_p2id_transaction_request, generate_salt};
+use miden_multisig_client::{
+    build_p2id_transaction_request, generate_salt, P2ideHeights,
+};
 use miden_protocol::note::NoteType;
 
 // Producer: build a transaction and propose it under a custom label.
 let salt = generate_salt();
 let mut request = build_p2id_transaction_request(
-    account.inner(), recipient, vec![asset], NoteType::Public, salt, std::iter::empty(),
+    account.inner(),
+    recipient,
+    vec![asset],
+    NoteType::Public,
+    P2ideHeights::default(),
+    salt,
+    std::iter::empty(),
 )?;
 let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
 
@@ -197,16 +322,136 @@ let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").a
 
 // Producer (once threshold is met): bind-check the request, fetch the validated
 // advice, inject it into the request, and submit. `prepare_custom_execution`
-// verifies the request against the signed commitment *before* the GUARDIAN ack.
+// verifies the request against the signed commitment *before* the GUARDIAN ack,
+// re-executing at the proposal's anchored reference block; `submit_transaction`
+// takes the proposal id to execute at that same anchor, since the collected
+// signatures only authorize the summary produced there.
 let advice = client.prepare_custom_execution(&proposal.id, &request.to_bytes()).await?;
 request.advice_map_mut().extend(advice);
-client.submit_transaction(request).await?;
+client.submit_transaction(&proposal.id, request).await?;
 ```
 
 The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches
 the commitment the cosigners signed.
+
+Every exported transaction builder declares the recipe's salt with
+`TransactionRequestBuilder::fee_conversion_salt`. When the request executes,
+`miden-client` derives the native 1/1 conversion info from that execution's
+reference header and commits it into the auth argument. A producer assembling a
+different custom request directly with `TransactionRequestBuilder` must declare
+its salt the same way.
+
+## Delta History
+
+Render the account's confirmed history after recovery. One
+`HistoryPage` per call, newest-first by nonce, with typed note summaries:
+
+```rust
+let mut cursor: Option<String> = None;
+loop {
+    let page = client.delta_history(Some(50), cursor.take()).await?;
+    for entry in &page.entries {
+        // entry.status is HistoryEntryStatus::Canonical; notes carry a
+        // typed tag, visibility, assets, and counterparties.
+        println!("{} at {}", entry.nonce, entry.timestamp);
+    }
+    match page.next_cursor {
+        Some(next) => cursor = Some(next),
+        None => break,
+    }
+}
+```
+
+Only canonical (confirmed) deltas appear — pending proposals live on
+`list_proposals()` — and only transactions pushed through Guardian are
+visible to it.
+
+## Recovering Notes After Device Loss
+
+Normal forward sync cannot see notes that landed behind the store's
+cursors. After `pull_account` on a recovered account, `recover_notes` runs
+the three recovery strategies as one flow — the private-note transport
+drain, the proposal-embedded note import, and the historical public-note
+backfill — and finishes with a normal sync so imported notes are verified
+and ready to consume. The flow is the one public entry point; the
+strategies are internal.
+
+```rust
+client.pull_account(account_id).await?;
+
+// `None` runs every strategy over the full chain and syncs afterwards.
+let report = client.recover_notes(None).await?;
+println!("recovered {} notes", report.imported);
+for problem in &report.problems {
+    println!("step {} did not run: {}", problem.step, problem.reason);
+}
+```
+
+Strategies are individually selectable and the backfill's block range can be
+bounded:
+
+```rust
+use miden_multisig_client::{NoteRecoveryOptions, PublicBackfillOptions};
+
+let report = client
+    .recover_notes(Some(NoteRecoveryOptions {
+        proposal_import: false,
+        backfill: PublicBackfillOptions {
+            from_block: Some(1_690_000u32.into()),
+            ..Default::default()
+        },
+        sync_after: false,
+        ..Default::default()
+    }))
+    .await?;
+```
+
+The combined `NoteRecoveryReport` carries each strategy's own report
+(`transport`, `proposal_import`, `backfill`) untouched; a strategy that
+cannot run at all (GUARDIAN unreachable, chain tip unresolvable, broken
+local store) becomes a `RecoveryStepProblem` entry instead of aborting the
+flow, and `retryable: true` means rerunning the flow — which is idempotent —
+can plausibly recover more. In brief:
+
+- **Transport drain** — rescans the full private-note transport backlog for
+  every tracked tag, regardless of the stored cursor (and without ever
+  regressing it). Bounded by the transport service's retention: a
+  best-effort rescan, **not** a backup.
+- **Proposal import** — rebuilds importable notes from the bytes v2
+  consume-notes proposals embed (validated against the proposals' declared
+  note ids) plus node-fetched inclusion proofs, so it works for private
+  notes too. Per-note `NoteImportOutcome`s; corrupt proposals and notes are
+  isolated as `Invalid` outcomes instead of blocking the rest.
+- **Public backfill** — tag-scoped historical scan (genesis to tip by
+  default) importing discovered public notes with their proofs, never
+  touching the global sync height; cost scales with matches, not range
+  length. Discoveries are screened with the execution-based `NoteScreener`
+  exactly like normal sync, and unscannable sub-ranges are reported in
+  `uncovered` instead of failing the flow.
+
+For the full report semantics see
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md).
+
+### Preserving notes across a guardian switch
+
+Pending proposals do not survive a guardian switch — the new GUARDIAN is
+registered with bare account state — so the notes embedded in the old
+GUARDIAN's pending consume-notes proposals are the one recovery source
+`recover_notes` can no longer reach after the repoint. `execute_proposal`
+runs the proposal-import slice automatically on the switch-guardian path
+(against the old GUARDIAN, before the switch transaction executes),
+best-effort and bounded by a 30s timeout; the transport drain and public
+backfill deliberately do not run there (an intact local store loses
+nothing they rescan), and the offline switch flow skips the import
+entirely (it exists to avoid contacting the GUARDIAN). When repointing a
+client by hand — or before executing an offline switch while the old
+GUARDIAN is still reachable — request the same preservation first:
+
+```rust
+let report = client.preserve_pre_switch_proposal_notes().await;
+```
 
 ## Consume-notes metadata versions
 
@@ -220,8 +465,7 @@ is the `consume_notes_metadata_version` field on the wire.
   advanced past the block, store was wiped, private-note transport
   pruned the blob), verification fails with
   `MultisigError::LegacyConsumeNotesNoteMissing` and the cosigner
-  cannot sign. This is the failure tracked by
-  [issue #229](https://github.com/OpenZeppelin/guardian/issues/229).
+  cannot sign. This is the gap the v2 shape closes.
 - **v2 (self-contained)** — `consume_notes_metadata_version: 2` plus a
   `consume_notes_notes` array carrying base64-serialized `Note` bytes
   aligned by index with `note_ids`. Verification rebuilds the request

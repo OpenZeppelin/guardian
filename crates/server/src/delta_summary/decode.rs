@@ -37,3 +37,29 @@ fn classify_decode_error(err: String) -> &'static str {
         "malformed_tx_summary"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::decode_proposal_metadata;
+
+    /// Keeps `chain_anchor` out of delta metadata and dashboard listings.
+    #[test]
+    fn decode_proposal_metadata_drops_the_chain_anchor() {
+        let payload = json!({
+            "tx_summary": { "data": "AAAA" },
+            "metadata": {
+                "proposal_type": "consume_notes",
+                "note_ids": ["0xabc"],
+                "chain_anchor": "bW9jay1jaGFpbi1hbmNob3I=",
+            }
+        });
+
+        let metadata = decode_proposal_metadata(&payload).expect("metadata decodes");
+        assert_eq!(metadata.proposal_type, "consume_notes");
+
+        let lifted = serde_json::to_value(&metadata).expect("metadata serializes");
+        assert!(lifted.get("chain_anchor").is_none());
+    }
+}

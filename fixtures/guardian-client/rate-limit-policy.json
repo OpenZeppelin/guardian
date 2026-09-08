@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "burst rejection with envelope and hint",
+      "body": {
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests — please try again shortly.",
+        "meta": { "retryable": true, "retry_after_secs": 1 }
+      },
+      "grpc": { "code": 8, "retryAfterMetadata": "1" },
+      "http": { "status": 429, "retryAfterHeader": "1" },
+      "expected": { "retryable": true, "retryAfterSecs": 1 }
+    },
+    {
+      "name": "sustained rejection with envelope and hint",
+      "body": {
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests — please try again shortly.",
+        "meta": { "retryable": true, "retry_after_secs": 60 }
+      },
+      "grpc": { "code": 8, "retryAfterMetadata": "60" },
+      "http": { "status": 429, "retryAfterHeader": "60" },
+      "expected": { "retryable": true, "retryAfterSecs": 60 }
+    },
+    {
+      "name": "carrier hint wins over envelope value",
+      "body": {
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests — please try again shortly.",
+        "meta": { "retryable": true, "retry_after_secs": 60 }
+      },
+      "grpc": { "code": 8, "retryAfterMetadata": "5" },
+      "http": { "status": 429, "retryAfterHeader": "5" },
+      "expected": { "retryable": true, "retryAfterSecs": 5 }
+    },
+    {
+      "name": "unparseable carrier hint falls back to envelope",
+      "body": {
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests — please try again shortly.",
+        "meta": { "retryable": true, "retry_after_secs": 60 }
+      },
+      "grpc": { "code": 8, "retryAfterMetadata": "soon" },
+      "http": { "status": 429, "retryAfterHeader": "soon" },
+      "expected": { "retryable": true, "retryAfterSecs": 60 }
+    },
+    {
+      "name": "unparseable hint with no envelope value means no hint",
+      "body": {
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests — please try again shortly.",
+        "meta": { "retryable": true }
+      },
+      "grpc": { "code": 8, "retryAfterMetadata": "soon" },
+      "http": { "status": 429, "retryAfterHeader": "soon" },
+      "expected": { "retryable": true, "retryAfterSecs": null }
+    },
+    {
+      "name": "empty carrier hint falls back to envelope",
+      "body": {
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests — please try again shortly.",
+        "meta": { "retryable": true, "retry_after_secs": 60 }
+      },
+      "grpc": { "code": 8, "retryAfterMetadata": "" },
+      "http": { "status": 429, "retryAfterHeader": "" },
+      "expected": { "retryable": true, "retryAfterSecs": 60 }
+    },
+    {
+      "name": "scientific notation hint is rejected not coerced",
+      "body": {
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests — please try again shortly.",
+        "meta": { "retryable": true }
+      },
+      "grpc": { "code": 8, "retryAfterMetadata": "1e3" },
+      "http": { "status": 429, "retryAfterHeader": "1e3" },
+      "expected": { "retryable": true, "retryAfterSecs": null }
+    },
+    {
+      "name": "signed and hex hints are rejected not coerced",
+      "body": {
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests — please try again shortly.",
+        "meta": { "retryable": true }
+      },
+      "grpc": { "code": 8, "retryAfterMetadata": "-0" },
+      "http": { "status": 429, "retryAfterHeader": "0x10" },
+      "expected": { "retryable": true, "retryAfterSecs": null }
+    },
+    {
+      "name": "rate limit rejection without envelope classifies by carrier",
+      "body": null,
+      "grpc": { "code": 8, "retryAfterMetadata": "60" },
+      "http": { "status": 429, "retryAfterHeader": "60" },
+      "expected": { "retryable": true, "retryAfterSecs": 60 }
+    },
+    {
+      "name": "paused account is not retryable",
+      "body": {
+        "code": "account_paused",
+        "message": "This account is paused and can't approve transactions right now.",
+        "meta": { "retryable": false }
+      },
+      "grpc": { "code": 9 },
+      "http": { "status": 409 },
+      "expected": { "retryable": false, "retryAfterSecs": null }
+    },
+    {
+      "name": "plain failure without envelope is not retryable",
+      "body": null,
+      "grpc": { "code": 13 },
+      "http": { "status": 500 },
+      "expected": { "retryable": false, "retryAfterSecs": null }
+    }
+  ]
+}

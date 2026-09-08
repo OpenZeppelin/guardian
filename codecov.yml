@@ -19,6 +19,8 @@ comment:
   require_head: true
 
 ignore:
+  - "benchmarks/**"
+  - "crates/server/bench/**"
   - "examples/**"
   - "crates/contracts/**"
   - "tests/**"

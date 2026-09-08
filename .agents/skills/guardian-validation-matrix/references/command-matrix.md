@@ -37,8 +37,10 @@ Code in:
 
 Run:
 ```bash
-cd packages/guardian-client && npm test
-cd packages/guardian-client && npm run build
+cd packages
+npm ci
+npm test -w @openzeppelin/guardian-client
+npm run build -w @openzeppelin/guardian-client
 ```
 
 ## Rust Multisig SDK
@@ -63,8 +65,11 @@ Code in:
 
 Run:
 ```bash
-cd packages/miden-multisig-client && npm test
-cd packages/miden-multisig-client && npm run build
+cd packages
+npm ci
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
+npm run build -w @openzeppelin/miden-multisig-client
 ```
 
 ## Rust Example Surface

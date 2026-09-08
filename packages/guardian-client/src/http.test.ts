@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GuardianHttpClient, GuardianHttpError } from './http.js';
 import type { Signer, ConfigureResponse, StateObject, DeltaObject, DeltaProposalResponse } from './types.js';
@@ -60,6 +61,7 @@ describe('GuardianHttpClient', () => {
     it('should throw GuardianHttpError on non-ok response', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 500,
         statusText: 'Internal Server Error',
         text: async () => 'Server error message',
@@ -77,6 +79,7 @@ describe('GuardianHttpClient', () => {
     it('exposes code and released_at from a GUARDIAN_ACCOUNT_RELEASED envelope', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 409,
         statusText: 'Conflict',
         text: async () =>
@@ -98,6 +101,7 @@ describe('GuardianHttpClient', () => {
     it('exposes code without releasedAt for other envelope errors', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 404,
         statusText: 'Not Found',
         text: async () =>
@@ -152,6 +156,7 @@ describe('GuardianHttpClient', () => {
     it('should throw GuardianHttpError on non-ok response', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 503,
         statusText: 'Service Unavailable',
         text: async () => 'down',
@@ -226,6 +231,52 @@ describe('GuardianHttpClient', () => {
       };
 
       await expect(client.configure(request)).rejects.toThrow('No signer configured');
+    });
+
+    it('retries a configure replay rejection with fresh authentication', async () => {
+      client.setSigner(mockSigner);
+      const signRequest = mockSigner.signRequest;
+      if (!signRequest) {
+        throw new Error('test signer must implement signRequest');
+      }
+      const signRequestMock = vi.mocked(signRequest);
+      signRequestMock.mockImplementation(
+        (_accountId, timestamp) => `0x${timestamp.toString(16).padStart(128, '0')}`
+      );
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          headers: new Headers(),
+          status: 401,
+          statusText: 'Unauthorized',
+          text: async () =>
+            JSON.stringify({
+              code: 'authentication_replay',
+              message: 'Guardian received this request out of order. Please try again.',
+              meta: { retryable: true },
+            }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ success: true, message: 'Account configured' }),
+        });
+
+      await client.configure({
+        accountId: '0x' + 'd'.repeat(30),
+        auth: {
+          MidenFalconRpo: {
+            cosigner_commitments: ['0x' + 'e'.repeat(64)],
+          },
+        },
+        initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const timestamps = mockFetch.mock.calls.map((call) =>
+        Number((call[1].headers as Record<string, string>)['x-timestamp'])
+      );
+      expect(timestamps[1]).toBeGreaterThan(timestamps[0]);
+      expect(signRequestMock).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -497,6 +548,7 @@ describe('GuardianHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 409,
         statusText: 'Conflict',
         text: async () =>
@@ -521,6 +573,7 @@ describe('GuardianHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 404,
         statusText: 'Not Found',
         text: async () =>
@@ -569,6 +622,24 @@ describe('GuardianHttpClient', () => {
       expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('landed');
     });
 
+    it('classifies a retained delta as retained, not abandoned (issue #345)', async () => {
+      // The Guardian gave up verifying and released the account, but the
+      // on-chain outcome is still uncertain: 'retained' means "unlocked
+      // but unresolved" — reporting it as 'abandoned' would wrongly
+      // imply the transaction definitively did not land.
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          serverDelta({
+            status: 'retained',
+            timestamp: '2026-07-14T12:00:00Z',
+            reason: 'retry_exhausted',
+          }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('retained');
+    });
+
     it('classifies a client-abandoned discard as abandoned', async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
@@ -594,6 +665,7 @@ describe('GuardianHttpClient', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 404,
         statusText: 'Not Found',
         text: async () =>
@@ -822,6 +894,136 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  // --- getDeltaHistory (issue #413) -----
+
+  describe('getDeltaHistory', () => {
+    const accountId = '0x' + 'a'.repeat(30);
+
+    const serverPage = {
+      items: [
+        {
+          nonce: 5,
+          status: 'canonical',
+          timestamp: '2026-08-01T12:00:05Z',
+          new_commitment: '0x' + 'c'.repeat(64),
+          input_notes: [],
+          output_notes: [
+            {
+              note_id: '0x' + 'd'.repeat(64),
+              tag: 'p2id',
+              note_type: 'public',
+              assets: [
+                { asset_id: '0x' + 'e'.repeat(30), kind: 'fungible', amount: '100' },
+              ],
+              sender: accountId,
+              recipient: '0x' + 'f'.repeat(30),
+            },
+          ],
+        },
+        {
+          nonce: 4,
+          status: 'canonical',
+          timestamp: '2026-08-01T12:00:04Z',
+          new_commitment: null,
+          input_notes: [],
+          output_notes: [],
+          decode_warnings: [{ section: 'tx_summary', reason: 'malformed_tx_summary' }],
+        },
+      ],
+      next_cursor: 'opaque-cursor',
+    };
+
+    it('returns a camelCase page and maps notes and warnings', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => serverPage,
+      });
+
+      const result = await client.getDeltaHistory(accountId, { limit: 2 });
+
+      expect(result.nextCursor).toBe('opaque-cursor');
+      expect(result.entries).toHaveLength(2);
+      expect(result.entries[0].nonce).toBe(5);
+      expect(result.entries[0].newCommitment).toBe('0x' + 'c'.repeat(64));
+      expect(result.entries[0].decodeWarnings).toEqual([]);
+      expect(result.entries[0].status).toBe('canonical');
+      expect(result.entries[0].outputNotes[0]).toEqual({
+        noteId: '0x' + 'd'.repeat(64),
+        tag: 'p2id',
+        noteType: 'public',
+        assets: [{ assetId: '0x' + 'e'.repeat(30), kind: 'fungible', amount: '100' }],
+        sender: accountId,
+        recipient: '0x' + 'f'.repeat(30),
+      });
+      expect(result.entries[1].newCommitment).toBeUndefined();
+      expect(result.entries[1].decodeWarnings).toEqual([
+        { section: 'tx_summary', reason: 'malformed_tx_summary' },
+      ]);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `http://localhost:3000/delta/history?account_id=${accountId}&limit=2`,
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            'x-pubkey': mockSigner.publicKey,
+          }),
+        })
+      );
+    });
+
+    it('signs the same key set it sends: omitted options stay omitted', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ items: [], next_cursor: null }),
+      });
+
+      const result = await client.getDeltaHistory(accountId);
+
+      expect(result.entries).toEqual([]);
+      expect(result.nextCursor).toBeUndefined();
+      expect(mockFetch).toHaveBeenCalledWith(
+        `http://localhost:3000/delta/history?account_id=${accountId}`,
+        expect.anything()
+      );
+      // The signed payload must byte-match the server's canonical JSON
+      // of its query struct: only account_id when limit/cursor are
+      // omitted, and limit as a string when present.
+      const signRequest = mockSigner.signRequest as ReturnType<typeof vi.fn>;
+      const lastCall = signRequest.mock.calls.at(-1);
+      if (lastCall === undefined) {
+        throw new Error('Expected signRequest to be called');
+      }
+      const authPayload = lastCall[2];
+      expect(authPayload.toCanonicalJson()).toBe(JSON.stringify({ account_id: accountId }));
+    });
+
+    it('passes the cursor through query and signed payload', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ items: [], next_cursor: null }),
+      });
+
+      await client.getDeltaHistory(accountId, { limit: 10, cursor: 'abc123' });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `http://localhost:3000/delta/history?account_id=${accountId}&limit=10&cursor=abc123`,
+        expect.anything()
+      );
+      const signRequest = mockSigner.signRequest as ReturnType<typeof vi.fn>;
+      const lastCall = signRequest.mock.calls.at(-1);
+      if (lastCall === undefined) {
+        throw new Error('Expected signRequest to be called');
+      }
+      const authPayload = lastCall[2];
+      expect(authPayload.toCanonicalJson()).toBe(
+        JSON.stringify({ account_id: accountId, cursor: 'abc123', limit: '10' })
+      );
+    });
+  });
+
   // --- lookupAccountByKeyCommitment -----
 
   describe('lookupAccountByKeyCommitment', () => {
@@ -934,6 +1136,7 @@ describe('GuardianHttpClient', () => {
       client.setSigner(signer);
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 401,
         statusText: 'Unauthorized',
         text: async () => '{"code":"authentication_failed","error":"..."}',
@@ -996,6 +1199,35 @@ describe('GuardianHttpError', () => {
     expect(plain.meta).toBeUndefined();
   });
 
+  describe('retry classification (shared fixture)', () => {
+    interface FixtureCase {
+      name: string;
+      body: Record<string, unknown> | null;
+      http: { status: number; retryAfterHeader?: string };
+      expected: { retryable: boolean; retryAfterSecs: number | null };
+    }
+
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL('../../../fixtures/guardian-client/rate-limit-policy.json', import.meta.url),
+        'utf-8'
+      )
+    ) as { cases: FixtureCase[] };
+
+    it.each(fixture.cases.map((c) => [c.name, c] as const))('%s', (_name, c) => {
+      const body = c.body === null ? 'plain failure' : JSON.stringify(c.body);
+      const error = new GuardianHttpError(
+        c.http.status,
+        'error',
+        body,
+        c.http.retryAfterHeader ?? null
+      );
+
+      expect(error.isRetryable()).toBe(c.expected.retryable);
+      expect(error.retryAfterSecs()).toBe(c.expected.retryAfterSecs ?? undefined);
+    });
+  });
+
   describe('error envelope contract (account-paused path)', () => {
     let client: GuardianHttpClient;
     beforeEach(() => {
@@ -1022,6 +1254,7 @@ describe('GuardianHttpError', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        headers: new Headers(),
         status: 409,
         statusText: 'Conflict',
         text: async () => JSON.stringify(envelope),
@@ -1057,19 +1290,16 @@ describe('GuardianHttpError', () => {
       expect(parsed.delta).toBeUndefined();
     });
 
-    it('surfaces 401 AUTHENTICATION_FAILED with a parseable error envelope', async () => {
+    it('does not retry a terminal 401 authentication_failed rejection', async () => {
       client.setSigner(mockSigner);
       const envelope = {
         code: 'authentication_failed',
-        message: 'Your session has expired. Please sign in again.',
+        message: 'Guardian could not authenticate this request.',
         meta: { retryable: false },
       };
-      // `authentication_failed` triggers the replay-retry path (the specific
-      // "Replay attack" detail is sanitized off the wire in feature 009, so we
-      // retry on the auth code). Use a persistent mock so the retries resolve
-      // and the final attempt throws the typed error.
       mockFetch.mockResolvedValue({
         ok: false,
+        headers: new Headers(),
         status: 401,
         statusText: 'Unauthorized',
         text: async () => JSON.stringify(envelope),
@@ -1088,9 +1318,103 @@ describe('GuardianHttpError', () => {
       expect(e.status).toBe(401);
       expect(e.code).toBe('authentication_failed');
       expect(typeof e.userMessage).toBe('string');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
       const parsed = JSON.parse(e.body);
       expect(parsed.success).toBeUndefined();
       expect(parsed.delta).toBeUndefined();
+    });
+
+    it('retries an authentication_replay rejection with a fresh timestamp and signature', async () => {
+      client.setSigner(mockSigner);
+      const signRequest = mockSigner.signRequest;
+      if (!signRequest) {
+        throw new Error('test signer must implement signRequest');
+      }
+      const signRequestMock = vi.mocked(signRequest);
+      signRequestMock.mockClear();
+      const signatureForTimestamp = (_accountId: string, timestamp: number) =>
+        `0x${timestamp.toString(16).padStart(128, '0')}`;
+      signRequestMock
+        .mockImplementationOnce(signatureForTimestamp)
+        .mockImplementationOnce(signatureForTimestamp);
+      const replayResponse = {
+        ok: false,
+        headers: new Headers(),
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () =>
+          JSON.stringify({
+            code: 'authentication_replay',
+            message: 'Guardian received this request out of order. Please try again.',
+            meta: { retryable: true },
+          }),
+      };
+      const serverResponse = {
+        delta: {
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: { tx_summary: { data: '' }, signatures: [] },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [],
+          },
+        },
+        commitment: '0x' + 'd'.repeat(64),
+      };
+      mockFetch
+        .mockResolvedValueOnce(replayResponse)
+        .mockResolvedValueOnce({ ok: true, json: async () => serverResponse });
+
+      const result = await client.pushDeltaProposal({
+        accountId: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        deltaPayload: { txSummary: { data: '' }, signatures: [] },
+      });
+
+      expect(result.commitment).toBe('0x' + 'd'.repeat(64));
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const timestamps = mockFetch.mock.calls.map((call) =>
+        Number((call[1].headers as Record<string, string>)['x-timestamp'])
+      );
+      const signatures = mockFetch.mock.calls.map(
+        (call) => (call[1].headers as Record<string, string>)['x-signature']
+      );
+      expect(timestamps[1]).toBeGreaterThan(timestamps[0]);
+      expect(signatures[1]).not.toBe(signatures[0]);
+      expect(signRequestMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('gives up after exhausting the bounded replay retry budget', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValue({
+        ok: false,
+        headers: new Headers(),
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () =>
+          JSON.stringify({
+            code: 'authentication_replay',
+            message: 'Guardian received this request out of order. Please try again.',
+            meta: { retryable: true },
+          }),
+      });
+
+      const error = await client
+        .pushDeltaProposal({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          deltaPayload: { txSummary: { data: '' }, signatures: [] },
+        })
+        .catch((e) => e as GuardianHttpError);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      const e = error as GuardianHttpError;
+      expect(e.code).toBe('authentication_replay');
+      expect(e.meta?.retryable).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(3);
     });
   });
 });

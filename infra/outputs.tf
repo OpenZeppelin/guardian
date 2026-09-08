@@ -9,8 +9,17 @@ output "alb_url" {
 }
 
 output "custom_domain_url" {
-  description = "Custom domain URL when configured"
-  value       = local.domain_enabled ? "https://${local.service_fqdn}" : ""
+  description = "Canonical service URL: https when a certificate is configured, http when Terraform manages only the DNS record"
+  value = !local.domain_enabled ? "" : (
+    local.acm_certificate_arn != "" ? "https://${local.service_fqdn}" : (
+      local.route53_zone_id != "" || var.cloudflare_zone_id != "" ? "http://${local.service_fqdn}" : ""
+    )
+  )
+}
+
+output "alias_domain_url" {
+  description = "Migration-only legacy domain URL"
+  value       = local.alias_domain_enabled ? "https://${local.alias_service_fqdn}" : ""
 }
 
 output "grpc_endpoint" {
@@ -170,17 +179,17 @@ output "server_autoscaling_max_capacity" {
 }
 
 output "guardian_rate_burst_per_sec" {
-  description = "Effective Guardian HTTP burst rate limit"
+  description = "Effective Guardian burst rate limit (HTTP and gRPC)"
   value       = local.effective_guardian_rate_burst_per_sec
 }
 
 output "guardian_rate_limit_enabled" {
-  description = "Whether Guardian HTTP rate limiting is enabled"
+  description = "Whether Guardian rate limiting is enabled (HTTP and gRPC)"
   value       = local.effective_guardian_rate_limit_enabled
 }
 
 output "guardian_rate_per_min" {
-  description = "Effective Guardian HTTP sustained rate limit"
+  description = "Effective Guardian sustained rate limit (HTTP and gRPC)"
   value       = local.effective_guardian_rate_per_min
 }
 
@@ -237,4 +246,34 @@ output "server_log_group" {
 output "cluster_log_group" {
   description = "CloudWatch log group for ECS execute command"
   value       = aws_cloudwatch_log_group.cluster.name
+}
+
+output "guardian_metrics_enabled" {
+  description = "Whether the Guardian Prometheus metrics endpoint is enabled in the ECS task"
+  value       = var.guardian_metrics_enabled
+}
+
+output "cloudwatch_metrics_enabled" {
+  description = "Whether the ADOT metrics sidecar, dashboard, and alarms are deployed (cascades off with the metrics endpoint)"
+  value       = local.cloudwatch_metrics_enabled
+}
+
+output "metrics_namespace" {
+  description = "CloudWatch namespace receiving Guardian application metrics"
+  value       = local.cloudwatch_metrics_enabled ? local.metrics_namespace : ""
+}
+
+output "metrics_dashboard_name" {
+  description = "CloudWatch dashboard name for the Guardian server"
+  value       = local.cloudwatch_metrics_enabled ? aws_cloudwatch_dashboard.server[0].dashboard_name : ""
+}
+
+output "metrics_emf_log_group" {
+  description = "CloudWatch log group the ADOT sidecar writes EMF metric events into"
+  value       = local.cloudwatch_metrics_enabled ? aws_cloudwatch_log_group.emf[0].name : ""
+}
+
+output "metrics_missing_alarm_name" {
+  description = "Name of the metrics-pipeline heartbeat alarm for this stack"
+  value       = local.cloudwatch_metrics_enabled ? aws_cloudwatch_metric_alarm.metrics_missing[0].alarm_name : ""
 }

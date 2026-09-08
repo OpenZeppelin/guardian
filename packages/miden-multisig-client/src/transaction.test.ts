@@ -12,7 +12,6 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     withCustomScript: vi.fn().mockReturnThis(),
     withScriptArg: vi.fn().mockReturnThis(),
     extendAdviceMap: vi.fn().mockReturnThis(),
-    withAuthArg: vi.fn().mockReturnThis(),
     build: vi.fn().mockReturnValue({}),
   })),
   Word: {

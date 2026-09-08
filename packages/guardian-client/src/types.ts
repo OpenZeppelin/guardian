@@ -65,6 +65,11 @@ export type DeltaStatus =
   | { status: 'pending'; timestamp: string; proposerId: string; cosignerSigs: CosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
+  /** Candidate the Guardian gave up verifying (retry exhaustion or a
+   * confirmed-diverged observation) but kept for background
+   * reconciliation (issue #345); promoted to `canonical` if the chain
+   * ever shows it landed, dropped after a server-side TTL otherwise. */
+  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' }
   | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ProposalType =
@@ -100,6 +105,17 @@ export interface ProposalMetadata {
   amount?: string;
   /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
   noteType?: string;
+  /**
+   * Base64-serialized Miden `ChainAnchor` pinning the reference block the
+   * proposal's transaction summary was built at. Since protocol 0.16 the
+   * signed summary binds the reference block commitment, so cosigners and the
+   * executor need this anchor to reproduce the summary the proposer signed.
+   */
+  chainAnchor?: string;
+  /** P2IDE reclaim block height (issue #366). Presence of either height means a P2IDE note. */
+  reclaimHeight?: number;
+  /** P2IDE timelock block height (issue #366). */
+  timelockHeight?: number;
 }
 
 export interface DeltaObject {
@@ -196,9 +212,12 @@ export interface AbandonCandidateResponse {
    * `'pending'` while the guardian's worker still has to resolve the
    * abandon intent (the account stays locked until then); `'abandoned'`
    * once the delta is discarded as client-abandoned and the account
-   * released.
+   * released; `'retained'` when the worker had already stopped
+   * verifying the candidate and released the account — unlocked, but
+   * the on-chain outcome is still uncertain: background reconciliation
+   * may promote the delta until its retention TTL expires.
    */
-  state: 'pending' | 'abandoned';
+  state: 'pending' | 'abandoned' | 'retained';
   /**
    * RFC 3339 UTC timestamp of the recorded abandon request. Retries
    * return the original timestamp; absent once resolved.
@@ -206,8 +225,13 @@ export interface AbandonCandidateResponse {
   abandonRequestedAt?: string;
 }
 
-/** Resolution of an abandon request, as observed via the delta feed. */
-export type AbandonStatus = 'waiting' | 'landed' | 'abandoned' | 'unexpected';
+/**
+ * Resolution of an abandon request, as observed via the delta feed.
+ * `'retained'` means the account slot is released but the on-chain
+ * outcome is still uncertain — "unlocked but unresolved", never to be
+ * read as "the transaction did not land".
+ */
+export type AbandonStatus = 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected';
 
 export interface PushDeltaResponse {
   accountId: string;
@@ -230,4 +254,91 @@ export interface LookupAccount {
 /** Response shape for `lookupAccountByKeyCommitment`. */
 export interface LookupResponse {
   accounts: LookupAccount[];
+}
+
+/** Note classification decoded from the on-chain note script. */
+export type HistoryNoteTag = 'p2id' | 'p2ide' | 'pswap' | 'mint' | 'burn' | 'custom';
+
+/** On-chain note visibility from the note metadata. */
+export type HistoryNoteVisibility = 'public' | 'private';
+
+/** Which section of the persisted payload failed to decode. */
+export type HistoryDecodeSection =
+  | 'tx_summary'
+  | 'metadata'
+  | 'input_notes'
+  | 'output_notes'
+  | 'vault'
+  | 'storage';
+
+/**
+ * Delta lifecycle status of a history entry. Only `canonical` is
+ * emitted today; the set widens if the feed gains a status filter.
+ */
+export type HistoryEntryStatus = 'canonical';
+
+/**
+ * One decoded asset inside a history note. `amount` is a base-10
+ * string for fungible assets, absent for non-fungible ones.
+ */
+export interface HistoryNoteAsset {
+  assetId: string;
+  kind: 'fungible' | 'non_fungible';
+  amount?: string;
+}
+
+/**
+ * One decoded note attached to a history entry. `sender` / `recipient`
+ * are account IDs when the note script exposes them.
+ */
+export interface HistoryNote {
+  noteId: string;
+  tag: HistoryNoteTag;
+  /** On-chain visibility from the note metadata. */
+  noteType: HistoryNoteVisibility;
+  assets: HistoryNoteAsset[];
+  sender?: string;
+  recipient?: string;
+}
+
+/**
+ * Why a history entry's note sections are empty: the persisted payload
+ * could not be decoded server-side (schema drift). The entry itself is
+ * still returned.
+ */
+export interface HistoryDecodeWarning {
+  section: HistoryDecodeSection;
+  reason: string;
+}
+
+/** One canonical transaction in an account's history (issue #413). */
+export interface HistoryEntry {
+  nonce: number;
+  /** Delta lifecycle status; always `canonical` today. */
+  status: HistoryEntryStatus;
+  /** RFC 3339 UTC timestamp at which the delta became canonical. */
+  timestamp: string;
+  /**
+   * Account commitment after this transaction; `undefined` when the
+   * stored row predates commitment recording.
+   */
+  newCommitment?: string;
+  inputNotes: HistoryNote[];
+  outputNotes: HistoryNote[];
+  decodeWarnings: HistoryDecodeWarning[];
+}
+
+/** One page of canonical delta history, newest-first by nonce. */
+export interface HistoryPage {
+  entries: HistoryEntry[];
+  /** Opaque resume token; `undefined` when the feed is exhausted. */
+  nextCursor?: string;
+}
+
+/** Options for `getDeltaHistory`. */
+export interface HistoryOptions {
+  /** Page size in `[1, 500]`; server default 50 when omitted. */
+  limit?: number;
+  /** Opaque `nextCursor` from a previous page. */
+  cursor?: string;
 }

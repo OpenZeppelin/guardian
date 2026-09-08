@@ -41,11 +41,17 @@ function isDefinitelyOffline(): boolean {
   return navigator.onLine === false;
 }
 
+/** Best-effort human-readable message from an unknown thrown value. */
+export function errorMessage(err: unknown): string {
+  const message =
+    typeof err === 'object' && err !== null && 'message' in err ? err.message : undefined;
+  return typeof message === 'string' ? message : String(message ?? err ?? '');
+}
+
 /** Classify a codeless transport failure into a {@link ConnectivityCategory}. */
 function classifyTransportError(err: unknown): ConnectivityCategory {
   if (isDefinitelyOffline()) return 'network';
-  const message = (err as { message?: string } | null | undefined)?.message ?? String(err ?? '');
-  const lower = message.toLowerCase();
+  const lower = errorMessage(err).toLowerCase();
   if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('abort')) {
     return 'timeout';
   }
@@ -57,8 +63,7 @@ function classifyTransportError(err: unknown): ConnectivityCategory {
  * semantic Guardian error)? String heuristic — see module docs.
  */
 export function isLikelyNetworkError(err: unknown): boolean {
-  const message = (err as { message?: string } | null | undefined)?.message ?? String(err ?? '');
-  const lower = message.toLowerCase();
+  const lower = errorMessage(err).toLowerCase();
   if (lower.includes('failed to fetch')) return true;
   if (lower.includes('networkerror')) return true;
   if (lower.includes('network error')) return true;

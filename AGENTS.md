@@ -92,6 +92,7 @@ Use this when changing endpoints, payloads, status enums, signatures, or auth be
 - Maintain storage/metadata backend parity (filesystem/postgres where applicable).
 - Preserve canonicalization semantics (pending/candidate/canonical/discarded lifecycle).
 - Default local development/test backend is `filesystem` unless a task explicitly requires Postgres.
+- Put tests compiled only with the `postgres` feature under a module path containing `postgres`. Mark live-database tests ignored; `scripts/test-postgres.sh` discovers the ignored tests using that module-path filter.
 - Keep shared server layers network-agnostic. Put Miden/EVM-specific logic in `src/network/*`, and dispatch from services/builders via account network config rather than embedding network-specific assumptions in shared modules.
 - Secret-bearing fields (keys, tokens, credential URLs, DB/RPC URLs) must use a wrapper from `src/secret/` (`FixedKey<N>`, `SecretBytes`, `SecretString`, `CredentialUrl`) — never bind a raw `String`/`Vec<u8>` to a config field or struct. Read-and-wrap in one expression. See `CONTRIBUTING.md` ("Secrets in server memory").
 
@@ -160,11 +161,16 @@ cargo test -p guardian-server --features e2e
 
 ### TypeScript
 
+TypeScript packages live in an npm workspace under `packages/`. Install once from that directory, then test with `-w`. `miden-multisig-client` links the in-repo `@openzeppelin/guardian-client`; build that package first.
+
 ```bash
-cd packages/guardian-client && npm test
-cd packages/guardian-operator-client && npm test
-cd packages/guardian-evm-client && npm test
-cd packages/miden-multisig-client && npm test
+cd packages
+npm ci
+npm test -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/guardian-operator-client
+npm test -w @openzeppelin/guardian-evm-client
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
 ```
 
 ### Examples (smoke/integration)
@@ -200,7 +206,9 @@ Before finishing, confirm all are true:
    - EVM `/evm/*` change → `packages/guardian-evm-client` in the same PR.
 3. Tests updated where behavior changed.
 4. At least one upstream consumer validated for changed lower-layer behavior.
-5. README/docs touched if external behavior changed.
+5. README/docs touched if external behavior changed. A public API or config
+   field added to a published crate or package means its own `README.md`, not
+   just `docs/`. See §9.
 6. No unrelated file churn.
 
 ## 9) Documentation Impact Check
@@ -210,7 +218,9 @@ Do not update docs mechanically for every code edit. Do check and update the mat
 Common mappings:
 
 - Server or API behavior -> `spec/`, `docs/CONCEPTS.md`, SDK docs
-- Multisig SDK behavior -> `docs/MULTISIG_SDK.md`, `examples/demo`, `examples/web`, `examples/smoke-web`
+- Multisig SDK behavior -> `docs/MULTISIG_SDK.md`, `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`, `examples/demo`, `examples/web`, `examples/smoke-web`
+- Miden version support, cross-line breaking changes, data resets -> `docs/MIDEN_COMPATIBILITY.md` (facts live there; `docs/PRODUCTION.md` keeps operator steps and `docs/TROUBLESHOOTING.md` keeps symptoms)
+- New or changed public API, builder option, or config field on a published crate or package -> that crate's or package's own `README.md`, in the same PR. These READMEs are the crates.io and npm landing pages, so a field documented only in `docs/` is invisible to every consumer who never opens the repo. Published surfaces: `crates/shared`, `crates/client`, `crates/contracts`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/guardian-evm-client`, `packages/guardian-operator-client`, `packages/miden-multisig-client`. Keep relative links out of npm READMEs; they resolve only on GitHub.
 - Operator/dashboard behavior -> `docs/DASHBOARD.md`, `docs/PRODUCTION.md`, `examples/operator-smoke-web`
 - EVM proposal behavior -> `speckit/features/001-evm-proposal-support/`, `packages/guardian-evm-client`, `examples/evm-smoke-web`
 - Deployment, config, infrastructure, or secrets -> `docs/PRODUCTION.md`, `docs/architecture/infra.md`, `docs/runbooks/secrets.md`, `docs/SERVER_AWS_DEPLOY.md`, `infra/README.md`
@@ -228,7 +238,8 @@ When docs are not updated after a visible behavior change, note why in the final
 ## 11) Versioning Policy
 
 - Keep crate/package versions aligned with the active Miden dependency line.
-- Current baseline is Miden `0.14.x`; changes must remain compatible with that line unless migration is explicit.
+- Current baseline is the Miden `0.16` pre-release line (exact-pinned pre-releases, currently the `rc` series) across the Rust workspace and `packages/miden-multisig-client`. Changes must remain compatible with that line unless migration is explicit.
+- Pre-release pins are exact and must move together across both SDKs. The pin pair is authoritative: `@miden-sdk/miden-sdk` bundles a WASM built against specific `miden-protocol`/`miden-standards` versions, and only a matching pair produces identical transaction-summary commitments and auth procedure roots. Read the bundled versions with `strings packages/node_modules/@miden-sdk/miden-sdk/dist/st/assets/miden_client_web.wasm | grep -oE "miden-[a-z-]+-[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?" | sort -u` after running `npm ci` in `packages/`, and pin the Rust workspace to exactly those. Ranges are never acceptable here: semver ranges exclude pre-releases, so `0.16.x` resolves to no published version.
 - If a change requires moving to a new Miden line, treat it as a coordinated release task:
   1. Update workspace/dependency constraints.
   2. Update both multisig SDKs and both base clients as needed.

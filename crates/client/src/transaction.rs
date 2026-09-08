@@ -41,9 +41,9 @@ pub fn tx_summary_commitment_hex(tx_summary: &TransactionSummary) -> String {
 mod tests {
     use super::*;
     use guardian_shared::ToJson;
-    use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::account::{AccountDelta, AccountId};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes};
+    use miden_protocol::account::delta::AccountVaultDelta;
+    use miden_protocol::account::{AccountDelta, AccountId, AccountStoragePatch};
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
     use miden_protocol::{Felt, Word, ZERO};
 
     fn create_test_tx_summary() -> TransactionSummary {
@@ -53,8 +53,9 @@ mod tests {
 
         let account_delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("valid delta");
@@ -64,6 +65,8 @@ mod tests {
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             Word::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         )
     }
 

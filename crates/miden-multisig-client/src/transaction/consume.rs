@@ -22,7 +22,7 @@ pub(crate) async fn fetch_notes_from_store(
         let input_note_record = client
             .get_input_note(*note_id)
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to fetch note: {}", e)))?
+            .map_err(|e| MultisigError::miden_client_with_context("failed to fetch note", e))?
             .ok_or(MultisigError::LegacyConsumeNotesNoteMissing { note_id: *note_id })?;
         let note: Note = input_note_record.try_into().map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to convert note record to note: {:?}", e))
@@ -60,7 +60,7 @@ where
 
     let mut builder = TransactionRequestBuilder::new()
         .input_notes(note_and_args)
-        .auth_arg(salt);
+        .fee_conversion_salt(salt);
 
     for (key, values) in signature_advice {
         builder = builder.extend_advice_map([(key, values)]);

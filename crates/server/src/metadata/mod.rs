@@ -11,6 +11,11 @@ pub mod postgres;
 pub use auth::{Auth, AuthHeader, Credentials, ExtractCredentials};
 pub use network::{MidenNetworkType, NetworkConfig};
 
+/// Per-account replay floor retained when legacy account-scoped state is
+/// expanded to signer-scoped rows. It protects signers that were absent during
+/// migration and are authorized again later.
+pub const LEGACY_ACCOUNT_AUTH_FLOOR: &str = "__legacy_account_floor__";
+
 /// Metadata for a single account
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AccountMetadata {
@@ -20,8 +25,6 @@ pub struct AccountMetadata {
     pub created_at: String,
     pub updated_at: String,
     pub has_pending_candidate: bool,
-    #[serde(default)]
-    pub last_auth_timestamp: Option<i64>,
     /// UTC timestamp of the first pause request that took effect.
     /// `None` when active. First-writer-wins: re-pause does not
     /// update this value.
@@ -171,16 +174,26 @@ pub trait MetadataStore: Send + Sync {
     /// List all account IDs that have pending candidates
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String>;
 
-    /// Atomically update the last authentication timestamp for replay protection.
+    /// Atomically record the last authentication timestamp for replay protection.
     ///
-    /// Uses compare-and-swap semantics: only updates if the new timestamp is strictly
-    /// greater than the current stored timestamp. Returns Ok(true) if updated,
-    /// Ok(false) if the timestamp was not greater (potential replay), or Err on failure.
+    /// Compare-and-swap: records `new_timestamp` only when it is strictly greater
+    /// than the stored value (a missing record accepts any timestamp and creates
+    /// one). Returns `Ok(true)` when recorded, `Ok(false)` when not greater — the
+    /// replay signal, which must never surface as `Err`; `Err` is reserved for
+    /// storage failure. Replay state is owned exclusively by this method: no other
+    /// store operation may read or write it, and it must not affect `updated_at`.
+    ///
+    /// Scope is per `(account_id, signer_commitment)` (issue #367): independent
+    /// authorized cosigners never contend on one timestamp, while a replay of a
+    /// request from the same signer is still rejected: every accepted request
+    /// advances its own signer's record, so a captured request can never win the
+    /// CAS again. A migrated account-level floor is also consulted for signers
+    /// first seen after migration, including signers removed and later restored.
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,
+        signer_commitment: &str,
         new_timestamp: i64,
-        now: &str,
     ) -> Result<bool, String>;
 
     /// Find every account whose Miden cosigner-commitment authorization set

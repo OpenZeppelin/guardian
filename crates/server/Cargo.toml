@@ -32,7 +32,7 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-process = "2.4"
 pin-project-lite = "0.2"
 sha2 = "0.10"
-rand = "0.9"
+rand = { workspace = true }
 rand_chacha = { workspace = true }
 secrecy = { version = "0.10", default-features = false }
 serde = { workspace = true }
@@ -51,7 +51,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 utoipa = { workspace = true }
 dotenvy = "0.15"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 miden-protocol = { workspace = true, features = ["testing"] }
 miden-standards = { workspace = true }
 futures = "0.3"
@@ -72,17 +72,18 @@ diesel-async = { version = "0.5", features = ["postgres", "deadpool"], optional 
 diesel_migrations = { version = "2.2", optional = true }
 
 # Optional dependencies for e2e tests
-miden-client = { workspace = true, features = ["testing"], optional = true }
+miden-client = { workspace = true, features = ["testing", "tonic"], optional = true }
 miden-confidential-contracts = { path = "../contracts", optional = true }
 miden-testing = { workspace = true, optional = true }
 miden-tx = { workspace = true, optional = true }
-miden-remote-prover-client = { workspace = true, optional = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 bytes = "1"
+futures = "0.3"
+miden-protocol = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util"] }
 k256 = { version = "0.13", features = ["ecdsa", "pkcs8", "std"] }
 static_assertions = "1.1"
@@ -106,5 +107,12 @@ postgres = [
     "tokio-postgres-rustls",
 ]
 integration = []
-proving = ["miden-tx", "miden-remote-prover-client"]
-e2e = ["miden-client", "miden-confidential-contracts", "miden-testing", "miden-tx", "proving"]
+proving = ["miden-tx"]
+e2e = [
+    "proving",
+    "miden-client",
+    "miden-confidential-contracts",
+    "miden-confidential-contracts/testing",
+    "miden-testing",
+    "miden-tx",
+]

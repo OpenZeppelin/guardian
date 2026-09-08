@@ -2,6 +2,21 @@
 
 This example shows how to use `@openzeppelin/miden-multisig-client` from a browser. It wires a `MidenClient`, generates a Falcon signer, talks to a Guardian, and drives multisig proposals end to end.
 
+## Setup
+
+Install the shared TypeScript workspace dependencies once from the repository
+root. The example's `dev` and `build` commands rebuild the local Guardian and
+Miden multisig packages automatically.
+
+```bash
+cd packages
+npm ci
+
+cd ../examples/web
+npm ci
+npm run dev
+```
+
 ## How this demo works
 
 1) **Initialize**: create a `MidenClient` pointed at Miden devnet, sync state, and generate a Falcon signer stored in the web keystore.

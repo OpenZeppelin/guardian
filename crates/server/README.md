@@ -22,11 +22,12 @@ let builder = ServerBuilder::new()
 - `GUARDIAN_ENV` - Runtime environment (`prod` uses Secrets Manager-backed ack bootstrap, anything else uses filesystem ack keys)
 - `GUARDIAN_KEYSTORE_PATH` - Keystore path for cryptographic keys (default: `/var/guardian/keystore`)
 - `AWS_REGION` - AWS region used to fetch production ack keys from Secrets Manager
-- `RUST_LOG` - Logging level (default: `info`)
+- `RUST_LOG` - Logging level (default: `info`; hot-path request events require `debug`, e.g. `RUST_LOG=server=debug`. `info` still emits one span-close line per request)
+- `GUARDIAN_LOG_FORMAT` - Log format (`text` default local, `json` for CloudWatch Logs Insights, `compact` single-line; trim + case-insensitive, unknown falls back to `text` with a stderr warn)
 
 #### Rate Limiting
 
-- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable HTTP rate limiting entirely (default: `true`)
+- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable rate limiting on both transports (default: `true`)
 - `GUARDIAN_RATE_BURST_PER_SEC` - Maximum requests per second (burst limit, default: `10`)
 - `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (sustained limit, default: `60`)
 
@@ -73,6 +74,19 @@ GUARDIAN_NETWORK_TYPE=MidenLocal \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-public-keys.json \
 cargo run -p guardian-server --bin server
 ```
+
+`GUARDIAN_NETWORK_TYPE` pins network identity and the default node endpoint.
+To point at a node on another host or port without changing identity, set
+`GUARDIAN_MIDEN_RPC_ENDPOINT`; `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` and
+`GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS` tune the per-request deadline and the
+opt-in read retry budget for eligible non-canonicalization reads
+(submissions are never retried, and canonicalization makes one attempt per
+node read — later passes provide recovery). Embedders using the
+Rust builder can inject the same settings programmatically via
+`ServerBuilder::with_rpc(RpcSettings::from_env(network)?)` (or a directly
+constructed `RpcSettings::Miden(...)`) — the enum leaves room for future
+networks without reshaping the builder surface. See
+[docs/CONFIGURATION.md](../../docs/CONFIGURATION.md).
 
 Deployed example:
 
@@ -200,15 +214,28 @@ The server uses structured logging via the `tracing` crate. Configure logging pr
 
 ```rust
 use server::builder::ServerBuilder;
-use server::logging::LoggingConfig;
+use server::logging::{LoggingConfig, LogFormat};
 use tracing::Level;
 
 ServerBuilder::new()
     .with_logging(LoggingConfig::new(Level::DEBUG))
     // ... other configuration
+
+// JSON output for CloudWatch (flattened fields + span context)
+ServerBuilder::new()
+    .with_logging(LoggingConfig::new(Level::INFO).with_format(LogFormat::Json))
+
+// Env-driven (only Default reads GUARDIAN_LOG_FORMAT; new() is always text)
+ServerBuilder::new()
+    .with_logging(LoggingConfig::default())
 ```
 
-Or use the `RUST_LOG` environment variable to override:
+Env vars (see [docs/CONFIGURATION.md](../../docs/CONFIGURATION.md#logging)):
+
+- `RUST_LOG` — filter (default `info`). Hot-path request events are `debug`, e.g. `RUST_LOG=server=debug`. At `info` each request emits one span-close line with the span's fields and `time.busy` / `time.idle`, on the success and the error path alike.
+- `GUARDIAN_LOG_FORMAT` — `text` (ANSI when TTY), `json` (flattened JSON for CloudWatch), `compact`. Trimmed, case-insensitive; unknown → `text` with a stderr warn. Default `text` locally; ECS task defaults to `json`.
+
+Via env:
 
 ```bash
 # Debug level for entire server
@@ -219,6 +246,9 @@ RUST_LOG=server::jobs::canonicalization=trace cargo run
 
 # Multiple modules
 RUST_LOG=server::jobs=debug,server::services=info cargo run
+
+# JSON output for CloudWatch Logs Insights
+GUARDIAN_LOG_FORMAT=json RUST_LOG=info cargo run --package guardian-server
 ```
 
 ### Rate Limiting
@@ -231,7 +261,7 @@ The HTTP API includes built-in rate limiting to protect against abuse. Rate limi
 - **Enhanced keying**: When `x-pubkey` header or `account_id` query parameter is present, limits are applied per IP+account/signer combination
 - **Two windows**: Burst (per second) and sustained (per minute) limits are enforced independently
 - **Ingress assumption**: GUARDIAN prefers `X-Forwarded-For`, then `X-Real-IP`, then the socket peer IP. Deployments should restrict direct access so only the ingress proxy/load balancer can reach the server
-- **Disable switch**: `GUARDIAN_RATE_LIMIT_ENABLED=false` bypasses HTTP rate limiting entirely
+- **Disable switch**: `GUARDIAN_RATE_LIMIT_ENABLED=false` bypasses rate limiting on both transports
 
 If `GUARDIAN_RATE_LIMIT_ENABLED=false`, the HTTP server skips rate limiting regardless of the other rate-limit settings.
 

@@ -13,8 +13,32 @@
 
 - The signed payload includes a Unix timestamp in milliseconds.
 - The server enforces a maximum clock skew window of **300,000 milliseconds** (5 minutes).
-- The server tracks `last_auth_timestamp` per account; requests with a timestamp less than or equal to the last accepted timestamp are rejected.
-- `last_auth_timestamp` is updated atomically when authentication succeeds.
+- The server tracks `last_auth_timestamp` per `(account, signer commitment)`; a request whose timestamp is not strictly greater than the last accepted timestamp from the same signer is rejected with the dedicated stable code `authentication_replay` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: true`). Independent authorized signers never contend on one timestamp, while a replayed request from the same signer always loses: every accepted request advances that signer's own record.
+- All other authentication failures (clock skew, invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
+- `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds.
+- `POST /configure` enforces the same timestamp skew and replay CAS. A first-time
+  configuration seeds the verified signer's floor once the account metadata row
+  exists; reconfiguration consumes the timestamp before changing stored state.
+  The first-time seed is deliberately post-write because replay state has a
+  foreign key to account metadata. A crash in that narrow interval can leave the
+  new account without a floor, allowing any captured, still-fresh request signed
+  by that signer to initialize the floor and execute. Replaying the configure
+  itself only idempotently re-submits the same state, but the bounded first-write
+  window applies to other signed routes too. Concurrent first configurations are
+  not serialized across different signers; callers must not use `/configure` as
+  a general concurrent state-update mechanism.
+- Migrated stores retain the former account-scoped value as a lower bound for
+  signers first seen later, preventing a removed signer from regaining a replay
+  window when it is authorized again.
+- Clients generate strictly increasing timestamps per instance (`max(now_ms, previous + 1)`) and retry only `authentication_replay`, bounded, with a fresh timestamp, recomputed digest, and fresh signature over the identical payload on each attempt. Terminal authentication failures are never retried.
+- During a mixed server/client rollout, a replay CAS reported under the older
+  authentication code—or received by a client without replay-specific retry
+  handling—can surface as a terminal 401. Current clients retry only
+  `authentication_replay` and never retry `authentication_failed`.
+- HTTP `/configure` failures use the standard API error envelope
+  (`{ code, message, meta }`), not `ConfigureResponse` with `success: false`.
+  Direct HTTP consumers that inspect the old error body must migrate with the
+  server rollout. The shared protobuf response fields remain for gRPC.
 
 ### Miden Request Signing
 
@@ -131,7 +155,13 @@ gRPC uses `NetworkConfig::{miden, evm}`.
 - `{ "status": "pending", "timestamp": string, "proposer_id": string, "cosigner_sigs": CosignerSignature[] }`
 - `{ "status": "candidate", "timestamp": string, "retry_count": number }`
 - `{ "status": "canonical", "timestamp": string }`
-- `{ "status": "discarded", "timestamp": string }`
+- `{ "status": "retained", "timestamp": string, "reason": "retry_exhausted" | "diverged" }` —
+  a candidate the worker gave up verifying, kept for background
+  reconciliation (issue #345): promoted to `canonical` if the chain ever
+  shows it landed, dropped after a server-side TTL otherwise. `reason`
+  is omitted when not recorded.
+- `{ "status": "discarded", "timestamp": string, "reason": "client_abandoned" }` —
+  `reason` is omitted for discards without a recorded reason.
 
 ### Proposal Payloads
 
@@ -148,6 +178,8 @@ Miden delta proposals use:
 `metadata.proposal_type` is required and must be a non-empty string, but its value is **not** restricted to a fixed set: the server accepts any label (issue #266). The first-party multisig operations use `add_signer`, `remove_signer`, `change_threshold`, `update_procedure_threshold`, `switch_guardian`, `consume_notes`, and `p2id`; any other label is accepted and surfaced verbatim. Clients that do not model a given label bucket it as `custom` while preserving the original string for display. The server makes no security decision based on `proposal_type` — integrity comes from the tx_summary/state-commitment check, the cosigner threshold, and the GUARDIAN ack. Restricting which types an account may submit is a policy-layer concern, not a core-server one.
 
 `p2id` metadata carries `recipient_id`, `faucet_id`, `amount`, and an optional `note_type` (`"public"` or `"private"`, issue #322). Clients emit `note_type` only when the note is private; an absent field means public, which keeps proposals created before the field existed valid. The value is part of the signed metadata: verifiers rebuild the transaction from it, so a tampered `note_type` fails the tx_summary commitment check.
+
+`p2id` metadata may additionally carry `reclaim_height` and/or `timelock_height` (issue #366): absolute `u32` block heights that make the proposal create a P2IDE note instead of a plain P2ID note (`reclaim_height` lets the sender reclaim an unconsumed note from that block on; `timelock_height` blocks consumption before that block). Presence of either field selects P2IDE; both absent means plain P2ID, which keeps pre-existing proposals valid. `0` is rejected because it is the on-chain encoding for "no constraint". Like `note_type`, the heights are part of the signed metadata and a tampered value fails the tx_summary commitment check.
 
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
 
@@ -230,11 +262,19 @@ EVM proposal response:
 
 ### Rate Limiting
 
-- HTTP endpoints are rate limited by client IP.
-- Burst limits are applied per IP and endpoint path.
-- Sustained limits are applied per IP and per IP+account/signer when available.
-- Client IP detection prefers `X-Forwarded-For`, then `X-Real-IP`, then the socket peer IP.
-- Exceeded limits return `429 Too Many Requests` and include `Retry-After`.
+- Both transports are rate limited by client IP, metered from one store.
+- Burst limits are applied per IP and endpoint, where the endpoint is the
+  HTTP path or the gRPC method. HTTP paths and gRPC method names differ, so
+  a burst bucket is never shared across transports.
+- Sustained limits are applied per IP alone, so HTTP and gRPC calls from one
+  client draw on the same allowance, and per IP+account/signer when available.
+- Client IP detection prefers the **rightmost** `X-Forwarded-For` entry (the
+  one the nearest proxy appended; any prefix is client-supplied and ignored),
+  then `X-Real-IP`, then the socket peer IP.
+- Exceeded limits return `429 Too Many Requests` with `Retry-After` on HTTP,
+  and `RESOURCE_EXHAUSTED` with a `retry-after` metadata key (ASCII decimal
+  seconds) on gRPC. Both carry the same `rate_limit_exceeded` error envelope,
+  including `meta.retry_after_secs`.
 
 ### Request Size Limits
 
@@ -265,9 +305,12 @@ component schemas.
 | client | `POST /delta` | signed headers | Push a signed single-key delta |
 | client | `GET /delta` | signed headers | Fetch the delta at a nonce |
 | client | `GET /delta/since` | signed headers | Merged delta since a nonce |
+| client | `GET /delta/history` | signed headers | Paginated canonical delta history with decoded note summaries |
 | client | `GET /state` | signed headers | Latest canonical state |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
 | client | `GET /pubkey` | public | ACK public key / commitment |
+| client | `GET /status` | public | Server liveness, version, environment, uptime |
+| client | `GET /` | public | Alias of `GET /status` |
 | client | `POST /delta/proposal` | signed headers | Create a multisig proposal |
 | client | `GET /delta/proposal` | signed headers | List pending proposals |
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
@@ -309,14 +352,28 @@ is built with the `evm` feature.
 
 Semantics not captured by the OpenAPI shapes:
 
-- **Pagination.** Paginated dashboard endpoints return
-  `{ items, next_cursor }`; `limit` defaults to 50 and is capped at 500
-  (`invalid_limit` outside `[1, 500]`). Cursors are opaque and signed;
-  tampered/stale cursors return `invalid_cursor`. Per-account feeds key
-  the cursor on immutable fields (`nonce`, `(nonce, commitment)`) and are
-  fully stable; cross-account feeds order by `status_timestamp` /
+- **Pagination.** Paginated endpoints (the dashboard feeds and the
+  client `GET /delta/history`) return `{ items, next_cursor }`; `limit`
+  defaults to 50 and is capped at 500 (`invalid_limit` outside
+  `[1, 500]`). Cursors are opaque and signed, scoped to the issuing
+  endpoint; tampered/stale/cross-endpoint cursors return
+  `invalid_cursor`. Per-account feeds key the cursor on immutable
+  fields (`nonce`, `(nonce, commitment)`) and are fully stable;
+  cross-account feeds order by `status_timestamp` /
   `originating_timestamp` and MAY skip or repeat an entry whose timestamp
   is bumped mid-traversal (FR-005).
+- **`GET /delta/history`.** Canonical deltas only, newest-first by nonce. Each
+  entry carries an explicit `status` (always `canonical` today; the closed set
+  widens if the feed gains a `status=` filter) and decoded notes carry
+  `note_type` (`public` / `private`) from the on-chain note metadata, with
+  input/output note summaries decoded server-side from the stored
+  `TransactionSummary`. An entry whose payload cannot be decoded is
+  still returned, with empty note sections and a `decode_warnings`
+  item. Read-only: served while the account is paused. Only
+  transactions pushed through Guardian appear — history of
+  transactions the account executed elsewhere is not visible to it.
+  EVM-configured accounts are rejected with `unsupported_for_network`,
+  like the other Miden delta APIs.
 - **`/state/lookup`.** An empty `accounts` list is a successful response,
   not a 404 — distinguishing "no account" from "wrong key" would leak
   account presence to non-key-holders. Authentication is proof-of-possession
@@ -356,6 +413,7 @@ Stable error codes include:
 - `commitment_mismatch`
 - `invalid_commitment`
 - `authentication_failed`
+- `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))
 - `authorization_failed`
 - `invalid_input`
 - `storage_error`
@@ -404,6 +462,11 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `GetDeltaProposal(GetDeltaProposalRequest) -> GetDeltaProposalResponse`
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
+- `GetDeltaHistory(GetDeltaHistoryRequest) -> GetDeltaHistoryResponse`
+
+Every gRPC method is rate limited from the same store as the HTTP surface;
+see [Rate Limiting](#rate-limiting) for the keying rules and the rejection
+shape.
 
 `GetAccountByKeyCommitment` mirrors the HTTP `GET /state/lookup` route. Authentication is carried in gRPC metadata (`x-pubkey`, `x-signature`, `x-timestamp`) and signed under the **Lookup Request Signing** format. Errors propagate as `tonic::Status` via the structured `GuardianError` mapping (`InvalidInput → INVALID_ARGUMENT`, `AuthenticationFailed → UNAUTHENTICATED`, `StorageError → INTERNAL`); the response contains a `repeated AccountRef accounts` field, with empty list as the success-with-no-matches signal.
 
@@ -468,7 +531,9 @@ behavior.
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |
 | `guardian_canonicalization_fast_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_fast_run_duration_seconds` | histogram | — |
-| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`) |
+| `guardian_canonicalization_reconcile_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
+| `guardian_canonicalization_reconcile_run_duration_seconds` | histogram | — |
+| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |
 | `guardian_canonicalization_pass_accounts` | gauge | — |
@@ -479,8 +544,8 @@ behavior.
 | `guardian_operator_auth_challenges_total` | counter | `outcome` |
 | `guardian_operator_auth_verifications_total` | counter | `outcome` |
 | `guardian_operator_sessions_started_total` | counter | — |
-| `guardian_rate_limit_rejections_total` | counter | `limit_type` (`burst`/`sustained`) |
-| `guardian_deltas` | gauge | `status` (`candidate`/`canonical`/`discarded`) |
+| `guardian_rate_limit_rejections_total` | counter | `limit_type` (`burst`/`sustained`), `transport` (`http`/`grpc`) |
+| `guardian_deltas` | gauge | `status` (`candidate`/`canonical`/`retained`/`discarded`) |
 | `guardian_proposals_in_flight` | gauge | — |
 | `guardian_accounts` | gauge | — |
 | `guardian_accounts_created_total` | counter | `kind` (`miden`/`evm`) |
@@ -489,8 +554,9 @@ behavior.
 | `process_*` (CPU, RSS, fds, start time) | standard | — |
 
 Durations use seconds with explicit buckets from 1ms to 10s, except
-`guardian_canonicalization_run_duration_seconds` and
-`guardian_canonicalization_fast_run_duration_seconds`, which use extended
+`guardian_canonicalization_run_duration_seconds`,
+`guardian_canonicalization_fast_run_duration_seconds` and
+`guardian_canonicalization_reconcile_run_duration_seconds`, which use extended
 buckets up to 5 minutes, and
 `guardian_canonicalization_candidate_age_seconds` which spans 1 second
 to 24 hours so stuck candidates stay visible. The

@@ -11,6 +11,8 @@ import type {
   DeltaProposalRequest,
   DeltaProposalResponse,
   ExecutionDelta,
+  HistoryOptions,
+  HistoryPage,
   LookupResponse,
   PubkeyResponse,
   PushDeltaResponse,
@@ -26,6 +28,7 @@ import type {
   ServerAbandonCandidateResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
+  ServerHistoryPage,
   ServerLookupResponse,
   ServerProposalsResponse,
   ServerPubkeyResponse,
@@ -37,6 +40,7 @@ import type {
 import {
   fromServerConfigureResponse,
   fromServerDeltaObject,
+  fromServerHistoryPage,
   fromServerLookupResponse,
   fromServerStateObject,
   toServerConfigureRequest,
@@ -149,10 +153,13 @@ export class GuardianHttpError extends Error {
    */
   public readonly releasedAt: string | null;
 
+  private readonly headerRetryAfterSecs?: number;
+
   constructor(
     public readonly status: number,
     public readonly statusText: string,
-    public readonly body: string
+    public readonly body: string,
+    retryAfterHeader?: string | null
   ) {
     // Only the parsed, user-safe message is folded into Error.message; the
     // raw body (which may carry backend/proxy internals) stays on the `body`
@@ -165,7 +172,37 @@ export class GuardianHttpError extends Error {
     this.userMessage = parsed?.message;
     this.meta = parsed?.meta;
     this.releasedAt = parsed?.meta.releasedAt ?? null;
+    this.headerRetryAfterSecs = parseRetryAfterSeconds(retryAfterHeader);
   }
+
+  /**
+   * Whether the server marked this error safe to retry: `meta.retryable`
+   * from the envelope, falling back to the status class (429 rejections
+   * happen before any handler runs). Mirrors the Rust client's
+   * `ClientError::is_retryable`.
+   */
+  isRetryable(): boolean {
+    return this.meta?.retryable ?? this.status === 429;
+  }
+
+  /**
+   * Server-provided backoff hint in seconds: the `Retry-After` header,
+   * falling back to `meta.retryAfterSecs`. Unparseable values mean no
+   * hint. Mirrors the Rust client's `ClientError::retry_after`.
+   */
+  retryAfterSecs(): number | undefined {
+    return this.headerRetryAfterSecs ?? this.meta?.retryAfterSecs;
+  }
+}
+
+// Decimal digits only, mirroring the Rust client's `parse::<u64>()`: no
+// signs, exponents, hex, or empty strings (`Number('')` is 0).
+function parseRetryAfterSeconds(header: string | null | undefined): number | undefined {
+  if (typeof header !== 'string') return undefined;
+  const trimmed = header.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const secs = Number(trimmed);
+  return Number.isSafeInteger(secs) ? secs : undefined;
 }
 
 /**
@@ -322,8 +359,12 @@ export class GuardianHttpClient {
    * {@link abandonCandidate}: `'waiting'` while the quarantine runs,
    * `'landed'` if the transaction landed after all (the delta
    * canonicalized), `'abandoned'` once the delta is discarded as
-   * client-abandoned and the account released, `'unexpected'` for any
-   * state no abandon flow produces (including a missing delta).
+   * client-abandoned and the account released, `'retained'` when the
+   * guardian stopped verifying and released the account but the
+   * on-chain outcome is still uncertain (reconciliation may promote the
+   * delta until its retention TTL expires — sync and check chain before
+   * replacing it), `'unexpected'` for any state no abandon flow
+   * produces (including a missing delta).
    */
   async abandonStatus(accountId: string, nonce: number): Promise<AbandonStatus> {
     let delta: DeltaObject;
@@ -340,6 +381,12 @@ export class GuardianHttpClient {
         return 'waiting';
       case 'canonical':
         return 'landed';
+      // The Guardian gave up verifying and released the account (issue
+      // #345): unlocked, but unresolved — deliberately distinct from
+      // 'abandoned', which would wrongly imply the transaction did not
+      // land.
+      case 'retained':
+        return 'retained';
       case 'discarded':
         return delta.status.reason === 'client_abandoned' ? 'abandoned' : 'unexpected';
       default:
@@ -409,6 +456,33 @@ export class GuardianHttpClient {
     return fromServerDeltaObject(server);
   }
 
+  /**
+   * Fetch one page of the account's canonical delta history
+   * (issue #413), newest-first by nonce, with decoded input/output
+   * note summaries. Pass `options.cursor` from a previous page's
+   * `nextCursor` to resume; an absent `nextCursor` on the result means
+   * the feed is exhausted. Read-only: served while the account is
+   * paused. Only transactions pushed through Guardian appear.
+   */
+  async getDeltaHistory(accountId: string, options: HistoryOptions = {}): Promise<HistoryPage> {
+    // Signed payload and query string must carry the same values: the
+    // server signs the canonical JSON of its query struct, where limit
+    // stays a string and omitted parameters are omitted keys.
+    const requestPayload: Record<string, string> = { account_id: accountId };
+    if (options.limit !== undefined) {
+      requestPayload.limit = options.limit.toString();
+    }
+    if (options.cursor !== undefined) {
+      requestPayload.cursor = options.cursor;
+    }
+    const params = new URLSearchParams(requestPayload);
+    const response = await this.fetchAuthenticated(`/delta/history?${params}`, {
+      method: 'GET',
+    }, accountId, requestPayload);
+    const server = (await response.json()) as ServerHistoryPage;
+    return fromServerHistoryPage(server);
+  }
+
   private async fetch(path: string, init: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const response = await fetch(url, {
@@ -421,7 +495,12 @@ export class GuardianHttpClient {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new GuardianHttpError(response.status, response.statusText, body);
+      throw new GuardianHttpError(
+        response.status,
+        response.statusText,
+        body,
+        response.headers.get('Retry-After')
+      );
     }
 
     return response;
@@ -494,15 +573,16 @@ export class GuardianHttpClient {
         },
       });
     } catch (err) {
-      // Replay rejections (stale timestamp) are transient: retry once with a
-      // fresh timestamp. The specific "Replay attack" detail is now sanitized
-      // off the wire (feature 009), so branch on the stable auth code instead.
-      // Retrying a genuine auth failure is harmless — one extra attempt that
-      // also fails — and only happens when a retry budget remains.
+      // Replay rejections are transient: the request was correctly signed
+      // but lost the server's per-signer timestamp CAS. Retry with a fresh
+      // timestamp and signature, branching only on the dedicated
+      // `authentication_replay` code (issue #367); terminal authentication
+      // failures (invalid signature, clock outside the skew window) are
+      // never retried.
       if (
         retries > 0 &&
         err instanceof GuardianHttpError &&
-        err.code === 'authentication_failed'
+        err.code === 'authentication_replay'
       ) {
         await new Promise((resolve) => setTimeout(resolve, 50));
         return this.fetchAuthenticated(path, init, accountId, requestPayload, retries - 1);

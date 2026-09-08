@@ -135,7 +135,7 @@ pub async fn get_account_snapshot(
                 amount: a.amount().to_string(),
             }),
             Asset::NonFungible(a) => {
-                let key_word = a.vault_key().to_word();
+                let key_word = a.id().to_word();
                 non_fungible.push(DashboardVaultNonFungibleEntry {
                     faucet_id: a.faucet_id().to_hex(),
                     vault_key: (&key_word).into_hex(),
@@ -205,7 +205,6 @@ mod tests {
             created_at: "2026-05-11T00:00:00Z".to_string(),
             updated_at: "2026-05-11T00:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,

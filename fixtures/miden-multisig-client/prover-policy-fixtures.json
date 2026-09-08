@@ -1,0 +1,321 @@
+{
+  "version": 5,
+  "attemptBudgets": [
+    { "input": null, "normalized": 2 },
+    { "input": 0, "normalized": 1 },
+    { "input": 1, "normalized": 1 },
+    { "input": 2, "normalized": 2 },
+    { "input": 5, "normalized": 5 }
+  ],
+  "endpoints": [
+    {
+      "input": " https://prover.example ",
+      "valid": true,
+      "canonical": "https://prover.example/"
+    },
+    {
+      "input": "http://127.0.0.1:50051",
+      "valid": true,
+      "canonical": "http://127.0.0.1:50051/"
+    },
+    { "input": "", "valid": false },
+    { "input": "   ", "valid": false },
+    { "input": "/relative/prover", "valid": false },
+    { "input": "local", "valid": false },
+    { "input": "ftp://prover.example", "valid": false },
+    { "input": "https://", "valid": false }
+  ],
+  "selections": [
+    {
+      "default": "local",
+      "customUrl": null,
+      "selected": "local"
+    },
+    {
+      "default": "local",
+      "customUrl": "https://prover.example/",
+      "selected": "custom"
+    },
+    {
+      "default": "remote",
+      "customUrl": "https://prover.example/",
+      "selected": "custom"
+    }
+  ],
+  "classifications": [
+    {
+      "name": "nested unavailable",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "code": "Unavailable", "message": "service unavailable" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "deadline exceeded",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "code": "DeadlineExceeded", "message": "deadline exceeded" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "resource exhausted",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "code": "ResourceExhausted", "message": "capacity exhausted" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "cancelled timeout",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "code": "Cancelled", "message": "Timeout expired" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "observed nested cancelled timeout",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        {
+          "code": "Cancelled",
+          "message": "code: 'The operation was cancelled', message: \"Timeout expired\", source: tonic::transport::Error(Transport, TimeoutExpired(()))"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "cancelled",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "code": "Cancelled", "message": "The operation was cancelled" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http 408",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "status": 408, "message": "Request Timeout" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http 429",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "status": 429, "message": "Too Many Requests" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http 502",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "status": 502, "message": "Bad Gateway" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http 503",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "status": 503, "message": "Service Unavailable" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http 504",
+      "chain": [
+        { "message": "failed to prove transaction" },
+        { "status": 504, "message": "Gateway Timeout" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened http 408",
+      "chain": [
+        { "message": "failed to prove transaction: http status 408" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened http 429",
+      "chain": [
+        { "message": "failed to prove transaction: http 429" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened http 502",
+      "chain": [
+        { "message": "failed to prove transaction: status: 502" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened http 503",
+      "chain": [
+        { "message": "failed to prove transaction: http status 503" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened http 504",
+      "chain": [
+        { "message": "failed to prove transaction: http 504" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened http 400 beats timeout text",
+      "chain": [
+        { "message": "failed to prove transaction: http status 400 after upstream timeout" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "flattened permanent http status beats transient http status",
+      "chain": [
+        { "message": "upstream http 503 followed by http status 400" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "http success status permits connection reset fallback",
+      "chain": [
+        { "status": 200, "message": "connection reset by peer" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened http success status permits connection reset fallback",
+      "chain": [
+        { "message": "http status 200 after connection reset by peer" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http status requires an exact numeric token",
+      "chain": [
+        { "message": "upstream status 5031" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "http 400 beats timeout text",
+      "chain": [
+        { "status": 400, "message": "invalid request after upstream timeout" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "flattened timeout",
+      "chain": [
+        { "message": "failed to prove transaction: Timeout expired" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened io timeout",
+      "chain": [
+        { "message": "failed to prove transaction: I/O timeout" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened connection reset",
+      "chain": [
+        { "message": "failed to prove transaction: connection reset by peer" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "flattened broken pipe",
+      "chain": [
+        { "message": "failed to prove transaction: broken pipe" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "unknown with nested io timeout",
+      "chain": [
+        { "code": "Unknown", "message": "failed to prove transaction" },
+        { "message": "transport I/O timeout" }
+      ],
+      "transient": true
+    },
+    {
+      "name": "observed flattened unknown io timeout",
+      "chain": [
+        {
+          "message": "transaction proving failed: failed to prove transaction: code: 'Unknown error', message: \"connection error: desc = \\\"i/o timeout\\\"\""
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "generic connection error is permanent",
+      "chain": [
+        { "message": "failed to prove transaction: connection error" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "known permanent beats nested text",
+      "chain": [
+        { "code": "InvalidArgument", "message": "invalid proof" },
+        { "message": "previous transport timeout" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "internal beats nested timeout",
+      "chain": [
+        { "code": "Internal", "message": "prover internal failure" },
+        { "message": "nested I/O timeout" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "outer transient inner permanent",
+      "chain": [
+        { "code": "Unavailable", "message": "service unavailable" },
+        { "code": "InvalidArgument", "message": "invalid proof" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "outer permanent inner transient",
+      "chain": [
+        { "code": "InvalidArgument", "message": "invalid proof" },
+        { "code": "Unavailable", "message": "service unavailable" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "structured unknown without transient evidence",
+      "chain": [
+        { "code": "Unknown", "message": "transaction kernel assertion failed" }
+      ],
+      "transient": false
+    },
+    {
+      "name": "unknown",
+      "chain": [
+        { "message": "transaction kernel assertion failed" }
+      ],
+      "transient": false
+    }
+  ],
+  "delays": [
+    { "retryIndex": 0, "unitRandom": 0.0, "delayMs": 375 },
+    { "retryIndex": 0, "unitRandom": 0.5, "delayMs": 500 },
+    { "retryIndex": 1, "unitRandom": 0.5, "delayMs": 1000 },
+    { "retryIndex": 2, "unitRandom": 0.5, "delayMs": 2000 },
+    { "retryIndex": 4, "unitRandom": 0.999, "delayMs": 8000 },
+    { "retryIndex": 20, "unitRandom": 0.0, "delayMs": 8000 }
+  ]
+}

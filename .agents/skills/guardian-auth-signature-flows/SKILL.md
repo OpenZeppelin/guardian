@@ -62,13 +62,15 @@ Default targeted checks:
 ```bash
 cargo test -p guardian-client
 cargo test -p guardian-server
-cd packages/guardian-client && npm test
+cd packages
+npm ci
+npm test -w @openzeppelin/guardian-client
 ```
 
 Expand when the auth or signature change crosses into multisig execution:
 
 - `cargo test -p miden-multisig-client`
-- `cd packages/miden-multisig-client && npm test`
+- `cd packages && npm run build -w @openzeppelin/guardian-client && npm test -w @openzeppelin/miden-multisig-client`
 - `smoke-test-rust-multisig-sdk`
 - `smoke-test-ts-multisig-sdk`
 

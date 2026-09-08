@@ -1,5 +1,7 @@
 //! Payload types for multisig transaction proposals.
 
+use std::num::NonZeroU32;
+
 use guardian_shared::{DeltaSignature, ProposalSignature, ToJson};
 use miden_protocol::note::NoteType;
 use miden_protocol::transaction::TransactionSummary;
@@ -7,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::keystore::{KeyManager, proposal_public_key_hex};
 use crate::procedures::ProcedureName;
+use crate::proposal::P2ideHeights;
 
 /// Metadata for multisig transaction proposals.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -40,6 +43,19 @@ pub struct ProposalMetadataPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_type: Option<String>,
 
+    /// P2IDE reclaim block height (issue #366). Presence of either height
+    /// means the proposal creates a P2IDE note; omitted when unset so
+    /// plain-P2ID payloads keep the pre-#366 wire shape. `NonZeroU32`
+    /// enforces the documented 1..=u32::MAX range at the serde boundary:
+    /// a wire `0` ("no constraint" on-chain) fails deserialization instead
+    /// of silently rebuilding an unconstrained note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_height: Option<NonZeroU32>,
+
+    /// P2IDE timelock block height (issue #366).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timelock_height: Option<NonZeroU32>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_signatures: Option<u64>,
 
@@ -62,6 +78,14 @@ pub struct ProposalMetadataPayload {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
+
+    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
+    /// proposal's transaction summary was built at. Since protocol 0.16 the
+    /// signed summary binds the reference block commitment, so cosigners and
+    /// the executor need this anchor to reproduce the summary the proposer
+    /// signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_anchor: Option<String>,
 }
 
 /// Complete payload for a multisig transaction proposal.
@@ -154,7 +178,8 @@ impl ProposalPayload {
 
     /// Sets the metadata for P2ID payment transfers. `note_type` is written to
     /// the wire only when it is private, so public payloads keep the legacy
-    /// shape (issue #322).
+    /// shape (issue #322). The P2IDE heights are written only when set, so
+    /// plain-P2ID payloads keep the pre-#366 wire shape (issue #366).
     pub fn with_payment_metadata(
         mut self,
         recipient_id: String,
@@ -162,6 +187,7 @@ impl ProposalPayload {
         amount: u64,
         salt: String,
         note_type: NoteType,
+        heights: P2ideHeights,
     ) -> Self {
         self.metadata = Some(ProposalMetadataPayload {
             proposal_type: "p2id".to_string(),
@@ -169,6 +195,8 @@ impl ProposalPayload {
             faucet_id: Some(faucet_id),
             amount: Some(amount.to_string()),
             note_type: (note_type != NoteType::Public).then(|| note_type.to_string()),
+            reclaim_height: heights.reclaim,
+            timelock_height: heights.timelock,
             salt: Some(salt),
             ..Default::default()
         });
@@ -256,6 +284,16 @@ impl ProposalPayload {
             .metadata
             .get_or_insert_with(ProposalMetadataPayload::default);
         metadata.required_signatures = Some(required_signatures as u64);
+        self
+    }
+
+    /// Sets the base64-serialized chain anchor pinning the proposal's
+    /// reference block.
+    pub fn with_chain_anchor(mut self, chain_anchor_b64: String) -> Self {
+        let metadata = self
+            .metadata
+            .get_or_insert_with(ProposalMetadataPayload::default);
+        metadata.chain_anchor = Some(chain_anchor_b64);
         self
     }
 
@@ -349,6 +387,7 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Public,
+            P2ideHeights::default(),
         );
 
         let meta = payload.metadata.unwrap();
@@ -375,6 +414,7 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Public,
+            P2ideHeights::default(),
         );
 
         let json = serde_json::to_value(payload.metadata.unwrap()).unwrap();
@@ -394,11 +434,79 @@ mod tests {
             1000,
             "0xsalt".to_string(),
             NoteType::Private,
+            P2ideHeights::default(),
         );
 
         let json = serde_json::to_string(&payload.metadata.unwrap()).unwrap();
         let parsed: ProposalMetadataPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.note_type, Some("private".to_string()));
+    }
+
+    /// Unset heights must be omitted on the wire so plain-P2ID payloads keep
+    /// the pre-#366 shape (issue #366).
+    #[test]
+    fn with_payment_metadata_omits_unset_heights_on_wire() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_payment_metadata(
+            "0xrecipient".to_string(),
+            "0xfaucet".to_string(),
+            1000,
+            "0xsalt".to_string(),
+            NoteType::Public,
+            P2ideHeights::default(),
+        );
+
+        let json = serde_json::to_value(payload.metadata.unwrap()).unwrap();
+        assert!(json.get("reclaim_height").is_none());
+        assert!(json.get("timelock_height").is_none());
+    }
+
+    #[test]
+    fn with_payment_metadata_round_trips_p2ide_heights() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_payment_metadata(
+            "0xrecipient".to_string(),
+            "0xfaucet".to_string(),
+            1000,
+            "0xsalt".to_string(),
+            NoteType::Public,
+            P2ideHeights {
+                reclaim: NonZeroU32::new(12345),
+                timelock: NonZeroU32::new(700),
+            },
+        );
+
+        let json = serde_json::to_string(&payload.metadata.unwrap()).unwrap();
+        let parsed: ProposalMetadataPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.reclaim_height, NonZeroU32::new(12345));
+        assert_eq!(parsed.timelock_height, NonZeroU32::new(700));
+    }
+
+    /// A wire `0` height must fail at the serde boundary (issue #366):
+    /// `0` encodes "no constraint" on-chain, so accepting it would
+    /// silently rebuild an unconstrained note. `NonZeroU32` makes the
+    /// value unrepresentable past this point.
+    #[test]
+    fn payment_metadata_rejects_zero_height_on_wire() {
+        let json = r#"{"proposal_type":"p2id","reclaim_height":0}"#;
+        let err = serde_json::from_str::<ProposalMetadataPayload>(json)
+            .expect_err("zero reclaim_height must fail deserialization");
+        assert!(
+            err.to_string().contains("nonzero"),
+            "unexpected error: {err}"
+        );
+
+        let json = r#"{"proposal_type":"p2id","timelock_height":0}"#;
+        serde_json::from_str::<ProposalMetadataPayload>(json)
+            .expect_err("zero timelock_height must fail deserialization");
     }
 
     #[test]
@@ -488,6 +596,38 @@ mod tests {
         assert_eq!(meta.target_threshold, Some(2));
         assert!(meta.signer_commitments.is_empty());
         assert!(meta.salt.is_none());
+    }
+
+    /// The chain anchor rides the wire as `chain_anchor` and is omitted when
+    /// unset, so pre-anchor payload shapes stay byte-identical.
+    #[test]
+    fn with_chain_anchor_round_trips_and_is_omitted_when_unset() {
+        let payload = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_add_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string())
+        .with_chain_anchor("bW9jay1jaGFpbi1hbmNob3I=".to_string());
+
+        let json = serde_json::to_value(payload.metadata.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            json.get("chain_anchor").and_then(|v| v.as_str()),
+            Some("bW9jay1jaGFpbi1hbmNob3I=")
+        );
+
+        let parsed: ProposalMetadataPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            parsed.chain_anchor.as_deref(),
+            Some("bW9jay1jaGFpbi1hbmNob3I=")
+        );
+
+        let without_anchor = ProposalMetadataPayload {
+            proposal_type: "add_signer".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&without_anchor).unwrap();
+        assert!(json.get("chain_anchor").is_none());
     }
 
     // ---------- consume_notes metadata v1/v2 round-trip (issue #229) ----------

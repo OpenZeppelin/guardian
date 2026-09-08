@@ -1,9 +1,11 @@
 use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
 
-/// Integration test for verifying we can connect to Miden devnet
-/// To run: cargo test --package guardian-server --test miden_rpc_integration_test
+/// Integration test for verifying we can connect to Miden devnet.
+///
+/// Run this ignored test with `GUARDIAN_NETWORK_TESTS=1`.
 #[tokio::test]
+#[ignore = "requires live Miden devnet access; run with GUARDIAN_NETWORK_TESTS=1"]
 async fn test_fetch_account_commitment_from_devnet() {
     if std::env::var("GUARDIAN_NETWORK_TESTS").as_deref() != Ok("1") {
         return;

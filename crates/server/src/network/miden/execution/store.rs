@@ -5,18 +5,19 @@
 //! and discarded when the execution reaches a terminal state.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
+use miden_protocol::Word;
 use miden_protocol::account::{
     Account, AccountId, PartialAccount, StorageMapKey, StorageMapWitness, StorageSlotContent,
 };
-use miden_protocol::asset::{AssetVaultKey, AssetWitness};
+use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{Note, NoteScript, NoteScriptRoot};
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
-use miden_protocol::{MastForest, Word};
-use miden_tx::{DataStore, DataStoreError, MastForestStore, TransactionMastStore};
+use miden_tx::{
+    DataStore, DataStoreError, LoadedMastForest, MastForestStore, TransactionMastStore,
+};
 
 /// Everything the executor may ask for during one transaction execution.
 ///
@@ -118,7 +119,7 @@ impl DataStore for ExecutionDataStore {
         &self,
         account_id: AccountId,
         vault_root: Word,
-        vault_keys: BTreeSet<AssetVaultKey>,
+        vault_keys: BTreeSet<AssetId>,
     ) -> impl FutureMaybeSend<Result<Vec<AssetWitness>, DataStoreError>> {
         async move {
             self.ensure_own_account(account_id)?;
@@ -176,7 +177,7 @@ impl DataStore for ExecutionDataStore {
 }
 
 impl MastForestStore for ExecutionDataStore {
-    fn get(&self, procedure_hash: &Word) -> Option<Arc<MastForest>> {
+    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
         self.mast_store.get(procedure_hash)
     }
 }

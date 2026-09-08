@@ -25,6 +25,13 @@ pub enum AbandonState {
     /// The worker already resolved the abandon: the delta is
     /// `Discarded { reason: ClientAbandoned }` and the account released.
     Abandoned,
+    /// The worker already stopped actively verifying this candidate and
+    /// released the account slot (issue #345). Unlike `Abandoned`, the
+    /// on-chain outcome remains UNCERTAIN: background reconciliation may
+    /// still promote the delta to `canonical` until its retention TTL
+    /// expires. Nothing is locked, so there is nothing left to abandon —
+    /// but callers must not read this as "the transaction did not land".
+    Retained,
 }
 
 impl AbandonState {
@@ -32,6 +39,7 @@ impl AbandonState {
         match self {
             Self::Pending => "pending",
             Self::Abandoned => "abandoned",
+            Self::Retained => "retained",
         }
     }
 }
@@ -117,6 +125,22 @@ pub async fn abandon_candidate(
                 abandon_requested_at: None,
             });
         }
+        DeltaStatus::Retained { .. } => {
+            // The worker already gave up on this candidate and released
+            // the account (issue #345): there is nothing left to unlock.
+            // Reported as `retained`, NOT `abandoned` — the on-chain
+            // outcome is still uncertain, and the row stays in the
+            // recovery net: if the transaction actually landed it is
+            // promoted later (the same landed-always-wins rule every
+            // abandon carries), and a resubmission at this nonce
+            // supersedes it either way.
+            return Ok(AbandonCandidateResult {
+                account_id,
+                nonce,
+                state: AbandonState::Retained,
+                abandon_requested_at: None,
+            });
+        }
         _ => {
             return Err(GuardianError::DeltaNotFound { account_id, nonce });
         }
@@ -144,7 +168,11 @@ pub async fn abandon_candidate(
 
     let verify_result = state
         .network_client
-        .verify_commitment(&account_id, &expected_commitment)
+        .verify_commitment(
+            &account_id,
+            &expected_commitment,
+            crate::network::RpcReadMode::Configured,
+        )
         .await;
     match verify_result {
         Ok(StateVerification::Match) => {
@@ -197,12 +225,23 @@ pub async fn abandon_candidate(
         }),
         AbandonIntent::NotCandidate => {
             // Resolved between our read and the write: classify precisely.
+            // A row the worker retained meanwhile (issue #345) reports
+            // `retained`, matching the direct retained arm above — the
+            // account is already released, but the on-chain outcome is
+            // still uncertain.
             let delta = pull_delta_at_nonce(&resolved.storage, &account_id, nonce).await?;
             if delta.status.is_client_abandoned() {
                 Ok(AbandonCandidateResult {
                     account_id,
                     nonce,
                     state: AbandonState::Abandoned,
+                    abandon_requested_at: None,
+                })
+            } else if delta.status.is_retained() {
+                Ok(AbandonCandidateResult {
+                    account_id,
+                    nonce,
+                    state: AbandonState::Retained,
                     abandon_requested_at: None,
                 })
             } else {
@@ -232,7 +271,6 @@ mod tests {
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: true,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,
@@ -476,6 +514,28 @@ mod tests {
 
         let result = abandon_candidate(&t.state, t.params).await.unwrap();
         assert_eq!(result.state, AbandonState::Abandoned);
+        assert!(result.abandon_requested_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_abandon_retained_candidate_reports_retained() {
+        // A retained row (issue #345) means the worker already gave up
+        // and released the account: the abandon resolves immediately
+        // instead of 404ing on a row the client can plainly see — but as
+        // `retained`, never `abandoned`: the on-chain outcome is still
+        // uncertain and reconciliation may yet promote the delta.
+        let network = MockNetworkClient::new();
+        let t = setup(network);
+        let mut retained = create_candidate_delta(&t.params.account_id, 1);
+        retained.status = DeltaStatus::retained(
+            "2024-11-14T12:05:00Z".to_string(),
+            crate::delta_object::RetainReason::RetryExhausted,
+        );
+        let _ = t.storage.clone().with_pull_delta(Ok(retained));
+
+        let result = abandon_candidate(&t.state, t.params).await.unwrap();
+        assert_eq!(result.state, AbandonState::Retained);
+        assert_eq!(result.state.as_str(), "retained");
         assert!(result.abandon_requested_at.is_none());
     }
 

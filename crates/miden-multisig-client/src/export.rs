@@ -6,6 +6,7 @@
 //!
 
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 
 use guardian_shared::FromJson;
 use guardian_shared::SignatureScheme;
@@ -91,6 +92,16 @@ pub struct ExportedMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_type: Option<String>,
 
+    /// P2IDE reclaim block height (issue #366). Presence of either height
+    /// means the proposal creates a P2IDE note; absent => plain P2ID
+    /// (pre-#366 exports). `NonZeroU32`: a `0` fails deserialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_height: Option<NonZeroU32>,
+
+    /// P2IDE timelock block height (issue #366).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timelock_height: Option<NonZeroU32>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_ids_hex: Vec<String>,
 
@@ -112,6 +123,13 @@ pub struct ExportedMetadata {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
+
+    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
+    /// tx_summary was built at. Mirrors
+    /// `ProposalMetadataPayload::chain_anchor`; required to verify or execute
+    /// the imported proposal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_anchor: Option<String>,
 }
 
 impl ExportedProposal {
@@ -126,6 +144,8 @@ impl ExportedProposal {
             faucet_id_hex: self.metadata.faucet_id_hex.clone(),
             amount: self.metadata.amount,
             note_type: self.metadata.note_type.clone(),
+            reclaim_height: self.metadata.reclaim_height,
+            timelock_height: self.metadata.timelock_height,
             note_ids_hex: self.metadata.note_ids_hex.clone(),
             consume_notes_metadata_version: self.metadata.consume_notes_metadata_version,
             consume_notes_notes: self
@@ -144,6 +164,7 @@ impl ExportedProposal {
                 .iter()
                 .map(|signature| signature.signer_commitment.clone())
                 .collect(),
+            chain_anchor_b64: self.metadata.chain_anchor.clone(),
         }
     }
 
@@ -285,6 +306,8 @@ impl ExportedProposal {
             faucet_id_hex: proposal.metadata.faucet_id_hex.clone(),
             amount: proposal.metadata.amount,
             note_type: proposal.metadata.note_type.clone(),
+            reclaim_height: proposal.metadata.reclaim_height,
+            timelock_height: proposal.metadata.timelock_height,
             note_ids_hex: proposal.metadata.note_ids_hex.clone(),
             consume_notes_metadata_version: proposal.metadata.consume_notes_metadata_version,
             consume_notes_notes: proposal
@@ -296,6 +319,7 @@ impl ExportedProposal {
             new_guardian_pubkey_hex: proposal.metadata.new_guardian_pubkey_hex.clone(),
             new_guardian_endpoint: proposal.metadata.new_guardian_endpoint.clone(),
             target_procedure: proposal.metadata.target_procedure.clone(),
+            chain_anchor: proposal.metadata.chain_anchor_b64.clone(),
         };
 
         Ok(Self {
@@ -459,9 +483,12 @@ mod tests {
     use guardian_shared::ToJson;
     use miden_client::Serializable;
     use miden_protocol::account::AccountId;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, Word, ZERO};
 
     use super::*;
@@ -494,12 +521,15 @@ mod tests {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: vec![],
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
             new_guardian_pubkey_hex: None,
             new_guardian_endpoint: None,
             target_procedure: None,
+            chain_anchor: None,
         };
 
         let json = serde_json::to_string(&meta).expect("should serialize");
@@ -706,8 +736,9 @@ mod tests {
         let account_id = AccountId::from_hex(&valid_account_id()).expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("valid delta");
@@ -716,7 +747,17 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new_unchecked(7), ZERO, ZERO, ZERO]),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([
+                ZERO,
+                ZERO,
+                ZERO,
+                Felt::new_unchecked(7),
+                ZERO,
+                ZERO,
+                ZERO,
+            ]),
         )
     }
 

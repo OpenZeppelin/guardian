@@ -24,11 +24,20 @@ Three decisions when running Guardian locally:
 ## Prerequisites
 
 - Rust toolchain pinned by [`rust-toolchain.toml`](../rust-toolchain.toml).
-- Node 18+ if you will run any TS examples or packages.
+- Node 24+ (bundles npm 11, which the `packages/` workspace lockfile requires) if you will run any TS examples or packages.
 - Docker if you will use `docker-compose.*.yml`.
 - A Miden node — required for almost every flow. Either point at a
   Miden Devnet endpoint or run one locally; configure via
-  `GUARDIAN_NETWORK_TYPE`.
+  `GUARDIAN_NETWORK_TYPE`. A node on a non-default host or port (for
+  example a sidecar container) is reachable via
+  `GUARDIAN_MIDEN_RPC_ENDPOINT` without changing the network type; see
+  [CONFIGURATION.md](./CONFIGURATION.md) for that and the optional
+  `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` / `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS`
+  read-retry knobs. The node's Miden line must match the workspace
+  baseline (currently the 0.16 pre-release line; devnet already runs
+  the 0.16 node) — a mismatched node is rejected at the RPC boundary
+  (see
+  [Troubleshooting](./TROUBLESHOOTING.md#client-and-node-disagree-about-the-network-version)).
 
 ## Environment file
 
@@ -97,6 +106,39 @@ The Postgres path runs SQL migrations on startup
 wires `PostgresAuditor` so admin actions land in the `admin_actions` table.
 Pool sizing is controlled by `GUARDIAN_DB_POOL_MAX_SIZE` and
 `GUARDIAN_METADATA_DB_POOL_MAX_SIZE`.
+
+### Postgres-backed tests
+
+The `guardian-server` tests that need a live database (metadata replay state,
+delta storage fencing, the audit append-only trigger, and the lease, session,
+and challenge coordination stores) stay `#[ignore]` and run through one script:
+
+```bash
+POSTGRES_PASSWORD=guardian docker compose -f docker-compose.postgres.yml up -d postgres
+./scripts/test-postgres.sh
+```
+
+Name the `postgres` service explicitly: an unqualified `up -d` also builds and
+starts the server image, which these tests do not use. `POSTGRES_PASSWORD` is
+required even when only the database service is selected, because Compose
+interpolates the whole file; the script's default connection URL expects
+`guardian`. If your Compose volume was initialised with a different password,
+pass a matching `DATABASE_URL` instead of relying on the default.
+
+The suite drops and recreates the `public` schema before the first test and
+re-applies every migration from empty, so no run inherits state from an earlier
+one and there is no cleanup step. It creates `guardian_test` if it is missing,
+and it refuses to run against a database whose name does not end in `_test`, so
+a `DATABASE_URL` still exported from a Path B session cannot lose your
+development data. Point it elsewhere with:
+
+```bash
+DATABASE_URL=postgres://user:pass@host:5432/guardian_test ./scripts/test-postgres.sh
+```
+
+Run one suite at a time per server: the reset wipes the shared test database.
+Execution is serial because one test reverts the newest migration for the
+duration of its own run.
 
 The local compose Postgres uses no TLS, so omit `sslmode` (plaintext). To
 exercise certificate verification locally, run a TLS-enabled Postgres with a
@@ -167,7 +209,7 @@ The deploy script builds with `postgres,evm` when the EVM stack is requested
 ## Verifying the server is up
 
 ```bash
-curl http://localhost:3000/                   # liveness
+curl http://localhost:3000/                   # liveness (alias of /status)
 curl http://localhost:3000/pubkey             # ACK key commitment
 grpcurl -plaintext \
   -import-path crates/server/proto -proto guardian.proto \
@@ -202,8 +244,11 @@ cargo test -p guardian-server --features integration
 cargo test -p guardian-server --features e2e
 ```
 
-TypeScript packages each carry their own `npm test` — see the root
-[`README.md`](../README.md#typescript-tests).
+TypeScript packages live in an npm workspace under `packages/`. Install
+once from that directory with `npm ci`, then run tests with
+`npm test -w @openzeppelin/<package>`. `miden-multisig-client` depends
+on the in-repo `guardian-client` workspace package — build that first.
+See the root [`README.md`](../README.md#typescript-tests).
 
 Cargo feature gates (`integration`, `e2e`) document what each suite
 needs at the top of the relevant test modules under

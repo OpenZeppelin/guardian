@@ -458,8 +458,8 @@ audit / CloudTrail trail (below) to confirm a revocation took effect.
 
 ## `DATABASE_URL` and RDS Proxy credentials
 
-Both are **created and owned by Terraform** ([`infra/rds.tf:43`](../../infra/rds.tf#L43),
-[`infra/rds.tf:48`](../../infra/rds.tf#L48)). Do not edit them by hand —
+Both are **created and owned by Terraform** ([`infra/rds.tf:45`](../../infra/rds.tf#L45),
+[`infra/rds.tf:50`](../../infra/rds.tf#L50)). Do not edit them by hand —
 the next `terraform apply` will overwrite your change.
 
 To rotate the database password:

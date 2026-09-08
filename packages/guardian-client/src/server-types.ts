@@ -21,6 +21,7 @@ export type ServerDeltaStatus =
   | { status: 'pending'; timestamp: string; proposer_id: string; cosigner_sigs: ServerCosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
+  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' }
   | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ServerProposalType =
@@ -56,6 +57,12 @@ export interface ServerProposalMetadata {
   amount?: string;
   /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
   note_type?: string;
+  /** Base64-serialized Miden `ChainAnchor` pinning the proposal's reference block. */
+  chain_anchor?: string;
+  /** P2IDE reclaim block height (issue #366). Presence of either height means a P2IDE note. */
+  reclaim_height?: number;
+  /** P2IDE timelock block height (issue #366). */
+  timelock_height?: number;
 }
 
 export interface ServerDeltaObject {
@@ -147,7 +154,7 @@ export interface ServerAbandonCandidateRequest {
 export interface ServerAbandonCandidateResponse {
   account_id: string;
   nonce: number;
-  state: 'pending' | 'abandoned';
+  state: 'pending' | 'abandoned' | 'retained';
   abandon_requested_at?: string;
 }
 
@@ -177,4 +184,41 @@ export interface ServerLookupAccount {
 
 export interface ServerLookupResponse {
   accounts: ServerLookupAccount[];
+}
+
+// --- Delta history (issue #413) ---
+
+export interface ServerHistoryNoteAsset {
+  asset_id: string;
+  kind: 'fungible' | 'non_fungible';
+  amount?: string;
+}
+
+export interface ServerHistoryNote {
+  note_id: string;
+  tag: 'p2id' | 'p2ide' | 'pswap' | 'mint' | 'burn' | 'custom';
+  note_type: 'public' | 'private';
+  assets: ServerHistoryNoteAsset[];
+  sender?: string;
+  recipient?: string;
+}
+
+export interface ServerHistoryDecodeWarning {
+  section: 'tx_summary' | 'metadata' | 'input_notes' | 'output_notes' | 'vault' | 'storage';
+  reason: string;
+}
+
+export interface ServerHistoryEntry {
+  nonce: number;
+  status: 'canonical';
+  timestamp: string;
+  new_commitment: string | null;
+  input_notes: ServerHistoryNote[];
+  output_notes: ServerHistoryNote[];
+  decode_warnings?: ServerHistoryDecodeWarning[];
+}
+
+export interface ServerHistoryPage {
+  items: ServerHistoryEntry[];
+  next_cursor: string | null;
 }

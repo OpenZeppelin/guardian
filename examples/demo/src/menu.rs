@@ -9,8 +9,10 @@ pub enum MenuAction {
     SyncAccount,
     VerifyStateCommitment,
     ListNotes,
+    DeltaHistory,
     ProposalManagement,
     RecoverByKey,
+    RecoverNotes,
     ShowAccount,
     ShowStatus,
     Quit,
@@ -22,10 +24,16 @@ pub fn print_menu(state: &SessionState) {
     print_menu_option("2", "Sync account", true);
     print_menu_option("v", "Verify state commitment", state.has_account());
     print_menu_option("3", "List consumable notes", state.has_account());
+    print_menu_option("h", "Delta history", state.has_account());
     print_menu_option("4", "Proposal management", state.has_account());
     print_menu_option("s", "Show account details", state.has_account());
     print_menu_option("c", "Show connection status", true);
     print_menu_option("r", "Recover by key", true);
+    print_menu_option(
+        "n",
+        "Recover notes (after device loss)",
+        state.has_account(),
+    );
     print_menu_option("q", "Quit", true);
 
     println!();
@@ -46,10 +54,12 @@ pub fn parse_menu_choice(choice: &str, state: &SessionState) -> Option<MenuActio
         "2" => Some(MenuAction::SyncAccount),
         "v" if state.has_account() => Some(MenuAction::VerifyStateCommitment),
         "3" if state.has_account() => Some(MenuAction::ListNotes),
+        "h" if state.has_account() => Some(MenuAction::DeltaHistory),
         "4" if state.has_account() => Some(MenuAction::ProposalManagement),
         "s" if state.has_account() => Some(MenuAction::ShowAccount),
         "c" => Some(MenuAction::ShowStatus),
         "r" => Some(MenuAction::RecoverByKey),
+        "n" if state.has_account() => Some(MenuAction::RecoverNotes),
         "q" => Some(MenuAction::Quit),
         _ => None,
     }

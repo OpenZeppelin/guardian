@@ -10,9 +10,19 @@ import { GuardianHttpClient } from '@openzeppelin/guardian-client';
 import type { StateObject } from '@openzeppelin/guardian-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
-import { AccountInspector } from './inspector.js';
+import { AccountInspector, assertCompleteDetectedConfig } from './inspector.js';
 import { getRawMidenClient, requireConfigValue, requireMidenRpcEndpoint } from './raw-client.js';
 import type { MultisigConfig, Signer } from './types.js';
+import {
+  resolveProverConfig,
+  type ProverConfig,
+  type ResolvedProverConfig,
+} from './prover/config.js';
+import {
+  resolveRpcConfig,
+  type RpcConfig,
+  type ResolvedRpcConfig,
+} from './rpc/config.js';
 
 interface AccountKeyBindingSigner {
   bindAccountKey?(midenClient: MidenClient, accountId: string): Promise<void>;
@@ -41,6 +51,10 @@ export interface MultisigClientConfig {
    * the injected `MidenClient`; there is no default.
    */
   midenRpcEndpoint: string;
+  /** Multisig-owned remote prover override and proof retry policy. */
+  prover?: ProverConfig;
+  /** Retry policy for idempotent Miden node reads; submission is never retried. */
+  rpc?: RpcConfig;
 }
 
 /**
@@ -70,6 +84,10 @@ export interface RecoveredAccount {
  * const client = new MultisigClient(midenClient, {
  *   guardianEndpoint: 'http://localhost:3000',
  *   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
+ *   prover: {
+ *     url: 'https://prover.example',
+ *     retry: { maxAttempts: 4 },
+ *   },
  * });
  *
  * // Get GUARDIAN pubkey for config
@@ -83,11 +101,15 @@ export interface RecoveredAccount {
 export class MultisigClient {
   private readonly midenClient: MidenClient;
   private readonly midenRpcEndpoint: string;
+  private readonly proverConfig: ResolvedProverConfig;
+  private readonly rpcConfig: ResolvedRpcConfig;
   private _guardianClient: GuardianHttpClient;
 
   constructor(midenClient: MidenClient, config: MultisigClientConfig) {
     this.midenClient = midenClient;
     this.midenRpcEndpoint = requireMidenRpcEndpoint(config?.midenRpcEndpoint);
+    this.proverConfig = resolveProverConfig(config?.prover, midenClient.defaultProver);
+    this.rpcConfig = resolveRpcConfig(config?.rpc);
     this._guardianClient = new GuardianHttpClient(
       requireConfigValue('guardianEndpoint', config?.guardianEndpoint),
     );
@@ -161,7 +183,9 @@ export class MultisigClient {
       signer,
       this.midenClient,
       undefined,
-      this.midenRpcEndpoint
+      this.midenRpcEndpoint,
+      this.proverConfig,
+      this.rpcConfig,
     );
   }
 
@@ -190,11 +214,13 @@ export class MultisigClient {
     const account = Account.deserialize(accountBytes);
 
     const detected = AccountInspector.fromAccount(account);
+    // Fail closed on a partial read: the detected signer set becomes the
+    // authoritative config that membership proposals rewrite on-chain.
+    assertCompleteDetectedConfig(detected);
     const config: MultisigConfig = {
       threshold: detected.threshold,
       signerCommitments: detected.signerCommitments,
-      guardianCommitment: detected.guardianCommitment ?? '',
-      guardianEnabled: detected.guardianEnabled,
+      guardianCommitment: detected.guardianCommitment,
       procedureThresholds: Array.from(detected.procedureThresholds.entries()).map(
         ([procedure, threshold]) => ({ procedure, threshold })
       ),
@@ -213,7 +239,9 @@ export class MultisigClient {
       signer,
       this.midenClient,
       accountId,
-      this.midenRpcEndpoint
+      this.midenRpcEndpoint,
+      this.proverConfig,
+      this.rpcConfig,
     );
   }
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -7,8 +8,9 @@ const skillDir = path.resolve(scriptDir, '..');
 const repoRoot = path.resolve(skillDir, '../../..');
 const evmClientPackage = path.join(repoRoot, 'packages/guardian-evm-client');
 const clientDist = path.join(evmClientPackage, 'dist/index.js');
-const viemEntry = path.join(evmClientPackage, 'node_modules/viem/_esm/index.js');
-const viemAccountsEntry = path.join(evmClientPackage, 'node_modules/viem/_esm/accounts/index.js');
+const workspaceRequire = createRequire(pathToFileURL(clientDist));
+const viemEntry = workspaceRequire.resolve('viem');
+const viemAccountsEntry = workspaceRequire.resolve('viem/accounts');
 
 const {
   GuardianEvmClient,

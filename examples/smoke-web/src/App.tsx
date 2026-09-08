@@ -243,7 +243,6 @@ export default function App() {
                 }
               >
                 <option value="local">Local</option>
-                <option value="para">Para</option>
                 <option value="miden-wallet">Miden Wallet</option>
               </select>
             </label>
@@ -277,7 +276,6 @@ export default function App() {
           </div>
           <div className="actions">
             <button onClick={handleInitSession}>Reinitialize session</button>
-            <button onClick={() => runAction(async () => api.connectPara())}>Connect Para</button>
             <button onClick={() => runAction(async () => api.connectMidenWallet())}>
               Connect Miden Wallet
             </button>
@@ -343,10 +341,6 @@ export default function App() {
             <div>
               <span className="label">Local ECDSA commitment</span>
               <strong>{snapshot.localSigners?.ecdsaCommitment ?? 'n/a'}</strong>
-            </div>
-            <div>
-              <span className="label">Para</span>
-              <strong>{snapshot.para.connected ? snapshot.para.commitment : 'Disconnected'}</strong>
             </div>
             <div>
               <span className="label">Miden Wallet</span>
@@ -426,6 +420,12 @@ export default function App() {
               onClick={() => runAction(async () => api.recoverByKey())}
             >
               Recover by key
+            </button>
+            <button
+              disabled={!sessionReady || !accountLoaded}
+              onClick={() => runAction(async () => api.recoverNotes())}
+            >
+              Recover notes
             </button>
             <button disabled={!sessionReady || !accountLoaded} onClick={handleRegisterOnGuardian}>
               Register on Guardian
@@ -721,7 +721,12 @@ const { recipe } = await window.smoke.createCustomProposal({
 await window.smoke.executeCustomProposal({ recipe });
 
 const matches = await window.smoke.recoverByKey();
-// matches: [{ accountId: '0x...', state: { ... } }, ...]`}
+// matches: [{ accountId: '0x...', state: { ... } }, ...]
+
+// After loading a recovered account, restore its notes in one call:
+const { report } = await window.smoke.recoverNotes();
+// report.imported, report.transport, report.proposalImport,
+// report.backfill, report.problems`}
           </pre>
         </section>
       </main>

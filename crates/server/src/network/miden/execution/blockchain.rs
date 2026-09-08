@@ -260,7 +260,10 @@ async fn fetch_block_header(
     block_num: Option<u32>,
     include_mmr_proof: bool,
 ) -> Result<(BlockHeader, Option<MerklePath>), String> {
-    let response = rpc.get_block_header(block_num, include_mmr_proof).await?;
+    let response = rpc
+        .get_block_header(block_num, include_mmr_proof)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let header: BlockHeader = response
         .block_header

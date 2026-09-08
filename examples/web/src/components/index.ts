@@ -6,3 +6,4 @@ export { ImportProposalDialog } from './ImportProposalDialog';
 export { MultisigDashboard } from './MultisigDashboard';
 export { ProposalCard } from './ProposalCard';
 export { CreateProposalForm } from './CreateProposalForm';
+export { DeltaHistoryCard } from './DeltaHistoryCard';

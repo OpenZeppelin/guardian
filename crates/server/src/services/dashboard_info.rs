@@ -53,6 +53,7 @@ pub enum DashboardServiceStatus {
 pub struct DashboardDeltaStatusCounts {
     pub candidate: u64,
     pub canonical: u64,
+    pub retained: u64,
     pub discarded: u64,
 }
 
@@ -81,6 +82,15 @@ pub struct DashboardCanonicalizationConfig {
     pub check_interval_seconds: u64,
     pub max_retries: u32,
     pub submission_grace_period_seconds: u64,
+    /// How long retry-exhausted candidates are kept as `retained` for
+    /// background reconciliation (issue #345). `0` = retention disabled.
+    pub retained_ttl_seconds: u64,
+    /// Cadence of the dedicated reconcile pass over recoverable deltas.
+    /// Individual accounts back off further as their rows age, so a
+    /// retained row being reconsidered less often than this is expected.
+    pub reconcile_interval_seconds: u64,
+    /// Accounts one reconcile pass visits at most (rotation cursor).
+    pub reconcile_page_size: u32,
 }
 
 /// Backend configuration snapshot. Stable for the lifetime of the
@@ -153,6 +163,9 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
                 check_interval_seconds: c.check_interval_seconds,
                 max_retries: c.max_retries,
                 submission_grace_period_seconds: c.submission_grace_period_seconds,
+                retained_ttl_seconds: c.retained_ttl_seconds,
+                reconcile_interval_seconds: c.reconcile_interval_seconds,
+                reconcile_page_size: c.reconcile_page_size,
             }
         }),
     };
@@ -257,6 +270,7 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
         Ok(counts) => {
             response.delta_status_counts.candidate = counts.candidate;
             response.delta_status_counts.canonical = counts.canonical;
+            response.delta_status_counts.retained = counts.retained;
             response.delta_status_counts.discarded = counts.discarded;
         }
         Err(e) => {
@@ -361,7 +375,6 @@ mod tests {
             created_at: "2026-05-11T00:00:00Z".to_string(),
             updated_at: "2026-05-11T00:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,
@@ -496,6 +509,7 @@ mod tests {
             crate::storage::DeltaStatusCounts {
                 candidate: 1,
                 canonical: 1,
+                retained: 1,
                 discarded: 1,
             },
             2,
@@ -509,6 +523,7 @@ mod tests {
         assert_eq!(info.total_account_count, 2);
         assert_eq!(info.delta_status_counts.candidate, 1);
         assert_eq!(info.delta_status_counts.canonical, 1);
+        assert_eq!(info.delta_status_counts.retained, 1);
         assert_eq!(info.delta_status_counts.discarded, 1);
         assert_eq!(info.in_flight_proposal_count, 2);
         assert_eq!(
@@ -624,6 +639,9 @@ mod tests {
             submission_grace_period_seconds: 42,
             divergence_confirmations: 2,
             max_concurrent_accounts: 4,
+            retained_ttl_seconds: 86_400,
+            reconcile_interval_seconds: 60,
+            reconcile_page_size: 100,
         });
         let info = get_dashboard_info(&state).await.unwrap();
         let cfg = info.backend.canonicalization.expect("config present");

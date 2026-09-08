@@ -181,6 +181,7 @@ async fn live_sync_notes_paths_track_against_the_execution_reference_forest() {
 #[tokio::test]
 #[ignore = "requires outbound access to a Miden RPC node and a remote prover"]
 async fn live_prove_a_guardian_assembled_witness() {
+    use miden_client::remote_prover::RemoteTransactionProver;
     use miden_confidential_contracts::multisig_guardian::{
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
@@ -188,7 +189,6 @@ async fn live_prove_a_guardian_assembled_witness() {
     use miden_protocol::account::auth::AuthSecretKey;
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
     use miden_protocol::transaction::{InputNotes, TransactionArgs};
-    use miden_remote_prover_client::RemoteTransactionProver;
     use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
     use miden_tx::{TransactionExecutor, TransactionExecutorError};
 

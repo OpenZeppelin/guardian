@@ -7,9 +7,50 @@
       "name": "AGPL-3.0",
       "identifier": "AGPL-3.0"
     },
-    "version": "0.16.0"
+    "version": "0.17.0-rc.3"
   },
   "paths": {
+    "/": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Alias of `GET /status` mounted at the site root. Health checks and\nload balancers that probe `/` get the same machine-readable status\nbody, with the identical response shape and no authentication.",
+        "operationId": "status_root",
+        "responses": {
+          "200": {
+            "description": "Alias of `GET /status`: server liveness, version, and environment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/configure": {
       "post": {
         "tags": [
@@ -43,7 +84,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConfigureResponse"
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             }
@@ -117,7 +168,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -203,7 +254,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -258,7 +309,7 @@
           "client"
         ],
         "summary": "Request abandonment of a pending canonicalization candidate whose\ntransaction will never land on-chain (issue #319).",
-        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned.",
+        "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned; `retained` → the worker\nalready released the account, but the outcome is still uncertain\n(reconciliation may promote it until the retention TTL expires).",
         "operationId": "abandon_candidate",
         "requestBody": {
           "content": {
@@ -282,7 +333,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -303,6 +354,112 @@
           },
           "409": {
             "description": "Candidate already landed on-chain, or account paused/released",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/delta/history": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Paginated canonical delta history for an account (issue\n#413), newest-first by nonce, with decoded input/output note\nsummaries. Read-only: served while the account is paused.",
+        "operationId": "get_delta_history",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size in `[1, 500]`; defaults to 50 when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque `next_cursor` from a previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of canonical history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PagedResult_HistoryEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor, or account on an unsupported network (unsupported_for_network)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -370,7 +527,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -446,7 +603,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -542,7 +699,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -628,7 +785,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -716,7 +873,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -845,7 +1002,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -933,7 +1090,7 @@
             }
           },
           "401": {
-            "description": "Authentication failed",
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -1069,7 +1226,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released."
+            "description": "`\"pending\"` while the worker still has to resolve the intent\n(the account stays locked until then); `\"abandoned\"` once the\ndelta is discarded as client-abandoned and the account released;\n`\"retained\"` when the worker had already stopped verifying the\ncandidate and released the account — unlocked, but the on-chain\noutcome is still uncertain and background reconciliation may yet\npromote the delta until its retention TTL expires."
           }
         }
       },
@@ -1372,6 +1529,93 @@
           "custom"
         ]
       },
+      "DecodeSection": {
+        "type": "string",
+        "enum": [
+          "tx_summary",
+          "metadata",
+          "input_notes",
+          "output_notes",
+          "vault",
+          "storage"
+        ]
+      },
+      "DecodeWarning": {
+        "type": "object",
+        "required": [
+          "section",
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "section": {
+            "$ref": "#/components/schemas/DecodeSection"
+          }
+        }
+      },
+      "DecodedAsset": {
+        "type": "object",
+        "required": [
+          "asset_id",
+          "kind"
+        ],
+        "properties": {
+          "amount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "asset_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AssetKind"
+          }
+        }
+      },
+      "DecodedNote": {
+        "type": "object",
+        "description": "Decoded note summary shared by the dashboard per-delta detail\nendpoint and the client delta-history feed\n(`HistoryEntry.input_notes` / `output_notes`); not built by the\ndashboard listing path.",
+        "required": [
+          "note_id",
+          "tag",
+          "note_type",
+          "assets"
+        ],
+        "properties": {
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedAsset"
+            }
+          },
+          "note_id": {
+            "type": "string"
+          },
+          "note_type": {
+            "$ref": "#/components/schemas/NoteVisibility",
+            "description": "On-chain visibility from the note metadata: `public` notes are\nfully shared with the network, `private` notes publish only\ntheir hash."
+          },
+          "recipient": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sender": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tag": {
+            "$ref": "#/components/schemas/NoteTag"
+          }
+        }
+      },
       "DeltaMetadata": {
         "type": "object",
         "description": "Persisted activity metadata for a canonical delta. Stored as JSONB\nin the `deltas.metadata` column. `None` for EVM deltas and any\nhistorical row never reprocessed by [`build_metadata`].",
@@ -1606,6 +1850,35 @@
           },
           {
             "type": "object",
+            "description": "A candidate the worker gave up on, kept for background\nreconciliation (issue #345) instead of being deleted. A give-up\nverdict — retry exhaustion or confirmed divergence — is an\n*observation*, not proof the delta is wrong, so the worker keeps\nre-checking `stored base + delta` against the chain and promotes\nthe row if they ever match. Does NOT hold the pending-candidate\nlock: new submissions stay unblocked and supersede a retained\nrow at the same nonce. `timestamp` is when retention began and\nanchors the TTL after which the row is dropped for good.",
+            "required": [
+              "timestamp",
+              "status"
+            ],
+            "properties": {
+              "reason": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RetainReason"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "retained"
+                ]
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "timestamp",
               "status"
@@ -1640,6 +1913,65 @@
         "description": "Why a delta ended in `Discarded`. Absent on discards that predate\nthe field (and on the worker's retry/divergence discards, which\ndelete the delta instead of transitioning it).",
         "enum": [
           "client_abandoned"
+        ]
+      },
+      "HistoryEntry": {
+        "type": "object",
+        "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
+        "required": [
+          "nonce",
+          "status",
+          "timestamp",
+          "input_notes",
+          "output_notes"
+        ],
+        "properties": {
+          "decode_warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodeWarning"
+            },
+            "description": "Why the note sections are empty when they are: the persisted\npayload could not be decoded (e.g. rows predating the current\nsummary format). The entry itself is still returned rather than\nfailing the page."
+          },
+          "input_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedNote"
+            }
+          },
+          "new_commitment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Account commitment after this transaction; lets a wallet\ncorrelate history entries with recovered state. `null` when the\nstored row predates commitment recording."
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecodedNote"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/HistoryEntryStatus",
+            "description": "Delta lifecycle status. Always `canonical` today; carried\nexplicitly so a future `status=` filter can surface other\nlifecycle statuses without changing the entry shape."
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "RFC 3339 UTC timestamp at which the delta became canonical."
+          }
+        }
+      },
+      "HistoryEntryStatus": {
+        "type": "string",
+        "description": "Lifecycle status of a history entry. Only `canonical` is emitted\ntoday; the closed set widens when the feed gains a status filter.",
+        "enum": [
+          "canonical"
         ]
       },
       "LookupAccount": {
@@ -1741,9 +2073,98 @@
           }
         }
       },
+      "NoteTag": {
+        "type": "string",
+        "enum": [
+          "p2id",
+          "p2ide",
+          "pswap",
+          "mint",
+          "burn",
+          "custom"
+        ]
+      },
+      "NoteVisibility": {
+        "type": "string",
+        "description": "On-chain note visibility, decoded from `NoteMetadata::note_type()`.\nWire labels match issue #322's `metadata.note_type` vocabulary.",
+        "enum": [
+          "public",
+          "private"
+        ]
+      },
+      "PagedResult_HistoryEntry": {
+        "type": "object",
+        "description": "Standard cursor-pagination envelope returned by every paginated\nendpoint. `next_cursor` is `None` at end of list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
+              "required": [
+                "nonce",
+                "status",
+                "timestamp",
+                "input_notes",
+                "output_notes"
+              ],
+              "properties": {
+                "decode_warnings": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DecodeWarning"
+                  },
+                  "description": "Why the note sections are empty when they are: the persisted\npayload could not be decoded (e.g. rows predating the current\nsummary format). The entry itself is still returned rather than\nfailing the page."
+                },
+                "input_notes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DecodedNote"
+                  }
+                },
+                "new_commitment": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Account commitment after this transaction; lets a wallet\ncorrelate history entries with recovered state. `null` when the\nstored row predates commitment recording."
+                },
+                "nonce": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "output_notes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DecodedNote"
+                  }
+                },
+                "status": {
+                  "$ref": "#/components/schemas/HistoryEntryStatus",
+                  "description": "Delta lifecycle status. Always `canonical` today; carried\nexplicitly so a future `status=` filter can surface other\nlifecycle statuses without changing the entry shape."
+                },
+                "timestamp": {
+                  "type": "string",
+                  "description": "RFC 3339 UTC timestamp at which the delta became canonical."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ProposalMetadata": {
         "type": "object",
-        "description": "Operator-stated intent lifted from a matching proposal. Mirrors\n`ProposalMetadataPayload` in `crates/miden-multisig-client/src/payload.rs`\nfield-for-field.",
+        "description": "Operator-stated intent lifted from a matching proposal.\n`chain_anchor` remains only in the proposal payload to avoid duplicating it\nin delta metadata and dashboard listings.",
         "required": [
           "proposal_type"
         ],
@@ -1815,6 +2236,16 @@
               "null"
             ]
           },
+          "reclaim_height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "P2IDE reclaim block height (issue #366). Presence of either height\nmeans the proposal creates a P2IDE note; absent => plain P2ID.\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain,\nso `NonZeroU32` rejects it at the serde boundary. `value_type = u64`\nemits an int64-capable OpenAPI schema: `format: int32` implies a\nsigned range that cannot hold heights above 2^31-1.",
+            "maximum": 4294967295,
+            "minimum": 1
+          },
           "required_signatures": {
             "type": [
               "integer",
@@ -1848,6 +2279,16 @@
             ],
             "format": "int64",
             "minimum": 0
+          },
+          "timelock_height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "P2IDE timelock block height (issue #366).\nValid heights are 1..=u32::MAX; 0 encodes \"no constraint\" on-chain,\nso `NonZeroU32` rejects it at the serde boundary. `value_type = u64`\nemits an int64-capable OpenAPI schema.",
+            "maximum": 4294967295,
+            "minimum": 1
           }
         }
       },
@@ -1931,6 +2372,14 @@
             ]
           }
         }
+      },
+      "RetainReason": {
+        "type": "string",
+        "description": "Why a candidate was moved to `Retained` instead of deleted\n(issue #345). The label is diagnostic — every retained delta is\nreconciled and TTL-expired identically — but it records which\nworker verdict parked the row, and a `diverged` row that later\nreconciles is direct evidence the divergence verdict was spurious\n(e.g. a lagging RPC node, or the pre-#326 empty-digest misread\nthat hit new accounts' first transactions).",
+        "enum": [
+          "retry_exhausted",
+          "diverged"
+        ]
       },
       "SignProposalRequest": {
         "type": "object",

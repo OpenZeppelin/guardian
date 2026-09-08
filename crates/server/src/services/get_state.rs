@@ -16,11 +16,12 @@ pub struct GetStateResult {
 }
 
 #[tracing::instrument(
+    level = "info",
     skip(state, params),
     fields(account_id = %params.account_id)
 )]
 pub async fn get_state(state: &AppState, params: GetStateParams) -> Result<GetStateResult> {
-    tracing::info!(account_id = %params.account_id, "Getting state");
+    tracing::debug!("Getting state");
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
     if resolved.metadata.network_config.is_evm() {

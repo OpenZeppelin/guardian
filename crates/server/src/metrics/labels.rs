@@ -119,6 +119,19 @@ pub enum CandidateOutcome {
     /// candidate's base commitment during the pass; the candidate is
     /// re-verified against the new base next tick.
     StaleBase,
+    /// Retry budget exhausted but the candidate was kept as `retained`
+    /// (issue #345) for background reconciliation instead of deleted.
+    Retained,
+    /// A retained delta verified against the on-chain commitment on a
+    /// later pass and was promoted to canonical — the stuck base
+    /// auto-recovered.
+    Reconciled,
+    /// A retained delta's expected commitment was still not observed
+    /// on-chain; kept for the next reconcile pass (until its TTL).
+    ReconcileDeferred,
+    /// A retained delta outlived its TTL without ever verifying and was
+    /// dropped for good.
+    ReconcileExpired,
 }
 
 impl CandidateOutcome {
@@ -132,6 +145,10 @@ impl CandidateOutcome {
             Self::Diverged => "diverged",
             Self::Abandoned => "abandoned",
             Self::StaleBase => "stale_base",
+            Self::Retained => "retained",
+            Self::Reconciled => "reconciled",
+            Self::ReconcileDeferred => "reconcile_deferred",
+            Self::ReconcileExpired => "reconcile_expired",
         }
     }
 }
@@ -199,6 +216,10 @@ mod tests {
             CandidateOutcome::Diverged.as_str(),
             CandidateOutcome::Abandoned.as_str(),
             CandidateOutcome::StaleBase.as_str(),
+            CandidateOutcome::Retained.as_str(),
+            CandidateOutcome::Reconciled.as_str(),
+            CandidateOutcome::ReconcileDeferred.as_str(),
+            CandidateOutcome::ReconcileExpired.as_str(),
             AccountKind::Miden.as_str(),
             PoolKind::Storage.as_str(),
             PoolKind::Metadata.as_str(),

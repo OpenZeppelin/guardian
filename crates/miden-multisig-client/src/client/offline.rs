@@ -5,8 +5,6 @@
 
 use std::collections::HashSet;
 
-use guardian_shared::ToJson;
-
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
@@ -14,6 +12,7 @@ use crate::export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, Exported
 use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::proposal_public_key_hex;
 use crate::proposal::TransactionType;
+use guardian_shared::ToJson;
 
 impl MultisigClient {
     /// Creates a proposal offline without pushing to GUARDIAN.
@@ -68,20 +67,23 @@ impl MultisigClient {
 
         let tx_request = crate::transaction::build_update_guardian_transaction_request(
             new_commitment,
+            self.key_manager.scheme(),
             salt,
             std::iter::empty(),
         )?;
+
+        let (tx_summary, chain_anchor) =
+            crate::transaction::execute_for_summary(&mut self.miden_client, account_id, tx_request)
+                .await?;
+
         let metadata = ExportedMetadata {
             proposal_type: "switch_guardian".to_string(),
             salt_hex: Some(crate::transaction::word_to_hex(&salt)),
             new_guardian_pubkey_hex: Some(crate::transaction::word_to_hex(&new_commitment)),
             new_guardian_endpoint: Some(new_endpoint),
+            chain_anchor: Some(crate::transaction::chain_anchor_to_base64(&chain_anchor)),
             ..Default::default()
         };
-
-        let tx_summary =
-            crate::transaction::execute_for_summary(&mut self.miden_client, account_id, tx_request)
-                .await?;
 
         let tx_commitment = tx_summary.to_commitment();
         let signature_hex = self.key_manager.sign_word_hex(tx_commitment);
@@ -173,6 +175,12 @@ impl MultisigClient {
     ///
     /// Only `SwitchGuardian` transactions are supported in this mode.
     ///
+    /// Deliberately skips the pre-switch proposal-note import (issue #417):
+    /// it would contact the very GUARDIAN this flow exists to avoid. When
+    /// the old GUARDIAN is in fact still reachable, call
+    /// [`MultisigClient::preserve_pre_switch_proposal_notes`] before
+    /// executing.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -228,6 +236,12 @@ impl MultisigClient {
         // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
 
+        // Execute and finalize at the proposal's anchored reference block; the
+        // anchor was checked against the signed summary's block commitment in
+        // `verify_proposal_summary_binding` above. It also carries the fee
+        // faucet used to derive native fee conversion info during execution.
+        let chain_anchor = proposal.metadata.chain_anchor()?;
+
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
@@ -240,8 +254,20 @@ impl MultisigClient {
         )
         .await?;
 
-        // Execute and finalize
-        self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
-            .await
+        // Make the deliberate import skip observable rather than a silent
+        // loss when the old GUARDIAN was in fact still reachable.
+        tracing::warn!(
+            "offline switch execution skips the pre-switch proposal-note import; if the \
+             old GUARDIAN is still reachable, call preserve_pre_switch_proposal_notes \
+             before executing to keep notes embedded in its pending proposals"
+        );
+
+        self.finalize_transaction(
+            account_id,
+            final_tx_request,
+            &proposal.transaction_type,
+            chain_anchor,
+        )
+        .await
     }
 }

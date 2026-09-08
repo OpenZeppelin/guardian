@@ -109,7 +109,6 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: paused.map(|(ts, _)| ts),
             paused_reason: paused.and_then(|(_, r)| r.map(|s| s.to_string())),
             released_at: None,

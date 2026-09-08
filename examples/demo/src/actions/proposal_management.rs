@@ -1,13 +1,14 @@
 //! Unified proposal management - all proposal operations in one place.
 
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::pin::Pin;
 
 use miden_client::Serializable;
 use miden_multisig_client::{
     build_p2id_transaction_request, build_transfer_asset, ensure_hex_prefix, generate_salt,
-    word_from_hex, Asset, ExportedProposal, NoteId, ProcedureName, TransactionType,
+    word_from_hex, Asset, ExportedProposal, NoteId, P2ideHeights, ProcedureName, TransactionType,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -16,7 +17,7 @@ use rustyline::DefaultEditor;
 
 use crate::display::{
     print_error, print_full_hex, print_info, print_section, print_success, print_waiting,
-    shorten_hex,
+    print_warning, shorten_hex,
 };
 use crate::menu::prompt_input;
 use crate::state::{CustomProposalRecipe, SessionState};
@@ -148,6 +149,11 @@ async fn action_create_proposal(
         "b" | "B" => return Ok(()),
         _ => return Err("Invalid choice".to_string()),
     };
+
+    if !confirm_override_dilution(state, &transaction_type, editor)? {
+        print_info("Proposal cancelled.");
+        return Ok(());
+    }
 
     print_waiting("Creating proposal on GUARDIAN");
 
@@ -492,7 +498,29 @@ async fn action_execute_proposal(
         return Err("Invalid selection".to_string());
     }
 
-    let proposal_id = proposals[idx - 1].id.clone();
+    let proposal = proposals[idx - 1].clone();
+    let proposal_id = proposal.id.clone();
+
+    // A private P2ID note must be handed to the recipient out-of-band (issue
+    // #356). Its ID is deterministic from the proposal salt but derives from
+    // the pre-execution vault state, so compute it before executing.
+    let private_note_id = match &proposal.transaction_type {
+        TransactionType::P2ID {
+            note_type: NoteType::Private,
+            ..
+        } => match state.get_client()?.p2id_note_id(&proposal) {
+            Ok(id) => Some(id.to_hex()),
+            Err(e) => {
+                print_info(&format!(
+                    "  Note: could not precompute the private note id ({}); \
+                     the note can still be exported later via the SDK.",
+                    e
+                ));
+                None
+            }
+        },
+        _ => None,
+    };
 
     print_waiting("Executing proposal");
 
@@ -529,6 +557,10 @@ async fn action_execute_proposal(
                 print_success("State synced successfully");
             }
 
+            if let Some(note_id) = private_note_id {
+                offer_private_note_export(state, editor, &note_id).await;
+            }
+
             Ok(())
         }
         Err(e) => {
@@ -539,6 +571,89 @@ async fn action_execute_proposal(
             Err(e)
         }
     }
+}
+
+/// Offer to export a just-created private P2ID note to a file for
+/// out-of-band delivery to the recipient (issue #356).
+///
+/// Export failure is reported but never bubbled: the transaction already
+/// executed, and the note can still be exported later via the SDK.
+async fn offer_private_note_export(
+    state: &SessionState,
+    editor: &mut DefaultEditor,
+    note_id: &str,
+) {
+    print_info("\nThis proposal created a PRIVATE note: only its commitment is on chain,");
+    print_info("so the recipient must receive the note file out-of-band to consume it.");
+    print_info(&format!("Note ID: {}", note_id));
+
+    let confirm = match prompt_input(editor, "Export the note file now? [Y/n]: ") {
+        Ok(choice) => choice,
+        Err(e) => {
+            print_error(&e);
+            return;
+        }
+    };
+    if !confirm.is_empty() && confirm.to_lowercase() != "y" {
+        print_info("Skipped. The note can be exported later with the SDK's export_note_to_file.");
+        return;
+    }
+
+    let default_path = format!("note_{}.mno", shorten_hex(note_id).replace("...", "_"));
+    let path = match prompt_input(editor, &format!("File path [{}]: ", default_path)) {
+        Ok(input) if input.is_empty() => default_path,
+        Ok(input) => input,
+        Err(e) => {
+            print_error(&e);
+            return;
+        }
+    };
+
+    let export_result = match state.get_client() {
+        Ok(client) => client.export_note_to_file(note_id, Path::new(&path)).await,
+        Err(e) => {
+            print_error(&e);
+            return;
+        }
+    };
+
+    match export_result {
+        Ok(()) => {
+            print_success(&format!("Note exported to: {}", path));
+            print_info("Share this file with the recipient; they import it in the");
+            print_info("consume-notes flow before proposing consumption.");
+        }
+        Err(e) => print_error(&format!("Failed to export note: {}", e)),
+    }
+}
+
+/// Import a note file received out-of-band (issue #356) and sync so the note
+/// becomes consumable.
+async fn import_note_file(
+    state: &mut SessionState,
+    editor: &mut DefaultEditor,
+) -> Result<(), String> {
+    let path = prompt_input(editor, "Note file path: ")?;
+    if path.is_empty() {
+        return Err("File path is required".to_string());
+    }
+
+    print_waiting("Importing note file");
+    let client = state.get_client_mut()?;
+    let note_id = client
+        .import_note_from_file(Path::new(&path))
+        .await
+        .map_err(|e| format!("Failed to import note: {}", e))?;
+
+    print_success(&format!("Note imported: {}", shorten_hex(&note_id)));
+
+    print_waiting("Syncing so the note's on-chain commitment is tracked");
+    client
+        .sync()
+        .await
+        .map_err(|e| format!("Failed to sync after import: {}", e))?;
+
+    Ok(())
 }
 
 // =============================================================================
@@ -915,13 +1030,14 @@ async fn action_create_custom_proposal(
     }
 
     print_info("Building a transfer transaction to use as the custom transaction request.");
-    let (recipient, faucet_id, amount, note_type) = match prompt_p2id(state, editor)? {
+    let (recipient, faucet_id, amount, note_type, heights) = match prompt_p2id(state, editor)? {
         TransactionType::P2ID {
             recipient,
             faucet_id,
             amount,
             note_type,
-        } => (recipient, faucet_id, amount, note_type),
+            heights,
+        } => (recipient, faucet_id, amount, note_type, heights),
         _ => return Err("expected a P2ID transaction".to_string()),
     };
 
@@ -931,14 +1047,15 @@ async fn action_create_custom_proposal(
         .ok_or_else(|| "No account loaded".to_string())?
         .clone();
 
-    let asset = build_transfer_asset(account.inner(), faucet_id, amount)
-        .map_err(|e| format!("invalid asset: {}", e))?;
+    let asset =
+        build_transfer_asset(faucet_id, amount).map_err(|e| format!("invalid asset: {}", e))?;
     let salt = generate_salt();
     let transaction_request_bytes = build_p2id_transaction_request(
         account.inner(),
         recipient,
         vec![asset.into()],
         note_type,
+        heights,
         salt,
         std::iter::empty(),
     )
@@ -961,6 +1078,7 @@ async fn action_create_custom_proposal(
             faucet_id,
             amount,
             note_type,
+            heights,
             salt,
         },
     );
@@ -996,7 +1114,7 @@ async fn action_execute_custom_proposal(
         .account()
         .ok_or_else(|| "No account loaded".to_string())?
         .clone();
-    let asset = build_transfer_asset(account.inner(), recipe.faucet_id, recipe.amount)
+    let asset = build_transfer_asset(recipe.faucet_id, recipe.amount)
         .map_err(|e| format!("invalid asset: {}", e))?;
 
     let mut request = build_p2id_transaction_request(
@@ -1004,6 +1122,7 @@ async fn action_execute_custom_proposal(
         recipe.recipient,
         vec![asset.into()],
         recipe.note_type,
+        recipe.heights,
         recipe.salt,
         std::iter::empty(),
     )
@@ -1020,12 +1139,52 @@ async fn action_execute_custom_proposal(
 
     print_waiting("Submitting custom transaction");
     client
-        .submit_transaction(request)
+        .submit_transaction(&proposal_id, request)
         .await
         .map_err(|e| format!("submit failed: {}", e))?;
 
     print_success("Custom proposal executed");
     Ok(())
+}
+
+/// Surfaces the upstream `AuthMultisig` security note before a signer-set-growing
+/// proposal: per-procedure threshold overrides are absolute counts and the on-chain
+/// update never re-scales them, so growth silently lowers every override's
+/// effective signing ratio. Returns whether the user chose to proceed.
+fn confirm_override_dilution(
+    state: &SessionState,
+    transaction_type: &TransactionType,
+    editor: &mut DefaultEditor,
+) -> Result<bool, String> {
+    let client = state.get_client()?;
+    let account = client
+        .account()
+        .ok_or_else(|| "No account loaded".to_string())?;
+    let current = account.cosigner_commitments().len() as u32;
+    let Some(target) = transaction_type.target_signer_count(current) else {
+        return Ok(true);
+    };
+    let diluted = account
+        .overrides_diluted_by_signer_growth(target)
+        .map_err(|e| format!("Failed to read procedure threshold overrides: {}", e))?;
+    if diluted.is_empty() {
+        return Ok(true);
+    }
+
+    print_warning("Growing the signer set dilutes existing procedure threshold overrides.");
+    print_info("Overrides are absolute signature counts and are never re-scaled on-chain:");
+    for (procedure, threshold) in &diluted {
+        println!(
+            "    {}: {}-of-{} becomes {}-of-{}",
+            procedure, threshold, current, threshold, target
+        );
+    }
+    print_info(
+        "To keep the intended security level, raise the affected overrides via\n  \
+         [6] Update procedure threshold override after (or alongside) this change.",
+    );
+    let answer = prompt_input(editor, "Proceed anyway? [y/N]: ")?;
+    Ok(matches!(answer.trim(), "y" | "Y"))
 }
 
 fn prompt_add_cosigner(editor: &mut DefaultEditor) -> Result<TransactionType, String> {
@@ -1196,83 +1355,127 @@ fn prompt_p2id(
         other => return Err(format!("Invalid note visibility '{}'", other)),
     };
 
+    // Get optional P2IDE heights (issue #366)
+    let heights = P2ideHeights {
+        reclaim: prompt_p2ide_height(editor, "  Reclaim block height (blank = none): ")?,
+        timelock: prompt_p2ide_height(editor, "  Timelock block height (blank = none): ")?,
+    };
+
     println!("\nTransfer details:");
     println!("  Recipient: {}", shorten_hex(recipient_input.trim()));
     println!("  Faucet:    {}", shorten_hex(&faucet_id.to_hex()));
     println!("  Amount:    {} / {} available", amount, max_amount);
     println!("  Note:      {}", note_type);
+    if let Some(height) = heights.reclaim {
+        println!("  Reclaim:   block {}", height);
+    }
+    if let Some(height) = heights.timelock {
+        println!("  Timelock:  block {}", height);
+    }
 
     let confirm = prompt_input(editor, "\nConfirm? [y/N]: ")?;
     if confirm.to_lowercase() != "y" {
         return Err("Cancelled".to_string());
     }
 
-    Ok(TransactionType::transfer_with_note_type(
-        recipient, faucet_id, amount, note_type,
+    Ok(TransactionType::transfer_p2ide(
+        recipient, faucet_id, amount, note_type, heights,
     ))
+}
+
+/// Prompts for an optional P2IDE block height (issue #366). Blank => none;
+/// `0` is rejected because it encodes "no constraint" on-chain.
+fn prompt_p2ide_height(
+    editor: &mut DefaultEditor,
+    prompt: &str,
+) -> Result<Option<NonZeroU32>, String> {
+    let input = prompt_input(editor, prompt)?;
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    match input.parse::<u32>() {
+        Ok(0) => Err("Block height must be greater than 0".to_string()),
+        Ok(height) => Ok(NonZeroU32::new(height)),
+        Err(_) => Err(format!("Invalid block height '{}'", input)),
+    }
 }
 
 async fn prompt_consume_notes(
     state: &mut SessionState,
     editor: &mut DefaultEditor,
 ) -> Result<TransactionType, String> {
-    let client = state.get_client_mut()?;
-
-    print_waiting("Fetching consumable notes...");
-    let mut notes = client
-        .list_consumable_notes()
-        .await
-        .map_err(|e| format!("Failed to list notes: {}", e))?;
-
-    if notes.is_empty() {
-        print_info("No consumable notes in local cache.");
-        let confirm = prompt_input(editor, "Sync account now and retry? [y/N]: ")?;
-        if confirm.to_lowercase() != "y" {
-            return Err("No consumable notes available".to_string());
-        }
-
-        print_waiting("Syncing account state from network...");
-        client
-            .sync()
-            .await
-            .map_err(|e| format!("Failed to sync: {}", e))?;
-
-        print_waiting("Fetching consumable notes (local cache)...");
-        notes = client
+    let (notes, selection) = loop {
+        print_waiting("Fetching consumable notes...");
+        let notes = state
+            .get_client_mut()?
             .list_consumable_notes()
             .await
             .map_err(|e| format!("Failed to list notes: {}", e))?;
 
         if notes.is_empty() {
-            return Err("No consumable notes available".to_string());
-        }
-    }
+            print_info("No consumable notes in local cache.");
+            println!("  [1] Sync account and retry");
+            println!("  [2] Import a note file received out-of-band (private notes)");
+            println!("  [b] Cancel");
 
-    println!("\nConsumable notes:");
-    for (idx, note) in notes.iter().enumerate() {
-        println!("  [{}] {}", idx + 1, shorten_hex(&note.id.to_hex()));
-
-        for asset in &note.assets {
-            match asset {
-                Asset::Fungible(f) => {
-                    println!(
-                        "      - {} tokens (faucet: {})",
-                        f.amount(),
-                        shorten_hex(&f.faucet_id().to_hex())
-                    );
+            let choice = prompt_input(editor, "\nChoice: ")?;
+            match choice.to_lowercase().as_str() {
+                "1" => {
+                    print_waiting("Syncing account state from network...");
+                    state
+                        .get_client_mut()?
+                        .sync()
+                        .await
+                        .map_err(|e| format!("Failed to sync: {}", e))?;
                 }
-                Asset::NonFungible(nft) => {
-                    println!(
-                        "      - NFT (faucet: {})",
-                        shorten_hex(&nft.faucet_id().to_hex())
-                    );
+                "2" => {
+                    if let Err(e) = import_note_file(state, editor).await {
+                        print_error(&e);
+                    }
+                }
+                "b" => return Err("Cancelled".to_string()),
+                _ => print_error("Invalid choice"),
+            }
+            continue;
+        }
+
+        println!("\nConsumable notes:");
+        for (idx, note) in notes.iter().enumerate() {
+            println!("  [{}] {}", idx + 1, shorten_hex(&note.id.to_hex()));
+
+            for asset in &note.assets {
+                match asset {
+                    Asset::Fungible(f) => {
+                        println!(
+                            "      - {} tokens (faucet: {})",
+                            f.amount(),
+                            shorten_hex(&f.faucet_id().to_hex())
+                        );
+                    }
+                    Asset::NonFungible(nft) => {
+                        println!(
+                            "      - NFT (faucet: {})",
+                            shorten_hex(&nft.faucet_id().to_hex())
+                        );
+                    }
                 }
             }
         }
-    }
 
-    print_info("\nEnter note numbers to consume (comma-separated, e.g., 1,2,3):");
-    let selection = prompt_input(editor, "  Notes: ")?;
+        print_info("\nEnter note numbers to consume (comma-separated, e.g., 1,2,3),");
+        print_info("or 'i' to import a note file received out-of-band (private notes):");
+        let selection = prompt_input(editor, "  Notes: ")?;
+
+        if selection.trim().eq_ignore_ascii_case("i") {
+            if let Err(e) = import_note_file(state, editor).await {
+                print_error(&e);
+            }
+            continue;
+        }
+
+        break (notes, selection);
+    };
 
     let indices: Vec<usize> = selection
         .split(',')

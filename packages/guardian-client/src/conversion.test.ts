@@ -86,6 +86,27 @@ describe('conversion', () => {
       }
     });
 
+    it('converts retained DeltaStatus with and without a reason (issue #345)', () => {
+      const withReason = fromServerDeltaStatus({
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+        reason: 'diverged',
+      });
+      expect(withReason).toEqual({
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+        reason: 'diverged',
+      });
+
+      // Serde omits the field for rows without a recorded reason.
+      const withoutReason = fromServerDeltaStatus({
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+      });
+      expect(withoutReason.status).toBe('retained');
+      expect(withoutReason.reason).toBeUndefined();
+    });
+
     it('converts ProposalMetadata with all fields', () => {
       const server: ServerProposalMetadata = {
         proposal_type: 'update_procedure_threshold',
@@ -276,6 +297,22 @@ describe('conversion', () => {
       });
     });
 
+    it('round-trips retained DeltaStatus (issue #345)', () => {
+      const status: DeltaStatus = {
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+        reason: 'retry_exhausted',
+      };
+
+      const server = toServerDeltaStatus(status);
+      expect(server).toEqual({
+        status: 'retained',
+        timestamp: '2026-07-23T00:00:00Z',
+        reason: 'retry_exhausted',
+      });
+      expect(fromServerDeltaStatus(server)).toEqual(status);
+    });
+
     it('converts ProposalMetadata', () => {
       const meta: ProposalMetadata = {
         proposalType: 'update_procedure_threshold',
@@ -417,6 +454,21 @@ describe('conversion', () => {
       expect(result.salt).toBe(original.salt);
     });
 
+    it('chainAnchor survives roundtrip as chain_anchor on the wire', () => {
+      const original: ProposalMetadata = {
+        proposalType: 'add_signer',
+        targetThreshold: 2,
+        signerCommitments: ['0xabc'],
+        chainAnchor: 'bW9jay1jaGFpbi1hbmNob3I=',
+      };
+
+      const server = toServerProposalMetadata(original);
+      expect(server.chain_anchor).toBe('bW9jay1jaGFpbi1hbmNob3I=');
+
+      const result = fromServerProposalMetadata(server);
+      expect(result.chainAnchor).toBe('bW9jay1jaGFpbi1hbmNob3I=');
+    });
+
     it('p2id noteType survives roundtrip as note_type on the wire (issue #322)', () => {
       const original: ProposalMetadata = {
         proposalType: 'p2id',
@@ -431,6 +483,25 @@ describe('conversion', () => {
 
       const result = fromServerProposalMetadata(server);
       expect(result.noteType).toBe('private');
+    });
+
+    it('p2ide heights survive roundtrip as reclaim_height/timelock_height on the wire (issue #366)', () => {
+      const original: ProposalMetadata = {
+        proposalType: 'p2id',
+        recipientId: '0xrecipient',
+        faucetId: '0xfaucet',
+        amount: '1000',
+        reclaimHeight: 12345,
+        timelockHeight: 700,
+      };
+
+      const server = toServerProposalMetadata(original);
+      expect(server.reclaim_height).toBe(12345);
+      expect(server.timelock_height).toBe(700);
+
+      const result = fromServerProposalMetadata(server);
+      expect(result.reclaimHeight).toBe(12345);
+      expect(result.timelockHeight).toBe(700);
     });
   });
 });

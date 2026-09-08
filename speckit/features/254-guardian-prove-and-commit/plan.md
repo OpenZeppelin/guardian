@@ -61,8 +61,8 @@ and batching remain future work. No v1 implementation tasks are added for those 
 - **Server**: `crates/server`, axum HTTP + tonic gRPC, Diesel-backed Postgres
   plus the filesystem backend in `src/storage/filesystem.rs`.
 - **Proving**: `crates/server/src/network/miden/execution/` behind the
-  `proving` Cargo feature (`miden-tx`, `miden-remote-prover-client`); `e2e`
-  includes `proving`. Remote prover only — Guardian never proves locally.
+  `proving` Cargo feature (`miden-tx`); `e2e` includes `proving` and uses the remote prover client
+  exposed by `miden-client` on the 0.16 line. Production proving remains remote.
 - **Concurrency substrate**: `LeaseFence { lease_name, holder_id, fence_token }`
   (`storage/mod.rs:149`) and the leader/lease machinery in
   `src/coordination/leader.rs`, established by `010-horizontal-scaling`.

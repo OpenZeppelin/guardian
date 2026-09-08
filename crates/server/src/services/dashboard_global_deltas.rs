@@ -3,7 +3,7 @@
 //! Returns delta records aggregated across all accounts, ordered by
 //! `status_timestamp DESC` with `(account_id, nonce)` as the stable
 //! tie-breaker. Only persisted lifecycle statuses are surfaced
-//! (`candidate`, `canonical`, `discarded`).
+//! (`candidate`, `canonical`, `retained`, `discarded`).
 //!
 //! Cursor traversal is stable under concurrent inserts, but an entry
 //! whose `status_timestamp` is bumped mid-traversal MAY be skipped or
@@ -42,6 +42,11 @@ pub struct DashboardGlobalDeltaEntry {
     pub new_commitment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
+    /// Why the row left the active candidate path: `retry_exhausted` or
+    /// `diverged` on `retained` rows, `client_abandoned` on `discarded`
+    /// rows; absent elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<&'static str>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<DashboardDeltaCategory>,
@@ -81,10 +86,12 @@ pub fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<DashboardDelt
         let parsed = match t {
             "candidate" => DashboardDeltaStatus::Candidate,
             "canonical" => DashboardDeltaStatus::Canonical,
+            "retained" => DashboardDeltaStatus::Retained,
             "discarded" => DashboardDeltaStatus::Discarded,
             other => {
                 return Err(GuardianError::InvalidStatusFilter(format!(
-                    "unknown status value '{other}'; allowed: candidate, canonical, discarded"
+                    "unknown status value '{other}'; allowed: candidate, canonical, \
+                     retained, discarded"
                 )));
             }
         };
@@ -103,6 +110,9 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         prev_commitment: delta.prev_commitment.clone(),
         new_commitment: delta.new_commitment.clone(),
         retry_count,
+        status_reason: crate::services::dashboard_account_deltas::decode_status_reason(
+            &delta.status,
+        ),
         category: None,
         proposal_type: None,
         assets: Vec::new(),
@@ -125,6 +135,7 @@ fn map_status_filter(status: &DashboardDeltaStatus) -> DeltaStatusKind {
     match status {
         DashboardDeltaStatus::Candidate => DeltaStatusKind::Candidate,
         DashboardDeltaStatus::Canonical => DeltaStatusKind::Canonical,
+        DashboardDeltaStatus::Retained => DeltaStatusKind::Retained,
         DashboardDeltaStatus::Discarded => DeltaStatusKind::Discarded,
     }
 }
@@ -288,6 +299,14 @@ mod tests {
         assert_eq!(
             parse_status_filter(Some("candidate,candidate")).unwrap(),
             Some(vec![DashboardDeltaStatus::Candidate])
+        );
+    }
+
+    #[test]
+    fn parse_status_filter_accepts_retained() {
+        assert_eq!(
+            parse_status_filter(Some("retained")).unwrap(),
+            Some(vec![DashboardDeltaStatus::Retained])
         );
     }
 

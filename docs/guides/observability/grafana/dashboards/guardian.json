@@ -1944,8 +1944,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Rate-limit rejections by type",
-      "description": "burst / sustained",
+      "title": "Rate-limit rejections by type and transport",
+      "description": "burst / sustained, http / grpc",
       "datasource": {
         "type": "prometheus",
         "uid": "guardian-prometheus"
@@ -1987,9 +1987,9 @@
             "type": "prometheus",
             "uid": "guardian-prometheus"
           },
-          "expr": "sum by (limit_type) (rate(guardian_rate_limit_rejections_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (limit_type, transport) (rate(guardian_rate_limit_rejections_total{instance=~\"$instance\"}[$__rate_interval]))",
           "refId": "A",
-          "legendFormat": "{{limit_type}}"
+          "legendFormat": "{{transport}} {{limit_type}}"
         }
       ]
     },

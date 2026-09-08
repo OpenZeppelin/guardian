@@ -6,27 +6,27 @@
 //! reference block, partial blockchain, vault and storage-map witnesses, account MAST —
 //! was accepted by the VM.
 
-use miden_client::account::AccountInterfaceExt;
-use miden_confidential_contracts::masm_builder::get_multisig_library;
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::Felt;
 use miden_protocol::Hasher;
 use miden_protocol::Word;
-use miden_protocol::account::AccountId;
 use miden_protocol::account::auth::AuthSecretKey;
+use miden_protocol::account::{AccountCodeInterface, AccountId};
+use miden_protocol::assembly::Package;
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::crypto::rand::RandomCoin;
-use miden_protocol::note::{NoteAttachments, NoteType};
+use miden_protocol::note::{Note, NoteType};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
 };
 use miden_protocol::transaction::{InputNotes, TransactionArgs};
-use miden_standards::account::interface::AccountInterface;
+use miden_standards::StandardsLib;
 use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::P2idNote;
+use miden_standards::tx_script::SendNotesTransactionScript;
 use miden_testing::MockChainBuilder;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 use miden_tx::{LocalTransactionProver, TransactionExecutor, TransactionExecutorError};
@@ -303,7 +303,6 @@ async fn guardian_executes_signs_and_proves_end_to_end() {
     // same witness either way, so this exercises the identical interface.
     let proven = LocalTransactionProver::default()
         .prove(executed.clone())
-        .await
         .expect("proving succeeds");
 
     // FR-039: the authoritative expiration lives on the proven transaction and is available
@@ -446,7 +445,7 @@ async fn execute_two_phase(
 
 /// **P2ID-send family** driven with the real send script, not `TransactionArgs::default()`.
 ///
-/// The script comes from `AccountInterface::build_send_notes_script`, which is the same
+/// The script comes from `SendNotesTransactionScript`, which is the same
 /// upstream primitive the multisig SDK's `build_p2id_transaction_request` uses. The server
 /// cannot depend on the SDK, so the script is built from that primitive directly rather than
 /// by importing the SDK's builder.
@@ -487,25 +486,32 @@ async fn guardian_executes_the_p2id_send_family() {
 
     // The note and script must be identical across both phases, so build them once.
     let mut rng = RandomCoin::new(salt);
-    let note = P2idNote::create(
-        account.id(),
-        recipient,
-        vec![asset],
-        NoteType::Public,
-        NoteAttachments::default(),
-        &mut rng,
-    )
-    .expect("p2id note builds");
+    let note: Note = P2idNote::builder()
+        .sender(account.id())
+        .target(recipient)
+        .assets([asset])
+        .note_type(NoteType::Public)
+        .generate_serial_number(&mut rng)
+        .build()
+        .expect("p2id note builds")
+        .into();
 
-    let send_script = AccountInterface::from_account(&account)
-        .build_send_notes_script(&[note.clone().into()], None)
+    let interface = AccountCodeInterface::new(
+        account.id(),
+        account.code().procedures().iter().copied().collect(),
+    )
+    .expect("account interface builds");
+    let send_script = SendNotesTransactionScript::new(&interface, &[note.clone().into()])
         .expect("send script builds");
 
     let expected_note = note.clone();
 
     let build_args = || {
         let mut args = TransactionArgs::default()
-            .with_tx_script(send_script.clone())
+            .with_tx_script_and_args(
+                send_script.tx_script().clone(),
+                send_script.tx_script_args(),
+            )
             .with_auth_args(salt);
         args.extend_output_note_recipients(vec![&expected_note]);
         args
@@ -545,7 +551,7 @@ async fn guardian_executes_the_configuration_family() {
     let threshold = 2u64;
 
     // Mirrors the SDK's `build_multisig_config_advice`: threshold, signer count, two zero
-    // felts, then the commitments in reverse order, hashed to give the advice key.
+    // felts, then commitment/scheme pairs in reverse order, hashed to give the advice key.
     let mut payload = vec![
         Felt::new_unchecked(threshold),
         Felt::new_unchecked(signer_commitments.len() as u64),
@@ -554,17 +560,19 @@ async fn guardian_executes_the_configuration_family() {
     ];
     for commitment in signer_commitments.iter().rev() {
         payload.extend_from_slice(commitment.as_elements());
+        payload.extend_from_slice(&[Felt::new_unchecked(2), Felt::ZERO, Felt::ZERO, Felt::ZERO]);
     }
     let config_hash: Word = Hasher::hash_elements(&payload);
 
-    let multisig_library = get_multisig_library().expect("multisig library loads");
+    let multisig_library: Package = StandardsLib::default().into();
     let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_library(&multisig_library)
+        .with_dynamically_linked_package(&multisig_library)
         .expect("library links")
         .compile_tx_script(
             r#"
-            use oz_multisig::multisig
-            begin
+            use miden::standards::auth::multisig
+            @transaction_script
+            pub proc main
                 call.multisig::update_signers_and_threshold
             end
             "#,
@@ -583,7 +591,7 @@ async fn guardian_executes_the_configuration_family() {
     let executed = execute_two_phase(&account, &chain, &cosigner, &guardian, build_args).await;
 
     assert!(
-        !executed.account_delta().storage().is_empty(),
+        !executed.account_patch().storage().is_empty(),
         "a signer/threshold rotation must change account storage"
     );
 }
@@ -628,26 +636,37 @@ async fn guardian_proves_a_transaction_with_a_finite_expiration() {
         .expect("recipient id is valid");
     let salt = Word::from([3u32, 3, 3, 3]);
     let mut rng = RandomCoin::new(salt);
-    let note = P2idNote::create(
-        account.id(),
-        recipient,
-        vec![asset],
-        NoteType::Public,
-        NoteAttachments::default(),
-        &mut rng,
-    )
-    .expect("p2id note builds");
+    let note: Note = P2idNote::builder()
+        .sender(account.id())
+        .target(recipient)
+        .assets([asset])
+        .note_type(NoteType::Public)
+        .generate_serial_number(&mut rng)
+        .build()
+        .expect("p2id note builds")
+        .into();
 
     // The only difference from the send-family test: a finite expiration delta, which the
     // script turns into a `set_tx_expiration` section.
-    let send_script = AccountInterface::from_account(&account)
-        .build_send_notes_script(&[note.clone().into()], Some(EXPIRATION_DELTA))
-        .expect("send script builds with an expiration delta");
+    let interface = AccountCodeInterface::new(
+        account.id(),
+        account.code().procedures().iter().copied().collect(),
+    )
+    .expect("account interface builds");
+    let send_script = SendNotesTransactionScript::with_expiration_delta(
+        &interface,
+        &[note.clone().into()],
+        std::num::NonZeroU16::new(EXPIRATION_DELTA).unwrap(),
+    )
+    .expect("send script builds with an expiration delta");
     let expected_note = note.clone();
 
     let build_args = || {
         let mut args = TransactionArgs::default()
-            .with_tx_script(send_script.clone())
+            .with_tx_script_and_args(
+                send_script.tx_script().clone(),
+                send_script.tx_script_args(),
+            )
             .with_auth_args(salt);
         args.extend_output_note_recipients(vec![&expected_note]);
         args
@@ -658,7 +677,6 @@ async fn guardian_proves_a_transaction_with_a_finite_expiration() {
 
     let proven = LocalTransactionProver::default()
         .prove(executed)
-        .await
         .expect("proving succeeds");
 
     let expiration = proven.expiration_block_num();

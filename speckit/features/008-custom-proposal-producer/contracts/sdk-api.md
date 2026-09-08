@@ -35,7 +35,7 @@ Integration execute flow (Rust): `let advice = client.prepare_custom_execution(i
 ## TypeScript — `Multisig` (`packages/miden-multisig-client/src/multisig.ts`)
 
 ```ts
-createCustomProposal(transactionRequestBytes: Uint8Array, proposalType: string, nonce?: number): Promise<Proposal>;
+createCustomProposal(transactionRequestBytes: Uint8Array, proposalType: string, options?: { nonce?: number }): Promise<Proposal>; // nonce moved into options by issue #387
 
 // Binding-check, fetch ack, return advice. Does NOT submit.
 prepareCustomExecution(proposalId: string, transactionRequestBytes: Uint8Array): Promise<AdviceMap>;

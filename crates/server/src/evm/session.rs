@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use rand::RngCore;
+use rand::Rng;
 
 use crate::coordination::{
     ChallengePayload, ChallengeStore, InMemoryChallengeStore, InMemorySessionStore, SessionStore,

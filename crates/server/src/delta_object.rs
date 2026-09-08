@@ -21,6 +21,24 @@ pub enum DiscardReason {
     ClientAbandoned,
 }
 
+/// Why a candidate was moved to `Retained` instead of deleted
+/// (issue #345). The label is diagnostic — every retained delta is
+/// reconciled and TTL-expired identically — but it records which
+/// worker verdict parked the row, and a `diverged` row that later
+/// reconciles is direct evidence the divergence verdict was spurious
+/// (e.g. a lagging RPC node, or the pre-#326 empty-digest misread
+/// that hit new accounts' first transactions).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RetainReason {
+    /// Verification never observed the expected commitment within the
+    /// retry budget (RPC outage, worker downtime, slow proving).
+    RetryExhausted,
+    /// The on-chain commitment was observed at neither the candidate's
+    /// base nor its expected commitment on enough consecutive ticks.
+    Diverged,
+}
+
 /// Delta status state machine
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -58,6 +76,20 @@ pub enum DeltaStatus {
     },
     Canonical {
         timestamp: String,
+    },
+    /// A candidate the worker gave up on, kept for background
+    /// reconciliation (issue #345) instead of being deleted. A give-up
+    /// verdict — retry exhaustion or confirmed divergence — is an
+    /// *observation*, not proof the delta is wrong, so the worker keeps
+    /// re-checking `stored base + delta` against the chain and promotes
+    /// the row if they ever match. Does NOT hold the pending-candidate
+    /// lock: new submissions stay unblocked and supersede a retained
+    /// row at the same nonce. `timestamp` is when retention began and
+    /// anchors the TTL after which the row is dropped for good.
+    Retained {
+        timestamp: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<RetainReason>,
     },
     Discarded {
         timestamp: String,
@@ -97,6 +129,20 @@ impl DeltaStatus {
 
     pub fn canonical(timestamp: String) -> Self {
         Self::Canonical { timestamp }
+    }
+
+    pub fn retained(timestamp: String, reason: RetainReason) -> Self {
+        Self::Retained {
+            timestamp,
+            reason: Some(reason),
+        }
+    }
+
+    pub fn retain_reason(&self) -> Option<RetainReason> {
+        match self {
+            Self::Retained { reason, .. } => *reason,
+            _ => None,
+        }
     }
 
     pub fn discarded(timestamp: String) -> Self {
@@ -225,6 +271,10 @@ impl DeltaStatus {
         matches!(self, Self::Canonical { .. })
     }
 
+    pub fn is_retained(&self) -> bool {
+        matches!(self, Self::Retained { .. })
+    }
+
     pub fn is_discarded(&self) -> bool {
         matches!(self, Self::Discarded { .. })
     }
@@ -234,6 +284,7 @@ impl DeltaStatus {
             Self::Pending { timestamp, .. } => timestamp,
             Self::Candidate { timestamp, .. } => timestamp,
             Self::Canonical { timestamp } => timestamp,
+            Self::Retained { timestamp, .. } => timestamp,
             Self::Discarded { timestamp, .. } => timestamp,
         }
     }
@@ -468,6 +519,40 @@ mod tests {
         let status: DeltaStatus = serde_json::from_value(json).unwrap();
         assert!(status.is_discarded());
         assert!(!status.is_client_abandoned());
+    }
+
+    #[test]
+    fn retained_status_roundtrips_with_reason() {
+        let status = DeltaStatus::retained(
+            "2026-07-01T00:00:00Z".to_string(),
+            RetainReason::RetryExhausted,
+        );
+        assert!(status.is_retained());
+        assert!(!status.is_candidate());
+        assert!(!status.is_discarded());
+        assert_eq!(status.timestamp(), "2026-07-01T00:00:00Z");
+
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["status"], "retained");
+        assert_eq!(json["reason"], "retry_exhausted");
+        let back: DeltaStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back.retain_reason(), Some(RetainReason::RetryExhausted));
+
+        let diverged =
+            DeltaStatus::retained("2026-07-01T00:00:00Z".to_string(), RetainReason::Diverged);
+        let json = serde_json::to_value(&diverged).unwrap();
+        assert_eq!(json["reason"], "diverged");
+    }
+
+    #[test]
+    fn retained_json_without_reason_deserializes() {
+        let json = serde_json::json!({
+            "status": "retained",
+            "timestamp": "2026-07-01T00:00:00Z"
+        });
+        let status: DeltaStatus = serde_json::from_value(json).unwrap();
+        assert!(status.is_retained());
+        assert_eq!(status.retain_reason(), None);
     }
 
     #[test]

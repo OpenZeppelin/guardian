@@ -15,6 +15,23 @@ export function wordElementToBigInt(word: Word, index: number): bigint {
   return index < elements.length ? elements[index] : 0n;
 }
 
+/**
+ * True when every element of the word is zero. The SDK's storage-map reads
+ * return `Word::empty()` for a key with no entry (`StorageMap::get` is
+ * `unwrap_or_default()` in miden-protocol), so readers use this to detect
+ * absent entries.
+ */
+export function isEmptyWord(word: Word): boolean {
+  const elements: BigUint64Array | bigint[] =
+    typeof word.toU64s === 'function' ? word.toU64s() : word.toFelts().map(f => f.asInt());
+  for (const element of elements) {
+    if (element !== 0n) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function wordToBytes(word: { toFelts: () => Array<{ asInt: () => bigint }> }): Uint8Array {
   const felts = word.toFelts();
   const buf = new Uint8Array(32);

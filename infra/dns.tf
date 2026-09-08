@@ -35,3 +35,31 @@ resource "cloudflare_dns_record" "service" {
   ttl     = 1
   type    = "CNAME"
 }
+
+# Temporary Route 53 legacy hostname -> ALB during migration
+resource "aws_route53_record" "service_secondary" {
+  count = local.alias_domain_enabled && local.route53_zone_id != "" ? 1 : 0
+
+  zone_id = local.route53_zone_id
+  name    = local.alias_service_fqdn
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.main.dns_name
+    zone_id                = aws_lb.main.zone_id
+    evaluate_target_health = true
+  }
+}
+
+# Temporary Cloudflare legacy hostname -> ALB during migration
+resource "cloudflare_dns_record" "service_secondary" {
+  count = local.alias_domain_enabled && var.cloudflare_zone_id != "" ? 1 : 0
+
+  zone_id = data.cloudflare_zone.domain[0].zone_id
+  comment = "GUARDIAN service secondary hostname"
+  content = aws_lb.main.dns_name
+  name    = var.alias_subdomain
+  proxied = var.cloudflare_proxied
+  ttl     = 1
+  type    = "CNAME"
+}

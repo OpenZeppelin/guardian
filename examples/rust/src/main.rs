@@ -10,7 +10,7 @@ use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
-use miden_client::{Client, ClientError, DebugMode, Deserializable, Felt, Serializable, Word};
+use miden_client::{Client, ClientError, Deserializable, Felt, Serializable, Word};
 use miden_client_sqlite_store::SqliteStore;
 
 use miden_protocol::account::auth::Signature as AccountSignature;
@@ -78,7 +78,6 @@ async fn create_miden_client(
     configured_client_builder(endpoint)
         .store(store)
         .rng(rng)
-        .in_debug_mode(DebugMode::Enabled)
         .tx_discard_delta(Some(20))
         .max_block_number_delta(256)
         .build()
@@ -86,6 +85,8 @@ async fn create_miden_client(
         .map_err(|err| format!("Failed to create Miden client: {err}"))
 }
 
+// The Err variant is upstream's `miden_client::ClientError`, propagated verbatim.
+#[allow(clippy::result_large_err)]
 async fn add_account_and_sync(
     client: &mut Client<FilesystemKeyStore>,
     account: &Account,
@@ -112,8 +113,8 @@ async fn main() -> ClientResult<()> {
     let (_client2_full_pubkey_hex, client2_commitment_hex, client2_secret_key) =
         falcon::generate_falcon_keypair(&keystore);
 
-    println!("  ✓ Client 1 commitment: {}...", &client1_commitment_hex);
-    println!("  ✓ Client 2 commitment: {}...", &client2_commitment_hex);
+    println!("  ✓ Client 1 commitment: {client1_commitment_hex}...");
+    println!("  ✓ Client 2 commitment: {client2_commitment_hex}...");
     println!();
 
     let miden_endpoint = match args.network {
@@ -222,6 +223,12 @@ async fn main() -> ClientResult<()> {
         return Ok(());
     }
     println!("  ✓ Account synced with Miden node");
+    println!(
+        "  ! On a chain with a non-zero verification_base_fee, fund this account with the \
+         native fee asset before the first execute below: the guarded auth procedure pays \
+         the fee before the transaction summary exists, so an empty vault aborts with \
+         \"the amount of the asset in the vault is less than the amount to remove\"."
+    );
     println!();
 
     println!("Step 3: Client 1 - Configure account in GUARDIAN...");
@@ -481,10 +488,12 @@ async fn main() -> ClientResult<()> {
                     }
                 };
 
-                println!(
-                    "  ✓ Transaction executed (nonce: {})",
-                    tx_result.account_delta().nonce_delta().as_canonical_u64()
-                );
+                let final_nonce = tx_result
+                    .account_patch()
+                    .final_nonce()
+                    .map(|nonce| nonce.as_canonical_u64().to_string())
+                    .unwrap_or_else(|| "unavailable".to_owned());
+                println!("  ✓ Transaction executed (final nonce: {final_nonce})");
             }
             Ok(false) => {
                 println!("  ✗ Invalid GUARDIAN signature");

@@ -2,19 +2,74 @@ use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AccountState, ConfigureRequest,
     ConfigureResponse, DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
-    GetAccountByKeyCommitmentResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
-    GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
-    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
-    GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest,
-    PushDeltaResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
+    GetAccountByKeyCommitmentResponse, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
+    GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
+    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
+    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
+    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
+    SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
+/// Post-start control surface for a [`MockGuardianService`]: the service is
+/// moved into `start_mock_server`, so tests clone a handle first to observe
+/// recorded traffic and to (re)arm responses while the server runs.
+///
+/// Persistent responses complement the one-shot `with_*` builders: a
+/// persistent response is served whenever no one-shot response is queued for
+/// that endpoint, instead of the endpoint's hardcoded default — so multi-call
+/// flows (sync loops, repeated listings) can run against stable data.
+#[derive(Clone, Default)]
+pub struct MockGuardianHandle {
+    /// Guardian method names in arrival order, across all endpoints that
+    /// record themselves — the cross-endpoint ordering log.
+    calls: Arc<StdMutex<Vec<String>>>,
+    /// Every `push_delta_proposal` request body, in arrival order.
+    push_delta_proposal_requests: Arc<StdMutex<Vec<PushDeltaProposalRequest>>>,
+    persistent_get_pubkey: Arc<StdMutex<Option<String>>>,
+    persistent_get_state: Arc<StdMutex<Option<GetStateResponse>>>,
+    persistent_get_delta_proposal: Arc<StdMutex<Option<GetDeltaProposalResponse>>>,
+    persistent_get_delta_proposals: Arc<StdMutex<Option<GetDeltaProposalsResponse>>>,
+}
+
+impl MockGuardianHandle {
+    /// Guardian method names in arrival order.
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// Every `push_delta_proposal` request received so far.
+    pub fn pushed_proposals(&self) -> Vec<PushDeltaProposalRequest> {
+        self.push_delta_proposal_requests.lock().unwrap().clone()
+    }
+
+    /// Serve `pubkey` from `get_pubkey` whenever no one-shot response is queued.
+    pub fn set_persistent_get_pubkey(&self, pubkey: impl Into<String>) {
+        *self.persistent_get_pubkey.lock().unwrap() = Some(pubkey.into());
+    }
+
+    /// Serve `response` from `get_state` whenever the one-shot queue is empty.
+    pub fn set_persistent_get_state(&self, response: GetStateResponse) {
+        *self.persistent_get_state.lock().unwrap() = Some(response);
+    }
+
+    /// Serve `response` from `get_delta_proposal` whenever no one-shot response is queued.
+    pub fn set_persistent_get_delta_proposal(&self, response: GetDeltaProposalResponse) {
+        *self.persistent_get_delta_proposal.lock().unwrap() = Some(response);
+    }
+
+    /// Serve `response` from `get_delta_proposals` whenever no one-shot response is queued.
+    pub fn set_persistent_get_delta_proposals(&self, response: GetDeltaProposalsResponse) {
+        *self.persistent_get_delta_proposals.lock().unwrap() = Some(response);
+    }
+}
+
 #[derive(Default)]
 pub struct MockGuardianService {
+    handle: MockGuardianHandle,
     get_pubkey_response: Arc<StdMutex<Option<Result<String, Status>>>>,
     configure_response: Arc<StdMutex<Option<Result<ConfigureResponse, Status>>>>,
     push_delta_proposal_response: Arc<StdMutex<Option<Result<PushDeltaProposalResponse, Status>>>>,
@@ -24,7 +79,10 @@ pub struct MockGuardianService {
     push_delta_response: Arc<StdMutex<Option<Result<PushDeltaResponse, Status>>>>,
     get_delta_response: Arc<StdMutex<Option<Result<GetDeltaResponse, Status>>>>,
     get_delta_since_response: Arc<StdMutex<Option<Result<GetDeltaSinceResponse, Status>>>>,
-    get_state_response: Arc<StdMutex<Option<Result<GetStateResponse, Status>>>>,
+    get_delta_history_response: Arc<StdMutex<Option<Result<GetDeltaHistoryResponse, Status>>>>,
+    get_delta_history_requests: Arc<StdMutex<Vec<(GetDeltaHistoryRequest, i64, String)>>>,
+    get_state_responses: Arc<StdMutex<Vec<Result<GetStateResponse, Status>>>>,
+    get_state_auth_headers: Arc<StdMutex<Vec<(i64, String)>>>,
     get_account_by_key_commitment_response:
         Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
     abandon_delta_candidate_response:
@@ -39,6 +97,11 @@ impl MockGuardianService {
 
     pub fn with_configure(self, response: Result<ConfigureResponse, Status>) -> Self {
         *self.configure_response.lock().unwrap() = Some(response);
+        self
+    }
+
+    pub fn with_get_delta_history(self, response: Result<GetDeltaHistoryResponse, Status>) -> Self {
+        *self.get_delta_history_response.lock().unwrap() = Some(response);
         self
     }
 
@@ -89,9 +152,29 @@ impl MockGuardianService {
         self
     }
 
+    /// Queue a `get_state` response. Responses are served FIFO; once the
+    /// queue is empty the handler falls back to its default success, so
+    /// queueing N errors makes attempt N+1 succeed.
     pub fn with_get_state(self, response: Result<GetStateResponse, Status>) -> Self {
-        *self.get_state_response.lock().unwrap() = Some(response);
+        self.get_state_responses.lock().unwrap().push(response);
         self
+    }
+
+    /// Handle onto the `(x-timestamp, x-signature)` pairs recorded from every
+    /// `get_state` request, in arrival order. Clone before moving the service
+    /// into `start_mock_server` to observe per-attempt auth metadata.
+    pub fn get_state_auth_headers_handle(&self) -> Arc<StdMutex<Vec<(i64, String)>>> {
+        self.get_state_auth_headers.clone()
+    }
+
+    /// Requests seen by `get_delta_history`, each with the
+    /// `x-timestamp` and `x-signature` metadata it carried, so tests
+    /// can assert the outgoing message and auth instead of only the
+    /// response mapping.
+    pub fn get_delta_history_requests_handle(
+        &self,
+    ) -> Arc<StdMutex<Vec<(GetDeltaHistoryRequest, i64, String)>>> {
+        self.get_delta_history_requests.clone()
     }
 
     pub fn with_get_account_by_key_commitment(
@@ -109,6 +192,24 @@ impl MockGuardianService {
         *self.abandon_delta_candidate_response.lock().unwrap() = Some(response);
         self
     }
+
+    /// Clone the post-start control surface before moving the service into
+    /// [`start_mock_server`]. See [`MockGuardianHandle`].
+    pub fn handle(&self) -> MockGuardianHandle {
+        self.handle.clone()
+    }
+
+    fn record_call(&self, method: &str) {
+        self.handle.calls.lock().unwrap().push(method.to_string());
+    }
+}
+
+/// Shared precedence for endpoints with a persistent slot: the armed
+/// persistent response if any, otherwise the endpoint's hardcoded default.
+/// (Callers apply this only after the one-shot queue came up empty, so the
+/// full order is: one-shot, then persistent, then default.)
+fn persistent_or<T: Clone>(slot: &StdMutex<Option<T>>, default: impl FnOnce() -> T) -> T {
+    slot.lock().unwrap().clone().unwrap_or_else(default)
 }
 
 #[tonic::async_trait]
@@ -117,12 +218,17 @@ impl Guardian for MockGuardianService {
         &self,
         _request: Request<GetPubkeyRequest>,
     ) -> Result<Response<crate::proto::GetPubkeyResponse>, Status> {
+        self.record_call("get_pubkey");
         let response = self
             .get_pubkey_response
             .lock()
             .unwrap()
             .take()
-            .unwrap_or_else(|| Ok("mock_pubkey".to_string()));
+            .unwrap_or_else(|| {
+                Ok(persistent_or(&self.handle.persistent_get_pubkey, || {
+                    "mock_pubkey".to_string()
+                }))
+            });
 
         response.map(|pubkey| {
             Response::new(crate::proto::GetPubkeyResponse {
@@ -136,6 +242,7 @@ impl Guardian for MockGuardianService {
         &self,
         _request: Request<ConfigureRequest>,
     ) -> Result<Response<ConfigureResponse>, Status> {
+        self.record_call("configure");
         let response = self
             .configure_response
             .lock()
@@ -155,8 +262,14 @@ impl Guardian for MockGuardianService {
 
     async fn push_delta_proposal(
         &self,
-        _request: Request<PushDeltaProposalRequest>,
+        request: Request<PushDeltaProposalRequest>,
     ) -> Result<Response<PushDeltaProposalResponse>, Status> {
+        self.record_call("push_delta_proposal");
+        self.handle
+            .push_delta_proposal_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
         let response = self
             .push_delta_proposal_response
             .lock()
@@ -178,17 +291,21 @@ impl Guardian for MockGuardianService {
         &self,
         _request: Request<GetDeltaProposalsRequest>,
     ) -> Result<Response<GetDeltaProposalsResponse>, Status> {
+        self.record_call("get_delta_proposals");
         let response = self
             .get_delta_proposals_response
             .lock()
             .unwrap()
             .take()
             .unwrap_or_else(|| {
-                Ok(GetDeltaProposalsResponse {
-                    success: true,
-                    message: String::new(),
-                    proposals: vec![],
-                })
+                Ok(persistent_or(
+                    &self.handle.persistent_get_delta_proposals,
+                    || GetDeltaProposalsResponse {
+                        success: true,
+                        message: String::new(),
+                        proposals: vec![],
+                    },
+                ))
             });
 
         response.map(Response::new)
@@ -198,17 +315,21 @@ impl Guardian for MockGuardianService {
         &self,
         _request: Request<GetDeltaProposalRequest>,
     ) -> Result<Response<GetDeltaProposalResponse>, Status> {
+        self.record_call("get_delta_proposal");
         let response = self
             .get_delta_proposal_response
             .lock()
             .unwrap()
             .take()
             .unwrap_or_else(|| {
-                Ok(GetDeltaProposalResponse {
-                    success: true,
-                    message: String::new(),
-                    proposal: Some(create_mock_delta()),
-                })
+                Ok(persistent_or(
+                    &self.handle.persistent_get_delta_proposal,
+                    || GetDeltaProposalResponse {
+                        success: true,
+                        message: String::new(),
+                        proposal: Some(create_mock_delta()),
+                    },
+                ))
             });
 
         response.map(Response::new)
@@ -263,6 +384,7 @@ impl Guardian for MockGuardianService {
         &self,
         _request: Request<PushDeltaRequest>,
     ) -> Result<Response<PushDeltaResponse>, Status> {
+        self.record_call("push_delta");
         let response = self
             .push_delta_response
             .lock()
@@ -320,22 +442,79 @@ impl Guardian for MockGuardianService {
         response.map(Response::new)
     }
 
-    async fn get_state(
+    async fn get_delta_history(
         &self,
-        _request: Request<GetStateRequest>,
-    ) -> Result<Response<GetStateResponse>, Status> {
+        request: Request<GetDeltaHistoryRequest>,
+    ) -> Result<Response<GetDeltaHistoryResponse>, Status> {
+        let timestamp = request
+            .metadata()
+            .get("x-timestamp")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default();
+        let signature = request
+            .metadata()
+            .get("x-signature")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        self.get_delta_history_requests.lock().unwrap().push((
+            request.get_ref().clone(),
+            timestamp,
+            signature,
+        ));
+
         let response = self
-            .get_state_response
+            .get_delta_history_response
             .lock()
             .unwrap()
             .take()
             .unwrap_or_else(|| {
-                Ok(GetStateResponse {
+                Ok(GetDeltaHistoryResponse {
+                    success: true,
+                    message: String::new(),
+                    entries: Vec::new(),
+                    next_cursor: None,
+                })
+            });
+
+        response.map(Response::new)
+    }
+
+    async fn get_state(
+        &self,
+        request: Request<GetStateRequest>,
+    ) -> Result<Response<GetStateResponse>, Status> {
+        let timestamp = request
+            .metadata()
+            .get("x-timestamp")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or_default();
+        let signature = request
+            .metadata()
+            .get("x-signature")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        self.get_state_auth_headers
+            .lock()
+            .unwrap()
+            .push((timestamp, signature));
+
+        self.record_call("get_state");
+        let mut responses = self.get_state_responses.lock().unwrap();
+        let response = if responses.is_empty() {
+            Ok(persistent_or(&self.handle.persistent_get_state, || {
+                GetStateResponse {
                     success: true,
                     message: String::new(),
                     state: Some(create_mock_account_state()),
-                })
-            });
+                }
+            }))
+        } else {
+            responses.remove(0)
+        };
 
         response.map(Response::new)
     }

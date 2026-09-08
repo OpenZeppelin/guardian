@@ -1,12 +1,20 @@
 export {
   buildConsumeNotesTransactionRequest,
 } from './transaction/consumeNotes.js';
-export { executeForSummary } from './transaction/summary.js';
 export {
+  chainAnchorFromBase64,
+  chainAnchorToBase64,
+  executeForSummary,
+  executeForSummaryAt,
+  summaryAuthArg,
+} from './transaction/summary.js';
+export {
+  buildP2idNoteFromMetadata,
   buildP2idTransactionRequest,
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
   type P2idTransactionOptions,
+  type P2ideHeightOptions,
 } from './transaction/p2id.js';
 export {
   buildUpdateGuardianTransactionRequest,

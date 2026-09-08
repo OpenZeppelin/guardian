@@ -14,13 +14,13 @@ use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::{KeyManager, ensure_hex_prefix};
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
-use crate::proposal::{Proposal, ProposalMetadata, TransactionType};
+use crate::proposal::{P2ideHeights, Proposal, ProposalMetadata, TransactionType};
 use crate::utils::hex_body_eq;
 
 use super::{
     build_p2id_transaction_request, build_update_guardian_transaction_request,
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
-    execute_for_summary, generate_salt, word_to_hex,
+    chain_anchor_to_base64, execute_for_summary, generate_salt, word_to_hex,
 };
 
 /// Builder for creating multisig transaction proposals.
@@ -78,6 +78,7 @@ impl ProposalBuilder {
                 faucet_id,
                 amount,
                 note_type,
+                heights,
             } => {
                 self.build_p2id(
                     miden_client,
@@ -87,6 +88,7 @@ impl ProposalBuilder {
                     faucet_id,
                     amount,
                     note_type,
+                    heights,
                     key_manager,
                 )
                 .await
@@ -183,7 +185,8 @@ impl ProposalBuilder {
         )?;
 
         // Execute to get the TransactionSummary
-        let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
+        let (tx_summary, chain_anchor) =
+            execute_for_summary(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
@@ -201,6 +204,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -209,6 +214,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
+            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
         };
 
         // Build the payload using ProposalPayload
@@ -219,7 +225,8 @@ impl ProposalBuilder {
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
-            .with_required_signatures(required_signatures);
+            .with_required_signatures(required_signatures)
+            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -291,7 +298,8 @@ impl ProposalBuilder {
         )?;
 
         // Execute to get the TransactionSummary
-        let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
+        let (tx_summary, chain_anchor) =
+            execute_for_summary(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
@@ -309,6 +317,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -317,6 +327,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
+            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
         };
 
         // Build the payload using ProposalPayload
@@ -327,7 +338,8 @@ impl ProposalBuilder {
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
-            .with_required_signatures(required_signatures);
+            .with_required_signatures(required_signatures)
+            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -362,13 +374,14 @@ impl ProposalBuilder {
         faucet_id: AccountId,
         amount: u64,
         note_type: NoteType,
+        heights: P2ideHeights,
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
             account.effective_threshold_for_procedure(ProcedureName::SendAsset)? as usize;
 
-        let asset = build_transfer_asset(account.inner(), faucet_id, amount)?;
+        let asset = build_transfer_asset(faucet_id, amount)?;
 
         // Generate salt for replay protection
         let salt = generate_salt();
@@ -379,12 +392,14 @@ impl ProposalBuilder {
             recipient,
             vec![asset.into()],
             note_type,
+            heights,
             salt,
             std::iter::empty(),
         )?;
 
         // Execute to get the TransactionSummary
-        let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
+        let (tx_summary, chain_anchor) =
+            execute_for_summary(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
@@ -400,6 +415,8 @@ impl ProposalBuilder {
             faucet_id_hex: Some(faucet_id.to_string()),
             amount: Some(amount),
             note_type: (note_type != NoteType::Public).then(|| note_type.to_string()),
+            reclaim_height: heights.reclaim,
+            timelock_height: heights.timelock,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -408,6 +425,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
+            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
         };
 
         // Build the payload using ProposalPayload
@@ -419,8 +437,10 @@ impl ProposalBuilder {
                 amount,
                 word_to_hex(&salt),
                 note_type,
+                heights,
             )
-            .with_required_signatures(required_signatures);
+            .with_required_signatures(required_signatures)
+            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -440,6 +460,7 @@ impl ProposalBuilder {
                 faucet_id,
                 amount,
                 note_type,
+                heights,
             },
             metadata,
         );
@@ -477,7 +498,8 @@ impl ProposalBuilder {
             std::iter::empty(),
         )?;
 
-        let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
+        let (tx_summary, chain_anchor) =
+            execute_for_summary(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
 
         let note_ids_hex: Vec<String> = note_ids.iter().map(|id| id.to_hex()).collect();
@@ -491,6 +513,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: note_ids_hex.clone(),
             consume_notes_metadata_version: Some(
                 crate::proposal::CONSUME_NOTES_METADATA_VERSION_V2,
@@ -501,6 +525,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
+            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
         };
 
         let notes_base64: Vec<String> = serialized_notes
@@ -511,7 +536,8 @@ impl ProposalBuilder {
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_note_consumption_metadata_v2(note_ids_hex, notes_base64, word_to_hex(&salt))
-            .with_required_signatures(required_signatures);
+            .with_required_signatures(required_signatures)
+            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
 
         // FR-011: cap covers only the metadata fragment, not the full payload.
         if let Some(meta) = payload.metadata.as_ref() {
@@ -574,12 +600,14 @@ impl ProposalBuilder {
         // Build the GUARDIAN update transaction request (no signatures for proposal)
         let tx_request = build_update_guardian_transaction_request(
             new_guardian_pubkey,
+            key_manager.scheme(),
             salt,
             std::iter::empty(),
         )?;
 
         // Execute to get the TransactionSummary
-        let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
+        let (tx_summary, chain_anchor) =
+            execute_for_summary(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
@@ -595,6 +623,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -603,6 +633,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
+            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
         };
 
         // Build the payload using ProposalPayload
@@ -613,7 +644,8 @@ impl ProposalBuilder {
                 new_guardian_endpoint.clone(),
                 word_to_hex(&salt),
             )
-            .with_required_signatures(required_signatures);
+            .with_required_signatures(required_signatures)
+            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -654,14 +686,14 @@ impl ProposalBuilder {
             as usize;
 
         let salt = generate_salt();
-        let (tx_request, _) = build_update_procedure_threshold_transaction_request(
+        let tx_request = build_update_procedure_threshold_transaction_request(
             procedure,
             new_threshold,
             salt,
             std::iter::empty(),
-            key_manager.scheme(),
         )?;
-        let tx_summary = execute_for_summary(miden_client, account_id, tx_request).await?;
+        let (tx_summary, chain_anchor) =
+            execute_for_summary(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
 
         let metadata = ProposalMetadata {
@@ -674,6 +706,8 @@ impl ProposalBuilder {
             faucet_id_hex: None,
             amount: None,
             note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
             note_ids_hex: Vec::new(),
             consume_notes_metadata_version: None,
             consume_notes_notes: Vec::new(),
@@ -682,12 +716,14 @@ impl ProposalBuilder {
             target_procedure: Some(procedure.to_string()),
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
+            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
         };
 
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_procedure_threshold_metadata(procedure, new_threshold as u64, word_to_hex(&salt))
-            .with_required_signatures(required_signatures);
+            .with_required_signatures(required_signatures)
+            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
 
         let nonce = account.nonce() + 1;
         let response = guardian_client
@@ -715,8 +751,11 @@ impl ProposalBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miden_protocol::account::delta::{AccountDelta, AccountStorageDelta, AccountVaultDelta};
-    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+    use miden_protocol::account::AccountStoragePatch;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
     use miden_protocol::{Felt, ZERO};
 
     fn test_proposal() -> Proposal {
@@ -724,8 +763,9 @@ mod tests {
             AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").expect("valid account id");
         let account_delta = AccountDelta::new(
             account_id,
-            AccountStorageDelta::default(),
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("valid delta");
@@ -733,7 +773,17 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
-            Word::from([Felt::new_unchecked(9), ZERO, ZERO, ZERO]),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([
+                ZERO,
+                ZERO,
+                ZERO,
+                Felt::new_unchecked(9),
+                ZERO,
+                ZERO,
+                ZERO,
+            ]),
         );
 
         Proposal::new(
@@ -775,5 +825,95 @@ mod tests {
                 .to_string()
                 .contains("transaction summary commitment")
         );
+    }
+
+    mod fee_conversion_salt {
+        use super::*;
+        use crate::client::test_support::{guarded_multisig_account, p2id_note_for, test_wallet};
+        use guardian_shared::SignatureScheme;
+        use miden_client::transaction::TransactionRequest;
+        use miden_protocol::asset::FungibleAsset;
+
+        fn salt() -> Word {
+            Word::from([1u32, 2, 3, 4])
+        }
+
+        fn assert_declares_salt(request: &TransactionRequest) {
+            assert_eq!(request.fee_conversion_salt(), Some(salt()));
+            assert_eq!(*request.auth_arg(), None);
+        }
+
+        #[test]
+        fn signer_update_request_declares_the_fee_conversion_salt() {
+            let (request, _) = build_update_signers_transaction_request(
+                1,
+                &[Word::from([5u32, 6, 7, 8])],
+                salt(),
+                std::iter::empty(),
+                SignatureScheme::Falcon,
+            )
+            .expect("the signer-update request builds");
+
+            assert_declares_salt(&request);
+        }
+
+        #[test]
+        fn p2id_request_declares_the_fee_conversion_salt() {
+            let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b")
+                .expect("valid recipient id");
+
+            let request = build_p2id_transaction_request(
+                &guarded_multisig_account(),
+                recipient,
+                vec![FungibleAsset::mock(100)],
+                NoteType::Public,
+                P2ideHeights::default(),
+                salt(),
+                std::iter::empty(),
+            )
+            .expect("the p2id request builds");
+
+            assert_declares_salt(&request);
+        }
+
+        #[test]
+        fn consume_notes_request_declares_the_fee_conversion_salt() {
+            let note = p2id_note_for(&test_wallet(1), 1, NoteType::Public);
+
+            let request = crate::transaction::build_consume_notes_transaction_request_from_notes(
+                vec![note],
+                salt(),
+                std::iter::empty(),
+            )
+            .expect("the consume-notes request builds");
+
+            assert_declares_salt(&request);
+        }
+
+        #[test]
+        fn switch_guardian_request_declares_the_fee_conversion_salt() {
+            let request = build_update_guardian_transaction_request(
+                Word::from([1u32, 1, 1, 1]),
+                SignatureScheme::Falcon,
+                salt(),
+                std::iter::empty(),
+            )
+            .expect("the switch-guardian request builds");
+
+            assert_declares_salt(&request);
+        }
+
+        #[test]
+        fn update_procedure_threshold_request_declares_the_fee_conversion_salt() {
+            let request = build_update_procedure_threshold_transaction_request(
+                ProcedureName::SendAsset,
+                2,
+                salt(),
+                std::iter::empty(),
+            )
+            .expect("the procedure-threshold request builds");
+
+            assert_declares_salt(&request);
+        }
     }
 }

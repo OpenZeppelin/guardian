@@ -24,18 +24,14 @@ interface HeaderProps {
   onReconnect: (url: string) => void;
   walletSource: WalletSource;
   onWalletSourceChange: (source: WalletSource) => void;
-  paraConnected: boolean;
-  paraCommitment: string | null;
   midenWalletConnected: boolean;
   midenWalletCommitment: string | null;
   onConnectMidenWallet: () => void;
   onDisconnectMidenWallet: () => void;
-  onOpenParaModal: () => void;
 }
 
 const SOURCE_LABELS: Record<WalletSource, string> = {
   local: 'Local',
-  para: 'Para',
   'miden-wallet': 'Miden Wallet',
 };
 
@@ -50,13 +46,10 @@ export function Header({
   onReconnect,
   walletSource,
   onWalletSourceChange,
-  paraConnected,
-  paraCommitment,
   midenWalletConnected,
   midenWalletCommitment,
   onConnectMidenWallet,
   onDisconnectMidenWallet,
-  onOpenParaModal,
 }: HeaderProps) {
   const [urlInput, setUrlInput] = useState(guardianUrl);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -98,36 +91,6 @@ export function Header({
                 >
                   Local Keys
                 </Button>
-
-                <div className="space-y-1">
-                  {paraConnected ? (
-                    <Button
-                      variant={walletSource === 'para' ? 'default' : 'outline'}
-                      size="sm"
-                      className="w-full justify-start"
-                      onClick={() => onWalletSourceChange('para')}
-                    >
-                      Para Wallet (connected)
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full justify-start"
-                      onClick={onOpenParaModal}
-                    >
-                      Connect Para Wallet
-                    </Button>
-                  )}
-                  {paraConnected && paraCommitment && (
-                    <code
-                      onClick={() => copyToClipboard(paraCommitment, () => toast.success('Para commitment copied'))}
-                      className="block text-xs bg-muted px-2 py-1 rounded cursor-pointer hover:bg-muted/80 font-mono truncate"
-                    >
-                      {truncateHex(paraCommitment, 10, 6)}
-                    </code>
-                  )}
-                </div>
 
                 <div className="space-y-1">
                   {midenWalletConnected ? (

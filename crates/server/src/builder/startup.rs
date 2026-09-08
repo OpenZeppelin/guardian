@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StartupInfo {
     network: NetworkType,
+    rpc_endpoint: String,
     storage: StorageType,
     coordination_mode: &'static str,
     ecdsa_backend: &'static str,
@@ -35,6 +36,7 @@ impl StartupInfo {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         network: NetworkType,
+        rpc_endpoint: String,
         storage: StorageType,
         coordination_mode: &'static str,
         ecdsa_backend: &'static str,
@@ -49,6 +51,7 @@ impl StartupInfo {
     ) -> Self {
         Self {
             network,
+            rpc_endpoint,
             storage,
             coordination_mode,
             ecdsa_backend,
@@ -73,7 +76,7 @@ impl StartupInfo {
         );
         tracing::info!(
             network = %self.network,
-            rpc_endpoint = self.network.rpc_endpoint(),
+            rpc_endpoint = self.rpc_endpoint,
             "network"
         );
         tracing::info!(storage = %self.storage, "storage backend");
@@ -173,6 +176,7 @@ mod tests {
     fn captures_postgres_kms_and_canonicalization_config() {
         let info = StartupInfo::new(
             NetworkType::MidenDevnet,
+            "https://rpc.devnet.miden.io".to_string(),
             StorageType::Postgres,
             "shared",
             "aws-kms",
@@ -189,6 +193,9 @@ mod tests {
                 abandon_quarantine_seconds: 15,
                 abandon_quarantine_checks: 2,
                 max_concurrent_accounts: 4,
+                retained_ttl_seconds: 86_400,
+                reconcile_interval_seconds: 60,
+                reconcile_page_size: 100,
             }),
             3,
             true,
@@ -218,6 +225,7 @@ mod tests {
     fn optimistic_mode_and_disabled_listeners_are_none() {
         let info = StartupInfo::new(
             NetworkType::MidenLocal,
+            "https://rpc.example".to_string(),
             StorageType::Filesystem,
             "single-process",
             "in-memory",
@@ -250,6 +258,7 @@ mod tests {
     fn coordination_mode_label_is_logged_as_resolved() {
         let info = StartupInfo::new(
             NetworkType::MidenDevnet,
+            "https://rpc.devnet.miden.io".to_string(),
             StorageType::Postgres,
             "single-process",
             "in-memory",

@@ -12,7 +12,6 @@ import {
   FalconSigner,
   MidenWalletSigner,
   MultisigClient as MultisigClientClass,
-  ParaSigner,
   type AccountState,
   type ConsumableNote,
   type DetectedMultisigConfig,
@@ -26,13 +25,6 @@ import {
   type WalletSigningContext,
 } from '@openzeppelin/miden-multisig-client';
 import type { SignerInfo, ResolvedSigner } from './types';
-
-interface ParaSignerOptions {
-  paraClient: { signMessage(params: { walletId: string; messageBase64: string }): Promise<unknown> };
-  walletId: string;
-  commitment: string;
-  publicKey: string;
-}
 
 interface MidenWalletSignerOptions {
   wallet: WalletSigningContext;
@@ -59,20 +51,6 @@ export function resolveLocalSigner(
     signatureScheme,
     signerInstance: new FalconSigner(signer.falcon.secretKey),
     walletSource: 'local',
-  };
-}
-
-export function resolveParaSigner({
-  paraClient,
-  walletId,
-  commitment,
-  publicKey,
-}: ParaSignerOptions): ResolvedSigner {
-  return {
-    commitment,
-    signatureScheme: 'ecdsa',
-    signerInstance: new ParaSigner(paraClient, walletId, commitment, publicKey),
-    walletSource: 'para',
   };
 }
 
@@ -177,8 +155,15 @@ export async function initMultisigClient(
   midenClient: MidenClient,
   guardianEndpoint: string,
   midenRpcEndpoint: string,
+  prover?: import('@openzeppelin/miden-multisig-client').ProverConfig,
+  rpc?: import('@openzeppelin/miden-multisig-client').RpcConfig,
 ): Promise<{ client: MultisigClient; guardianPubkey: string }> {
-  const client = new MultisigClientClass(midenClient, { guardianEndpoint, midenRpcEndpoint });
+  const client = new MultisigClientClass(midenClient, {
+    guardianEndpoint,
+    midenRpcEndpoint,
+    prover,
+    rpc,
+  });
   const response = await client.guardianClient.getPubkey();
   const guardianPubkey = typeof response === 'string' ? response : response.commitment;
   return { client, guardianPubkey };
@@ -198,7 +183,6 @@ export async function createMultisigAccount(
     threshold,
     signerCommitments,
     guardianCommitment,
-    guardianEnabled: true,
     procedureThresholds,
     storageMode: 'private',
     signatureScheme,
@@ -267,7 +251,10 @@ export async function createAddSignerProposal(
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () => {
     const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
-    return multisig.createAddSignerProposal(commitment, proposalNonce(multisig), newThreshold);
+    return multisig.createAddSignerProposal(commitment, {
+      nonce: proposalNonce(multisig),
+      newThreshold,
+    });
   });
 }
 
@@ -277,11 +264,10 @@ export async function createRemoveSignerProposal(
   newThreshold?: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createRemoveSignerProposal(
-      signerToRemove,
-      proposalNonce(multisig),
+    multisig.createRemoveSignerProposal(signerToRemove, {
+      nonce: proposalNonce(multisig),
       newThreshold,
-    ));
+    }));
 }
 
 export async function createChangeThresholdProposal(
@@ -289,7 +275,7 @@ export async function createChangeThresholdProposal(
   newThreshold: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createChangeThresholdProposal(newThreshold, proposalNonce(multisig)));
+    multisig.createChangeThresholdProposal(newThreshold, { nonce: proposalNonce(multisig) }));
 }
 
 export async function createUpdateProcedureThresholdProposal(
@@ -301,7 +287,7 @@ export async function createUpdateProcedureThresholdProposal(
     multisig.createUpdateProcedureThresholdProposal(
       procedure,
       threshold,
-      proposalNonce(multisig),
+      { nonce: proposalNonce(multisig) },
     ));
 }
 
@@ -310,7 +296,7 @@ export async function createConsumeNotesProposal(
   noteIds: string[],
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createConsumeNotesProposal(noteIds, proposalNonce(multisig)));
+    multisig.createConsumeNotesProposal(noteIds, { nonce: proposalNonce(multisig) }));
 }
 
 export async function createP2idProposal(
@@ -319,15 +305,14 @@ export async function createP2idProposal(
   faucetId: string,
   amount: bigint,
   noteType?: NoteType,
+  heights?: { reclaimHeight?: number; timelockHeight?: number },
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createP2idProposal(
-      recipientId,
-      faucetId,
-      amount,
-      proposalNonce(multisig),
-      { noteType },
-    ));
+    multisig.createP2idProposal(recipientId, faucetId, amount, {
+      ...heights,
+      nonce: proposalNonce(multisig),
+      noteType,
+    }));
 }
 
 export async function createSwitchGuardianProposal(
@@ -341,7 +326,7 @@ export async function createSwitchGuardianProposal(
       multisig.createSwitchGuardianProposal(
         newGuardianEndpoint,
         newGuardianPubkey,
-        proposalNonce(multisig),
+        { nonce: proposalNonce(multisig) },
       ),
     async (currentMultisig) => listVisibleProposals(currentMultisig),
   );
@@ -397,17 +382,15 @@ export interface CustomProposalRecipe {
   saltHex: string;
 }
 
-async function buildRequestFromRecipe(
-  multisig: Multisig,
+function buildRequestFromRecipe(
   recipe: CustomProposalRecipe,
   signatureAdviceMap?: AdviceMap,
-): Promise<TransactionRequest> {
+): TransactionRequest {
   return buildP2idTransactionRequest(
     recipe.senderId,
     recipe.recipientId,
     recipe.faucetId,
     BigInt(recipe.amount),
-    await multisig.getStoreAccount(),
     { salt: Word.fromHex(recipe.saltHex), signatureAdviceMap },
   ).request;
 }
@@ -425,11 +408,10 @@ export async function createCustomP2idProposal(
     recipientId,
     faucetId,
     amount,
-    await multisig.getStoreAccount(),
   );
 
   const created = await createProposalResult(multisig, () =>
-    multisig.createCustomProposal(request.serialize(), label, proposalNonce(multisig)));
+    multisig.createCustomProposal(request.serialize(), label, { nonce: proposalNonce(multisig) }));
 
   const recipe: CustomProposalRecipe = {
     proposalId: created.proposal.id,
@@ -448,13 +430,13 @@ export async function prepareAndSubmitCustomProposal(
   multisig: Multisig,
   recipe: CustomProposalRecipe,
 ): Promise<void> {
-  const bindingRequestBytes = (await buildRequestFromRecipe(multisig, recipe)).serialize();
+  const bindingRequestBytes = buildRequestFromRecipe(recipe).serialize();
   const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequestBytes);
 
-  const finalRequest = await buildRequestFromRecipe(multisig, recipe, advice);
+  const finalRequest = buildRequestFromRecipe(recipe, advice);
 
   try {
-    await multisig.submitTransaction(finalRequest);
+    await multisig.submitTransaction(recipe.proposalId, finalRequest);
   } catch (submitError) {
     // The local apply step can transiently fail (autoSync race) even when the
     // on-chain submit succeeded. Re-sync so local state catches up, then surface

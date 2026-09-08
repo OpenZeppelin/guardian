@@ -17,8 +17,29 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.7
 ```
+
+> **Why the peer version is exact**: no stable `0.16.0` is published, so a
+> `0.16.x`/`^0.16.0` range resolves to nothing, and the transaction-summary
+> layout and procedure roots are only byte-compatible within one pre-release
+> pair. Package releases wait for upstream 0.16 to stabilize.
+
+## Miden compatibility
+
+This package's version and Miden's are **not** aligned. Pick the release that
+matches your Miden node:
+
+| This package | Miden protocol |
+|---|---|
+| 0.17.x | 0.16.x (pre-release) |
+| 0.16.x | 0.15.x |
+| 0.15.x | 0.15.x |
+
+Adopting a new Miden line has twice required an irreversible reset of
+Guardian-stored account data, so an upgrade is not a drop-in. Full matrix, the
+breaking changes per line, and what each upgrade does to stored data:
+[MIDEN_COMPATIBILITY.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/MIDEN_COMPATIBILITY.md).
 
 ## Setup
 
@@ -38,8 +59,64 @@ const signer = new FalconSigner(secretKey);
 const client = new MultisigClient(midenClient, {
   guardianEndpoint: 'http://localhost:3000',
   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
+  prover: {
+    url: 'https://prover.example',
+    retry: { maxAttempts: 4 },
+  },
+  rpc: {
+    retry: { maxAttempts: 3 },
+  },
 });
 ```
+
+The nested `prover` configuration is optional. Without it, the injected Miden
+client's prover is preserved. By default, cloneable remote provers get two total
+attempts; endpoint-less injected provers, including local and callback provers,
+run once. A custom URL must be absolute HTTP(S), overrides the injected prover,
+and never falls back to a default endpoint. Retries apply only to transient
+proof failures; transaction execution, submission, local state application, and
+GUARDIAN calls are not retried.
+
+An optional `rpc` configuration (`rpc: { retry: { maxAttempts: 3 } }`) tunes
+retries for the idempotent Miden node reads this SDK issues — on-chain
+account lookups, state-commitment verification, and the guardian-switch node
+sync — against transient failures such as rate limiting. The default is two
+total attempts (one retry); an explicit `maxAttempts` of 1 opts out. Syncs
+performed directly on the injected Miden client are owned by the
+application. Transaction submission is never retried under any
+configuration: a submission whose outcome is unknown could execute twice if
+re-sent. There is no timeout setting: the browser WASM RPC client cannot
+cancel an in-flight request, so a JavaScript-side timeout would abandon a
+call whose side effects may still land.
+
+### Note transport endpoint
+
+Private notes are relayed through a note transport service that is separate
+from the node RPC. The injected Miden client owns note relay, so the endpoint
+is set when constructing it rather than on `MultisigClientConfig`. The
+`createDevnet` / `createTestnet` helpers wire the matching public transport
+service automatically; a custom node endpoint has no derivable transport
+service, so private-note relay stays disabled until `noteTransportUrl` is set
+explicitly.
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://my-node.internal:57291',
+  noteTransportUrl: 'https://my-transport.internal',
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://my-node.internal:57291',
+});
+```
+
+`noteTransportUrl` also accepts the `'devnet'` and `'testnet'` shorthands, so
+a custom node on a public network can reuse that network's public transport
+service.
+
+The full cross-SDK reference, including the Rust equivalents, is
+[`docs/MULTISIG_SDK.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MULTISIG_SDK.md).
 
 ## Usage
 
@@ -83,37 +160,46 @@ The configuration is automatically detected from the account's on-chain storage:
 const multisig = await client.load(accountId, signer);
 ```
 
-### Recover An Account By Key
+### Read Signer Public-Key Commitments
 
-When the wallet only holds a signing key from the account's authorization
-set, it does not yet know the account ID. `recoverByKey` queries Guardian's
-`/state/lookup` endpoint with proof-of-possession of the key, fetches state
-for each matching account, and returns `(accountId, state)` pairs.
+Since accounts use the upstream `AuthGuardedMultisig` component, the Miden
+SDK's `Account.getPublicKeyCommitments()` returns the approver commitments
+natively. The `AccountInspector` accessors are the strict, layout-insulated
+alternative (issue #306): they validate the complete set against the
+configured signer count and throw instead of silently omitting unreadable
+entries, and they shield consumers from storage-layout changes across
+contract versions.
+
+Holding only a fetched Miden SDK `Account` (e.g. a wallet or dApp):
 
 ```typescript
-const recovered = await client.recoverByKey(signer);
+import { AccountInspector } from '@openzeppelin/miden-multisig-client';
 
-if (recovered.length === 0) {
-  // No account on this Guardian operator authorizes the key.
-} else {
-  for (const { accountId, state } of recovered) {
-    const multisig = await client.load(accountId, signer);
-    // ...
-  }
-}
+const commitments = AccountInspector.getSignerPublicKeyCommitments(account);
+const guardianKey = AccountInspector.getGuardianPublicKeyCommitment(account);
 ```
 
-The `Signer` passed to `recoverByKey` MUST implement `signLookupMessage`
-(the bundled `FalconSigner` and `EcdsaSigner` both do). The lookup endpoint
-authenticates by proof-of-possession of the queried commitment — same key
-that already authenticates per-account requests, so revealing the account ID
-does not grant any new capability. See the design doc for the security
-analysis.
+Or from a loaded `Multisig` instance (reads current store-backed state):
 
-Multiple matches are returned uniformly: a key may legitimately authorize
-several accounts, and the helper surfaces all of them rather than silently
-picking one. The returned list is empty (not an error) when no account
-authorizes the queried commitment.
+```typescript
+const signerKeys = await multisig.getSignerPublicKeyCommitments();
+```
+
+Commitments are ordered by signer index as currently stored; indices re-pack
+when signers are removed, so index 0 is the key listed first at creation (by
+convention the creating client's own key) only until the first membership
+change. Hot/cold roles are a consumer-side convention, not part of on-chain
+state. `getSignerPublicKeyCommitments` throws rather than silently returning
+a truncated list when any signer entry is absent; `getGuardianPublicKeyCommitment`
+throws when the guardian entry is missing (the guarded-multisig always
+includes a guardian). Both are gated on this SDK's pinned contract version
+and reject accounts built from a different miden-standards release.
+
+The `Account` passed to `AccountInspector` must come from the same copy of
+`@miden-sdk/miden-sdk` that this package links. An application bundling its
+own SDK copy (common in wallets) will get a descriptive error from the SDK's
+instance checks; construct the account with this package's SDK instance
+instead.
 
 ### Fetch Account State
 
@@ -123,17 +209,51 @@ console.log('Commitment:', state.commitment);
 console.log('Created:', state.createdAt);
 ```
 
+### Creating Proposals
+
+Every `create*Proposal` method takes its required arguments followed by a
+single optional options object (issue #387) — there are no positional
+optional parameters:
+
+```typescript
+createP2idProposal(recipientId, faucetId, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)
+createConsumeNotesProposal(noteIds, { nonce }?)
+createAddSignerProposal(commitment, { nonce, newThreshold }?)
+createRemoveSignerProposal(commitment, { nonce, newThreshold }?)
+createChangeThresholdProposal(threshold, { nonce }?)
+createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)
+createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)
+createCustomProposal(requestBytes, label, { nonce }?)
+```
+
+All methods accept `nonce` (identifies the proposal; defaults to
+`Date.now()`). `newThreshold` defaults to the current threshold on add and to
+the min of the current threshold and the remaining signer count on remove.
+The option shapes are exported as `CreateProposalOptions`,
+`CreateSignerProposalOptions`, and `CreateP2idProposalOptions`.
+
+> **Breaking change (issue #387):** these methods previously took `nonce` (and
+> `newThreshold`) as positional parameters. Passing the old positional form
+> now throws at runtime instead of silently applying defaults.
+
 ### Create a Proposal (Add Signer)
 
 ```typescript
 // Create a proposal to add a new signer
 const proposal = await multisig.createAddSignerProposal(
   newSignerCommitment, // Commitment of signer to add
-  undefined,
-  3,
+  { newThreshold: 3 }, // Options: nonce, newThreshold
 );
 console.log('Proposal ID:', proposal.id);
 ```
+
+Per-procedure threshold overrides are absolute signature counts and are never
+re-scaled on-chain, so growing the signer set silently lowers every override's
+effective signing ratio (a 2-of-2 override becomes 2-of-n).
+`createAddSignerProposal` logs a `console.warn` per affected override, and
+`multisig.overridesDilutedBySignerGrowth(newNumSigners)` returns them for UIs
+that want to prompt before proposing. Raise the affected overrides via an
+update-procedure-threshold proposal alongside the growth.
 
 ### Sign a Proposal
 
@@ -169,6 +289,26 @@ console.log(accepted.state); // 'pending'
 const status = await multisig.abandonStatus(nonce);
 // 'waiting' | 'landed' | 'abandoned' | 'unexpected'
 ```
+
+### Delta History
+
+Render the account's confirmed history after recovery. One page
+per call, newest-first by nonce, with server-decoded note summaries:
+
+```typescript
+let cursor: string | undefined;
+do {
+  const page = await multisig.deltaHistory({ limit: 50, cursor });
+  for (const entry of page.entries) {
+    console.log(entry.nonce, entry.timestamp, entry.outputNotes);
+  }
+  cursor = page.nextCursor;
+} while (cursor !== undefined);
+```
+
+Only canonical (confirmed) deltas appear — pending proposals live on
+`syncProposals()` — and only transactions pushed through Guardian are
+visible to it.
 
 ### Check Proposal Status
 
@@ -216,6 +356,37 @@ const signedJson = await multisig.signProposalOffline(imported.id);
 console.log(signedJson);
 ```
 
+### Leave an Unreachable Guardian (Offline Switch)
+
+A switch-Guardian proposal can be created fully offline — nothing is pushed to
+the current Guardian, so an account can leave an operator that is down
+(mirrors the Rust `create_proposal_offline`). Only switch-Guardian proposals
+support this: every other type needs a Guardian acknowledgment at execution.
+The new endpoint must be reachable; its `/pubkey` commitment is verified
+before anything is signed.
+
+```typescript
+// Proposer: build, sign, and cache locally — the current Guardian is never contacted.
+const exported = await multisig.createSwitchGuardianProposalOffline(
+  'https://new-guardian.example',
+  newGuardianPubkey,
+);
+const json = JSON.stringify(exported); // share with cosigners side-channel
+
+// Cosigner: import, sign, send the updated JSON back.
+const imported = await cosigner.importProposal(json);
+const signedJson = await cosigner.signProposalOffline(imported.id);
+
+// Proposer: import the cosigned proposal and execute. The push to the old
+// Guardian is best-effort; registration happens on the new Guardian.
+const ready = await multisig.importProposal(signedJson);
+await multisig.executeProposal(ready.id);
+```
+
+For hand-rolled export/import flows, `computeCommitmentFromTxSummary` is
+exported: a proposal's `commitment` is its transaction summary's commitment,
+recomputed from the serialized summary.
+
 ### Custom Proposal Types
 
 GUARDIAN accepts any non-empty `proposalType`, so an integration can propose a
@@ -236,8 +407,11 @@ import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client
 // The options object accepts `noteType` (`NoteType.Public` (default) or
 // `NoteType.Private`, from `@miden-sdk/miden-sdk`); a private note publishes
 // only its hash on chain, so the recipient needs the note shared out-of-band.
-// The typed path is `createP2idProposal(recipient, faucet, amount, nonce?,
-// { noteType })`, which persists the choice in signed metadata.
+// It also accepts `reclaimHeight`/`timelockHeight` (absolute block heights,
+// issue #366); presence of either builds a P2IDE note instead of plain P2ID.
+// The typed path is `createP2idProposal(recipient, faucet, amount,
+// { nonce, noteType, reclaimHeight, timelockHeight })`, which persists the
+// choices in signed metadata.
 const { request, salt } = buildP2idTransactionRequest(senderId, recipientId, faucetId, amount);
 const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg');
 
@@ -249,17 +423,51 @@ const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg
 const advice = await multisig.prepareCustomExecution(proposal.id, request.serialize());
 
 // The browser TransactionRequest is immutable, so rebuild from the same recipe
-// (inputs + salt) with the advice, then submit.
+// (inputs + salt) with the advice, then submit. `submitTransaction` takes the
+// proposal id to execute at the proposal's anchored reference block, since the
+// collected signatures only authorize the summary produced there.
 const { request: finalRequest } = buildP2idTransactionRequest(
   senderId, recipientId, faucetId, amount, { salt, signatureAdviceMap: advice },
 );
-await multisig.submitTransaction(finalRequest);
+await multisig.submitTransaction(proposal.id, finalRequest);
 ```
+
+The exported transaction builders declare the proposal salt through
+`TransactionRequestBuilder.withFeeConversionSalt`. Miden-client derives the
+native 1:1 conversion info from the execution reference header. Integrations
+that build a request directly must retain the original salt and call
+`withFeeConversionSalt(salt)` on their builder when they create and rebuild the
+request.
 
 The integration keeps only its own recipe (build inputs + salt) so it can
 reproduce the exact transaction at execute time — the SDK does not store the
 serialized request. The binding check guarantees the rebuilt transaction matches the
 commitment the cosigners signed.
+
+The salt cannot be recovered from the summary. Once the auth arg became the
+commitment `hash(CONVERSION_INFO || SALT)` it stopped being invertible, so a
+recipe that was not retained cannot be reconstructed from the signed summary —
+keep the salt, or read it from the proposal's `saltHex` metadata, which is what
+the SDK's own execution path does.
+
+The summary exposes the committed auth argument for inspection:
+
+```typescript
+import { summaryAuthArg } from '@openzeppelin/miden-multisig-client';
+import { TransactionSummary } from '@miden-sdk/miden-sdk';
+
+const signedAuthArg = summaryAuthArg(TransactionSummary.deserialize(bytes));
+```
+
+Do not use `signedAuthArg` as the salt when rebuilding the request.
+`withFeeConversionSalt` would derive and commit a second value from it, and the
+rebuilt summary would not match the summary that the cosigners signed.
+
+On the Miden 0.16 pre-release line a summary binds seven user-defined elements,
+and the guarded-multisig auth component zeroes the leading three and passes the
+auth arg as the trailing four. `summaryAuthArg` reads that convention, so prefer
+it over indexing `userParams()` by hand. It replaced `summarySalt`, whose name
+claimed an inversion that no longer exists.
 
 > **Rust ↔ TS parity:** both SDKs expose the same producer surface —
 > `createCustomProposal` / `propose_custom_transaction`, `prepareCustomExecution` /
@@ -267,6 +475,116 @@ commitment the cosigners signed.
 > only difference is advice injection: Rust mutates the request's advice map in
 > place (`request.advice_map_mut().extend(advice)`), while the immutable browser
 > `TransactionRequest` is rebuilt from the recipe with the advice.
+
+### Recover An Account By Key
+
+When the wallet only holds a signing key from the account's authorization
+set, it does not yet know the account ID. `recoverByKey` queries Guardian's
+`/state/lookup` endpoint with proof-of-possession of the key, fetches state
+for each matching account, and returns `(accountId, state)` pairs.
+
+```typescript
+const recovered = await client.recoverByKey(signer);
+
+if (recovered.length === 0) {
+  // No account on this Guardian operator authorizes the key.
+} else {
+  for (const { accountId, state } of recovered) {
+    const multisig = await client.load(accountId, signer);
+    // ...
+  }
+}
+```
+
+The `Signer` passed to `recoverByKey` MUST implement `signLookupMessage`
+(the bundled `FalconSigner` and `EcdsaSigner` both do). The lookup endpoint
+authenticates by proof-of-possession of the queried commitment — same key
+that already authenticates per-account requests, so revealing the account ID
+does not grant any new capability. See the design doc for the security
+analysis.
+
+Multiple matches are returned uniformly: a key may legitimately authorize
+several accounts, and the helper surfaces all of them rather than silently
+picking one. The returned list is empty (not an error) when no account
+authorizes the queried commitment.
+
+### Recovering Notes After Device Loss
+
+Normal forward sync cannot see notes that landed behind the store's
+cursors. After `load()` on a recovered account, `multisig.recoverNotes()`
+runs the three recovery strategies as one flow — the private-note transport
+drain, the proposal-embedded note import, and the historical public-note
+backfill — and finishes with a normal sync (transport fetch, chain sync,
+and GUARDIAN state sync) so imported notes are verified and ready to
+consume. The flow is the one public entry point; the strategies are
+internal.
+
+```typescript
+const multisig = await client.load(accountId, signer);
+
+const report = await multisig.recoverNotes();
+console.log(`recovered ${report.imported} notes`);
+for (const problem of report.problems) {
+  console.log(`step ${problem.step} did not run: ${problem.reason}`);
+}
+```
+
+Strategies are individually selectable and the backfill's block range can be
+bounded:
+
+```typescript
+// Rescan only the transport backlog and recent public history, skipping the
+// proposal import and the final verifying sync.
+const report = await multisig.recoverNotes({
+  proposalImport: false,
+  fromBlock: 1_690_000,
+  syncAfter: false,
+});
+```
+
+The combined `NoteRecoveryReport` carries each strategy's own report
+(`transport`, `proposalImport`, `backfill`) untouched; a strategy that
+cannot run at all (GUARDIAN unreachable, chain tip unresolvable, broken
+local store) becomes a `RecoveryStepProblem` entry instead of aborting the
+flow, and `retryable: true` means rerunning the flow — which is idempotent —
+can plausibly recover more. In brief:
+
+- **Transport drain** — rescans the full private-note transport backlog for
+  every tracked tag, regardless of the stored cursor (and without ever
+  regressing it). Bounded by the transport service's retention: a
+  best-effort rescan, **not** a backup.
+- **Proposal import** — rebuilds importable notes from the bytes v2
+  consume-notes proposals embed (validated against the proposals' declared
+  note ids) plus node-fetched inclusion proofs, so it works for private
+  notes too. Per-note `NoteImportOutcome`s; corrupt proposals and notes are
+  isolated as `invalid` outcomes instead of blocking the rest.
+- **Public backfill** — tag-scoped historical scan (genesis to tip by
+  default) importing discovered public notes with their proofs, never
+  touching the global sync height; cost scales with matches, not range
+  length. This SDK screens discoveries statically against the well-known
+  P2ID/P2IDE scripts (custom-script notes are counted as
+  `skippedUnscreenable`), and unscannable sub-ranges are reported in
+  `uncovered` instead of failing the flow.
+
+For the full report semantics see
+[`docs/MULTISIG_SDK.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MULTISIG_SDK.md).
+
+### Preserving notes across a guardian switch
+
+Pending proposals do not survive a guardian switch — the new GUARDIAN is
+registered with bare account state — so the notes embedded in the old
+GUARDIAN's pending consume-notes proposals are the one recovery source
+`recoverNotes` can no longer reach after the repoint. `executeProposal`
+runs the proposal-import slice automatically on the switch-guardian path
+(against the old GUARDIAN, before the switch transaction executes),
+best-effort and bounded by a 30s timeout with cooperative cancellation;
+the transport drain and public backfill deliberately do not run there (an
+intact local store loses nothing they rescan). When repointing a client by
+hand via `setGuardianClient`, request the same preservation first:
+
+```typescript
+const report = await multisig.preservePreSwitchProposalNotes();
+```
 
 ## Transaction Utilities
 
@@ -357,8 +675,8 @@ default to `false`, at which point v1 proposals are refused with
 `UnsupportedMetadataVersionError(undefined)` on every code path.
 Deployments should drain or re-propose any v1 `consume_notes`
 proposals in flight before upgrading past the cut-over client version.
-Tracked by spec
-[`006-consume-notes-metadata`](../../speckit/features/006-consume-notes-metadata/spec.md).
+Tracked by the `006-consume-notes-metadata` feature spec in the
+repository.
 
 ## Testing
 

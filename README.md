@@ -8,6 +8,15 @@
 
 Warning: This is a work in progress.
 
+> **Miden version baseline**: the Rust workspace and the TypeScript
+> multisig SDK both track the Miden **v0.16 pre-release line**
+> (exact-pinned pre-releases; devnet already runs the v0.16 node). Package
+> releases wait for upstream 0.16 to stabilize. The Para wallet packages
+> (`@miden-sdk/miden-para`) still ship against 0.15 and are held back via
+> npm overrides in the browser examples until upstream updates them.
+> Accounts, local stores, and networks from v0.15 do not interoperate
+> with v0.16 — see [Troubleshooting](docs/TROUBLESHOOTING.md).
+
 ### Documentation
 
 - [`docs/`](docs/README.md) — in-repo documentation hub. Start with
@@ -68,7 +77,7 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 - `RUST_LOG` - Logging level (default: `info`)
   - Supports: `trace`, `debug`, `info`, `warn`, `error`
   - Module-specific: `RUST_LOG=server::jobs::canonicalization=debug`
-- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable HTTP rate limiting entirely (default: `true`)
+- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable rate limiting on both transports (default: `true`)
 - `GUARDIAN_RATE_BURST_PER_SEC` - Maximum requests per second (default: `10`)
 - `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
 - `GUARDIAN_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
@@ -156,18 +165,26 @@ cargo test -p guardian-server --features integration
 cargo test -p guardian-server --features e2e
 ```
 
+Postgres-backed tests stay `#[ignore]` and need a live database, so they run
+through their own script:
+
+```bash
+POSTGRES_PASSWORD=guardian docker compose -f docker-compose.postgres.yml up -d postgres
+./scripts/test-postgres.sh
+```
+
+See [LOCAL_DEV.md](./docs/LOCAL_DEV.md#postgres-backed-tests) for the reset and
+safety behaviour.
+
 #### TypeScript Tests
 
 ```bash
-# Install dependencies
-cd packages/guardian-client && npm install
-cd packages/guardian-evm-client && npm install
-cd packages/guardian-operator-client && npm install
-cd packages/miden-multisig-client && npm install
+cd packages
+npm ci
 
-# Run tests
-cd packages/guardian-client && npm test
-cd packages/guardian-evm-client && npm test
-cd packages/guardian-operator-client && npm test
-cd packages/miden-multisig-client && npm test
+npm test -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/guardian-evm-client
+npm test -w @openzeppelin/guardian-operator-client
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
 ```

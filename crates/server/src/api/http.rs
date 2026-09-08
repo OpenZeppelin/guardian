@@ -3,9 +3,9 @@ use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
-    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams,
-    GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams, LookupAccountParams,
-    PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
+    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaHistoryParams, GetDeltaParams,
+    GetDeltaProposalParams, GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams,
+    LookupAccountParams, PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -51,6 +51,23 @@ pub struct DeltaQuery {
 #[into_params(parameter_in = Query)]
 pub struct StateQuery {
     pub account_id: String,
+}
+
+/// Query parameters for the paginated history feed (issue #413).
+/// `limit` and `cursor` are kept as raw strings so the signed request
+/// payload (canonical JSON of this struct, omitted keys skipped)
+/// byte-matches what SDKs sign, and so limit parsing shares the
+/// dashboard rules.
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct HistoryQuery {
+    pub account_id: String,
+    /// Page size in `[1, 500]`; defaults to 50 when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<String>,
+    /// Opaque `next_cursor` from a previous page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
@@ -108,7 +125,11 @@ pub struct AbandonCandidateResponse {
     pub nonce: u64,
     /// `"pending"` while the worker still has to resolve the intent
     /// (the account stays locked until then); `"abandoned"` once the
-    /// delta is discarded as client-abandoned and the account released.
+    /// delta is discarded as client-abandoned and the account released;
+    /// `"retained"` when the worker had already stopped verifying the
+    /// candidate and released the account — unlocked, but the on-chain
+    /// outcome is still uncertain and background reconciliation may yet
+    /// promote the delta until its retention TTL expires.
     pub state: String,
     /// RFC 3339 UTC timestamp of the recorded abandon request. Retries
     /// return the original timestamp; absent once resolved.
@@ -145,68 +166,29 @@ pub struct ConfigureResponse {
     request_body = ConfigureRequest,
     responses(
         (status = 200, description = "Account configured", body = ConfigureResponse),
-        (status = 400, description = "Invalid request", body = ConfigureResponse),
+        (status = 400, description = "Invalid request", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn configure(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<ConfigureRequest>,
-) -> (StatusCode, Json<ConfigureResponse>) {
-    let request_payload = match request_payload_from_serializable(&payload) {
-        Ok(request_payload) => request_payload,
-        Err(e) => {
-            // Log the raw detail; return only the user-safe message + stable
-            // code (feature 009-human-readable-errors).
-            let err = GuardianError::InvalidInput(e);
-            tracing::debug!(code = err.code(), detail = %err, "configure request invalid");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ConfigureResponse {
-                    success: false,
-                    message: err.user_message().to_string(),
-                    ack_pubkey: None,
-                    ack_commitment: None,
-                    code: Some(err.code()),
-                }),
-            );
-        }
-    };
+) -> Result<Json<ConfigureResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
 
     let mut params = ConfigureAccountParams::from(payload);
     params.credential = request_payload.apply_to(credentials);
 
-    match services::configure_account(&state, params).await {
-        Ok(response) => (
-            StatusCode::OK,
-            Json(ConfigureResponse {
-                success: true,
-                message: format!("Account '{}' configured successfully", response.account_id),
-                ack_pubkey: Some(response.ack_pubkey),
-                ack_commitment: Some(response.ack_commitment),
-                code: None,
-            }),
-        ),
-        Err(e) => {
-            // The diagnostic Display string is logged, not returned; the wire
-            // carries only the user-safe message + stable code (feature 009).
-            if e.http_status().is_server_error() {
-                tracing::error!(code = e.code(), detail = %e, "configure failed (5xx)");
-            } else {
-                tracing::debug!(code = e.code(), detail = %e, "configure rejected (4xx)");
-            }
-            (
-                e.http_status(),
-                Json(ConfigureResponse {
-                    success: false,
-                    message: e.user_message().to_string(),
-                    ack_pubkey: None,
-                    ack_commitment: None,
-                    code: Some(e.code()),
-                }),
-            )
-        }
-    }
+    let response = services::configure_account(&state, params).await?;
+    Ok(Json(ConfigureResponse {
+        success: true,
+        message: format!("Account '{}' configured successfully", response.account_id),
+        ack_pubkey: Some(response.ack_pubkey),
+        ack_commitment: Some(response.ack_commitment),
+        code: None,
+    }))
 }
 
 /// Push a signed state delta for a single-key account. The request
@@ -220,7 +202,7 @@ pub async fn configure(
     responses(
         (status = 200, description = "Delta accepted", body = DeltaObject),
         (status = 400, description = "Invalid delta payload", body = crate::openapi::ApiErrorResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Conflicting pending delta/proposal", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -253,7 +235,7 @@ pub async fn push_delta(
     params(DeltaQuery),
     responses(
         (status = 200, description = "Delta found", body = DeltaObject),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Delta not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -285,7 +267,7 @@ pub async fn get_delta(
     params(DeltaQuery),
     responses(
         (status = 200, description = "Merged delta", body = DeltaObject),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "No deltas found", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -307,6 +289,48 @@ pub async fn get_delta_since(
     Ok(Json(response.merged_delta))
 }
 
+/// Paginated canonical delta history for an account (issue
+/// #413), newest-first by nonce, with decoded input/output note
+/// summaries. Read-only: served while the account is paused.
+#[utoipa::path(
+    get,
+    path = "/delta/history",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(HistoryQuery),
+    responses(
+        (status = 200, description = "One page of canonical history", body = crate::services::PagedResult<crate::services::HistoryEntry>),
+        (status = 400, description = "Invalid limit or cursor, or account on an unsupported network (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account not found", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_delta_history(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<HistoryQuery>,
+) -> Result<Json<crate::services::PagedResult<crate::services::HistoryEntry>>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+
+    let limit = services::parse_limit(query.limit.as_deref())?;
+    let cursor = services::parse_cursor(
+        query.cursor.as_deref(),
+        state.dashboard.cursor_secret(),
+        crate::dashboard::cursor::CursorKind::AccountDeltaHistory,
+    )?;
+
+    let params = GetDeltaHistoryParams {
+        account_id: query.account_id,
+        limit,
+        cursor,
+        credentials: request_payload.apply_to(credentials),
+    };
+
+    let response = services::get_delta_history(&state, params).await?;
+    Ok(Json(response))
+}
+
 /// Fetch the latest canonical state object for an account.
 #[utoipa::path(
     get,
@@ -316,7 +340,7 @@ pub async fn get_delta_since(
     params(StateQuery),
     responses(
         (status = 200, description = "Current account state", body = StateObject),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "State not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -349,7 +373,7 @@ pub async fn get_state(
     responses(
         (status = 200, description = "Accounts whose authorization set contains the commitment", body = LookupResponse),
         (status = 400, description = "Malformed key commitment", body = crate::openapi::ApiErrorResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -416,6 +440,21 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
     ))
 }
 
+/// Alias of `GET /status` mounted at the site root. Health checks and
+/// load balancers that probe `/` get the same machine-readable status
+/// body, with the identical response shape and no authentication.
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "client",
+    responses(
+        (status = 200, description = "Alias of `GET /status`: server liveness, version, and environment", body = crate::services::StatusResponse),
+    )
+)]
+pub async fn status_root(state: State<AppState>) -> Json<crate::services::StatusResponse> {
+    status(state).await
+}
+
 /// Return the Guardian acknowledgement (ACK) public key / commitment
 /// for the requested signature scheme (`falcon` default, or `ecdsa`).
 #[utoipa::path(
@@ -454,7 +493,7 @@ pub async fn get_pubkey(
     responses(
         (status = 200, description = "Proposal created", body = DeltaProposalResponse),
         (status = 400, description = "Invalid proposal payload", body = crate::openapi::ApiErrorResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Conflicting / too many pending proposals", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -494,7 +533,9 @@ pub async fn push_delta_proposal(
 /// already landed. Retries are idempotent and preserve the original
 /// request timestamp. Poll `GET /delta` for the resolution: still
 /// `candidate` → waiting; `canonical` → landed after all; `discarded`
-/// with reason `client_abandoned` → abandoned.
+/// with reason `client_abandoned` → abandoned; `retained` → the worker
+/// already released the account, but the outcome is still uncertain
+/// (reconciliation may promote it until the retention TTL expires).
 #[utoipa::path(
     post,
     path = "/delta/candidate/abandon",
@@ -503,7 +544,7 @@ pub async fn push_delta_proposal(
     request_body = AbandonCandidateRequest,
     responses(
         (status = 202, description = "Abandon intent accepted (or already resolved)", body = AbandonCandidateResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "No candidate delta at this nonce", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Candidate already landed on-chain, or account paused/released", body = crate::openapi::ApiErrorResponse),
     )
@@ -543,7 +584,7 @@ pub async fn abandon_candidate(
     params(ProposalQuery),
     responses(
         (status = 200, description = "Pending proposals", body = ProposalsResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn get_delta_proposals(
@@ -574,7 +615,7 @@ pub async fn get_delta_proposals(
     params(ProposalItemQuery),
     responses(
         (status = 200, description = "Proposal found", body = DeltaObject),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -607,7 +648,7 @@ pub async fn get_delta_proposal(
     responses(
         (status = 200, description = "Signature accepted", body = DeltaObject),
         (status = 400, description = "Invalid signature", body = crate::openapi::ApiErrorResponse),
-        (status = 401, description = "Authentication failed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Proposal already signed by this signer", body = crate::openapi::ApiErrorResponse),
     )
@@ -714,34 +755,34 @@ mod tests {
         (state, storage, network, metadata)
     }
 
-    #[tokio::test]
-    async fn status_route_returns_ok_without_auth() {
+    async fn get_json(state: AppState, uri: &str) -> serde_json::Value {
         use crate::testing::helpers::create_router;
         use axum::body::{Body, to_bytes};
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
 
-        let (state, ..) = create_test_state();
-        let app = create_router(state);
-
-        let res = app
+        let res = create_router(state)
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/status")
+                    .uri(uri)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
-            .expect("status request should succeed");
-
-        assert_eq!(res.status(), StatusCode::OK);
+            .expect("request should succeed");
+        assert_eq!(res.status(), StatusCode::OK, "{uri} should return 200");
 
         let bytes = to_bytes(res.into_body(), usize::MAX)
             .await
-            .expect("status body should read");
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("status body should be JSON");
+            .expect("body should read");
+        serde_json::from_slice(&bytes).expect("body should be JSON")
+    }
+
+    #[tokio::test]
+    async fn status_route_returns_ok_without_auth() {
+        let (state, ..) = create_test_state();
+        let json = get_json(state, "/status").await;
 
         assert_eq!(json["status"], "ok");
         assert!(json["version"].is_string());
@@ -751,6 +792,23 @@ mod tests {
         // Must not leak any dashboard/inventory fields.
         assert!(json.get("total_account_count").is_none());
         assert!(json.get("accounts_by_auth_method").is_none());
+    }
+
+    #[tokio::test]
+    async fn root_route_returns_the_status_body_without_auth() {
+        let (state, ..) = create_test_state();
+        let mut root = get_json(state.clone(), "/").await;
+        let mut status = get_json(state, "/status").await;
+
+        assert_eq!(root["status"], "ok");
+        // `uptime_seconds` is derived from the wall clock, so the two
+        // requests can straddle a second boundary. Every other field is
+        // identical by construction.
+        assert!(root["uptime_seconds"].is_number());
+        assert!(status["uptime_seconds"].is_number());
+        root.as_object_mut().unwrap().remove("uptime_seconds");
+        status.as_object_mut().unwrap().remove("uptime_seconds");
+        assert_eq!(root, status, "GET / must mirror GET /status");
     }
 
     fn create_account_metadata(
@@ -766,7 +824,6 @@ mod tests {
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,
@@ -865,10 +922,9 @@ mod tests {
         };
 
         let credentials = signed_credentials(&signer, &account_id, &request);
-        let (status, Json(response)) =
-            configure(State(state), AuthHeader(credentials), Json(request)).await;
-
-        assert_eq!(status, StatusCode::OK);
+        let Json(response) = configure(State(state), AuthHeader(credentials), Json(request))
+            .await
+            .expect("configure succeeds");
         assert!(response.success);
         assert!(response.ack_pubkey.is_some());
         assert!(response.message.contains("configured successfully"));

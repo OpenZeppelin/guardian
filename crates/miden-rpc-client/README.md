@@ -59,3 +59,7 @@ let notes = client.get_notes_by_id(note_ids).await?;
 // Get account commitment (convenience wrapper)
 let commitment = client.get_account_commitment(&account_id).await?;
 ```
+
+The generated block headers, Merkle paths, MMR deltas, and digests support checked
+`TryFrom` conversion into the corresponding `miden-protocol` types for witness
+assembly. Invalid field elements and missing required header fields are rejected.

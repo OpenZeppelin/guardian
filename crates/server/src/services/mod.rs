@@ -1,6 +1,6 @@
 use crate::error::{GuardianError, Result};
-use crate::metadata::AccountMetadata;
 use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS};
+use crate::metadata::{AccountMetadata, LEGACY_ACCOUNT_AUTH_FLOOR};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use base64::Engine;
@@ -21,6 +21,7 @@ mod dashboard_info;
 mod dashboard_pagination;
 mod delta_commit;
 mod get_delta;
+mod get_delta_history;
 mod get_delta_proposal;
 mod get_delta_proposals;
 mod get_delta_since;
@@ -65,8 +66,13 @@ pub use dashboard_info::{
     AGG_DELTA_STATUS_COUNTS, AGG_IN_FLIGHT_PROPOSAL_COUNT, AGG_LATEST_ACTIVITY,
     DashboardDeltaStatusCounts, DashboardInfoResponse, DashboardServiceStatus, get_dashboard_info,
 };
-pub use dashboard_pagination::{DEFAULT_LIMIT, MAX_LIMIT, PagedResult, parse_cursor, parse_limit};
+pub use dashboard_pagination::{
+    DEFAULT_LIMIT, MAX_LIMIT, PagedResult, parse_cursor, parse_limit, validate_limit,
+};
 pub use get_delta::{GetDeltaParams, GetDeltaResult, get_delta};
+pub use get_delta_history::{
+    GetDeltaHistoryParams, HistoryEntry, HistoryEntryStatus, get_delta_history,
+};
 pub use get_delta_proposal::{GetDeltaProposalParams, GetDeltaProposalResult, get_delta_proposal};
 pub use get_delta_proposals::{
     GetDeltaProposalsParams, GetDeltaProposalsResult, get_delta_proposals,
@@ -98,7 +104,11 @@ impl std::fmt::Debug for ResolvedAccount {
     }
 }
 
-#[tracing::instrument(skip(state, creds), fields(account_id = %account_id))]
+#[tracing::instrument(
+    level = "debug",
+    skip(state, creds),
+    fields(account_id = %account_id)
+)]
 pub async fn resolve_account(
     state: &AppState,
     account_id: &str,
@@ -118,6 +128,38 @@ pub async fn resolve_account(
         })?
         .ok_or_else(|| GuardianError::AccountNotFound(account_id.to_string()))?;
 
+    let request_timestamp = validate_request_timestamp(state, account_id, creds)?;
+
+    if metadata.network_config.is_evm()
+        || matches!(metadata.auth, crate::metadata::Auth::EvmEcdsa { .. })
+    {
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "evm".to_string(),
+            operation: "delta_api".to_string(),
+        });
+    }
+
+    let signer_commitment = metadata.auth.verify(account_id, creds).map_err(|e| {
+        tracing::warn!(
+            account_id = %account_id,
+            error = %e,
+            "Authentication failed in resolve_account"
+        );
+        GuardianError::AuthenticationFailed(e)
+    })?;
+
+    consume_auth_timestamp(state, account_id, &signer_commitment, request_timestamp).await?;
+
+    let storage = state.storage.clone();
+
+    Ok(ResolvedAccount { metadata, storage })
+}
+
+pub(crate) fn validate_request_timestamp(
+    state: &AppState,
+    account_id: &str,
+    creds: &Credentials,
+) -> Result<i64> {
     let request_timestamp = creds.timestamp();
     let server_now_ms = state.clock.now().timestamp_millis();
     let time_diff_ms = (server_now_ms - request_timestamp).abs();
@@ -135,35 +177,19 @@ pub async fn resolve_account(
             time_diff_ms, MAX_TIMESTAMP_SKEW_MS
         )));
     }
+    Ok(request_timestamp)
+}
 
-    if metadata.network_config.is_evm() {
-        return Err(GuardianError::UnsupportedForNetwork {
-            network: "evm".to_string(),
-            operation: "delta_api".to_string(),
-        });
-    } else {
-        if matches!(metadata.auth, crate::metadata::Auth::EvmEcdsa { .. }) {
-            return Err(GuardianError::UnsupportedForNetwork {
-                network: "evm".to_string(),
-                operation: "delta_api".to_string(),
-            });
-        }
-
-        metadata.auth.verify(account_id, creds).map_err(|e| {
-            tracing::warn!(
-                account_id = %account_id,
-                error = %e,
-                "Authentication failed in resolve_account"
-            );
-            GuardianError::AuthenticationFailed(e)
-        })?;
-    }
-
-    // Atomically check and update the last auth timestamp for replay protection
-    let now_str = state.clock.now_rfc3339();
+pub(crate) async fn consume_auth_timestamp(
+    state: &AppState,
+    account_id: &str,
+    signer_commitment: &str,
+    request_timestamp: i64,
+) -> Result<()> {
+    debug_assert_ne!(signer_commitment, LEGACY_ACCOUNT_AUTH_FLOOR);
     let updated = state
         .metadata
-        .update_last_auth_timestamp_cas(account_id, request_timestamp, &now_str)
+        .update_last_auth_timestamp_cas(account_id, signer_commitment, request_timestamp)
         .await
         .map_err(|e| {
             tracing::error!(
@@ -177,17 +203,14 @@ pub async fn resolve_account(
     if !updated {
         tracing::warn!(
             account_id = %account_id,
+            signer_commitment = %signer_commitment,
             request_timestamp = %request_timestamp,
-            "Replay attack detected: timestamp not greater than last seen (CAS failed)"
+            "Replay rejected: timestamp not greater than last seen for signer (CAS failed)"
         );
-        return Err(GuardianError::AuthenticationFailed(
-            "Replay attack detected: timestamp must be greater than previous request".to_string(),
-        ));
+        return Err(GuardianError::AuthenticationReplay);
     }
 
-    let storage = state.storage.clone();
-
-    Ok(ResolvedAccount { metadata, storage })
+    Ok(())
 }
 
 pub fn normalize_payload(payload: Value) -> Result<Value> {
@@ -445,7 +468,6 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,
@@ -545,10 +567,8 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            GuardianError::AuthenticationFailed(msg) => {
-                assert!(msg.contains("Replay attack detected"));
-            }
-            e => panic!("Expected AuthenticationFailed with replay, got: {:?}", e),
+            GuardianError::AuthenticationReplay => {}
+            e => panic!("Expected AuthenticationReplay, got: {:?}", e),
         }
     }
 
@@ -631,6 +651,384 @@ mod tests {
                 assert!(msg.contains("Failed to check account"));
             }
             e => panic!("Expected StorageError, got: {:?}", e),
+        }
+    }
+}
+
+#[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
+mod replay_protection_tests {
+    use super::*;
+    use crate::error::GuardianError;
+    use crate::metadata::{AccountMetadata, Auth};
+    use crate::state::AppState;
+    use crate::testing::helpers::{TestSigner, create_test_app_state};
+
+    const ACCOUNT_ID: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+
+    async fn app_state_with_account(auth: Auth) -> AppState {
+        let state = create_test_app_state().await;
+        state
+            .metadata
+            .set(AccountMetadata {
+                account_id: ACCOUNT_ID.to_string(),
+                auth,
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+                has_pending_candidate: false,
+                paused_at: None,
+                paused_reason: None,
+                released_at: None,
+            })
+            .await
+            .expect("account metadata stored");
+        state
+    }
+
+    fn assert_replay_rejected(result: Result<ResolvedAccount>) {
+        match result.expect_err("replayed request must be rejected") {
+            GuardianError::AuthenticationReplay => {}
+            e => panic!("Expected AuthenticationReplay, got: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn first_request_accepted_then_identical_replay_rejected() {
+        let signer = TestSigner::new();
+        let state = app_state_with_account(Auth::MidenFalconRpo {
+            cosigner_commitments: vec![signer.commitment_hex.clone()],
+        })
+        .await;
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let (signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, timestamp);
+        let creds = Credentials::signature(signer.pubkey_hex.clone(), signature, timestamp);
+
+        resolve_account(&state, ACCOUNT_ID, &creds)
+            .await
+            .expect("first request accepted");
+        assert_replay_rejected(resolve_account(&state, ACCOUNT_ID, &creds).await);
+    }
+
+    #[tokio::test]
+    async fn timestamp_older_than_last_accepted_is_rejected() {
+        let signer = TestSigner::new();
+        let state = app_state_with_account(Auth::MidenFalconRpo {
+            cosigner_commitments: vec![signer.commitment_hex.clone()],
+        })
+        .await;
+        let newer = chrono::Utc::now().timestamp_millis();
+        let older = newer - 1_000;
+
+        let (newer_signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, newer);
+        resolve_account(
+            &state,
+            ACCOUNT_ID,
+            &Credentials::signature(signer.pubkey_hex.clone(), newer_signature, newer),
+        )
+        .await
+        .expect("request at the newer timestamp accepted");
+
+        let (older_signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, older);
+        assert_replay_rejected(
+            resolve_account(
+                &state,
+                ACCOUNT_ID,
+                &Credentials::signature(signer.pubkey_hex.clone(), older_signature, older),
+            )
+            .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn cosigners_do_not_contend_on_replay_state() {
+        let signer_a = TestSigner::new();
+        let signer_b = TestSigner::new();
+        let state = app_state_with_account(Auth::MidenFalconRpo {
+            cosigner_commitments: vec![
+                signer_a.commitment_hex.clone(),
+                signer_b.commitment_hex.clone(),
+            ],
+        })
+        .await;
+
+        let newer = chrono::Utc::now().timestamp_millis();
+        let older = newer - 60_000;
+
+        let (signature_a, _) = signer_a.sign_with_timestamp(ACCOUNT_ID, newer);
+        resolve_account(
+            &state,
+            ACCOUNT_ID,
+            &Credentials::signature(signer_a.pubkey_hex.clone(), signature_a, newer),
+        )
+        .await
+        .expect("first cosigner accepted");
+
+        let (signature_b, _) = signer_b.sign_with_timestamp(ACCOUNT_ID, older);
+        resolve_account(
+            &state,
+            ACCOUNT_ID,
+            &Credentials::signature(signer_b.pubkey_hex.clone(), signature_b, older),
+        )
+        .await
+        .expect("second cosigner accepted although its clock trails the first cosigner's");
+
+        let (replayed_b, _) = signer_b.sign_with_timestamp(ACCOUNT_ID, older);
+        assert_replay_rejected(
+            resolve_account(
+                &state,
+                ACCOUNT_ID,
+                &Credentials::signature(signer_b.pubkey_hex.clone(), replayed_b, older),
+            )
+            .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn same_signer_clock_ahead_within_skew_is_a_retryable_replay_not_terminal() {
+        let signer = TestSigner::new();
+        let state = app_state_with_account(Auth::MidenFalconRpo {
+            cosigner_commitments: vec![signer.commitment_hex.clone()],
+        })
+        .await;
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let ahead = now + 60_000;
+
+        let (ahead_signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, ahead);
+        resolve_account(
+            &state,
+            ACCOUNT_ID,
+            &Credentials::signature(signer.pubkey_hex.clone(), ahead_signature, ahead),
+        )
+        .await
+        .expect("a fast clock within the skew window is accepted");
+
+        let (wall_clock_signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, now);
+        assert_replay_rejected(
+            resolve_account(
+                &state,
+                ACCOUNT_ID,
+                &Credentials::signature(signer.pubkey_hex.clone(), wall_clock_signature, now),
+            )
+            .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn in_flight_reorder_of_adjacent_timestamps_rejects_only_the_late_arrival() {
+        let signer = TestSigner::new();
+        let state = app_state_with_account(Auth::MidenFalconRpo {
+            cosigner_commitments: vec![signer.commitment_hex.clone()],
+        })
+        .await;
+
+        let first = chrono::Utc::now().timestamp_millis();
+        let second = first + 1;
+        let (first_signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, first);
+        let (second_signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, second);
+
+        resolve_account(
+            &state,
+            ACCOUNT_ID,
+            &Credentials::signature(signer.pubkey_hex.clone(), second_signature, second),
+        )
+        .await
+        .expect("the later-minted request lands first and is accepted");
+
+        assert_replay_rejected(
+            resolve_account(
+                &state,
+                ACCOUNT_ID,
+                &Credentials::signature(signer.pubkey_hex.clone(), first_signature, first),
+            )
+            .await,
+        );
+
+        let third = second + 1;
+        let (third_signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, third);
+        resolve_account(
+            &state,
+            ACCOUNT_ID,
+            &Credentials::signature(signer.pubkey_hex.clone(), third_signature, third),
+        )
+        .await
+        .expect("a fresh timestamp minted after the rejection is accepted");
+    }
+
+    #[tokio::test]
+    async fn ecdsa_replay_scope_is_per_signer() {
+        use crate::testing::helpers::TestEcdsaSigner;
+
+        let signer_a = TestEcdsaSigner::new();
+        let signer_b = TestEcdsaSigner::new();
+        let state = app_state_with_account(Auth::MidenEcdsa {
+            cosigner_commitments: vec![
+                signer_a.commitment_hex.clone(),
+                signer_b.commitment_hex.clone(),
+            ],
+        })
+        .await;
+
+        let newer = chrono::Utc::now().timestamp_millis();
+        let older = newer - 60_000;
+
+        let (signature_a, _) = signer_a.sign_with_timestamp(ACCOUNT_ID, newer);
+        resolve_account(
+            &state,
+            ACCOUNT_ID,
+            &Credentials::signature(signer_a.pubkey_hex.clone(), signature_a, newer),
+        )
+        .await
+        .expect("first ECDSA cosigner accepted");
+
+        let (signature_b, _) = signer_b.sign_with_timestamp(ACCOUNT_ID, older);
+        resolve_account(
+            &state,
+            ACCOUNT_ID,
+            &Credentials::signature(signer_b.pubkey_hex.clone(), signature_b, older),
+        )
+        .await
+        .expect("second ECDSA cosigner accepted although its clock trails the first cosigner's");
+
+        let (replayed_b, _) = signer_b.sign_with_timestamp(ACCOUNT_ID, older);
+        assert_replay_rejected(
+            resolve_account(
+                &state,
+                ACCOUNT_ID,
+                &Credentials::signature(signer_b.pubkey_hex.clone(), replayed_b, older),
+            )
+            .await,
+        );
+
+        let fresher = older + 1;
+        let (fresh_b, _) = signer_b.sign_with_timestamp(ACCOUNT_ID, fresher);
+        resolve_account(
+            &state,
+            ACCOUNT_ID,
+            &Credentials::signature(signer_b.pubkey_hex.clone(), fresh_b, fresher),
+        )
+        .await
+        .expect("the ECDSA signer recovers with a fresh timestamp");
+    }
+
+    #[tokio::test]
+    async fn replay_state_survives_metadata_reconfiguration() {
+        let signer = TestSigner::new();
+        let state = app_state_with_account(Auth::MidenFalconRpo {
+            cosigner_commitments: vec![signer.commitment_hex.clone()],
+        })
+        .await;
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let (signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, timestamp);
+        let creds = Credentials::signature(signer.pubkey_hex.clone(), signature, timestamp);
+
+        resolve_account(&state, ACCOUNT_ID, &creds)
+            .await
+            .expect("first request accepted");
+
+        let stale_read = state
+            .metadata
+            .get(ACCOUNT_ID)
+            .await
+            .expect("metadata read")
+            .expect("account exists");
+        state
+            .metadata
+            .set(stale_read)
+            .await
+            .expect("metadata rewritten from a stale read");
+
+        assert_replay_rejected(resolve_account(&state, ACCOUNT_ID, &creds).await);
+    }
+
+    fn assert_endpoint_replay_rejected(
+        endpoint: &str,
+        first: std::result::Result<(), GuardianError>,
+        second: std::result::Result<(), GuardianError>,
+    ) {
+        if let Err(GuardianError::AuthenticationFailed(msg)) = &first {
+            panic!("{endpoint}: first request failed authentication: {msg}");
+        }
+        match second.expect_err("replayed request must be rejected") {
+            GuardianError::AuthenticationReplay => {}
+            e => panic!("{endpoint}: expected AuthenticationReplay, got: {e:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_authenticated_read_endpoint_rejects_a_replayed_request() {
+        for endpoint in [
+            "get_state",
+            "get_delta_since",
+            "get_delta_proposals",
+            "get_delta_proposal",
+            "get_delta",
+        ] {
+            let signer = TestSigner::new();
+            let state = app_state_with_account(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![signer.commitment_hex.clone()],
+            })
+            .await;
+            let timestamp = chrono::Utc::now().timestamp_millis();
+            let (signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, timestamp);
+            let credentials =
+                Credentials::signature(signer.pubkey_hex.clone(), signature, timestamp);
+
+            let call = async |credentials: Credentials| match endpoint {
+                "get_state" => get_state(
+                    &state,
+                    GetStateParams {
+                        account_id: ACCOUNT_ID.to_string(),
+                        credentials,
+                    },
+                )
+                .await
+                .map(|_| ()),
+                "get_delta_since" => get_delta_since(
+                    &state,
+                    GetDeltaSinceParams {
+                        account_id: ACCOUNT_ID.to_string(),
+                        from_nonce: 0,
+                        credentials,
+                    },
+                )
+                .await
+                .map(|_| ()),
+                "get_delta_proposals" => get_delta_proposals(
+                    &state,
+                    GetDeltaProposalsParams {
+                        account_id: ACCOUNT_ID.to_string(),
+                        credentials,
+                    },
+                )
+                .await
+                .map(|_| ()),
+                "get_delta_proposal" => get_delta_proposal(
+                    &state,
+                    GetDeltaProposalParams {
+                        account_id: ACCOUNT_ID.to_string(),
+                        commitment: "0xabc".to_string(),
+                        credentials,
+                    },
+                )
+                .await
+                .map(|_| ()),
+                "get_delta" => get_delta(
+                    &state,
+                    GetDeltaParams {
+                        account_id: ACCOUNT_ID.to_string(),
+                        nonce: 1,
+                        credentials,
+                    },
+                )
+                .await
+                .map(|_| ()),
+                other => panic!("unknown endpoint {other}"),
+            };
+
+            let first = call(credentials.clone()).await;
+            let second = call(credentials).await;
+            assert_endpoint_replay_rejected(endpoint, first, second);
         }
     }
 }

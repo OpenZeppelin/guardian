@@ -1,4 +1,5 @@
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 
 import { defineConfig } from 'vitest/config';
 
@@ -6,9 +7,9 @@ import { defineConfig } from 'vitest/config';
 // napi build that the "node" condition resolves, which omits `Poseidon2`/
 // `FeltArray`. Alias the bare specifier to the WASM single-thread entry and
 // initialize its module in `setupFiles`.
-const midenWasmEntry = fileURLToPath(
-  new URL('./node_modules/@miden-sdk/miden-sdk/dist/st/index.js', import.meta.url),
-);
+const require = createRequire(import.meta.url);
+const midenSdkRoot = dirname(require.resolve('@miden-sdk/miden-sdk/package.json'));
+const midenWasmEntry = join(midenSdkRoot, 'dist/st/index.js');
 
 export default defineConfig({
   resolve: {
@@ -19,5 +20,10 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
     setupFiles: ['./tests/setup-wasm.ts'],
+    // Without this, builder-mock call indices leak between tests in a file, so an
+    // assertion reading `mock.calls[0]` can read a neighbouring test's call and pass
+    // even when the code under test never invoked the builder. Three separate review
+    // rounds found assertions that could not fail for that reason.
+    clearMocks: true,
   },
 });

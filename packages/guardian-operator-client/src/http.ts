@@ -859,6 +859,29 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
         'dashboard info.backend.canonicalization',
       ),
     };
+    // Optional (issue #345): absent on servers predating the retained
+    // lifecycle, so their absence never fails info decoding.
+    if (c.retained_ttl_seconds !== undefined) {
+      canonicalization.retainedTtlSeconds = requireInteger(
+        c,
+        'retained_ttl_seconds',
+        'dashboard info.backend.canonicalization',
+      );
+    }
+    if (c.reconcile_interval_seconds !== undefined) {
+      canonicalization.reconcileIntervalSeconds = requireInteger(
+        c,
+        'reconcile_interval_seconds',
+        'dashboard info.backend.canonicalization',
+      );
+    }
+    if (c.reconcile_page_size !== undefined) {
+      canonicalization.reconcilePageSize = requireInteger(
+        c,
+        'reconcile_page_size',
+        'dashboard info.backend.canonicalization',
+      );
+    }
   }
   const backend: DashboardInfoResponse['backend'] = {
     storage: storageRaw,
@@ -912,6 +935,16 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
         'canonical',
         'dashboard info.delta_status_counts',
       ),
+      // Absent on servers that predate retain-and-reconcile (issue
+      // #345); default to 0 so old servers keep decoding.
+      retained:
+        'retained' in counts
+          ? requireInteger(
+              counts,
+              'retained',
+              'dashboard info.delta_status_counts',
+            )
+          : 0,
       discarded: requireInteger(
         counts,
         'discarded',
@@ -1334,6 +1367,26 @@ function requireNonNegativeInteger(
   return value;
 }
 
+/**
+ * P2IDE block heights are 1..=u32::MAX (issue #366): `0` encodes "no
+ * constraint" on-chain, so surfacing it as a real height would misrender
+ * a buggy peer's payload.
+ */
+function requireP2ideHeight(value: unknown, key: string, context: string): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > 0xffff_ffff
+  ) {
+    throw new GuardianOperatorContractError(
+      context,
+      `field "${key}" must be an integer between 1 and 4294967295`,
+    );
+  }
+  return value;
+}
+
 function assertStringArray(
   value: unknown[],
   key: string,
@@ -1471,6 +1524,15 @@ function parseDeltaEntry(
       );
     }
     entry.retryCount = retry;
+  }
+  if (record.status_reason !== undefined) {
+    if (typeof record.status_reason !== 'string') {
+      throw new GuardianOperatorContractError(
+        context,
+        'status_reason must be a string when present',
+      );
+    }
+    entry.statusReason = record.status_reason;
   }
   if (record.account_id !== undefined) {
     if (typeof record.account_id !== 'string') {
@@ -1681,6 +1743,14 @@ function parseDeltaProposalMetadata(
   if (typeof record.faucet_id === 'string') proposal.faucetId = record.faucet_id;
   if (typeof record.amount === 'string') proposal.amount = record.amount;
   if (typeof record.note_type === 'string') proposal.noteType = record.note_type;
+  if (record.reclaim_height !== undefined)
+    proposal.reclaimHeight = requireP2ideHeight(record.reclaim_height, 'reclaim_height', context);
+  if (record.timelock_height !== undefined)
+    proposal.timelockHeight = requireP2ideHeight(
+      record.timelock_height,
+      'timelock_height',
+      context,
+    );
   if (record.note_ids !== undefined)
     proposal.noteIds = assertStringArray(
       requireArray(record, 'note_ids', context),
@@ -1760,6 +1830,21 @@ function parseDeltaDetail(value: unknown): DashboardDeltaDetail {
     }
     detail.retryCount = retry;
   }
+  if (record.status_reason !== undefined) {
+    if (typeof record.status_reason !== 'string') {
+      throw new GuardianOperatorContractError(
+        ctx,
+        'status_reason must be a string when present',
+      );
+    }
+    detail.statusReason = record.status_reason;
+  }
+  if (typeof record.retained_expires_at === 'string') {
+    detail.retainedExpiresAt = record.retained_expires_at;
+  }
+  if (typeof record.base_matches_stored_state === 'boolean') {
+    detail.baseMatchesStoredState = record.base_matches_stored_state;
+  }
   if (record.category !== undefined && record.category !== null) {
     detail.category = parseDeltaCategory(
       requireString(record, 'category', ctx),
@@ -1831,6 +1916,9 @@ function parseDecodedNote(
       parseDecodedAsset(a, `${context}.assets[${i}]`),
     ),
   };
+  if (record.note_type === 'public' || record.note_type === 'private') {
+    note.noteType = record.note_type;
+  }
   if (typeof record.sender === 'string') note.sender = record.sender;
   if (typeof record.recipient === 'string') note.recipient = record.recipient;
   return note;
@@ -1966,11 +2054,16 @@ function parseDeltaStatus(
   value: string,
   context: string,
 ): DashboardDeltaStatus {
-  if (value === 'candidate' || value === 'canonical' || value === 'discarded') {
+  if (
+    value === 'candidate' ||
+    value === 'canonical' ||
+    value === 'retained' ||
+    value === 'discarded'
+  ) {
     return value;
   }
   throw new GuardianOperatorContractError(
     context,
-    `expected status to be "candidate" / "canonical" / "discarded", got ${JSON.stringify(value)}`,
+    `expected status to be "candidate" / "canonical" / "retained" / "discarded", got ${JSON.stringify(value)}`,
   );
 }

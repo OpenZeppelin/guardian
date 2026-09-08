@@ -9,9 +9,14 @@ Map the changed area to the smallest browser smoke workflow that still proves th
 Run validation first:
 
 ```bash
-cd packages/miden-multisig-client && npm test
-cd examples/smoke-web && npm run typecheck && npm run build
-cd examples/web && npm run build
+(
+  cd packages
+  npm ci
+  npm run build -w @openzeppelin/guardian-client
+  npm test -w @openzeppelin/miden-multisig-client
+)
+(cd examples/smoke-web && npm run typecheck && npm run build)
+(cd examples/web && npm run build)
 ```
 
 Primary smoke server commands:
@@ -33,7 +38,7 @@ Default startup choices:
   - Local dev or Staging: `https://rpc.devnet.miden.io`
   - Production: `https://rpc.testnet.miden.io`
 - signer source: `local`
-- signature scheme: Falcon unless the task specifically targets ECDSA, Para, or Miden Wallet
+- signature scheme: Falcon unless the task specifically targets ECDSA or Miden Wallet
 
 If `3002` is occupied by another local app, start `examples/smoke-web` on a free port and use that exact URL consistently in every browser and automation command.
 
@@ -49,7 +54,7 @@ await window.smoke.initSession({
 });
 ```
 
-Record commitments from `await window.smoke.status()`. For local signers, use `status.localSigners.falconCommitment` or `status.localSigners.ecdsaCommitment`. For Para or Miden Wallet, use `status.para.commitment` or `status.midenWallet.commitment`.
+Record commitments from `await window.smoke.status()`. For local signers, use `status.localSigners.falconCommitment` or `status.localSigners.ecdsaCommitment`. For Miden Wallet, use `status.midenWallet.commitment`.
 
 Use `await window.smoke.events()` as the primary timing source for command durations. Record extra manual timings for wallet modal latency, faucet confirmation, and canonicalization lag.
 
@@ -213,6 +218,68 @@ Canary checks:
 - if consume executes but the vault remains empty, mark the canary failed
 - if self-P2ID executes but no new note appears after final sync, mark the canary failed
 
+## `private-note-roundtrip-canary`
+
+Use when:
+
+- private P2ID note behavior or note export/import changed (issues #322, #356)
+- `exportNote` / `importNote` / `getP2idNoteId` harness commands changed
+- the prompt asks to validate out-of-band note transfer or private note consumption
+
+Setup:
+
+1. Run the `payment-roundtrip-canary` setup through vault funding: browsers A and B on one 2-of-2 account, faucet receipt consumed so the vault holds an asset.
+
+Steps:
+
+1. In A, create a self-addressed **private** P2ID proposal:
+   ```js
+   const { detectedConfig, multisig } = await window.smoke.status();
+   const asset = detectedConfig.vaultBalances[0];
+   const payment = await window.smoke.createProposal({
+     type: 'p2id',
+     recipientId: multisig.accountId,
+     faucetId: asset.faucetId,
+     amount: asset.amount,
+     noteType: 'private',
+   });
+   ```
+2. Still in A, resolve the note ID **before executing** (it derives from the pre-execution vault state):
+   ```js
+   const { noteId } = await window.smoke.getP2idNoteId({ proposalId: payment.proposal.id });
+   ```
+3. In B, sign the proposal. In A, execute it.
+4. In B, `sync()` and confirm `listConsumableNotes()` does NOT show the private note (only its commitment is on chain; B has a separate local store).
+5. In A, export the note file:
+   ```js
+   const { noteFileBase64 } = await window.smoke.exportNote({ noteId });
+   ```
+6. Hand the base64 string to B out-of-band (copy between consoles) and import it there:
+   ```js
+   const imported = await window.smoke.importNote({ noteFileBase64 });
+   ```
+   `importNote` syncs afterwards; the note should appear in `imported.status.consumableNotes`.
+7. In B, create a consume-notes proposal with the imported note ID.
+8. In A, `sync()` until the note appears in `listConsumableNotes()` there too, then sign the proposal. (The sender's store knows the full note and self-heals once a sync attaches the inclusion proof; a cosigner browser that never created nor imported the note must `importNote` first.)
+9. Execute, sync both browsers, and verify the vault balance reflects the reconsumed asset.
+
+Expect:
+
+- the proposal metadata carries `noteType: 'private'`
+- `getP2idNoteId` returns the same ID the export later resolves
+- before import, B cannot see the private note via sync
+- `exportNote` returns non-empty base64 and `importNote` in B returns the note ID
+- after import, the note is consumable in B and the consume proposal executes normally
+
+Canary checks:
+
+- if the private note IS visible in B before import, report it — the note leaked publicly and the private path is not being exercised
+- if `exportNote` fails with a not-found error in A after execution, report it with the exact message
+- if import succeeds but the note never becomes consumable after sync, report the sync attempt count and elapsed wait
+- if signing fails with `metadata does not match tx_summary`, the signer's store does not yet hold the note with its inclusion proof — sync (or `importNote`) until the note lists as consumable and retry; report it as a failure only if it persists after that
+- if consume execution fails with a note-binding or missing-note error, report it with the exact message
+- record elapsed time for P2ID execute, export, import, first consumability after import, and consume execute
+
 ## `switch-guardian-offline-canary`
 
 Use when:
@@ -286,37 +353,13 @@ Canary checks:
 - if execute is attempted before the proposal is fully signed, report that as test-sequencing failure rather than SDK failure
 - if execute succeeds but post-switch sync still depends on the dead GUARDIAN, mark the canary failed
 
-## `para-connectivity`
-
-Use when:
-
-- Para integration changed
-- ECDSA external signer resolution changed
-- the prompt explicitly asks for Para validation
-
-Steps:
-
-1. Initialize the session in a clean browser.
-2. Run:
-   ```js
-   await window.smoke.connectPara();
-   const status = await window.smoke.status();
-   ```
-3. Verify `status.signerSource === 'para'`, `status.signatureScheme === 'ecdsa'`, and `status.para.connected === true`.
-4. If the changed code path affects signing, create or load a small multisig and run at least one sign operation with Para.
-
-Expect:
-
-- connection succeeds through the Para modal flow
-- commitment and public key are visible in `status().para`
-- any requested signing path succeeds with Para as the active signer source
-
 ## `miden-wallet-connectivity`
 
 Use when:
 
 - Miden Wallet integration changed
 - wallet extension detection or external signing changed
+- ECDSA external signer resolution changed
 - the prompt explicitly asks for wallet validation
 
 Steps:
@@ -328,12 +371,14 @@ Steps:
    const status = await window.smoke.status();
    ```
 3. Verify `status.signerSource === 'miden-wallet'` and `status.midenWallet.connected === true`.
-4. If the changed code path affects signing, create or load a small multisig and run at least one sign operation through the wallet.
+4. If the trigger was `ECDSA external signer resolution changed`, also verify `status.midenWallet.scheme === 'ecdsa'`; a Falcon-only wallet run does not exercise external ECDSA resolution and does not satisfy that trigger.
+5. If the changed code path affects signing, create or load a small multisig and run at least one sign operation through the wallet.
 
 Expect:
 
 - wallet connection succeeds
 - commitment, public key, and scheme are visible in `status().midenWallet`
+- for an ECDSA resolution trigger, `status.midenWallet.scheme` is `ecdsa`
 - any requested signing path succeeds with the wallet as the active signer source
 
 ## `state-verification`
@@ -413,4 +458,3 @@ Use when:
 - thrown auth/unauthenticated error (proof-of-possession metadata regression)
 - recovered `accountId` differs from `originalAccountId` (server-side index regression)
 - `verifyStateCommitment` mismatch after recover + load (state-fetch regression)
-

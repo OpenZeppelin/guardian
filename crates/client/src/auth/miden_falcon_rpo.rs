@@ -58,7 +58,7 @@ impl FalconRpoSigner {
 
 /// Converts an account ID and timestamp to a Word for signing.
 pub fn account_id_timestamp_to_word(account_id: AccountId, timestamp: i64) -> Word {
-    let account_id_felts: [Felt; 2] = account_id.into();
+    let account_id_felts: [Felt; 2] = [account_id.prefix().as_felt(), account_id.suffix()];
     let timestamp_felt = Felt::new_unchecked(timestamp as u64);
 
     let message_elements = vec![

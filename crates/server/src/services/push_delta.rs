@@ -22,11 +22,12 @@ pub struct PushDeltaResult {
 }
 
 #[tracing::instrument(
+    level = "info",
     skip(state, params),
     fields(account_id = %params.delta.account_id)
 )]
 pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<PushDeltaResult> {
-    tracing::info!(account_id = %params.delta.account_id, "Pushing delta");
+    tracing::debug!("Pushing delta");
 
     let resolved = resolve_account(state, &params.delta.account_id, &params.credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;
@@ -230,7 +231,6 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: Some(
                 chrono::Utc
                     .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
@@ -360,7 +360,6 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,
@@ -464,7 +463,6 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
             released_at: None,

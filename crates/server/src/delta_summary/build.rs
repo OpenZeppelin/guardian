@@ -240,14 +240,14 @@ mod tests {
     fn build_with_consume_notes_and_input_note_surfaces_asset_on_listing() {
         use guardian_shared::ToJson;
         use miden_protocol::account::AccountId;
-        use miden_protocol::account::delta::{
-            AccountDelta, AccountStorageDelta, AccountVaultDelta,
-        };
+        use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
         use miden_protocol::asset::FungibleAsset;
         use miden_protocol::crypto::rand::RandomCoin;
         use miden_protocol::note::NoteType;
         use miden_protocol::transaction::InputNote;
-        use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+        use miden_protocol::transaction::{
+            InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+        };
         use miden_protocol::{Felt, Word, ZERO};
         use miden_standards::note::P2idNote;
 
@@ -258,23 +258,25 @@ mod tests {
         let sender = AccountId::from_hex(NOTE_SENDER).expect("sender");
         let consumer = AccountId::from_hex(CONSUMER).expect("consumer");
         let faucet = AccountId::from_hex(FAUCET).expect("faucet");
-        let asset = FungibleAsset::new(faucet, 100_000_000)
+        let asset: miden_protocol::asset::Asset = FungibleAsset::new(faucet, 100_000_000)
             .expect("fungible asset")
             .into();
         let mut rng = RandomCoin::new(Word::from([9u32, 8, 7, 6]));
-        let note = P2idNote::create(
-            sender,
-            consumer,
-            vec![asset],
-            NoteType::Public,
-            Default::default(),
-            &mut rng,
-        )
-        .expect("p2id note");
+        let note = miden_protocol::note::Note::from(
+            P2idNote::builder()
+                .sender(sender)
+                .target(consumer)
+                .assets(vec![asset])
+                .note_type(NoteType::Public)
+                .generate_serial_number(&mut rng)
+                .build()
+                .expect("p2id note"),
+        );
         let delta = AccountDelta::new(
             consumer,
-            AccountStorageDelta::default(),
+            miden_protocol::account::AccountStoragePatch::default(),
             AccountVaultDelta::default(),
+            None,
             Felt::ZERO,
         )
         .expect("account delta");
@@ -283,6 +285,8 @@ mod tests {
             InputNotes::new(vec![InputNote::unauthenticated(note)]).expect("inputs"),
             RawOutputNotes::new(Vec::new()).expect("outputs"),
             Word::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 7]),
         );
         let delta_payload = summary.to_json();
         let proposal_payload = synthetic_proposal_payload(json!({
