@@ -54,11 +54,11 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
         note.clone(),
     )]);
 
-    // The author builds the pending consume-notes v2 proposal from the
-    // embedded bytes exactly the way binding verification replays it: the
-    // same request builder and an abort-execution for the summary, from a
-    // store that does not hold the note's proof — the self-contained v2
-    // reconstruction path every verifier can reproduce.
+    // The author builds the pending consume-notes v2 proposal exactly the way
+    // proposal creation does: the note authenticated in its store first (the
+    // canonical consumption mode every verifier's rebuild reproduces, issue
+    // #409), then the same request builder and an abort-execution for the
+    // summary, with the anchor tracking the note's block.
     let dir1 = tempfile::tempdir().unwrap();
     let (mut author, _store1) =
         offline_client_parts_with_keystore(dir1.path(), api.clone(), None, keystore.clone()).await;
@@ -66,6 +66,14 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
     author.add_or_update_account(&account, true).await.unwrap();
     author.account = Some(MultisigAccount::new(account.clone()));
     author.miden_client.sync_state().await.unwrap();
+    let author_rpc = author.node_rpc_client();
+    crate::transaction::ensure_notes_authenticated(
+        &mut author.miden_client,
+        &author_rpc,
+        std::slice::from_ref(&note),
+    )
+    .await
+    .unwrap();
 
     let salt = Word::from([5u32, 6, 7, 8]);
     let tx_type =
@@ -153,18 +161,28 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
         "problems: {:?}",
         report.problems
     );
+    // Binding verification authenticates the proposal's notes before it
+    // rebuilds (issue #409), so by the time the import step runs the note is
+    // already in the store with its proof and the step reports it as such.
     let outcomes = report.proposal_import.expect("proposal import ran");
     assert_eq!(outcomes.len(), 1, "outcomes: {outcomes:?}");
     assert_eq!(
         outcomes[0].status,
-        NoteImportStatus::Imported,
+        NoteImportStatus::AlreadyPresent,
         "{outcomes:?}"
     );
     assert_eq!(outcomes[0].identifier, note.id().to_hex());
-    assert_eq!(report.imported, 1);
+    assert_eq!(report.imported, 0);
+    let held = executor
+        .miden_client
+        .get_input_note(note.id())
+        .await
+        .unwrap()
+        .expect("the pre-switch listing brought the note into the store");
+    assert!(held.is_authenticated(), "with its inclusion proof");
 
     // Repoint to the new GUARDIAN, which serves no proposals: the note must
-    // already be in the local store, proof-backed — the pre-switch import
+    // already be in the local store, proof-backed — the pre-switch listing
     // was its only way in.
     executor
         .set_guardian_endpoint(&endpoint_b, false)

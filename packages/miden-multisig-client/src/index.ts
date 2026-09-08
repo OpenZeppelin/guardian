@@ -173,6 +173,7 @@ export {
   UnsupportedMetadataVersionError,
   ConsumeNotesMetadataOversizeError,
   LegacyConsumeNotesNoteMissingError,
+  ConsumeNoteNotAuthenticatedError,
 } from './multisig/consumeNotesErrors.js';
 
 export {
