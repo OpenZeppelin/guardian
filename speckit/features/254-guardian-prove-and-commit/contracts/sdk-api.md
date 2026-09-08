@@ -8,6 +8,19 @@ Two additions per layer: **client-level configuration** deciding whether proposa
 created Guardian-executable, and methods to request and observe a Guardian execution. No
 existing method signature changes.
 
+## Proposal creation and signing
+
+Client-side preparation and execution remain the default. In Guardian-executable mode,
+creation sends the client-derived summary, signatures, metadata and attached request.
+Guardian does not reproduce the request at creation. The caller separately requests
+execution after enough valid signatures exist; a ready proposal needs no intervening
+signing round. V1 adds no combined create-and-execute method and no automatic dispatch.
+The Guardian acknowledgment is separate from the effective cosigner threshold.
+
+A future optional preparation operation could create an unsigned proposal from a request
+and return its ID and derived summary. It is outside this contract, as is automatic
+execution policy. Both require explicit future API design.
+
 ## Naming rule
 
 `Guardian` appears **only on the verb that delegates**, and only where a local counterpart
@@ -39,7 +52,7 @@ gRPC operation names keep the `delta_proposal` family convention already used by
   offers execution (FR-009, FR-021).
 - **Execution handle** — `(account_id, proposal_id)`. No opaque token; polling is
   idempotent.
-- **Execution state** — exactly five values: `pending`, `proving`, `submitted`, `landed`,
+- **Execution state** — exactly five values: `pending`, `proving`, `submitted`, `committed`,
   `failed` (see `execution-api.md`). Both SDKs MUST model it as a closed type and handle
   every variant exhaustively (`never` check in TS, full `match` in Rust). Adding a state is
   a breaking SDK change. SDKs MUST NOT invent additional states, and MUST NOT collapse
@@ -219,13 +232,13 @@ not at creation (FR-009).
 1. Not build, execute, or prove anything locally (FR-034).
 2. Surface synchronous refusals as typed errors carrying the stable codes from
    `execution-api.md` — never as free-form strings (AGENTS.md §12).
-3. Return the accepted execution state; MUST NOT poll internally or block until landed.
+3. Return the accepted execution state; MUST NOT poll internally or block until committed.
    Any wait-for-completion helper MUST be a separate, explicitly-named call so the
    non-blocking behavior is visible in the API (no silent fallbacks).
 
 `execution_status` MUST return the server's state verbatim without collapsing
 distinct states into a boolean, and MUST NOT treat `submitted` as either terminal success
-or terminal failure — only `landed` and `failed` are terminal.
+or terminal failure — only `committed` and `failed` are terminal.
 
 Both SDKs MUST surface `newly_accepted` and `proposal_exists` rather than dropping them.
 `newly_accepted` is how a caller distinguishes a fresh execution from an idempotent hit on an

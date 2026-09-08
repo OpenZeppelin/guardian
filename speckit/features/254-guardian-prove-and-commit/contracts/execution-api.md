@@ -9,6 +9,15 @@ parameters** (compare `/delta/proposal/single`, `/delta/candidate/abandon` in
 per-account scheme (`x-pubkey`, `x-signature`, `x-timestamp`) — no new mechanism
 (FR-002).
 
+Proposal creation and execution are separate operations. Creation stores the supplied
+summary and optional request without executing it. Even when signatures already meet the
+threshold, the caller MUST explicitly request execution. The Guardian acknowledgment is
+separate from that threshold. V1 adds no preparation or automatic-execution operation.
+
+The terminal execution value is `committed`; committing submission evidence to storage
+still yields `submitted`. Existing delta statuses and `candidate_landed` errors do not
+change.
+
 ## Endpoints
 
 | Surface | Operation | Auth | Purpose |
@@ -108,7 +117,7 @@ where it changes what the caller does. Exhaustive; consumers MUST handle every v
 | `pending` | no | none | wait | Accepted; not started, or finishing up |
 | `proving` | no | none | wait | Delegated to the prover — the multi-minute phase |
 | `submitted` | no | **always exists** | wait, watch the delta, **do not retry** | Boundary crossed (FR-047): candidate and submission evidence are durable; the network send may be pending, attempted, or of unknown outcome (FR-030) |
-| `landed` | **yes** | canonical | done | Candidate canonicalized. Success |
+| `committed` | **yes** | canonical | done | Candidate canonicalized. Success |
 | `failed` | **yes** | none of its own, or a discarded one | retry **only if** `proposal_exists` | Did not take effect; see `error.code`. Post-boundary failures may have had their proposal deleted with their candidate (FR-042) |
 
 Permitted transitions, and only these:
@@ -116,21 +125,21 @@ Permitted transitions, and only these:
 ```text
 pending    → proving | failed
 proving    → submitted | failed
-submitted  → landed | failed        (see ownership below)
+submitted  → committed | failed        (see ownership below)
 ```
 
 **From `submitted`, exactly one of three parties writes the outcome** (FR-053):
 
 | Outcome | Written by | Trigger |
 |---|---|---|
-| `landed` | the extended `promote_candidate` | the candidate canonicalized |
+| `committed` | the extended `promote_candidate` | the candidate canonicalized |
 | `failed` | the **execution owner** | a **definite** application-level rejection from the node |
 | `failed` | **reconciliation** | an **unknown** submission outcome, resolved as superseded or expired |
 
-Reconciliation MUST NOT write `landed`. Observing the account at the expected commitment tells
+Reconciliation MUST NOT write `committed`. Observing the account at the expected commitment tells
 it to wait for promotion; writing the outcome itself would race the party that owns it.
 
-`landed` and `failed` are terminal (FR-026). The reservation is released on reaching a
+`committed` and `failed` are terminal (FR-026). The reservation is released on reaching a
 terminal state; while `submitted`, it is **retained** and retry is refused, because the
 submission outcome may not yet be established.
 
@@ -143,12 +152,12 @@ permitted only when `state == "failed"` **and** `proposal_exists == true`.
 |---|---|---|
 | `pending`, `proving` | `true` | no — an execution is already in flight |
 | `submitted` | `true` | **no** — expressly forbidden (FR-030) |
-| `landed` | `false` | no — it succeeded; the proposal is deleted on promotion |
+| `committed` | `false` | no — it succeeded; the proposal is deleted on promotion |
 | `failed`, pre-boundary | `true` | **yes** |
 | `failed`, post-boundary, candidate discarded | `false` | no — create a **new** proposal |
 
 An earlier revision named this field `proposal_retryable`, which was wrong in two directions:
-it claimed retryable for `submitted`, where retry is forbidden, and implicitly for `landed`,
+it claimed retryable for `submitted`, where retry is forbidden, and implicitly for `committed`,
 whose proposal no longer exists.
 
 **Terminal outcomes are persisted, not derived** (FR-041). Canonicalization deletes an

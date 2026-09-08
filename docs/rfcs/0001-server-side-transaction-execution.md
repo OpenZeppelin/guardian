@@ -6,7 +6,7 @@
 | **Feature** | [#254](https://github.com/OpenZeppelin/guardian/issues/254) (parent [#253](https://github.com/OpenZeppelin/guardian/issues/253), "Transaction Orchestration") |
 | **Audience** | Integrators, operators, and upstream reviewers (Miden team or anyone reading publicly) |
 | **Working artifacts** | [`speckit/features/254-guardian-prove-and-commit/`](../../speckit/features/254-guardian-prove-and-commit/) — see appendix |
-| **Revision** | 13 (2026-07-31) |
+| **Revision** | 14 (2026-09-08): upstream review clarifications |
 
 > **Implementation status:** this RFC describes the **proposed end state**. The wire API, execution lifecycle, and SDK changes are not implemented yet; the one exception is the Gate 0 witness-assembly spike (`crates/server/src/network/miden/execution/`), which exists and passes its tests. The linked working artifacts are the implementation plan, and numeric defaults given here are proposals unless the linked contract marks them normative.
 
@@ -76,13 +76,56 @@ sequenceDiagram
   Note over Thin,Guardian: 4. Outcome Polling
   loop Poll Status
     Thin->>Guardian: GET /delta/proposal/execution
-    Guardian-->>Thin: state: proving → submitted → landed
+    Guardian-->>Thin: state: proving → submitted → committed
   end
 ```
 
+#### Proposal admission and explicit execution
+
+For v1, the client builds the transaction request, derives the summary locally, and
+submits the summary with its signatures and metadata. Opting into delegated execution
+also attaches the serialized request. Client-side preparation and execution remain the
+default.
+
+Proposal creation does not execute the request. The existing Miden validation parses
+the supplied summary and verifies that the stored account state matches its recorded
+commitment. Guardian records that commitment as the proposal's base. These checks do
+not establish that the request produces the supplied summary. Guardian reproduces the
+request and checks the signed-summary binding after delegated execution is accepted,
+before acknowledgment or remote proving.
+
+The wallet makes two calls: create the proposal, then request execution. If the
+proposal already contains enough valid signatures, the calls can run consecutively
+without another signature-collection round. An SDK convenience operation could compose
+these calls, but v1 does not automatically execute when the final signature arrives.
+Creating or signing a proposal does not acquire an execution reservation.
+
+The effective cosigner threshold is checked before Guardian adds its separate
+acknowledgment. The acknowledgment does not fill a missing cosigner signature. The
+mapping to a wallet described as 2-of-3 with Guardian as one signer requires agreement
+with the wallet team; see the upstream signer-model question below.
+
+#### Competing proposals and admission limits
+
+Multiple proposals can coexist without reserving the account. V1 records each proposal's
+base commitment and treats it as stale once the canonical state advances. Only one
+proposal can hold the execution reservation. A conflicting execution request is refused;
+creating further proposals is also refused while an active candidate exists.
+
+V1 adds a viable-proposal quota per account and authenticated proposer alongside the existing
+account-wide count cap and the request-byte limits. A signer must not consume the count
+capacity allocated to another signer. Admission must check limits and insert atomically
+on both storage backends. Two viable proposals per proposer is a proposed default;
+final configuration and the allocation of account-wide capacity must be specified before
+implementation. Byte limits remain separate resource limits, so this is not a guarantee
+against every denial of service by an authorized signer.
+
 ### 1.2 End-to-End Execution Lifecycle & State Machine
 
-Every delegated execution progresses through an explicit five-state lifecycle:
+Every delegated execution progresses through an explicit five-state lifecycle.
+`committed` is the terminal execution status for on-chain success and candidate
+canonicalization. Committing submission evidence to storage only produces `submitted`;
+it does not establish on-chain success. Existing delta statuses and error codes are unchanged.
 
 ```mermaid
 stateDiagram-v2
@@ -94,10 +137,10 @@ stateDiagram-v2
   proving --> submitted: No-retry boundary committed (candidate + evidence durable)
   proving --> failed: Permanent prover error / expiration unmeetable
   
-  submitted --> landed: Landed on-chain, candidate promoted to canonical
+  submitted --> committed: Committed on-chain, candidate promoted to canonical
   submitted --> failed: Rejected by node / superseded / expired
   
-  landed --> [*]
+  committed --> [*]
   failed --> [*]
 ```
 
@@ -106,7 +149,7 @@ stateDiagram-v2
 | `pending` | No | Accepted; the durable reservation already exists — waiting for a worker to pick it up. **Action: Poll.** |
 | `proving` | No | Witness assembled, remote proving in progress (6–20s per attempt; transient prover failures are retried server-side). **Action: Poll.** |
 | `submitted` | No | No-retry boundary crossed; the candidate delta and submission evidence are durable. The network send may be pending, attempted, or of unknown outcome. **Action: Poll, DO NOT retry.** |
-| `landed` | **Yes** | Transaction landed on-chain; Guardian's candidate delta promoted to canonical. **Action: Success complete.** |
+| `committed` | **Yes** | Transaction committed on-chain; Guardian's candidate delta promoted to canonical. **Action: Success complete.** |
 | `failed` | **Yes** | Execution stopped or rejected. **Action: Retry ONLY IF `proposal_exists == true`.** |
 
 #### Core Execution Rules:
@@ -120,7 +163,7 @@ stateDiagram-v2
 Before sending the first byte of a submission, Guardian durably records the evidence it will reconcile against: the transaction id, the base account commitment, the expected resulting account commitment, the reference block, and the expiration block taken from the proven transaction itself. A `submitted` execution then terminates in one of four ways:
 
 - **Rejected** — the node returns a definite application-level rejection. The execution owner discards the candidate and settles `failed` immediately; no chain watch is needed.
-- **Landed** — the expected account commitment (or the transaction's inclusion) is observed on chain. The candidate delta is promoted to canonical through the normal canonicalization lifecycle, and the execution settles `landed`.
+- **Committed** — the expected account commitment (or the transaction's inclusion) is observed on chain. The candidate delta is promoted to canonical through the normal canonicalization lifecycle, and the execution settles `committed`.
 - **Superseded** — the account is observed at a commitment that is neither the base nor the expected result. The transaction can no longer land; the execution settles `failed`.
 - **Expired** — the chain height passes the recorded expiration block while the account still sits at its base commitment. The transaction can never land; the execution settles `failed`.
 
@@ -337,7 +380,7 @@ GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS=30
 
 > **Warning for Operators:** The upstream prover client's own default timeout (10 seconds) is below real testnet proving times (6–20 s), which is why the proposed Guardian default is far higher. If you override `GUARDIAN_TX_PROVER_TIMEOUT_SECS`, keep it well above observed proving times for your prover.
 >
-> **Canonicalization mode is required.** Guardian execution depends on the candidate → canonical delta lifecycle to establish whether a submitted transaction landed. A server running in optimistic delta-commit mode refuses execution requests with the capability-unavailable error class, and the misconfiguration is reported at startup rather than discovered by the first caller.
+> **Canonicalization mode is required.** Guardian execution depends on the candidate → canonical delta lifecycle to establish whether a submitted transaction committed. A server running in optimistic delta-commit mode refuses execution requests with the capability-unavailable error class, and the misconfiguration is reported at startup rather than discovered by the first caller.
 
 **Prover capacity is the principal throughput constraint to size.** Each observed proof took 6–20 seconds, and executions across all accounts use the configured prover endpoint. Exploratory load runs against the public testnet prover produced transport-level i/o timeouts under concurrency rather than well-formed errors (Appendix A.4, finding 4) — which is why the server-side retry policy above classifies transport failures as transient. These runs are not presented as a reproducible capacity benchmark because their raw report is not committed. A deployment expecting sustained execution throughput should provision its own prover (or prover pool) and size it against the expected number of concurrent executions.
 
@@ -418,6 +461,31 @@ Reading guide for the upstream questions:
 - **Q7** anchors at outcome observation — inclusion is inferred from the observed account commitment.
 
 ---
+
+## Future extensions (outside v1)
+
+- **Optional server preparation.** An authenticated `prepare` operation could accept a
+  transaction request and its execution context, derive the summary, and create an
+  unsigned proposal. It would return the proposal ID and summary for review and signing
+  through the existing signing endpoint. The existing create operation would continue
+  to accept client-prepared summaries. Preparation would neither reserve the account nor
+  authorize execution. Resource limits and preparation failures need their own contract.
+- **Opt-in automatic execution.** A future account policy could queue eligible proposals
+  when enough distinct, valid cosigner signatures exist. Explicit execution remains the
+  default. The policy must be discoverable by signers, preserve the normal authorization,
+  state and conflict checks, and define retry or queue behavior when another execution
+  blocks the account. Policy configuration is additional API work, not assumed here.
+- **Dependent transaction chains.** Pipelining `A -> B -> C` could reduce the wait between
+  transactions. It requires dependencies, speculative states, ordered submission, and
+  recovery when a parent fails. V1 waits for canonicalization before advancing the base.
+- **Independent proposal ordering.** V1's base-commitment restriction is Guardian policy,
+  not a claim that every summary binds to an exact starting account state. A future
+  executor could revalidate independent proposals after another transaction commits and
+  retain signatures only if execution still reproduces the signed summary. Compatibility
+  also depends on the pinned Miden version and signed execution context.
+- **Batching.** Compatible transactions could share a network batch. The design must
+  preserve each transaction's authorization and define how failures affect the batch.
+  This is distinct from both dependency chaining and independent proposal revalidation.
 
 ## 4. Protocol Questions for Upstream (Miden Team)
 

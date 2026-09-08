@@ -15,7 +15,7 @@ Requests use the existing per-account auth scheme (`x-pubkey`, `x-signature`,
   `GUARDIAN_TX_PROVER_URL` to `{protocol}://{host}:{port}`. Operators can run
   their own; the public testnet prover works for trials.
 - **Canonicalization enabled.** Guardian execution requires it — FR-040 depends
-  on it entirely to establish whether a submitted transaction landed. Optimistic
+  on it entirely to establish whether a submitted transaction committed. Optimistic
   delta-commit mode is refused at startup (FR-043).
 - Run the migration `2026-07-28-000001_execution_reservations` before starting
   the server.
@@ -69,6 +69,12 @@ Two consequences:
   deployment's private horizon. If a finite value falls outside that horizon, the server refuses
   it before the boundary.
 
+Creation stores the client-derived summary and attached request; it does not execute the
+request. Guardian verifies their equivalence after an explicit execution request is
+accepted. If creation already includes enough valid signatures, proceed directly to step 3.
+The Guardian acknowledgment does not replace a missing cosigner signature. V1 has no
+server preparation endpoint or automatic execution policy.
+
 ## 2. Collect signatures as usual
 
 No change. Sign until the effective per-procedure threshold is met (FR-005).
@@ -111,10 +117,10 @@ Five states, exhaustive (FR-024):
 ```text
 pending    → proving | failed
 proving    → submitted | failed
-submitted  → landed | failed
+submitted  → committed | failed
 ```
 
-`proving` is the multi-minute phase. `landed` and `failed` are terminal.
+`proving` is the multi-minute phase. `committed` and `failed` are terminal.
 
 To find what an account is doing without polling every proposal:
 
@@ -136,7 +142,7 @@ admitted atomically with the submission evidence (FR-045 step 9).
 
 Guardian resolves it without any transaction-status lookup — Miden exposes
 none — via one of three observations (FR-040): the candidate reached
-`canonical` (`landed`), the account moved somewhere else (`failed`, superseded),
+`canonical` (`committed`), the account moved somewhere else (`failed`, superseded),
 or the chain passed the recorded expiration block with the account still at base
 (`failed`, expired). The third is why FR-046's finite-expiration rule exists;
 without it this path could never fire.
@@ -155,7 +161,7 @@ once Guardian can obtain trustworthy chain observations.
 |---|---|---|
 | `pending`, `proving` | `true` | no — already in flight |
 | `submitted` | `true` | **no** — forbidden |
-| `landed` | `false` | no — succeeded; proposal deleted on promotion |
+| `committed` | `false` | no — succeeded; proposal deleted on promotion |
 | `failed`, pre-boundary | `true` | **yes** |
 | `failed`, post-boundary discarded | `false` | no — create a **new** proposal |
 

@@ -21,6 +21,17 @@ This is why the FR-045 step 9 commit writes the candidate and the evidence
 model with two writes, or with a flag beside the evidence, reintroduces the
 window this design exists to close.
 
+## Proposal admission quotas
+
+FR-016 adds viable count accounting by `(account_id, authenticated proposer_id)`.
+Use the stored authenticated proposer identity and compare each proposal's base commitment
+with the current canonical commitment. Stale proposals do not consume viable count quota.
+Check per-proposer counts, account-wide counts and request-byte limits together with
+insertion under the account lock or transaction on both filesystem and Postgres backends.
+Concurrent creates must not oversubscribe a quota. This admission operation creates no
+execution reservation. The final count allocation rule must preserve other signers'
+allocated capacity; its configuration is pending design, with two per proposer suggested.
+
 ## `ExecutionReservation`
 
 One row per account, at most one **active** at a time. Spans acceptance through
@@ -110,7 +121,7 @@ Written **before** the network send, inside the step-9 commit (FR-039).
 
 All four FR-039 fields are mandatory, and each is load-bearing for a specific
 reconciliation rule rather than merely diagnostic: `expected_commitment` distinguishes
-landed from superseded, `base_commitment` detects "never moved", `expiration_block` bounds
+committed from superseded, `base_commitment` detects "never moved", `expiration_block` bounds
 the wait, and `transaction_id` is what an operator correlates against the chain. An earlier
 revision of this document carried only the expiration block, which left the superseded rule
 stated but unimplementable.
@@ -132,7 +143,7 @@ rather than derived.
 | `account_id` | string | yes | |
 | `proposal_id` | string | yes | |
 | `attempt` | i32 | yes | Which attempt resolved; see § Attempt identity |
-| `state` | enum | yes | `landed` or `failed` only |
+| `state` | enum | yes | `committed` or `failed` only |
 | `error_code` | string | no | Required when `failed`; from the contract's vocabulary |
 | `error_message` | string | no | Human-readable |
 | `resolved_at` | timestamptz | yes | |
@@ -197,7 +208,7 @@ into check-then-act (FR-037).
 |---|---|---|
 | **Create reservation** | Acquire the `execution:{account_id}` lease, then insert the reservation iff no candidate exists and no active reservation | `ReservationWrite` |
 | **Admit candidate + record evidence** (step 9) | Persist candidate, set `has_pending_candidate`, set `candidate_nonce`, insert evidence — **as one commit** | `AdmissionWrite` |
-| **Promote candidate + resolve** | Existing fenced promotion, **extended** to upsert `ExecutionOutcome { landed }` and release the reservation in the same transaction. Owns `landed` (FR-053, FR-054) | `PromoteWrite` |
+| **Promote candidate + resolve** | Existing fenced promotion, **extended** to upsert `ExecutionOutcome { committed }` and release the reservation in the same transaction. Owns `committed` (FR-053, FR-054) | `PromoteWrite` |
 | **`resolve_execution`** | Post-boundary failure: validate execution ownership + fence, discard the candidate, **delete its matching proposal**, upsert `ExecutionOutcome`, release the reservation — **one transaction** | `ResolveWrite` |
 | **`fail_execution`** | Pre-boundary failure: upsert `ExecutionOutcome` and release the reservation as **one commit**. No candidate exists, so nothing to discard | `ResolveWrite` |
 | **Claim ownership** (FR-052) | Compare-and-set `holder_id` / `fence_token` on a live reservation; fails rather than steals on a stale expectation | `ReservationWrite` |
@@ -208,9 +219,9 @@ into check-then-act (FR-037).
 SC-025 requires candidate promotion and candidate deletion to **each** atomically persist the
 outcome. Two operations satisfy that, and the split matters:
 
-- **`landed`** is owned by the extended `promote_candidate`. Promotion is what makes the
+- **`committed`** is owned by the extended `promote_candidate`. Promotion is what makes the
   outcome true, so nothing else may write it — a reconciliation worker that also persisted
-  `landed` on observing `canonical` would be a second writer racing the first.
+  `committed` on observing `canonical` would be a second writer racing the first.
 - **Every post-boundary failure** — definite rejection, superseded, expired — is owned by
   `resolve_execution`, which discards the candidate *and* persists the outcome *and* releases
   the reservation in one transaction.
@@ -243,7 +254,7 @@ now releases an execution reservation, and FR-038 requires every durable mutatio
 the execution fence. Promotion is authorized to do this while holding the canonicalization
 fence, provided it takes the same per-account lock every other reservation write takes.
 
-The justification is narrow: promotion is what makes `landed` true, and it cannot be expected to
+The justification is narrow: promotion is what makes `committed` true, and it cannot be expected to
 hold a lease belonging to a worker that may have died. The per-account lock is what keeps it
 safe — promotion and `resolve_execution` serialize on it, whichever commits first wins, and the
 loser observes `AlreadyResolved` and writes nothing. Both results are individually correct, so
@@ -369,7 +380,7 @@ CREATE TABLE execution_outcomes (
     account_id     TEXT        NOT NULL,
     proposal_id    TEXT        NOT NULL,
     attempt        INTEGER     NOT NULL,
-    state          TEXT        NOT NULL CHECK (state IN ('landed', 'failed')),
+    state          TEXT        NOT NULL CHECK (state IN ('committed', 'failed')),
     error_code     TEXT,
     error_message  TEXT,
     resolved_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -430,7 +441,7 @@ with the evidence would be a bug, and the evidence wins.
 Reconciliation needs no transaction-status lookup — Miden exposes none. It resolves from
 observations already available.
 
-**Reconciliation owns exactly two terminal paths.** `landed` is **not** one of them:
+**Reconciliation owns exactly two terminal paths.** `committed` is **not** one of them:
 
 | Reconcile-owned path | Observation | Outcome |
 |---|---|---|
@@ -439,10 +450,10 @@ observations already available.
 
 Plus FR-031 restart recovery, which resolves rather than retries.
 
-`landed` is owned solely by the extended `promote_candidate` (FR-053). Observing the account at
+`committed` is owned solely by the extended `promote_candidate` (FR-053). Observing the account at
 `expected_commitment` is an **input** — it tells reconciliation this execution is not
-superseded and not expired, so it must wait for promotion — never a second write of `landed`.
-A reconciliation loop that upserted `landed` on that observation would be a second writer
+superseded and not expired, so it must wait for promotion — never a second write of `committed`.
+A reconciliation loop that upserted `committed` on that observation would be a second writer
 racing promotion, which is the exact `remove_candidate` race FR-041 exists to prevent.
 
 `expected_commitment` is still what makes the distinction possible at all: without it,

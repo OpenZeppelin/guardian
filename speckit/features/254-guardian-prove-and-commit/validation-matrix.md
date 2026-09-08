@@ -204,7 +204,7 @@ happy-path tests:
 | Proposal requiring foreign-account inputs (FPI) | Refused before any proving or submission, with a distinct reason (FR-050, SC-032) |
 | Crash between FR-039 evidence write and the send | Evidence is durable; recovery reconciles only, never re-submits or re-proves (FR-047, SC-024) |
 | Crash immediately *before* the evidence write | No submission occurred; recovery fails-and-releases (FR-047, SC-024) |
-| Candidate promotion | Atomically persists `landed` and releases the reservation (FR-041, SC-025) |
+| Candidate promotion | Atomically persists `committed` and releases the reservation (FR-041, SC-025) |
 | Candidate deletion | Atomically persists the terminal failure before the row disappears (FR-041, SC-025) |
 | `SwitchGuardian` canonicalizes during proving | Pre-submission re-check fails the execution; nothing submitted (FR-048, SC-026) |
 | Proven transaction with no finite expiration | Refused before the no-retry boundary with `GUARDIAN_EXECUTION_NO_FINITE_EXPIRATION` (FR-046, SC-027) |
@@ -230,8 +230,8 @@ happy-path tests:
 
 | Harness | Covers |
 |---|---|
-| `examples/demo` | Rust: propose as Guardian-executable → sign to threshold → request execution → observe landing, for a built-in **and** a custom proposal type (SC-015) |
-| `examples/execution-smoke` (new) | SC-001 / FR-034: request execution and poll to `landed` using **only** `packages/guardian-client` (plus a Rust counterpart over `crates/client`) — no Miden client constructed, no node connectivity, no proving. The only artifact that can evidence the no-Miden guarantee |
+| `examples/demo` | Rust: propose as Guardian-executable → sign to threshold → request execution → observe on-chain commitment, for a built-in **and** a custom proposal type (SC-015) |
+| `examples/execution-smoke` (new) | SC-001 / FR-034: request execution and poll to `committed` using **only** `packages/guardian-client` (plus a Rust counterpart over `crates/client`) — no Miden client constructed, no node connectivity, no proving. The only artifact that can evidence the no-Miden guarantee |
 | `examples/smoke-web` | TS end-to-end via the multisig SDK (SC-015). MUST NOT be claimed for SC-001/FR-034 — it constructs a Miden client, so it cannot demonstrate the no-Miden guarantee |
 
 ### Parity and performance
@@ -249,3 +249,17 @@ happy-path tests:
 - `guardian-validation-matrix` — to select the minimal meaningful subset while iterating.
 - `guardian-multisig-proposal-lifecycle` — proposal create/sign/execute changes.
 - `smoke-test-rust-multisig-sdk`, `smoke-test-ts-multisig-sdk` — the two example smokes.
+
+## Upstream review acceptance checks
+
+- Proposal creation and signature collection perform no transaction execution and create
+  no execution reservation. A ready-at-creation proposal executes only after the explicit
+  trigger; cover Rust and TypeScript consumers and Falcon/ECDSA signatures.
+- A Guardian acknowledgment cannot fill a missing cosigner signature. Keep the upstream
+  wallet quorum mapping open until agreed; do not infer general 2-of-3 equivalence.
+- FR-016 count quotas use authenticated proposer identity. Test atomic concurrent creates,
+  stale proposals freeing viable count quota, and capacity for another signer on both
+  storage backends. Finalize count allocation/configuration before implementing these tests.
+- Execution success is `committed` in HTTP, gRPC, SDKs and storage outcomes. Delta success
+  stays `canonical`; existing `candidate_landed` error codes are unchanged.
+- No v1 preparation, automatic execution, chaining or batching API is introduced.

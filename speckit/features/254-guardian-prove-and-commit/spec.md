@@ -2,7 +2,7 @@
 
 **Feature Branch**: `254-guardian-prove-and-commit`
 **Created**: 2026-07-27
-**Last Revised**: 2026-07-31 (review revision 8: expiration is outside `TransactionSummary` — FR-046/FR-051/SC-033 rework; revision 7 added server-side transient proving retries — FR-055, SC-040)
+**Last Revised**: 2026-09-08 (review revision 9: admission validation, proposer quotas, committed status, and future extensions)
 **Status**: Draft
 **Input**: Issue #254 (parent: #253 META - Transaction Orchestration): "Enable the Guardian to handle the full prove-and-commit lifecycle for a transaction. The user submits a signed `TransactionSummary` to the Guardian; the Guardian generates the ZK proof; the Guardian submits the proven transaction to the Miden network."
 
@@ -12,7 +12,8 @@ Guardian's multisig custody splits work between two parties. The **client** buil
 transaction, derives its canonical summary, collects cosigner signatures through
 Guardian, and then — once the signing threshold is met — executes, proves, and submits
 the transaction to the Miden network itself. **Guardian** is a coordinator: it validates
-each proposal against the account's current state, accumulates signatures, issues the
+the supplied summary's encoding and stored-state commitment consistency, records the
+proposal's base commitment, accumulates signatures, issues the
 acknowledgment that satisfies the on-chain guardian gate, and observes the chain
 read-only to canonicalize the resulting delta.
 
@@ -289,7 +290,7 @@ and blocks retry until the chain is observed.
    unlocked, and the proposal remains executable.
 5. **Given** a submission that times out or whose connection drops, **When** the
    execution state is inspected, **Then** it reports `submitted`, retry is refused, the
-   reservation is retained, and the state resolves to `landed` or `failed` only after
+   reservation is retained, and the state resolves to `committed` or `failed` only after
    chain observation establishes which occurred.
 
 ---
@@ -348,7 +349,7 @@ reachable prover and confirm execution succeeds.
   still executable.
 - **Submission returns a definite rejection** (the node rejects the proven transaction):
   reported `failed` with a submission cause. A candidate exists by construction (FR-045 step
-  9); since Guardian knows nothing landed it discards its own candidate and releases the
+  9); since Guardian knows nothing committed it discards its own candidate and releases the
   reservation (FR-032).
 - **Submission outcome is unknown** (timeout, dropped connection, or crash between send
   and response): reported `submitted`, the reservation is *retained*, and retry is refused
@@ -419,6 +420,18 @@ refers to the same requirement across revisions.
   response, because response-shape changes propagate to both base clients and both
   multisig SDKs.
 
+#### Proposal admission and readiness
+
+Creation MUST NOT execute the attached request or claim request-to-summary verification.
+The client derives the summary and supplies signatures; Guardian stores the proposal and
+its base commitment. Reproduction belongs to FR-007 after execution acceptance. A ready
+proposal still requires an explicit execution request; creation and signing MUST NOT
+reserve the account or dispatch execution. No preparation endpoint is added in v1.
+
+V1 permits competing proposals on the canonical base but no dependent in-flight chain.
+A proposal whose recorded base no longer matches canonical state cannot execute in v1.
+This is an admission/execution policy, not a universal property of signed summaries.
+
 #### Readiness and binding
 
 - **FR-005**: Before any proving or network submission, Guardian MUST verify that the
@@ -426,7 +439,10 @@ refers to the same requirement across revisions.
   the per-procedure override when one is configured for that procedure, otherwise the
   account default. It MUST read these from the account's own state, not from the
   client-supplied `required_signatures` metadata field. For proposals whose type is
-  custom, the effective threshold is the account default.
+  custom, the effective threshold is the account default. Guardian's separate
+  acknowledgment MUST NOT count toward this cosigner threshold. Mapping this model to
+  the upstream wallet's general 2-of-3 quorum is an open integration question; v1 does
+  not change the account authorization contract.
 - **FR-006**: Before any proving or network submission, Guardian MUST cryptographically
   verify each collected cosigner signature against the signed summary commitment and confirm
   its signing key belongs to the account's registered cosigner set. It MUST then **select the
@@ -517,6 +533,14 @@ refers to the same requirement across revisions.
   size limit enforced at proposal creation, and MUST be counted against a per-account
   aggregate limit so that accumulated pending proposals cannot exhaust storage. Exceeding
   either limit MUST refuse creation rather than store an unexecutable proposal.
+  Guardian MUST also enforce a viable-proposal count quota per account and authenticated
+  proposer, alongside the account-wide count cap. Identity MUST come from authentication,
+  not client-supplied metadata. The combined count limits MUST preserve capacity allocated
+  to other registered signers. Count checks and insertion MUST be atomic on both backends;
+  proposals stale against the current canonical base MUST NOT consume viable count quota.
+  Two proposals per proposer is a proposed default. The final configuration and allocation
+  rule are an explicit design decision required before implementation. Request-byte limits
+  remain independent and can still refuse admission.
 - **FR-017**: When a proposal is deleted, discarded, or superseded, its stored request
   MUST be removed on the same schedule as the proposal itself. This feature MUST NOT
   introduce a retention path that outlives the proposal.
@@ -561,7 +585,7 @@ refers to the same requirement across revisions.
   candidate/canonical lifecycle and MUST be refused, with the same capability-unavailable
   error class, on a server running in optimistic delta-commit mode (canonicalization
   disabled). Optimistic mode accepts deltas without on-chain verification, so it has no way
-  to establish whether a submitted transaction landed — which FR-040 depends on entirely.
+  to establish whether a submitted transaction committed — which FR-040 depends on entirely.
   This MUST be detected and reported at startup as well as per request, so a misconfigured
   deployment is visible before a caller discovers it. Defining a second, weaker lifecycle for
   optimistic mode is explicitly out of scope: it would mean shipping a mode in which Guardian
@@ -630,19 +654,19 @@ refers to the same requirement across revisions.
   From step 11 onward the outcome is owned by **exactly one of three parties**, decided by what
   the submission returned. This is normative, because two parties writing one outcome is the
   race FR-041 exists to prevent:
-  - **Promotion (canonicalization)** owns `landed`. Promotion is what makes the outcome true,
+  - **Promotion (canonicalization)** owns `committed`. Promotion is what makes the outcome true,
     so it persists the outcome and releases the reservation in its own transaction, and nothing
-    else may write `landed`.
+    else may write `committed`.
   - **The execution owner** owns a **definite** submission rejection: it resolves immediately
     via the single atomic resolution operation (FR-053), freeing the account rather than
     holding it until expiration.
   - **Reconciliation** owns every **unknown** outcome, resolving it by the superseded or
-    expired evidence paths (FR-040). It MUST NOT write `landed`; observing the account at the
+    expired evidence paths (FR-040). It MUST NOT write `committed`; observing the account at the
     expected commitment is an input to promotion and to status derivation, not a second
     terminal write.
   Only an explicit application-level rejection is definite. Every ambiguous transport
   failure — timeout, dropped connection, unavailable — is unknown, because misclassifying one
-  as definite would discard the candidate for a transaction that actually landed.
+  as definite would discard the candidate for a transaction that actually committed.
   Three orderings are normative, each fixing a specific failure mode:
   - **Steps 2 before 3** — the acknowledgment MUST NOT be issued for a transaction that does
     not reproduce the signed summary.
@@ -652,7 +676,7 @@ refers to the same requirement across revisions.
     transaction that was never sent.
   - **Step 9 before step 11** — the candidate MUST exist before the transaction is sent. If
     submission preceded admission, a crash in between would leave a transaction on chain with
-    no candidate to promote, so reconciliation would have to report `landed` with nothing ever
+    no candidate to promote, so reconciliation would have to report `committed` with nothing ever
     reaching `canonical` — contradicting FR-026 and US1. Binding the candidate and the
     evidence into one commit makes "about to submit" a single durable fact.
   This mirrors the existing client flow, where `push_delta` records the candidate before the
@@ -679,7 +703,7 @@ refers to the same requirement across revisions.
 - **FR-053 — every terminal transition is one atomic operation**: A terminal outcome and the
   release of its reservation MUST be committed together. Three operations, and no path may
   compose them from smaller steps:
-  - **Promotion** — the existing fenced promotion, extended to persist `landed` and release
+  - **Promotion** — the existing fenced promotion, extended to persist `committed` and release
     the reservation.
   - **`resolve_execution`** — post-boundary failure: discard the candidate, **delete its
     matching proposal**, persist the outcome, release the reservation.
@@ -697,7 +721,7 @@ refers to the same requirement across revisions.
 - **FR-054 — who may release a reservation**: Promotion runs under the **canonicalization**
   lease, not the account's execution lease, yet FR-038 requires every durable mutation to
   validate the execution fence. Promotion is therefore **explicitly authorized** to persist
-  `landed` and release the reservation while holding the canonicalization fence, provided it
+  `committed` and release the reservation while holding the canonicalization fence, provided it
   takes the same per-account lock every other reservation write takes. The authorization is
   narrow and justified: promotion is the operation that makes the outcome true, and it cannot
   be expected to hold a lease belonging to a worker that may no longer exist.
@@ -707,7 +731,7 @@ refers to the same requirement across revisions.
   definitely rejected did not — so the lock decides, not a precedence rule.
 - **FR-024**: The **externally reported** execution state MUST be an explicit,
   exhaustively enumerated set of exactly five values: `pending`, `proving`, `submitted`,
-  `landed`, and `failed`. The set is deliberately minimal: a state exists only where it
+  `committed`, and `failed`. The set is deliberately minimal: a state exists only where it
   changes what the caller does. `failed` MUST carry a stable error code and a
   human-readable message distinguishing at least verification, proving, submission, and
   post-submission-discard causes.
@@ -726,12 +750,12 @@ refers to the same requirement across revisions.
     way: wait, watch the delta, do not retry. Because the candidate is admitted atomically
     with the submission evidence (FR-045 step 9), there is no window in which this state
     exists without a candidate.
-  - `landed` — the candidate reached `canonical`. Terminal success.
+  - `committed` — the candidate reached `canonical`. Terminal success.
   - `failed` — terminal; the transaction did not take effect. Whether the proposal can be
     retried is **not** implied by this state and MUST be read from `proposal_exists`
     (FR-042): a pre-boundary failure leaves it intact, while a post-boundary failure may have
     had it deleted alongside its candidate.
-  Terminal states MUST be exactly `landed` and `failed`. This feature MUST NOT add delta
+  Terminal states MUST be exactly `committed` and `failed`. This feature MUST NOT add delta
   status values or alter existing delta transitions.
 - **FR-041 — terminal outcomes survive candidate deletion**: A post-submission terminal
   state MUST NOT be derived from the candidate delta on read, because the candidate does not
@@ -838,8 +862,8 @@ refers to the same requirement across revisions.
 - **FR-040 — terminating an unknown submission**: An account still sitting at its base
   commitment is **not** evidence that a transaction was dropped — it may still land. A
   reservation MUST therefore terminate only on positive evidence, exactly one of:
-  - **Landed** — the expected resulting account commitment is observed on chain, or the
-    transaction is observed included; settle `landed`.
+  - **Committed** — the expected resulting account commitment is observed on chain, or the
+    transaction is observed included; settle `committed`.
   - **Superseded** — the account is observed at a commitment that is neither the base nor
     the expected result; the transaction can no longer land; settle `failed`.
   - **Expired** — the chain height is observed strictly past the expiration block recorded
@@ -910,7 +934,7 @@ refers to the same requirement across revisions.
   - A **post-boundary** execution has a candidate **by construction** (FR-045 step 9), so
     "records no delta of its own" does not apply to it. Disposal of that candidate is owned by
     canonicalization and the FR-040 evidence paths; on a definite submission rejection
-    Guardian MAY discard its own candidate immediately, since it knows nothing landed.
+    Guardian MAY discard its own candidate immediately, since it knows nothing committed.
   - A **post-boundary** `failed` execution MUST NOT promise the proposal is still executable.
     Canonicalization deletes the proposal alongside an unrecoverable candidate, so it may
     legitimately be gone. Guardian MUST report this via `proposal_exists` (FR-042) rather than
@@ -919,7 +943,7 @@ refers to the same requirement across revisions.
   whether the proposal **still exists**, as a fact, rather than advertising whether a retry is
   permitted. Retry permission is already implied by the reported state; conflating the two
   produced a field that claimed "may retry" for `submitted` (where retry is forbidden) and for
-  `landed` (whose proposal is deleted on promotion). Where a proposal was deleted with its
+  `committed` (whose proposal is deleted on promotion). Where a proposal was deleted with its
   candidate, the execution's terminal record MUST remain readable and MUST report the proposal
   as absent, so a caller learns it must create a **new** proposal rather than retry the old
   one. Guardian MUST NOT recreate the proposal itself: doing so would resurrect
@@ -980,7 +1004,7 @@ refers to the same requirement across revisions.
 
 ### Measurable Outcomes
 
-- **SC-001**: A cosigner can take a threshold-met proposal to a landed on-chain state
+- **SC-001**: A cosigner can take a threshold-met proposal to a committed on-chain state
   using only authenticated Guardian requests — with no local transaction building, no
   Miden node connectivity, and no local proving. Demonstrated against a **base client**
   (FR-034), which has no Miden dependency; not against a multisig SDK.
@@ -1009,7 +1033,7 @@ refers to the same requirement across revisions.
   no indefinite lock, verified by an explicit test.
 - **SC-008**: A simulated unknown-outcome submission never results in a second
   submission: it reports `submitted`, retains its reservation, and refuses retry. It reaches a
-  terminal state via exactly one of the FR-040 evidence paths — landed, superseded, or
+  terminal state via exactly one of the FR-040 evidence paths — committed, superseded, or
   expired — with an explicit test per path, including one where the account never leaves its
   base commitment and only observation beyond the expiration bound terminates it. A separate
   outage test holds the same reservation safely while observation is unavailable and resumes
@@ -1035,7 +1059,7 @@ refers to the same requirement across revisions.
   refuses 100% of execution requests with an explicit capability-unavailable error and
   never attempts to prove or submit.
 - **SC-015**: The full lifecycle — propose as Guardian-executable, sign to threshold,
-  request Guardian execution, observe landing and canonicalization — is demonstrated
+  request Guardian execution, observe on-chain commitment and canonicalization — is demonstrated
   end-to-end in an example harness for both a built-in proposal type and a custom one.
 - **SC-016**: The reported state vocabulary is exactly the five values in FR-024 on both
   HTTP and gRPC, and no internal execution state is observable on any wire surface —
@@ -1087,7 +1111,7 @@ refers to the same requirement across revisions.
 - **SC-030**: The candidate always exists before the transaction is sent: a crash injected
   between the FR-045 step 9 commit and the network send leaves a durable candidate and durable
   evidence, reports `submitted`, and is resolved by reconciliation without re-sending — so no
-  execution can ever report `landed` with nothing having reached `canonical` (FR-045, FR-047).
+  execution can ever report `committed` with nothing having reached `canonical` (FR-045, FR-047).
 - **SC-031**: A worker that goes stale after crossing the boundary never sends: the pre-send
   fence re-check aborts it, it writes nothing, and reconciliation resolves the durable candidate
   after trustworthy observation reaches the expiration horizon — verified by a test that commits the boundary, transfers
@@ -1210,10 +1234,20 @@ documents do not read as contradictory.
 
 ## Out of Scope
 
-- **Automatic execution when the signing threshold is reached.** This version requires
-  an explicit request. A per-account auto-execute policy is a follow-up that becomes
-  possible without further wire changes once this lands, because Guardian will already
-  hold everything it needs at the moment the final signature arrives.
+- **Server-side proposal preparation.** A future authenticated `prepare` operation could
+  accept a request and execution context, derive the summary, store an unsigned proposal,
+  and return its ID and summary. Existing signing operations would collect approvals.
+  Preparation would not reserve the account or authorize execution. Client preparation
+  and self-execution remain the default; no preparation API is specified in v1.
+- **Automatic execution when the signing threshold is reached.** V1 requires an explicit
+  request. A future opt-in account policy could queue eligible proposals after verifying
+  the valid-signature threshold. It needs signer-visible policy configuration and defined
+  conflict/queue behavior while preserving normal authorization and state checks.
+- **Dependent chains and independent proposal revalidation.** V1 does not pipeline
+  speculative account states or preserve viability after the recorded base changes.
+  Future work must distinguish dependent chains from independent proposals whose signed
+  summaries still reproduce after another transaction commits. Chaining needs ordering
+  and parent-failure recovery; revalidation must preserve signed execution context.
 - **Cryptographic verification of cosigner signatures at ingestion.** Recommended as a
   separate change: it would make Guardian's stored record trustworthy and fail earlier,
   but it alters the behavior of the existing proposal-create and proposal-sign endpoints

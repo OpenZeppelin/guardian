@@ -10,7 +10,7 @@ prove, and submit the transaction on the client's behalf, so a cosigner needs
 no Miden dependency and no chain access to move an account forward.
 
 **The proving architecture is ratified and is not what this plan builds.** The
-Gate 0 spike landed a working `DataStore` over Guardian's own state
+Gate 0 spike produced a working `DataStore` over Guardian's own state
 (`crates/server/src/network/miden/execution/`), assembled a `PartialBlockchain`
 from node RPC alone, and proved a witness through a remote prover against public
 testnet — with **no new dependencies**. See [research.md](./research.md) and
@@ -37,6 +37,22 @@ which no failure path may ever retry, only reconcile.
 exact primitive FR-037 requires: a per-account row lock plus fence-validated
 conditional write, committed as one transaction. Reservations extend that
 pattern.
+
+## Review decisions and implementation scope
+
+V1 retains client preparation and an explicit execution trigger. Admission stores the
+summary and request without execution; FR-007 verifies reproduction after acceptance.
+The Guardian acknowledgment remains separate from the cosigner threshold. Resolve the
+upstream wallet's 2-of-3 mapping without assuming a change to account authorization.
+
+Implement FR-016 per-proposer quotas in proposal admission on both backends and test
+concurrent inserts and capacity for another signer. Before implementation, settle the
+count configuration and allocation rule; two per proposer is a proposed default, not a
+final config contract. Use `committed` consistently for terminal execution success while
+keeping the delta status `canonical` and existing error codes unchanged.
+
+Preparation, automatic execution, dependent chains, independent proposal revalidation,
+and batching remain future work. No v1 implementation tasks are added for those APIs.
 
 ## Technical Context
 
@@ -313,10 +329,10 @@ Reconciliation owns **two** terminal paths — superseded and expired — plus F
 rule: an execution whose durable record shows the boundary was crossed is **never** retried,
 only reconciled.
 
-**It does not own `landed`.** That belongs solely to the extended `promote_candidate`
+**It does not own `committed`.** That belongs solely to the extended `promote_candidate`
 (FR-053). Observing the account at the expected commitment is an *input* telling reconciliation
 this execution is neither superseded nor expired, so it must wait for promotion — never a
-second write of the outcome. A reconcile loop that upserted `landed` on that observation would
+second write of the outcome. A reconcile loop that upserted `committed` on that observation would
 race the party that owns it, reintroducing the `remove_candidate` hazard FR-041 exists to
 prevent.
 
@@ -446,7 +462,7 @@ accounts held until expiration with no resolution path.
 ## Deferred
 
 - **Optimistic mode** — refused. Requires canonicalization (FR-043); without it
-  there is no way to establish whether a submitted transaction landed.
+  there is no way to establish whether a submitted transaction committed.
 - **FPI / foreign-account inputs** — excluded by FR-050, refused before
   execution.
 - **Stage 2 live submission validation** — needs a funded, Guardian-registered
