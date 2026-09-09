@@ -174,15 +174,17 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_anch
 /// Issue #462: one proposal whose summary binding cannot be verified must
 /// not hide the others. The strict listing returns it with
 /// `verification_error` set and the healthy proposal untouched; signing the
-/// unverifiable one still fails, because signing re-verifies.
+/// unverifiable one still fails, because signing re-verifies. A signer
+/// update is used so the case does not depend on any input-note handling.
 #[tokio::test]
 async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_listing() {
+    use crate::transaction::build_update_signers_transaction_request;
+
     let keystore = Arc::new(GuardianKeyStore::generate());
     let signer_commitment = keystore.commitment();
     let guardian_commitment = Word::from([9u32, 9, 9, 9]);
     let account = multisig_account(signer_commitment, guardian_commitment, 50);
-    let note = p2id_note_for(&account, 31, NoteType::Private);
-    let api = chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
+    let api = chain_with_notes(Vec::new());
 
     let dir = tempfile::tempdir().unwrap();
     let (mut client, _store) =
@@ -192,20 +194,18 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
     client.account = Some(MultisigAccount::new(account.clone()));
     client.miden_client.sync_state().await.unwrap();
 
+    // An add-cosigner proposal: the same signer set plus one, threshold kept.
+    let new_cosigner = Word::from([7u32, 7, 7, 7]);
+    let signers = vec![signer_commitment, new_cosigner];
+    let signers_hex: Vec<String> = signers.iter().map(word_to_hex).collect();
     let salt = Word::from([5u32, 6, 7, 8]);
-    let tx_type =
-        TransactionType::consume_notes_v2(vec![note.id()], vec![SerializedNote::from_note(&note)]);
-    let tx_request = build_final_transaction_request(
-        &client.miden_client,
-        &tx_type,
-        &account,
+    let (tx_request, _) = build_update_signers_transaction_request(
+        1,
+        &signers,
         salt,
-        Vec::new(),
-        None,
-        Some(&[]),
+        std::iter::empty(),
         client.key_manager.scheme(),
     )
-    .await
     .unwrap();
     let (tx_summary, chain_anchor) =
         execute_for_summary(&mut client.miden_client, account.id(), tx_request)
@@ -215,11 +215,7 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
     let anchor_b64 = chain_anchor_to_base64(&chain_anchor);
     let payload = |salt_hex: String| {
         ProposalPayload::new(&tx_summary)
-            .with_note_consumption_metadata_v2(
-                vec![note.id().to_hex()],
-                vec![SerializedNote::from_note(&note).into_inner()],
-                salt_hex,
-            )
+            .with_add_signer_metadata(1, signers_hex.clone(), salt_hex)
             .with_required_signatures(1)
             .with_chain_anchor(anchor_b64.clone())
             .to_json()
@@ -235,13 +231,12 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
         payload(word_to_hex(&salt)),
         &word_to_hex(&signer_commitment),
     );
-    let mut bad = pending_proto_delta(
+    let bad = pending_proto_delta(
         &account,
         2,
         payload(word_to_hex(&Word::from([1u32, 1, 1, 1]))),
         &word_to_hex(&signer_commitment),
     );
-    bad.nonce = 2;
 
     let service = MockGuardianService::default();
     let handle = service.handle();
@@ -264,7 +259,7 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
     assert_eq!(proposals.len(), 2, "proposals: {proposals:?}");
     let (unverifiable, verified): (Vec<_>, Vec<_>) =
         proposals.iter().partition(|p| !p.is_verified());
-    assert_eq!(verified.len(), 1);
+    assert_eq!(verified.len(), 1, "proposals: {proposals:?}");
     assert!(verified[0].id.eq_ignore_ascii_case(&good_id));
     assert_eq!(unverifiable.len(), 1);
     assert_eq!(unverifiable[0].nonce, 2);
