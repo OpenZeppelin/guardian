@@ -162,6 +162,14 @@ export interface Proposal {
   txSummary: string;
   signatures: ProposalSignatureEntry[];
   metadata: ProposalMetadata;
+  /**
+   * Why this proposal's summary binding could not be verified when it was
+   * synced, if it could not. Absent when the metadata reproduced the signed
+   * summary. `syncProposals` surfaces unverifiable proposals instead of
+   * failing wholesale (issue #462); `signProposal` and `executeProposal`
+   * re-verify and refuse them.
+   */
+  verificationError?: string;
 }
 
 export interface TransactionProposal {

@@ -83,6 +83,13 @@ impl MultisigClient {
     /// skipped: they have already been executed or superseded, but GUARDIAN may
     /// still report them pending until canonicalization prunes them.
     ///
+    /// Every listed proposal's metadata is checked against its signed summary.
+    /// One that fails is still listed, with the reason in
+    /// [`Proposal::verification_error`], so a single stale or corrupt proposal
+    /// cannot hide the others (issue #462: once the node prunes a proposal's
+    /// anchor block its re-execution fails for everyone). Signing and executing
+    /// re-verify and refuse such a proposal.
+    ///
     /// # Errors
     ///
     /// Returns an error if any proposal from GUARDIAN cannot be parsed. This ensures
@@ -105,13 +112,15 @@ impl MultisigClient {
         let mut proposals = Vec::with_capacity(response.proposals.len());
         for delta in &response.proposals {
             Self::ensure_proposal_account_id(&delta.account_id, &account_id)?;
-            let proposal = Proposal::from(delta)?;
+            let mut proposal = Proposal::from(delta)?;
 
             if proposal.nonce <= current_nonce {
                 continue;
             }
 
-            self.verify_proposal_summary_binding(&proposal).await?;
+            if let Err(e) = self.verify_proposal_summary_binding(&proposal).await {
+                proposal.verification_error = Some(e.to_string());
+            }
             proposals.push(proposal);
         }
 

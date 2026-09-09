@@ -362,6 +362,9 @@ async fn action_view_proposals(state: &mut SessionState) -> Result<(), String> {
         println!("      Type: {:?}", proposal.transaction_type);
         print_full_hex("      Proposal ID", &proposal.id);
         println!("      Signatures: {}/{}", collected, required);
+        if let Some(reason) = &proposal.verification_error {
+            println!("      ⚠ UNVERIFIABLE: {}", reason);
+        }
 
         if proposal.status.is_pending() && !proposal.metadata.signers.is_empty() {
             println!("      Signers:");
@@ -406,6 +409,12 @@ async fn action_sign_proposal(
         println!("  [{}] {}", idx + 1, shorten_hex(&proposal.id));
         println!("      Type: {:?}", proposal.transaction_type);
         println!("      Signatures: {}/{}", collected, required);
+        if let Some(reason) = &proposal.verification_error {
+            println!(
+                "      ⚠ UNVERIFIABLE (cannot be signed or executed): {}",
+                reason
+            );
+        }
     }
 
     let selection = prompt_input(editor, "\nSelect proposal to sign (number): ")?;
@@ -486,6 +495,12 @@ async fn action_execute_proposal(
         println!("  [{}] {}{}", idx + 1, shorten_hex(&proposal.id), ready);
         println!("      Type: {:?}", proposal.transaction_type);
         println!("      Signatures: {}/{}", collected, required);
+        if let Some(reason) = &proposal.verification_error {
+            println!(
+                "      ⚠ UNVERIFIABLE (cannot be signed or executed): {}",
+                reason
+            );
+        }
     }
 
     let selection = prompt_input(editor, "\nSelect proposal to execute (number): ")?;
@@ -691,6 +706,12 @@ async fn action_export_proposal(
         println!("  [{}] {}", idx + 1, shorten_hex(&proposal.id));
         println!("      Type: {:?}", proposal.transaction_type);
         println!("      Signatures: {}/{}", collected, required);
+        if let Some(reason) = &proposal.verification_error {
+            println!(
+                "      ⚠ UNVERIFIABLE (cannot be signed or executed): {}",
+                reason
+            );
+        }
     }
 
     let choice = prompt_input(editor, "\nSelect proposal to export (number): ")?;

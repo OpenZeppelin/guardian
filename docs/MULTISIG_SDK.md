@@ -357,6 +357,18 @@ and its block commitment against the one signed into the summary — before
 anything executes against it. A proposal without an anchor cannot be verified
 or executed.
 
+> **Anchor lifetime.** Re-executing at the anchor also loads every foreign
+> account the transaction touches at that block, and every fee-paying
+> transaction touches the fee faucet (the kernel's asset callbacks check it).
+> Nodes serve historical account state only for a limited window — devnet
+> serves about 50 blocks, roughly 2.5 minutes — after which the node answers
+> `block N has been pruned` and the proposal can no longer be verified or
+> executed by anyone, the proposer included. Until proposals can carry those
+> inputs themselves (tracked in issue #462), collect signatures and execute
+> promptly, and re-propose once a proposal has aged out. A listing keeps
+> working: such a proposal is returned with its `verificationError` /
+> `verification_error` set rather than failing the whole sync.
+
 ### Custom Proposal Types
 
 Guardian accepts any non-empty `proposal_type`, not just the first-party
@@ -898,6 +910,12 @@ const exported = await multisig.createSwitchGuardianProposalOffline(
 const proposals = await multisig.syncProposals();
 
 for (const proposal of proposals) {
+  if (proposal.verificationError) {
+    // The signed summary could not be reproduced from the metadata (for
+    // example, its anchor block is pruned). Signing and executing refuse it.
+    console.log(`${proposal.id}: unverifiable — ${proposal.verificationError}`);
+    continue;
+  }
   console.log(`${proposal.id}: ${proposal.status.type}`);
 
   if (proposal.status.type === 'pending') {
@@ -1382,6 +1400,12 @@ match client.propose_with_fallback(tx).await? {
 let proposals = client.list_proposals().await?;
 
 for proposal in &proposals {
+    if let Some(reason) = &proposal.verification_error {
+        // The signed summary could not be reproduced from the metadata (for
+        // example, its anchor block is pruned). Signing and executing refuse it.
+        println!("{}: unverifiable — {}", proposal.id, reason);
+        continue;
+    }
     match &proposal.status {
         ProposalStatus::Pending => {
             let (signatures_collected, signatures_required) = proposal.signature_counts();

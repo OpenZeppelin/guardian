@@ -381,6 +381,7 @@ impl ExportedProposal {
                 })
                 .collect(),
             metadata,
+            verification_error: None,
         })
     }
 

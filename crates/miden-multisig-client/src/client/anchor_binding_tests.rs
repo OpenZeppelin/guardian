@@ -170,3 +170,107 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_anch
         "a tip re-execution must not reproduce a summary anchored at an earlier block"
     );
 }
+
+/// Issue #462: one proposal whose summary binding cannot be verified must
+/// not hide the others. The strict listing returns it with
+/// `verification_error` set and the healthy proposal untouched; signing the
+/// unverifiable one still fails, because signing re-verifies.
+#[tokio::test]
+async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_listing() {
+    let keystore = Arc::new(GuardianKeyStore::generate());
+    let signer_commitment = keystore.commitment();
+    let guardian_commitment = Word::from([9u32, 9, 9, 9]);
+    let account = multisig_account(signer_commitment, guardian_commitment, 50);
+    let note = p2id_note_for(&account, 31, NoteType::Private);
+    let api = chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, _store) =
+        offline_client_parts_with_keystore(dir.path(), api.clone(), None, keystore.clone()).await;
+    client.set_node_rpc_client(api.clone());
+    client.add_or_update_account(&account, true).await.unwrap();
+    client.account = Some(MultisigAccount::new(account.clone()));
+    client.miden_client.sync_state().await.unwrap();
+
+    let salt = Word::from([5u32, 6, 7, 8]);
+    let tx_type =
+        TransactionType::consume_notes_v2(vec![note.id()], vec![SerializedNote::from_note(&note)]);
+    let tx_request = build_final_transaction_request(
+        &client.miden_client,
+        &tx_type,
+        &account,
+        salt,
+        Vec::new(),
+        None,
+        Some(&[]),
+        client.key_manager.scheme(),
+    )
+    .await
+    .unwrap();
+    let (tx_summary, chain_anchor) =
+        execute_for_summary(&mut client.miden_client, account.id(), tx_request)
+            .await
+            .unwrap();
+    let good_id = word_to_hex(&tx_summary.to_commitment());
+    let anchor_b64 = chain_anchor_to_base64(&chain_anchor);
+    let payload = |salt_hex: String| {
+        ProposalPayload::new(&tx_summary)
+            .with_note_consumption_metadata_v2(
+                vec![note.id().to_hex()],
+                vec![SerializedNote::from_note(&note).into_inner()],
+                salt_hex,
+            )
+            .with_required_signatures(1)
+            .with_chain_anchor(anchor_b64.clone())
+            .to_json()
+            .to_string()
+    };
+    // The healthy proposal and a copy whose served salt is wrong: its
+    // rebuild yields a different summary, so its binding fails. Same
+    // summary bytes, so the same id — GUARDIAN never serves that, so give it
+    // a distinct nonce to keep the two apart in the listing.
+    let good = pending_proto_delta(
+        &account,
+        1,
+        payload(word_to_hex(&salt)),
+        &word_to_hex(&signer_commitment),
+    );
+    let mut bad = pending_proto_delta(
+        &account,
+        2,
+        payload(word_to_hex(&Word::from([1u32, 1, 1, 1]))),
+        &word_to_hex(&signer_commitment),
+    );
+    bad.nonce = 2;
+
+    let service = MockGuardianService::default();
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    handle.set_persistent_get_state(registered_state(&account));
+    handle.set_persistent_get_delta_proposals(GetDeltaProposalsResponse {
+        success: true,
+        message: String::new(),
+        proposals: vec![bad, good],
+    });
+    client
+        .set_guardian_endpoint(&endpoint, false)
+        .await
+        .unwrap();
+
+    let proposals = client
+        .list_proposals()
+        .await
+        .expect("an unverifiable proposal is reported, not fatal");
+    assert_eq!(proposals.len(), 2, "proposals: {proposals:?}");
+    let (unverifiable, verified): (Vec<_>, Vec<_>) =
+        proposals.iter().partition(|p| !p.is_verified());
+    assert_eq!(verified.len(), 1);
+    assert!(verified[0].id.eq_ignore_ascii_case(&good_id));
+    assert_eq!(unverifiable.len(), 1);
+    assert_eq!(unverifiable[0].nonce, 2);
+    let reason = unverifiable[0].verification_error.as_deref().unwrap();
+    assert!(
+        reason.contains("metadata does not match tx_summary"),
+        "reason: {reason}"
+    );
+}

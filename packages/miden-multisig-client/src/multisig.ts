@@ -716,6 +716,15 @@ export class Multisig {
 
   /**
    * Sync proposals from the GUARDIAN server.
+   *
+   * Every synced proposal's metadata is checked against its signed summary.
+   * One that fails is still returned, with the reason in
+   * {@link Proposal.verificationError}, so a single stale or corrupt proposal
+   * cannot hide the others (issue #462: once the node prunes a proposal's
+   * anchor block its re-execution fails for everyone). `signProposal` and
+   * `executeProposal` re-verify and refuse such a proposal. A payload that
+   * does not parse at all still rejects, so malformed GUARDIAN data is never
+   * silently dropped.
    */
   async syncProposals(): Promise<Proposal[]> {
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
@@ -732,7 +741,11 @@ export class Multisig {
         existingProposal?.metadata,
         existingProposal?.signatures ?? [],
       );
-      await this.verifyProposalMetadataBinding(proposal);
+      try {
+        await this.verifyProposalMetadataBinding(proposal);
+      } catch (error) {
+        proposal.verificationError = error instanceof Error ? error.message : String(error);
+      }
 
       this.proposals.set(proposal.id, proposal);
     }

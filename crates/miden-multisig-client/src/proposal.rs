@@ -681,6 +681,12 @@ pub struct Proposal {
     pub tx_summary: TransactionSummary,
     pub signatures: Vec<ProposalSignatureEntry>,
     pub metadata: ProposalMetadata,
+    /// Why this proposal's summary binding could not be verified when it was
+    /// listed, if it could not. `None` means the metadata reproduced the
+    /// signed summary. A listing surfaces unverifiable proposals instead of
+    /// failing wholesale (issue #462); signing and executing re-verify and
+    /// refuse them.
+    pub verification_error: Option<String>,
 }
 
 impl Proposal {
@@ -809,6 +815,7 @@ impl Proposal {
             tx_summary,
             signatures,
             metadata,
+            verification_error: None,
         };
         proposal.refresh_status();
         Ok(proposal)
@@ -842,9 +849,16 @@ impl Proposal {
             tx_summary,
             signatures: Vec::new(),
             metadata,
+            verification_error: None,
         };
         proposal.refresh_status();
         proposal
+    }
+
+    /// True when the listing reproduced this proposal's signed summary from
+    /// its metadata (see [`Proposal::verification_error`]).
+    pub fn is_verified(&self) -> bool {
+        self.verification_error.is_none()
     }
 
     pub fn has_signed(&self, signer_commitment_hex: &str) -> bool {
@@ -1146,6 +1160,7 @@ mod tests {
                 ],
                 ..Default::default()
             },
+            verification_error: None,
         };
 
         assert_eq!(proposal.signature_counts(), (1, 3));
@@ -1172,6 +1187,7 @@ mod tests {
                 ],
                 ..Default::default()
             },
+            verification_error: None,
         };
 
         let missing = proposal.missing_signers();
@@ -1198,6 +1214,7 @@ mod tests {
                 signers: vec!["0xabc".to_string(), "0xdef".to_string()],
                 ..Default::default()
             },
+            verification_error: None,
         };
 
         assert_eq!(proposal.signatures_needed(), 0);
