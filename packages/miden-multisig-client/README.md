@@ -32,7 +32,7 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.17.x | 0.16.x (pre-release) |
+| 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
 
@@ -463,7 +463,7 @@ Do not use `signedAuthArg` as the salt when rebuilding the request.
 `withFeeConversionSalt` would derive and commit a second value from it, and the
 rebuilt summary would not match the summary that the cosigners signed.
 
-On the Miden 0.16 pre-release line a summary binds seven user-defined elements,
+On the Miden 0.16 line a summary binds seven user-defined elements,
 and the guarded-multisig auth component zeroes the leading three and passes the
 auth arg as the trailing four. `summaryAuthArg` reads that convention, so prefer
 it over indexing `userParams()` by hand. It replaced `summarySalt`, whose name

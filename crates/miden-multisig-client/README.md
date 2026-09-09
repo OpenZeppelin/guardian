@@ -22,7 +22,7 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.17.x | 0.16.x (pre-release) |
+| 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
 
