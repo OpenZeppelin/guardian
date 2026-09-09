@@ -279,7 +279,7 @@ Procedure:
    ```
 4. Confirm the replacement:
    ```bash
-   curl https://guardian.openzeppelin.com/pubkey
+   curl https://guardian-testnet.openzeppelin.com/pubkey
    ```
    Should return the new key material.
 5. Securely shred `/tmp/ack-keys.json`.

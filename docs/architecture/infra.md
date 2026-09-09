@@ -26,7 +26,7 @@ storage autoscaling on top of the same base topology.
 ```mermaid
 flowchart LR
   Client["Client<br/>(SDK / curl / grpcurl)"]
-  DNS["Route 53 / Cloudflare<br/>guardian.openzeppelin.com"]
+  DNS["Route 53 / Cloudflare<br/>guardian-testnet.openzeppelin.com"]
   ACM["ACM certificate"]
 
   subgraph VPC["AWS VPC"]
@@ -97,7 +97,7 @@ sequenceDiagram
   participant DB as RDS Postgres
   participant SM as Secrets Manager
 
-  C->>DNS: resolve guardian.openzeppelin.com
+  C->>DNS: resolve guardian-testnet.openzeppelin.com
   DNS-->>C: ALB DNS / Cloudflare IP
   C->>ALB: HTTPS or gRPC over :443
   ALB->>ALB: ACM TLS termination

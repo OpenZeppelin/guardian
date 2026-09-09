@@ -14,15 +14,15 @@ Pick the target before picking a workflow. All three are valid smoke targets —
 | Target | GUARDIAN endpoint | Miden RPC | When to use |
 | --- | --- | --- | --- |
 | **Local dev** | `http://localhost:3000` | `https://rpc.devnet.miden.io` or local `http://localhost:57291` | default for in-repo changes not yet released |
-| **Staging (devnet)** | `https://guardian-stg.openzeppelin.com` | `https://rpc.devnet.miden.io` | verify a candidate before release; mirrors prod topology on devnet |
-| **Production (testnet)** | `https://guardian.openzeppelin.com` | `https://rpc.testnet.miden.io` | smoke the published npm SDK against live prod |
+| **Staging (devnet)** | `https://guardian-devnet.openzeppelin.com` | `https://rpc.devnet.miden.io` | verify a candidate before release; mirrors prod topology on devnet |
+| **Production (testnet)** | `https://guardian-testnet.openzeppelin.com` | `https://rpc.testnet.miden.io` | smoke the published npm SDK against live prod |
 
 Sanity-check GUARDIAN before every deployed-env run:
 
 ```bash
-curl https://guardian.openzeppelin.com/pubkey
-curl 'https://guardian.openzeppelin.com/pubkey?scheme=ecdsa'
-curl https://guardian-stg.openzeppelin.com/pubkey
+curl https://guardian-testnet.openzeppelin.com/pubkey
+curl 'https://guardian-testnet.openzeppelin.com/pubkey?scheme=ecdsa'
+curl https://guardian-devnet.openzeppelin.com/pubkey
 ```
 
 If the commitment does not round-trip into `status().multisig.guardianPubkey` after `createAccount`, report the exact mismatch.

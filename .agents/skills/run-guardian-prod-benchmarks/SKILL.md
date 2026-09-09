@@ -53,8 +53,8 @@ Before the first benchmark in a session:
 2. If the deployment shape matters, inspect it first with [`deploy-guardian-aws`](../deploy-guardian-aws/SKILL.md).
 3. Verify public health at minimum:
    ```bash
-   curl -fsS https://guardian.openzeppelin.com/
-   curl -fsS https://guardian.openzeppelin.com/pubkey
+   curl -fsS https://guardian-testnet.openzeppelin.com/
+   curl -fsS https://guardian-testnet.openzeppelin.com/pubkey
    ```
 4. If reproducing the April 2026 reference runs, confirm the deployment is still close to:
    - `1` ECS server task

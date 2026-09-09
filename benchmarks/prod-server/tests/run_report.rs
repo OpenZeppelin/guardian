@@ -15,7 +15,7 @@ fn report_should_include_all_and_scheme_scopes() {
         started_at: chrono::Utc::now(),
         completed_at: chrono::Utc::now(),
         measurement_seconds: 10.0,
-        guardian_endpoint: "https://guardian.openzeppelin.com:443".to_string(),
+        guardian_endpoint: "https://guardian-testnet.openzeppelin.com:443".to_string(),
         deployment_shape: Some("prod-single-task-arm64-rds-proxy".to_string()),
         scheme_distribution: SchemeDistributionReport {
             falcon_percent: 50,
