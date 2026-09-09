@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| unreleased (`main`) | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.17.0-rc.3 | 0.16 (rc) | `=0.16.0-rc.9` | `=0.16.0-rc.4` | `0.16.0-rc.7` (exact) |
 | 0.17.0-rc.2 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.3` | `0.16.0-rc.5` (exact) |
 | 0.17.0-rc.1 | 0.16 (rc) | `=0.16.0-rc.6` | `=0.16.0-rc.2` | `0.16.0-rc.3` (exact) |
@@ -29,15 +30,36 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
-The 0.17 line is a release candidate while `miden-standards` itself is still an
-rc, and it is published to npm under the `rc` dist-tag, so `npm install` without
-an explicit version still resolves the 0.16.x line.
+The 0.17.0-rc.x releases tracked the Miden 0.16 release candidates and are published
+to npm under the `rc` dist-tag, so `npm install` without an explicit version still
+resolves the 0.16.x line. `main` now builds on the stable Miden 0.16 release:
+`@miden-sdk/miden-sdk` 0.16.0 embeds `miden-client` 0.16.0 and `miden-protocol` /
+`miden-standards` 0.16.1, which is why the Rust pins are 0.16.1 for the protocol
+crates and 0.16.0 for the client crates.
 
-Pins are exact on the 0.16 rc line because the rc protocol is still moving. The
-Rust and npm pins must move together: nothing at build time verifies that the npm
-SDK's embedded `miden-standards` matches the Rust pin, so the CI parity gates are
-what catch drift. See
+Pins stay exact on the 0.16 line. The Rust and npm pins must move together:
+nothing at build time verifies that the npm SDK's embedded `miden-standards`
+matches the Rust pin, so the CI parity gates are what catch drift. See
 [`MULTISIG_SDK.md`](./MULTISIG_SDK.md#contract-version-pinning).
+
+**The stable 0.16 bump is a breaking contract bump.** `miden-standards` 0.16.1 factored
+the fee payment out of `auth_tx_guarded_multisig` into
+`miden::standards::auth::multisig::pay_bounded_fee`. The behaviour is unchanged (native fee
+asset, capped at twice the computed fee), but the procedure's MAST root moves, so an account
+created by 0.17.0-rc.3 does not carry the `auth_tx` root that `main` pins:
+`assertPinnedContractVersion` rejects it, and reads through `AccountInspector` fail with
+`UnsupportedContractVersion`. There is no in-place migration; accounts must be recreated. The
+other five pinned roots are unchanged.
+
+Two `miden-client` 0.16.0 changes also apply to this upgrade. `TransactionRequest`
+serialization now carries the pinned input notes, so the request bytes of a `custom` proposal
+created on rc.4 cannot be decoded by 0.16.0 (drain pending proposals first, as below). The
+SQLite store schema changed (settings scope, SMT forest tables, normalized note scripts), so
+the Rust SDK's local client store must be recreated; the browser IndexedDB store migrates in
+place.
+
+`miden-client` 0.16.0 raises the MSRV to 1.98.1; `rust-toolchain.toml`, the workspace
+`rust-version`, CI, and the Dockerfile base image all moved with it.
 
 **0.17.0-rc.3 is a breaking contract bump.** The guarded-multisig auth component now pays
 the transaction fee, so it calls `miden::standards::fee` procedures that first ship in

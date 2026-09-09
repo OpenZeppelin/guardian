@@ -17,13 +17,13 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.7
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0
 ```
 
-> **Why the peer version is exact**: no stable `0.16.0` is published, so a
-> `0.16.x`/`^0.16.0` range resolves to nothing, and the transaction-summary
-> layout and procedure roots are only byte-compatible within one pre-release
-> pair. Package releases wait for upstream 0.16 to stabilize.
+> **Why the peer version is exact**: the transaction-summary layout and the
+> guarded-multisig procedure roots are only byte-compatible between one
+> `@miden-sdk/miden-sdk` build and the `miden-standards` version its WASM
+> embeds, so the SDK pins the exact version the Rust SDK was built against.
 
 ## Miden compatibility
 
