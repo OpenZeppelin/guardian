@@ -366,8 +366,26 @@ or executed.
 > executed by anyone, the proposer included. Until proposals can carry those
 > inputs themselves (tracked in issue #462), collect signatures and execute
 > promptly, and re-propose once a proposal has aged out. A listing keeps
-> working: such a proposal is returned with its `verificationError` /
-> `verification_error` set rather than failing the whole sync.
+> working: such a proposal is returned with `verification` set to `failed`
+> (`retryable: false`) rather than failing the whole sync.
+
+#### Proposal verification status
+
+Every proposal a listing returns carries the outcome of its summary-binding
+check: `verification` on the TS `Proposal` (`{ status: 'unchecked' }`,
+`{ status: 'verified' }`, or `{ status: 'failed', retryable, message }`) and
+`ProposalVerification` on the Rust one (`Unchecked`, `Verified`,
+`Failed { retryable, message }`). Only the check itself writes `verified`;
+a freshly parsed or imported proposal is `unchecked`. `failed` with
+`retryable: true` means the re-execution hit a transient node error and
+the same proposal may verify on the next sync; `retryable: false` means
+the proposal cannot be reproduced (tampered metadata, a pruned anchor
+block) and has to be re-proposed. Verification is kept out of `status`
+on purpose: a proposal can be fully signed and dead at the same time, so
+`status: 'ready'` keeps meaning "threshold met" and
+`isProposalActionable(proposal)` / `proposal.is_actionable()` answers
+"verified and ready". Signing and executing re-verify the one proposal
+they act on and refuse a failed one with the real error.
 
 ### Custom Proposal Types
 
@@ -910,10 +928,11 @@ const exported = await multisig.createSwitchGuardianProposalOffline(
 const proposals = await multisig.syncProposals();
 
 for (const proposal of proposals) {
-  if (proposal.verificationError) {
+  if (proposal.verification.status === 'failed') {
     // The signed summary could not be reproduced from the metadata (for
     // example, its anchor block is pruned). Signing and executing refuse it.
-    console.log(`${proposal.id}: unverifiable — ${proposal.verificationError}`);
+    const { retryable, message } = proposal.verification;
+    console.log(`${proposal.id}: ${retryable ? 'retry later' : 're-propose'} — ${message}`);
     continue;
   }
   console.log(`${proposal.id}: ${proposal.status.type}`);
@@ -1400,10 +1419,11 @@ match client.propose_with_fallback(tx).await? {
 let proposals = client.list_proposals().await?;
 
 for proposal in &proposals {
-    if let Some(reason) = &proposal.verification_error {
+    if let ProposalVerification::Failed { retryable, message } = &proposal.verification {
         // The signed summary could not be reproduced from the metadata (for
         // example, its anchor block is pruned). Signing and executing refuse it.
-        println!("{}: unverifiable — {}", proposal.id, reason);
+        let hint = if *retryable { "retry later" } else { "re-propose" };
+        println!("{}: {hint} — {message}", proposal.id);
         continue;
     }
     match &proposal.status {

@@ -163,13 +163,34 @@ export interface Proposal {
   signatures: ProposalSignatureEntry[];
   metadata: ProposalMetadata;
   /**
-   * Why this proposal's summary binding could not be verified when it was
-   * synced, if it could not. Absent when the metadata reproduced the signed
-   * summary. `syncProposals` surfaces unverifiable proposals instead of
+   * Result of the last summary-binding check on this value. Only the check
+   * itself writes `verified`; a freshly parsed or imported proposal is
+   * `unchecked`. `syncProposals` surfaces failed proposals instead of
    * failing wholesale (issue #462); `signProposal` and `executeProposal`
    * re-verify and refuse them.
    */
-  verificationError?: string;
+  verification: ProposalVerification;
+}
+
+/**
+ * Outcome of checking a proposal's metadata against its signed summary.
+ * `failed.retryable` is true when the failure came from a transient node or
+ * RPC error, so the same proposal may verify on a later sync; false when the
+ * proposal itself cannot be reproduced (tampered metadata, an anchor block the
+ * node has pruned) and it has to be re-proposed.
+ */
+export type ProposalVerification =
+  | { status: 'unchecked' }
+  | { status: 'verified' }
+  | { status: 'failed'; retryable: boolean; message: string };
+
+/**
+ * True when the proposal is both verified and has met its signature
+ * threshold, i.e. it can be executed. `status` alone keeps meaning
+ * "threshold met": a fully signed proposal can still be dead.
+ */
+export function isProposalActionable(proposal: Proposal): boolean {
+  return proposal.verification.status === 'verified' && proposal.status === 'ready';
 }
 
 export interface TransactionProposal {

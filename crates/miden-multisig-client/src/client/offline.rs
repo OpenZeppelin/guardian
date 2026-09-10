@@ -125,13 +125,13 @@ impl MultisigClient {
     /// std::fs::write("/tmp/proposal_signed.json", json)?;
     /// ```
     pub async fn sign_imported_proposal(&mut self, proposal: &mut ExportedProposal) -> Result<()> {
-        let bound_proposal = proposal.to_proposal()?;
+        let mut bound_proposal = proposal.to_proposal()?;
         if !bound_proposal.transaction_type.supports_offline_execution() {
             return Err(MultisigError::OfflineUnsupportedTransaction(
                 bound_proposal.transaction_type.type_name().to_string(),
             ));
         }
-        self.verify_proposal_summary_binding(&bound_proposal)
+        self.verify_proposal_summary_binding(&mut bound_proposal)
             .await?;
         let account = self.require_account()?;
         let account_id = account.id();
@@ -202,13 +202,13 @@ impl MultisigClient {
         }
 
         // Parse the proposal
-        let proposal = exported.to_proposal()?;
+        let mut proposal = exported.to_proposal()?;
         if !proposal.transaction_type.supports_offline_execution() {
             return Err(MultisigError::OfflineUnsupportedTransaction(
                 proposal.transaction_type.type_name().to_string(),
             ));
         }
-        self.verify_proposal_summary_binding(&proposal).await?;
+        self.verify_proposal_summary_binding(&mut proposal).await?;
         let tx_summary = proposal.tx_summary.clone();
         let tx_summary_commitment = tx_summary.to_commitment();
 

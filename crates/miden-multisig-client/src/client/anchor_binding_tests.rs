@@ -143,6 +143,11 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_anch
         "listed {} but the proposer signed {proposal_id}",
         proposals[0].id
     );
+    assert!(
+        proposals[0].is_verified(),
+        "the listing must have reproduced the signed summary at the anchor: {:?}",
+        proposals[0].verification
+    );
 
     // Control: the same request re-executed at the cosigner's own tip yields
     // a different commitment, so this test would fail were verification to
@@ -263,9 +268,18 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
     assert!(verified[0].id.eq_ignore_ascii_case(&good_id));
     assert_eq!(unverifiable.len(), 1);
     assert_eq!(unverifiable[0].nonce, 2);
-    let reason = unverifiable[0].verification_error.as_deref().unwrap();
-    assert!(
-        reason.contains("metadata does not match tx_summary"),
-        "reason: {reason}"
-    );
+    match &unverifiable[0].verification {
+        crate::proposal::ProposalVerification::Failed { retryable, message } => {
+            assert!(
+                !retryable,
+                "a tampered proposal is not worth retrying: {message}"
+            );
+            assert!(
+                message.contains("metadata does not match tx_summary"),
+                "message: {message}"
+            );
+        }
+        other => panic!("expected a failed verification, got {other:?}"),
+    }
+    assert!(!unverifiable[0].is_actionable());
 }

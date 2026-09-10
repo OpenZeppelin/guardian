@@ -157,6 +157,8 @@ export {
   MAX_CONSUME_NOTES_METADATA_BYTES,
   isConsumeNotesV1,
   isConsumeNotesV2,
+  isProposalActionable,
+  type ProposalVerification,
   isP2idNoteVisibility,
   type P2idNoteVisibility,
   MAX_P2IDE_BLOCK_HEIGHT,

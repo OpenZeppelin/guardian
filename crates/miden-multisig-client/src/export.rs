@@ -23,7 +23,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::{
-    Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus, SerializedNote,
+    Proposal, ProposalMetadata, ProposalSignatureEntry, ProposalStatus, ProposalVerification,
+    SerializedNote,
 };
 use crate::utils::hex_body_eq;
 
@@ -381,7 +382,7 @@ impl ExportedProposal {
                 })
                 .collect(),
             metadata,
-            verification_error: None,
+            verification: ProposalVerification::Unchecked,
         })
     }
 

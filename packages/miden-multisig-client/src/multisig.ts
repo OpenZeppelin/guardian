@@ -116,6 +116,7 @@ import {
   resolveRpcConfig,
   type ResolvedRpcConfig,
 } from './rpc/config.js';
+import { isTransientRpcError } from './rpc/errors.js';
 import { retryRpcRead } from './rpc/retry.js';
 
 /**
@@ -717,14 +718,16 @@ export class Multisig {
   /**
    * Sync proposals from the GUARDIAN server.
    *
-   * Every synced proposal's metadata is checked against its signed summary.
-   * One that fails is still returned, with the reason in
-   * {@link Proposal.verificationError}, so a single stale or corrupt proposal
-   * cannot hide the others (issue #462: once the node prunes a proposal's
-   * anchor block its re-execution fails for everyone). `signProposal` and
-   * `executeProposal` re-verify and refuse such a proposal. A payload that
-   * does not parse at all still rejects, so malformed GUARDIAN data is never
-   * silently dropped.
+   * Every synced proposal's metadata is checked against its signed summary
+   * and the outcome is recorded in {@link Proposal.verification}. One that
+   * fails is still returned, so a single stale or corrupt proposal cannot
+   * hide the others (issue #462: once the node prunes a proposal's anchor
+   * block its re-execution fails for everyone). `failed` with
+   * `retryable: true` means a transient node error, worth syncing again;
+   * `retryable: false` means the proposal cannot be reproduced and must be
+   * re-proposed. `signProposal` and `executeProposal` re-verify and refuse a
+   * failed proposal. A payload that does not parse at all still rejects, so
+   * malformed GUARDIAN data is never silently dropped.
    */
   async syncProposals(): Promise<Proposal[]> {
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
@@ -741,11 +744,9 @@ export class Multisig {
         existingProposal?.metadata,
         existingProposal?.signatures ?? [],
       );
-      try {
-        await this.verifyProposalMetadataBinding(proposal);
-      } catch (error) {
-        proposal.verificationError = error instanceof Error ? error.message : String(error);
-      }
+      // The outcome lands on the proposal either way; a failure is reported
+      // there rather than failing the sync.
+      await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
 
       this.proposals.set(proposal.id, proposal);
     }
@@ -2506,7 +2507,29 @@ export class Multisig {
     return txSummaryCommitment;
   }
 
+  /**
+   * Verifies that a proposal's metadata reconstructs its signed summary
+   * commitment and records the outcome in {@link Proposal.verification}:
+   * `verified`, or `failed` with the message and whether the failure looked
+   * transient. Rethrows the failure so strict callers keep failing closed
+   * while `syncProposals` keeps going with the outcome recorded.
+   */
   private async verifyProposalMetadataBinding(proposal: Proposal): Promise<string> {
+    try {
+      const commitment = await this.checkProposalMetadataBinding(proposal);
+      proposal.verification = { status: 'verified' };
+      return commitment;
+    } catch (error) {
+      proposal.verification = {
+        status: 'failed',
+        retryable: isTransientRpcError(error),
+        message: error instanceof Error ? error.message : String(error),
+      };
+      throw error;
+    }
+  }
+
+  private async checkProposalMetadataBinding(proposal: Proposal): Promise<string> {
     const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
 
     const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
