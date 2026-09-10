@@ -27,14 +27,14 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.7
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "0.17.0-rc.3"
-miden-client = "=0.16.0-rc.4"
+miden-multisig-client = "0.17.0"
+miden-client = "=0.16.0"
 ```
 
 ### 5-Minute Example
@@ -357,6 +357,29 @@ and its block commitment against the one signed into the summary — before
 anything executes against it. A proposal without an anchor cannot be verified
 or executed.
 
+#### Authenticated note consumption
+
+The anchor pins the block, but a `consume_notes` summary also depends on
+*how* each input note is consumed. miden-client decides that per note, at
+execution time and from the local store alone: a note whose record carries
+its inclusion proof is consumed **authenticated**, anything else
+**unauthenticated**, and the two commit differently into the summary
+(`hash(nullifier || note_id_or_ZERO)`). Left to the store, a proposer that
+had synced the notes and a cosigner on a fresh store would therefore sign
+different commitments (issue #409).
+
+Authenticated is the canonical mode. `createConsumeNotesProposal` /
+`TransactionType::consume_notes` authenticates the notes in the proposer's
+store before the summary and its anchor are captured, and every verifier
+(`syncProposals`, `signProposal`, `executeProposal`, and their Rust
+counterparts) authenticates the proposal's embedded notes before it
+rebuilds: notes already authenticated locally are left alone, the rest get
+their inclusion proofs from the Miden node in one round trip and are
+imported as committed. Verification therefore needs the node, and a
+consume-notes proposal can only be created for notes already committed on
+chain; a note that cannot be authenticated fails with
+`ConsumeNoteNotAuthenticatedError` (`consume_notes_note_not_authenticated`)
+naming the note, rather than with a summary mismatch.
 > **Anchor lifetime.** Re-executing at the anchor also loads every foreign
 > account the transaction touches at that block, and every fee-paying
 > transaction touches the fee faucet (the kernel's asset callbacks check it).
@@ -668,7 +691,11 @@ them from GUARDIAN (isolating per-proposal parse or binding failures as
 `invalid` outcomes instead of failing the whole step), validates each
 embedded note against the proposal's declared note ids, fetches on-chain
 inclusion proofs, and imports per note — so it works for private notes too;
-the node never needs to hold the note body.
+the node never needs to hold the note body. Binding verification itself
+already authenticates a proposal's embedded notes into the store (see
+*Authenticated note consumption*), so a proposal that verified reports its
+notes as already present here; the import step still covers notes whose
+proposal failed verification for an unrelated reason.
 
 Each unique embedded note gets a `NoteImportOutcome` in
 `report.proposalImport` (`imported`, `already-present`, `already-consumed`,
@@ -820,14 +847,13 @@ await multisig.exportNoteToFile(noteId);
 const importedNoteId = await multisig.importNoteFromBytes(noteFileBytes);
 ```
 
-> **Note:** every cosigner device that verifies or signs the consume-notes
-> proposal needs the note in its local store with the on-chain inclusion
-> proof — deliver the note file to each of them (import + sync), not just to
-> the proposer. A cosigner whose store lacks the authenticated note rebuilds
-> the transaction differently (the input-notes commitment distinguishes
-> authenticated from unauthenticated consumption) and rejects the proposal
-> with `metadata does not match tx_summary`. The sender's own device heals
-> itself: it already knows the full note, so a post-commit sync is enough.
+> **Note:** only the proposer needs the note file. The proposal embeds the
+> note, and every cosigner device that verifies or signs it authenticates
+> that embedded note from the node's inclusion proof before rebuilding (see
+> *Authenticated note consumption* above), so the store contents of the other
+> devices no longer matter. The proposer must wait for the note to commit on
+> chain before proposing: an uncommitted note cannot be authenticated and
+> proposal creation fails with `ConsumeNoteNotAuthenticatedError`.
 
 #### Consume Notes (Claim Received Funds)
 
@@ -1267,7 +1293,11 @@ them from GUARDIAN (isolating per-proposal parse or binding failures as
 `Invalid` outcomes instead of failing the whole step), validates each
 embedded note against the proposal's declared note ids, fetches on-chain
 inclusion proofs, and imports per note — so it works for private notes too;
-the node never needs to hold the note body.
+the node never needs to hold the note body. Binding verification itself
+already authenticates a proposal's embedded notes into the store (see
+*Authenticated note consumption*), so a proposal that verified reports its
+notes as already present here; the import step still covers notes whose
+proposal failed verification for an unrelated reason.
 
 Each unique embedded note gets a `NoteImportOutcome` in
 `report.proposal_import` (`Imported`, `AlreadyPresent`, `AlreadyConsumed`,

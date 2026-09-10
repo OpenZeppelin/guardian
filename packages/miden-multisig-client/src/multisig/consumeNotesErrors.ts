@@ -8,7 +8,8 @@ export type ConsumeNotesErrorCode =
   | 'consume_notes_note_binding_mismatch'
   | 'consume_notes_unsupported_metadata_version'
   | 'consume_notes_metadata_oversize'
-  | 'consume_notes_legacy_note_missing';
+  | 'consume_notes_legacy_note_missing'
+  | 'consume_notes_note_not_authenticated';
 
 /**
  * v2 metadata's embedded `notes` array did not match its declared
@@ -70,5 +71,23 @@ export class LegacyConsumeNotesNoteMissingError extends Error {
     super(`consume_notes legacy verification: note not found in local store: ${noteId}`);
     this.name = 'LegacyConsumeNotesNoteMissingError';
     this.noteId = noteId;
+  }
+}
+
+/**
+ * A note a `consume_notes` proposal consumes could not be authenticated
+ * (its inclusion proof fetched from the node and imported into the local
+ * store). The signed summary commits to authenticated consumption, so an
+ * unauthenticated rebuild would never match it (issue #409).
+ */
+export class ConsumeNoteNotAuthenticatedError extends Error {
+  readonly code: ConsumeNotesErrorCode = 'consume_notes_note_not_authenticated';
+  readonly noteId: string;
+  readonly reason: string;
+  constructor(noteId: string, reason: string) {
+    super(`consume_notes: note ${noteId} could not be authenticated: ${reason}`);
+    this.name = 'ConsumeNoteNotAuthenticatedError';
+    this.noteId = noteId;
+    this.reason = reason;
   }
 }

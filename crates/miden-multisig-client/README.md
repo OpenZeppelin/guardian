@@ -22,7 +22,7 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.17.x | 0.16.x (pre-release) |
+| 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
 
@@ -495,10 +495,24 @@ is the `consume_notes_metadata_version` field on the wire.
 - **v2 (self-contained)** — `consume_notes_metadata_version: 2` plus a
   `consume_notes_notes` array carrying base64-serialized `Note` bytes
   aligned by index with `note_ids`. Verification rebuilds the request
-  from the embedded notes alone — no local-store read, no network
-  call. This restores the same "rebuild from signed metadata" invariant
-  every other proposal type already satisfied (and that audit finding
-  **M-08** remediated for `p2id`).
+  from the embedded notes, never from whatever notes the verifier's
+  store happens to hold. This restores the same "rebuild from signed
+  metadata" invariant every other proposal type already satisfied (and
+  that audit finding **M-08** remediated for `p2id`).
+
+  The rebuild is not store-independent by itself, though: miden-client
+  consumes each input note as *authenticated* when the local store holds
+  its inclusion proof and as *unauthenticated* otherwise, and the two
+  commit differently into the signed summary (issue #409). Authenticated
+  is the canonical mode, so before every rebuild (list, sign, execute)
+  the verifier authenticates the embedded notes: notes already
+  authenticated locally are left alone, the rest get their inclusion
+  proofs from the Miden node in one round trip and are imported into
+  the local store as committed (with one sync if the store is behind the
+  note's block). Verification therefore reads and writes the local store
+  and contacts the node. Proposal creation does the same before the
+  summary and its chain anchor are captured, and refuses a note that is
+  not yet committed on chain.
 
 Proposal creation always emits v2 starting with this release; the
 proposer is the one party guaranteed to hold the notes locally. The
@@ -508,7 +522,7 @@ surfaces to the proposer before any signature collection begins.
 
 ### Error taxonomy
 
-All four errors below carry a stable, cross-SDK string code via
+All five errors below carry a stable, cross-SDK string code via
 `MultisigError::code()`. The TS SDK exposes the same identifiers as
 `Error.code`.
 
@@ -518,6 +532,7 @@ All four errors below carry a stable, cross-SDK string code via
 | `UnsupportedMetadataVersion { found }` | `consume_notes_unsupported_metadata_version` | Unrecognized version (including v1 on a cut-over build) |
 | `ConsumeNotesMetadataOversize { limit, actual }` | `consume_notes_metadata_oversize` | v2 metadata serialization exceeds 256 KiB at creation |
 | `LegacyConsumeNotesNoteMissing { note_id }` | `consume_notes_legacy_note_missing` | v1 path: local store does not contain the referenced note |
+| `ConsumeNoteNotAuthenticated { note_id, reason }` | `consume_notes_note_not_authenticated` | A note could not be authenticated: not committed on chain yet, the node served no proof, the import failed, or the store could not verify it after a sync |
 
 ### Cut-over policy
 

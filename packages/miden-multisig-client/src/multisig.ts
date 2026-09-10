@@ -55,9 +55,11 @@ import {
   type P2ideHeightOptions,
 } from './transaction.js';
 import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
+import { ensureNotesAuthenticated } from './transaction/noteAuthentication.js';
 import {
   CONSUME_NOTES_METADATA_VERSION_V2,
   MAX_CONSUME_NOTES_METADATA_BYTES,
+  type ConsumeNotesProposalMetadata,
 } from './types/proposal.js';
 import { LEGACY_CONSUME_NOTES_ENABLED } from './multisig/config.js';
 import {
@@ -1198,6 +1200,10 @@ export class Multisig {
       }
       fetchedNotes.push(inputNoteRecord.toNote());
     }
+    // Canonical consumption mode is authenticated (issue #409): the summary this
+    // proposal signs must be the one every cosigner's rebuild reproduces, so
+    // the notes are authenticated here first, before the anchor is captured.
+    await this.ensureNotesAuthenticated(fetchedNotes);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
     const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes);
@@ -1455,6 +1461,18 @@ export class Multisig {
    * store, reusing this client's Miden RPC endpoint and retry
    * configuration.
    */
+  /**
+   * Puts the local store in the canonical (authenticated) consumption mode
+   * for `notes`, fetching missing inclusion proofs from this client's Miden
+   * node; see {@link ensureNotesAuthenticated}.
+   */
+  private async ensureNotesAuthenticated(notes: readonly Note[]): Promise<void> {
+    await ensureNotesAuthenticated(this.midenClient, notes, {
+      midenRpcEndpoint: this.getMidenRpcEndpoint(),
+      rpc: { retry: { maxAttempts: this.rpcConfig.maxAttempts } },
+    });
+  }
+
   private async importNotesFromProposals(
     proposals: ReadonlyArray<Pick<Proposal, 'id' | 'metadata'>>,
     cancelled?: () => boolean,
@@ -2565,6 +2583,17 @@ export class Multisig {
         normalizeHexWord(this.requireProposalSaltHex(proposal.id, proposal.metadata)),
       );
 
+      // A consume-notes summary commits to *authenticated* consumption (see
+      // ensureNotesAuthenticated), which miden-client decides from this store
+      // alone. Put the store in that mode before the rebuild, or a cosigner
+      // that never held these notes reproduces a different commitment.
+      if (
+        proposal.metadata.proposalType === 'consume_notes' &&
+        proposal.metadata.metadataVersion === CONSUME_NOTES_METADATA_VERSION_V2
+      ) {
+        await this.ensureNotesAuthenticated(decodeEmbeddedConsumeNotes(proposal.metadata));
+      }
+
       const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
       const webClient = await this.getRawClient();
       const reconstructed = await executeForSummaryAt(webClient, this._accountId, request, anchor);
@@ -2690,25 +2719,7 @@ export class Multisig {
         // v1/v2 dispatch for issue #229 / FR-009.
         const version = metadata.metadataVersion;
         if (version === CONSUME_NOTES_METADATA_VERSION_V2) {
-          const embedded = metadata.notes ?? [];
-          if (embedded.length !== metadata.noteIds.length) {
-            throw new NoteBindingMismatchError(
-              `consume_notes v2: notes.length=${embedded.length} does not match noteIds.length=${metadata.noteIds.length}`,
-            );
-          }
-          const decoded: Note[] = [];
-          for (let i = 0; i < embedded.length; i++) {
-            const note = noteFromBase64(embedded[i], Note);
-            // Normalize both sides; matches the file's other hex comparisons.
-            const embeddedId = normalizeHexWord(note.id().toString());
-            const declaredId = normalizeHexWord(metadata.noteIds[i]);
-            if (embeddedId !== declaredId) {
-              throw new NoteBindingMismatchError(
-                `consume_notes v2: notes[${i}] id ${embeddedId} != noteIds[${i}] ${declaredId}`,
-              );
-            }
-            decoded.push(note);
-          }
+          const decoded = decodeEmbeddedConsumeNotes(metadata);
           const { request } = buildConsumeNotesTransactionRequestFromNotes(decoded, {
             salt,
             signatureAdviceMap,
@@ -2753,4 +2764,32 @@ export class Multisig {
     }
   }
 
+}
+
+/**
+ * Decodes a v2 `consume_notes` proposal's embedded notes, asserting each one
+ * is the note its declared id names (spec 006 FR-007).
+ */
+function decodeEmbeddedConsumeNotes(metadata: ConsumeNotesProposalMetadata): Note[] {
+  const embedded = metadata.notes ?? [];
+  const noteIds = metadata.noteIds ?? [];
+  if (embedded.length !== noteIds.length) {
+    throw new NoteBindingMismatchError(
+      `consume_notes v2: notes.length=${embedded.length} does not match noteIds.length=${noteIds.length}`,
+    );
+  }
+  const decoded: Note[] = [];
+  for (let i = 0; i < embedded.length; i++) {
+    const note = noteFromBase64(embedded[i], Note);
+    // Normalize both sides; matches the file's other hex comparisons.
+    const embeddedId = normalizeHexWord(note.id().toString());
+    const declaredId = normalizeHexWord(noteIds[i]);
+    if (embeddedId !== declaredId) {
+      throw new NoteBindingMismatchError(
+        `consume_notes v2: notes[${i}] id ${embeddedId} != noteIds[${i}] ${declaredId}`,
+      );
+    }
+    decoded.push(note);
+  }
+  return decoded;
 }

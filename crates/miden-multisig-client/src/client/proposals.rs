@@ -654,9 +654,11 @@ impl MultisigClient {
         warn_on_override_dilution(&account, &transaction_type);
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
+        let node_rpc = self.node_rpc_client();
         ProposalBuilder::new(transaction_type)
             .build(
                 &mut self.miden_client,
+                &node_rpc,
                 &mut guardian_client,
                 &account,
                 self.key_manager.as_ref(),

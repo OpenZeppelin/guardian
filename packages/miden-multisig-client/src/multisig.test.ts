@@ -42,6 +42,13 @@ vi.mock('./recovery/proposalNoteImport.js', async (importOriginal) => {
   };
 });
 
+const { mockEnsureNotesAuthenticated } = vi.hoisted(() => ({
+  mockEnsureNotesAuthenticated: vi.fn(async () => undefined),
+}));
+vi.mock('./transaction/noteAuthentication.js', () => ({
+  ensureNotesAuthenticated: mockEnsureNotesAuthenticated,
+}));
+
 vi.mock('./recovery/publicNoteBackfill.js', () => ({
   backfillPublicNotesByTag: mockBackfillPublicNotesByTag,
 }));
@@ -114,19 +121,27 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   TransactionRequest: {
     deserialize: vi.fn().mockReturnValue({}),
   },
-  AdviceMap: vi.fn().mockImplementation(() => ({
-    insert: vi.fn(),
-  })),
-  FeltArray: vi.fn().mockImplementation((arr: any[]) => arr),
+  AdviceMap: vi.fn().mockImplementation(function () {
+    return {
+      insert: vi.fn(),
+    };
+  }),
+  FeltArray: vi.fn().mockImplementation(function (arr: any[]) {
+    return arr;
+  }),
   Poseidon2: {
     hashElements: vi.fn().mockReturnValue({
       toHex: () => '0x' + 'e'.repeat(64),
     }),
   },
-  Endpoint: vi.fn().mockImplementation((url: string) => ({ url })),
-  RpcClient: vi.fn().mockImplementation(() => ({
-    getAccountDetails: mockRpcGetAccountDetails,
-  })),
+  Endpoint: vi.fn().mockImplementation(function (url: string) {
+    return { url };
+  }),
+  RpcClient: vi.fn().mockImplementation(function () {
+    return {
+      getAccountDetails: mockRpcGetAccountDetails,
+    };
+  }),
 }));
 
 // The consume-notes v2 binding path rebuilds the request from embedded
@@ -1653,6 +1668,124 @@ describe('Multisig', () => {
       expect(vi.mocked(executeForSummaryAt).mock.calls[0][3]).toBe(proposalAnchor);
       expect(executeForSummary).not.toHaveBeenCalled();
       expect(freed).toHaveBeenCalledTimes(1);
+    });
+
+    /// Issue #409, second cause: miden-client consumes a note as authenticated
+    /// or unauthenticated depending on the local store, and the two commit
+    /// differently. Verification must put the store in the canonical
+    /// (authenticated) mode for the proposal's embedded notes BEFORE it
+    /// rebuilds and re-executes.
+    it('authenticates a consume_notes v2 proposal\'s embedded notes before re-executing (issue #409)', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      const noteId = '0x' + '77'.repeat(32);
+      const embeddedNote = { id: () => ({ toString: () => noteId }) };
+      mockNoteDeserialize.mockReturnValue(embeddedNote);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [
+            {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: {
+                tx_summary: { data: 'AQID' },
+                signatures: [],
+                metadata: {
+                  proposal_type: 'consume_notes',
+                  consume_notes_metadata_version: 2,
+                  note_ids: [noteId],
+                  consume_notes_notes: ['bm90ZQ=='],
+                  chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+                  salt: MOCK_SALT_HEX,
+                  description: '',
+                },
+              },
+              status: {
+                status: 'pending',
+                timestamp: '2024-01-01T00:00:00Z',
+                proposer_id: '0x' + 'c'.repeat(64),
+                cosigner_sigs: [],
+              },
+            },
+          ],
+        }),
+      });
+
+      const order: string[] = [];
+      mockEnsureNotesAuthenticated.mockClear();
+      mockEnsureNotesAuthenticated.mockImplementationOnce(async () => {
+        order.push('authenticate');
+      });
+      vi.mocked(executeForSummaryAt).mockClear();
+      vi.mocked(executeForSummaryAt).mockImplementationOnce(async () => {
+        order.push('re-execute');
+        return {
+          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+        } as never;
+      });
+
+      const proposals = await multisig.syncProposals();
+      expect(proposals).toHaveLength(1);
+
+      expect(mockEnsureNotesAuthenticated).toHaveBeenCalledTimes(1);
+      const [, notes, options] = mockEnsureNotesAuthenticated.mock.calls[0] as unknown as [
+        unknown,
+        unknown[],
+        { midenRpcEndpoint: string },
+      ];
+      expect(notes).toEqual([embeddedNote]);
+      expect(options.midenRpcEndpoint).toEqual(expect.any(String));
+      expect(order).toEqual(['authenticate', 're-execute']);
+    });
+
+    it('does not touch note authentication for proposals without input notes', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [
+            {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: {
+                tx_summary: { data: 'AQID' },
+                signatures: [],
+                metadata: {
+                  proposal_type: 'add_signer',
+                  chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+                  salt: MOCK_SALT_HEX,
+                  target_threshold: 1,
+                  signer_commitments: ['0x' + 'a'.repeat(64)],
+                  description: '',
+                },
+              },
+              status: {
+                status: 'pending',
+                timestamp: '2024-01-01T00:00:00Z',
+                proposer_id: '0x' + 'c'.repeat(64),
+                cosigner_sigs: [],
+              },
+            },
+          ],
+        }),
+      });
+      mockEnsureNotesAuthenticated.mockClear();
+      await multisig.syncProposals();
+      expect(mockEnsureNotesAuthenticated).not.toHaveBeenCalled();
     });
 
     it('should reject non-32-byte signer IDs from GUARDIAN proposals', async () => {
@@ -5745,6 +5878,80 @@ describe('Multisig', () => {
       });
 
       expect(proposal.metadata?.proposalType).toBe('consume_notes');
+    });
+
+    /// Issue #409: the proposer authenticates the notes BEFORE the summary
+    /// (and its anchor) is captured, so the signed summary is the one every
+    /// cosigner's authenticated rebuild reproduces.
+    it('authenticates the notes before capturing the consume_notes summary (issue #409)', async () => {
+      const { executeForSummary } = await import('./transaction.js');
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      const noteId = '0x' + '88'.repeat(32);
+      const note = { id: () => ({ toString: () => noteId }), serialize: () => new Uint8Array([9]) };
+      mockWebClient.getInputNote = vi.fn().mockResolvedValue({ toNote: () => note });
+      // The returned delta's embedded bytes decode back to the same note.
+      mockNoteDeserialize.mockReturnValue(note);
+
+      const order: string[] = [];
+      mockEnsureNotesAuthenticated.mockClear();
+      mockEnsureNotesAuthenticated.mockImplementationOnce(async () => {
+        order.push('authenticate');
+      });
+      vi.mocked(executeForSummary).mockImplementationOnce(async () => {
+        order.push('summary');
+        return {
+          summary: {
+            toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+            serialize: () => new Uint8Array([1, 2, 3]),
+          },
+          anchor: createMockChainAnchor(),
+        } as never;
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: '0x' + 'a'.repeat(30),
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: {
+              tx_summary: { data: 'AQID' },
+              signatures: [],
+              metadata: {
+                proposal_type: 'consume_notes',
+                consume_notes_metadata_version: 2,
+                note_ids: [noteId],
+                consume_notes_notes: ['CQ=='],
+                chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+                salt: MOCK_SALT_HEX,
+                description: '',
+              },
+            },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      });
+
+      await multisig.createConsumeNotesProposal([noteId], { nonce: 1 });
+
+      // Called before the summary; the post-push binding check of the served
+      // proposal calls it again (a no-op once the notes are authenticated).
+      expect(mockEnsureNotesAuthenticated).toHaveBeenCalled();
+      expect((mockEnsureNotesAuthenticated.mock.calls[0] as unknown as [unknown, unknown[]])[1]).toEqual([
+        note,
+      ]);
+      expect(order).toEqual(['authenticate', 'summary']);
     });
 
     it('should create p2id proposal', async () => {

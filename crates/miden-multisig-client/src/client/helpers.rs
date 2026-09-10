@@ -273,6 +273,30 @@ impl MultisigClient {
         let salt = proposal.metadata.salt()?;
         let signer_commitments = proposal.metadata.signer_commitments()?;
 
+        // A consume-notes summary commits to *authenticated* consumption
+        // (see `ensure_notes_authenticated`), which miden-client decides
+        // from this store alone. Put the store in that mode before the
+        // rebuild, or a cosigner that never held these notes reproduces a
+        // different commitment (issue #409).
+        if let TransactionType::ConsumeNotes {
+            metadata_version: Some(crate::proposal::CONSUME_NOTES_METADATA_VERSION_V2),
+            notes,
+            ..
+        } = &proposal.transaction_type
+        {
+            let decoded = notes
+                .iter()
+                .map(crate::proposal::SerializedNote::to_note)
+                .collect::<Result<Vec<_>>>()?;
+            let node_rpc = self.node_rpc_client();
+            crate::transaction::ensure_notes_authenticated(
+                &mut self.miden_client,
+                &node_rpc,
+                &decoded,
+            )
+            .await?;
+        }
+
         let tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
