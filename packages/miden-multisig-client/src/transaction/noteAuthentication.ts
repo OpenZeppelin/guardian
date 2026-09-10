@@ -48,7 +48,7 @@ export async function ensureNotesAuthenticated(
   notes: readonly Note[],
   options: EnsureNotesAuthenticatedOptions,
 ): Promise<void> {
-  const webClient = await getRawMidenClient(midenClient);
+  const webClient = await getRawMidenClient(midenClient, options.midenRpcEndpoint);
   const pending = await unauthenticatedNotes(webClient, notes);
   if (pending.length === 0) {
     return;
