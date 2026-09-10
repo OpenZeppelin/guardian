@@ -1,7 +1,10 @@
 //! Proposal builder for multisig transactions.
 
+use std::sync::Arc;
+
 use guardian_client::GuardianClient;
 use guardian_shared::ToJson;
+use miden_client::rpc::NodeRpcClient;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::note::{NoteId, NoteType};
@@ -48,6 +51,7 @@ impl ProposalBuilder {
     pub async fn build(
         self,
         miden_client: &mut MidenSdkClient,
+        node_rpc: &Arc<dyn NodeRpcClient>,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         key_manager: &dyn KeyManager,
@@ -96,6 +100,7 @@ impl ProposalBuilder {
             TransactionType::ConsumeNotes { ref note_ids, .. } => {
                 self.build_consume_notes(
                     miden_client,
+                    node_rpc,
                     guardian_client,
                     account,
                     note_ids.clone(),
@@ -472,6 +477,7 @@ impl ProposalBuilder {
     async fn build_consume_notes(
         &self,
         miden_client: &mut MidenSdkClient,
+        node_rpc: &Arc<dyn NodeRpcClient>,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
         note_ids: Vec<NoteId>,
@@ -487,6 +493,11 @@ impl ProposalBuilder {
         // Fetch notes from the proposer's local store for v2 embedding (FR-012).
         let fetched_notes =
             crate::transaction::consume::fetch_notes_from_store(miden_client, &note_ids).await?;
+        // Canonical consumption mode is authenticated (issue #409): the summary
+        // this proposal signs must be the one every cosigner's rebuild
+        // reproduces, so the notes are authenticated here first.
+        crate::transaction::ensure_notes_authenticated(miden_client, node_rpc, &fetched_notes)
+            .await?;
         let serialized_notes: Vec<crate::proposal::SerializedNote> = fetched_notes
             .iter()
             .map(crate::proposal::SerializedNote::from_note)
