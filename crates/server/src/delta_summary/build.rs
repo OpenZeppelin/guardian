@@ -13,7 +13,7 @@ use super::category::{category_from_proposal_type, infer_category_from_summary};
 use super::decode::{decode_proposal_metadata, decode_transaction_summary};
 use super::projection::{
     project_assets_and_counterparty_from_input_notes,
-    project_assets_and_counterparty_from_output_notes, project_note_counts,
+    project_assets_and_counterparty_from_output_notes, project_fee, project_note_counts,
 };
 use super::{
     AssetKind, AssetSummary, CounterpartyDirection, CounterpartySummary, DeltaMetadata,
@@ -46,6 +46,7 @@ pub fn build_metadata(
                 assets: asset_from_proposal(&proposal).into_iter().collect(),
                 counterparty: counterparty_from_proposal(&proposal),
                 note_counts: Default::default(),
+                fee: None,
                 proposal: Some(proposal),
             })
         }
@@ -95,6 +96,7 @@ fn assemble(summary: &TransactionSummary, proposal: Option<ProposalMetadata>) ->
         assets,
         counterparty,
         note_counts,
+        fee: project_fee(summary),
         proposal,
     }
 }
@@ -381,6 +383,7 @@ mod tests {
                 input: 0,
                 output: 1,
             },
+            fee: None,
             proposal: Some(ProposalMetadata {
                 proposal_type: "p2id".to_string(),
                 amount: Some("100".to_string()),
