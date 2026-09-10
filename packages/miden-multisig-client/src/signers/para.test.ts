@@ -23,8 +23,12 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       suffix: () => ({ asInt: () => BigInt(2) }),
     })),
   },
-  Felt: vi.fn().mockImplementation((v: bigint) => ({ value: v })),
-  FeltArray: vi.fn().mockImplementation((arr: any[]) => arr),
+  Felt: vi.fn().mockImplementation(function (v: bigint) {
+    return { value: v };
+  }),
+  FeltArray: vi.fn().mockImplementation(function (arr: any[]) {
+    return arr;
+  }),
   Rpo256: {
     hashElements: vi.fn().mockReturnValue({
       toHex: () => '0x' + 'bb'.repeat(32),

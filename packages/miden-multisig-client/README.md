@@ -17,13 +17,13 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.7
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0
 ```
 
-> **Why the peer version is exact**: no stable `0.16.0` is published, so a
-> `0.16.x`/`^0.16.0` range resolves to nothing, and the transaction-summary
-> layout and procedure roots are only byte-compatible within one pre-release
-> pair. Package releases wait for upstream 0.16 to stabilize.
+> **Why the peer version is exact**: the transaction-summary layout and the
+> guarded-multisig procedure roots are only byte-compatible between one
+> `@miden-sdk/miden-sdk` build and the `miden-standards` version its WASM
+> embeds, so the SDK pins the exact version the Rust SDK was built against.
 
 ## Miden compatibility
 
@@ -32,7 +32,7 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.17.x | 0.16.x (pre-release) |
+| 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
 
@@ -463,7 +463,7 @@ Do not use `signedAuthArg` as the salt when rebuilding the request.
 `withFeeConversionSalt` would derive and commit a second value from it, and the
 rebuilt summary would not match the summary that the cosigners signed.
 
-On the Miden 0.16 pre-release line a summary binds seven user-defined elements,
+On the Miden 0.16 line a summary binds seven user-defined elements,
 and the guarded-multisig auth component zeroes the leading three and passes the
 auth arg as the trailing four. `summaryAuthArg` reads that convention, so prefer
 it over indexing `userParams()` by hand. It replaced `summarySalt`, whose name

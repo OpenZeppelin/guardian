@@ -120,19 +120,27 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   TransactionRequest: {
     deserialize: vi.fn().mockReturnValue({}),
   },
-  AdviceMap: vi.fn().mockImplementation(() => ({
-    insert: vi.fn(),
-  })),
-  FeltArray: vi.fn().mockImplementation((arr: any[]) => arr),
+  AdviceMap: vi.fn().mockImplementation(function () {
+    return {
+      insert: vi.fn(),
+    };
+  }),
+  FeltArray: vi.fn().mockImplementation(function (arr: any[]) {
+    return arr;
+  }),
   Poseidon2: {
     hashElements: vi.fn().mockReturnValue({
       toHex: () => '0x' + 'e'.repeat(64),
     }),
   },
-  Endpoint: vi.fn().mockImplementation((url: string) => ({ url })),
-  RpcClient: vi.fn().mockImplementation(() => ({
-    getAccountDetails: mockRpcGetAccountDetails,
-  })),
+  Endpoint: vi.fn().mockImplementation(function (url: string) {
+    return { url };
+  }),
+  RpcClient: vi.fn().mockImplementation(function () {
+    return {
+      getAccountDetails: mockRpcGetAccountDetails,
+    };
+  }),
 }));
 
 // The consume-notes v2 binding path rebuilds the request from embedded

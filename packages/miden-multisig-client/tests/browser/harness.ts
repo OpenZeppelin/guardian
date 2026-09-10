@@ -28,7 +28,7 @@ function report(message: string): void {
 
 async function run(): Promise<void> {
   const client = await MidenClient.create({
-    rpcUrl: 'https://rpc.devnet.miden.io',
+    rpcUrl: 'https://rpc.testnet.miden.io',
     storeName: `determinism-${Math.random().toString(36).slice(2)}`,
     autoSync: false,
   });
@@ -44,7 +44,7 @@ async function run(): Promise<void> {
       guardianCommitment: GUARDIAN_COMMITMENT,
       seed,
     },
-    'https://rpc.devnet.miden.io',
+    'https://rpc.testnet.miden.io',
   );
 
   const code = account.code();
@@ -54,7 +54,7 @@ async function run(): Promise<void> {
   }
 
   // Compile every config script against the real WASM assembler.
-  const rpcOptions = { midenRpcEndpoint: 'https://rpc.devnet.miden.io' };
+  const rpcOptions = { midenRpcEndpoint: 'https://rpc.testnet.miden.io' };
   const configScriptsCompiled: Record<string, boolean> = {};
   await buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT], rpcOptions);
   configScriptsCompiled.updateSigners = true;
