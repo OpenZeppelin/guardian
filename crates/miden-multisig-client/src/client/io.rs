@@ -73,8 +73,8 @@ impl MultisigClient {
             .as_ref()
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
         Self::ensure_proposal_account_id(&raw_proposal.account_id, &account_id)?;
-        let proposal = crate::proposal::Proposal::from(raw_proposal)?;
-        self.verify_proposal_summary_binding(&proposal).await?;
+        let mut proposal = crate::proposal::Proposal::from(raw_proposal)?;
+        self.verify_proposal_summary_binding(&mut proposal).await?;
 
         // Extract signatures - fail if status structure is missing
         let status = raw_proposal.status.as_ref().ok_or_else(|| {
@@ -146,8 +146,8 @@ impl MultisigClient {
         let exported = ExportedProposal::from_json(json)?;
         exported.validate(self.account.as_ref().map(|account| account.id()))?;
 
-        let proposal = exported.to_proposal()?;
-        self.verify_proposal_summary_binding(&proposal).await?;
+        let mut proposal = exported.to_proposal()?;
+        self.verify_proposal_summary_binding(&mut proposal).await?;
 
         Ok(exported)
     }

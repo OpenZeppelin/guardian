@@ -72,8 +72,8 @@ impl MultisigClient {
             .proposal
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
         Self::ensure_proposal_account_id(&raw_proposal.account_id, account_id)?;
-        let proposal = Proposal::from(&raw_proposal)?;
-        self.verify_proposal_summary_binding(&proposal).await?;
+        let mut proposal = Proposal::from(&raw_proposal)?;
+        self.verify_proposal_summary_binding(&mut proposal).await?;
         Ok(proposal)
     }
 
@@ -82,6 +82,15 @@ impl MultisigClient {
     /// Proposals whose nonce is not above the committed account nonce are
     /// skipped: they have already been executed or superseded, but GUARDIAN may
     /// still report them pending until canonicalization prunes them.
+    ///
+    /// Every listed proposal's metadata is checked against its signed summary
+    /// and the outcome is recorded in [`Proposal::verification`]. One that
+    /// fails is still listed, so a single stale or corrupt proposal cannot
+    /// hide the others (issue #462: once the node prunes a proposal's anchor
+    /// block its re-execution fails for everyone). `Failed { retryable: true }`
+    /// means a transient node error, worth listing again; `retryable: false`
+    /// means the proposal cannot be reproduced and must be re-proposed.
+    /// Signing and executing re-verify and refuse a failed proposal.
     ///
     /// # Errors
     ///
@@ -105,13 +114,15 @@ impl MultisigClient {
         let mut proposals = Vec::with_capacity(response.proposals.len());
         for delta in &response.proposals {
             Self::ensure_proposal_account_id(&delta.account_id, &account_id)?;
-            let proposal = Proposal::from(delta)?;
+            let mut proposal = Proposal::from(delta)?;
 
             if proposal.nonce <= current_nonce {
                 continue;
             }
 
-            self.verify_proposal_summary_binding(&proposal).await?;
+            // The outcome lands on the proposal either way; a failure is
+            // reported there rather than failing the listing.
+            let _ = self.verify_proposal_summary_binding(&mut proposal).await;
             proposals.push(proposal);
         }
 
@@ -154,7 +165,7 @@ impl MultisigClient {
                 skipped.push((identifier, e.to_string()));
                 continue;
             }
-            let proposal = match Proposal::from(delta) {
+            let mut proposal = match Proposal::from(delta) {
                 Ok(proposal) => proposal,
                 Err(e) => {
                     skipped.push((identifier, format!("failed to parse proposal: {}", e)));
@@ -166,7 +177,7 @@ impl MultisigClient {
                 continue;
             }
 
-            if let Err(e) = self.verify_proposal_summary_binding(&proposal).await {
+            if let Err(e) = self.verify_proposal_summary_binding(&mut proposal).await {
                 skipped.push((
                     format!("proposal {}", proposal.id),
                     format!("summary binding failed verification: {}", e),

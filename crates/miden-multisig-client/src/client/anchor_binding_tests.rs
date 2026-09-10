@@ -154,6 +154,11 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_anch
         "listed {} but the proposer signed {proposal_id}",
         proposals[0].id
     );
+    assert!(
+        proposals[0].is_verified(),
+        "the listing must have reproduced the signed summary at the anchor: {:?}",
+        proposals[0].verification
+    );
 
     // Control: the same request re-executed at the cosigner's own tip yields
     // a different commitment, so this test would fail were verification to
@@ -324,6 +329,11 @@ async fn fresh_cosigner_verifies_a_consume_proposal_whose_proposer_held_the_note
         .expect("the rebuild authenticates the notes first, so the summary reproduces");
     assert_eq!(proposals.len(), 1, "proposals: {proposals:?}");
     assert!(proposals[0].id.eq_ignore_ascii_case(&proposal_id));
+    assert!(
+        proposals[0].is_verified(),
+        "the listing must have reproduced the signed summary with authenticated notes: {:?}",
+        proposals[0].verification
+    );
 
     for note in &notes {
         let record = cosigner
@@ -410,4 +420,112 @@ async fn ensure_notes_authenticated_imports_committed_notes_and_refuses_uncommit
         }
         other => panic!("unexpected error: {other:?}"),
     }
+}
+
+/// Issue #462: one proposal whose summary binding cannot be verified must
+/// not hide the others. The strict listing returns it with
+/// `verification_error` set and the healthy proposal untouched; signing the
+/// unverifiable one still fails, because signing re-verifies. A signer
+/// update is used so the case does not depend on any input-note handling.
+#[tokio::test]
+async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_listing() {
+    use crate::transaction::build_update_signers_transaction_request;
+
+    let keystore = Arc::new(GuardianKeyStore::generate());
+    let signer_commitment = keystore.commitment();
+    let guardian_commitment = Word::from([9u32, 9, 9, 9]);
+    let account = multisig_account(signer_commitment, guardian_commitment, 50);
+    let api = chain_with_notes(Vec::new());
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, _store) =
+        offline_client_parts_with_keystore(dir.path(), api.clone(), None, keystore.clone()).await;
+    client.set_node_rpc_client(api.clone());
+    client.add_or_update_account(&account, true).await.unwrap();
+    client.account = Some(MultisigAccount::new(account.clone()));
+    client.miden_client.sync_state().await.unwrap();
+
+    // An add-cosigner proposal: the same signer set plus one, threshold kept.
+    let new_cosigner = Word::from([7u32, 7, 7, 7]);
+    let signers = vec![signer_commitment, new_cosigner];
+    let signers_hex: Vec<String> = signers.iter().map(word_to_hex).collect();
+    let salt = Word::from([5u32, 6, 7, 8]);
+    let (tx_request, _) = build_update_signers_transaction_request(
+        1,
+        &signers,
+        salt,
+        std::iter::empty(),
+        client.key_manager.scheme(),
+    )
+    .unwrap();
+    let (tx_summary, chain_anchor) =
+        execute_for_summary(&mut client.miden_client, account.id(), tx_request)
+            .await
+            .unwrap();
+    let good_id = word_to_hex(&tx_summary.to_commitment());
+    let anchor_b64 = chain_anchor_to_base64(&chain_anchor);
+    let payload = |salt_hex: String| {
+        ProposalPayload::new(&tx_summary)
+            .with_add_signer_metadata(1, signers_hex.clone(), salt_hex)
+            .with_required_signatures(1)
+            .with_chain_anchor(anchor_b64.clone())
+            .to_json()
+            .to_string()
+    };
+    // The healthy proposal and a copy whose served salt is wrong: its
+    // rebuild yields a different summary, so its binding fails. Same
+    // summary bytes, so the same id — GUARDIAN never serves that, so give it
+    // a distinct nonce to keep the two apart in the listing.
+    let good = pending_proto_delta(
+        &account,
+        1,
+        payload(word_to_hex(&salt)),
+        &word_to_hex(&signer_commitment),
+    );
+    let bad = pending_proto_delta(
+        &account,
+        2,
+        payload(word_to_hex(&Word::from([1u32, 1, 1, 1]))),
+        &word_to_hex(&signer_commitment),
+    );
+
+    let service = MockGuardianService::default();
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    handle.set_persistent_get_state(registered_state(&account));
+    handle.set_persistent_get_delta_proposals(GetDeltaProposalsResponse {
+        success: true,
+        message: String::new(),
+        proposals: vec![bad, good],
+    });
+    client
+        .set_guardian_endpoint(&endpoint, false)
+        .await
+        .unwrap();
+
+    let proposals = client
+        .list_proposals()
+        .await
+        .expect("an unverifiable proposal is reported, not fatal");
+    assert_eq!(proposals.len(), 2, "proposals: {proposals:?}");
+    let (unverifiable, verified): (Vec<_>, Vec<_>) =
+        proposals.iter().partition(|p| !p.is_verified());
+    assert_eq!(verified.len(), 1, "proposals: {proposals:?}");
+    assert!(verified[0].id.eq_ignore_ascii_case(&good_id));
+    assert_eq!(unverifiable.len(), 1);
+    assert_eq!(unverifiable[0].nonce, 2);
+    match &unverifiable[0].verification {
+        crate::proposal::ProposalVerification::Failed { retryable, message } => {
+            assert!(
+                !retryable,
+                "a tampered proposal is not worth retrying: {message}"
+            );
+            assert!(
+                message.contains("metadata does not match tx_summary"),
+                "message: {message}"
+            );
+        }
+        other => panic!("expected a failed verification, got {other:?}"),
+    }
+    assert!(!unverifiable[0].is_actionable());
 }

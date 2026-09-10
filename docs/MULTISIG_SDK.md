@@ -380,6 +380,35 @@ consume-notes proposal can only be created for notes already committed on
 chain; a note that cannot be authenticated fails with
 `ConsumeNoteNotAuthenticatedError` (`consume_notes_note_not_authenticated`)
 naming the note, rather than with a summary mismatch.
+> **Anchor lifetime.** Re-executing at the anchor also loads every foreign
+> account the transaction touches at that block, and every fee-paying
+> transaction touches the fee faucet (the kernel's asset callbacks check it).
+> Nodes serve historical account state only for a limited window — devnet
+> serves about 50 blocks, roughly 2.5 minutes — after which the node answers
+> `block N has been pruned` and the proposal can no longer be verified or
+> executed by anyone, the proposer included. Until proposals can carry those
+> inputs themselves (tracked in issue #462), collect signatures and execute
+> promptly, and re-propose once a proposal has aged out. A listing keeps
+> working: such a proposal is returned with `verification` set to `failed`
+> (`retryable: false`) rather than failing the whole sync.
+
+#### Proposal verification status
+
+Every proposal a listing returns carries the outcome of its summary-binding
+check: `verification` on the TS `Proposal` (`{ status: 'unchecked' }`,
+`{ status: 'verified' }`, or `{ status: 'failed', retryable, message }`) and
+`ProposalVerification` on the Rust one (`Unchecked`, `Verified`,
+`Failed { retryable, message }`). Only the check itself writes `verified`;
+a freshly parsed or imported proposal is `unchecked`. `failed` with
+`retryable: true` means the re-execution hit a transient node error and
+the same proposal may verify on the next sync; `retryable: false` means
+the proposal cannot be reproduced (tampered metadata, a pruned anchor
+block) and has to be re-proposed. Verification is kept out of `status`
+on purpose: a proposal can be fully signed and dead at the same time, so
+`status: 'ready'` keeps meaning "threshold met" and
+`isProposalActionable(proposal)` / `proposal.is_actionable()` answers
+"verified and ready". Signing and executing re-verify the one proposal
+they act on and refuse a failed one with the real error.
 
 ### Custom Proposal Types
 
@@ -925,6 +954,13 @@ const exported = await multisig.createSwitchGuardianProposalOffline(
 const proposals = await multisig.syncProposals();
 
 for (const proposal of proposals) {
+  if (proposal.verification.status === 'failed') {
+    // The signed summary could not be reproduced from the metadata (for
+    // example, its anchor block is pruned). Signing and executing refuse it.
+    const { retryable, message } = proposal.verification;
+    console.log(`${proposal.id}: ${retryable ? 'retry later' : 're-propose'} — ${message}`);
+    continue;
+  }
   console.log(`${proposal.id}: ${proposal.status.type}`);
 
   if (proposal.status.type === 'pending') {
@@ -1413,6 +1449,13 @@ match client.propose_with_fallback(tx).await? {
 let proposals = client.list_proposals().await?;
 
 for proposal in &proposals {
+    if let ProposalVerification::Failed { retryable, message } = &proposal.verification {
+        // The signed summary could not be reproduced from the metadata (for
+        // example, its anchor block is pruned). Signing and executing refuse it.
+        let hint = if *retryable { "retry later" } else { "re-propose" };
+        println!("{}: {hint} — {message}", proposal.id);
+        continue;
+    }
     match &proposal.status {
         ProposalStatus::Pending => {
             let (signatures_collected, signatures_required) = proposal.signature_counts();

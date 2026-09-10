@@ -723,6 +723,7 @@ mod tests {
             tx_summary,
             signatures: vec![],
             metadata: v2_metadata_entries(entries),
+            verification: crate::proposal::ProposalVerification::Unchecked,
         }
     }
 
