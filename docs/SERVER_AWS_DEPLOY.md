@@ -181,9 +181,11 @@ export GUARDIAN_NETWORK_TYPE=MidenTestnet
 export DEPLOY_STAGE=dev
 # export DEPLOY_STAGE=prod
 
-# Optional: override the stack base name or public hostname
+# Stack base name and canonical public hostname. SUBDOMAIN defaults to
+# guardian, which no OZ stack uses: set guardian-devnet for the devnet stack
+# or guardian-testnet for the testnet stack.
 export STACK_NAME=guardian
-# export SUBDOMAIN=guardian-devnet
+export SUBDOMAIN=guardian-devnet
 
 aws sts get-caller-identity
 ./scripts/aws-deploy.sh deploy

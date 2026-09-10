@@ -26,7 +26,7 @@ set -euo pipefail
 #   DEPLOY_STAGE          - Deployment profile (dev or prod, default: dev)
 #   ECR_REPO_NAME         - ECR repository/image name (default: <stack-name>-server)
 #   DOMAIN_NAME           - Root domain (default: openzeppelin.com)
-#   SUBDOMAIN             - Subdomain (default: guardian)
+#   SUBDOMAIN             - Subdomain (default: guardian; the OZ stacks override it with guardian-devnet or guardian-testnet)
 #   ROUTE53_ZONE_ID       - Route 53 hosted zone ID (optional)
 #   CLOUDFLARE_ZONE_ID    - Cloudflare zone ID (optional)
 #   CLOUDFLARE_API_TOKEN  - Cloudflare API token (optional)
@@ -1012,7 +1012,7 @@ case "${COMMAND:-}" in
     echo "Options:"
     echo "  --skip-build  Skip Docker build and push (use existing image)"
     echo "  --domain=     Override root domain (default: openzeppelin.com)"
-    echo "  --subdomain=  Override subdomain (default: guardian)"
+    echo "  --subdomain=  Override subdomain (default: guardian; OZ stacks use guardian-devnet or guardian-testnet)"
     echo "  --route53-zone-id=  Route 53 hosted zone ID (optional)"
     echo "  --cloudflare-zone-id=  Cloudflare zone ID (optional)"
     echo "  --cloudflare-proxied=  Cloudflare proxied setting (true/false)"
