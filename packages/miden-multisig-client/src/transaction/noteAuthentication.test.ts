@@ -22,8 +22,13 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     authenticated: vi.fn((note: unknown, proof: unknown) => ({ note, proof })),
   },
   NoteDetails: vi.fn(),
-  Endpoint: vi.fn().mockImplementation((url: string) => ({ url })),
-  RpcClient: vi.fn().mockImplementation(() => ({ getNotesById: mockGetNotesById })),
+  // Constructor mocks must be real functions: vitest rejects `new` on an arrow mock.
+  Endpoint: vi.fn().mockImplementation(function (url: string) {
+    return { url };
+  }),
+  RpcClient: vi.fn().mockImplementation(function () {
+    return { getNotesById: mockGetNotesById };
+  }),
 }));
 
 vi.mock('../raw-client.js', () => ({
