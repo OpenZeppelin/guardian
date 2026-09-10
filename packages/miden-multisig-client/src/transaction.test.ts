@@ -4,16 +4,22 @@ import { describe, it, expect, vi, beforeAll } from 'vitest';
 vi.mock('@miden-sdk/miden-sdk', () => ({
   AccountId: { fromHex: vi.fn() },
   AdviceMap: vi.fn(),
-  Felt: vi.fn().mockImplementation((v) => ({ value: v })),
-  FeltArray: vi.fn().mockImplementation((arr) => arr),
+  Felt: vi.fn().mockImplementation(function (v) {
+    return { value: v };
+  }),
+  FeltArray: vi.fn().mockImplementation(function (arr) {
+    return arr;
+  }),
   Poseidon2: { hashElements: vi.fn() },
   Signature: { deserialize: vi.fn() },
-  TransactionRequestBuilder: vi.fn().mockImplementation(() => ({
-    withCustomScript: vi.fn().mockReturnThis(),
-    withScriptArg: vi.fn().mockReturnThis(),
-    extendAdviceMap: vi.fn().mockReturnThis(),
-    build: vi.fn().mockReturnValue({}),
-  })),
+  TransactionRequestBuilder: vi.fn().mockImplementation(function () {
+    return {
+      withCustomScript: vi.fn().mockReturnThis(),
+      withScriptArg: vi.fn().mockReturnThis(),
+      extendAdviceMap: vi.fn().mockReturnThis(),
+      build: vi.fn().mockReturnValue({}),
+    };
+  }),
   Word: {
     fromHex: vi.fn().mockImplementation((hex: string) => ({
       toHex: () => hex,

@@ -9,11 +9,17 @@ import {
 
 // Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => ({
-  AdviceMap: vi.fn().mockImplementation(() => ({
-    insert: vi.fn(),
-  })),
-  Felt: vi.fn().mockImplementation((v: bigint) => ({ value: v })),
-  FeltArray: vi.fn().mockImplementation((arr: any[]) => arr),
+  AdviceMap: vi.fn().mockImplementation(function () {
+    return {
+      insert: vi.fn(),
+    };
+  }),
+  Felt: vi.fn().mockImplementation(function (v: bigint) {
+    return { value: v };
+  }),
+  FeltArray: vi.fn().mockImplementation(function (arr: any[]) {
+    return arr;
+  }),
   Poseidon2: {
     hashElements: vi.fn().mockReturnValue({
       toHex: () => '0x' + 'h'.repeat(64),
