@@ -77,6 +77,8 @@ Use the deploy script env vars for the normal workflow:
 - `CLOUDFLARE_ZONE_ID`
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_PROXIED`
+- `ALIAS_SUBDOMAIN`
+- `ALIAS_ACM_CERTIFICATE_ARN`
 - `GUARDIAN_NETWORK_TYPE`
 - `GUARDIAN_CORS_ALLOWED_ORIGINS`
 - `GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON`
@@ -133,6 +135,9 @@ Treat these as stale or conditional:
 - `AWS_PROFILE` is only needed for the initial SSO or `assume-role` step if temporary credentials are exported afterward
 - `STS_CMD` is only a temporary shell helper and can be unset after exporting credentials
 - `CLOUDFLARE_ZONE_ID` without `CLOUDFLARE_API_TOKEN` is invalid for Terraform-managed Cloudflare DNS
+- the alias hostname is migration-only; leave `ALIAS_SUBDOMAIN` unset for normal deployments
+- keep the canonical hostname in `SUBDOMAIN` and use `ALIAS_SUBDOMAIN` for a secondary or legacy name
+- both subdomains use `DOMAIN_NAME`; Terraform creates their records for the configured `ROUTE53_ZONE_ID` and/or `CLOUDFLARE_ZONE_ID`, while external DNS remains operator-managed
 - `ROUTE53_ZONE_ID` is only needed if Terraform should create the AWS Route 53 record; current Terraform does not auto-discover the zone
 - `DATABASE_MODE` is stale and should not appear in commands or advice
 - old ECS Postgres naming overrides such as `TF_VAR_postgres_service_name`, `TF_VAR_sd_namespace_name`, `TF_VAR_postgres_task_family`, and `TF_VAR_postgres_log_group_name` are stale and should not be used
@@ -147,7 +152,7 @@ After every deploy:
 - verify the running ECS task definition or image reference when the task is specifically about image rollout or stale containers
 - note the RDS endpoint, `database_url_secret_arn`, and the ack secret names
 - note whether the server is using direct RDS or the RDS Proxy endpoint
-- note whether the active URL is the ALB DNS name or the custom domain
+- note whether the active URL is the ALB DNS name or a custom domain, and verify both custom hostnames when the optional secondary hostname is enabled
 - record the AWS account, region, network type, and DNS mode used
 
 ## Output Shape

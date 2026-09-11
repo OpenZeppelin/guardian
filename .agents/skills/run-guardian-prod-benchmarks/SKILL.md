@@ -130,6 +130,7 @@ After aggregation, inspect the generated artifacts in `benchmarks/prod-server/re
 - `run-report.json`
 - `summary.md`
 - `cleanup-manifest.json`
+- `canonicalization-samples.json` (when `canonicalization.sample_rate > 0`)
 
 Confirm all of these before finishing:
 
@@ -145,6 +146,8 @@ Read [`references/reporting.md`](references/reporting.md) before writing conclus
 Use these rules:
 
 - `push_delta/s` is the main metric
+- for canonicalization A/B comparisons, the accepted→canonical wait in the
+  `canonicalization` report section is the main metric instead
 - mixed runs should report both `push_delta/s` and `get_state/s`
 - latency should always include at least `p50`, `p95`, `p99`, and `max`
 - if failures are mostly `state_conflict`, the account pool shape is capping admitted writes, not necessarily the server

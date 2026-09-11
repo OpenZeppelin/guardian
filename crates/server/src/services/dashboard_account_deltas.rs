@@ -4,7 +4,8 @@
 //!
 //! Returns the persisted delta feed for one account with newest-first
 //! ordering by `nonce DESC`. Surfaces only the lifecycle statuses that
-//! live in the `deltas` table (`candidate`, `canonical`, `discarded`).
+//! live in the `deltas` table (`candidate`, `canonical`, `retained`,
+//! `discarded`).
 //! `pending` entries live in `delta_proposals` and are exposed via
 //! [`crate::services::dashboard_account_proposals`] per FR-014.
 //!
@@ -32,6 +33,7 @@ use crate::storage::AccountDeltaCursor;
 pub enum DashboardDeltaStatus {
     Candidate,
     Canonical,
+    Retained,
     Discarded,
 }
 
@@ -50,9 +52,17 @@ pub struct DashboardDeltaEntry {
     /// discarded delta that did not produce a resulting commitment).
     pub new_commitment: Option<String>,
     /// Always `Some(_)` on candidate entries (default `0` per FR-015);
-    /// `None` and skipped on `canonical` / `discarded`.
+    /// `None` and skipped on `canonical` / `retained` / `discarded`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
+    /// Why a row left the active candidate path: `retained` rows carry
+    /// the worker verdict that parked them (`retry_exhausted` /
+    /// `diverged` — a `diverged` row that later reconciles is direct
+    /// evidence the verdict was spurious), `discarded` rows carry the
+    /// discard reason when recorded (`client_abandoned`). `None` and
+    /// skipped elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<&'static str>,
 
     /// Spread from the persisted `DeltaMetadata` column. `None` for
     /// rows that predate the push-time pipeline or carry an undecodable
@@ -85,6 +95,7 @@ pub(crate) fn decode_delta_status(
         DeltaStatus::Candidate {
             timestamp,
             retry_count,
+            ..
         } => Some((
             DashboardDeltaStatus::Candidate,
             Some(*retry_count),
@@ -93,9 +104,34 @@ pub(crate) fn decode_delta_status(
         DeltaStatus::Canonical { timestamp } => {
             Some((DashboardDeltaStatus::Canonical, None, timestamp.clone()))
         }
-        DeltaStatus::Discarded { timestamp } => {
+        DeltaStatus::Retained { timestamp, .. } => {
+            Some((DashboardDeltaStatus::Retained, None, timestamp.clone()))
+        }
+        DeltaStatus::Discarded { timestamp, .. } => {
             Some((DashboardDeltaStatus::Discarded, None, timestamp.clone()))
         }
+    }
+}
+
+/// The stable wire label for why a row left the active candidate path
+/// (see [`DashboardDeltaEntry::status_reason`]). Shared with the global
+/// delta feed.
+pub(crate) fn decode_status_reason(status: &DeltaStatus) -> Option<&'static str> {
+    use crate::delta_object::{DiscardReason, RetainReason};
+    match status {
+        DeltaStatus::Retained {
+            reason: Some(RetainReason::RetryExhausted),
+            ..
+        } => Some("retry_exhausted"),
+        DeltaStatus::Retained {
+            reason: Some(RetainReason::Diverged),
+            ..
+        } => Some("diverged"),
+        DeltaStatus::Discarded {
+            reason: Some(DiscardReason::ClientAbandoned),
+            ..
+        } => Some("client_abandoned"),
+        _ => None,
     }
 }
 
@@ -112,6 +148,7 @@ impl DashboardDeltaEntry {
             prev_commitment: delta.prev_commitment.clone(),
             new_commitment: delta.new_commitment.clone(),
             retry_count,
+            status_reason: decode_status_reason(&delta.status),
             category: None,
             proposal_type: None,
             assets: Vec::new(),
@@ -244,6 +281,9 @@ mod tests {
             DeltaStatus::Candidate {
                 timestamp: format!("2026-05-08T12:0{nonce}:00Z"),
                 retry_count: retries,
+                divergence_count: 0,
+                abandon_requested_at: None,
+                abandon_confirm_count: 0,
             },
         )
     }
@@ -263,6 +303,7 @@ mod tests {
             nonce,
             DeltaStatus::Discarded {
                 timestamp: format!("2026-05-08T12:0{nonce}:00Z"),
+                reason: None,
             },
         )
     }
@@ -342,7 +383,6 @@ mod tests {
         use crate::metadata::AccountMetadata;
         use crate::metadata::auth::Auth;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let metadata_response = if has_metadata {
             Ok(Some(AccountMetadata {
@@ -354,9 +394,9 @@ mod tests {
                 created_at: "2026-05-01T00:00:00Z".into(),
                 updated_at: "2026-05-01T00:00:00Z".into(),
                 has_pending_candidate: false,
-                last_auth_timestamp: None,
                 paused_at: None,
                 paused_reason: None,
+                released_at: None,
             }))
         } else {
             Ok(None)
@@ -380,7 +420,7 @@ mod tests {
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata_store),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -460,7 +500,6 @@ mod tests {
         use crate::ack::AckRegistry;
         use crate::builder::clock::test::MockClock;
         use crate::testing::mocks::MockNetworkClient;
-        use tokio::sync::Mutex;
 
         let metadata =
             MockMetadataStore::new().with_get(Ok(Some(crate::metadata::AccountMetadata {
@@ -472,9 +511,9 @@ mod tests {
                 created_at: "2026-05-01T00:00:00Z".into(),
                 updated_at: "2026-05-01T00:00:00Z".into(),
                 has_pending_candidate: false,
-                last_auth_timestamp: None,
                 paused_at: None,
                 paused_reason: None,
+                released_at: None,
             })));
         let storage = MockStorageBackend::new()
             .with_list_account_deltas_paged(Err("disk read failed".into()));
@@ -485,7 +524,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),
@@ -521,7 +560,6 @@ mod tests {
         use crate::storage::filesystem::FilesystemService;
         use crate::testing::mocks::MockNetworkClient;
         use tempfile::TempDir;
-        use tokio::sync::Mutex;
 
         let dir = TempDir::new().expect("tempdir");
         let svc = FilesystemService::new(dir.path().to_path_buf())
@@ -559,9 +597,9 @@ mod tests {
                     created_at: "2026-05-01T00:00:00Z".into(),
                     updated_at: "2026-05-01T00:00:00Z".into(),
                     has_pending_candidate: false,
-                    last_auth_timestamp: None,
                     paused_at: None,
                     paused_reason: None,
+                    released_at: None,
                 })));
             }
             m
@@ -574,7 +612,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(svc),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

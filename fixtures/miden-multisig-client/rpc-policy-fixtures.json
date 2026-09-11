@@ -1,0 +1,374 @@
+{
+  "version": 1,
+  "attemptBudgets": [
+    {
+      "input": null,
+      "normalized": 2
+    },
+    {
+      "input": 0,
+      "normalized": 1
+    },
+    {
+      "input": 1,
+      "normalized": 1
+    },
+    {
+      "input": 3,
+      "normalized": 3
+    },
+    {
+      "input": 4294967295,
+      "normalized": 4294967295
+    }
+  ],
+  "endpoints": [
+    {
+      "input": "https://rpc.example",
+      "valid": true,
+      "canonical": "https://rpc.example/"
+    },
+    {
+      "input": " https://rpc.example ",
+      "valid": true,
+      "canonical": "https://rpc.example/"
+    },
+    {
+      "input": "http://node-sidecar:57291",
+      "valid": true,
+      "canonical": "http://node-sidecar:57291/"
+    },
+    {
+      "input": "http://localhost:57291",
+      "valid": true,
+      "canonical": "http://localhost:57291/"
+    },
+    {
+      "input": "localhost:57291",
+      "valid": false
+    },
+    {
+      "input": "rpc.example",
+      "valid": false
+    },
+    {
+      "input": "ftp://rpc.example",
+      "valid": false
+    },
+    {
+      "input": "https://",
+      "valid": false
+    },
+    {
+      "input": "",
+      "valid": false
+    }
+  ],
+  "classifications": [
+    {
+      "name": "rate limit rendered as ResourceExhausted",
+      "chain": [
+        {
+          "code": "ResourceExhausted",
+          "message": "Too Many Requests!"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "rate limit rendered as bare text",
+      "chain": [
+        {
+          "message": "Too Many Requests!"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "io timeout surfaced as Unknown carries transport evidence",
+      "chain": [
+        {
+          "code": "Unknown",
+          "message": "connection error: desc = \"i/o timeout\""
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "transport error surfaced as Unknown carries transport evidence",
+      "chain": [
+        {
+          "code": "Unknown",
+          "message": "transport error: code: 'Unknown error', message: \"transport error\", source: tonic::transport::Error(Transport, hyper::Error(Io, Kind(TimedOut)))"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "cancelled with timeout expired text",
+      "chain": [
+        {
+          "code": "Cancelled",
+          "message": "Timeout expired"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "unavailable during sync",
+      "chain": [
+        {
+          "message": "failed to sync state"
+        },
+        {
+          "code": "Unavailable",
+          "message": "service unavailable"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "deadline exceeded on account read",
+      "chain": [
+        {
+          "code": "DeadlineExceeded",
+          "message": "deadline exceeded"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "connection reset in nested transport error",
+      "chain": [
+        {
+          "message": "transport error"
+        },
+        {
+          "message": "connection reset by peer"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "broken pipe fallback",
+      "chain": [
+        {
+          "message": "broken pipe"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http 429 in message",
+      "chain": [
+        {
+          "message": "http status 429; slow down"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http 502 bad gateway",
+      "chain": [
+        {
+          "status": 502,
+          "message": "bad gateway"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "colon-tight status rendering is transient",
+      "chain": [
+        {
+          "message": "status:503 from upstream"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "http status code wording is transient",
+      "chain": [
+        {
+          "message": "HTTP status code: 503"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "status code 400 is permanent",
+      "chain": [
+        {
+          "message": "status code 400; malformed request"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "note transport fetch timeout is transient",
+      "chain": [
+        {
+          "message": "note transport error: note transport network error: Fetch notes failed: Status { code: Cancelled, message: \"Timeout expired\" }"
+        }
+      ],
+      "transient": true
+    },
+    {
+      "name": "invalid argument is permanent",
+      "chain": [
+        {
+          "code": "InvalidArgument",
+          "message": "malformed account id"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "not found is permanent",
+      "chain": [
+        {
+          "code": "NotFound",
+          "message": "account not found"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "internal beats nested timeout",
+      "chain": [
+        {
+          "code": "Internal",
+          "message": "internal error"
+        },
+        {
+          "message": "timeout"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "aborted is permanent",
+      "chain": [
+        {
+          "code": "Aborted",
+          "message": "aborted"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "outer transient inner permanent",
+      "chain": [
+        {
+          "code": "Unavailable",
+          "message": "retry later"
+        },
+        {
+          "code": "PermissionDenied",
+          "message": "permission denied"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "outer permanent inner transient",
+      "chain": [
+        {
+          "code": "FailedPrecondition",
+          "message": "precondition failed"
+        },
+        {
+          "code": "Unavailable",
+          "message": "unavailable"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "guardian pending-delta rejection is never transient",
+      "chain": [
+        {
+          "message": "There's already a pending change for this account. New changes can't be accepted until it's resolved."
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "guardian session expiry is never transient",
+      "chain": [
+        {
+          "message": "Your session has expired. Please sign in again."
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "account not on chain is never transient",
+      "chain": [
+        {
+          "message": "account not found on chain"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "http 403 is permanent despite transient wording",
+      "chain": [
+        {
+          "message": "http status 403; service unavailable"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "grpc code wording in message text beats transient wording",
+      "chain": [
+        {
+          "message": "grpc code: InvalidArgument; request timeout"
+        }
+      ],
+      "transient": false
+    },
+    {
+      "name": "unrecognized error does not retry",
+      "chain": [
+        {
+          "message": "something odd happened"
+        }
+      ],
+      "transient": false
+    }
+  ],
+  "delays": [
+    {
+      "retryIndex": 0,
+      "unitRandom": 0.0,
+      "delayMs": 375
+    },
+    {
+      "retryIndex": 0,
+      "unitRandom": 0.5,
+      "delayMs": 500
+    },
+    {
+      "retryIndex": 1,
+      "unitRandom": 0.5,
+      "delayMs": 1000
+    },
+    {
+      "retryIndex": 2,
+      "unitRandom": 0.5,
+      "delayMs": 2000
+    },
+    {
+      "retryIndex": 4,
+      "unitRandom": 0.999,
+      "delayMs": 8000
+    },
+    {
+      "retryIndex": 20,
+      "unitRandom": 0.0,
+      "delayMs": 8000
+    }
+  ]
+}

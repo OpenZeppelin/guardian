@@ -11,6 +11,11 @@ pub mod postgres;
 pub use auth::{Auth, AuthHeader, Credentials, ExtractCredentials};
 pub use network::{MidenNetworkType, NetworkConfig};
 
+/// Per-account replay floor retained when legacy account-scoped state is
+/// expanded to signer-scoped rows. It protects signers that were absent during
+/// migration and are authorized again later.
+pub const LEGACY_ACCOUNT_AUTH_FLOOR: &str = "__legacy_account_floor__";
+
 /// Metadata for a single account
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AccountMetadata {
@@ -20,8 +25,6 @@ pub struct AccountMetadata {
     pub created_at: String,
     pub updated_at: String,
     pub has_pending_candidate: bool,
-    #[serde(default)]
-    pub last_auth_timestamp: Option<i64>,
     /// UTC timestamp of the first pause request that took effect.
     /// `None` when active. First-writer-wins: re-pause does not
     /// update this value.
@@ -31,6 +34,16 @@ pub struct AccountMetadata {
     /// active. Required (non-empty, ≤ 512 UTF-8 chars) on pause.
     #[serde(default)]
     pub paused_reason: Option<String>,
+    /// UTC timestamp at which this server detected it is no longer the
+    /// account's guardian (a canonicalized `SwitchGuardian` delta moved
+    /// the on-chain guardian key away from this server's ack key).
+    /// `None` while this server is the account's guardian. Terminal:
+    /// cleared only by re-onboarding through `/configure`, which
+    /// re-validates the guardian binding. First-writer-wins like
+    /// `paused_at`; orthogonal to pause so an operator unpause can
+    /// never resurrect a released account.
+    #[serde(default)]
+    pub released_at: Option<DateTime<Utc>>,
 }
 
 /// Cursor parameters for the paginated account list read. Sort key is
@@ -59,7 +72,19 @@ pub trait MetadataStore: Send + Sync {
     /// Get metadata for a specific account
     async fn get(&self, account_id: &str) -> Result<Option<AccountMetadata>, String>;
 
-    /// Store or update metadata for an account
+    /// Store or update metadata for an account.
+    ///
+    /// Lifecycle fields — `has_pending_candidate`, `paused_at` /
+    /// `paused_reason`, and `released_at` — are owned by their dedicated
+    /// mutation methods and MUST NOT be changed by this generic write when
+    /// the account already exists. Callers read the row, spend time in
+    /// network calls, and write it back (e.g. `configure_account`), so a
+    /// `set` that applied these fields would clobber a concurrent
+    /// `submit_candidate` or pause with stale values. Shared backends
+    /// enforce this in the upsert itself; the single-process filesystem
+    /// store enforces it for pause/release only and accepts the residual
+    /// in-process candidate-flag window. Their values still apply on first
+    /// insert, where no concurrent owner can exist yet.
     async fn set(&self, metadata: AccountMetadata) -> Result<(), String>;
 
     /// List all account IDs
@@ -123,19 +148,52 @@ pub trait MetadataStore: Send + Sync {
         self.set(metadata).await
     }
 
+    /// Clear `has_pending_candidate` only if the account has no
+    /// candidate-status delta at the moment of the write.
+    ///
+    /// A blind `set_has_pending_candidate(false)` is unsafe as the trailing
+    /// cleanup after a promotion or discard: between the custody write that
+    /// removes the candidate row and the flag clear, a new submission can pass
+    /// the row-scan gate, insert a fresh candidate, and set the flag — the
+    /// blind clear then clobbers it. Because the canonicalization worker
+    /// selects accounts by this flag while the submission gate scans delta
+    /// rows, a wrongly-cleared flag makes the account invisible to the worker
+    /// *and* keeps new submissions rejected: a permanent wedge. Backends that
+    /// can check the delta table in the same statement MUST override this with
+    /// an atomic conditional write. This default (a plain clear) is only
+    /// acceptable for single-process backends, where the residual in-process
+    /// window is the pre-existing one.
+    async fn clear_pending_candidate_if_none(
+        &self,
+        account_id: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.set_has_pending_candidate(account_id, false, now).await
+    }
+
     /// List all account IDs that have pending candidates
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String>;
 
-    /// Atomically update the last authentication timestamp for replay protection.
+    /// Atomically record the last authentication timestamp for replay protection.
     ///
-    /// Uses compare-and-swap semantics: only updates if the new timestamp is strictly
-    /// greater than the current stored timestamp. Returns Ok(true) if updated,
-    /// Ok(false) if the timestamp was not greater (potential replay), or Err on failure.
+    /// Compare-and-swap: records `new_timestamp` only when it is strictly greater
+    /// than the stored value (a missing record accepts any timestamp and creates
+    /// one). Returns `Ok(true)` when recorded, `Ok(false)` when not greater — the
+    /// replay signal, which must never surface as `Err`; `Err` is reserved for
+    /// storage failure. Replay state is owned exclusively by this method: no other
+    /// store operation may read or write it, and it must not affect `updated_at`.
+    ///
+    /// Scope is per `(account_id, signer_commitment)` (issue #367): independent
+    /// authorized cosigners never contend on one timestamp, while a replay of a
+    /// request from the same signer is still rejected: every accepted request
+    /// advances its own signer's record, so a captured request can never win the
+    /// CAS again. A migrated account-level floor is also consulted for signers
+    /// first seen after migration, including signers removed and later restored.
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,
+        signer_commitment: &str,
         new_timestamp: i64,
-        now: &str,
     ) -> Result<bool, String>;
 
     /// Find every account whose Miden cosigner-commitment authorization set
@@ -169,4 +227,21 @@ pub trait MetadataStore: Send + Sync {
         &self,
         account_id: &str,
     ) -> Result<crate::services::account_status::PauseTransition, String>;
+
+    /// Atomically transition an account to the released state after a
+    /// guardian switch away from this server was detected.
+    /// First-writer-wins: when the account is already released the
+    /// persisted `released_at` is left unchanged. Returns `Ok(true)`
+    /// when this call performed the transition (callers audit on this),
+    /// `Ok(false)` when the account was already released, `Err` if the
+    /// account does not exist. Like pause, released state is owned by
+    /// this method + [`Self::clear_released`]; a generic [`Self::set`]
+    /// must never change it.
+    async fn set_released(&self, account_id: &str, now: DateTime<Utc>) -> Result<bool, String>;
+
+    /// Clear the released state for an account. Called only from the
+    /// `/configure` re-onboarding path, which re-validates that this
+    /// server is the account's guardian before reactivating it.
+    /// Idempotent; `Err` if the account does not exist.
+    async fn clear_released(&self, account_id: &str) -> Result<(), String>;
 }

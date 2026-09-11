@@ -8,6 +8,14 @@
 
 Warning: This is a work in progress.
 
+> **Miden version baseline**: the Rust workspace and the TypeScript
+> multisig SDK both track the stable Miden **v0.16 line** with exact pins
+> (`miden-client` 0.16.0, `miden-protocol` / `miden-standards` 0.16.1,
+> `@miden-sdk/miden-sdk` 0.16.0). Run against a node on protocol 0.16.
+> Accounts, local stores, and networks from v0.15 do not interoperate
+> with v0.16 — see [Troubleshooting](docs/TROUBLESHOOTING.md) and
+> [Miden compatibility](docs/MIDEN_COMPATIBILITY.md).
+
 ### Documentation
 
 - [`docs/`](docs/README.md) — in-repo documentation hub. Start with
@@ -68,7 +76,7 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 - `RUST_LOG` - Logging level (default: `info`)
   - Supports: `trace`, `debug`, `info`, `warn`, `error`
   - Module-specific: `RUST_LOG=server::jobs::canonicalization=debug`
-- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable HTTP rate limiting entirely (default: `true`)
+- `GUARDIAN_RATE_LIMIT_ENABLED` - Enable or disable rate limiting on both transports (default: `true`)
 - `GUARDIAN_RATE_BURST_PER_SEC` - Maximum requests per second (default: `10`)
 - `GUARDIAN_RATE_PER_MIN` - Maximum requests per minute (default: `60`)
 - `GUARDIAN_MAX_REQUEST_BYTES` - Maximum request body size in bytes (default: `1048576` = 1 MB)
@@ -81,14 +89,19 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 #### Running with Cargo
 
 ```bash
-cargo run --bin server
+GUARDIAN_NETWORK_TYPE=MidenTestnet cargo run --bin server
 ```
+
+`GUARDIAN_NETWORK_TYPE` (`MidenLocal`, `MidenTestnet`, or `MidenDevnet`) is
+required — the server refuses to start without it. A root `.env` file works
+too; see [`docs/LOCAL_DEV.md`](docs/LOCAL_DEV.md#environment-file).
 
 EVM proposal support is feature-gated. Default builds do not register EVM
 routes. EVM-enabled servers use the domain-separated `/evm/auth/*`,
 `/evm/accounts`, and `/evm/proposals*` routes.
 
 ```bash
+GUARDIAN_NETWORK_TYPE=MidenTestnet \
 GUARDIAN_EVM_RPC_URLS=31337=http://127.0.0.1:8545 \
 GUARDIAN_EVM_ENTRYPOINT_ADDRESS=0x... \
 cargo run -p guardian-server --features evm --bin server
@@ -96,10 +109,13 @@ cargo run -p guardian-server --features evm --bin server
 
 #### Running with Docker Compose
 
-The default compose file sets the container paths it needs, so a root `.env`
-is not required for this path. Start the server:
+The default compose file sets the container paths it needs, but you must
+choose a network explicitly: `GUARDIAN_NETWORK_TYPE` has no default and the
+server refuses to start without it. Set it in a root `.env` or export it in
+your shell before starting:
 
 ```bash
+echo "GUARDIAN_NETWORK_TYPE=MidenTestnet" > .env
 docker compose up --build -d
 ```
 
@@ -148,18 +164,26 @@ cargo test -p guardian-server --features integration
 cargo test -p guardian-server --features e2e
 ```
 
+Postgres-backed tests stay `#[ignore]` and need a live database, so they run
+through their own script:
+
+```bash
+POSTGRES_PASSWORD=guardian docker compose -f docker-compose.postgres.yml up -d postgres
+./scripts/test-postgres.sh
+```
+
+See [LOCAL_DEV.md](./docs/LOCAL_DEV.md#postgres-backed-tests) for the reset and
+safety behaviour.
+
 #### TypeScript Tests
 
 ```bash
-# Install dependencies
-cd packages/guardian-client && npm install
-cd packages/guardian-evm-client && npm install
-cd packages/guardian-operator-client && npm install
-cd packages/miden-multisig-client && npm install
+cd packages
+npm ci
 
-# Run tests
-cd packages/guardian-client && npm test
-cd packages/guardian-evm-client && npm test
-cd packages/guardian-operator-client && npm test
-cd packages/miden-multisig-client && npm test
+npm test -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/guardian-evm-client
+npm test -w @openzeppelin/guardian-operator-client
+npm run build -w @openzeppelin/guardian-client
+npm test -w @openzeppelin/miden-multisig-client
 ```

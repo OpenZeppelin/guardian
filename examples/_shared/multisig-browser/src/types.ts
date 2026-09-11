@@ -10,7 +10,12 @@ import type {
   SignatureScheme,
   Signer,
   VaultBalance,
+  ProverConfig,
+  RpcConfig,
 } from '@openzeppelin/miden-multisig-client';
+
+export type BrowserProverConfig = ProverConfig;
+export type BrowserRpcConfig = RpcConfig;
 
 export interface LocalSignerInfo {
   commitment: string;
@@ -23,7 +28,7 @@ export interface SignerInfo {
   activeScheme: SignatureScheme;
 }
 
-export type WalletSource = 'local' | 'para' | 'miden-wallet';
+export type WalletSource = 'local' | 'miden-wallet';
 
 export interface ExternalWalletState {
   source: WalletSource;
@@ -49,7 +54,6 @@ export interface SerializedDetectedMultisigConfig {
   threshold: number;
   numSigners: number;
   signerCommitments: string[];
-  guardianEnabled: boolean;
   guardianCommitment: string | null;
   vaultBalances: SerializedVaultBalance[];
   procedureThresholds: Array<{ procedure: ProcedureName; threshold: number }>;
@@ -114,7 +118,6 @@ export interface BrowserSessionSnapshot {
   signatureScheme: SignatureScheme | null;
   guardianPubkey: string | null;
   localSigners: SerializedSignerInfo | null;
-  para: SerializedExternalWalletState;
   midenWallet: SerializedExternalWalletState;
   multisig: {
     accountId: string;
@@ -157,7 +160,6 @@ export function serializeDetectedMultisigConfig(
     threshold: config.threshold,
     numSigners: config.numSigners,
     signerCommitments: [...config.signerCommitments],
-    guardianEnabled: config.guardianEnabled,
     guardianCommitment: config.guardianCommitment,
     vaultBalances: config.vaultBalances.map(serializeVaultBalance),
     procedureThresholds: [...config.procedureThresholds.entries()]

@@ -156,7 +156,11 @@ export class ProposalFactory {
     proposalType: ProposalType,
     signatures: ProposalSignatureEntry[],
   ): ProposalStatus {
-    switch (status.status) {
+    // The explicit widening keeps this compiling against published
+    // @openzeppelin/guardian-client types that predate the `retained`
+    // status (issue #345); it becomes redundant — but stays correct —
+    // once the lockfile picks up a release that includes it.
+    switch (status.status as DeltaStatus['status'] | 'retained') {
       case 'pending': {
         const signaturesRequired = this.options.resolveRequiredSignatures(proposalType);
         return signatures.length >= signaturesRequired ? 'ready' : 'pending';
@@ -164,6 +168,12 @@ export class ProposalFactory {
       case 'candidate':
         return 'ready';
       case 'canonical':
+      // A retained delta left the active candidate path (issue #345):
+      // no longer signable or submittable, so it is finalized from the
+      // proposal list's point of view. Whether its transaction landed is
+      // resolved by background reconciliation, surfaced via the delta
+      // status, not here.
+      case 'retained':
       case 'discarded':
         return 'finalized';
     }

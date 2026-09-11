@@ -26,9 +26,22 @@ pub const ACCOUNTS_PAUSE: &str = "accounts.pause";
 /// `target_account_id` is set.
 pub const ACCOUNTS_UNPAUSE: &str = "accounts.unpause";
 
+/// The server detected a canonicalized guardian switch away from its
+/// own ack key and released the account (issue #305). System-initiated
+/// (`operator_identity` is `system`). `payload` carries
+/// `{ new_guardian_commitment, delta_nonce, new_commitment }`;
+/// `target_account_id` is set.
+pub const ACCOUNTS_RELEASE: &str = "accounts.release";
+
 /// All registered kinds in v1, for tests and introspection. Append
 /// new consts above and add them to this slice in the same commit.
-pub const ALL_KINDS: &[&str] = &[AUTH_DENIED, PROBE_ACCESS, ACCOUNTS_PAUSE, ACCOUNTS_UNPAUSE];
+pub const ALL_KINDS: &[&str] = &[
+    AUTH_DENIED,
+    PROBE_ACCESS,
+    ACCOUNTS_PAUSE,
+    ACCOUNTS_UNPAUSE,
+    ACCOUNTS_RELEASE,
+];
 
 #[cfg(test)]
 mod tests {
@@ -38,7 +51,13 @@ mod tests {
     fn all_kinds_matches_consts() {
         assert_eq!(
             ALL_KINDS,
-            &[AUTH_DENIED, PROBE_ACCESS, ACCOUNTS_PAUSE, ACCOUNTS_UNPAUSE]
+            &[
+                AUTH_DENIED,
+                PROBE_ACCESS,
+                ACCOUNTS_PAUSE,
+                ACCOUNTS_UNPAUSE,
+                ACCOUNTS_RELEASE,
+            ]
         );
     }
 

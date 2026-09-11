@@ -18,7 +18,7 @@ falcon_percent = 100
 ecdsa_percent = 0
 
 [canonicalization]
-sample_rate = 0.0
+sample_rate = 0.05
 poll_interval_ms = 1000
 timeout_seconds = 180
 

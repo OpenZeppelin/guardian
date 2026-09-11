@@ -8,8 +8,12 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       suffix: () => ({ label: 'suffix' }),
     })),
   },
-  Felt: vi.fn().mockImplementation((value: bigint) => ({ value })),
-  FeltArray: vi.fn().mockImplementation((elements: unknown[]) => elements),
+  Felt: vi.fn().mockImplementation(function (value: bigint) {
+    return { value };
+  }),
+  FeltArray: vi.fn().mockImplementation(function (elements: unknown[]) {
+    return elements;
+  }),
   Word: {
     fromHex: vi.fn((hex: string) => ({
       toHex: () => hex,

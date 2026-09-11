@@ -10,7 +10,8 @@ use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::Word;
-use miden_protocol::account::delta::{AccountStorageDelta, AccountVaultDelta};
+use miden_protocol::account::AccountStoragePatch;
+use miden_protocol::account::delta::AccountVaultDelta;
 use miden_protocol::account::{AccountDelta, AccountId};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
@@ -18,7 +19,9 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
 use miden_protocol::crypto::dsa::falcon512_poseidon2::{
     PublicKey as FalconPublicKey, SecretKey as FalconSecretKey,
 };
-use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummary};
+use miden_protocol::transaction::{
+    InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, ZERO};
 use reqwest::Method;
@@ -803,8 +806,9 @@ fn create_account_seed(
 fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
     let account_delta = AccountDelta::new(
         account_id.to_owned(),
-        AccountStorageDelta::default(),
+        AccountStoragePatch::default(),
         AccountVaultDelta::default(),
+        None,
         Felt::new_unchecked(nonce),
     )
     .map_err(|e| anyhow!("failed to build account delta: {e}"))?;
@@ -814,6 +818,8 @@ fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
         RawOutputNotes::new(Vec::new())
             .map_err(|e| anyhow!("failed to build output notes: {e}"))?,
         Word::from([ZERO; 4]),
+        0,
+        TransactionSummaryUserParams::new([ZERO; 7]),
     );
     Ok(tx_summary.to_json())
 }

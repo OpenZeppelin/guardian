@@ -32,6 +32,13 @@ const CANONICALIZATION_RUN_BUCKETS: &[f64] = &[
     0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
 ];
 
+/// Candidate age spans from sub-tick freshness through the submission
+/// grace period (default 600s) out to a day, so stuck candidates stay
+/// visible instead of saturating at +Inf.
+const CANDIDATE_AGE_BUCKETS: &[f64] = &[
+    1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0, 14400.0, 86400.0,
+];
+
 /// Build an uninstalled recorder. The caller decides whether to
 /// install it globally (production) or scope it locally (tests).
 pub fn build_recorder() -> PrometheusRecorder {
@@ -48,6 +55,21 @@ pub fn build_recorder() -> PrometheusRecorder {
             CANONICALIZATION_RUN_BUCKETS,
         )
         .expect("static canonicalization buckets are non-empty")
+        .set_buckets_for_metric(
+            Matcher::Full(names::CANONICALIZATION_FAST_RUN_DURATION_SECONDS.to_string()),
+            CANONICALIZATION_RUN_BUCKETS,
+        )
+        .expect("static fast canonicalization buckets are non-empty")
+        .set_buckets_for_metric(
+            Matcher::Full(names::CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS.to_string()),
+            CANONICALIZATION_RUN_BUCKETS,
+        )
+        .expect("static reconcile canonicalization buckets are non-empty")
+        .set_buckets_for_metric(
+            Matcher::Full(names::CANONICALIZATION_CANDIDATE_AGE_SECONDS.to_string()),
+            CANDIDATE_AGE_BUCKETS,
+        )
+        .expect("static age buckets are non-empty")
         .build_recorder()
 }
 
@@ -98,12 +120,15 @@ mod tests {
     }
 
     #[test]
-    fn canonicalization_run_histogram_uses_extended_buckets() {
+    fn canonicalization_run_histograms_use_extended_buckets() {
         let recorder = build_recorder();
         let handle = recorder.handle();
 
         metrics::with_local_recorder(&recorder, || {
             metrics::histogram!(names::CANONICALIZATION_RUN_DURATION_SECONDS).record(45.0);
+            metrics::histogram!(names::CANONICALIZATION_FAST_RUN_DURATION_SECONDS).record(45.0);
+            metrics::histogram!(names::CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS)
+                .record(45.0);
         });
 
         let rendered = handle.render();
@@ -115,6 +140,17 @@ mod tests {
         assert!(
             rendered.contains("guardian_canonicalization_run_duration_seconds_bucket{le=\"60\"} 1"),
             "45s sample must fall in the le=60 bucket:\n{rendered}"
+        );
+        assert!(
+            rendered
+                .contains("guardian_canonicalization_fast_run_duration_seconds_bucket{le=\"300\"}"),
+            "expected extended fast-run buckets in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "guardian_canonicalization_reconcile_run_duration_seconds_bucket{le=\"300\"}"
+            ),
+            "expected extended reconcile-run buckets in:\n{rendered}"
         );
     }
 

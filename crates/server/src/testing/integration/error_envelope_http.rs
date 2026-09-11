@@ -21,14 +21,23 @@ use serde_json::json;
 use tower::Service;
 
 #[derive(Deserialize, Debug)]
+struct ErrorMeta {
+    retryable: bool,
+    paused_at: Option<String>,
+    paused_reason: Option<String>,
+}
+
+/// New error wire shape (feature 009): `{ code, message, meta }`. The legacy
+/// `success`/`error` fields are gone; the diagnostic detail is logged only.
+#[derive(Deserialize, Debug)]
 struct ErrorEnvelope {
-    success: bool,
     code: String,
-    error: String,
+    message: String,
+    meta: ErrorMeta,
 }
 
 async fn parse_envelope(response: axum::http::Response<Body>) -> ErrorEnvelope {
-    let status = response.status();
+    let _status = response.status();
     let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let value: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap_or_else(|e| {
         panic!(
@@ -47,12 +56,20 @@ async fn parse_envelope(response: axum::http::Response<Body>) -> ErrorEnvelope {
         !obj.contains_key("nonce"),
         "error body must not be a delta object; got: {value}"
     );
+    // Legacy fields must be gone (breaking reshape).
+    assert!(
+        !obj.contains_key("success"),
+        "error body must not carry legacy `success`; got: {value}"
+    );
+    assert!(
+        !obj.contains_key("error"),
+        "error body must not carry the diagnostic `error` field; got: {value}"
+    );
 
     let envelope: ErrorEnvelope = serde_json::from_value(value.clone())
         .unwrap_or_else(|e| panic!("body does not match ErrorEnvelope ({e}): {value}"));
-    assert!(!envelope.success, "success must be false ({status})");
     assert!(!envelope.code.is_empty(), "code must be non-empty");
-    assert!(!envelope.error.is_empty(), "error must be non-empty");
+    assert!(!envelope.message.is_empty(), "message must be non-empty");
     envelope
 }
 
@@ -71,7 +88,7 @@ async fn push_delta_proposal_error_uses_error_envelope() {
     });
 
     let request = Request::builder()
-        .uri("/push_delta_proposal")
+        .uri("/delta/proposal")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -103,7 +120,7 @@ async fn push_delta_error_uses_error_envelope() {
     let body = json!({ "account_id": "0xnope", "nonce": 1 });
 
     let request = Request::builder()
-        .uri("/push_delta")
+        .uri("/delta")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -125,7 +142,7 @@ async fn get_delta_error_uses_error_envelope() {
 
     let signer = TestSigner::new();
     let (_account_id, account_id_hex, _initial_state) = load_fixture_account();
-    let uri = format!("/get_delta?account_id={account_id_hex}&nonce=1");
+    let uri = format!("/delta?account_id={account_id_hex}&nonce=1");
 
     let request = Request::builder()
         .uri(uri)
@@ -149,7 +166,7 @@ async fn get_state_error_uses_error_envelope() {
 
     let signer = TestSigner::new();
     let (_account_id, account_id_hex, _initial_state) = load_fixture_account();
-    let uri = format!("/get_state?account_id={account_id_hex}");
+    let uri = format!("/state?account_id={account_id_hex}");
 
     let request = Request::builder()
         .uri(uri)
@@ -173,7 +190,7 @@ async fn get_delta_proposal_error_uses_error_envelope() {
 
     let signer = TestSigner::new();
     let (_account_id, account_id_hex, _initial_state) = load_fixture_account();
-    let uri = format!("/get_delta_proposal?account_id={account_id_hex}&commitment=0xmissing");
+    let uri = format!("/delta/proposal/single?account_id={account_id_hex}&commitment=0xmissing");
 
     let request = Request::builder()
         .uri(uri)
@@ -249,7 +266,7 @@ async fn push_delta_proposal_on_paused_account_returns_409_envelope() {
     });
     let (sig2, ts2) = signer.sign_json_payload(&account_id_hex, &proposal_body);
     let push_req = Request::builder()
-        .uri("/push_delta_proposal")
+        .uri("/delta/proposal")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
@@ -280,22 +297,30 @@ async fn push_delta_proposal_on_paused_account_returns_409_envelope() {
         "paused-account error body must not be shaped like a domain object; got: {value}"
     );
 
+    // Legacy fields gone; pause context now lives under `meta`.
+    assert!(!obj.contains_key("success"));
+    assert!(!obj.contains_key("error"));
+
     let envelope: ErrorEnvelope = serde_json::from_value(value.clone())
         .unwrap_or_else(|e| panic!("body does not match ErrorEnvelope ({e}): {value}"));
-    assert!(!envelope.success);
     assert_eq!(envelope.code, "GUARDIAN_ACCOUNT_PAUSED");
-    assert!(envelope.error.contains(pause_reason));
+    // The user-safe message is sanitized: it must NOT echo the internal
+    // pause reason (that now travels only in `meta.paused_reason`).
+    assert!(!envelope.message.is_empty());
+    assert!(
+        !envelope.message.contains(pause_reason),
+        "user-safe message must not leak the pause reason; got: {:?}",
+        envelope.message
+    );
 
-    let paused_at = obj
-        .get("paused_at")
-        .and_then(|v| v.as_str())
-        .expect("paused_at must be a string");
+    let paused_at = envelope.meta.paused_at.expect("meta.paused_at must be set");
     assert!(!paused_at.is_empty(), "paused_at must be non-empty");
-    let paused_reason = obj
-        .get("paused_reason")
-        .and_then(|v| v.as_str())
-        .expect("paused_reason must be a string");
-    assert_eq!(paused_reason, pause_reason);
+    assert_eq!(
+        envelope.meta.paused_reason.as_deref(),
+        Some(pause_reason),
+        "meta.paused_reason must carry the internal reason"
+    );
+    assert!(!envelope.meta.retryable, "paused account is not retryable");
 }
 
 #[tokio::test]
@@ -305,7 +330,7 @@ async fn get_delta_proposals_error_uses_error_envelope() {
 
     let signer = TestSigner::new();
     let (_account_id, account_id_hex, _initial_state) = load_fixture_account();
-    let uri = format!("/get_delta_proposals?account_id={account_id_hex}");
+    let uri = format!("/delta/proposal?account_id={account_id_hex}");
 
     let request = Request::builder()
         .uri(uri)
@@ -340,8 +365,8 @@ async fn sign_delta_proposal_error_uses_error_envelope() {
     });
 
     let request = Request::builder()
-        .uri("/sign_delta_proposal")
-        .method("POST")
+        .uri("/delta/proposal")
+        .method("PUT")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", &signer.pubkey_hex)
         .header("x-signature", format!("0x{}", "ab".repeat(666)))

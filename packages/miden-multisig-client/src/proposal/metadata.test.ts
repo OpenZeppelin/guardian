@@ -4,6 +4,7 @@ import { ProposalMetadataCodec } from './metadata.js';
 import type {
   ConsumeNotesProposalMetadata,
   CustomProposalMetadata,
+  P2IdProposalMetadata,
 } from '../types/proposal.js';
 
 describe('ProposalMetadataCodec consume_notes v2 round-trip (issue #229)', () => {
@@ -95,5 +96,140 @@ describe('ProposalMetadataCodec custom proposal types (issue #266)', () => {
     expect(back.proposalType).toBe('update_procedure_threshold');
     expect(back.targetProcedure).toBe('send_asset');
     expect(back.targetThreshold).toBe(2);
+  });
+});
+
+describe('ProposalMetadataCodec p2id noteType (issue #322)', () => {
+  const baseWire: GuardianProposalMetadata = {
+    proposalType: 'p2id',
+    recipientId: '0xrecipient',
+    faucetId: '0xfaucet',
+    amount: '1000',
+  };
+
+  it('round-trips a private noteType through the codec', () => {
+    const md = ProposalMetadataCodec.fromGuardian({
+      ...baseWire,
+      noteType: 'private',
+    }) as P2IdProposalMetadata;
+    expect(md.noteType).toBe('private');
+
+    const wire = ProposalMetadataCodec.toGuardian(md);
+    expect(wire.noteType).toBe('private');
+  });
+
+  it('leaves noteType absent for legacy proposals (=> public)', () => {
+    const md = ProposalMetadataCodec.fromGuardian(baseWire) as P2IdProposalMetadata;
+    expect(md.noteType).toBeUndefined();
+    expect(ProposalMetadataCodec.toGuardian(md).noteType).toBeUndefined();
+  });
+
+  it('canonicalizes an explicit public noteType to absent on encode', () => {
+    const md = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xrecipient',
+      faucetId: '0xfaucet',
+      amount: '1000',
+      noteType: 'public',
+    } as P2IdProposalMetadata;
+
+    // toGuardian omits the field so a public note keeps the pre-#322 wire
+    // shape and matches the Rust encoder, even if handed an explicit 'public'.
+    expect(ProposalMetadataCodec.toGuardian(md).noteType).toBeUndefined();
+  });
+
+  it('fromGuardian rejects an unsupported noteType', () => {
+    expect(() =>
+      ProposalMetadataCodec.fromGuardian({ ...baseWire, noteType: 'encrypted' }),
+    ).toThrow(/unsupported noteType/);
+  });
+
+  it('validate rejects an unsupported noteType', () => {
+    const md = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xrecipient',
+      faucetId: '0xfaucet',
+      amount: '1000',
+      noteType: 'encrypted',
+    } as unknown as P2IdProposalMetadata;
+    expect(() => ProposalMetadataCodec.validate(md)).toThrow(/unsupported noteType/);
+  });
+});
+
+describe('ProposalMetadataCodec p2id P2IDE heights (issue #366)', () => {
+  const baseWire: GuardianProposalMetadata = {
+    proposalType: 'p2id',
+    recipientId: '0xrecipient',
+    faucetId: '0xfaucet',
+    amount: '1000',
+  };
+
+  it('round-trips reclaim and timelock heights through the codec', () => {
+    const md = ProposalMetadataCodec.fromGuardian({
+      ...baseWire,
+      reclaimHeight: 12345,
+      timelockHeight: 700,
+    }) as P2IdProposalMetadata;
+    expect(md.reclaimHeight).toBe(12345);
+    expect(md.timelockHeight).toBe(700);
+
+    const wire = ProposalMetadataCodec.toGuardian(md);
+    expect(wire.reclaimHeight).toBe(12345);
+    expect(wire.timelockHeight).toBe(700);
+  });
+
+  it('leaves heights absent for plain P2ID proposals (pre-#366 wire shape)', () => {
+    const md = ProposalMetadataCodec.fromGuardian(baseWire) as P2IdProposalMetadata;
+    expect(md.reclaimHeight).toBeUndefined();
+    expect(md.timelockHeight).toBeUndefined();
+
+    const wire = ProposalMetadataCodec.toGuardian(md);
+    expect(wire.reclaimHeight).toBeUndefined();
+    expect(wire.timelockHeight).toBeUndefined();
+  });
+
+  it('fromGuardian rejects a zero height (encodes "no constraint" on-chain)', () => {
+    expect(() =>
+      ProposalMetadataCodec.fromGuardian({ ...baseWire, reclaimHeight: 0 }),
+    ).toThrow(/unsupported reclaimHeight/);
+  });
+
+  it('fromGuardian rejects a non-integer or out-of-range height', () => {
+    expect(() =>
+      ProposalMetadataCodec.fromGuardian({ ...baseWire, timelockHeight: 1.5 }),
+    ).toThrow(/unsupported timelockHeight/);
+    expect(() =>
+      ProposalMetadataCodec.fromGuardian({ ...baseWire, reclaimHeight: 0x1_0000_0000 }),
+    ).toThrow(/unsupported reclaimHeight/);
+  });
+
+  it('validate rejects an invalid height', () => {
+    const md = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xrecipient',
+      faucetId: '0xfaucet',
+      amount: '1000',
+      reclaimHeight: -1,
+    } as unknown as P2IdProposalMetadata;
+    expect(() => ProposalMetadataCodec.validate(md)).toThrow(/unsupported reclaimHeight/);
+  });
+
+  it('toGuardian rejects an invalid height instead of emitting it on the wire', () => {
+    const base = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xrecipient',
+      faucetId: '0xfaucet',
+      amount: '1000',
+    };
+    expect(() =>
+      ProposalMetadataCodec.toGuardian({ ...base, reclaimHeight: 0 } as P2IdProposalMetadata),
+    ).toThrow(/unsupported reclaimHeight/);
+    expect(() =>
+      ProposalMetadataCodec.toGuardian({ ...base, timelockHeight: 1.5 } as P2IdProposalMetadata),
+    ).toThrow(/unsupported timelockHeight/);
   });
 });

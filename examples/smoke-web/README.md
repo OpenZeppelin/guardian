@@ -12,13 +12,23 @@ This app is the browser analogue of the Rust CLI smoke surface:
 
 - Use one browser or browser profile per cosigner session.
 - Same-browser concurrent tabs are out of scope because the current browser client path does not expose safe per-session IndexedDB isolation.
-- Para and Miden Wallet parity is preserved through React providers, but the primary interface is still `window.smoke`.
+- Miden Wallet parity is reached through `window.smoke.connectMidenWallet()`; no wallet provider wraps the app, and `window.smoke` stays the primary interface.
 
 ## Setup
 
+Install the shared TypeScript workspace dependencies once from the repository
+root. The example's `dev`, `build`, and `typecheck` commands rebuild their
+Guardian SDK dependencies automatically.
+
 ```bash
-cd /Users/marcos/repos/guardian/examples/smoke-web
-npm install
+cd packages
+npm ci
+
+cd ../examples/_shared/multisig-browser
+npm ci
+
+cd ../../smoke-web
+npm ci
 npm run typecheck
 npm run dev
 ```
@@ -26,8 +36,9 @@ npm run dev
 Optional env vars:
 
 ```bash
-VITE_PARA_API_KEY=...
-VITE_PARA_ENVIRONMENT=development
+VITE_PROVER_URL=...
+VITE_PROVER_MAX_ATTEMPTS=2
+VITE_RPC_MAX_ATTEMPTS=2
 ```
 
 The page follows the `examples/web` lifecycle:
@@ -41,7 +52,6 @@ The page follows the `examples/web` lifecycle:
 The app exposes `window.smoke` with JSON-safe methods:
 
 - `initSession({ guardianEndpoint, midenRpcEndpoint, signerSource, signatureScheme, browserLabel })`
-- `connectPara()`
 - `connectMidenWallet()`
 - `status()`
 - `createAccount({ threshold, otherCommitments, guardianCommitment, procedureThresholds })`
@@ -60,6 +70,8 @@ The app exposes `window.smoke` with JSON-safe methods:
 - `exportProposal({ proposalId })`
 - `signProposalOffline({ proposalId, json })`
 - `importProposal({ json })`
+- `recoverByKey()`
+- `recoverNotes({ transportDrain?, proposalImport?, publicBackfill?, fromBlock?, toBlock?, syncAfter? })`
 - `clearLocalState()`
 - `events()`
 
@@ -96,7 +108,9 @@ request, proposes it via `createCustomProposal`, and after threshold calls
 `prepareCustomExecution` to get the validated advice, which the harness injects
 into a rebuilt request before submitting on-chain. The `recipe` returned by
 `createCustomProposal` is what the producer keeps to reproduce the exact
-transaction at execute time (request inputs + salt).
+transaction at execute time (request inputs and the original salt). Both builds
+pass that salt to `withFeeConversionSalt`; the Miden client derives the native
+fee conversion info from the same execution reference header.
 
 ```js
 // Producer tab: create
@@ -122,11 +136,12 @@ explicitly to drive execution from a fresh session.
 
 Use this harness for manual smoke flows that need:
 - local Falcon and ECDSA signers
-- Para or Miden Wallet connectivity checks
+- Miden Wallet connectivity checks
 - create/load/register/sync/state verification
 - proposal create/sign/execute loops
 - custom (producer-API) propose/sign/prepare/submit loops
 - offline export/import/sign flows
 - switch-GUARDIAN proposal orchestration
+- key-based account recovery plus the note-recovery flow (`recoverNotes`)
 
 The UI is intentionally plain. Agents should prefer `window.smoke` over DOM clicking.

@@ -6,7 +6,7 @@
 //! # Quick Start
 //!
 //! ```ignore
-//! use miden_multisig_client::MultisigClient;
+//! use miden_multisig_client::{MultisigClient, ProverConfig, ProverRetryPolicy};
 //! use miden_client::rpc::Endpoint;
 //!
 //! #[tokio::main]
@@ -14,7 +14,13 @@
 //!     // Create a client with auto-generated keys
 //!     let mut client = MultisigClient::builder()
 //!         .miden_endpoint(Endpoint::new("http://localhost:57291"))
-//!         .data_dir("/tmp/multisig-client")
+//!         .guardian_endpoint("http://localhost:50051")
+//!         .account_dir("/tmp/multisig-client")
+//!         .prover_config(
+//!             ProverConfig::new()
+//!                 .with_url("https://prover.example")?
+//!                 .with_retry_policy(ProverRetryPolicy::new(4)),
+//!         )
 //!         .generate_key()
 //!         .build()
 //!         .await?;
@@ -47,6 +53,8 @@ mod keystore;
 mod payload;
 mod procedures;
 mod proposal;
+mod prover;
+mod rpc;
 mod transaction;
 mod utils;
 
@@ -54,9 +62,14 @@ pub(crate) type MidenSdkClient = Client<FilesystemKeyStore>;
 
 // Main client
 pub use builder::MultisigClientBuilder;
+pub use client::{AbandonRequestState, AbandonStatus};
 pub use client::{
-    ConsumableNote, MultisigClient, NoteFilter, ProposalResult, RecoveredAccount,
-    StateVerificationResult,
+    BlockRange, ConsumableNote, HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning,
+    HistoryEntry, HistoryEntryStatus, HistoryNote, HistoryNoteAsset, HistoryNoteTag,
+    HistoryNoteVisibility, HistoryPage, MultisigClient, NoteFilter, NoteImportOutcome,
+    NoteImportSource, NoteImportStatus, NoteRecoveryOptions, NoteRecoveryReport, ProposalResult,
+    PublicBackfillOptions, PublicBackfillReport, RecoveredAccount, RecoveryStep,
+    RecoveryStepProblem, StateVerificationResult, TransportRecoveryReport, TransportRecoveryStatus,
 };
 
 // Procedures
@@ -84,9 +97,11 @@ pub use keystore::{
 pub use execution::{SignatureAdvice, build_transfer_asset};
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{
-    CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, Proposal,
+    CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, P2ideHeights, Proposal,
     ProposalMetadata, ProposalStatus, SerializedNote, TransactionType,
 };
+pub use prover::{ProverConfig, ProverRetryPolicy};
+pub use rpc::{RpcConfig, RpcRetryPolicy};
 pub use transaction::{
     ProposalBuilder, build_p2id_transaction_request, deserialize_transaction_request, generate_salt,
 };
@@ -105,4 +120,4 @@ pub use miden_protocol::account::AccountId;
 pub use miden_protocol::asset::Asset;
 pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 pub use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-pub use miden_protocol::note::NoteId;
+pub use miden_protocol::note::{NoteId, NoteType};

@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::Word;
 use serde::{Deserialize, Serialize};
@@ -56,18 +55,4 @@ pub struct IssuedOperatorSession {
     pub operator: AuthenticatedOperator,
     pub expires_at: String,
     pub cookie_header: String,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct PendingChallenge {
-    pub(crate) signing_digest: Word,
-    pub(crate) issued_at: DateTime<Utc>,
-    pub(crate) expires_at: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct OperatorSessionRecord {
-    pub(crate) operator: AuthenticatedOperator,
-    pub(crate) issued_at: DateTime<Utc>,
-    pub(crate) expires_at: DateTime<Utc>,
 }

@@ -17,6 +17,7 @@ pub struct GetDeltaSinceResult {
 }
 
 #[tracing::instrument(
+    level = "info",
     skip(state, params),
     fields(account_id = %params.account_id, from_nonce = params.from_nonce)
 )]
@@ -24,11 +25,7 @@ pub async fn get_delta_since(
     state: &AppState,
     params: GetDeltaSinceParams,
 ) -> Result<GetDeltaSinceResult> {
-    tracing::info!(
-        account_id = %params.account_id,
-        from_nonce = params.from_nonce,
-        "Getting delta since"
-    );
+    tracing::debug!("Getting delta since");
 
     let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
     if resolved.metadata.network_config.is_evm() {
@@ -61,7 +58,7 @@ pub async fn get_delta_since(
         deltas.iter().map(|d| d.delta_payload.clone()).collect();
 
     let merged_payload = {
-        let client = state.network_client.lock().await;
+        let client = &state.network_client;
         client
             .merge_deltas(delta_payloads)
             .map_err(GuardianError::InvalidDelta)?

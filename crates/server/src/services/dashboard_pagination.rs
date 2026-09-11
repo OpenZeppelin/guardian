@@ -90,18 +90,32 @@ pub fn parse_limit(raw: Option<&str>) -> Result<u32> {
                     "limit must be a positive integer in [1, {MAX_LIMIT}], got '{s}'"
                 ))
             })?;
-            if value < 1 {
-                return Err(GuardianError::InvalidLimit(format!(
-                    "limit must be at least 1, got {value}"
-                )));
-            }
-            if value > MAX_LIMIT as i64 {
-                return Err(GuardianError::InvalidLimit(format!(
-                    "limit must be at most {MAX_LIMIT}, got {value}"
-                )));
-            }
-            Ok(value as u32)
+            // Range policy lives in `validate_limit`; only the
+            // string-to-number conversion is handled here.
+            let value = u32::try_from(value).map_err(|_| {
+                GuardianError::InvalidLimit(format!(
+                    "limit must be in [1, {MAX_LIMIT}], got {value}"
+                ))
+            })?;
+            validate_limit(Some(value))
         }
+    }
+}
+
+/// Validate an already-numeric optional `limit` (the gRPC transport
+/// carries it as `optional uint32`, so there is no string to parse).
+/// Same range rules as [`parse_limit`]: omitted → [`DEFAULT_LIMIT`],
+/// outside `[1, MAX_LIMIT]` → [`GuardianError::InvalidLimit`].
+pub fn validate_limit(value: Option<u32>) -> Result<u32> {
+    match value {
+        None => Ok(DEFAULT_LIMIT),
+        Some(0) => Err(GuardianError::InvalidLimit(
+            "limit must be at least 1, got 0".to_string(),
+        )),
+        Some(v) if v > MAX_LIMIT => Err(GuardianError::InvalidLimit(format!(
+            "limit must be at most {MAX_LIMIT}, got {v}"
+        ))),
+        Some(v) => Ok(v),
     }
 }
 
@@ -183,6 +197,26 @@ mod tests {
     fn parse_limit_rejects_decimal() {
         let err = parse_limit(Some("50.0")).unwrap_err();
         assert!(matches!(err, GuardianError::InvalidLimit(_)));
+    }
+
+    // --- validate_limit (numeric variant used by the gRPC transport) ---
+
+    #[test]
+    fn validate_limit_omitted_uses_default() {
+        assert_eq!(validate_limit(None).unwrap(), DEFAULT_LIMIT);
+    }
+
+    #[test]
+    fn validate_limit_rejects_out_of_range() {
+        assert!(matches!(
+            validate_limit(Some(0)).unwrap_err(),
+            GuardianError::InvalidLimit(_)
+        ));
+        assert!(matches!(
+            validate_limit(Some(MAX_LIMIT + 1)).unwrap_err(),
+            GuardianError::InvalidLimit(_)
+        ));
+        assert_eq!(validate_limit(Some(MAX_LIMIT)).unwrap(), MAX_LIMIT);
     }
 
     // --- parse_cursor ---

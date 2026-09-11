@@ -2,8 +2,8 @@ use crate::delta_object::{DeltaObject, ProposalSignature};
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials, ExtractCredentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaParams, GetDeltaProposalParams, GetStateParams,
-    LookupAccountParams, PushDeltaParams,
+    self, ConfigureAccountParams, GetDeltaHistoryParams, GetDeltaParams, GetDeltaProposalParams,
+    GetStateParams, LookupAccountParams, PushDeltaParams,
 };
 use crate::state::AppState;
 use guardian_shared::SignatureScheme;
@@ -72,13 +72,7 @@ impl Guardian for GuardianService {
                 ack_commitment: response.ack_commitment,
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(ConfigureResponse {
-                success: false,
-                message: e.to_string(),
-                ack_pubkey: String::new(),
-                ack_commitment: String::new(),
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -122,13 +116,7 @@ impl Guardian for GuardianService {
                 ack_sig: Some(response.delta.ack_sig),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(PushDeltaResponse {
-                success: false,
-                message: e.to_string(),
-                delta: None,
-                ack_sig: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -154,12 +142,7 @@ impl Guardian for GuardianService {
                 delta: Some(delta_to_proto(&response.delta)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetDeltaResponse {
-                success: false,
-                message: e.to_string(),
-                delta: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -185,12 +168,43 @@ impl Guardian for GuardianService {
                 merged_delta: Some(delta_to_proto(&response.merged_delta)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetDeltaSinceResponse {
-                success: false,
-                message: e.to_string(),
-                merged_delta: None,
-                error_code: e.code().to_string(),
+            Err(e) => Err(Status::from(e)),
+        }
+    }
+
+    async fn get_delta_history(
+        &self,
+        request: Request<GetDeltaHistoryRequest>,
+    ) -> Result<Response<GetDeltaHistoryResponse>, Status> {
+        let auth = authenticated_request(&request)?;
+
+        let req = request.into_inner();
+
+        let limit = services::validate_limit(req.limit).map_err(Status::from)?;
+        let cursor = services::parse_cursor(
+            req.cursor.as_deref(),
+            self.app_state.dashboard.cursor_secret(),
+            crate::dashboard::cursor::CursorKind::AccountDeltaHistory,
+        )
+        .map_err(Status::from)?;
+
+        let params = GetDeltaHistoryParams {
+            account_id: req.account_id,
+            limit,
+            cursor,
+            credentials: auth,
+        };
+
+        // Call service layer
+        match services::get_delta_history(&self.app_state, params).await {
+            Ok(page) => Ok(Response::new(GetDeltaHistoryResponse {
+                success: true,
+                message: "History retrieved successfully".to_string(),
+                entries: page.items.into_iter().map(history_entry_to_proto).collect(),
+                next_cursor: page.next_cursor,
+                error_code: String::new(),
             })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -215,12 +229,7 @@ impl Guardian for GuardianService {
                 state: Some(state_to_proto(&response.state)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetStateResponse {
-                success: false,
-                message: e.to_string(),
-                state: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -268,13 +277,7 @@ impl Guardian for GuardianService {
                 commitment: response.commitment,
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(PushDeltaProposalResponse {
-                success: false,
-                message: e.to_string(),
-                delta: None,
-                commitment: String::new(),
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -297,12 +300,7 @@ impl Guardian for GuardianService {
                 proposals: response.proposals.iter().map(delta_to_proto).collect(),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetDeltaProposalsResponse {
-                success: false,
-                message: e.to_string(),
-                proposals: vec![],
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -326,12 +324,7 @@ impl Guardian for GuardianService {
                 proposal: Some(delta_to_proto(&response.proposal)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(GetDeltaProposalResponse {
-                success: false,
-                message: e.to_string(),
-                proposal: None,
-                error_code: e.code().to_string(),
-            })),
+            Err(e) => Err(Status::from(e)),
         }
     }
 
@@ -360,10 +353,43 @@ impl Guardian for GuardianService {
                 delta: Some(delta_to_proto(&response.delta)),
                 error_code: String::new(),
             })),
-            Err(e) => Ok(Response::new(SignDeltaProposalResponse {
+            Err(e) => Err(Status::from(e)),
+        }
+    }
+
+    /// Request abandonment of a pending canonicalization candidate
+    /// (issue #319): records the intent; the worker resolves it after the
+    /// abandon quarantine. Mirror of HTTP `POST /delta/candidate/abandon`.
+    async fn abandon_delta_candidate(
+        &self,
+        request: Request<AbandonDeltaCandidateRequest>,
+    ) -> Result<Response<AbandonDeltaCandidateResponse>, Status> {
+        let credentials = authenticated_request(&request)?;
+        let data = request.into_inner();
+
+        let params = services::AbandonCandidateParams {
+            account_id: data.account_id.clone(),
+            nonce: data.nonce,
+            credentials,
+        };
+
+        match services::abandon_candidate(&self.app_state, params).await {
+            Ok(response) => Ok(Response::new(AbandonDeltaCandidateResponse {
+                success: true,
+                message: "Abandon intent accepted".to_string(),
+                account_id: response.account_id,
+                nonce: response.nonce,
+                state: response.state.as_str().to_string(),
+                abandon_requested_at: response.abandon_requested_at.unwrap_or_default(),
+                error_code: String::new(),
+            })),
+            Err(e) => Ok(Response::new(AbandonDeltaCandidateResponse {
                 success: false,
                 message: e.to_string(),
-                delta: None,
+                account_id: data.account_id,
+                nonce: data.nonce,
+                state: String::new(),
+                abandon_requested_at: String::new(),
                 error_code: e.code().to_string(),
             })),
         }
@@ -408,6 +434,44 @@ fn authenticated_request<T: Message>(request: &Request<T>) -> Result<Credentials
 }
 
 // Helper functions to convert between internal types and protobuf types
+
+/// Project a service-layer history entry into its proto shape. Enum
+/// labels (`tag`, `kind`, `section`) cross the wire as the same stable
+/// snake_case strings the JSON serialization uses.
+fn history_entry_to_proto(entry: services::HistoryEntry) -> HistoryEntry {
+    let note_to_proto = |note: crate::delta_summary::DecodedNote| HistoryNote {
+        note_id: note.note_id,
+        tag: note.tag.as_str().to_string(),
+        note_type: note.note_type.as_str().to_string(),
+        assets: note
+            .assets
+            .into_iter()
+            .map(|asset| HistoryNoteAsset {
+                asset_id: asset.asset_id,
+                kind: asset.kind.as_str().to_string(),
+                amount: asset.amount,
+            })
+            .collect(),
+        sender: note.sender,
+        recipient: note.recipient,
+    };
+    HistoryEntry {
+        nonce: entry.nonce,
+        status: entry.status.as_str().to_string(),
+        timestamp: entry.timestamp,
+        new_commitment: entry.new_commitment,
+        input_notes: entry.input_notes.into_iter().map(note_to_proto).collect(),
+        output_notes: entry.output_notes.into_iter().map(note_to_proto).collect(),
+        decode_warnings: entry
+            .decode_warnings
+            .into_iter()
+            .map(|warning| HistoryDecodeWarning {
+                section: warning.section.as_str().to_string(),
+                reason: warning.reason,
+            })
+            .collect(),
+    }
+}
 fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
     let (candidate_at, canonical_at, discarded_at) = match &delta.status {
         crate::delta_object::DeltaStatus::Pending { timestamp, .. } => {
@@ -419,7 +483,10 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
         crate::delta_object::DeltaStatus::Canonical { timestamp } => {
             (Some(timestamp.clone()), Some(timestamp.clone()), None)
         }
-        crate::delta_object::DeltaStatus::Discarded { timestamp } => {
+        // No legacy timestamp column carries retention; consumers of the
+        // typed status oneof see `retained_at` below.
+        crate::delta_object::DeltaStatus::Retained { .. } => (None, None, None),
+        crate::delta_object::DeltaStatus::Discarded { timestamp, .. } => {
             (None, None, Some(timestamp.clone()))
         }
     };
@@ -448,23 +515,51 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                         cosigner_sigs: proto_cosigner_sigs,
                     },
                 )),
+                discard_reason: String::new(),
+                retain_reason: String::new(),
             })
         }
         crate::delta_object::DeltaStatus::Candidate { timestamp, .. } => Some(DeltaStatusGrpc {
             status: Some(guardian::delta_status::Status::CandidateAt(
                 timestamp.clone(),
             )),
+            discard_reason: String::new(),
+            retain_reason: String::new(),
         }),
         crate::delta_object::DeltaStatus::Canonical { timestamp } => Some(DeltaStatusGrpc {
             status: Some(guardian::delta_status::Status::CanonicalAt(
                 timestamp.clone(),
             )),
+            discard_reason: String::new(),
+            retain_reason: String::new(),
         }),
-        crate::delta_object::DeltaStatus::Discarded { timestamp } => Some(DeltaStatusGrpc {
-            status: Some(guardian::delta_status::Status::DiscardedAt(
+        crate::delta_object::DeltaStatus::Retained { timestamp, reason } => Some(DeltaStatusGrpc {
+            status: Some(guardian::delta_status::Status::RetainedAt(
                 timestamp.clone(),
             )),
+            discard_reason: String::new(),
+            retain_reason: match reason {
+                Some(crate::delta_object::RetainReason::RetryExhausted) => {
+                    "retry_exhausted".to_string()
+                }
+                Some(crate::delta_object::RetainReason::Diverged) => "diverged".to_string(),
+                None => String::new(),
+            },
         }),
+        crate::delta_object::DeltaStatus::Discarded { timestamp, reason } => {
+            Some(DeltaStatusGrpc {
+                status: Some(guardian::delta_status::Status::DiscardedAt(
+                    timestamp.clone(),
+                )),
+                discard_reason: match reason {
+                    Some(crate::delta_object::DiscardReason::ClientAbandoned) => {
+                        "client_abandoned".to_string()
+                    }
+                    None => String::new(),
+                },
+                retain_reason: String::new(),
+            })
+        }
     };
 
     guardian::DeltaObject {
@@ -541,7 +636,7 @@ mod tests {
     use crate::testing::helpers::{TestSigner, create_test_app_state_with_mocks};
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+
     use tonic::Request;
 
     fn create_test_state() -> (
@@ -556,7 +651,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 
@@ -576,9 +671,9 @@ mod tests {
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 
@@ -700,7 +795,7 @@ mod tests {
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
 
-        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        // The flow reads metadata more than once; stack one get response per read.
         let _metadata = metadata
             .with_get(Ok(Some(create_account_metadata(
                 account_id.clone(),
@@ -742,6 +837,116 @@ mod tests {
         assert_eq!(inner.delta.unwrap().nonce, 1);
     }
 
+    fn abandon_grpc_fixtures(
+        storage: &MockStorageBackend,
+        network: &MockNetworkClient,
+        metadata: &MockMetadataStore,
+        account_id: &str,
+        signer: &TestSigner,
+        landed: bool,
+    ) {
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let candidate = crate::delta_object::DeltaObject {
+            account_id: account_id.to_string(),
+            nonce: 1,
+            prev_commitment: "0x123".to_string(),
+            new_commitment: Some("0x456".to_string()),
+            delta_payload: delta_fixture["delta_payload"].clone(),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string()),
+            metadata: None,
+        };
+
+        let _ = metadata.clone().with_get(Ok(Some(create_account_metadata(
+            account_id.to_string(),
+            vec![signer.commitment_hex.clone()],
+        ))));
+        let _ = storage
+            .clone()
+            .with_pull_delta(Ok(candidate))
+            .with_pull_state(Ok(create_state_object(
+                account_id.to_string(),
+                "0x123".to_string(),
+                account_json,
+            )));
+        let verify = if landed {
+            Ok(crate::network::StateVerification::Match)
+        } else {
+            Ok(crate::network::StateVerification::Mismatch {
+                on_chain: "0x123".to_string(),
+            })
+        };
+        let _ = network
+            .clone()
+            .with_apply_delta(Ok((serde_json::json!({"new": true}), "0x456".to_string())))
+            .with_verify_commitment(verify);
+    }
+
+    #[tokio::test]
+    async fn test_grpc_abandon_delta_candidate_success() {
+        let (state, storage, network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        abandon_grpc_fixtures(&storage, &network, &metadata, &account_id, &signer, false);
+        let service = create_service(state);
+
+        let request = create_request_with_auth(
+            AbandonDeltaCandidateRequest {
+                account_id: account_id.clone(),
+                nonce: 1,
+            },
+            &signer,
+            &account_id,
+        );
+        let response = service
+            .abandon_delta_candidate(request)
+            .await
+            .expect("gRPC call should succeed")
+            .into_inner();
+
+        assert!(response.success, "expected success: {}", response.message);
+        assert_eq!(response.account_id, account_id);
+        assert_eq!(response.nonce, 1);
+        assert_eq!(response.state, "pending");
+        assert!(!response.abandon_requested_at.is_empty());
+        assert!(response.error_code.is_empty());
+        // Intent only: nothing is deleted at request time.
+        assert!(storage.get_delete_delta_calls().is_empty());
+        let _ = account_id;
+    }
+
+    #[tokio::test]
+    async fn test_grpc_abandon_delta_candidate_landed_error_code() {
+        let (state, storage, network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        abandon_grpc_fixtures(&storage, &network, &metadata, &account_id, &signer, true);
+        let service = create_service(state);
+
+        let request = create_request_with_auth(
+            AbandonDeltaCandidateRequest {
+                account_id: account_id.clone(),
+                nonce: 1,
+            },
+            &signer,
+            &account_id,
+        );
+        let response = service
+            .abandon_delta_candidate(request)
+            .await
+            .expect("gRPC transport should not error")
+            .into_inner();
+
+        assert!(!response.success);
+        assert_eq!(response.error_code, "GUARDIAN_CANDIDATE_LANDED");
+        assert!(response.state.is_empty());
+        assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
     #[tokio::test]
     async fn test_grpc_push_delta_proposal_missing_tx_summary() {
         let (state, storage, _network, metadata) = create_test_state();
@@ -779,10 +984,16 @@ mod tests {
         };
 
         let request = create_request_with_auth(request, &signer, &account_id);
-        let response = service.push_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
+        let status = service
+            .push_delta_proposal(request)
+            .await
+            .expect_err("missing tx summary must surface as a gRPC Status");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert!(details["code"].is_string());
+        assert!(details["message"].is_string());
+        assert!(details["meta"]["retryable"].is_boolean());
     }
 
     #[tokio::test]
@@ -794,7 +1005,7 @@ mod tests {
         let signer = TestSigner::new();
         let commitment = signer.commitment_hex.clone();
 
-        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        // The flow reads metadata more than once; stack one get response per read.
         let _metadata = metadata
             .with_get(Ok(Some(create_account_metadata(
                 account_id.clone(),
@@ -847,7 +1058,7 @@ mod tests {
         let signer = TestSigner::new();
         let commitment = signer.commitment_hex.clone();
 
-        // Need two get responses: one for auth verification, one for update_last_auth_timestamp
+        // The flow reads metadata more than once; stack one get response per read.
         let _metadata = metadata
             .with_get(Ok(Some(create_account_metadata(
                 account_id.clone(),
@@ -953,11 +1164,16 @@ mod tests {
         };
 
         let request = create_request_with_auth(request, &signer, &account_id);
-        let response = service.get_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
-        assert!(inner.proposal.is_none());
+        let status = service
+            .get_delta_proposal(request)
+            .await
+            .expect_err("unknown proposal must surface as a gRPC Status");
+        assert_eq!(status.code(), tonic::Code::NotFound);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert_eq!(details["code"], "proposal_not_found");
+        assert!(details["message"].is_string());
+        assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
     #[tokio::test]
@@ -982,12 +1198,16 @@ mod tests {
         request
             .metadata_mut()
             .insert("x-signature", "0xdeadbeef".parse().unwrap());
-        let response = service.get_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
-
-        assert!(!inner.success);
-        assert!(inner.proposal.is_none());
-        assert!(inner.message.contains("Authentication failed"));
+        let status = service
+            .get_delta_proposal(request)
+            .await
+            .expect_err("bad signature must surface as a gRPC Status");
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert_eq!(details["code"], "authentication_failed");
+        assert!(details["message"].is_string());
+        assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(false));
     }
 
     #[tokio::test]
@@ -1018,9 +1238,65 @@ mod tests {
         };
 
         let request = create_request_with_auth(request, &signer, &account_id);
-        let response = service.sign_delta_proposal(request).await.unwrap();
-        let inner = response.into_inner();
+        let status = service
+            .sign_delta_proposal(request)
+            .await
+            .expect_err("unknown proposal must surface as a gRPC Status");
+        let details: serde_json::Value =
+            serde_json::from_slice(status.details()).expect("Status.details is JSON");
+        assert!(details["code"].is_string());
+        assert!(details["message"].is_string());
+        assert!(details["meta"]["retryable"].is_boolean());
+    }
 
-        assert!(!inner.success);
+    #[test]
+    fn delta_to_proto_encodes_retained_status_and_reason() {
+        // The wire contract for issue #345: retained rows ride the typed
+        // status oneof (`retained_at` + `retain_reason`) and deliberately
+        // populate none of the legacy timestamp columns, so pre-retained
+        // consumers see an in-progress delta rather than a wrong terminal
+        // state.
+        let delta = DeltaObject {
+            account_id: "0xtest_account".to_string(),
+            nonce: 7,
+            prev_commitment: "0xprev".to_string(),
+            new_commitment: Some("0xnew".to_string()),
+            delta_payload: serde_json::json!({"test": "payload"}),
+            ack_sig: "0xsig".to_string(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::retained(
+                "2026-07-23T00:00:00Z".to_string(),
+                crate::delta_object::RetainReason::Diverged,
+            ),
+            metadata: None,
+        };
+
+        let proto = delta_to_proto(&delta);
+
+        let status = proto.status.expect("typed status present");
+        assert_eq!(
+            status.status,
+            Some(guardian::delta_status::Status::RetainedAt(
+                "2026-07-23T00:00:00Z".to_string()
+            ))
+        );
+        assert_eq!(status.retain_reason, "diverged");
+        assert_eq!(status.discard_reason, "");
+        assert_eq!(proto.candidate_at, "");
+        assert_eq!(proto.canonical_at, None);
+        assert_eq!(proto.discarded_at, None);
+
+        // A reasonless retained row encodes an empty reason string.
+        let mut reasonless = delta;
+        reasonless.status = DeltaStatus::Retained {
+            timestamp: "2026-07-23T00:00:00Z".to_string(),
+            reason: None,
+        };
+        let proto = delta_to_proto(&reasonless);
+        assert_eq!(
+            proto.status.expect("typed status present").retain_reason,
+            ""
+        );
     }
 }

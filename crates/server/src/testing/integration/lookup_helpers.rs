@@ -24,9 +24,9 @@ pub fn falcon_account(account_id: &str, cosigner_commitments: Vec<String>) -> Ac
         created_at: "2024-01-01T00:00:00Z".to_string(),
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         has_pending_candidate: false,
-        last_auth_timestamp: None,
         paused_at: None,
         paused_reason: None,
+        released_at: None,
     }
 }
 
@@ -40,9 +40,9 @@ pub fn ecdsa_account(account_id: &str, cosigner_commitments: Vec<String>) -> Acc
         created_at: "2024-01-01T00:00:00Z".to_string(),
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         has_pending_candidate: false,
-        last_auth_timestamp: None,
         paused_at: None,
         paused_reason: None,
+        released_at: None,
     }
 }
 
@@ -54,9 +54,9 @@ pub fn evm_account(account_id: &str, signers: Vec<String>) -> AccountMetadata {
         created_at: "2024-01-01T00:00:00Z".to_string(),
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         has_pending_candidate: false,
-        last_auth_timestamp: None,
         paused_at: None,
         paused_reason: None,
+        released_at: None,
     }
 }
 
@@ -95,6 +95,7 @@ pub fn fresh_account_id_hex(seed_byte: u8) -> String {
         [seed_byte; 15],
         miden_protocol::account::AccountIdVersion::Version1,
         miden_protocol::account::AccountType::Private,
+        miden_protocol::account::AssetCallbackFlag::Disabled,
     )
     .to_hex()
 }

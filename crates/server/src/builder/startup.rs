@@ -18,7 +18,9 @@ use std::net::SocketAddr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StartupInfo {
     network: NetworkType,
+    rpc_endpoint: String,
     storage: StorageType,
+    coordination_mode: &'static str,
     ecdsa_backend: &'static str,
     falcon_commitment: String,
     ecdsa_commitment: String,
@@ -34,7 +36,9 @@ impl StartupInfo {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         network: NetworkType,
+        rpc_endpoint: String,
         storage: StorageType,
+        coordination_mode: &'static str,
         ecdsa_backend: &'static str,
         falcon_commitment: String,
         ecdsa_commitment: String,
@@ -47,7 +51,9 @@ impl StartupInfo {
     ) -> Self {
         Self {
             network,
+            rpc_endpoint,
             storage,
+            coordination_mode,
             ecdsa_backend,
             falcon_commitment,
             ecdsa_commitment,
@@ -70,10 +76,29 @@ impl StartupInfo {
         );
         tracing::info!(
             network = %self.network,
-            rpc_endpoint = self.network.rpc_endpoint(),
+            rpc_endpoint = self.rpc_endpoint,
             "network"
         );
         tracing::info!(storage = %self.storage, "storage backend");
+        tracing::info!(
+            mode = self.coordination_mode,
+            backend = backend_label(&self.storage),
+            stage = if crate::config::stage::is_prod().unwrap_or(false) {
+                "prod"
+            } else {
+                "non-prod"
+            },
+            // Resolved value (FR-019), matching the rate limiter's fallback —
+            // never the raw env string, which could disagree with what is
+            // actually enforced.
+            max_replicas = crate::middleware::rate_limit::max_replicas_from_env().unwrap_or(1),
+            cursor_secret = if self.cursor_secret_configured {
+                "configured"
+            } else {
+                "ephemeral"
+            },
+            "coordination",
+        );
         tracing::info!(
             falcon = "enabled",
             falcon_commitment = %self.falcon_commitment,
@@ -93,6 +118,9 @@ impl StartupInfo {
         match &self.canonicalization {
             Some(config) => tracing::info!(
                 check_interval_seconds = config.check_interval_seconds,
+                fast_promotion_enabled = config.fast_promotion_enabled,
+                fast_promotion_interval_seconds = config.fast_promotion_interval_seconds,
+                fast_promotion_window_seconds = config.fast_promotion_window_seconds,
                 max_retries = config.max_retries,
                 submission_grace_period_seconds = config.submission_grace_period_seconds,
                 "canonicalization"
@@ -112,6 +140,13 @@ impl StartupInfo {
         );
         tracing::info!(features = ?compiled_features(), "compiled features");
         tracing::info!("=========================================");
+    }
+}
+
+fn backend_label(storage: &StorageType) -> &'static str {
+    match storage {
+        StorageType::Postgres => "postgres",
+        StorageType::Filesystem => "filesystem",
     }
 }
 
@@ -141,14 +176,26 @@ mod tests {
     fn captures_postgres_kms_and_canonicalization_config() {
         let info = StartupInfo::new(
             NetworkType::MidenDevnet,
+            "https://rpc.devnet.miden.io".to_string(),
             StorageType::Postgres,
+            "shared",
             "aws-kms",
             "0xfalcon".to_string(),
             "0xecdsa".to_string(),
             Some(CanonicalizationConfig {
                 check_interval_seconds: 10,
+                fast_promotion_enabled: true,
+                fast_promotion_interval_seconds: 3,
+                fast_promotion_window_seconds: 30,
                 max_retries: 48,
                 submission_grace_period_seconds: 600,
+                divergence_confirmations: 2,
+                abandon_quarantine_seconds: 15,
+                abandon_quarantine_checks: 2,
+                max_concurrent_accounts: 4,
+                retained_ttl_seconds: 86_400,
+                reconcile_interval_seconds: 60,
+                reconcile_page_size: 100,
             }),
             3,
             true,
@@ -159,6 +206,7 @@ mod tests {
 
         assert_eq!(info.network, NetworkType::MidenDevnet);
         assert_eq!(info.storage, StorageType::Postgres);
+        assert_eq!(info.coordination_mode, "shared");
         assert_eq!(info.ecdsa_backend, "aws-kms");
         assert_eq!(info.falcon_commitment, "0xfalcon");
         assert_eq!(info.ecdsa_commitment, "0xecdsa");
@@ -177,7 +225,9 @@ mod tests {
     fn optimistic_mode_and_disabled_listeners_are_none() {
         let info = StartupInfo::new(
             NetworkType::MidenLocal,
+            "https://rpc.example".to_string(),
             StorageType::Filesystem,
+            "single-process",
             "in-memory",
             "0xfalcon".to_string(),
             "0xecdsa".to_string(),
@@ -196,6 +246,34 @@ mod tests {
         assert!(!info.cursor_secret_configured);
         assert_eq!(info.http_port, None);
         assert_eq!(info.grpc_port, None);
+    }
+
+    #[test]
+    fn backend_label_maps_storage_type() {
+        assert_eq!(backend_label(&StorageType::Postgres), "postgres");
+        assert_eq!(backend_label(&StorageType::Filesystem), "filesystem");
+    }
+
+    #[test]
+    fn coordination_mode_label_is_logged_as_resolved() {
+        let info = StartupInfo::new(
+            NetworkType::MidenDevnet,
+            "https://rpc.devnet.miden.io".to_string(),
+            StorageType::Postgres,
+            "single-process",
+            "in-memory",
+            "0xfalcon".to_string(),
+            "0xecdsa".to_string(),
+            None,
+            0,
+            false,
+            None,
+            None,
+            None,
+        );
+        // Mode reflects the resolved coordination backing passed in, not the
+        // storage type — so it cannot claim "shared" while actually in-memory.
+        assert_eq!(info.coordination_mode, "single-process");
     }
 
     #[test]

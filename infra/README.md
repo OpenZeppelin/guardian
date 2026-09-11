@@ -21,9 +21,18 @@ Resources created:
 - Optional Secrets Manager secret for dashboard operator public keys
 - Optional Secrets Manager secrets for EVM allowed chain IDs and RPC URLs
 - Secrets Manager secrets for stable Falcon and ECDSA ack keys in `prod`
+- Pre-created Secrets Manager secret for the shared dashboard cursor key in `prod`
 - Security groups for the ALB, server task, and database
 - CloudWatch log groups
 - IAM roles for ECS task execution and runtime
+- ADOT Collector sidecar in the server task exporting Guardian Prometheus metrics to CloudWatch (EMF)
+- CloudWatch dashboard (`<stack>-server`) and alarms (error rate, latency, canonicalization, metrics pipeline, ECS saturation)
+
+The Guardian metrics endpoint binds loopback inside the task's shared network
+namespace; only the sidecar can reach it — it is never exposed via the ALB or
+security groups. See `observability.tf` and
+[`docs/SERVER_AWS_DEPLOY.md`](../docs/SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms)
+for details and verification steps.
 
 ## Usage
 
@@ -97,6 +106,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_rate_per_min = 5000
 # guardian_db_pool_max_size = 32
 # guardian_metadata_db_pool_max_size = 32
+# guardian_canonicalization_fast_promotion_enabled = false
 
 # Optional: dashboard operator Falcon public keys managed by Terraform
 # guardian_operator_public_keys = [
@@ -127,6 +137,19 @@ terraform plan
 terraform apply
 ```
 
+Image-only rollouts of a published GHCR version go through the **AWS Deploy**
+GitHub Actions workflow instead (OIDC, no local credentials or state). It also
+moves the ECR `latest` tag so the `server_image_uri` resolved by
+`scripts/aws-deploy.sh` stays in step with what is running. See
+[`docs/SERVER_AWS_DEPLOY.md`](../docs/SERVER_AWS_DEPLOY.md#deploying-a-published-image-from-github-actions).
+
+For direct prod Terraform usage, create the dashboard cursor secret before
+planning. Its value must be exactly 64 hexadecimal characters. Terraform checks
+that the secret exists without reading its value into state; the deployment
+helper performs the value-shape validation. If a customer-managed KMS key
+encrypts the secret, its key policy must allow the ECS task execution role to
+decrypt it.
+
 When you use `scripts/aws-deploy.sh`, it keeps separate local Terraform state files per `STACK_NAME` and `deployment_stage`, using:
 
 ```text
@@ -142,13 +165,17 @@ cp infra/terraform.tfstate infra/terraform.guardian.dev.tfstate
 cp infra/terraform.tfstate.backup infra/terraform.guardian.dev.tfstate.backup 2>/dev/null || true
 ```
 
-For `prod`, create the ACK key secrets once before the first deploy:
+For `prod`, create the ACK key and dashboard cursor secrets once before the first
+deploy:
 
 ```bash
 DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
+DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret
 ```
 
-Normal deploys do not create or rotate ACK keys. The server fetches the prod Secrets Manager entries at startup, imports them into the filesystem keystore, and then signs through the filesystem keystore like every other environment.
+Normal deploys do not create or rotate these secrets. Terraform requires the
+cursor secret to exist, grants the ECS execution role access, and injects its
+value as `GUARDIAN_DASHBOARD_CURSOR_SECRET` into every prod task.
 
 By default the secret names follow `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`, so each stack gets its own pair (`guardian-prod` → `guardian-prod/server/ack-falcon-secret-key`, etc.) and multiple Guardian instances can coexist in the same AWS account. To pin a stack at an existing legacy name, set `GUARDIAN_ACK_FALCON_SECRET_NAME` and `GUARDIAN_ACK_ECDSA_SECRET_NAME` before `bootstrap-ack-keys` and `deploy` — they flow through to the `guardian_ack_falcon_secret_name` / `guardian_ack_ecdsa_secret_name` Terraform variables.
 
@@ -165,11 +192,19 @@ terraform output
 
 ```bash
 ALB_DNS=$(terraform output -raw alb_dns_name)
+CUSTOM_DOMAIN_URL=$(terraform output -raw custom_domain_url)
+GRPC_ENDPOINT=$(terraform output -raw grpc_endpoint)
+ALIAS_DOMAIN_URL=$(terraform output -raw alias_domain_url 2>/dev/null || true)
 
-curl "http://$ALB_DNS/"
-curl "http://$ALB_DNS/pubkey"
-curl "https://guardian.openzeppelin.com/pubkey"
-grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
+# ACM certificates never cover the raw ALB hostname, so the direct checks
+# stay on plain HTTP; on HTTPS stacks they return the 301 redirect and the
+# hostname checks below verify TLS end to end.
+curl --fail-with-body "http://$ALB_DNS/"
+curl --fail-with-body "http://$ALB_DNS/pubkey"
+[ -z "$CUSTOM_DOMAIN_URL" ] || curl --fail-with-body "$CUSTOM_DOMAIN_URL/pubkey"
+[ -z "$GRPC_ENDPOINT" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${GRPC_ENDPOINT#https://}:443" guardian.Guardian/GetPubkey
+[ -z "$ALIAS_DOMAIN_URL" ] || curl --fail-with-body "$ALIAS_DOMAIN_URL/pubkey"
+[ -z "$ALIAS_DOMAIN_URL" ] || grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' "${ALIAS_DOMAIN_URL#https://}:443" guardian.Guardian/GetPubkey
 ```
 
 ### 6. Destroy
@@ -177,6 +212,12 @@ grpcurl -import-path ../crates/server/proto -proto guardian.proto -d '{}' guardi
 ```bash
 terraform destroy
 ```
+
+In the prod stage the RDS instance has deletion protection on and takes a
+final snapshot (`<stack>-postgres-final`) on destroy. To tear down a prod
+stack, set `TF_VAR_rds_deletion_protection=false`, apply, then destroy. If a
+snapshot named `<stack>-postgres-final` is left over from a previous
+teardown, copy or delete it first — the destroy fails on the name collision.
 
 ECR repositories are not managed by Terraform:
 
@@ -207,24 +248,47 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `postgres_db` | `guardian` | Postgres database name |
 | `postgres_user` | `guardian` | Postgres username |
 | `postgres_password` | `guardian_dev_password` | Postgres password |
-| `rds_instance_class` | `db.t3.micro` in dev, `db.t3.medium` in prod | RDS instance class |
+| `rds_instance_class` | `db.t3.micro` in dev, `db.r6g.large` in prod | RDS instance class |
 | `rds_allocated_storage` | `20` in dev, `50` in prod | RDS allocated storage in GiB |
 | `rds_max_allocated_storage` | `null` in dev, `200` in prod | RDS storage autoscaling ceiling |
+| `rds_backup_retention_days` | `7` | Automated backup retention in days; enables point-in-time recovery |
+| `rds_deletion_protection` | `false` in dev, `true` in prod | Whether the RDS instance is protected from deletion |
+| `rds_skip_final_snapshot` | `true` in dev, `false` in prod | Whether destroying the RDS instance skips the final snapshot |
+| `rds_multi_az` | `false` | Whether RDS runs as a Multi-AZ deployment with a standby replica |
 | `rds_proxy_enabled` | `false` in dev, `true` in prod | Whether RDS Proxy is enabled |
 | `domain_name` | `openzeppelin.com` | Root domain for HTTPS endpoint |
 | `subdomain` | `guardian` | Subdomain for HTTPS endpoint |
+| `acm_certificate_arn` | `""` | ACM certificate for the canonical hostname |
 | `route53_zone_id` | `""` | Route 53 hosted zone ID for the domain |
+| `cloudflare_zone_id` | `""` | Cloudflare zone ID for the canonical hostname |
+| `alias_subdomain` | `""` | Migration-only legacy subdomain under `domain_name`; leave empty normally |
+| `alias_acm_certificate_arn` | `""` | Migration-only distinct legacy certificate attached through SNI |
 | `alb_ingress_cidrs` | `["0.0.0.0/0"]` | CIDR blocks allowed to reach the ALB |
 | `server_cpu` | `512` | Server task CPU units |
 | `server_memory` | `1024` | Server task memory (MB) |
 | `server_desired_count` | `1` in dev, `2` in prod | ECS service desired task count |
 | `server_autoscaling_enabled` | `false` in dev, `true` in prod | Whether ECS autoscaling is enabled |
-| `guardian_rate_limit_enabled` | `true` | Whether Guardian HTTP rate limiting is enabled |
+| `guardian_rate_limit_enabled` | `true` | Whether Guardian rate limiting is enabled (HTTP and gRPC) |
 | `guardian_rate_burst_per_sec` | `10` in dev, `200` in prod | Guardian HTTP burst limit |
 | `guardian_rate_per_min` | `60` in dev, `5000` in prod | Guardian HTTP sustained limit |
+| `guardian_max_replicas` | greater of desired count and autoscaling max when enabled, desired count otherwise (prod `6` by default) | `GUARDIAN_MAX_REPLICAS` rate-limit partition divisor; an explicit value is clamped **up** to steady-state capacity. A rolling deployment may temporarily allow up to `server_deployment_maximum_percent / 100` times the configured fleet limit. |
+| `guardian_dashboard_commitment_rate_burst_per_sec` | `6` | Fleet-wide dashboard per-commitment burst budget, partitioned by the steady-state replica capacity |
+| `guardian_dashboard_commitment_rate_per_min` | `30` | Fleet-wide dashboard per-commitment sustained budget, partitioned by the steady-state replica capacity |
+| `server_deployment_maximum_percent` | `200` | ECS rolling-deploy task ceiling (percent of desired count). The temporary fleet-wide rate allowance can scale by the same factor during a rollout. Must be an integer in `(100, 200]` and allow at least one surge task at the minimum positive desired capacity, including autoscaling minimum |
 | `guardian_db_pool_max_size` | `16` in dev, `32` in prod | Guardian storage DB pool size |
 | `guardian_metadata_db_pool_max_size` | matches storage by default | Guardian metadata DB pool size |
+| `guardian_canonicalization_fast_promotion_enabled` | `true` | Enables the recent-candidate promotion-only pass in the ECS task definition |
+| `guardian_log_format` | `json` | Log format for `GUARDIAN_LOG_FORMAT` (`text`, `json`, `compact`) |
 | `log_retention_days` | `7` | CloudWatch log retention in days |
+| `guardian_metrics_enabled` | `true` | Guardian Prometheus metrics endpoint (loopback-only inside the task) |
+| `cloudwatch_metrics_enabled` | `true` | ADOT sidecar + EMF export + CloudWatch dashboard/alarms (cascades off when the endpoint is disabled) |
+| `adot_image` | pinned ADOT Collector release | Digest-pinned sidecar image |
+| `metrics_namespace` | `<Title(stack_name)>/Server` | CloudWatch namespace for application metrics |
+| `alarm_actions` | `[]` | ARNs (e.g. SNS topics) notified on alarm/ok transitions |
+| `alarm_error_rate_threshold_percent` | `5` | HTTP 5xx / gRPC error-rate alarm threshold |
+| `alarm_latency_threshold_seconds` | `1` | Average HTTP latency alarm threshold |
+| `alarm_cpu_threshold_percent` | `85` | ECS CPU saturation alarm threshold |
+| `alarm_memory_threshold_percent` | `90` | ECS memory saturation alarm threshold |
 
 ## Outputs
 
@@ -232,7 +296,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name for accessing the server |
 | `alb_url` | Full URL (http or https) |
-| `custom_domain_url` | Custom domain URL when configured |
+| `custom_domain_url` | Canonical service URL: https with a certificate, http when Terraform manages only the DNS record |
+| `alias_domain_url` | Migration-only legacy domain URL |
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |
@@ -247,11 +312,21 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
+| `dashboard_cursor_secret_name` | Secrets Manager name for the shared dashboard cursor key |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server ECS service ARN |
 | `server_log_group` | CloudWatch log group for the server |
 | `cluster_log_group` | CloudWatch log group for ECS execute command |
-| `guardian_rate_limit_enabled` | Whether HTTP rate limiting is enabled |
+| `guardian_rate_limit_enabled` | Whether rate limiting is enabled (HTTP and gRPC) |
+| `guardian_max_replicas` | Effective `GUARDIAN_MAX_REPLICAS` after clamping to steady-state capacity |
+| `guardian_dashboard_commitment_rate_burst_per_sec` | Effective fleet-wide dashboard per-commitment burst budget |
+| `guardian_dashboard_commitment_rate_per_min` | Effective fleet-wide dashboard per-commitment sustained budget |
+| `guardian_metrics_enabled` | Whether the Guardian Prometheus metrics endpoint is enabled |
+| `cloudwatch_metrics_enabled` | Whether the metrics sidecar, dashboard, and alarms are deployed |
+| `metrics_missing_alarm_name` | Name of the metrics-pipeline heartbeat alarm |
+| `metrics_namespace` | CloudWatch namespace receiving Guardian application metrics |
+| `metrics_dashboard_name` | CloudWatch dashboard name |
+| `metrics_emf_log_group` | Log group the ADOT sidecar writes EMF metric events into |
 
 ## Stage Profiles
 
@@ -274,7 +349,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 
 ## HTTPS Configuration
 
-HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, or both depending on which variables are provided. In the current `guardian-stg` deployment, Terraform state shows Cloudflare DNS management and no Route 53 record.
+HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through Cloudflare, Route 53, both, or an external provider. Terraform creates canonical and migration-only alias records only for the configured providers; external records remain operator-managed. The migration-only secondary-subdomain settings are covered in [`docs/runbooks/guardian-domain-migration.md`](../docs/runbooks/guardian-domain-migration.md).
 
 When HTTPS is enabled, the ALB routes standard HTTPS requests to the server HTTP port `3000` and gRPC requests for `/guardian.Guardian/*` to the server gRPC port `50051`. The public gRPC endpoint uses the same hostname on port `443`.
 

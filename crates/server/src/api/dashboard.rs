@@ -95,6 +95,7 @@ pub struct AccountsQuery {
     responses(
         (status = 200, description = "Challenge issued", body = OperatorChallengeResponse),
         (status = 400, description = "Invalid commitment", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Challenge issuance failed (shared auth store unavailable; fails closed)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn challenge_operator_login(
@@ -135,6 +136,7 @@ pub async fn challenge_operator_login(
     responses(
         (status = 200, description = "Session established", body = VerifyOperatorResponse),
         (status = 401, description = "Challenge verification failed", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Session establishment failed (shared auth store unavailable; fails closed)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn verify_operator_login(
@@ -173,23 +175,31 @@ pub async fn verify_operator_login(
     security(("operator_session" = [])),
     responses(
         (status = 200, description = "Session invalidated", body = LogoutOperatorResponse),
+        (status = 500, description = "Session revocation failed", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn logout_operator(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> impl IntoResponse {
+) -> Result<(
+    StatusCode,
+    [(header::HeaderName, String); 1],
+    Json<LogoutOperatorResponse>,
+)> {
     let token = extract_cookie(&headers, state.dashboard.cookie_name());
+    // Fail closed: if the shared session store cannot revoke (e.g. Postgres is
+    // unavailable), surface the error so the caller can retry instead of being
+    // told a logout succeeded that did not take effect fleet-wide.
     state
         .dashboard
         .logout(token.as_deref(), state.clock.now())
-        .await;
+        .await?;
 
-    (
+    Ok((
         StatusCode::OK,
         [(header::SET_COOKIE, state.dashboard.clear_cookie_header())],
         Json(LogoutOperatorResponse { success: true }),
-    )
+    ))
 }
 
 /// Paginated list of accounts visible to the operator. Requires the
@@ -589,9 +599,9 @@ mod tests {
             created_at: "2026-05-11T00:00:00Z".to_string(),
             updated_at: "2026-05-11T00:00:00Z".to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         };
         state
             .metadata
@@ -1127,9 +1137,9 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: updated_at.to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 
@@ -1275,11 +1285,11 @@ mod tests {
                 "expected stable code on {path}",
             );
             assert_eq!(
-                body["missing_permissions"],
+                body["meta"]["missing_permissions"],
                 serde_json::json!(["dashboard:read"]),
                 "expected missing_permissions on {path}",
             );
-            assert_eq!(body["retryable"], serde_json::Value::Bool(false));
+            assert_eq!(body["meta"]["retryable"], serde_json::Value::Bool(false));
         }
     }
 
@@ -1433,7 +1443,7 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
             assert_eq!(
-                body["missing_permissions"],
+                body["meta"]["missing_permissions"],
                 serde_json::json!(["accounts:pause"])
             );
 
@@ -1912,7 +1922,7 @@ mod tests {
         let body: serde_json::Value = read_json(response).await;
         assert_eq!(body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
         assert_eq!(
-            body["missing_permissions"],
+            body["meta"]["missing_permissions"],
             serde_json::json!(["accounts:pause"])
         );
     }

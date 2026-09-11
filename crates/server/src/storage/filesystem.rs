@@ -3,7 +3,7 @@ use crate::state_object::StateObject;
 use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
+    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
     GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalRecord, StorageType,
 };
 use crate::utils::normalize_commitment_hex;
@@ -16,6 +16,13 @@ use tokio::io::AsyncWriteExt;
 
 pub struct FilesystemService {
     app_path: PathBuf,
+    /// Serializes delta-status writes against the conditional candidate
+    /// delete (issue #319): the filesystem has no transactions, so
+    /// `delete_delta_if_candidate`'s read-check-delete and the status
+    /// writes it races (`submit_delta`, `update_delta_status`) take this
+    /// lock. The backend is single-process, so an in-process mutex is
+    /// sufficient.
+    delta_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl FilesystemService {
@@ -26,7 +33,10 @@ impl FilesystemService {
             .await
             .map_err(|e| format!("Failed to create app directory: {e}"))?;
 
-        Ok(Self { app_path })
+        Ok(Self {
+            app_path,
+            delta_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        })
     }
 
     /// Atomically write a file
@@ -404,12 +414,8 @@ impl StorageBackend for FilesystemService {
     }
 
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String> {
-        let content = serde_json::to_string_pretty(delta)
-            .map_err(|e| format!("Failed to serialize delta: {e}"))?;
-
-        let app_path = self.get_delta_path(&delta.account_id, delta.nonce);
-
-        self.write(&app_path, &content).await
+        let _guard = self.delta_write_lock.lock().await;
+        self.write_delta_holding_lock(delta).await
     }
 
     async fn pull_state(&self, account_id: &str) -> Result<StateObject, String> {
@@ -501,6 +507,131 @@ impl StorageBackend for FilesystemService {
 
         deltas.sort_by_key(|delta| delta.nonce);
         Ok(deltas)
+    }
+
+    /// Filtered read only in what it returns: the filesystem layout has
+    /// no status index, so every delta file is still opened and decoded.
+    /// Acceptable for the single-process backend; the store-side win
+    /// belongs to Postgres.
+    async fn pull_candidate_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        let deltas_filenames = self.list_delta_filenames(account_id).await?;
+        let mut deltas = Vec::new();
+
+        for filename in deltas_filenames {
+            if let Some(nonce_str) = filename.strip_suffix(".json")
+                && let Ok(nonce) = nonce_str.parse::<u64>()
+            {
+                let delta = self.pull_delta(account_id, nonce).await?;
+                if delta.status.is_candidate() {
+                    deltas.push(delta);
+                }
+            }
+        }
+
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
+    }
+
+    /// Every page pull fans out over every account and decodes every
+    /// candidate delta before `limit` is applied — the filesystem layout
+    /// has no status index. Acceptable for the single-process dev
+    /// backend this store is; deployments large enough to care about
+    /// fast-promotion cost belong on Postgres.
+    async fn pull_recent_candidate_deltas(
+        &self,
+        since: DateTime<Utc>,
+        cursor: Option<&crate::storage::RecentCandidateCursor>,
+        limit: u32,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let mut deltas = Vec::new();
+        for account_id in self.fanout_account_ids().await? {
+            for delta in self.pull_candidate_deltas(&account_id).await? {
+                if let Some(at) =
+                    parse_status_timestamp(delta.status.timestamp()).filter(|at| *at > since)
+                {
+                    deltas.push((at, delta));
+                }
+            }
+        }
+        deltas.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.account_id.cmp(&right.1.account_id))
+                .then_with(|| left.1.nonce.cmp(&right.1.nonce))
+        });
+        if let Some(cursor) = cursor {
+            deltas.retain(|(at, delta)| {
+                (*at, delta.account_id.as_str(), delta.nonce)
+                    > (
+                        cursor.last_status_timestamp,
+                        cursor.last_account_id.as_str(),
+                        cursor.last_nonce,
+                    )
+            });
+        }
+        deltas.truncate(limit as usize);
+        Ok(deltas.into_iter().map(|(_, delta)| delta).collect())
+    }
+
+    /// Opens and decodes every delta file for the account — the
+    /// filesystem layout has no status index. Acceptable for the
+    /// single-process dev backend this store is; the indexed scan
+    /// belongs to Postgres.
+    async fn pull_recoverable_deltas(
+        &self,
+        account_id: &str,
+        abandoned_since: DateTime<Utc>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let deltas_filenames = self.list_delta_filenames(account_id).await?;
+        let mut deltas = Vec::new();
+
+        for filename in deltas_filenames {
+            if let Some(nonce_str) = filename.strip_suffix(".json")
+                && let Ok(nonce) = nonce_str.parse::<u64>()
+            {
+                let delta = self.pull_delta(account_id, nonce).await?;
+                if crate::storage::is_recoverable(&delta.status, abandoned_since) {
+                    deltas.push(delta);
+                }
+            }
+        }
+
+        deltas.sort_by_key(|delta| delta.nonce);
+        Ok(deltas)
+    }
+
+    /// Every reconcile tick fans out over every account and reads every
+    /// delta file before filtering — the filesystem layout has no status
+    /// index (the same caveat as `pull_recent_candidate_deltas`).
+    /// Acceptable for the single-process dev backend; deployments large
+    /// enough to care belong on Postgres.
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        abandoned_since: DateTime<Utc>,
+    ) -> Result<Vec<String>, String> {
+        let account_ids = self.fanout_account_ids().await?;
+        let mut with_recoverable = Vec::new();
+        for account_id in account_ids {
+            // Per-account tolerance: one unreadable delta file must not
+            // silently disable reconciliation (and TTL expiry) for every
+            // other account in the store.
+            match self
+                .pull_recoverable_deltas(&account_id, abandoned_since)
+                .await
+            {
+                Ok(recoverable) if !recoverable.is_empty() => with_recoverable.push(account_id),
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        account_id = %account_id,
+                        error = %e,
+                        "Skipping account in recoverable-delta scan; \
+                         its rows wait until the read heals"
+                    );
+                }
+            }
+        }
+        Ok(with_recoverable)
     }
 
     // Delta proposal methods - stored separately from executed deltas
@@ -612,6 +743,47 @@ impl StorageBackend for FilesystemService {
         Ok(())
     }
 
+    async fn request_candidate_abandon(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+    ) -> Result<AbandonIntent, String> {
+        let path = self.get_delta_path(account_id, nonce);
+
+        // Read-check-write under the delta write lock: status writes
+        // (`submit_delta`, `update_delta_status`) take the same lock, so
+        // the intent annotation can neither clobber a concurrent status
+        // transition nor lose worker-owned counters.
+        let _guard = self.delta_write_lock.lock().await;
+
+        let content = match fs::read_to_string(&path).await {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(AbandonIntent::NotCandidate);
+            }
+            Err(e) => return Err(format!("Failed to read delta file: {e}")),
+        };
+        let mut delta: DeltaObject = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to deserialize delta: {e}"))?;
+
+        if !delta.status.is_candidate() {
+            return Ok(AbandonIntent::NotCandidate);
+        }
+        if let Some(requested_at) = delta.status.abandon_requested_at() {
+            return Ok(AbandonIntent::AlreadyRequested {
+                requested_at: requested_at.to_string(),
+            });
+        }
+
+        delta.status = delta.status.with_abandon_requested(now.to_string());
+        let updated = serde_json::to_string_pretty(&delta)
+            .map_err(|e| format!("Failed to serialize delta: {e}"))?;
+        self.write(&path, &updated).await?;
+
+        Ok(AbandonIntent::Recorded)
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,
@@ -620,6 +792,7 @@ impl StorageBackend for FilesystemService {
     ) -> Result<(), String> {
         let path = self.get_delta_path(account_id, nonce);
 
+        let _guard = self.delta_write_lock.lock().await;
         let content = fs::read_to_string(&path)
             .await
             .map_err(|e| format!("Failed to read delta file: {e}"))?;
@@ -633,6 +806,169 @@ impl StorageBackend for FilesystemService {
             .map_err(|e| format!("Failed to serialize delta: {e}"))?;
 
         self.write(&path, &updated_content).await
+    }
+
+    // Canonicalization lifecycle writes: the filesystem backend is
+    // single-process by construction (no shared coordination store), so
+    // no fence applies. It is NOT single-task, though: API handlers and
+    // the canonicalization worker interleave as tokio tasks in the same
+    // process, and retained/abandoned rows (issue #345) are precisely
+    // the rows a client submission may supersede while the worker
+    // reconciles or expires them. Every read-check-act sequence below
+    // therefore holds `delta_write_lock` end to end — the single-process
+    // equivalent of the Postgres account-locked transaction — so a kind
+    // guard checked by one task can never be invalidated by another
+    // before its write lands.
+
+    async fn submit_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        delta: &DeltaObject,
+        now: &str,
+    ) -> Result<crate::storage::CandidateSubmission, String> {
+        let _guard = self.delta_write_lock.lock().await;
+
+        // Race-proof twin of the service-layer admission gate, mirroring
+        // the Postgres transaction: two submissions that both passed the
+        // pre-commit validation serialize on this lock, and the loser is
+        // rejected here rather than overwriting the winner.
+        let current_state = self.pull_state(&delta.account_id).await?;
+        if current_state.commitment != delta.prev_commitment {
+            return Ok(crate::storage::CandidateSubmission::CommitmentMismatch {
+                expected: current_state.commitment,
+            });
+        }
+        if self.has_pending_candidate(&delta.account_id).await? {
+            return Ok(crate::storage::CandidateSubmission::Conflict);
+        }
+
+        match self.pull_delta(&delta.account_id, delta.nonce).await {
+            // A retained row (issue #345) or client-abandoned discard
+            // (issue #319) at this nonce is a recovery/history artifact,
+            // never settled canonical history: the client re-supplying
+            // its intent for the slot supersedes it.
+            Ok(existing)
+                if existing.status.is_retained() || existing.status.is_client_abandoned() =>
+            {
+                self.delete_delta(&delta.account_id, delta.nonce).await?;
+                tracing::info!(
+                    event = "reconcile_superseded",
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    "Recoverable row superseded by a new candidate at its nonce"
+                );
+            }
+            // Any other row at this nonce is settled history and must
+            // never be overwritten by a delayed submission (the
+            // filesystem twin of Postgres's ON CONFLICT DO NOTHING).
+            Ok(_) => return Ok(crate::storage::CandidateSubmission::Conflict),
+            Err(e) if crate::storage::is_storage_not_found(&e) => {}
+            Err(e) => return Err(e),
+        }
+
+        self.write_delta_holding_lock(delta).await?;
+        metadata
+            .set_has_pending_candidate(&delta.account_id, true, now)
+            .await?;
+        Ok(crate::storage::CandidateSubmission::Submitted)
+    }
+
+    async fn promote_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        promotion: crate::storage::CandidatePromotion,
+    ) -> Result<crate::storage::PromoteWrite, String> {
+        let _guard = self.delta_write_lock.lock().await;
+
+        // Source-kind gate under the lock: a superseded row cannot be
+        // stamped canonical, and a promoted row cannot be superseded
+        // mid-promotion.
+        if let Ok(existing) = self
+            .pull_delta(&promotion.state.account_id, promotion.delta.nonce)
+            .await
+            && !promotion.source.matches(&existing.status)
+        {
+            return Ok(crate::storage::PromoteWrite::NotCandidate);
+        }
+
+        let current_state = self.pull_state(&promotion.state.account_id).await?;
+        if current_state.commitment != promotion.delta.prev_commitment {
+            return Ok(crate::storage::PromoteWrite::StaleBase);
+        }
+        self.submit_state(&promotion.state).await?;
+        if let Some(new_auth) = promotion.new_auth {
+            metadata
+                .update_auth(&promotion.state.account_id, new_auth, &promotion.now)
+                .await?;
+        }
+        self.write_delta_holding_lock(&promotion.delta).await?;
+        metadata
+            .clear_pending_candidate_if_none(&promotion.state.account_id, &promotion.now)
+            .await?;
+        Ok(crate::storage::PromoteWrite::Applied)
+    }
+
+    async fn discard_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        account_id: &str,
+        nonce: u64,
+        kind: DeltaStatusKind,
+        now: &str,
+        _fence: Option<&crate::storage::LeaseFence>,
+    ) -> Result<crate::storage::CanonicalWrite, String> {
+        // The sequential helper only calls lock-free primitives
+        // (`pull_delta`, `delete_delta`, metadata flag ops), so holding
+        // the guard across it is deadlock-free.
+        let _guard = self.delta_write_lock.lock().await;
+        crate::storage::discard_candidate_sequential(self, metadata, account_id, nonce, kind, now)
+            .await
+    }
+
+    async fn update_candidate_status(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        status: DeltaStatus,
+        _fence: Option<&crate::storage::LeaseFence>,
+    ) -> Result<crate::storage::CanonicalWrite, String> {
+        let path = self.get_delta_path(account_id, nonce);
+
+        // Read-modify-write under the delta write lock (the same lock
+        // `request_candidate_abandon` takes): the new status is computed
+        // from the worker's tick-start snapshot, so a concurrently
+        // recorded abandon request must be carried into the overwrite.
+        let _guard = self.delta_write_lock.lock().await;
+
+        let content = match fs::read_to_string(&path).await {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(crate::storage::CanonicalWrite::NotCandidate);
+            }
+            Err(e) => return Err(format!("Failed to read delta file: {e}")),
+        };
+        let mut delta: DeltaObject = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to deserialize delta: {e}"))?;
+
+        if !delta.status.is_candidate() {
+            return Ok(crate::storage::CanonicalWrite::NotCandidate);
+        }
+
+        // A concurrently recorded abandon intent must not be wiped into
+        // a retained status, which has no field to carry it: refuse the
+        // flip — the next worker tick sees the intent in its snapshot
+        // and resolves the abandon instead.
+        if status.is_retained() && delta.status.abandon_requested_at().is_some() {
+            return Ok(crate::storage::CanonicalWrite::NotCandidate);
+        }
+
+        delta.status =
+            status.with_abandon_request_preserved_from(delta.status.abandon_requested_at());
+        let updated = serde_json::to_string_pretty(&delta)
+            .map_err(|e| format!("Failed to serialize delta: {e}"))?;
+        self.write(&path, &updated).await?;
+
+        Ok(crate::storage::CanonicalWrite::Applied)
     }
 
     // ----------------------------------------------------------------------
@@ -660,7 +996,26 @@ impl StorageBackend for FilesystemService {
             .filter(|d| !matches!(d.status, DeltaStatus::Pending { .. }))
             .filter(|d| cutoff.is_none_or(|cutoff_nonce| d.nonce < cutoff_nonce))
             .collect();
-        deltas.sort_by(|a, b| b.nonce.cmp(&a.nonce));
+        deltas.sort_by_key(|delta| std::cmp::Reverse(delta.nonce));
+        deltas.truncate(limit as usize);
+        Ok(deltas)
+    }
+
+    async fn list_canonical_deltas_paged(
+        &self,
+        account_id: &str,
+        limit: u32,
+        cursor: Option<AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        let cutoff = cursor.map(|c| c.last_nonce as u64);
+        let mut deltas: Vec<DeltaObject> = self
+            .pull_deltas_after(account_id, 0)
+            .await?
+            .into_iter()
+            .filter(|d| d.status.is_canonical())
+            .filter(|d| cutoff.is_none_or(|cutoff_nonce| d.nonce < cutoff_nonce))
+            .collect();
+        deltas.sort_by_key(|d| std::cmp::Reverse(d.nonce));
         deltas.truncate(limit as usize);
         Ok(deltas)
     }
@@ -726,9 +1081,7 @@ impl StorageBackend for FilesystemService {
             for delta in deltas {
                 let kind = match &delta.status {
                     DeltaStatus::Pending { .. } => continue,
-                    DeltaStatus::Candidate { .. } => DeltaStatusKind::Candidate,
-                    DeltaStatus::Canonical { .. } => DeltaStatusKind::Canonical,
-                    DeltaStatus::Discarded { .. } => DeltaStatusKind::Discarded,
+                    status => DeltaStatusKind::of(status),
                 };
                 if let Some(allowed) = &status_filter
                     && !allowed.contains(&kind)
@@ -850,6 +1203,7 @@ impl StorageBackend for FilesystemService {
                 match delta.status {
                     DeltaStatus::Candidate { .. } => counts.candidate += 1,
                     DeltaStatus::Canonical { .. } => counts.canonical += 1,
+                    DeltaStatus::Retained { .. } => counts.retained += 1,
                     DeltaStatus::Discarded { .. } => counts.discarded += 1,
                     DeltaStatus::Pending { .. } => {}
                 }
@@ -901,6 +1255,18 @@ impl StorageBackend for FilesystemService {
 /// fan-out methods. Used by the dashboard global feed and aggregate
 /// implementations.
 impl FilesystemService {
+    /// Serialize and write a delta row WITHOUT taking `delta_write_lock`.
+    /// Callers must already hold the lock — this exists so the lifecycle
+    /// writes (`submit_candidate`, `promote_candidate`) can compose the
+    /// row write into a larger guarded read-check-act sequence without
+    /// deadlocking on the non-reentrant mutex.
+    async fn write_delta_holding_lock(&self, delta: &DeltaObject) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(delta)
+            .map_err(|e| format!("Failed to serialize delta: {e}"))?;
+        let app_path = self.get_delta_path(&delta.account_id, delta.nonce);
+        self.write(&app_path, &content).await
+    }
+
     async fn fanout_account_ids(&self) -> Result<Vec<String>, String> {
         if !self.app_path.exists() {
             return Ok(Vec::new());
@@ -981,6 +1347,7 @@ mod tests {
     use super::*;
     use crate::delta_object::{DeltaObject, DeltaStatus};
     use crate::state_object::StateObject;
+    use chrono::TimeZone;
     use std::env;
 
     fn create_test_delta(account_id: &str, nonce: u64) -> DeltaObject {
@@ -1009,6 +1376,548 @@ mod tests {
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             auth_scheme: String::new(),
         }
+    }
+
+    /// Seeds the account metadata and a state whose commitment matches
+    /// `create_test_delta`'s `prev_commitment`, so candidate submissions
+    /// pass the in-lock admission gate.
+    async fn seed_account(
+        storage: &FilesystemService,
+        metadata_store: &crate::metadata::filesystem::FilesystemMetadataStore,
+        account_id: &str,
+    ) {
+        crate::metadata::MetadataStore::set(
+            metadata_store,
+            crate::metadata::AccountMetadata {
+                account_id: account_id.to_string(),
+                auth: crate::metadata::auth::Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                created_at: "2024-11-14T12:00:00Z".to_string(),
+                updated_at: "2024-11-14T12:00:00Z".to_string(),
+                has_pending_candidate: false,
+                paused_at: None,
+                paused_reason: None,
+                released_at: None,
+            },
+        )
+        .await
+        .expect("metadata seed");
+
+        let mut state = create_test_state(account_id);
+        state.commitment = "0x123".to_string();
+        storage.submit_state(&state).await.expect("state seed");
+    }
+
+    #[tokio::test]
+    async fn test_pull_recoverable_deltas_filters_and_orders() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let canonical = create_test_delta(account_id, 1);
+        let mut retained_late = create_test_delta(account_id, 3);
+        retained_late.status = DeltaStatus::retained(
+            "2024-11-14T12:00:00Z".to_string(),
+            crate::delta_object::RetainReason::RetryExhausted,
+        );
+        let mut retained_early = create_test_delta(account_id, 2);
+        retained_early.status = DeltaStatus::retained(
+            "2024-11-14T12:00:00Z".to_string(),
+            crate::delta_object::RetainReason::Diverged,
+        );
+        // A recent client-abandoned discard is in scope (the issue #319
+        // late-landing net); one past the cutoff is not.
+        let mut abandoned_recent = create_test_delta(account_id, 4);
+        abandoned_recent.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-14T11:30:00Z".to_string());
+        let mut abandoned_old = create_test_delta(account_id, 5);
+        abandoned_old.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-10T00:00:00Z".to_string());
+        for delta in [
+            &canonical,
+            &retained_late,
+            &retained_early,
+            &abandoned_recent,
+            &abandoned_old,
+        ] {
+            storage.submit_delta(delta).await.expect("submit works");
+        }
+
+        let cutoff = chrono::DateTime::parse_from_rfc3339("2024-11-13T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let recoverable = storage
+            .pull_recoverable_deltas(account_id, cutoff)
+            .await
+            .expect("recoverable read works");
+        assert_eq!(
+            recoverable.iter().map(|d| d.nonce).collect::<Vec<_>>(),
+            vec![2, 3, 4],
+            "all retained rows plus only the recent abandoned discard"
+        );
+
+        let accounts = storage
+            .list_accounts_with_recoverable_deltas(cutoff)
+            .await
+            .expect("account scan works");
+        assert_eq!(accounts, vec![account_id.to_string()]);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_discard_kind_guard_spares_other_lifecycles() {
+        // The expected-kind guard: a candidate-kind discard must never
+        // delete a retained row and vice versa — a stale worker's delayed
+        // discard cannot remove a row that moved on.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut retained = create_test_delta(account_id, 1);
+        retained.status = DeltaStatus::retained(
+            "2024-11-14T12:00:00Z".to_string(),
+            crate::delta_object::RetainReason::RetryExhausted,
+        );
+        storage.submit_delta(&retained).await.expect("submit works");
+
+        let outcome = storage
+            .discard_candidate(
+                &metadata_store,
+                account_id,
+                1,
+                DeltaStatusKind::Candidate,
+                "2024-11-14T12:05:00Z",
+                None,
+            )
+            .await
+            .expect("discard resolves");
+        assert_eq!(outcome, crate::storage::CanonicalWrite::NotCandidate);
+        assert!(
+            storage.pull_delta(account_id, 1).await.is_ok(),
+            "a candidate-kind discard spares the retained row"
+        );
+
+        let outcome = storage
+            .discard_candidate(
+                &metadata_store,
+                account_id,
+                1,
+                DeltaStatusKind::Retained,
+                "2024-11-14T12:06:00Z",
+                None,
+            )
+            .await
+            .expect("discard resolves");
+        assert_eq!(outcome, crate::storage::CanonicalWrite::Applied);
+        assert!(
+            storage.pull_delta(account_id, 1).await.is_err(),
+            "a retained-kind discard removes the retained row"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_submit_candidate_supersedes_retained_row() {
+        // A fresh candidate at a retained row's nonce replaces it: the
+        // client re-supplied its intent for that slot, and the reconcile
+        // pass must never resurrect a base under the new candidate.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        seed_account(&storage, &metadata_store, account_id).await;
+
+        let mut retained = create_test_delta(account_id, 1);
+        retained.status = DeltaStatus::retained(
+            "2024-11-14T12:00:00Z".to_string(),
+            crate::delta_object::RetainReason::Diverged,
+        );
+        storage.submit_delta(&retained).await.expect("submit works");
+
+        let mut candidate = create_test_delta(account_id, 1);
+        candidate.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        let submission = storage
+            .submit_candidate(&metadata_store, &candidate, "2024-11-14T12:10:00Z")
+            .await
+            .expect("submission resolves");
+        assert_eq!(submission, crate::storage::CandidateSubmission::Submitted);
+
+        let stored = storage
+            .pull_delta(account_id, 1)
+            .await
+            .expect("row survives");
+        assert!(stored.status.is_candidate(), "the candidate replaced it");
+
+        // Clear the slot before part two: the in-lock pending-candidate
+        // gate (correctly) refuses a second candidate while one exists.
+        storage
+            .discard_candidate(
+                &metadata_store,
+                account_id,
+                1,
+                DeltaStatusKind::Candidate,
+                "2024-11-14T12:15:00Z",
+                None,
+            )
+            .await
+            .expect("discard resolves");
+
+        // A client-abandoned discard at a nonce must be superseded too:
+        // it is precisely the resubmission the abandon endpoint (issue
+        // #319) exists to enable, and the nonce's unique constraint must
+        // not refuse it.
+        let mut abandoned = create_test_delta(account_id, 2);
+        abandoned.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-14T12:20:00Z".to_string());
+        storage
+            .submit_delta(&abandoned)
+            .await
+            .expect("submit works");
+
+        let mut rebuilt = create_test_delta(account_id, 2);
+        rebuilt.status = DeltaStatus::candidate("2024-11-14T12:30:00Z".to_string());
+        let submission = storage
+            .submit_candidate(&metadata_store, &rebuilt, "2024-11-14T12:30:00Z")
+            .await
+            .expect("submission resolves");
+        assert_eq!(submission, crate::storage::CandidateSubmission::Submitted);
+        let stored = storage
+            .pull_delta(account_id, 2)
+            .await
+            .expect("row survives");
+        assert!(
+            stored.status.is_candidate(),
+            "the rebuilt candidate replaced the abandoned discard"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_same_nonce_submissions_admit_exactly_one() {
+        // Two submissions that both passed the service-layer validation
+        // race into the store; the in-lock recheck must admit exactly one
+        // and refuse the other instead of silently overwriting it.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        seed_account(&storage, &metadata_store, account_id).await;
+
+        let mut first = create_test_delta(account_id, 1);
+        first.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        first.new_commitment = Some("0xaaa".to_string());
+        let mut second = create_test_delta(account_id, 1);
+        second.status = DeltaStatus::candidate("2024-11-14T12:10:01Z".to_string());
+        second.new_commitment = Some("0xbbb".to_string());
+
+        let (left, right) = tokio::join!(
+            storage.submit_candidate(&metadata_store, &first, "2024-11-14T12:10:00Z"),
+            storage.submit_candidate(&metadata_store, &second, "2024-11-14T12:10:01Z"),
+        );
+        let outcomes = [left.expect("resolves"), right.expect("resolves")];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == crate::storage::CandidateSubmission::Submitted)
+                .count(),
+            1,
+            "exactly one submission wins: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == crate::storage::CandidateSubmission::Conflict)
+                .count(),
+            1,
+            "the loser is refused, not overwritten: {outcomes:?}"
+        );
+
+        // The stored row is the winner's, untouched by the loser.
+        let stored = storage.pull_delta(account_id, 1).await.expect("row exists");
+        let winner_was_first = outcomes[0] == crate::storage::CandidateSubmission::Submitted;
+        let expected = if winner_was_first { "0xaaa" } else { "0xbbb" };
+        assert_eq!(stored.new_commitment.as_deref(), Some(expected));
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_different_nonce_submissions_admit_exactly_one() {
+        // The one-candidate-per-account invariant must hold across
+        // nonces too: the loser hits the in-lock pending-candidate
+        // recheck even though its nonce slot is free.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        seed_account(&storage, &metadata_store, account_id).await;
+
+        let mut first = create_test_delta(account_id, 1);
+        first.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        let mut second = create_test_delta(account_id, 2);
+        second.status = DeltaStatus::candidate("2024-11-14T12:10:01Z".to_string());
+
+        let (left, right) = tokio::join!(
+            storage.submit_candidate(&metadata_store, &first, "2024-11-14T12:10:00Z"),
+            storage.submit_candidate(&metadata_store, &second, "2024-11-14T12:10:01Z"),
+        );
+        let outcomes = [left.expect("resolves"), right.expect("resolves")];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == crate::storage::CandidateSubmission::Submitted)
+                .count(),
+            1,
+            "exactly one candidate is admitted: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == crate::storage::CandidateSubmission::Conflict)
+                .count(),
+            1,
+            "the second candidate conflicts on the account: {outcomes:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_submit_candidate_rechecks_commitment_and_settled_rows() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        seed_account(&storage, &metadata_store, account_id).await;
+
+        // The account state advanced after service-layer validation:
+        // the in-lock recheck reports the current commitment.
+        let mut stale = create_test_delta(account_id, 1);
+        stale.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        stale.prev_commitment = "0xstale".to_string();
+        let submission = storage
+            .submit_candidate(&metadata_store, &stale, "2024-11-14T12:10:00Z")
+            .await
+            .expect("submission resolves");
+        assert_eq!(
+            submission,
+            crate::storage::CandidateSubmission::CommitmentMismatch {
+                expected: "0x123".to_string()
+            }
+        );
+
+        // A settled (canonical) row at the nonce is history: never
+        // overwritten by a delayed submission.
+        let canonical = create_test_delta(account_id, 1);
+        storage
+            .submit_delta(&canonical)
+            .await
+            .expect("submit works");
+        let mut late = create_test_delta(account_id, 1);
+        late.status = DeltaStatus::candidate("2024-11-14T12:20:00Z".to_string());
+        let submission = storage
+            .submit_candidate(&metadata_store, &late, "2024-11-14T12:20:00Z")
+            .await
+            .expect("submission resolves");
+        assert_eq!(submission, crate::storage::CandidateSubmission::Conflict);
+        let stored = storage.pull_delta(account_id, 1).await.expect("row exists");
+        assert!(
+            stored.status.is_canonical(),
+            "the settled row survives the delayed submission"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_request_candidate_abandon_records_intent() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        let intent = storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .await
+            .expect("intent recording works");
+        assert_eq!(intent, AbandonIntent::Recorded);
+
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert!(stored.status.is_candidate(), "status must stay candidate");
+        assert_eq!(
+            stored.status.abandon_requested_at(),
+            Some("2024-11-14T12:05:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_candidate_abandon_is_idempotent() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .await
+            .expect("first request works");
+        let retry = storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:09:00Z")
+            .await
+            .expect("retry works");
+        assert_eq!(
+            retry,
+            AbandonIntent::AlreadyRequested {
+                requested_at: "2024-11-14T12:05:00Z".to_string()
+            },
+            "retries must preserve the original request timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_candidate_abandon_spares_non_candidates() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        // create_test_delta is canonical by default.
+        let delta = create_test_delta(account_id, 1);
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        let intent = storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .await
+            .expect("call works");
+        assert_eq!(intent, AbandonIntent::NotCandidate);
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert!(stored.status.is_canonical(), "canonical delta untouched");
+    }
+
+    #[tokio::test]
+    async fn test_stale_counter_write_preserves_concurrent_abandon_intent() {
+        // The clobber race: the worker computes a counter write from its
+        // tick-start snapshot (no intent), a client records the intent in
+        // between, then the worker's write lands. The stored intent must
+        // survive.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        // Worker snapshot taken here (no intent yet).
+        let stale_counter_write = delta.status.with_incremented_divergence();
+
+        // Client records the intent.
+        storage
+            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .await
+            .expect("intent recording works");
+
+        // Worker's stale write lands.
+        let outcome = storage
+            .update_candidate_status(account_id, 1, stale_counter_write, None)
+            .await
+            .expect("status update works");
+        assert_eq!(outcome, crate::storage::CanonicalWrite::Applied);
+
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert_eq!(
+            stored.status.abandon_requested_at(),
+            Some("2024-11-14T12:05:00Z"),
+            "the concurrently recorded intent must survive the counter write"
+        );
+        assert_eq!(stored.status.divergence_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_candidate_status_spares_non_candidates() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        // create_test_delta is canonical by default.
+        let delta = create_test_delta(account_id, 1);
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        let outcome = storage
+            .update_candidate_status(
+                account_id,
+                1,
+                DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string()),
+                None,
+            )
+            .await
+            .expect("call works");
+        assert_eq!(outcome, crate::storage::CanonicalWrite::NotCandidate);
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert!(stored.status.is_canonical(), "canonical delta untouched");
+    }
+
+    #[tokio::test]
+    async fn test_request_candidate_abandon_missing_is_not_candidate() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let intent = storage
+            .request_candidate_abandon("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1, "now")
+            .await
+            .expect("call works");
+        assert_eq!(intent, AbandonIntent::NotCandidate);
     }
 
     #[tokio::test]
@@ -1102,6 +2011,103 @@ mod tests {
         assert_eq!(deltas[3].nonce, 5);
 
         // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_pull_candidate_deltas_filters_and_orders() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+
+        // Mixed history: canonical at 1 and 3, candidates at 4 and 2
+        // (submitted out of nonce order).
+        for nonce in [1u64, 3] {
+            storage
+                .submit_delta(&create_test_delta(account_id, nonce))
+                .await
+                .expect("Submit delta failed");
+        }
+        for nonce in [4u64, 2] {
+            let mut delta = create_test_delta(account_id, nonce);
+            delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+            storage
+                .submit_delta(&delta)
+                .await
+                .expect("Submit delta failed");
+        }
+
+        let candidates = storage
+            .pull_candidate_deltas(account_id)
+            .await
+            .expect("Pull candidate deltas failed");
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].nonce, 2);
+        assert_eq!(candidates[1].nonce, 4);
+        assert!(candidates.iter().all(|d| d.status.is_candidate()));
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_pull_recent_candidate_deltas_filters_across_accounts() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let cutoff = Utc.with_ymd_and_hms(2024, 11, 14, 12, 0, 0).unwrap();
+
+        for (account_id, nonce, timestamp) in [
+            ("account-b", 3, "2024-11-14T12:00:01Z"),
+            ("account-a", 2, "2024-11-14T12:00:30Z"),
+            ("account-a", 1, "2024-11-14T12:00:00Z"),
+            ("account-c", 4, "2024-11-14T11:59:59Z"),
+        ] {
+            let mut delta = create_test_delta(account_id, nonce);
+            delta.status = DeltaStatus::candidate(timestamp.to_string());
+            storage
+                .submit_delta(&delta)
+                .await
+                .expect("Submit delta failed");
+        }
+
+        let candidates = storage
+            .pull_recent_candidate_deltas(cutoff, None, 10)
+            .await
+            .expect("Pull recent candidate deltas failed");
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|delta| (delta.account_id.as_str(), delta.nonce))
+                .collect::<Vec<_>>(),
+            vec![("account-b", 3), ("account-a", 2)]
+        );
+
+        let limited = storage
+            .pull_recent_candidate_deltas(cutoff, None, 1)
+            .await
+            .expect("Pull bounded recent candidate deltas failed");
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].account_id, "account-b");
+
+        let cursor = crate::storage::RecentCandidateCursor {
+            last_status_timestamp: Utc.with_ymd_and_hms(2024, 11, 14, 12, 0, 1).unwrap(),
+            last_account_id: "account-b".to_string(),
+            last_nonce: 3,
+        };
+        let next_page = storage
+            .pull_recent_candidate_deltas(cutoff, Some(&cursor), 10)
+            .await
+            .expect("Pull next recent candidate page failed");
+        assert_eq!(next_page.len(), 1);
+        assert_eq!(next_page[0].account_id, "account-a");
+
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 

@@ -18,6 +18,7 @@ export type { OperatorPermission } from './permissions.js';
 
 export type {
   AccountPausedErrorDetails,
+  AccountReleasedErrorDetails,
   AccountStatus,
   DashboardAccountDetail,
   DashboardAccountResponse,
@@ -41,6 +42,7 @@ export type {
   DeltaAssetKind,
   DeltaCounterpartyDirection,
   DashboardErrorCode,
+  DashboardErrorCodeOrRaw,
   DashboardGlobalDeltaEntry,
   DashboardGlobalDeltaStatusFilter,
   DashboardGlobalProposalEntry,

@@ -1,4 +1,5 @@
 use crate::cleanup_manifest::CleanupAccountRecord;
+use crate::model::CanonicalizationSample;
 use crate::report::{LatencyReport, OperationReport};
 use anyhow::{Result, anyhow, bail};
 use base64::Engine;
@@ -48,6 +49,7 @@ pub struct WorkerArtifact {
     pub measurement_seconds: f64,
     pub operations: Vec<OperationReport>,
     pub cleanup_accounts: Vec<CleanupAccountRecord>,
+    pub canonicalization_samples: Vec<CanonicalizationSample>,
 }
 
 impl WorkerArtifact {

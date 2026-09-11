@@ -7,8 +7,7 @@ use std::collections::HashSet;
 
 use base64::Engine;
 use guardian_client::{
-    AuthConfig, ClientError as GuardianClientError, MidenEcdsaAuth, MidenFalconRpoAuth,
-    TryIntoTxSummary, auth_config::AuthType,
+    AuthConfig, MidenEcdsaAuth, MidenFalconRpoAuth, TryIntoTxSummary, auth_config::AuthType,
 };
 use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
@@ -45,6 +44,10 @@ impl MultisigClient {
 
     /// Creates a new multisig account.
     ///
+    /// On a fee-charging network, fund the new account with the native fee asset before creating
+    /// regular proposals. A `consume_notes` proposal can consume the funding note and pay its own
+    /// fee.
+    ///
     /// # Arguments
     /// * `threshold` - Minimum number of signatures required (default threshold)
     /// * `signer_commitments` - Public key commitments of all signers
@@ -60,6 +63,10 @@ impl MultisigClient {
     }
 
     /// Creates a new multisig account with per-procedure threshold overrides.
+    ///
+    /// On a fee-charging network, fund the new account with the native fee asset before creating
+    /// regular proposals. A `consume_notes` proposal can consume the funding note and pay its own
+    /// fee.
     ///
     /// # Arguments
     /// * `threshold` - Minimum number of signatures required (default threshold)
@@ -117,7 +124,7 @@ impl MultisigClient {
 
         // Generate a random seed for account ID
         let mut seed = [0u8; 32];
-        rand::Rng::fill(&mut rand::rng(), &mut seed);
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut seed);
 
         let account = MultisigGuardianBuilder::new(guardian_config)
             .with_seed(seed)
@@ -242,7 +249,7 @@ impl MultisigClient {
         self.miden_client
             .sync_state()
             .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to sync state: {:#?}", e)))?;
+            .map_err(|e| MultisigError::miden_client_with_context("failed to sync state", e))?;
         Ok(())
     }
 
@@ -254,7 +261,7 @@ impl MultisigClient {
                 .get_account(account_id)
                 .await
                 .map_err(|e| {
-                    MultisigError::MidenClient(format!("failed to get updated account: {}", e))
+                    MultisigError::miden_client_with_context("failed to get updated account", e)
                 })?
                 .ok_or_else(|| {
                     MultisigError::MissingConfig("account not found after sync".to_string())
@@ -393,10 +400,9 @@ impl MultisigClient {
             .await
         {
             Ok(resp) => resp,
-            Err(GuardianClientError::ServerError(msg)) if msg.contains("not found") => {
-                // No new deltas since current nonce - this is not an error
-                return Ok(());
-            }
+            // A not-found result means there are no new deltas since the current
+            // nonce — a normal sync outcome, not a failure.
+            Err(e) if e.is_not_found() => return Ok(()),
             Err(e) => {
                 return Err(MultisigError::GuardianServer(format!(
                     "failed to pull deltas from GUARDIAN: {}",
@@ -436,9 +442,8 @@ impl MultisigClient {
             })?
         } else {
             let mut acc: Account = account.into_inner();
-            acc.apply_delta(account_delta).map_err(|e| {
-                MultisigError::MidenClient(format!("failed to apply delta to account: {}", e))
-            })?;
+            guardian_shared::account_delta::apply_account_delta(&mut acc, account_delta)
+                .map_err(MultisigError::MidenClient)?;
             acc
         };
 
@@ -517,6 +522,11 @@ impl MultisigClient {
     }
 
     /// Changes the GUARDIAN endpoint and optionally registers the account on the new server.
+    ///
+    /// When repointing to a different GUARDIAN provider after a switch, call
+    /// [`MultisigClient::preserve_pre_switch_proposal_notes`] first — notes
+    /// embedded in pending proposals are only importable while the old
+    /// GUARDIAN is still the configured endpoint.
     ///
     /// # Arguments
     ///

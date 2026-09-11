@@ -27,8 +27,14 @@ Use `examples/operator-smoke-web` as the primary smoke surface for operator auth
    - `docs/PRODUCTION.md`
 2. Run the focused checks:
    ```bash
-   cd packages/guardian-operator-client && npm run typecheck && npm test && npm run build
-   cd examples/operator-smoke-web && npm run typecheck && npm run build
+   (
+     cd packages
+     npm ci
+     npm run typecheck -w @openzeppelin/guardian-operator-client
+     npm test -w @openzeppelin/guardian-operator-client
+     npm run build -w @openzeppelin/guardian-operator-client
+   )
+   (cd examples/operator-smoke-web && npm run typecheck && npm run build)
    cargo test -p guardian-server api::dashboard::tests
    cargo test -p guardian-server dashboard::tests
    ```

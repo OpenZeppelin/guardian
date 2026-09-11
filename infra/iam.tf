@@ -27,28 +27,44 @@ resource "aws_iam_role_policy" "ecs_task_execution_database_secret" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = concat(
-          [
-            aws_secretsmanager_secret.database_url.arn
-          ],
-          local.ca_bundle_enabled ? [
-            var.rds_ca_bundle_secret_arn
-          ] : [],
-          local.evm_allowed_chain_ids_secret_arn != "" ? [
-            local.evm_allowed_chain_ids_secret_arn
-          ] : [],
-          local.evm_rpc_urls_secret_arn != "" ? [
-            local.evm_rpc_urls_secret_arn
-          ] : []
-        )
-      }
-    ]
+    Statement = concat(
+      [
+        {
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:GetSecretValue"
+          ]
+          Resource = concat(
+            [
+              aws_secretsmanager_secret.database_url.arn
+            ],
+            local.ca_bundle_enabled ? [
+              var.rds_ca_bundle_secret_arn
+            ] : [],
+            local.evm_allowed_chain_ids_secret_arn != "" ? [
+              local.evm_allowed_chain_ids_secret_arn
+            ] : [],
+            local.evm_rpc_urls_secret_arn != "" ? [
+              local.evm_rpc_urls_secret_arn
+            ] : [],
+            local.is_prod ? [
+              data.aws_secretsmanager_secret.dashboard_cursor[0].arn
+            ] : []
+          )
+        }
+      ],
+      local.is_prod && data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id != "" ? [
+        {
+          Effect = "Allow"
+          Action = [
+            "kms:Decrypt"
+          ]
+          Resource = [
+            data.aws_kms_key.dashboard_cursor[0].arn
+          ]
+        }
+      ] : []
+    )
   })
 }
 
@@ -154,6 +170,37 @@ resource "aws_iam_role_policy" "ecs_task_operator_public_keys_secret" {
         ]
         Resource = [
           local.operator_public_keys_secret_arn
+        ]
+      }
+    ]
+  })
+}
+
+# The ADOT sidecar publishes metrics as EMF log events using the task
+# role, so it needs only stream-level write access on the
+# Terraform-managed EMF log group. Deliberately no CreateLogGroup or
+# PutRetentionPolicy: Terraform stays authoritative for the group and
+# its retention, and a group deleted out of band surfaces via awsemf
+# export errors in the sidecar log plus the metrics-missing alarm.
+resource "aws_iam_role_policy" "ecs_task_adot_metrics" {
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
+
+  name = "${var.stack_name}-ecs-task-adot-metrics"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:DescribeLogStreams",
+          "logs:PutLogEvents"
+        ]
+        Resource = [
+          aws_cloudwatch_log_group.emf[0].arn,
+          "${aws_cloudwatch_log_group.emf[0].arn}:*"
         ]
       }
     ]

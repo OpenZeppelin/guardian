@@ -68,20 +68,35 @@ impl AwsSecretsManagerProvider {
         F: FnOnce(&[u8]) -> std::result::Result<T, String>,
     {
         let secret_hex = self.secret_string(secret_id).await?;
-        let secret_bytes = SecretBytes::new(
-            hex::decode(secret_hex.expose_secret().trim()).map_err(|error| {
-                GuardianError::ConfigurationError(format!(
-                    "Secret {secret_id} must contain valid hex-encoded key bytes: {error}"
-                ))
-            })?,
-        );
-
-        parser(secret_bytes.expose_secret()).map_err(|error| {
-            GuardianError::ConfigurationError(format!(
-                "Secret {secret_id} does not contain a valid key: {error}"
-            ))
-        })
+        decode_secret_key(&format!("Secret {secret_id}"), &secret_hex, parser)
     }
+}
+
+/// Hex-decode a secret string into key bytes and parse them, mapping both
+/// failure modes to [`GuardianError::ConfigurationError`]. Shared by every
+/// [`AckSecretProvider`] so the on-disk key-material format is identical no
+/// matter where the hex came from (Secrets Manager, a local file, ...).
+/// `label` names the source in error messages (e.g. `"Secret <id>"`,
+/// `"Ack secret file <path>"`).
+pub(super) fn decode_secret_key<T, F>(
+    label: &str,
+    secret_hex: &SecretString,
+    parser: F,
+) -> Result<T>
+where
+    F: FnOnce(&[u8]) -> std::result::Result<T, String>,
+{
+    let secret_bytes = SecretBytes::new(hex::decode(secret_hex.expose_secret().trim()).map_err(
+        |error| {
+            GuardianError::ConfigurationError(format!(
+                "{label} must contain valid hex-encoded key bytes: {error}"
+            ))
+        },
+    )?);
+
+    parser(secret_bytes.expose_secret()).map_err(|error| {
+        GuardianError::ConfigurationError(format!("{label} does not contain a valid key: {error}"))
+    })
 }
 
 #[async_trait]

@@ -5,8 +5,6 @@ import {
   WasmWebClient,
 } from '@miden-sdk/miden-sdk';
 
-export const DEFAULT_MIDEN_RPC_URL = 'https://rpc.devnet.miden.io';
-
 export type RawClientSource = MidenClient | WasmWebClient;
 export interface ScriptLibrarySource {
   namespace: string;
@@ -16,8 +14,19 @@ export interface ScriptLibrarySource {
 
 const rawClientCache = new WeakMap<MidenClient, Promise<WasmWebClient>>();
 
-export function resolveMidenRpcEndpoint(endpoint?: string): string {
-  return endpoint ?? DEFAULT_MIDEN_RPC_URL;
+export function requireConfigValue(field: string, value?: unknown): string {
+  if (typeof value !== 'string') {
+    throw new Error(`missing required configuration: ${field}`);
+  }
+  const normalizedValue = value.trim();
+  if (normalizedValue === '') {
+    throw new Error(`missing required configuration: ${field}`);
+  }
+  return normalizedValue;
+}
+
+export function requireMidenRpcEndpoint(endpoint?: string): string {
+  return requireConfigValue('midenRpcEndpoint', endpoint);
 }
 
 function isPublicMidenClient(client: RawClientSource): client is MidenClient {
@@ -37,8 +46,9 @@ export async function getRawMidenClient(
     return cached;
   }
 
+  const endpoint = requireMidenRpcEndpoint(rpcUrl);
   const rawClient = WasmWebClient.createClient(
-    resolveMidenRpcEndpoint(rpcUrl),
+    endpoint,
     undefined,
     undefined,
     await client.storeIdentifier(),

@@ -36,6 +36,12 @@ export interface GuardianDashboardAccountSummary {
   paused_at: string | null;
   /** Reason captured at first pause; `null` when active. */
   paused_reason: string | null;
+  /**
+   * RFC 3339 UTC timestamp at which this server detected the account
+   * switched to a different guardian and released it; `null` while
+   * this server is the account's guardian.
+   */
+  released_at: string | null;
 }
 
 export interface GuardianDashboardAccountDetail extends GuardianDashboardAccountSummary {
@@ -72,6 +78,18 @@ export interface GuardianAccountPausedErrorDetails {
   paused_reason: string | null;
 }
 
+/**
+ * Stable error code returned by mutating endpoints when the target
+ * account was released after switching to a different guardian.
+ * HTTP 409, gRPC FAILED_PRECONDITION. Terminal until the wallet
+ * re-onboards via `/configure`.
+ */
+export const GUARDIAN_ACCOUNT_RELEASED = 'GUARDIAN_ACCOUNT_RELEASED' as const;
+
+export interface GuardianAccountReleasedErrorDetails {
+  released_at: string;
+}
+
 export interface GuardianDashboardAccountsResponse {
   success: boolean;
   total_count: number;
@@ -83,16 +101,28 @@ export interface GuardianDashboardAccountResponse {
   account: GuardianDashboardAccountDetail;
 }
 
-export interface GuardianErrorResponse {
-  success: boolean;
-  error: string;
+/** Structured machine-readable side-data on the wire (feature 009). */
+export interface GuardianErrorMetaWire {
+  /** Always present. */
+  retryable: boolean;
   retry_after_secs?: number;
-  code?: string;
-  retryable?: boolean;
+  /** Populated only for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`. */
+  missing_permissions?: string[];
   /** Populated only for `GUARDIAN_ACCOUNT_PAUSED`. */
   paused_at?: string;
   /** Populated only for `GUARDIAN_ACCOUNT_PAUSED`. */
-  paused_reason?: string;
-  /** Populated only for `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`. */
-  missing_permissions?: string[];
+  paused_reason?: string | null;
+}
+
+/**
+ * Wire shape of a Guardian error body (feature `009-human-readable-errors`):
+ * `{ code, message, meta }`. The legacy `success`/`error` fields are gone;
+ * the diagnostic detail is logged server-side only.
+ */
+export interface GuardianErrorResponse {
+  /** Stable machine-readable code; branch on this. */
+  code?: string;
+  /** Short, user-safe message — safe to display verbatim. */
+  message: string;
+  meta: GuardianErrorMetaWire;
 }

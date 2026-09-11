@@ -1,10 +1,18 @@
+import {
+  type GuardianErrorCode,
+  normalizeGuardianErrorCode,
+} from './error-codes.js';
 import type {
+  AbandonCandidateResponse,
+  AbandonStatus,
   ConfigureRequest,
   ConfigureResponse,
   DeltaObject,
   DeltaProposalRequest,
   DeltaProposalResponse,
   ExecutionDelta,
+  HistoryOptions,
+  HistoryPage,
   LookupResponse,
   PubkeyResponse,
   PushDeltaResponse,
@@ -16,8 +24,11 @@ import type {
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
 import type {
+  ServerAbandonCandidateRequest,
+  ServerAbandonCandidateResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
+  ServerHistoryPage,
   ServerLookupResponse,
   ServerProposalsResponse,
   ServerPubkeyResponse,
@@ -29,6 +40,7 @@ import type {
 import {
   fromServerConfigureResponse,
   fromServerDeltaObject,
+  fromServerHistoryPage,
   fromServerLookupResponse,
   fromServerStateObject,
   toServerConfigureRequest,
@@ -38,17 +50,159 @@ import {
 } from './conversion.js';
 
 /**
- * Error thrown by the GUARDIAN HTTP client.
+ * Structured machine-readable side-data on a GUARDIAN error
+ * (feature `009-human-readable-errors`). `retryable` is always present.
+ */
+export interface GuardianErrorMeta {
+  retryable: boolean;
+  retryAfterSecs?: number;
+  missingPermissions?: string[];
+  pausedAt?: string;
+  pausedReason?: string | null;
+  releasedAt?: string;
+}
+
+interface ParsedGuardianError {
+  /** Typed code, or `null` when the wire code is outside the known vocabulary. */
+  code: GuardianErrorCode | null;
+  /** Verbatim wire code, kept even when it does not narrow to the union. */
+  rawCode: string;
+  message: string;
+  meta: GuardianErrorMeta;
+}
+
+/**
+ * Parse a GUARDIAN error body `{ code, message, meta }` (feature 009),
+ * mapping the server's snake_case `meta` fields to camelCase. Returns
+ * `undefined` for non-JSON or non-conforming bodies — including a missing
+ * `meta` or a non-boolean `meta.retryable`, which the contract requires;
+ * treating those as conforming would silently misclassify retryability for
+ * bodies from older servers or intermediary proxies.
+ */
+function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
+  let json: unknown;
+  try {
+    json = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof json !== 'object' || json === null) return undefined;
+  const obj = json as Record<string, unknown>;
+  if (typeof obj.code !== 'string' || typeof obj.message !== 'string') return undefined;
+
+  if (typeof obj.meta !== 'object' || obj.meta === null || Array.isArray(obj.meta)) {
+    return undefined;
+  }
+  const rawMeta = obj.meta as Record<string, unknown>;
+  if (typeof rawMeta.retryable !== 'boolean') return undefined;
+  const code = normalizeGuardianErrorCode(obj.code);
+  const meta: GuardianErrorMeta = { retryable: rawMeta.retryable };
+  if (
+    typeof rawMeta.retry_after_secs === 'number' &&
+    Number.isInteger(rawMeta.retry_after_secs) &&
+    rawMeta.retry_after_secs >= 0
+  ) {
+    meta.retryAfterSecs = rawMeta.retry_after_secs;
+  }
+  if (Array.isArray(rawMeta.missing_permissions)) {
+    meta.missingPermissions = rawMeta.missing_permissions.filter(
+      (x): x is string => typeof x === 'string'
+    );
+  }
+  if (typeof rawMeta.paused_at === 'string') meta.pausedAt = rawMeta.paused_at;
+  if (typeof rawMeta.released_at === 'string') meta.releasedAt = rawMeta.released_at;
+  if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
+    meta.pausedReason = rawMeta.paused_reason as string | null;
+  }
+  return { code, rawCode: obj.code, message: obj.message, meta };
+}
+
+/**
+ * Error thrown by the GUARDIAN HTTP client. Parses the `{ code, message, meta }`
+ * error body (feature 009): branch on {@link code}, display {@link userMessage}.
  */
 export class GuardianHttpError extends Error {
+  /**
+   * Typed, compiler-checked Guardian error code (issue #318), normalized to
+   * snake_case (e.g. `account_paused`, `account_released`,
+   * `commitment_mismatch`). `null` when the body is not a conforming JSON
+   * envelope OR the server emitted a code outside this client's known
+   * vocabulary — in the latter case {@link rawCode} still carries the
+   * verbatim wire string. Branch on this rather than on `body` text or the
+   * HTTP status alone; comparing against a non-member literal is a type
+   * error, so typos are caught at compile time.
+   */
+  public readonly code: GuardianErrorCode | null;
+  /**
+   * Verbatim wire code as the server sent it (e.g.
+   * `GUARDIAN_ACCOUNT_PAUSED`), including codes a newer server may emit
+   * that this client does not know. `null` only when the body carried no
+   * conforming envelope. For logging/telemetry; branch on {@link code}.
+   */
+  public readonly rawCode: string | null;
+  /** Short, user-safe message — safe to display verbatim in a wallet UI. */
+  readonly userMessage?: string;
+  /** Structured side-data (`retryable`, `retryAfterSecs`, …). */
+  readonly meta?: GuardianErrorMeta;
+  /**
+   * RFC 3339 UTC timestamp at which the guardian released the account
+   * after it switched to a different guardian. Convenience accessor for
+   * `meta.releasedAt`; present only when `code === 'account_released'`
+   * (wire form `GUARDIAN_ACCOUNT_RELEASED`, HTTP 409); the account is
+   * terminal on this server until re-onboarded via `configure`.
+   */
+  public readonly releasedAt: string | null;
+
+  private readonly headerRetryAfterSecs?: number;
+
   constructor(
     public readonly status: number,
     public readonly statusText: string,
-    public readonly body: string
+    public readonly body: string,
+    retryAfterHeader?: string | null
   ) {
-    super(`GUARDIAN HTTP error ${status}: ${statusText} - ${body}`);
+    // Only the parsed, user-safe message is folded into Error.message; the
+    // raw body (which may carry backend/proxy internals) stays on the `body`
+    // field for diagnostics only.
+    const parsed = parseGuardianErrorBody(body);
+    super(`GUARDIAN HTTP error ${status}: ${statusText}${parsed ? ` - ${parsed.message}` : ''}`);
     this.name = 'GuardianHttpError';
+    this.code = parsed?.code ?? null;
+    this.rawCode = parsed?.rawCode ?? null;
+    this.userMessage = parsed?.message;
+    this.meta = parsed?.meta;
+    this.releasedAt = parsed?.meta.releasedAt ?? null;
+    this.headerRetryAfterSecs = parseRetryAfterSeconds(retryAfterHeader);
   }
+
+  /**
+   * Whether the server marked this error safe to retry: `meta.retryable`
+   * from the envelope, falling back to the status class (429 rejections
+   * happen before any handler runs). Mirrors the Rust client's
+   * `ClientError::is_retryable`.
+   */
+  isRetryable(): boolean {
+    return this.meta?.retryable ?? this.status === 429;
+  }
+
+  /**
+   * Server-provided backoff hint in seconds: the `Retry-After` header,
+   * falling back to `meta.retryAfterSecs`. Unparseable values mean no
+   * hint. Mirrors the Rust client's `ClientError::retry_after`.
+   */
+  retryAfterSecs(): number | undefined {
+    return this.headerRetryAfterSecs ?? this.meta?.retryAfterSecs;
+  }
+}
+
+// Decimal digits only, mirroring the Rust client's `parse::<u64>()`: no
+// signs, exponents, hex, or empty strings (`Number('')` is 0).
+function parseRetryAfterSeconds(header: string | null | undefined): number | undefined {
+  if (typeof header !== 'string') return undefined;
+  const trimmed = header.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const secs = Number(trimmed);
+  return Number.isSafeInteger(secs) ? secs : undefined;
 }
 
 /**
@@ -172,6 +326,75 @@ export class GuardianHttpClient {
     };
   }
 
+  /**
+   * Request abandonment of a pending canonicalization candidate whose
+   * transaction will never land on-chain (issue #319).
+   *
+   * Records an abandon *intent* (`202 Accepted`): the delta stays a
+   * candidate — the account stays locked — until the guardian's worker
+   * confirms over the abandon quarantine that the transaction did not
+   * land, then discards the delta as `client_abandoned` and releases the
+   * account (typically well under a minute). Poll {@link abandonStatus}
+   * for the resolution. Refused with `GUARDIAN_CANDIDATE_LANDED` (409)
+   * when the transaction actually landed. Retries are idempotent and
+   * preserve the original request timestamp.
+   */
+  async abandonCandidate(accountId: string, nonce: number): Promise<AbandonCandidateResponse> {
+    const serverRequest: ServerAbandonCandidateRequest = { account_id: accountId, nonce };
+    const response = await this.fetchAuthenticated('/delta/candidate/abandon', {
+      method: 'POST',
+      body: JSON.stringify(serverRequest),
+    }, accountId, serverRequest);
+    const server = (await response.json()) as ServerAbandonCandidateResponse;
+    return {
+      accountId: server.account_id,
+      nonce: server.nonce,
+      state: server.state,
+      abandonRequestedAt: server.abandon_requested_at,
+    };
+  }
+
+  /**
+   * Poll the resolution of an abandon request made with
+   * {@link abandonCandidate}: `'waiting'` while the quarantine runs,
+   * `'landed'` if the transaction landed after all (the delta
+   * canonicalized), `'abandoned'` once the delta is discarded as
+   * client-abandoned and the account released, `'retained'` when the
+   * guardian stopped verifying and released the account but the
+   * on-chain outcome is still uncertain (reconciliation may promote the
+   * delta until its retention TTL expires — sync and check chain before
+   * replacing it), `'unexpected'` for any state no abandon flow
+   * produces (including a missing delta).
+   */
+  async abandonStatus(accountId: string, nonce: number): Promise<AbandonStatus> {
+    let delta: DeltaObject;
+    try {
+      delta = await this.getDelta(accountId, nonce);
+    } catch (e) {
+      if (e instanceof GuardianHttpError && e.code === 'delta_not_found') {
+        return 'unexpected';
+      }
+      throw e;
+    }
+    switch (delta.status.status) {
+      case 'candidate':
+        return 'waiting';
+      case 'canonical':
+        return 'landed';
+      // The Guardian gave up verifying and released the account (issue
+      // #345): unlocked, but unresolved — deliberately distinct from
+      // 'abandoned', which would wrongly imply the transaction did not
+      // land.
+      case 'retained':
+        return 'retained';
+      case 'discarded':
+        return delta.status.reason === 'client_abandoned' ? 'abandoned' : 'unexpected';
+      default:
+        return 'unexpected';
+    }
+  }
+
+
   async signDeltaProposal(request: SignProposalRequest): Promise<DeltaObject> {
     const serverRequest = toServerSignProposalRequest(request);
     const response = await this.fetchAuthenticated('/delta/proposal', {
@@ -233,6 +456,33 @@ export class GuardianHttpClient {
     return fromServerDeltaObject(server);
   }
 
+  /**
+   * Fetch one page of the account's canonical delta history
+   * (issue #413), newest-first by nonce, with decoded input/output
+   * note summaries. Pass `options.cursor` from a previous page's
+   * `nextCursor` to resume; an absent `nextCursor` on the result means
+   * the feed is exhausted. Read-only: served while the account is
+   * paused. Only transactions pushed through Guardian appear.
+   */
+  async getDeltaHistory(accountId: string, options: HistoryOptions = {}): Promise<HistoryPage> {
+    // Signed payload and query string must carry the same values: the
+    // server signs the canonical JSON of its query struct, where limit
+    // stays a string and omitted parameters are omitted keys.
+    const requestPayload: Record<string, string> = { account_id: accountId };
+    if (options.limit !== undefined) {
+      requestPayload.limit = options.limit.toString();
+    }
+    if (options.cursor !== undefined) {
+      requestPayload.cursor = options.cursor;
+    }
+    const params = new URLSearchParams(requestPayload);
+    const response = await this.fetchAuthenticated(`/delta/history?${params}`, {
+      method: 'GET',
+    }, accountId, requestPayload);
+    const server = (await response.json()) as ServerHistoryPage;
+    return fromServerHistoryPage(server);
+  }
+
   private async fetch(path: string, init: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const response = await fetch(url, {
@@ -245,7 +495,12 @@ export class GuardianHttpClient {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new GuardianHttpError(response.status, response.statusText, body);
+      throw new GuardianHttpError(
+        response.status,
+        response.statusText,
+        body,
+        response.headers.get('Retry-After')
+      );
     }
 
     return response;
@@ -318,7 +573,17 @@ export class GuardianHttpClient {
         },
       });
     } catch (err) {
-      if (retries > 0 && err instanceof GuardianHttpError && err.body.includes('Replay attack')) {
+      // Replay rejections are transient: the request was correctly signed
+      // but lost the server's per-signer timestamp CAS. Retry with a fresh
+      // timestamp and signature, branching only on the dedicated
+      // `authentication_replay` code (issue #367); terminal authentication
+      // failures (invalid signature, clock outside the skew window) are
+      // never retried.
+      if (
+        retries > 0 &&
+        err instanceof GuardianHttpError &&
+        err.code === 'authentication_replay'
+      ) {
         await new Promise((resolve) => setTimeout(resolve, 50));
         return this.fetchAuthenticated(path, init, accountId, requestPayload, retries - 1);
       }

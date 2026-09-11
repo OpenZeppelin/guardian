@@ -14,7 +14,7 @@ import {
   compileTxScript,
   getRawMidenClient,
   getTransactionProver,
-  resolveMidenRpcEndpoint,
+  requireConfigValue,
 } from './raw-client.js';
 
 describe('raw-client', () => {
@@ -22,8 +22,46 @@ describe('raw-client', () => {
     mockCreateClient.mockReset();
   });
 
-  it('defaults RPC endpoint resolution to devnet', () => {
-    expect(resolveMidenRpcEndpoint()).toBe('https://rpc.devnet.miden.io');
+  it.each([undefined, null, 42, {}, []])(
+    'rejects non-string configuration value %j consistently',
+    (value) => {
+      expect(() => requireConfigValue('guardianEndpoint', value)).toThrow(
+        'missing required configuration: guardianEndpoint',
+      );
+    },
+  );
+
+  it('trims surrounding whitespace from configuration values', () => {
+    expect(requireConfigValue('guardianEndpoint', '  http://localhost:3000\n')).toBe(
+      'http://localhost:3000',
+    );
+  });
+
+  it('rejects shadow client creation without an RPC endpoint', async () => {
+    const client = {
+      accounts: {},
+      sync: vi.fn(),
+      defaultProver: null,
+      storeIdentifier: vi.fn(() => 'browser-db'),
+    };
+
+    await expect(getRawMidenClient(client as any)).rejects.toThrow(
+      'missing required configuration: midenRpcEndpoint',
+    );
+    await expect(getRawMidenClient(client as any, '   ')).rejects.toThrow(
+      'missing required configuration: midenRpcEndpoint',
+    );
+    expect(mockCreateClient).not.toHaveBeenCalled();
+  });
+
+  it('returns an injected raw web client without needing an endpoint', async () => {
+    const rawClient = {
+      executeTransaction: vi.fn(),
+      proveTransaction: vi.fn(),
+    };
+
+    await expect(getRawMidenClient(rawClient as any)).resolves.toBe(rawClient);
+    expect(mockCreateClient).not.toHaveBeenCalled();
   });
 
   it('returns the default prover from a public MidenClient', () => {

@@ -1,7 +1,8 @@
-use crate::testing::helpers::{create_router, create_test_app_state};
+use crate::builder::handle::{HttpRouterConfig, build_http_router};
+use crate::middleware::BodyLimitConfig;
+use crate::testing::helpers::{create_test_app_state, test_router_config};
 
 use axum::body::Body;
-use axum::extract::DefaultBodyLimit;
 use axum::http::{Request, StatusCode, header};
 use serde_json::json;
 use tower::ServiceExt;
@@ -21,7 +22,13 @@ fn build_configure_request(body: String, pubkey: &str) -> Request<Body> {
 #[tokio::test]
 async fn test_body_limit_rejects_large_payload() {
     let state = create_test_app_state().await;
-    let app = create_router(state).layer(DefaultBodyLimit::max(100));
+    let app = build_http_router(
+        state,
+        HttpRouterConfig {
+            body_limit_config: Some(BodyLimitConfig { max_bytes: 100 }),
+            ..test_router_config()
+        },
+    );
 
     let large_data = "x".repeat(200);
     let configure_body = json!({
@@ -39,7 +46,13 @@ async fn test_body_limit_rejects_large_payload() {
 #[tokio::test]
 async fn test_body_limit_allows_small_payload() {
     let state = create_test_app_state().await;
-    let app = create_router(state).layer(DefaultBodyLimit::max(1024));
+    let app = build_http_router(
+        state,
+        HttpRouterConfig {
+            body_limit_config: Some(BodyLimitConfig { max_bytes: 1024 }),
+            ..test_router_config()
+        },
+    );
 
     let configure_body = json!({
         "account_id": "0x01",

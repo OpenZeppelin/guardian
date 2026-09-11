@@ -1,5 +1,6 @@
 use guardian_shared::SignatureScheme;
 use serde_json::Value;
+use std::sync::Arc;
 
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
@@ -21,11 +22,12 @@ pub struct PushDeltaResult {
 }
 
 #[tracing::instrument(
+    level = "info",
     skip(state, params),
     fields(account_id = %params.delta.account_id)
 )]
 pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<PushDeltaResult> {
-    tracing::info!(account_id = %params.delta.account_id, "Pushing delta");
+    tracing::debug!("Pushing delta");
 
     let resolved = resolve_account(state, &params.delta.account_id, &params.credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;
@@ -75,17 +77,16 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     }
 
     let (new_state_json, new_commitment) = {
-        let client = state.network_client.lock().await;
-        client
-            .verify_delta(
-                &current_state.commitment,
-                &current_state.state_json,
-                &params.delta.delta_payload,
-            )
-            .map_err(GuardianError::InvalidDelta)?;
-        client
-            .apply_delta(&current_state.state_json, &params.delta.delta_payload)
-            .map_err(GuardianError::InvalidDelta)?
+        let client = state.network_client.clone();
+        let prev_commitment = current_state.commitment.clone();
+        let prev_state_json = current_state.state_json.clone();
+        let delta_payload = Arc::new(params.delta.delta_payload.clone());
+        crate::network::reconstructor()
+            .run(move || {
+                client.verify_delta(&prev_commitment, &prev_state_json, &delta_payload)?;
+                client.apply_delta(&prev_state_json, &delta_payload)
+            })
+            .await?
     };
 
     // Unconditional lookup: for multisig pushes this lifts the
@@ -165,7 +166,7 @@ async fn lookup_matching_proposal_payload(
     delta_payload: &Value,
 ) -> Option<Value> {
     let proposal_id = {
-        let client = state.network_client.lock().await;
+        let client = &state.network_client;
         match client.delta_proposal_id(account_id, nonce, delta_payload) {
             Ok(id) => id,
             Err(err) => {
@@ -219,7 +220,6 @@ mod tests {
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::TimeZone;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     fn paused_metadata(account_id: &str, cosigner_commitment: String) -> AccountMetadata {
         AccountMetadata {
@@ -231,13 +231,13 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: Some(
                 chrono::Utc
                     .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
                     .unwrap(),
             ),
             paused_reason: Some("compliance".to_string()),
+            released_at: None,
         }
     }
 
@@ -257,7 +257,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 
@@ -360,14 +360,14 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         })));
 
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 
@@ -463,14 +463,14 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         })));
 
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 
@@ -539,7 +539,7 @@ mod tests {
 
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network.clone())),
+            Arc::new(network.clone()),
             Arc::new(metadata.clone()),
         );
 

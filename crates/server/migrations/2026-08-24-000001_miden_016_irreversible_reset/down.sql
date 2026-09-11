@@ -1,0 +1,12 @@
+-- Irreversible: the Miden 0.16 reset permanently removed Miden account data
+-- that cannot be reconstructed, because the 0.16 procedure roots, ECDSA
+-- commitment encoding, signature advice ABI, storage slot names, and
+-- transaction summary layout all differ from the values the deleted rows were
+-- written under. This down migration is intentionally a no-op: rolling back the
+-- schema does not (and cannot) restore deleted rows. Restore from a database
+-- backup taken before the upgrade instead.
+--
+-- The statement below is deliberate, not filler: a comments-only file is an
+-- empty query to Postgres, and `revert_last_migration` fails with
+-- "Received an empty query" rather than succeeding as a no-op.
+SELECT 1;

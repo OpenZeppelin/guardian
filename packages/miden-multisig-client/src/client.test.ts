@@ -19,22 +19,27 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       vault: vi.fn(),
     })),
   },
+  Word: vi.fn(),
 }));
 
-// Mock the AccountInspector
-vi.mock('./inspector.js', () => ({
-  AccountInspector: {
-    fromAccount: vi.fn(() => ({
-      threshold: 2,
-      numSigners: 2,
-      signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-      guardianEnabled: true,
-      guardianCommitment: '0x' + 'c'.repeat(64),
-      vaultBalances: [],
-      procedureThresholds: new Map(),
-    })),
-  },
-}));
+// Mock the AccountInspector, keeping the real assertCompleteDetectedConfig
+// so load()'s fail-closed validation is exercised.
+vi.mock('./inspector.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./inspector.js')>();
+  return {
+    ...actual,
+    AccountInspector: {
+      fromAccount: vi.fn(() => ({
+        threshold: 2,
+        numSigners: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      })),
+    },
+  };
+});
 
 // Mock the account creation module
 vi.mock('./account/index.js', () => ({
@@ -54,6 +59,10 @@ vi.mock('./account/index.js', () => ({
 // Mock fetch for GUARDIAN client
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
+
+const GUARDIAN_URL = 'http://localhost:3000';
+const MIDEN_RPC = 'http://localhost:57291';
+const CLIENT_CONFIG = { guardianEndpoint: GUARDIAN_URL, midenRpcEndpoint: MIDEN_RPC };
 
 describe('MultisigClient', () => {
   let webClient: any;
@@ -83,27 +92,75 @@ describe('MultisigClient', () => {
   });
 
   describe('constructor', () => {
-    it('should create client with default GUARDIAN endpoint', () => {
-      const client = new MultisigClient(webClient);
+    it('should create client when both endpoints are supplied', () => {
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
       expect(client).toBeInstanceOf(MultisigClient);
     });
 
     it('should create client with custom GUARDIAN endpoint', () => {
-      const client = new MultisigClient(webClient, { guardianEndpoint: 'http://custom:8080' });
+      const client = new MultisigClient(webClient, {
+        guardianEndpoint: 'http://custom:8080',
+        midenRpcEndpoint: MIDEN_RPC,
+      });
       expect(client).toBeInstanceOf(MultisigClient);
+    });
+
+    it('throws when the config object is omitted', () => {
+      expect(() => new (MultisigClient as any)(webClient)).toThrow(
+        'missing required configuration: midenRpcEndpoint',
+      );
+    });
+
+    it.each([undefined, null, 42, '', '   '])(
+      'throws before any network or store access when midenRpcEndpoint is %j',
+      (endpoint) => {
+        expect(
+          () =>
+            new MultisigClient(webClient, {
+              guardianEndpoint: GUARDIAN_URL,
+              midenRpcEndpoint: endpoint as any,
+            }),
+        ).toThrow('missing required configuration: midenRpcEndpoint');
+        expect(mockFetch).not.toHaveBeenCalled();
+        expect(webClient.accounts.get).not.toHaveBeenCalled();
+        expect(webClient.accounts.insert).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([undefined, null, 42, '', '   '])(
+      'throws before any network or store access when guardianEndpoint is %j',
+      (endpoint) => {
+        expect(
+          () =>
+            new MultisigClient(webClient, {
+              guardianEndpoint: endpoint as any,
+              midenRpcEndpoint: MIDEN_RPC,
+            }),
+        ).toThrow('missing required configuration: guardianEndpoint');
+        expect(mockFetch).not.toHaveBeenCalled();
+        expect(webClient.accounts.get).not.toHaveBeenCalled();
+        expect(webClient.accounts.insert).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects a blank endpoint passed to setGuardianEndpoint', () => {
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
+      expect(() => client.setGuardianEndpoint('   ')).toThrow(
+        'missing required configuration: guardianEndpoint',
+      );
     });
   });
 
   describe('guardianClient getter', () => {
     it('should expose GUARDIAN client for getting pubkey', () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
       expect(client.guardianClient).toBeDefined();
     });
   });
 
   describe('create', () => {
     it('should create multisig and return Multisig instance', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
 
       const config = {
         threshold: 2,
@@ -120,7 +177,7 @@ describe('MultisigClient', () => {
     });
 
     it('should set signer on GUARDIAN client', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
 
       const config = {
         threshold: 1,
@@ -133,7 +190,7 @@ describe('MultisigClient', () => {
     });
 
     it('binds the signer auth key to the created account when supported', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
       const bindAccountKey = vi.fn().mockResolvedValue(undefined);
       const bindingSigner = {
         ...mockSigner,
@@ -152,7 +209,7 @@ describe('MultisigClient', () => {
 
   describe('load', () => {
     it('should load existing multisig account and detect config', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
 
       // Mock getState response
       mockFetch.mockResolvedValueOnce({
@@ -180,23 +237,89 @@ describe('MultisigClient', () => {
       expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
     });
 
+    it('fails closed when the detected signer set is incomplete (issue #306 review)', async () => {
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
+
+      const { AccountInspector } = await import('./inspector.js');
+      // Storage reports 3 signers but only 2 entries were readable — adopting
+      // this config would let membership proposals drop the missing key.
+      vi.mocked(AccountInspector.fromAccount).mockReturnValueOnce({
+        threshold: 2,
+        numSigners: 3,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await expect(client.load('0x' + 'd'.repeat(30), mockSigner)).rejects.toThrow(
+        /incomplete signer set: storage reports 3 signers, read 2/,
+      );
+    });
+
+    it('fails closed when the guardian commitment is missing', async () => {
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
+
+      const { AccountInspector } = await import('./inspector.js');
+      vi.mocked(AccountInspector.fromAccount).mockReturnValueOnce({
+        threshold: 1,
+        numSigners: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: null,
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await expect(client.load('0x' + 'd'.repeat(30), mockSigner)).rejects.toThrow(
+        /missing guardian commitment/,
+      );
+    });
+
     it('should throw if account not found on GUARDIAN', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 404,
         statusText: 'Not Found',
-        text: async () => 'Account not found',
+        headers: new Headers(),
+        text: async () =>
+          JSON.stringify({
+            code: 'account_not_found',
+            message: 'Account not found',
+            meta: { retryable: false },
+          }),
       });
 
       await expect(
         client.load('0xnonexistent', mockSigner)
-      ).rejects.toThrow();
+      ).rejects.toThrow('Account not found');
     });
 
     it('should allow registerOnGuardian after load without explicit initial state', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -227,7 +350,7 @@ describe('MultisigClient', () => {
     });
 
     it('binds the signer auth key after loading an account when supported', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
       const bindAccountKey = vi.fn().mockResolvedValue(undefined);
       const bindingSigner = {
         ...mockSigner,
@@ -289,7 +412,7 @@ describe('MultisigClient', () => {
     }
 
     it('returns one (accountId, state) pair when lookup matches a single account', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
       const signer = makeLookupCapableSigner();
       const accountId = '0x7bfb0f38b0fafa103f86a805594170';
 
@@ -311,7 +434,7 @@ describe('MultisigClient', () => {
     });
 
     it('returns multiple (accountId, state) pairs when one commitment authorizes several accounts', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
       const signer = makeLookupCapableSigner();
       const accountA = '0xaaa1';
       const accountB = '0xbbb2';
@@ -328,7 +451,7 @@ describe('MultisigClient', () => {
     });
 
     it('returns empty array when no account authorizes the commitment', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
       const signer = makeLookupCapableSigner();
 
       mockServerLookupResponse([]);
@@ -341,7 +464,7 @@ describe('MultisigClient', () => {
     });
 
     it('throws a clear error when the signer does not implement signLookupMessage', async () => {
-      const client = new MultisigClient(webClient);
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
       // mockSigner from the outer beforeEach lacks signLookupMessage.
       await expect(client.recoverByKey(mockSigner)).rejects.toThrow(/signLookupMessage/);
       expect(mockFetch).not.toHaveBeenCalled();

@@ -1,11 +1,16 @@
 import { Account, TransactionSummary, Word } from '@miden-sdk/miden-sdk';
-import { base64ToUint8Array } from '../utils/encoding.js';
+import { base64ToUint8Array, normalizeHexWord } from '../utils/encoding.js';
 
+/**
+ * Recompute a proposal's id from its serialized transaction summary. Returns
+ * normalized hex (lowercase, 0x-prefixed, zero-padded) so the result compares
+ * equal to `ExportedProposal.commitment` / `Proposal.id` directly.
+ */
 export function computeCommitmentFromTxSummary(txSummaryBase64: string): string {
   const bytes = base64ToUint8Array(txSummaryBase64);
   const summary = TransactionSummary.deserialize(bytes);
   const commitment = summary.toCommitment();
-  return commitment.toHex();
+  return normalizeHexWord(commitment.toHex());
 }
 
 export function accountIdToHex(account: Account): string {

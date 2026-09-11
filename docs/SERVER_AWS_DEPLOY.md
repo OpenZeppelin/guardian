@@ -4,7 +4,7 @@ This guide covers the current AWS deployment for Guardian. The AWS stack now use
 
 The deployment surface supports two stage profiles:
 - `DEPLOY_STAGE=dev` keeps the current low-cost, fixed-capacity behavior
-- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, and benchmark-oriented runtime defaults
+- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, RDS deletion protection with a final snapshot on destroy, and benchmark-oriented runtime defaults
 
 ## Published Docker images
 
@@ -62,8 +62,82 @@ workflow one of two ways:
 In both cases a version containing `-` (e.g. `v1.2.3-rc.1`) is treated as a
 pre-release and does not move the `latest` tag.
 
-The AWS deploy below still builds and pushes to ECR via `scripts/aws-deploy.sh`;
-consuming the published GHCR image from the deploy flow is a separate, later change.
+Published images are what the **AWS Deploy** workflow rolls out (next section).
+`scripts/aws-deploy.sh` still builds and pushes its own image for infrastructure
+changes and first-time stack setup.
+
+## Deploying a published image from GitHub Actions
+
+The **AWS Deploy** workflow (`.github/workflows/aws-deploy.yml`) deploys a
+published GHCR version to a Guardian stack without local AWS credentials or
+Terraform state. GitHub environments are named after the Miden network they
+serve and map onto AWS stacks through environment variables, so stack names and
+infrastructure profiles stay explicit settings rather than being inferred from
+the environment name:
+
+| Environment | Network | Stack (`STACK_NAME`) | Profile | Hostname |
+|---|---|---|---|---|
+| `devnet` | MidenDevnet | `guardian` | dev | `guardian-stg.openzeppelin.com` |
+| `testnet` | MidenTestnet | `guardian-prod` | prod | `guardian.openzeppelin.com` |
+
+Run it from the Actions tab with:
+
+- `environment`: `devnet` or `testnet`
+- `version`: a published tag such as `v1.2.3`. Only `devnet` accepts
+  pre-releases like `v1.2.3-rc.1`; every other environment is release-only.
+
+What a run does:
+
+1. Resolves the version tag to an immutable digest and verifies that digest
+   against the SLSA provenance attestation signed by the Docker Publish
+   workflow. For release-only environments the attestation must also show the
+   build ran from the `refs/tags/<version>` release tag, so a manually
+   dispatched build of another branch cannot ship under a release version. This
+   happens before the environment's protection rules, so reviewers are only
+   asked to approve an already-verified digest.
+2. Authenticates to AWS with GitHub OIDC (bootstrap role, then role chaining to
+   the deploy role) and checks the stack's ECR repository and ECS service exist.
+3. Mirrors the verified digest into `<stack>-server` in ECR, tagged both
+   `<version>` and `latest`. Moving `latest` keeps
+   `scripts/aws-deploy.sh plan` / `deploy --skip-build` resolving the deployed
+   image, so a later Terraform apply does not roll the service back.
+4. Registers a new revision of the task definition the service is currently
+   running, with only the image changed, and waits up to 20 minutes for the
+   rollout to stabilize.
+
+The run summary records the deployed image URI and the previous task-definition
+ARN. There is no automatic rollback: if a rollout fails, the summary prints the
+`aws ecs update-service` command to restore the previous revision, or re-run the
+workflow with the previously deployed version.
+
+The workflow only rolls out an image. When a release also changes the task
+definition (new environment variables, secrets, or IAM grants in `infra/`),
+apply that release's Terraform first with `scripts/aws-deploy.sh`, then deploy
+the image. Stacks that override the default `<stack>-server` / `<stack>-cluster`
+resource names in Terraform (or `ECR_REPO_NAME` in the script) are not
+supported by the workflow. The `guardian-evm` stack is also out of scope: GHCR
+release images are built with the `postgres` feature only.
+
+One-time setup per target (infra):
+
+- A GitHub environment named after the network (`devnet` / `testnet`) with
+  variables `AWS_REGION`, `ROLE_FOR_OIDC` (role trusted for GitHub OIDC),
+  `ROLE_TO_ASSUME` (deploy role reached via role chaining), and `STACK_NAME`
+  (`guardian` / `guardian-prod`). Add required reviewers on `testnet`.
+- Each environment must restrict **deployment branches** to `main`. Without
+  that, anyone able to dispatch the workflow could run an edited copy of it
+  from a feature branch and obtain the environment's AWS OIDC identity.
+- The OIDC role's trust policy must accept this repository's environment
+  subject claims (`repo:OpenZeppelin/guardian:environment:devnet` / `:testnet`).
+- The deploy role needs ECR push/pull on `<stack>-server`
+  (`ecr:GetAuthorizationToken`, `ecr:DescribeRepositories`,
+  `ecr:BatchCheckLayerAvailability`, `ecr:BatchGetImage`,
+  `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`,
+  `ecr:PutImage`), `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`,
+  `ecs:RegisterTaskDefinition`, `ecs:UpdateService`, and `iam:PassRole` on the
+  stack's task and task-execution roles.
+- The ECR repository must already exist; `scripts/aws-deploy.sh build` creates
+  it on a new stack.
 
 ## Prerequisites
 
@@ -88,8 +162,9 @@ set -a && source .env && set +a
 # Optional: build/deploy ARM64 instead of X86_64
 # export CPU_ARCHITECTURE=ARM64
 
-# Optional: pin the server to a specific Miden network
-export GUARDIAN_NETWORK_TYPE=MidenDevnet
+# Miden network the server runs against. The server requires this at startup;
+# the deploy script passes MidenTestnet unless you override it here.
+export GUARDIAN_NETWORK_TYPE=MidenTestnet
 
 # Optional: allow dashboard operators and let Terraform create the secret
 # export GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON='["0x<alice-falcon-public-key>","0x<bob-falcon-public-key>"]'
@@ -201,6 +276,17 @@ aws_region = "us-east-1"
 # guardian_db_pool_max_size = 32
 # guardian_metadata_db_pool_max_size = 32
 
+# Optional: application metrics (ADOT sidecar + CloudWatch dashboard/alarms).
+# Enabled by default; see "Metrics, Dashboard, And Alarms".
+# guardian_metrics_enabled = true   # server Prometheus endpoint (loopback-only)
+# cloudwatch_metrics_enabled = true # ADOT sidecar + dashboard + alarms
+# metrics_namespace = "Guardian/Server"
+# alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
+# alarm_error_rate_threshold_percent = 5
+# alarm_latency_threshold_seconds = 1
+# alarm_cpu_threshold_percent = 85
+# alarm_memory_threshold_percent = 90
+
 # Optional: Route 53 hosted zone ID
 # route53_zone_id = "Z1234567890ABC"
 
@@ -308,6 +394,7 @@ become the only trusted ones.
 | `./scripts/aws-deploy.sh deploy --skip-build` | Resolve the existing ECR `latest` image to an immutable digest and run `terraform apply` without rebuilding. |
 | `./scripts/aws-deploy.sh bootstrap-ack-keys` | Create the prod ACK key secrets in Secrets Manager. Refuses to overwrite existing secrets. With `TF_VAR_guardian_ack_ecdsa_kms_key_arn` set, creates only the Falcon secret (ECDSA is KMS-backed). |
 | `./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key` | Create the KMS ECDSA ACK signing key (`ECC_SECG_P256K1` / `SIGN_VERIFY`) and an `alias/${STACK_NAME}-ack-ecdsa` alias, then print the ARN to set. Refuses to overwrite an existing alias. |
+| `./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret` | Create the shared 32-byte dashboard cursor secret in Secrets Manager. Refuses to overwrite an existing secret. |
 | `./scripts/aws-deploy.sh status` | Print Terraform outputs for the active `STACK_NAME` and `DEPLOY_STAGE`. |
 | `./scripts/aws-deploy.sh logs` | Tail the deployed server's CloudWatch log group. |
 | `./scripts/aws-deploy.sh cleanup` | Run Terraform destroy for the active `STACK_NAME` and `DEPLOY_STAGE`. |
@@ -337,15 +424,27 @@ Use this flow when you want to inspect Terraform changes before applying them:
 
 `build` creates the ECR repository if needed and pushes `${ECR_REPO_NAME}:latest`. Both `plan` and `deploy --skip-build` resolve that tag to an immutable digest before invoking Terraform. Do not rebuild or push a new `latest` between `plan` and `deploy --skip-build` unless you intend to apply a different image; rerun `plan` after any rebuild.
 
-For `DEPLOY_STAGE=prod`, bootstrap the ACK secrets once before the first deploy:
+For `DEPLOY_STAGE=prod`, bootstrap the ACK and dashboard cursor secrets once
+before the first deploy:
 
 ```bash
 DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys
+DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret
 ```
 
-The normal deploy path does not create or rotate ACK keys. It expects the prod Secrets Manager entries to already exist, and the server reads them directly at startup before importing them into the filesystem keystore.
+The normal deploy path does not create or rotate these secrets. It expects the
+prod Secrets Manager entries to already exist. Terraform injects the cursor
+secret into every ECS task as `GUARDIAN_DASHBOARD_CURSOR_SECRET`.
 
 Secret names default to `${STACK_NAME}/server/ack-{falcon,ecdsa}-secret-key`, so distinct stacks (e.g. `guardian-prod`, `guardian-prod-eu`) automatically resolve to distinct secrets and multiple Guardian deployments can coexist in the same AWS account. Override per stack by setting `GUARDIAN_ACK_FALCON_SECRET_NAME` / `GUARDIAN_ACK_ECDSA_SECRET_NAME` before `bootstrap-ack-keys` and `deploy`; they flow into Terraform variables and the ECS task definition's `GUARDIAN_ACK_FALCON_SECRET_ID` / `GUARDIAN_ACK_ECDSA_SECRET_ID` env vars.
+
+The cursor secret defaults to
+`${STACK_NAME}/server/dashboard-cursor-secret`. To use an existing secret, set
+`GUARDIAN_DASHBOARD_CURSOR_SECRET_NAME` before both bootstrap and deploy.
+The deploy helper always passes this resolved name explicitly, so a stale
+`infra/terraform.tfvars` value cannot make validation and deployment select
+different secrets. For a customer-managed KMS key, its key policy must also
+allow the ECS task execution role to decrypt the secret.
 
 #### Prod with a KMS-backed ECDSA signer
 
@@ -452,6 +551,120 @@ curl https://guardian.openzeppelin.com/pubkey
 grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
 ```
 
+## Metrics, Dashboard, And Alarms
+
+Application metrics ship to CloudWatch by default. Two switches control
+this: `guardian_metrics_enabled` turns on the server's Prometheus endpoint,
+and `cloudwatch_metrics_enabled` deploys the ADOT sidecar, EMF log group,
+IAM policy, dashboard, and alarms on top of it. The export pipeline
+cascades off with the endpoint, so `guardian_metrics_enabled = false` alone
+turns everything off. Disabling only `cloudwatch_metrics_enabled` keeps the
+endpoint without publishing CloudWatch custom metrics — but note the
+endpoint stays **loopback-only**, so that mode is useful only for an
+alternative in-task collector you add by customizing the module; the stack
+exposes no knobs for a routable bind address.
+
+- The server runs with `GUARDIAN_METRICS_ENABLED=true`, serving the Prometheus
+  exposition on `127.0.0.1:9464/metrics`. Fargate `awsvpc` containers share one
+  network namespace, so the endpoint is **loopback-only**: the sidecar reaches
+  it on `127.0.0.1` while nothing outside the task can — it is never exposed via
+  the ALB, target groups, or security groups. An externally scraped setup would
+  additionally require an explicit bind address, restricted security-group
+  ingress, and `GUARDIAN_METRICS_BEARER_TOKEN`; this module deliberately
+  configures none of that.
+- Latency and other duration metrics are **windowed**: the collector
+  delta-converts the Prometheus histograms (the awsemf exporter does not do
+  this for histograms on its own), so CloudWatch `Average` over a 5-minute
+  period reflects that period, not the process lifetime.
+- An **AWS Distro for OpenTelemetry (ADOT) Collector sidecar** in the server
+  task scrapes the endpoint every 60s and exports a curated selection of
+  metrics to CloudWatch as EMF log events (log group `/ecs/<service>/emf`).
+  CloudWatch materializes them as custom metrics under the
+  `metrics_namespace` namespace, which is **per stack**: `Guardian/Server` for
+  the default stack name, `Guardian-Prod/Server` for `guardian-prod`, and so
+  on, so stacks in one account never mix metrics.
+  The collector config is injected via `AOT_CONFIG_CONTENT`
+  (`infra/observability.tf`); no custom image or SSM parameter is involved.
+  Dimension sets come from Guardian's closed label sets (status, code, outcome,
+  kind, event, pool, transport); high-cardinality labels (route, method,
+  operation) are rolled up to keep the custom-metric count and cost bounded.
+  No scrape bearer token is configured on this path: network isolation (the
+  loopback-only listener inside the task) is the first defense layer described
+  in [the observability guide](./guides/observability/README.md#protecting-the-endpoint-production),
+  and no other network path to the endpoint exists.
+- The sidecar is **non-essential** (its exit does not stop the task) and its
+  memory is capped at 256 MiB, which bounds its worst-case share of the shared
+  task envelope — it is a bound, not isolation: both containers still draw
+  from the task's `server_memory` total, so size that with ~256 MiB of
+  headroom in mind. If the collector leaks it is OOM-killed at its cap, the
+  server keeps serving, and the `metrics-missing` alarm fires on the fleet
+  going dark. With more than one task, a single dead sidecar is not detected
+  by that alarm — the remaining tasks keep the metrics alive and the fleet's
+  Sums/Averages skew until the next deployment; per-task detection is a
+  possible follow-up.
+- Terraform creates a CloudWatch **dashboard** named `<stack>-server` (request
+  volume, error rate, latency, proposal/delta lifecycle, canonicalization
+  health, storage and DB-pool health, Miden RPC, ECS CPU/memory/tasks) and
+  these **alarms**:
+
+| Alarm | Fires when |
+|-------|------------|
+| `<stack>-http-5xx-rate` | HTTP 5xx responses (500/501/502/503/504) exceed `alarm_error_rate_threshold_percent` (default 5%) of requests for 15 min. ALB health checks count as successful requests and dilute the rate on low-traffic multi-task fleets — treat as a sustained-fault signal |
+| `<stack>-grpc-error-rate` | gRPC server-fault responses (`internal`, `unavailable`, `unknown`, `data_loss`, `deadline_exceeded`) exceed the same threshold for 15 min; the same health-check dilution applies |
+| `<stack>-http-latency` | Average HTTP latency exceeds `alarm_latency_threshold_seconds` (default 1s) for 15 min. Fleet average across all routes — continuous ALB health-check probes dilute it on low-traffic stacks, so treat it as a sustained-degradation signal |
+| `<stack>-canonicalization-failures` | Canonicalization passes (full, fast, or reconcile) report `error` or `partial` (some accounts failed) outcomes for 10 min |
+| `<stack>-metrics-missing` | Application metrics stop arriving — the constant `guardian_build_info` heartbeat disappears (metrics endpoint down, sidecar dead, or scrape failing) |
+| `<stack>-metrics-refresh-failures` | Slow-aggregate refresher attempts are failing; delta/proposal/account gauges are stale |
+| `<stack>-metrics-refresh-stale` | The refresh timestamp stopped advancing for ≥ 10 min (hung or dead refresher — catches what the failures counter cannot) |
+| `<stack>-ecs-cpu-high` / `<stack>-ecs-memory-high` | ECS service average CPU/memory exceeds `alarm_cpu_threshold_percent` (85%) / `alarm_memory_threshold_percent` (90%); must sit above the autoscaling targets (enforced at plan time) |
+
+To receive notifications, point the alarms at one or more SNS topics:
+
+```hcl
+alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
+```
+
+This stack does **not** provision the SNS topic or a chat integration. The
+supported notification path is: CloudWatch alarm → an existing **same-region
+SNS topic** (listed in `alarm_actions`) → [Amazon Q Developer in chat
+applications](https://docs.aws.amazon.com/chatbot/latest/adminguide/what-is.html)
+(formerly AWS Chatbot) subscribed to that topic → Slack channel. Create the
+topic and the chat subscription out of band, then pass the topic ARN here;
+alarms fire both `alarm_actions` and `ok_actions`, so the channel sees
+recovery too.
+
+Set `guardian_metrics_enabled = false` to turn everything off (no metrics env
+vars, no sidecar, no dashboard, no alarms — the CloudWatch flag cascades off
+with it), or only `cloudwatch_metrics_enabled = false` to keep the
+loopback-only endpoint without any CloudWatch export (see the caveat above
+about what that mode is useful for).
+
+### Verify metrics after a deploy
+
+```bash
+# Every name below is per stack; read them all from Terraform outputs.
+NS=$(terraform -chdir=infra output -raw metrics_namespace)
+DASH=$(terraform -chdir=infra output -raw metrics_dashboard_name)
+LOG_GROUP=$(terraform -chdir=infra output -raw server_log_group)
+ALARM=$(terraform -chdir=infra output -raw metrics_missing_alarm_name)
+
+# 1. Metrics arriving in the namespace (allow ~2 minutes after task start)
+aws cloudwatch list-metrics --namespace "$NS" --output table | head -40
+
+# 2. Dashboard exists and populates
+aws cloudwatch get-dashboard --dashboard-name "$DASH" --query DashboardName
+# then open CloudWatch > Dashboards > <stack>-server in the console
+
+# 3. Sidecar logs — scrape failures surface here as
+#    "Failed to scrape Prometheus endpoint"
+aws logs tail "$LOG_GROUP" --log-stream-name-prefix adot --since 15m
+
+# 4. Exercise one alarm notification path end to end
+aws cloudwatch set-alarm-state --alarm-name "$ALARM" \
+  --state-value ALARM --state-reason "notification path test"
+# the next evaluation returns it to OK automatically
+```
+
 ## Operations
 
 ### Logs
@@ -480,6 +693,12 @@ You can override that with `TF_STATE_PATH` if needed.
 ./scripts/aws-deploy.sh cleanup
 ```
 
+In the prod stage the RDS instance has deletion protection on and takes a
+final snapshot (`<stack>-postgres-final`) on destroy, so a prod cleanup
+fails until you set `TF_VAR_rds_deletion_protection=false` and re-apply.
+Restoring from the final snapshot is covered in
+[`runbooks/backup-restore.md`](./runbooks/backup-restore.md).
+
 ECR repositories are not managed by Terraform:
 
 ```bash
@@ -501,8 +720,11 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | Secrets Manager | Optional EVM allowed chain IDs and RPC URLs secrets |
 | Secrets Manager | Secrets containing the Falcon and ECDSA ack private keys used to seed the server keystore in prod |
 | Security Groups | ALB, server, and database security groups |
-| CloudWatch Log Groups | Cluster execute-command logs and server logs |
+| CloudWatch Log Groups | Cluster execute-command logs, server logs, and the EMF metrics log group |
 | IAM Role | ECS task execution and runtime roles |
+| ADOT Sidecar | OpenTelemetry Collector container in the server task exporting Prometheus metrics to CloudWatch |
+| CloudWatch Dashboard | `<stack>-server` application and ECS overview |
+| CloudWatch Alarms | Error rate, latency, canonicalization, metrics pipeline, and ECS saturation alarms |
 
 ## Outputs
 
@@ -510,7 +732,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name |
 | `alb_url` | Full ALB URL |
-| `custom_domain_url` | Custom domain URL when configured |
+| `custom_domain_url` | Canonical service URL: https with a certificate, http when Terraform manages only the DNS record |
 | `grpc_endpoint` | Public gRPC endpoint when HTTPS is enabled |
 | `database_endpoint` | RDS endpoint used by the server |
 | `rds_proxy_endpoint` | RDS Proxy endpoint when enabled |
@@ -525,8 +747,13 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
+| `dashboard_cursor_secret_name` | Secrets Manager name for the shared dashboard cursor key |
 | `ecs_cluster_arn` | ECS cluster ARN |
 | `server_service_arn` | Server ECS service ARN |
+| `metrics_namespace` | CloudWatch namespace receiving Guardian application metrics |
+| `metrics_dashboard_name` | CloudWatch dashboard name |
+| `metrics_emf_log_group` | Log group the ADOT sidecar writes EMF metric events into |
+| `metrics_missing_alarm_name` | Name of the metrics-pipeline heartbeat alarm for this stack |
 
 ## Stage Profiles
 
@@ -546,6 +773,26 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 - RDS storage autoscaling
 - RDS Proxy between ECS and RDS
 - higher Guardian runtime rate-limit and DB-pool defaults for benchmark traffic
+
+#### Horizontal scaling (multiple replicas)
+
+The prod profile runs 2–6 tasks behind the ALB. Because it sets `GUARDIAN_ENV=prod`
+and the Postgres backend, the server runs **shared coordination** (sessions,
+login challenges, and the canonicalization lease live in Postgres) — so any
+request lands on any replica and canonicalization runs on exactly one replica at
+a time. Terraform also sets `GUARDIAN_MAX_REPLICAS` from
+`effective_guardian_max_replicas` (the greater of desired count and autoscaling
+max, 6 by default) so global HTTP and dashboard commitment rate limits are
+partitioned across the steady-state fleet. A rolling deployment may allow up to
+`server_deployment_maximum_percent / 100` times the configured aggregate limit
+(2× by default). The default dashboard share is 5 requests per minute on a
+keep-alive-pinned replica. In prod, Terraform requires the pre-created dashboard
+cursor secret and injects the same value into every task, so dashboard
+pagination works across replicas. The server itself still warns and uses an
+ephemeral key when run without the variable outside this managed prod profile.
+Watch the per-replica `GUARDIAN_DB_POOL_MAX_SIZE` against Postgres
+`max_connections` (RDS Proxy absorbs most of this). Full operator guidance:
+[`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md).
 
 ## HTTPS And gRPC
 
@@ -585,6 +832,7 @@ Use this cutover flow for an existing stack:
 - If a prod deploy fails before Terraform starts, confirm the fixed prod ACK secrets exist by running `./scripts/aws-deploy.sh bootstrap-ack-keys` once and then retrying the deploy.
 - If RDS subnet-group creation fails, verify the selected subnets cover at least two subnets for the database deployment.
 - If gRPC works against the ALB directly but fails on the public hostname, check Cloudflare gRPC settings on the zone.
+- If the `metrics-missing` alarm fires or the dashboard is empty, tail the sidecar stream (`aws logs tail /ecs/<service> --log-stream-name-prefix adot`) — scrape failures appear as `Failed to scrape Prometheus endpoint`, and export failures reference `awsemf`.
 
 ## Legacy Script
 

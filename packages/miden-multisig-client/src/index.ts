@@ -20,10 +20,15 @@
  * // Create a signer
  * const signer = new FalconSigner(secretKey);
  *
- * // Create multisig client
+ * // Create multisig client. Both endpoints are required; midenRpcEndpoint
+ * // must point at the same network as the injected MidenClient.
  * const client = new MultisigClient(midenClient, {
  *   guardianEndpoint: 'http://localhost:3000',
  *   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
+ *   prover: {
+ *     url: 'https://prover.example',
+ *     retry: { maxAttempts: 4 },
+ *   },
  * });
  *
  * // Get GUARDIAN pubkey for config
@@ -44,19 +49,87 @@ export {
   type MultisigClientConfig,
   type RecoveredAccount,
 } from './client.js';
+export type {
+  TransportRecoveryReport,
+  TransportRecoveryStatus,
+} from './recovery/transportDrain.js';
+export type { ProverConfig, ProverRetryPolicy } from './prover/config.js';
+export type { RpcConfig, RpcRetryPolicy } from './rpc/config.js';
 export { lookupAuthDigest } from './lookupAuth.js';
-export { Multisig, type AccountState } from './multisig.js';
+export {
+  Multisig,
+  type AccountState,
+  type CreateProposalOptions,
+  type CreateSignerProposalOptions,
+  type CreateP2idProposalOptions,
+} from './multisig.js';
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {
+  chainAnchorFromBase64,
+  chainAnchorToBase64,
   executeForSummary,
+  executeForSummaryAt,
+  summaryAuthArg,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
   buildConsumeNotesTransactionRequest,
   buildP2idTransactionRequest,
+  parseP2idNoteType,
+  p2idNoteTypeToMetadata,
+  type P2idTransactionOptions,
+  type P2ideHeightOptions,
 } from './transaction.js';
+// Commitment derivation for hand-rolled export/import flows (issue #433):
+// the proposal id is the tx summary's commitment, recomputed from the
+// serialized summary exactly as import verification does. Returns normalized
+// hex, directly comparable to `ExportedProposal.commitment` / `Proposal.id`.
+export { computeCommitmentFromTxSummary } from './multisig/helpers.js';
+export type { SignatureOptions } from './transaction/options.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
+export type { GuardianErrorMeta } from '@openzeppelin/guardian-client';
+// Typed error-code vocabulary (issue #318): branch on GuardianErrorCode,
+// never on message text; unknown wire codes surface via rawCode.
+export {
+  GUARDIAN_ERROR_CODES,
+  isGuardianErrorCode,
+  normalizeGuardianErrorCode,
+} from '@openzeppelin/guardian-client';
+export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
+export type {
+  HistoryDecodeSection,
+  HistoryDecodeWarning,
+  HistoryEntry,
+  HistoryEntryStatus,
+  HistoryNote,
+  HistoryNoteAsset,
+  HistoryNoteTag,
+  HistoryNoteVisibility,
+  HistoryOptions,
+  HistoryPage,
+} from '@openzeppelin/guardian-client';
+
+// Codeless transport-failure classification (feature 009, User Story 3).
+export { isLikelyNetworkError, toUserFacingError } from './connectivity.js';
+export type { ConnectivityCategory, UserFacingError } from './connectivity.js';
+
+// The wallet-facing recovery flow (`Multisig.recoverNotes`) and its report
+// types. The individual strategies are internal — the flow is the one entry
+// point, so callers cannot accidentally skip the required context (tracked
+// account, synced store) or the final verifying sync.
+export type {
+  NoteImportOutcome,
+  NoteImportSource,
+  NoteImportStatus,
+} from './recovery/proposalNoteImport.js';
+export type { BlockRange, PublicBackfillReport } from './recovery/publicNoteBackfill.js';
+export type {
+  NoteRecoveryReport,
+  RecoverNotesOptions,
+  RecoveryStep,
+  RecoveryStepProblem,
+} from './recovery/recoverNotes.js';
 
 export {
   FalconSigner,
@@ -84,6 +157,10 @@ export {
   MAX_CONSUME_NOTES_METADATA_BYTES,
   isConsumeNotesV1,
   isConsumeNotesV2,
+  isP2idNoteVisibility,
+  type P2idNoteVisibility,
+  MAX_P2IDE_BLOCK_HEIGHT,
+  parseP2ideHeight,
 } from './types/proposal.js';
 
 export {
@@ -96,7 +173,14 @@ export {
   UnsupportedMetadataVersionError,
   ConsumeNotesMetadataOversizeError,
   LegacyConsumeNotesNoteMissingError,
+  ConsumeNoteNotAuthenticatedError,
 } from './multisig/consumeNotesErrors.js';
+
+export {
+  type AuthArgErrorCode,
+  ProposalAuthArgUnresolvableError,
+  ProposalSaltMalformedError,
+} from './multisig/authArgErrors.js';
 
 export {
   noteToBase64,

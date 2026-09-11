@@ -8,10 +8,36 @@ resource "aws_lb" "main" {
 
   enable_deletion_protection = false
 
+  # The server's rate limiter keys clients by the rightmost
+  # X-Forwarded-For entry, which is only trustworthy because the ALB
+  # appends the real caller address after any client-supplied values.
+  # Pinned so the trust assumption survives provider default changes.
+  xff_header_processing_mode = "append"
+
   lifecycle {
     precondition {
       condition     = length(local.load_balancer_subnet_ids) >= 2
       error_message = "Application Load Balancer requires at least two subnets in distinct Availability Zones. Configure subnet_ids with subnets from at least two AZs."
+    }
+
+    precondition {
+      condition     = !local.alias_domain_requested || local.alias_domain_enabled
+      error_message = "The secondary hostname must be non-empty and different from the canonical service hostname."
+    }
+
+    precondition {
+      condition     = var.cloudflare_zone_id == "" || trimspace(var.cloudflare_api_token) != ""
+      error_message = "cloudflare_api_token is required when cloudflare_zone_id is configured."
+    }
+
+    precondition {
+      condition     = !local.alias_domain_enabled || local.acm_certificate_arn != ""
+      error_message = "An enabled alias_subdomain requires acm_certificate_arn. Verify that it covers both hostnames or set alias_acm_certificate_arn for the legacy hostname."
+    }
+
+    precondition {
+      condition     = var.alias_acm_certificate_arn == "" || local.alias_domain_enabled
+      error_message = "alias_acm_certificate_arn requires an enabled alias_subdomain because the secondary certificate attaches through SNI."
     }
   }
 }
@@ -105,6 +131,21 @@ resource "aws_lb_listener" "https" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.server.arn
   }
+}
+
+# Temporary legacy-hostname certificate attached during a migration via SNI.
+# A single certificate covering both names needs no extra attachment.
+resource "aws_lb_listener_certificate" "secondary" {
+  count = (
+    local.alias_domain_enabled
+    && local.alias_acm_certificate_arn != ""
+    && local.alias_acm_certificate_arn != local.acm_certificate_arn
+    && local.acm_certificate_arn != ""
+    ? 1 : 0
+  )
+
+  listener_arn    = aws_lb_listener.https[0].arn
+  certificate_arn = local.alias_acm_certificate_arn
 }
 
 resource "aws_lb_listener_rule" "https_grpc" {

@@ -389,6 +389,16 @@ clear error.
   from the signed metadata. The rebuild MUST NOT read from the local
   Miden note store, MUST NOT contact the note transport service, and
   MUST NOT contact any Miden node.
+  > **Amended (issue #409, 2026-09-08).** The rebuild itself still reads
+  > nothing but the signed metadata, but the *execution* of that request
+  > is not store-independent: miden-client consumes each input note as
+  > authenticated when the local store holds its inclusion proof and as
+  > unauthenticated otherwise, and the two commit differently into the
+  > transaction summary. To keep FR-006 true, verification MUST first
+  > put the local store in the canonical mode — every embedded note
+  > authenticated — fetching missing inclusion proofs from the Miden
+  > node (see FR-015). Verification therefore MAY contact the Miden node
+  > and MAY write those notes into the local store.
 - **FR-006**: The rebuild MUST be deterministic: the same
   new-shape metadata MUST always produce the same transaction
   summary commitment, on any device, on any client (Rust or
@@ -445,6 +455,20 @@ clear error.
   note store for new-shape proposals. The executing cosigner's
   local-store state MUST NOT affect whether the executed
   transaction matches the signed transaction summary commitment.
+  > **Amended (issue #409, 2026-09-08).** Read as: the executing
+  > cosigner's *prior* local-store state MUST NOT affect the match.
+  > Execution applies FR-015 first, exactly as verification does.
+- **FR-015** *(added for issue #409)*: Authenticated consumption is
+  the canonical mode for new-shape `consume_notes` proposals. Proposal
+  creation MUST authenticate every note in the proposer's store (fetch
+  and import its inclusion proof if missing) before capturing the
+  transaction summary and its chain anchor, and MUST refuse to propose
+  a note that is not yet committed on chain. Verification and execution
+  MUST authenticate every embedded note the same way before rebuilding.
+  A note that cannot be authenticated MUST fail with an explicit,
+  note-naming error (`consume_notes_note_not_authenticated`), never with
+  a summary-commitment mismatch. This holds on the Rust and TypeScript
+  SDKs alike.
 
 #### Cross-client parity
 

@@ -76,6 +76,7 @@ pub async fn fetch_snapshot(
 pub fn apply_snapshot(snapshot: &RefreshSnapshot) {
     gauge!(DELTAS_GAUGE, LABEL_STATUS => "candidate").set(snapshot.delta_counts.candidate as f64);
     gauge!(DELTAS_GAUGE, LABEL_STATUS => "canonical").set(snapshot.delta_counts.canonical as f64);
+    gauge!(DELTAS_GAUGE, LABEL_STATUS => "retained").set(snapshot.delta_counts.retained as f64);
     gauge!(DELTAS_GAUGE, LABEL_STATUS => "discarded").set(snapshot.delta_counts.discarded as f64);
     gauge!(PROPOSALS_IN_FLIGHT).set(snapshot.in_flight_proposals as f64);
     gauge!(ACCOUNTS_GAUGE).set(snapshot.accounts_total as f64);
@@ -157,6 +158,7 @@ mod tests {
             .push(Ok(DeltaStatusCounts {
                 candidate: 2,
                 canonical: 40,
+                retained: 3,
                 discarded: 1,
             }));
         storage
@@ -180,6 +182,7 @@ mod tests {
 
         assert_eq!(snapshot.delta_counts.candidate, 2);
         assert_eq!(snapshot.delta_counts.canonical, 40);
+        assert_eq!(snapshot.delta_counts.retained, 3);
         assert_eq!(snapshot.delta_counts.discarded, 1);
         assert_eq!(snapshot.in_flight_proposals, 7);
         assert_eq!(snapshot.accounts_total, 3);
@@ -264,6 +267,7 @@ mod tests {
             delta_counts: DeltaStatusCounts {
                 candidate: 5,
                 canonical: 100,
+                retained: 3,
                 discarded: 2,
             },
             in_flight_proposals: 4,
@@ -277,6 +281,7 @@ mod tests {
         let rendered = handle.render();
         assert!(rendered.contains("guardian_deltas{status=\"candidate\"} 5"));
         assert!(rendered.contains("guardian_deltas{status=\"canonical\"} 100"));
+        assert!(rendered.contains("guardian_deltas{status=\"retained\"} 3"));
         assert!(rendered.contains("guardian_deltas{status=\"discarded\"} 2"));
         assert!(rendered.contains("guardian_proposals_in_flight 4"));
         assert!(rendered.contains("guardian_accounts 12"));

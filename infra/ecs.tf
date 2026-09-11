@@ -121,6 +121,10 @@ resource "aws_ecs_task_definition" "server" {
             value = "info"
           },
           {
+            name  = "GUARDIAN_LOG_FORMAT"
+            value = lower(trimspace(var.guardian_log_format))
+          },
+          {
             name  = "GUARDIAN_NETWORK_TYPE"
             value = var.server_network_type
           },
@@ -145,12 +149,32 @@ resource "aws_ecs_task_definition" "server" {
             value = tostring(local.effective_guardian_rate_per_min)
           },
           {
+            name  = "GUARDIAN_MAX_REPLICAS"
+            value = tostring(local.effective_guardian_max_replicas)
+          },
+          {
+            name  = "GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC"
+            value = tostring(local.dashboard_rate_burst_per_sec)
+          },
+          {
+            name  = "GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN"
+            value = tostring(local.dashboard_rate_per_min)
+          },
+          {
             name  = "GUARDIAN_DB_POOL_MAX_SIZE"
             value = tostring(local.effective_guardian_db_pool_max_size)
           },
           {
             name  = "GUARDIAN_METADATA_DB_POOL_MAX_SIZE"
             value = tostring(local.effective_guardian_metadata_db_pool_max_size)
+          },
+          {
+            name  = "GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS"
+            value = tostring(local.effective_guardian_canonicalization_max_concurrent_accounts)
+          },
+          {
+            name  = "GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED"
+            value = tostring(var.guardian_canonicalization_fast_promotion_enabled)
           },
           {
             name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
@@ -165,6 +189,23 @@ resource "aws_ecs_task_definition" "server" {
             value = local.ack_ecdsa_secret_name
           }
           ],
+          var.guardian_metrics_enabled ? [
+            {
+              name  = "GUARDIAN_METRICS_ENABLED"
+              value = "true"
+            },
+            {
+              # Loopback on purpose: Fargate awsvpc containers share one
+              # network namespace, so the ADOT sidecar scrapes 127.0.0.1
+              # while nothing outside the task can reach the endpoint.
+              name  = "GUARDIAN_METRICS_ADDR"
+              value = local.metrics_bind_addr
+            },
+            {
+              name  = "GUARDIAN_METRICS_PATH"
+              value = local.metrics_path
+            }
+          ] : [],
           var.guardian_cors_allowed_origins != "" ? [
             {
               name  = "GUARDIAN_CORS_ALLOWED_ORIGINS"
@@ -212,6 +253,12 @@ resource "aws_ecs_task_definition" "server" {
               name      = "GUARDIAN_EVM_RPC_URLS"
               valueFrom = local.evm_rpc_urls_secret_arn
             }
+          ] : [],
+          local.is_prod ? [
+            {
+              name      = "GUARDIAN_DASHBOARD_CURSOR_SECRET"
+              valueFrom = data.aws_secretsmanager_secret.dashboard_cursor[0].arn
+            }
           ] : []
         )
 
@@ -224,7 +271,53 @@ resource "aws_ecs_task_definition" "server" {
           }
         }
       }
-    ]
+    ],
+    local.cloudwatch_metrics_enabled ? [
+      {
+        name  = local.adot_container_name
+        image = var.adot_image
+        # Non-essential: the collector exiting must not stop the task.
+        # The metrics-missing alarm catches a dead pipeline instead.
+        essential = false
+        # Bounds the collector's worst-case share of the shared task
+        # memory envelope at 256 MiB (a leak is OOM-killed at this cap).
+        # This is a bound, not isolation: both containers still draw
+        # from the task's total, so size server_memory with this
+        # headroom in mind.
+        memoryReservation = 64
+        memory            = 256
+
+        environment = [
+          {
+            name  = "AOT_CONFIG_CONTENT"
+            value = local.adot_config
+          },
+          {
+            # The awsemf exporter needs an explicit region; Fargate does
+            # not inject one into the container environment.
+            name  = "AWS_REGION"
+            value = var.aws_region
+          }
+        ]
+
+        healthCheck = {
+          command     = ["CMD", "/healthcheck"]
+          interval    = 30
+          timeout     = 5
+          retries     = 3
+          startPeriod = 10
+        }
+
+        logConfiguration = {
+          logDriver = "awslogs"
+          options = {
+            "awslogs-group"         = aws_cloudwatch_log_group.server.name
+            "awslogs-region"        = var.aws_region
+            "awslogs-stream-prefix" = "adot"
+          }
+        }
+      }
+    ] : []
   ))
 }
 
@@ -234,11 +327,21 @@ resource "aws_ecs_service" "server" {
   cluster                            = aws_ecs_cluster.main.id
   task_definition                    = aws_ecs_task_definition.server.arn
   desired_count                      = local.effective_server_desired_count
-  deployment_maximum_percent         = 200
+  deployment_maximum_percent         = var.server_deployment_maximum_percent
   deployment_minimum_healthy_percent = 100
   launch_type                        = "FARGATE"
   platform_version                   = "LATEST"
   enable_execute_command             = true
+
+  lifecycle {
+    precondition {
+      condition = (
+        floor(local.effective_server_minimum_positive_capacity * var.server_deployment_maximum_percent / 100) >
+        local.effective_server_minimum_positive_capacity
+      )
+      error_message = "server_deployment_maximum_percent must allow at least one surge task at the minimum positive desired capacity because deployment_minimum_healthy_percent is 100."
+    }
+  }
 
   health_check_grace_period_seconds = 30
 

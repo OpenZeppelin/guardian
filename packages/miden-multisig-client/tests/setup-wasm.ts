@@ -1,3 +1,7 @@
+// Must precede the SDK import: the SDK's bundled dexie captures
+// `globalThis.indexedDB` at module load.
+import '../src/testing/fake-indexeddb-device.js';
+
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';

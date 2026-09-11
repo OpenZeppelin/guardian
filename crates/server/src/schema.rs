@@ -83,9 +83,26 @@ diesel::table! {
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         has_pending_candidate -> Bool,
-        last_auth_timestamp -> Nullable<Int8>,
         paused_at -> Nullable<Timestamptz>,
         paused_reason -> Nullable<Text>,
+        released_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `account_auth_state` table.
+    ///
+    /// Per-(account, signer) replay-protection record, kept apart from
+    /// `account_metadata` so the per-request CAS rewrites two identifiers
+    /// and a timestamp instead of the full metadata row. Keyed per signer
+    /// commitment (issue #367) so independent cosigners never contend
+    /// on one timestamp.
+    account_auth_state (account_id, signer_commitment) {
+        #[max_length = 128]
+        account_id -> Varchar,
+        #[max_length = 128]
+        signer_commitment -> Varchar,
+        last_auth_timestamp -> Int8,
     }
 }
 
@@ -109,6 +126,51 @@ diesel::table! {
 }
 
 diesel::table! {
+    /// Representation of the `auth_sessions` table.
+    ///
+    /// Shared operator/EVM session store for horizontal scaling (issue #242).
+    auth_sessions (realm, token_digest) {
+        realm -> Text,
+        token_digest -> Bytea,
+        subject -> Jsonb,
+        issued_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        revoked_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `auth_challenges` table.
+    ///
+    /// Shared operator/EVM login-challenge store for horizontal scaling
+    /// (issue #242). Composite key `(realm, challenge_key)`.
+    auth_challenges (realm, challenge_key) {
+        realm -> Text,
+        challenge_key -> Text,
+        principal -> Text,
+        payload -> Jsonb,
+        issued_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        consumed_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `worker_leases` table.
+    ///
+    /// Single-owner background-worker coordination for horizontal scaling
+    /// (issue #242).
+    worker_leases (lease_name) {
+        lease_name -> Text,
+        holder_id -> Text,
+        acquired_at -> Timestamptz,
+        renewed_at -> Timestamptz,
+        expires_at -> Timestamptz,
+        fence_token -> Int8,
+    }
+}
+
+diesel::table! {
     /// Single-row store-level encryption marker. Its presence indicates the
     /// store is encrypted.
     storage_encryption_marker (id) {
@@ -118,4 +180,12 @@ diesel::table! {
     }
 }
 
-diesel::allow_tables_to_appear_in_same_query!(states, deltas, delta_proposals, account_metadata,);
+diesel::joinable!(account_auth_state -> account_metadata (account_id));
+
+diesel::allow_tables_to_appear_in_same_query!(
+    states,
+    deltas,
+    delta_proposals,
+    account_metadata,
+    account_auth_state,
+);

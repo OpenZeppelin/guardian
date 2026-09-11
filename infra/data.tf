@@ -16,6 +16,16 @@ data "aws_secretsmanager_secret" "storage_encryption" {
   name  = local.storage_encryption_secret_name
 }
 
+data "aws_secretsmanager_secret" "dashboard_cursor" {
+  count = local.is_prod ? 1 : 0
+  name  = local.dashboard_cursor_secret_name
+}
+
+data "aws_kms_key" "dashboard_cursor" {
+  count  = local.is_prod && data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id != "" ? 1 : 0
+  key_id = data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id
+}
+
 # Get default VPC if vpc_id is not specified
 data "aws_vpc" "default" {
   count   = var.vpc_id == "" ? 1 : 0
@@ -78,64 +88,78 @@ locals {
     for subnet_id in local.effective_rds_proxy_subnet_ids : data.aws_subnet.rds_proxy_candidate[subnet_id].availability_zone_id
   ])
 
-  cluster_name                                 = var.cluster_name != "" ? var.cluster_name : "${var.stack_name}-cluster"
-  server_service_name                          = var.server_service_name != "" ? var.server_service_name : "${var.stack_name}-server"
-  alb_name                                     = var.alb_name != "" ? var.alb_name : "${var.stack_name}-alb"
-  target_group_name                            = var.target_group_name != "" ? var.target_group_name : "${var.stack_name}-server-tg"
-  grpc_target_group_name                       = "${var.stack_name}-grpc-tg"
-  alb_security_group_name                      = var.alb_security_group_name != "" ? var.alb_security_group_name : "${var.stack_name}-alb-sg"
-  server_security_group_name                   = var.server_security_group_name != "" ? var.server_security_group_name : "${var.stack_name}-server-sg"
-  postgres_security_group_name                 = var.postgres_security_group_name != "" ? var.postgres_security_group_name : "${var.stack_name}-postgres-sg"
-  task_execution_role_name                     = var.task_execution_role_name != "" ? var.task_execution_role_name : "${var.stack_name}-ecs-task-execution"
-  task_role_name                               = var.task_role_name != "" ? var.task_role_name : "${var.stack_name}-ecs-task"
-  server_task_family                           = var.server_task_family != "" ? var.server_task_family : "${var.stack_name}-server"
-  server_container_name                        = var.server_container_name != "" ? var.server_container_name : "${var.stack_name}-server"
-  server_log_group_name                        = var.server_log_group_name != "" ? var.server_log_group_name : "/ecs/${local.server_service_name}"
-  cluster_log_group_name                       = "/aws/ecs/${local.cluster_name}/cluster"
-  postgres_identifier_seed                     = lower(replace(var.stack_name, "/[^0-9A-Za-z]/", ""))
-  postgres_identifier_base                     = local.postgres_identifier_seed != "" ? local.postgres_identifier_seed : "guardian"
-  postgres_identifier_default                  = substr(can(regex("^[a-z]", local.postgres_identifier_base)) ? local.postgres_identifier_base : "g${local.postgres_identifier_base}", 0, 63)
-  postgres_db                                  = var.postgres_db != "" ? var.postgres_db : local.postgres_identifier_default
-  postgres_user                                = var.postgres_user != "" ? var.postgres_user : local.postgres_identifier_default
-  postgres_password                            = var.postgres_password != "" ? var.postgres_password : "${var.stack_name}_dev_password"
-  postgres_port                                = 5432
-  rds_instance_identifier                      = "${var.stack_name}-postgres"
-  rds_subnet_group_name                        = "${var.stack_name}-postgres-subnets"
-  database_secret_name                         = "${var.stack_name}/server/database-url"
-  database_credentials_secret_name             = "${var.stack_name}/server/database-credentials"
-  operator_public_keys_secret_name             = "${var.stack_name}/server/operator-public-keys"
-  evm_allowed_chain_ids_secret_name            = "${var.stack_name}/server/evm-allowed-chain-ids"
-  evm_rpc_urls_secret_name                     = "${var.stack_name}/server/evm-rpc-urls"
-  ack_falcon_secret_name                       = var.guardian_ack_falcon_secret_name != "" ? var.guardian_ack_falcon_secret_name : "${var.stack_name}/server/ack-falcon-secret-key"
-  ack_ecdsa_secret_name                        = var.guardian_ack_ecdsa_secret_name != "" ? var.guardian_ack_ecdsa_secret_name : "${var.stack_name}/server/ack-ecdsa-secret-key"
-  managed_storage_encryption_enabled           = local.is_prod && var.guardian_storage_encryption_secret_name != ""
-  storage_encryption_secret_name               = local.managed_storage_encryption_enabled ? var.guardian_storage_encryption_secret_name : ""
-  rds_proxy_name                               = "${var.stack_name}-postgres-proxy"
-  rds_proxy_role_name                          = "${var.stack_name}-rds-proxy"
-  rds_proxy_security_group_name                = "${var.stack_name}-rds-proxy-sg"
-  rds_master_password                          = var.postgres_password != "" ? var.postgres_password : random_password.postgres[0].result
-  effective_rds_instance_class                 = var.rds_instance_class != "" ? var.rds_instance_class : (local.is_prod ? "db.r6g.large" : "db.t3.micro")
-  effective_rds_allocated_storage              = var.rds_allocated_storage != null ? var.rds_allocated_storage : (local.is_prod ? 50 : 20)
-  effective_server_desired_count               = var.server_desired_count != null ? var.server_desired_count : (local.is_prod ? 2 : 1)
-  effective_server_autoscaling_enabled         = var.server_autoscaling_enabled != null ? var.server_autoscaling_enabled : local.is_prod
-  effective_server_autoscaling_min_capacity    = var.server_autoscaling_min_capacity != null ? var.server_autoscaling_min_capacity : local.effective_server_desired_count
-  effective_server_autoscaling_max_capacity    = var.server_autoscaling_max_capacity != null ? var.server_autoscaling_max_capacity : (local.is_prod ? max(local.effective_server_desired_count, 6) : local.effective_server_desired_count)
-  effective_server_autoscaling_cpu_target      = var.server_autoscaling_cpu_target != null ? var.server_autoscaling_cpu_target : 65
-  effective_server_autoscaling_memory_target   = var.server_autoscaling_memory_target != null ? var.server_autoscaling_memory_target : 75
-  effective_rds_proxy_enabled                  = var.rds_proxy_enabled != null ? var.rds_proxy_enabled : local.is_prod
-  effective_rds_proxy_route_database_url       = local.effective_rds_proxy_enabled && (var.rds_proxy_route_database_url != null ? var.rds_proxy_route_database_url : true)
-  effective_rds_max_allocated_storage          = var.rds_max_allocated_storage != null ? var.rds_max_allocated_storage : (local.is_prod ? max(local.effective_rds_allocated_storage, 200) : null)
-  effective_guardian_rate_limit_enabled        = var.guardian_rate_limit_enabled != null ? var.guardian_rate_limit_enabled : true
-  effective_guardian_rate_burst_per_sec        = var.guardian_rate_burst_per_sec != null ? var.guardian_rate_burst_per_sec : (local.is_prod ? 200 : 10)
-  effective_guardian_rate_per_min              = var.guardian_rate_per_min != null ? var.guardian_rate_per_min : (local.is_prod ? 5000 : 60)
+  cluster_name                               = var.cluster_name != "" ? var.cluster_name : "${var.stack_name}-cluster"
+  server_service_name                        = var.server_service_name != "" ? var.server_service_name : "${var.stack_name}-server"
+  alb_name                                   = var.alb_name != "" ? var.alb_name : "${var.stack_name}-alb"
+  target_group_name                          = var.target_group_name != "" ? var.target_group_name : "${var.stack_name}-server-tg"
+  grpc_target_group_name                     = "${var.stack_name}-grpc-tg"
+  alb_security_group_name                    = var.alb_security_group_name != "" ? var.alb_security_group_name : "${var.stack_name}-alb-sg"
+  server_security_group_name                 = var.server_security_group_name != "" ? var.server_security_group_name : "${var.stack_name}-server-sg"
+  postgres_security_group_name               = var.postgres_security_group_name != "" ? var.postgres_security_group_name : "${var.stack_name}-postgres-sg"
+  task_execution_role_name                   = var.task_execution_role_name != "" ? var.task_execution_role_name : "${var.stack_name}-ecs-task-execution"
+  task_role_name                             = var.task_role_name != "" ? var.task_role_name : "${var.stack_name}-ecs-task"
+  server_task_family                         = var.server_task_family != "" ? var.server_task_family : "${var.stack_name}-server"
+  server_container_name                      = var.server_container_name != "" ? var.server_container_name : "${var.stack_name}-server"
+  server_log_group_name                      = var.server_log_group_name != "" ? var.server_log_group_name : "/ecs/${local.server_service_name}"
+  cluster_log_group_name                     = "/aws/ecs/${local.cluster_name}/cluster"
+  postgres_identifier_seed                   = lower(replace(var.stack_name, "/[^0-9A-Za-z]/", ""))
+  postgres_identifier_base                   = local.postgres_identifier_seed != "" ? local.postgres_identifier_seed : "guardian"
+  postgres_identifier_default                = substr(can(regex("^[a-z]", local.postgres_identifier_base)) ? local.postgres_identifier_base : "g${local.postgres_identifier_base}", 0, 63)
+  postgres_db                                = var.postgres_db != "" ? var.postgres_db : local.postgres_identifier_default
+  postgres_user                              = var.postgres_user != "" ? var.postgres_user : local.postgres_identifier_default
+  postgres_password                          = var.postgres_password != "" ? var.postgres_password : "${var.stack_name}_dev_password"
+  postgres_port                              = 5432
+  rds_instance_identifier                    = "${var.stack_name}-postgres"
+  rds_subnet_group_name                      = "${var.stack_name}-postgres-subnets"
+  database_secret_name                       = "${var.stack_name}/server/database-url"
+  database_credentials_secret_name           = "${var.stack_name}/server/database-credentials"
+  operator_public_keys_secret_name           = "${var.stack_name}/server/operator-public-keys"
+  evm_allowed_chain_ids_secret_name          = "${var.stack_name}/server/evm-allowed-chain-ids"
+  evm_rpc_urls_secret_name                   = "${var.stack_name}/server/evm-rpc-urls"
+  ack_falcon_secret_name                     = var.guardian_ack_falcon_secret_name != "" ? var.guardian_ack_falcon_secret_name : "${var.stack_name}/server/ack-falcon-secret-key"
+  ack_ecdsa_secret_name                      = var.guardian_ack_ecdsa_secret_name != "" ? var.guardian_ack_ecdsa_secret_name : "${var.stack_name}/server/ack-ecdsa-secret-key"
+  managed_storage_encryption_enabled         = local.is_prod && var.guardian_storage_encryption_secret_name != ""
+  storage_encryption_secret_name             = local.managed_storage_encryption_enabled ? var.guardian_storage_encryption_secret_name : ""
+  dashboard_cursor_secret_name               = var.guardian_dashboard_cursor_secret_name != "" ? var.guardian_dashboard_cursor_secret_name : "${var.stack_name}/server/dashboard-cursor-secret"
+  rds_proxy_name                             = "${var.stack_name}-postgres-proxy"
+  rds_proxy_role_name                        = "${var.stack_name}-rds-proxy"
+  rds_proxy_security_group_name              = "${var.stack_name}-rds-proxy-sg"
+  rds_master_password                        = var.postgres_password != "" ? var.postgres_password : random_password.postgres[0].result
+  effective_rds_instance_class               = var.rds_instance_class != "" ? var.rds_instance_class : (local.is_prod ? "db.r6g.large" : "db.t3.micro")
+  effective_rds_allocated_storage            = var.rds_allocated_storage != null ? var.rds_allocated_storage : (local.is_prod ? 50 : 20)
+  effective_server_desired_count             = var.server_desired_count != null ? var.server_desired_count : (local.is_prod ? 2 : 1)
+  effective_server_autoscaling_enabled       = var.server_autoscaling_enabled != null ? var.server_autoscaling_enabled : local.is_prod
+  effective_server_autoscaling_min_capacity  = var.server_autoscaling_min_capacity != null ? var.server_autoscaling_min_capacity : local.effective_server_desired_count
+  effective_server_autoscaling_max_capacity  = var.server_autoscaling_max_capacity != null ? var.server_autoscaling_max_capacity : (local.is_prod ? max(local.effective_server_desired_count, 6) : local.effective_server_desired_count)
+  effective_server_minimum_positive_capacity = max(1, local.effective_server_autoscaling_enabled ? local.effective_server_autoscaling_min_capacity : local.effective_server_desired_count)
+  effective_server_autoscaling_cpu_target    = var.server_autoscaling_cpu_target != null ? var.server_autoscaling_cpu_target : 65
+  effective_server_autoscaling_memory_target = var.server_autoscaling_memory_target != null ? var.server_autoscaling_memory_target : 75
+  effective_rds_proxy_enabled                = var.rds_proxy_enabled != null ? var.rds_proxy_enabled : local.is_prod
+  effective_rds_proxy_route_database_url     = local.effective_rds_proxy_enabled && (var.rds_proxy_route_database_url != null ? var.rds_proxy_route_database_url : true)
+  effective_rds_max_allocated_storage        = var.rds_max_allocated_storage != null ? var.rds_max_allocated_storage : (local.is_prod ? max(local.effective_rds_allocated_storage, 200) : null)
+  effective_rds_deletion_protection          = var.rds_deletion_protection != null ? var.rds_deletion_protection : local.is_prod
+  effective_rds_skip_final_snapshot          = var.rds_skip_final_snapshot != null ? var.rds_skip_final_snapshot : !local.is_prod
+  effective_guardian_rate_limit_enabled      = var.guardian_rate_limit_enabled != null ? var.guardian_rate_limit_enabled : true
+  effective_guardian_rate_burst_per_sec      = var.guardian_rate_burst_per_sec != null ? var.guardian_rate_burst_per_sec : (local.is_prod ? 200 : 10)
+  effective_guardian_rate_per_min            = var.guardian_rate_per_min != null ? var.guardian_rate_per_min : (local.is_prod ? 5000 : 60)
+  dashboard_rate_burst_per_sec               = var.guardian_dashboard_commitment_rate_burst_per_sec != null ? var.guardian_dashboard_commitment_rate_burst_per_sec : 6
+  dashboard_rate_per_min                     = var.guardian_dashboard_commitment_rate_per_min != null ? var.guardian_dashboard_commitment_rate_per_min : 30
+  # Rate-limit partitioning uses steady-state capacity. Rolling deployments may
+  # temporarily allow deployment_maximum_percent / 100 times the fleet budget.
+  # Clamped to >= 1: a scaled-to-zero service would otherwise ship
+  # GUARDIAN_MAX_REPLICAS=0, which the prod server refuses at startup.
+  effective_server_steady_capacity             = max(1, local.effective_server_autoscaling_enabled ? max(local.effective_server_desired_count, local.effective_server_autoscaling_max_capacity) : local.effective_server_desired_count)
+  effective_guardian_max_replicas              = var.guardian_max_replicas != null ? max(var.guardian_max_replicas, local.effective_server_steady_capacity) : local.effective_server_steady_capacity
   effective_guardian_db_pool_max_size          = var.guardian_db_pool_max_size != null ? var.guardian_db_pool_max_size : (local.is_prod ? 32 : 16)
   effective_guardian_metadata_db_pool_max_size = var.guardian_metadata_db_pool_max_size != null ? var.guardian_metadata_db_pool_max_size : local.effective_guardian_db_pool_max_size
-  managed_evm_allowed_chain_ids_secret_enabled = var.guardian_evm_allowed_chain_ids_secret_arn == "" && var.guardian_evm_allowed_chain_ids != ""
-  evm_allowed_chain_ids_secret_arn             = var.guardian_evm_allowed_chain_ids_secret_arn != "" ? var.guardian_evm_allowed_chain_ids_secret_arn : (local.managed_evm_allowed_chain_ids_secret_enabled ? aws_secretsmanager_secret.evm_allowed_chain_ids[0].arn : "")
-  managed_evm_rpc_urls_secret_enabled          = var.guardian_evm_rpc_urls_secret_arn == "" && var.guardian_evm_rpc_urls != ""
-  evm_rpc_urls_secret_arn                      = var.guardian_evm_rpc_urls_secret_arn != "" ? var.guardian_evm_rpc_urls_secret_arn : (local.managed_evm_rpc_urls_secret_enabled ? aws_secretsmanager_secret.evm_rpc_urls[0].arn : "")
-  managed_operator_public_keys_secret_enabled  = var.guardian_operator_public_keys_secret_arn == "" && length(var.guardian_operator_public_keys) > 0
-  operator_public_keys_secret_arn              = var.guardian_operator_public_keys_secret_arn != "" ? var.guardian_operator_public_keys_secret_arn : (local.managed_operator_public_keys_secret_enabled ? aws_secretsmanager_secret.operator_public_keys[0].arn : "")
+
+  effective_guardian_canonicalization_max_concurrent_accounts = var.guardian_canonicalization_max_concurrent_accounts != null ? var.guardian_canonicalization_max_concurrent_accounts : (local.is_prod ? 50 : 10)
+  managed_evm_allowed_chain_ids_secret_enabled                = var.guardian_evm_allowed_chain_ids_secret_arn == "" && var.guardian_evm_allowed_chain_ids != ""
+  evm_allowed_chain_ids_secret_arn                            = var.guardian_evm_allowed_chain_ids_secret_arn != "" ? var.guardian_evm_allowed_chain_ids_secret_arn : (local.managed_evm_allowed_chain_ids_secret_enabled ? aws_secretsmanager_secret.evm_allowed_chain_ids[0].arn : "")
+  managed_evm_rpc_urls_secret_enabled                         = var.guardian_evm_rpc_urls_secret_arn == "" && var.guardian_evm_rpc_urls != ""
+  evm_rpc_urls_secret_arn                                     = var.guardian_evm_rpc_urls_secret_arn != "" ? var.guardian_evm_rpc_urls_secret_arn : (local.managed_evm_rpc_urls_secret_enabled ? aws_secretsmanager_secret.evm_rpc_urls[0].arn : "")
+  managed_operator_public_keys_secret_enabled                 = var.guardian_operator_public_keys_secret_arn == "" && length(var.guardian_operator_public_keys) > 0
+  operator_public_keys_secret_arn                             = var.guardian_operator_public_keys_secret_arn != "" ? var.guardian_operator_public_keys_secret_arn : (local.managed_operator_public_keys_secret_enabled ? aws_secretsmanager_secret.operator_public_keys[0].arn : "")
 
   direct_database_endpoint = aws_db_instance.postgres.address
   database_proxy_endpoint  = local.effective_rds_proxy_enabled ? aws_db_proxy.postgres[0].endpoint : ""
@@ -148,8 +172,29 @@ locals {
   database_sslparams       = local.ca_bundle_enabled ? "sslmode=verify-full&sslrootcert=${local.ca_bundle_container_path}" : "sslmode=require"
   database_url             = "postgres://${urlencode(local.postgres_user)}:${urlencode(local.rds_master_password)}@${local.database_endpoint}:${local.postgres_port}/${local.postgres_db}?${local.database_sslparams}"
 
+  # Observability: ADOT sidecar scraping the in-task Prometheus endpoint into
+  # CloudWatch EMF. The endpoint binds loopback: Fargate awsvpc containers
+  # share one network namespace, so the sidecar reaches it on 127.0.0.1 while
+  # nothing outside the task can, regardless of security-group contents.
+  metrics_port      = 9464
+  metrics_path      = "/metrics"
+  metrics_bind_addr = "127.0.0.1:${local.metrics_port}"
+  # CloudWatch export cascades off with the endpoint: without it the
+  # sidecar has nothing to scrape, so one flag turns everything off.
+  cloudwatch_metrics_enabled = var.cloudwatch_metrics_enabled && var.guardian_metrics_enabled
+  metrics_namespace          = var.metrics_namespace != "" ? var.metrics_namespace : "${title(var.stack_name)}/Server"
+  adot_container_name        = "adot-collector"
+  emf_log_group_name         = "${local.server_log_group_name}/emf"
+  dashboard_name             = "${var.stack_name}-server"
+
   # Custom domain configuration
   domain_enabled      = var.domain_name != ""
   service_fqdn        = var.domain_name == "" ? "" : (var.subdomain != "" ? "${var.subdomain}.${var.domain_name}" : var.domain_name)
   acm_certificate_arn = local.domain_enabled ? var.acm_certificate_arn : ""
+
+  # Temporary legacy subdomain used during a hostname migration.
+  alias_domain_requested    = var.alias_subdomain != ""
+  alias_service_fqdn        = local.alias_domain_requested && var.domain_name != "" ? "${var.alias_subdomain}.${var.domain_name}" : ""
+  alias_domain_enabled      = local.alias_service_fqdn != "" && local.alias_service_fqdn != local.service_fqdn
+  alias_acm_certificate_arn = local.alias_domain_enabled ? (var.alias_acm_certificate_arn != "" ? var.alias_acm_certificate_arn : local.acm_certificate_arn) : ""
 }

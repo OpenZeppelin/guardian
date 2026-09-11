@@ -80,7 +80,6 @@ export interface MultisigConfig {
   signerCommitments: string[];
   guardianCommitment: string;
   guardianPublicKey?: string;
-  guardianEnabled?: boolean;
   storageMode?: 'private' | 'public';
   procedureThresholds?: ProcedureThreshold[];
   signatureScheme?: SignatureScheme;

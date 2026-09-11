@@ -2,6 +2,11 @@
 
 Interactive CLI that exercises the `miden-multisig-client` SDK end-to-end: generate keys, create/register multisig accounts, list notes, coordinate proposals, export/import offline files, and execute transactions.
 
+On a fee-charging chain (`verification_base_fee` non-zero) fund the demo account with the
+native fee asset before the first execute: the guarded auth procedure pays the fee before
+the transaction summary exists, so an unfunded vault aborts there rather than reaching
+signing.
+
 ## Requirements
 
 - Guardian server (default `http://localhost:50051`)
@@ -13,7 +18,11 @@ Interactive CLI that exercises the `miden-multisig-client` SDK end-to-end: gener
 cargo run -p guardian-demo
 ```
 
-At startup you can override the Miden/GUARDIAN endpoints if needed.
+At startup you can override the Miden/GUARDIAN endpoints, select an optional
+custom remote prover, and set the total proof-attempt budget. Leaving the prover
+selection and attempt prompt at their defaults preserves the network's prover
+selection and uses two total remote proof attempts. Local proving always runs
+once.
 
 ## Typical Flow
 
@@ -23,6 +32,7 @@ At startup you can override the Miden/GUARDIAN endpoints if needed.
 4. Pull/register the account from another terminal and sign proposals.
 5. Create proposals (transfer, consume notes, switch GUARDIAN) and gather signatures.
 6. Execute once the threshold is satisfied, or export/import proposals for offline signing.
+7. After recovering an account on a fresh device (`r` then a sync/pull), run `n` — "Recover notes" — to restore pending notes via the transport drain, proposal import, and public backfill in one flow.
 
 All of these steps are surfaced via the interactive menu—run it in multiple terminals to simulate different cosigners.
 

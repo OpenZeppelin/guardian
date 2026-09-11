@@ -32,7 +32,7 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-process = "2.4"
 pin-project-lite = "0.2"
 sha2 = "0.10"
-rand = "0.9"
+rand = { workspace = true }
 rand_chacha = { workspace = true }
 secrecy = { version = "0.10", default-features = false }
 serde = { workspace = true }
@@ -41,6 +41,7 @@ url = "2.5"
 zeroize = { version = "1.7", features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 tonic-reflection = "0.14"
@@ -50,9 +51,10 @@ tower-http = { version = "0.6", features = ["cors"] }
 utoipa = { workspace = true }
 dotenvy = "0.15"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 miden-protocol = { workspace = true, features = ["testing"] }
 miden-standards = { workspace = true }
+futures = "0.3"
 futures-util = { version = "0.3", optional = true }
 rustls = { version = "0.23", optional = true }
 rustls-pemfile = { version = "2", optional = true }
@@ -72,6 +74,8 @@ diesel_migrations = { version = "2.2", optional = true }
 # Optional dependencies for e2e tests
 miden-client = { workspace = true, features = ["testing"], optional = true }
 miden-confidential-contracts = { path = "../contracts", optional = true }
+miden-testing = { workspace = true, optional = true }
+miden-tx = { workspace = true, optional = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
@@ -79,6 +83,7 @@ tonic-prost-build = { workspace = true }
 [dev-dependencies]
 bytes = "1"
 futures = "0.3"
+miden-protocol = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util"] }
 k256 = { version = "0.13", features = ["ecdsa", "pkcs8", "std"] }
 static_assertions = "1.1"
@@ -102,4 +107,10 @@ postgres = [
     "tokio-postgres-rustls",
 ]
 integration = []
-e2e = ["miden-client", "miden-confidential-contracts"]
+e2e = [
+    "miden-client",
+    "miden-confidential-contracts",
+    "miden-confidential-contracts/testing",
+    "miden-testing",
+    "miden-tx",
+]

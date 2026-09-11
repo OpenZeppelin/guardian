@@ -31,9 +31,11 @@ resource "aws_db_instance" "postgres" {
   db_subnet_group_name       = aws_db_subnet_group.postgres.name
   vpc_security_group_ids     = [aws_security_group.postgres.id]
   publicly_accessible        = var.rds_publicly_accessible
+  multi_az                   = var.rds_multi_az
   backup_retention_period    = var.rds_backup_retention_days
-  deletion_protection        = var.rds_deletion_protection
-  skip_final_snapshot        = var.rds_skip_final_snapshot
+  deletion_protection        = local.effective_rds_deletion_protection
+  skip_final_snapshot        = local.effective_rds_skip_final_snapshot
+  final_snapshot_identifier  = "${local.rds_instance_identifier}-final"
   storage_encrypted          = true
   apply_immediately          = true
   auto_minor_version_upgrade = true

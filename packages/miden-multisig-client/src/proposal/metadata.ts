@@ -1,6 +1,7 @@
 import type { ProposalMetadata as GuardianProposalMetadata } from '@openzeppelin/guardian-client';
 import type { ProposalMetadata } from '../types.js';
 import { isProcedureName } from '../procedures.js';
+import { isP2idNoteVisibility, parseP2ideHeight } from '../types/proposal.js';
 
 export class ProposalMetadataCodec {
   static toGuardian(metadata: ProposalMetadata): GuardianProposalMetadata {
@@ -9,6 +10,7 @@ export class ProposalMetadataCodec {
       description: metadata.description,
       salt: metadata.saltHex,
       requiredSignatures: metadata.requiredSignatures,
+      chainAnchor: metadata.chainAnchor,
     };
 
     switch (metadata.proposalType) {
@@ -25,6 +27,15 @@ export class ProposalMetadataCodec {
           recipientId: metadata.recipientId,
           faucetId: metadata.faucetId,
           amount: metadata.amount,
+          // Canonicalize: emit note_type only when private, so a public note
+          // keeps the pre-#322 wire shape and matches the Rust encoder (which
+          // round-trips through the NoteType enum). Absent => public.
+          noteType: metadata.noteType === 'private' ? 'private' : undefined,
+          // Validated on encode too: the create path already rejects bad
+          // heights when building the note, but metadata handed directly to
+          // the codec must not reach the wire with a value cosigners reject.
+          reclaimHeight: parseP2ideHeight('reclaimHeight', metadata.reclaimHeight),
+          timelockHeight: parseP2ideHeight('timelockHeight', metadata.timelockHeight),
         };
       case 'switch_guardian':
         return {
@@ -63,6 +74,7 @@ export class ProposalMetadataCodec {
       description: guardian.description ?? '',
       saltHex: guardian.salt,
       requiredSignatures: guardian.requiredSignatures,
+      chainAnchor: guardian.chainAnchor,
     };
 
     switch (guardian.proposalType) {
@@ -70,12 +82,20 @@ export class ProposalMetadataCodec {
         if (!guardian.recipientId || !guardian.faucetId || !guardian.amount) {
           throw new Error('p2id proposal is missing required metadata fields');
         }
+        if (guardian.noteType !== undefined && !isP2idNoteVisibility(guardian.noteType)) {
+          throw new Error(
+            `p2id proposal has unsupported noteType '${guardian.noteType}': expected 'public' or 'private'`,
+          );
+        }
         return {
           ...base,
           proposalType: 'p2id',
           recipientId: guardian.recipientId,
           faucetId: guardian.faucetId,
           amount: guardian.amount,
+          noteType: guardian.noteType,
+          reclaimHeight: parseP2ideHeight('reclaimHeight', guardian.reclaimHeight),
+          timelockHeight: parseP2ideHeight('timelockHeight', guardian.timelockHeight),
         };
       case 'consume_notes':
         if (!guardian.noteIds || guardian.noteIds.length === 0) {
@@ -127,7 +147,7 @@ export class ProposalMetadataCodec {
         };
       default:
         // Any proposal type the SDK does not model collapses to the 'custom'
-        // bucket while preserving the original label (issue #266).
+        // bucket while preserving the original label.
         return {
           ...base,
           proposalType: 'custom',
@@ -168,6 +188,11 @@ export class ProposalMetadataCodec {
         if (!metadata.recipientId || !metadata.faucetId || !metadata.amount) {
           throw new Error('p2id proposal metadata is incomplete');
         }
+        if (metadata.noteType !== undefined && !isP2idNoteVisibility(metadata.noteType)) {
+          throw new Error(`p2id proposal has unsupported noteType '${metadata.noteType}'`);
+        }
+        parseP2ideHeight('reclaimHeight', metadata.reclaimHeight);
+        parseP2ideHeight('timelockHeight', metadata.timelockHeight);
         return metadata;
       case 'custom':
         // Custom proposals are opaque to the SDK; nothing to validate beyond

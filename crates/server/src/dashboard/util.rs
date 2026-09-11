@@ -17,12 +17,8 @@ pub(crate) fn cookie_date(timestamp: DateTime<Utc>) -> String {
 }
 
 pub(crate) fn rate_limit_error(limit_type: RateLimitType) -> GuardianError {
-    let retry_after_secs = match limit_type {
-        RateLimitType::Burst => 1,
-        RateLimitType::Sustained => 60,
-    };
     GuardianError::RateLimitExceeded {
-        retry_after_secs,
+        retry_after_secs: limit_type.retry_after_secs(),
         scope: "operator_commitment".to_string(),
     }
 }

@@ -79,14 +79,13 @@ Defaults
 - Session TTL: 8 hours
 - Max outstanding challenges per operator: 8
 - Cookie name: `guardian_operator_session`
-- Pubkey-endpoint rate limit: 5 burst / 30 per minute
+- Per-commitment auth budget: 6 burst / 30 per minute, partitioned by
+  `GUARDIAN_MAX_REPLICAS` in multi-replica deployments
 
-Sessions are **in-memory per task** and there is no ALB session
-stickiness — so on multi-task deployments an operator may be routed to a
-task that did not mint their session and be asked to re-authenticate.
-The cookie is signed and can be validated cryptographically, but the
-corresponding session record only lives in the task that minted it. A
-task restart drops all sessions held by that task.
+Session records use the configured coordination backend. Postgres-backed
+deployments share sessions across replicas, so ALB stickiness is not required
+and task replacement does not invalidate an unexpired session. Filesystem-backed
+development uses the in-memory coordination backend and remains single-process.
 
 For multi-replica deployments where you want cursors to validate across
 replicas, set `GUARDIAN_DASHBOARD_CURSOR_SECRET` to a 32-byte hex value
@@ -115,11 +114,36 @@ The global-delta feed
 also accepts a `status` filter
 ([`services/dashboard_global_deltas.rs`](../crates/server/src/services/dashboard_global_deltas.rs)):
 
-- Allowed values: `candidate`, `canonical`, `discarded` (comma-separated
-  to combine, e.g. `?status=candidate,canonical`).
+- Allowed values: `candidate`, `canonical`, `retained`, `discarded`
+  (comma-separated to combine, e.g. `?status=candidate,canonical`).
 - Omitted or empty → all statuses.
 - Duplicates within the filter are silently coalesced.
 - Any other token returns HTTP 400 `invalid_status_filter`.
+
+Present `retained` rows as **"Unresolved / account unlocked"**, never as
+failed: the guardian stopped actively verifying and released the account
+slot, but the on-chain outcome is still uncertain and background
+reconciliation may promote the row to `canonical` until its retention
+TTL expires. The triage fields:
+
+- `status_reason` (feed + detail): why the row left the active candidate
+  path — `retry_exhausted` / `diverged` on `retained` rows (a `diverged`
+  row that later reconciles is direct evidence the divergence verdict
+  was spurious), `client_abandoned` on `discarded` rows.
+- `retained_expires_at` (detail): when the recovery net gives up for
+  good. Retained age is `now − status_timestamp`.
+- `base_matches_stored_state` (detail): whether the row still chains
+  from the stored account state; `false` means it is structurally
+  obsolete and can only age out.
+- The latest reconciliation activity is in the worker logs as stable
+  `event=reconcile_*` records (see TROUBLESHOOTING.md).
+
+`GET /dashboard/info` exposes the reconciliation settings
+(`retained_ttl_seconds`, `reconcile_interval_seconds`,
+`reconcile_page_size`) so operators can tell why retained rows are or
+are not being reconsidered — note that individual accounts back off as
+their recoverable rows age, so a retained row being probed less often
+than the configured interval is expected.
 
 ## Permission vocabulary
 
@@ -270,6 +294,7 @@ cat > /tmp/operators.json <<'EOF'
    "permissions": ["dashboard:read", "accounts:pause"] }]
 EOF
 
+GUARDIAN_NETWORK_TYPE=MidenLocal \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/operators.json \
 GUARDIAN_STORAGE_PATH=.guardian/storage \
 GUARDIAN_METADATA_PATH=.guardian/metadata \

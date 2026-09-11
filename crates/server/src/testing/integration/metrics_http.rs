@@ -8,13 +8,13 @@
 //! and never installed globally (the global recorder is process-wide
 //! and set-once; see `crate::metrics::recorder`).
 
+use crate::builder::handle::{HttpRouterConfig, build_http_router};
 use crate::metrics::config::MetricsConfig;
 use crate::metrics::recorder::build_recorder;
 use crate::metrics::refresher::{apply_snapshot, fetch_snapshot};
 use crate::metrics::router::metrics_router;
 use crate::metrics::storage::InstrumentedStorage;
-use crate::metrics::track_http;
-use crate::testing::helpers::{create_router, create_test_app_state};
+use crate::testing::helpers::{create_router, create_test_app_state, test_router_config};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -45,14 +45,22 @@ fn run_scrape_scenario() -> String {
             let mut state = create_test_app_state().await;
             state.storage = Arc::new(InstrumentedStorage::new(state.storage));
 
-            let app = create_router(state.clone()).layer(axum::middleware::from_fn(track_http));
+            // `metrics_enabled` rather than a hand-stacked `track_http`,
+            // so the layer under test is the one production installs.
+            let app = build_http_router(
+                state.clone(),
+                HttpRouterConfig {
+                    metrics_enabled: true,
+                    ..test_router_config()
+                },
+            );
 
             // Known route, unmatched route, and a templated dashboard
             // route with a raw account id in the path.
             for uri in [
                 "/pubkey",
                 "/definitely-not-a-route",
-                "/state?account_id=0xabc123",
+                "/dashboard/accounts/0xabc123",
             ] {
                 let _ = app
                     .clone()
@@ -102,6 +110,16 @@ fn scrape_exposes_http_storage_and_aggregate_metrics() {
     assert!(
         !exposition.contains("definitely-not-a-route"),
         "raw unmatched path leaked into labels"
+    );
+    // Templated routes are labelled by their `MatchedPath`, so a raw
+    // account id never becomes its own series.
+    assert!(
+        exposition.contains("route=\"/dashboard/accounts/{account_id}\""),
+        "missing templated dashboard route label in:\n{exposition}"
+    );
+    assert!(
+        !exposition.contains("0xabc123"),
+        "raw account id leaked into labels"
     );
     assert!(exposition.contains("guardian_http_request_duration_seconds_bucket"));
 

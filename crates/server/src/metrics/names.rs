@@ -12,6 +12,13 @@
 //! proto definition, static operation names, and small closed enums.
 //! Account IDs, nonces, commitments, pubkeys, client IPs, and error
 //! strings must never become label values.
+//!
+//! Downstream consumers re-list parts of this taxonomy and do not track
+//! it automatically: the CloudWatch export allowlist in
+//! `infra/observability.tf` (metrics absent there never reach
+//! CloudWatch) and the Grafana dashboard in
+//! `docs/guides/observability/grafana/dashboards/guardian.json`. Adding
+//! or renaming a metric here means revisiting both.
 
 // --- HTTP request path -------------------------------------------------
 
@@ -41,14 +48,29 @@ pub const DB_POOL_PENDING_ACQUIRES: &str = "guardian_db_pool_pending_acquires";
 
 pub const MIDEN_RPC_REQUESTS_TOTAL: &str = "guardian_miden_rpc_requests_total";
 pub const MIDEN_RPC_DURATION_SECONDS: &str = "guardian_miden_rpc_duration_seconds";
+pub const MIDEN_RPC_RETRIES_TOTAL: &str = "guardian_miden_rpc_retries_total";
 
 // --- Canonicalization jobs ----------------------------------------------
 
 pub const CANONICALIZATION_RUNS_TOTAL: &str = "guardian_canonicalization_runs_total";
 pub const CANONICALIZATION_RUN_DURATION_SECONDS: &str =
     "guardian_canonicalization_run_duration_seconds";
+pub const CANONICALIZATION_FAST_RUNS_TOTAL: &str = "guardian_canonicalization_fast_runs_total";
+pub const CANONICALIZATION_FAST_RUN_DURATION_SECONDS: &str =
+    "guardian_canonicalization_fast_run_duration_seconds";
+pub const CANONICALIZATION_RECONCILE_RUNS_TOTAL: &str =
+    "guardian_canonicalization_reconcile_runs_total";
+pub const CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS: &str =
+    "guardian_canonicalization_reconcile_run_duration_seconds";
 pub const CANONICALIZATION_CANDIDATES_TOTAL: &str = "guardian_canonicalization_candidates_total";
 pub const CANONICALIZATION_RETRIES_TOTAL: &str = "guardian_canonicalization_retries_total";
+pub const CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL: &str =
+    "guardian_canonicalization_commitment_mismatches_total";
+pub const CANONICALIZATION_PASS_ACCOUNTS: &str = "guardian_canonicalization_pass_accounts";
+pub const CANONICALIZATION_DELTAS_FETCHED_TOTAL: &str =
+    "guardian_canonicalization_deltas_fetched_total";
+pub const CANONICALIZATION_CANDIDATE_AGE_SECONDS: &str =
+    "guardian_canonicalization_candidate_age_seconds";
 
 // --- Delta / proposal lifecycle ------------------------------------------
 
@@ -87,10 +109,15 @@ pub const LABEL_OUTCOME: &str = "outcome";
 pub const LABEL_KIND: &str = "kind";
 pub const LABEL_EVENT: &str = "event";
 pub const LABEL_LIMIT_TYPE: &str = "limit_type";
+pub const LABEL_TRANSPORT: &str = "transport";
 pub const LABEL_POOL: &str = "pool";
 pub const LABEL_VERSION: &str = "version";
 pub const LABEL_GIT_COMMIT: &str = "git_commit";
 pub const LABEL_PROFILE: &str = "profile";
+
+/// The closed value set for `LABEL_TRANSPORT`.
+pub const TRANSPORT_HTTP: &str = "http";
+pub const TRANSPORT_GRPC: &str = "grpc";
 
 /// Every label key any guardian metric is allowed to carry. The
 /// `REGISTRY` unit test enforces membership; adding a new label means
@@ -106,6 +133,7 @@ pub const LABEL_ALLOWLIST: &[&str] = &[
     LABEL_KIND,
     LABEL_EVENT,
     LABEL_LIMIT_TYPE,
+    LABEL_TRANSPORT,
     LABEL_POOL,
     LABEL_VERSION,
     LABEL_GIT_COMMIT,
@@ -187,6 +215,13 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Outbound Miden chain-node RPC latency in seconds, by operation.",
     },
     MetricDef {
+        name: MIDEN_RPC_RETRIES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OPERATION],
+        help: "Miden chain-node RPC retry attempts beyond the first, by operation. \
+               Zero unless the configured read budget allows more than one attempt.",
+    },
+    MetricDef {
         name: STORAGE_OPERATIONS_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OPERATION, LABEL_OUTCOME],
@@ -231,7 +266,8 @@ pub const REGISTRY: &[MetricDef] = &[
         name: CANONICALIZATION_RUNS_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
-        help: "Canonicalization worker passes over all accounts, by outcome.",
+        help: "Canonicalization worker passes over all accounts, by outcome \
+               (completed, partial, cancelled, error).",
     },
     MetricDef {
         name: CANONICALIZATION_RUN_DURATION_SECONDS,
@@ -240,17 +276,71 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Duration of one canonicalization pass over all accounts, in seconds.",
     },
     MetricDef {
+        name: CANONICALIZATION_FAST_RUNS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Recent-candidate promotion-only passes, by outcome (completed, partial, cancelled, error).",
+    },
+    MetricDef {
+        name: CANONICALIZATION_FAST_RUN_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Duration of one recent-candidate promotion-only pass, in seconds.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_RECONCILE_RUNS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Recoverable-delta reconcile passes, by outcome (completed, partial, cancelled, error).",
+    },
+    MetricDef {
+        name: CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Duration of one recoverable-delta reconcile pass, in seconds.",
+    },
+    MetricDef {
         name: CANONICALIZATION_CANDIDATES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
         help: "Candidate deltas processed by the canonicalization worker, by outcome \
-               (canonicalized, retried, discarded, grace_deferred).",
+               (canonicalized, retried, discarded, grace_deferred, divergence_deferred, \
+               diverged, stale_base).",
     },
     MetricDef {
         name: CANONICALIZATION_RETRIES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[],
         help: "Canonicalization verification retries consumed across all candidates.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[],
+        help: "Candidates whose client-claimed new commitment was missing or differed \
+               from the locally recomputed commitment; nonzero indicates a client defect.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_PASS_ACCOUNTS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Accounts with pending candidates listed at the start of the most \
+               recent canonicalization pass.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_DELTAS_FETCHED_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[],
+        help: "Candidate delta rows fetched by the canonicalization worker across all \
+               accounts; this tracks canonicalization pass volume.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_CANDIDATE_AGE_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Age of a candidate delta (since it entered candidate status) each \
+               time the worker processes it; sustained growth means candidates \
+               are not converging.",
     },
     MetricDef {
         name: DELTAS_SUBMITTED_TOTAL,
@@ -285,8 +375,9 @@ pub const REGISTRY: &[MetricDef] = &[
     MetricDef {
         name: RATE_LIMIT_REJECTIONS_TOTAL,
         kind: MetricKind::Counter,
-        labels: &[LABEL_LIMIT_TYPE],
-        help: "Requests rejected by the rate limiter, by limit type (burst, sustained).",
+        labels: &[LABEL_LIMIT_TYPE, LABEL_TRANSPORT],
+        help: "Requests rejected by the rate limiter, by limit type (burst, sustained) \
+               and transport (http, grpc).",
     },
     MetricDef {
         name: DELTAS_GAUGE,
@@ -373,7 +464,9 @@ const KNOWN_GRPC_METHODS: &[(&str, &str)] = &[
     ("guardian.Guardian", "GetDeltaProposals"),
     ("guardian.Guardian", "GetDeltaProposal"),
     ("guardian.Guardian", "SignDeltaProposal"),
+    ("guardian.Guardian", "AbandonDeltaCandidate"),
     ("guardian.Guardian", "GetAccountByKeyCommitment"),
+    ("guardian.Guardian", "GetDeltaHistory"),
     // Served alongside Guardian via tonic-reflection (v1 and v1alpha).
     (
         "grpc.reflection.v1.ServerReflection",

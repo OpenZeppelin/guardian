@@ -25,12 +25,11 @@ use crate::logging::LoggingConfig;
 use crate::metadata::MetadataStore;
 use crate::metrics::{InstrumentedStorage, MetricsConfig};
 use crate::middleware::{BodyLimitConfig, RateLimitConfig};
-use crate::network::{NetworkType, miden::MidenNetworkClient};
+use crate::network::NetworkType;
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use guardian_shared::SignatureScheme;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Builder for configuring and creating a server instance
 pub struct ServerBuilder {
@@ -40,7 +39,9 @@ pub struct ServerBuilder {
     auditor: Option<crate::audit::SharedAuditor>,
     ack: Option<AckRegistry>,
     canonicalization: Option<CanonicalizationConfig>,
+    rpc: Option<crate::network::RpcSettings>,
     dashboard: Option<Arc<DashboardState>>,
+    coordination: Option<crate::coordination::CoordinationHandles>,
     logging_config: Option<LoggingConfig>,
     cors_layer: Option<tower_http::cors::CorsLayer>,
     rate_limit_config: Option<RateLimitConfig>,
@@ -62,7 +63,9 @@ impl ServerBuilder {
             auditor: None,
             ack: None,
             canonicalization: Some(CanonicalizationConfig::default()),
+            rpc: None,
             dashboard: None,
+            coordination: None,
             logging_config: None,
             cors_layer: None,
             rate_limit_config: None,
@@ -181,6 +184,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Coordination store handles selected by the storage backend (Postgres =>
+    /// shared, filesystem => in-memory). Injected into the realm-scoped consumers
+    /// when their state is built from the environment.
+    pub fn coordination(mut self, handles: crate::coordination::CoordinationHandles) -> Self {
+        self.coordination = Some(handles);
+        self
+    }
+
     /// Configure canonicalization mode
     ///
     /// # Arguments
@@ -208,6 +219,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Sets node RPC settings explicitly for the network they belong to.
+    /// When no settings are provided, `build()` resolves them from the
+    /// environment on top of the declared network type.
+    pub fn with_rpc(mut self, settings: crate::network::RpcSettings) -> Self {
+        self.rpc = Some(settings);
+        self
+    }
+
     /// Configure logging
     ///
     /// # Arguments
@@ -219,7 +238,7 @@ impl ServerBuilder {
     /// use server::logging::LoggingConfig;
     /// use tracing::Level;
     ///
-    /// // Default logging (info level with env filter)
+    /// // Default logging (info level, env filter, GUARDIAN_LOG_FORMAT honoured)
     /// let builder = ServerBuilder::new()
     ///     .with_logging(LoggingConfig::default());
     ///
@@ -305,6 +324,13 @@ impl ServerBuilder {
     ///
     /// Rate limiting uses two windows: burst (per second) and sustained (per minute).
     /// Limits are applied per IP, with optional enhancement based on account/signer.
+    ///
+    /// An explicitly supplied config is enforced **per process, as-is** — it is
+    /// NOT divided by `GUARDIAN_MAX_REPLICAS`. Multi-replica partitioning
+    /// (global limit ÷ max replicas) happens only in
+    /// [`RateLimitConfig::from_env`], which is also the default when this
+    /// method is not called. When embedding the server behind a multi-replica
+    /// deployment with explicit limits, pass per-replica values.
     ///
     /// # Arguments
     /// * `config` - The rate limit configuration to use
@@ -442,20 +468,88 @@ impl ServerBuilder {
             .ok_or("Auditor not set. Use .auditor(...) — typically populated by StorageMetadataBuilder::build()")?;
 
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
+        let coordination = self.coordination;
+        // Fail closed before anything else: the Postgres backend must never fall
+        // back to per-process coordination (AlwaysLeader + in-memory sessions),
+        // which would let every replica run canonicalization and split auth
+        // state. Checking here (not only on the dashboard==None path) catches a
+        // manual builder that supplies a custom dashboard but skips coordination.
+        // Present-but-in-memory handles are equally rejected: their leases have
+        // no shared-store row, so canonicalization writes would carry no fence
+        // and the Postgres backend would refuse them at runtime anyway — surface
+        // the misconfiguration at startup instead. The handles must come from
+        // the same database as storage and metadata
+        // (StorageMetadataBuilder::build wires all three from one pool); a
+        // mismatched domain fails closed at runtime — the fence cannot validate
+        // and candidates stay invisible to the worker — but is not detectable
+        // here through the trait objects.
+        if storage.kind() == crate::storage::StorageType::Postgres {
+            match &coordination {
+                None => {
+                    return Err("Postgres storage requires coordination handles for shared \
+                         sessions/challenges and canonicalization leadership; call \
+                         .coordination(...) (populated by StorageMetadataBuilder::build())"
+                        .to_string());
+                }
+                Some(handles) if !handles.leader.supports_fencing() => {
+                    return Err("Postgres storage requires fenceable coordination \
+                         (CoordinationHandles::postgres); in-memory handles would run \
+                         canonicalization on every replica with unfenced writes"
+                        .to_string());
+                }
+                Some(_) => {}
+            }
+        }
+        let coordination_mode = coordination
+            .as_ref()
+            .map(|handles| handles.mode)
+            .unwrap_or(crate::coordination::CoordinationMode::SingleProcess);
+        let leader: Arc<dyn crate::coordination::LeaderElector> = coordination
+            .as_ref()
+            .map(|handles| handles.leader.clone())
+            .unwrap_or_else(|| {
+                Arc::new(crate::coordination::AlwaysLeader::new(
+                    crate::coordination::CANONICALIZATION_LEASE,
+                    "single-process",
+                ))
+            });
         let dashboard = match self.dashboard {
             Some(dashboard) => dashboard,
-            None => Arc::new(DashboardState::from_env_for_network(network_type).await?),
+            None => match coordination.as_ref() {
+                Some(handles) => Arc::new(
+                    DashboardState::from_env_for_network_with_stores(
+                        network_type,
+                        handles.operator_sessions.clone(),
+                        handles.operator_challenges.clone(),
+                    )
+                    .await?,
+                ),
+                // The Postgres-without-coordination case already failed closed
+                // above, so reaching here with no handles means a non-Postgres
+                // (filesystem/dev) backend using per-process dashboard state.
+                None => Arc::new(DashboardState::from_env_for_network(network_type).await?),
+            },
         };
         #[cfg(feature = "evm")]
-        let evm = Arc::new(EvmAppState::from_env().await?);
+        let evm = {
+            let sessions = match coordination.as_ref() {
+                Some(handles) => crate::evm::EvmSessionState::new(
+                    handles.evm_sessions.clone(),
+                    handles.evm_challenges.clone(),
+                ),
+                None => crate::evm::EvmSessionState::default(),
+            };
+            Arc::new(EvmAppState::from_env_with_sessions(sessions).await?)
+        };
 
-        let network_client = MidenNetworkClient::from_network(network_type)
-            .await
-            .map_err(|e| format!("Failed to create network client: {e}"))?;
+        let rpc_settings = crate::network::RpcSettings::resolve_for(self.rpc, network_type)?;
+        let network_client = rpc_settings.connect().await?;
 
         let startup_info = startup::StartupInfo::new(
             network_type,
+            rpc_settings.sanitized_endpoint(),
             storage.kind(),
+            coordination_mode.as_str(),
             ack.ecdsa_backend_id(),
             ack.commitment(&SignatureScheme::Falcon),
             ack.commitment(&SignatureScheme::Ecdsa),
@@ -467,10 +561,48 @@ impl ServerBuilder {
             metrics_config.enabled.then_some(metrics_config.bind_addr),
         );
 
+        // Prod fail-fast pair for rate-limit partitioning; non-prod keeps the
+        // warnings emitted by RateLimitConfig::from_env. (A missing cursor
+        // secret only warns and boots — it is not a prod guard.)
+        let is_prod = crate::config::stage::is_prod().map_err(|error| error.to_string())?;
+        // An unparsable GUARDIAN_MAX_REPLICAS falls back to a divisor of 1 (no
+        // partitioning), silently letting the fleet aggregate reach
+        // max_replicas × the global limit — fail-open, the exact FR-009 bug.
+        // Refuse to start rather than serve too loose.
+        if is_prod {
+            crate::middleware::rate_limit::max_replicas_from_env().map_err(|error| {
+                format!(
+                    "invalid GUARDIAN_MAX_REPLICAS in the prod stage (GUARDIAN_ENV=prod): \
+                     {error}. Falling back would disable rate-limit partitioning and let the \
+                     fleet aggregate exceed the global limit. Set it to the deployment's \
+                     autoscaling max capacity."
+                )
+            })?;
+        }
+        // An enabled rate limit that partitions to 0 per replica (global limit
+        // below GUARDIAN_MAX_REPLICAS) silently throttles all traffic on every
+        // replica. Mirror the filesystem-backend prod guard and refuse to start
+        // rather than serve a fleet that denies every request.
+        let rate_limit_config = self
+            .rate_limit_config
+            .unwrap_or_else(RateLimitConfig::from_env);
+        if is_prod
+            && rate_limit_config.enabled
+            && (rate_limit_config.burst_per_sec == 0 || rate_limit_config.per_min == 0)
+        {
+            return Err(
+                "rate limiting partitions to 0 requests per replica in the prod stage \
+                 (GUARDIAN_ENV=prod): a global GUARDIAN_RATE_BURST_PER_SEC/GUARDIAN_RATE_PER_MIN \
+                 below GUARDIAN_MAX_REPLICAS makes every replica throttle all traffic. Raise the \
+                 global rate limit or lower GUARDIAN_MAX_REPLICAS."
+                    .to_string(),
+            );
+        }
+
         let app_state = AppState {
             storage,
             metadata,
-            network_client: Arc::new(Mutex::new(network_client)),
+            network_client,
             ack,
             canonicalization: self.canonicalization,
             clock: Arc::new(SystemClock),
@@ -482,9 +614,10 @@ impl ServerBuilder {
 
         Ok(ServerHandle {
             app_state,
+            leader,
             startup_info,
             cors_layer: self.cors_layer,
-            rate_limit_config: self.rate_limit_config,
+            rate_limit_config: Some(rate_limit_config),
             body_limit_config: self.body_limit_config,
             metrics_config,
             http_enabled: self.http_enabled,
@@ -502,3 +635,18 @@ impl Default for ServerBuilder {
 }
 
 // ServerHandle moved to builder::handle
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::env_lock::ENV_LOCK;
+
+    #[test]
+    fn with_rpc_stores_explicit_settings() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let settings = crate::network::RpcSettings::from_env(NetworkType::MidenLocal).unwrap();
+        let builder = ServerBuilder::new().with_rpc(settings);
+        assert!(builder.rpc.is_some());
+        assert!(ServerBuilder::new().rpc.is_none());
+    }
+}

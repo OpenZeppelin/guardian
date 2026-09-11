@@ -38,8 +38,8 @@ The specs declare security schemes so tools render auth correctly:
 
 - **Client API** — three required `apiKey` headers, `x-pubkey`,
   `x-signature`, `x-timestamp` (see [`spec/api.md`](../spec/api.md)
-  "Miden Request Signing"). Public endpoints (`/pubkey`) carry no
-  requirement.
+  "Miden Request Signing"). Public endpoints (`/pubkey`, `/status`, and
+  its root alias `/`) carry no requirement.
 - **Dashboard API** — the `guardian_operator_session` cookie
   (`operator_session`). The login challenge/verify endpoints are public.
 - **EVM API** — the `guardian_evm_session` cookie (`evm_session`). The

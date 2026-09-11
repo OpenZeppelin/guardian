@@ -87,19 +87,31 @@ variable "postgres_password" {
 }
 
 variable "domain_name" {
-  description = "Root domain name for the HTTPS endpoint (e.g., openzeppelin.com)"
+  description = "Root domain name for the canonical HTTPS endpoint (e.g., example.com)"
   type        = string
   default     = "openzeppelin.com"
 }
 
 variable "subdomain" {
-  description = "Subdomain for the service (e.g., guardian -> guardian.openzeppelin.com). Empty uses the root domain."
+  description = "Subdomain for the canonical service hostname (e.g., guardian -> guardian.example.com). Empty uses the root domain."
   type        = string
   default     = "guardian"
 }
 
 variable "acm_certificate_arn" {
-  description = "ACM certificate ARN for the service domain (e.g., guardian-stg.openzeppelin.com)"
+  description = "ACM certificate ARN for the canonical service hostname"
+  type        = string
+  default     = ""
+}
+
+variable "alias_subdomain" {
+  description = "Migration-only legacy subdomain under domain_name pointing to the same ALB. Terraform manages its DNS record only when a DNS provider is configured; external DNS is supported. Leave empty for normal deployments."
+  type        = string
+  default     = ""
+}
+
+variable "alias_acm_certificate_arn" {
+  description = "Migration-only ACM certificate ARN for the legacy hostname. When empty, acm_certificate_arn is reused and must cover both names."
   type        = string
   default     = ""
 }
@@ -261,15 +273,21 @@ variable "rds_backup_retention_days" {
 }
 
 variable "rds_deletion_protection" {
-  description = "Whether to enable deletion protection for RDS"
+  description = "Optional override for RDS deletion protection; defaults to true in prod, false otherwise"
   type        = bool
-  default     = false
+  default     = null
 }
 
 variable "rds_skip_final_snapshot" {
-  description = "Whether to skip the final snapshot when destroying RDS"
+  description = "Optional override for skipping the final snapshot when destroying RDS; defaults to false in prod, true otherwise"
   type        = bool
-  default     = true
+  default     = null
+}
+
+variable "rds_multi_az" {
+  description = "Whether the RDS instance runs as a Multi-AZ deployment with a standby replica"
+  type        = bool
+  default     = false
 }
 
 variable "rds_publicly_accessible" {
@@ -291,19 +309,102 @@ variable "rds_proxy_route_database_url" {
 }
 
 variable "guardian_rate_burst_per_sec" {
-  description = "Optional override for the Guardian HTTP burst rate limit"
+  description = "Optional override for the Guardian burst rate limit (HTTP and gRPC)"
   type        = number
   default     = null
 }
 
 variable "guardian_rate_per_min" {
-  description = "Optional override for the Guardian HTTP sustained rate limit"
+  description = "Optional override for the Guardian sustained rate limit (HTTP and gRPC)"
   type        = number
   default     = null
 }
 
+variable "guardian_dashboard_commitment_rate_burst_per_sec" {
+  description = "Optional override for the fleet-wide dashboard per-commitment burst rate limit"
+  type        = number
+  default     = null
+
+  validation {
+    condition = (
+      var.guardian_dashboard_commitment_rate_burst_per_sec == null ||
+      (
+        var.guardian_dashboard_commitment_rate_burst_per_sec >= 1 &&
+        var.guardian_dashboard_commitment_rate_burst_per_sec <= 4294967295 &&
+        floor(var.guardian_dashboard_commitment_rate_burst_per_sec) == var.guardian_dashboard_commitment_rate_burst_per_sec
+      )
+    )
+    error_message = "guardian_dashboard_commitment_rate_burst_per_sec must be an integer between 1 and 4294967295 when set."
+  }
+}
+
+variable "guardian_dashboard_commitment_rate_per_min" {
+  description = "Optional override for the fleet-wide dashboard per-commitment sustained rate limit"
+  type        = number
+  default     = null
+
+  validation {
+    condition = (
+      var.guardian_dashboard_commitment_rate_per_min == null ||
+      (
+        var.guardian_dashboard_commitment_rate_per_min >= 1 &&
+        var.guardian_dashboard_commitment_rate_per_min <= 4294967295 &&
+        floor(var.guardian_dashboard_commitment_rate_per_min) == var.guardian_dashboard_commitment_rate_per_min
+      )
+    )
+    error_message = "guardian_dashboard_commitment_rate_per_min must be an integer between 1 and 4294967295 when set."
+  }
+}
+
+variable "guardian_max_replicas" {
+  description = <<-EOT
+    Optional override for GUARDIAN_MAX_REPLICAS, the maximum replica capacity the
+    server divides rate limits by. Defaults to the greater of desired count and
+    autoscaling maximum when autoscaling is enabled, or the desired count
+    otherwise. Drives rate-limit partitioning only (coordination mode is
+    backend-derived). An explicit override is clamped up to that steady-state
+    capacity. Rolling deployments may temporarily allow up to
+    deployment_maximum_percent / 100 times the configured fleet-wide limit.
+  EOT
+  type        = number
+  default     = null
+
+  validation {
+    condition = (
+      var.guardian_max_replicas == null ||
+      (var.guardian_max_replicas >= 1 && floor(var.guardian_max_replicas) == var.guardian_max_replicas)
+    )
+    error_message = "guardian_max_replicas must be an integer >= 1 when set."
+  }
+}
+
+variable "server_deployment_maximum_percent" {
+  description = <<-EOT
+    ECS deployment_maximum_percent for the server service: the ceiling, as a
+    percentage of desired count, on tasks that may run concurrently during a
+    rolling deploy. Because GUARDIAN_MAX_REPLICAS uses steady-state capacity,
+    the fleet-wide rate allowance may temporarily scale by this percentage
+    during a rollout. Must exceed 100 and, after ECS rounds the resulting task
+    count down, allow at least one task above the minimum positive desired
+    capacity (including autoscaling minimum capacity). The ECS service
+    precondition enforces this because deployment_minimum_healthy_percent is
+    100.
+  EOT
+  type        = number
+  default     = 200
+
+  validation {
+    condition = (
+      var.server_deployment_maximum_percent > 100 &&
+      var.server_deployment_maximum_percent <= 200 &&
+      floor(var.server_deployment_maximum_percent) == var.server_deployment_maximum_percent
+    )
+    error_message = "server_deployment_maximum_percent must be an integer in (100, 200]."
+  }
+}
+
 variable "guardian_rate_limit_enabled" {
-  description = "Optional override to enable or disable Guardian HTTP rate limiting"
+  description = "Optional override to enable or disable Guardian rate limiting (HTTP and gRPC)"
   type        = bool
   default     = null
 }
@@ -362,6 +463,12 @@ variable "guardian_storage_encryption_secret_name" {
   default     = ""
 }
 
+variable "guardian_dashboard_cursor_secret_name" {
+  description = "Secrets Manager secret name holding the 64-hex dashboard pagination cursor secret (prod only). Defaults to $${stack_name}/server/dashboard-cursor-secret when empty. The secret must exist before planning or deploying prod."
+  type        = string
+  default     = ""
+}
+
 variable "guardian_evm_rpc_urls" {
   description = "Comma-separated chain_id=url EVM RPC entries; when set, Terraform creates a Secrets Manager secret containing this value"
   type        = string
@@ -396,6 +503,151 @@ variable "guardian_metadata_db_pool_max_size" {
   description = "Optional override for the Guardian metadata DB pool maximum size"
   type        = number
   default     = null
+}
+
+variable "guardian_canonicalization_max_concurrent_accounts" {
+  description = <<-EOT
+    Optional override for GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS, how many
+    accounts one canonicalization pass processes in parallel (1 = fully sequential).
+    Defaults to 50 in prod (which runs behind RDS Proxy), 10 otherwise. Most
+    of each account's wall clock is a chain RPC that holds no DB connection,
+    so this may exceed guardian_db_pool_max_size; write bursts queue briefly
+    at the pool instead of failing.
+  EOT
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_canonicalization_max_concurrent_accounts == null ? true : (
+      var.guardian_canonicalization_max_concurrent_accounts >= 1 &&
+      floor(var.guardian_canonicalization_max_concurrent_accounts) ==
+      var.guardian_canonicalization_max_concurrent_accounts
+    )
+    error_message = "guardian_canonicalization_max_concurrent_accounts must be a positive integer when provided."
+  }
+}
+
+variable "guardian_canonicalization_fast_promotion_enabled" {
+  description = "Whether ECS enables the recent-candidate fast promotion pass"
+  type        = bool
+  default     = true
+}
+
+variable "guardian_log_format" {
+  description = "Log output format for GUARDIAN_LOG_FORMAT (text, json, compact). json enables flattened JSON for CloudWatch Logs Insights"
+  type        = string
+  default     = "json"
+
+  validation {
+    condition     = contains(["text", "json", "compact"], lower(trimspace(var.guardian_log_format)))
+    error_message = "guardian_log_format must be text, json, or compact."
+  }
+}
+
+variable "guardian_metrics_enabled" {
+  description = <<-EOT
+    Whether the Guardian server exposes its Prometheus metrics endpoint inside
+    the ECS task. The endpoint binds loopback inside the task's network
+    namespace and is never reachable via the ALB or security groups; an
+    externally scraped setup would additionally require an explicit bind
+    address, restricted security-group access, and a bearer token — none of
+    which this module configures. Disabling also disables the CloudWatch
+    export pipeline (there is nothing to scrape).
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "cloudwatch_metrics_enabled" {
+  description = <<-EOT
+    Whether the deployment ships the metrics endpoint's data to CloudWatch:
+    runs the ADOT Collector sidecar that scrapes it and exports EMF metrics,
+    and creates the EMF log group, IAM policy, CloudWatch dashboard, and
+    alarms. Effective only while guardian_metrics_enabled is true — the
+    export pipeline cascades off with the endpoint, so disabling the
+    endpoint alone turns everything off. Disable just this flag to keep the
+    (loopback-only) endpoint without publishing CloudWatch custom metrics —
+    useful only for an alternative in-task collector unless the module is
+    customized with a routable bind address, security-group access, and a
+    bearer token.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "adot_image" {
+  description = <<-EOT
+    AWS Distro for OpenTelemetry Collector image for the metrics sidecar,
+    digest-pinned for supply-chain consistency with the server Dockerfile.
+    Refresh the digest with:
+    `docker manifest inspect public.ecr.aws/aws-observability/aws-otel-collector:<tag>`.
+    When bumping, verify metric-name normalization stays off (the
+    receiver config pins `trim_metric_suffixes = false`; check the gate
+    has not been renamed or force-enabled): with normalization on,
+    counters lose their `_total` suffix and stop matching the awsemf
+    declarations, silently blanking counter widgets and starving every
+    notBreaching alarm — while `guardian_build_info` (a gauge, no
+    suffix) keeps the metrics-missing heartbeat green. Verify with
+    `aws cloudwatch list-metrics` after any image bump; metrics-missing
+    does NOT catch partial selection drift.
+  EOT
+  type        = string
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector:v0.49.0@sha256:d2bdfff2c377c3d71d78bd5d9ce9862fd535b12134a5739d87a07801297cf9fd"
+}
+
+variable "metrics_namespace" {
+  description = "CloudWatch namespace for Guardian application metrics. Defaults to <Title(stack_name)>/Server (e.g. Guardian/Server), keeping stacks in the same account separate."
+  type        = string
+  default     = ""
+}
+
+variable "alarm_actions" {
+  description = "ARNs (e.g. SNS topics) notified when a Guardian CloudWatch alarm transitions to ALARM or back to OK. Empty leaves alarms visible in the console only."
+  type        = list(string)
+  default     = []
+}
+
+variable "alarm_error_rate_threshold_percent" {
+  description = "Error-rate percentage above which the HTTP 5xx and gRPC error alarms fire"
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.alarm_error_rate_threshold_percent > 0 && var.alarm_error_rate_threshold_percent <= 100
+    error_message = "alarm_error_rate_threshold_percent must be in (0, 100]."
+  }
+}
+
+variable "alarm_latency_threshold_seconds" {
+  description = "Average HTTP request latency in seconds above which the latency alarm fires"
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.alarm_latency_threshold_seconds > 0
+    error_message = "alarm_latency_threshold_seconds must be positive."
+  }
+}
+
+variable "alarm_cpu_threshold_percent" {
+  description = "ECS service average CPU utilization percentage above which the saturation alarm fires. Keep above the autoscaling CPU target so scaling reacts first."
+  type        = number
+  default     = 85
+
+  validation {
+    condition     = var.alarm_cpu_threshold_percent > 0 && var.alarm_cpu_threshold_percent <= 100
+    error_message = "alarm_cpu_threshold_percent must be in (0, 100]."
+  }
+}
+
+variable "alarm_memory_threshold_percent" {
+  description = "ECS service average memory utilization percentage above which the saturation alarm fires. Keep above the autoscaling memory target so scaling reacts first."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.alarm_memory_threshold_percent > 0 && var.alarm_memory_threshold_percent <= 100
+    error_message = "alarm_memory_threshold_percent must be in (0, 100]."
+  }
 }
 
 # Resource naming

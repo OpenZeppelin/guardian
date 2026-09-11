@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::dashboard::cursor::{self, Cursor, CursorKind};
 use crate::error::{GuardianError, Result};
 use crate::metadata::{AccountListCursor, AccountMetadata, auth::Auth};
+use crate::network::NetworkType;
 use crate::services::dashboard_pagination::PagedResult;
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -18,10 +19,11 @@ pub enum DashboardAccountStateStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct DashboardAccountSummary {
     pub account_id: String,
-    /// Bech32m encoding of the Miden `AccountId` using the network's
-    /// HRP (e.g. `mtst...`, `mdev...`, `mm...`). `None` for EVM
-    /// accounts (no bech32 in that addressing scheme) and for any
-    /// Miden `account_id` that fails to parse as a 15-byte id.
+    /// Bech32m encoding of the Miden `AccountId` using the HRP of the
+    /// network this server is configured against (e.g. `mtst...`,
+    /// `mdev...`, `mm...`). `None` for EVM accounts (no bech32 in that
+    /// addressing scheme) and for any Miden `account_id` that fails to
+    /// parse as a 15-byte id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id_bech32: Option<String>,
     pub auth_scheme: String,
@@ -35,6 +37,8 @@ pub struct DashboardAccountSummary {
     pub paused_at: Option<String>,
     #[serde(default)]
     pub paused_reason: Option<String>,
+    #[serde(default)]
+    pub released_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
@@ -60,6 +64,11 @@ pub struct DashboardAccountDetail {
     /// Reason captured at first pause; `None` when active.
     #[serde(default)]
     pub paused_reason: Option<String>,
+    /// RFC 3339 UTC timestamp at which this server detected the account
+    /// switched to a different guardian and released it; `None` while
+    /// this server is the account's guardian.
+    #[serde(default)]
+    pub released_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,7 +144,12 @@ pub async fn list_dashboard_accounts_paged(
                 ),
                 None => (None, DashboardAccountStateStatus::Unavailable),
             };
-            DashboardAccountSummary::from_parts(metadata, current_commitment, state_status)
+            DashboardAccountSummary::from_parts(
+                metadata,
+                current_commitment,
+                state_status,
+                state.dashboard.network_type(),
+            )
         })
         .collect();
 
@@ -196,7 +210,11 @@ pub async fn get_dashboard_account(
         })?;
 
     Ok(GetDashboardAccountResult {
-        account: DashboardAccountDetail::from_parts(&metadata, &account_state),
+        account: DashboardAccountDetail::from_parts(
+            &metadata,
+            &account_state,
+            state.dashboard.network_type(),
+        ),
     })
 }
 
@@ -205,10 +223,11 @@ impl DashboardAccountSummary {
         metadata: &AccountMetadata,
         current_commitment: Option<String>,
         state_status: DashboardAccountStateStatus,
+        network_type: NetworkType,
     ) -> Self {
         Self {
             account_id: metadata.account_id.clone(),
-            account_id_bech32: bech32_for_account(metadata),
+            account_id_bech32: bech32_for_account(metadata, network_type),
             auth_scheme: metadata.auth.scheme().to_string(),
             authorized_signer_count: normalized_authorized_signer_ids(&metadata.auth).len(),
             has_pending_candidate: metadata.has_pending_candidate,
@@ -218,17 +237,22 @@ impl DashboardAccountSummary {
             updated_at: metadata.updated_at.clone(),
             paused_at: metadata.paused_at.map(|ts| ts.to_rfc3339()),
             paused_reason: metadata.paused_reason.clone(),
+            released_at: metadata.released_at.map(|ts| ts.to_rfc3339()),
         }
     }
 }
 
 impl DashboardAccountDetail {
-    fn from_parts(metadata: &AccountMetadata, account_state: &StateObject) -> Self {
+    fn from_parts(
+        metadata: &AccountMetadata,
+        account_state: &StateObject,
+        network_type: NetworkType,
+    ) -> Self {
         let authorized_signer_ids = normalized_authorized_signer_ids(&metadata.auth);
 
         Self {
             account_id: metadata.account_id.clone(),
-            account_id_bech32: bech32_for_account(metadata),
+            account_id_bech32: bech32_for_account(metadata, network_type),
             auth_scheme: metadata.auth.scheme().to_string(),
             authorized_signer_count: authorized_signer_ids.len(),
             authorized_signer_ids,
@@ -241,25 +265,29 @@ impl DashboardAccountDetail {
             state_updated_at: Some(account_state.updated_at.clone()),
             paused_at: metadata.paused_at.map(|ts| ts.to_rfc3339()),
             paused_reason: metadata.paused_reason.clone(),
+            released_at: metadata.released_at.map(|ts| ts.to_rfc3339()),
         }
     }
 }
 
-/// Encode a Miden account_id (hex) as bech32m using the network HRP
-/// from the account's persisted `NetworkConfig`. Returns `None` for
-/// EVM accounts and for any hex that fails to parse as a Miden
-/// `AccountId` (data drift). The HRP set is fixed by the Miden
+/// Encode a Miden account_id (hex) as bech32m using the HRP of the
+/// network this server runs against (`GUARDIAN_NETWORK_TYPE`). The
+/// per-account `NetworkConfig` is only consulted to skip EVM accounts;
+/// its Miden `network_type` is untrusted here because clients omit it
+/// at registration and the server used to stamp a hardcoded `local`
+/// default, mislabeling accounts on testnet/devnet servers. Returns
+/// `None` for EVM accounts and for any hex that fails to parse as a
+/// Miden `AccountId` (data drift). The HRP set is fixed by the Miden
 /// protocol: `mm` for mainnet, `mtst` for testnet, `mdev` for devnet
 /// (Local is folded into Devnet — Miden has no separate Local HRP).
-fn bech32_for_account(metadata: &AccountMetadata) -> Option<String> {
-    use crate::metadata::NetworkConfig;
+fn bech32_for_account(metadata: &AccountMetadata, network_type: NetworkType) -> Option<String> {
+    use crate::metadata::MidenNetworkType;
     use miden_protocol::account::AccountId;
-    let network_type = match &metadata.network_config {
-        NetworkConfig::Miden { network_type } => *network_type,
-        NetworkConfig::Evm { .. } => return None,
-    };
+    if metadata.network_config.is_evm() {
+        return None;
+    }
     let account_id = AccountId::from_hex(&metadata.account_id).ok()?;
-    Some(account_id.to_bech32(network_type.to_miden_network_id()))
+    Some(account_id.to_bech32(MidenNetworkType::from(network_type).to_miden_network_id()))
 }
 
 fn normalized_authorized_signer_ids(auth: &Auth) -> Vec<String> {
@@ -291,7 +319,6 @@ mod tests {
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient};
     use std::sync::Arc;
     use tempfile::TempDir;
-    use tokio::sync::Mutex;
 
     fn miden_meta(account_id: &str, updated_at: &str) -> AccountMetadata {
         AccountMetadata {
@@ -303,31 +330,46 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: updated_at.to_string(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         }
     }
 
     #[test]
-    fn bech32_for_miden_account_encodes_with_network_hrp() {
-        let mut meta = miden_meta("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", "2026-05-26T00:00:00Z");
-        meta.network_config = NetworkConfig::Miden {
-            network_type: MidenNetworkType::Testnet,
-        };
-        let bech32 = bech32_for_account(&meta).expect("bech32 encodes for valid miden id");
+    fn bech32_for_miden_account_encodes_with_server_network_hrp() {
+        let meta = miden_meta("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", "2026-05-26T00:00:00Z");
+        let bech32 = bech32_for_account(&meta, NetworkType::MidenTestnet)
+            .expect("bech32 encodes for valid miden id");
         assert!(
             bech32.starts_with("mtst1"),
             "testnet HRP expected, got '{bech32}'",
         );
 
-        meta.network_config = NetworkConfig::Miden {
-            network_type: MidenNetworkType::Local,
-        };
-        let bech32_local = bech32_for_account(&meta).expect("local maps to devnet HRP");
+        let bech32_local =
+            bech32_for_account(&meta, NetworkType::MidenLocal).expect("local maps to devnet HRP");
         assert!(
             bech32_local.starts_with("mdev1"),
             "local folds into devnet HRP, got '{bech32_local}'",
+        );
+    }
+
+    /// Regression: clients omit `network_config` at registration and the
+    /// server used to stamp a hardcoded `local` default into metadata, so
+    /// a testnet server rendered `mdev...` addresses. The HRP must come
+    /// from the server's configured network, never from the persisted
+    /// per-account value.
+    #[test]
+    fn bech32_ignores_stale_local_network_config_in_metadata() {
+        let mut meta = miden_meta("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", "2026-05-26T00:00:00Z");
+        meta.network_config = NetworkConfig::Miden {
+            network_type: MidenNetworkType::Local,
+        };
+        let bech32 = bech32_for_account(&meta, NetworkType::MidenTestnet)
+            .expect("bech32 encodes for valid miden id");
+        assert!(
+            bech32.starts_with("mtst1"),
+            "server network HRP expected despite 'local' metadata, got '{bech32}'",
         );
     }
 
@@ -346,17 +388,17 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-26T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: None,
             paused_reason: None,
+            released_at: None,
         };
-        assert!(bech32_for_account(&meta).is_none());
+        assert!(bech32_for_account(&meta, NetworkType::MidenTestnet).is_none());
     }
 
     #[test]
     fn bech32_for_unparseable_miden_account_returns_none() {
         let meta = miden_meta("not-hex", "2026-05-26T00:00:00Z");
-        assert!(bech32_for_account(&meta).is_none());
+        assert!(bech32_for_account(&meta, NetworkType::MidenTestnet).is_none());
     }
 
     /// Bug #6 regression: walk multi-page cursor traversal end-to-end
@@ -404,7 +446,7 @@ mod tests {
         let state = AppState {
             storage: Arc::new(svc),
             metadata: Arc::new(metadata),
-            network_client: Arc::new(Mutex::new(MockNetworkClient::new())),
+            network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
             clock: Arc::new(MockClock::default()),

@@ -1,5 +1,6 @@
-use crate::middleware::{RateLimitConfig, RateLimitLayer};
-use crate::testing::helpers::{create_router, create_test_app_state};
+use crate::builder::handle::{HttpRouterConfig, build_http_router};
+use crate::middleware::{RateLimitConfig, RateLimitStore};
+use crate::testing::helpers::{create_test_app_state, test_router_config};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -24,7 +25,13 @@ fn build_get_request(uri: &str, ip: &str, pubkey: Option<&str>) -> Request<Body>
 #[tokio::test]
 async fn test_rate_limit_burst_per_endpoint() {
     let state = create_test_app_state().await;
-    let app = create_router(state).layer(RateLimitLayer::new(RateLimitConfig::new(2, 1000)));
+    let app = build_http_router(
+        state,
+        HttpRouterConfig {
+            rate_limit_store: RateLimitStore::new(RateLimitConfig::new(2, 1000)),
+            ..test_router_config()
+        },
+    );
 
     let ip = "1.2.3.4";
     let req1 = build_get_request("/pubkey", ip, None);
@@ -42,7 +49,7 @@ async fn test_rate_limit_burst_per_endpoint() {
     let res_other = app
         .clone()
         .oneshot(build_get_request(
-            "/get_state?account_id=0x01",
+            "/state?account_id=0x01",
             ip,
             Some("pubkey-1"),
         ))
@@ -55,7 +62,13 @@ async fn test_rate_limit_burst_per_endpoint() {
 #[tokio::test]
 async fn test_rate_limit_sustained_per_ip_even_with_different_signers() {
     let state = create_test_app_state().await;
-    let app = create_router(state).layer(RateLimitLayer::new(RateLimitConfig::new(100, 2)));
+    let app = build_http_router(
+        state,
+        HttpRouterConfig {
+            rate_limit_store: RateLimitStore::new(RateLimitConfig::new(100, 2)),
+            ..test_router_config()
+        },
+    );
 
     let ip = "5.6.7.8";
     let pubkeys = ["pubkey-a", "pubkey-b", "pubkey-c"];
@@ -63,7 +76,7 @@ async fn test_rate_limit_sustained_per_ip_even_with_different_signers() {
     let res1 = app
         .clone()
         .oneshot(build_get_request(
-            "/get_state?account_id=0x01",
+            "/state?account_id=0x01",
             ip,
             Some(pubkeys[0]),
         ))
@@ -72,7 +85,7 @@ async fn test_rate_limit_sustained_per_ip_even_with_different_signers() {
     let res2 = app
         .clone()
         .oneshot(build_get_request(
-            "/get_state?account_id=0x01",
+            "/state?account_id=0x01",
             ip,
             Some(pubkeys[1]),
         ))
@@ -81,7 +94,7 @@ async fn test_rate_limit_sustained_per_ip_even_with_different_signers() {
     let res3 = app
         .clone()
         .oneshot(build_get_request(
-            "/get_state?account_id=0x01",
+            "/state?account_id=0x01",
             ip,
             Some(pubkeys[2]),
         ))
@@ -91,4 +104,42 @@ async fn test_rate_limit_sustained_per_ip_even_with_different_signers() {
     assert_ne!(res1.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_ne!(res2.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(res3.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn test_rate_limit_spoofed_forwarded_prefix_does_not_mint_a_budget() {
+    let state = create_test_app_state().await;
+    let app = build_http_router(
+        state,
+        HttpRouterConfig {
+            rate_limit_store: RateLimitStore::new(RateLimitConfig::new(2, 1000)),
+            ..test_router_config()
+        },
+    );
+
+    let res1 = app
+        .clone()
+        .oneshot(build_get_request("/pubkey", "10.0.0.1", None))
+        .await
+        .unwrap();
+    let res2 = app
+        .clone()
+        .oneshot(build_get_request("/pubkey", "10.0.0.1", None))
+        .await
+        .unwrap();
+    let forged = app
+        .clone()
+        .oneshot(build_get_request("/pubkey", "9.9.9.9, 10.0.0.1", None))
+        .await
+        .unwrap();
+    let other = app
+        .clone()
+        .oneshot(build_get_request("/pubkey", "10.0.0.1, 10.0.0.2", None))
+        .await
+        .unwrap();
+
+    assert_ne!(res1.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_ne!(res2.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(forged.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_ne!(other.status(), StatusCode::TOO_MANY_REQUESTS);
 }

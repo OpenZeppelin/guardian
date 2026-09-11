@@ -1,4 +1,5 @@
 use crate::cleanup_manifest::CleanupStatus;
+use crate::model::{CanonicalizationOutcome, CanonicalizationSample};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -16,9 +17,49 @@ pub struct BenchmarkRunReport {
     pub deployment_shape: Option<String>,
     pub scheme_distribution: SchemeDistributionReport,
     pub operations: Vec<OperationReport>,
+    pub canonicalization: Option<CanonicalizationReport>,
     pub capacity_estimate: CapacityEstimate,
     pub cleanup: CleanupReport,
     pub artifacts: ArtifactReport,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CanonicalizationReport {
+    pub sampled: u64,
+    pub canonical: u64,
+    pub discarded: u64,
+    pub timed_out: u64,
+    pub observation_failed: u64,
+    pub timeout_seconds: u64,
+    pub wait_ms: LatencyReport,
+}
+
+impl CanonicalizationReport {
+    pub fn from_samples(samples: &[CanonicalizationSample], timeout_seconds: u64) -> Option<Self> {
+        if samples.is_empty() {
+            return None;
+        }
+        let count_of = |outcome: CanonicalizationOutcome| {
+            samples
+                .iter()
+                .filter(|sample| sample.outcome == outcome)
+                .count() as u64
+        };
+        let canonical_waits_ms = samples
+            .iter()
+            .filter(|sample| sample.outcome == CanonicalizationOutcome::Canonical)
+            .map(|sample| sample.wait_ms)
+            .collect();
+        Some(Self {
+            sampled: samples.len() as u64,
+            canonical: count_of(CanonicalizationOutcome::Canonical),
+            discarded: count_of(CanonicalizationOutcome::Discarded),
+            timed_out: count_of(CanonicalizationOutcome::TimedOut),
+            observation_failed: count_of(CanonicalizationOutcome::ObservationFailed),
+            timeout_seconds,
+            wait_ms: LatencyReport::from_unsorted_ms(canonical_waits_ms),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,6 +87,26 @@ pub struct LatencyReport {
     pub p95: f64,
     pub p99: f64,
     pub max: f64,
+}
+
+impl LatencyReport {
+    pub fn from_unsorted_ms(mut values_ms: Vec<f64>) -> Self {
+        values_ms.sort_by(f64::total_cmp);
+        Self {
+            p50: percentile(&values_ms, 0.50),
+            p95: percentile(&values_ms, 0.95),
+            p99: percentile(&values_ms, 0.99),
+            max: values_ms.last().copied().unwrap_or(0.0),
+        }
+    }
+}
+
+fn percentile(sorted: &[f64], percentile: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let index = ((sorted.len() as f64 - 1.0) * percentile).round() as usize;
+    sorted[index.min(sorted.len() - 1)]
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

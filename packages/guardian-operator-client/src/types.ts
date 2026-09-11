@@ -3,17 +3,24 @@ import type { OperatorPermission } from './permissions.js';
 export type DashboardAccountStateStatus = 'available' | 'unavailable';
 
 export interface GuardianOperatorHttpErrorData {
-  success: false;
   /**
    * Stable, machine-readable error code emitted by the server. Clients
-   * SHOULD branch on this rather than on `error` (the human message) or
+   * SHOULD branch on this rather than on `message` (the human text) or
    * the HTTP status alone. Codes added by feature
    * `005-operator-dashboard-metrics` are typed via {@link DashboardErrorCode};
    * other codes (e.g. `account_not_found`, `authentication_failed`) are
    * forwarded as raw strings.
    */
-  code?: string;
-  error: string;
+  code?: DashboardErrorCodeOrRaw;
+  /**
+   * Short, user-safe message (feature `009-human-readable-errors`) — safe to
+   * display verbatim. Wording is not part of the stable contract; branch on
+   * `code`, not on this text. Replaces the former diagnostic `error` field,
+   * which is no longer on the wire (logged server-side only). Parsed out of
+   * the wire `{ code, message, meta }` object; the structured `meta` fields
+   * below are flattened here for ergonomics.
+   */
+  message: string;
   retryAfterSecs?: number;
   /**
    * Feature 006-operator-authz FR-016 / FR-017: populated only for
@@ -24,11 +31,14 @@ export interface GuardianOperatorHttpErrorData {
    */
   missingPermissions?: readonly string[];
   /**
-   * Feature 006-operator-authz FR-016: explicit retryability flag.
-   * `false` for permission denials (the contract pins this); absent
-   * for every other code so existing parsers see no change.
+   * Explicit retryability flag, flattened from `meta.retryable` on the
+   * feature `009-human-readable-errors` envelope. Required: the parser
+   * rejects envelopes without a boolean `meta.retryable`, so it is always
+   * present here. Permission denials and account-paused rejections pin this
+   * to `false`; transient server failures (rate limit, connectivity,
+   * storage) surface `true`.
    */
-  retryable?: boolean;
+  retryable: boolean;
   /**
    * Populated only for `account_paused` responses. RFC 3339 UTC
    * timestamp of the original pause.
@@ -41,6 +51,12 @@ export interface GuardianOperatorHttpErrorData {
    * for forward compatibility).
    */
   pausedReason?: string | null;
+  /**
+   * Populated only for `account_released` responses. RFC 3339 UTC
+   * timestamp at which the server detected the account switched to a
+   * different guardian and released it.
+   */
+  releasedAt?: string;
 }
 
 export interface GuardianOperatorHttpClientOptions {
@@ -110,6 +126,12 @@ export interface DashboardAccountSummary {
   pausedAt: string | null;
   /** Reason captured at first pause; `null` when active. */
   pausedReason: string | null;
+  /**
+   * RFC 3339 UTC timestamp at which this server detected the account
+   * switched to a different guardian and released it; `null` while
+   * this server is the account's guardian.
+   */
+  releasedAt: string | null;
 }
 
 export interface DashboardAccountDetail extends DashboardAccountSummary {
@@ -140,6 +162,11 @@ export interface UnpauseAccountResponse {
 export interface AccountPausedErrorDetails {
   pausedAt: string;
   pausedReason: string | null;
+}
+
+/** Typed details carried on the `GUARDIAN_ACCOUNT_RELEASED` error envelope. */
+export interface AccountReleasedErrorDetails {
+  releasedAt: string;
 }
 
 /**
@@ -209,14 +236,29 @@ export type DashboardErrorCode =
   // paused. Exposed as snake_case to match the rest of the
   // vocabulary; server wire string is `GUARDIAN_ACCOUNT_PAUSED` and
   // the http.ts mapping layer translates between the two.
-  | 'account_paused';
+  | 'account_paused'
+  // Surfaced from mutating endpoints when the target account switched
+  // to a different guardian and was released (issue #305). Same
+  // wire-form / TS-form mapping as `account_paused`; server wire
+  // string is `GUARDIAN_ACCOUNT_RELEASED`.
+  | 'account_released';
+
+/**
+ * A dashboard error code with the union members preserved for autocomplete
+ * and literal narrowing. The bare `DashboardErrorCode | string` form is
+ * defeated by TypeScript's union widening — it collapses to plain `string`,
+ * making the literals documentation-only (issue #318). The `string & {}`
+ * intersection keeps arbitrary raw codes assignable (the server can emit
+ * codes outside the dashboard taxonomy) without collapsing the union.
+ */
+export type DashboardErrorCodeOrRaw = DashboardErrorCode | (string & {});
 
 export interface PagedResult<T> {
   items: T[];
   nextCursor: string | null;
 }
 
-export type DashboardDeltaStatus = 'candidate' | 'canonical' | 'discarded';
+export type DashboardDeltaStatus = 'candidate' | 'canonical' | 'retained' | 'discarded';
 
 /**
  * Closed enumeration of dashboard delta categories. Adding a value
@@ -266,6 +308,12 @@ export interface DashboardDeltaProposalMetadata {
   recipientId?: string;
   faucetId?: string;
   amount?: string;
+  /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
+  noteType?: string;
+  /** P2IDE reclaim block height (issue #366). Presence of either height means a P2IDE note. */
+  reclaimHeight?: number;
+  /** P2IDE timelock block height (issue #366). */
+  timelockHeight?: number;
   noteIds?: string[];
   consumeNotesMetadataVersion?: number;
   consumeNotesNotes?: string[];
@@ -299,6 +347,8 @@ export interface DashboardDeltaDecodedAsset {
 export interface DashboardDeltaDecodedNote {
   noteId: string;
   tag: DashboardDeltaNoteTag;
+  /** On-chain note visibility from the note metadata. */
+  noteType?: 'public' | 'private';
   assets: DashboardDeltaDecodedAsset[];
   sender?: string;
   recipient?: string;
@@ -368,6 +418,18 @@ export interface DashboardDeltaDetail {
   prevCommitment: string;
   newCommitment: string | null;
   retryCount?: number;
+  /** Why the row left the active candidate path. Documented values:
+   * `retry_exhausted` / `diverged` on `retained` rows,
+   * `client_abandoned` on `discarded` rows. Kept as an open string so
+   * new server-side labels never fail feed decoding. */
+  statusReason?: string;
+  /** When background reconciliation gives up on a `retained` row for
+   * good (RFC 3339). Present only on `retained` rows. */
+  retainedExpiresAt?: string;
+  /** Whether the `retained` row still chains from the stored account
+   * state; `false` means it is structurally obsolete and can only age
+   * out. Present only on `retained` rows. */
+  baseMatchesStoredState?: boolean;
   /** Server-curated classification from push-time metadata. */
   category?: DashboardDeltaCategory;
   /** Operator-stated proposal intent for multisig commits. */
@@ -392,6 +454,8 @@ export interface DashboardDeltaEntry {
   prevCommitment: string;
   newCommitment: string | null;
   retryCount?: number;
+  /** See `DashboardDeltaDetail.statusReason`. */
+  statusReason?: string;
 
   /** Push-time enrichment spread to L1 on listing endpoints. */
   category?: DashboardDeltaCategory;
@@ -528,6 +592,16 @@ export interface DashboardCanonicalizationConfig {
   checkIntervalSeconds: number;
   maxRetries: number;
   submissionGracePeriodSeconds: number;
+  /** How long retry-exhausted candidates are kept as `retained` for
+   * background reconciliation (issue #345). `0` = retention disabled.
+   * Absent on servers predating the retained lifecycle. */
+  retainedTtlSeconds?: number;
+  /** Cadence of the dedicated reconcile pass over recoverable deltas.
+   * Individual accounts back off further as their rows age, so a
+   * retained row being reconsidered less often than this is expected. */
+  reconcileIntervalSeconds?: number;
+  /** Accounts one reconcile pass visits at most (rotation cursor). */
+  reconcilePageSize?: number;
 }
 
 /** Backend configuration snapshot. */
@@ -557,6 +631,10 @@ export interface DashboardInfoResponse {
   deltaStatusCounts: {
     candidate: number;
     canonical: number;
+    /** Candidates the worker gave up verifying — retry exhaustion or
+     * confirmed divergence — kept for background reconciliation
+     * (issue #345). */
+    retained: number;
     discarded: number;
   };
   inFlightProposalCount: number;

@@ -126,7 +126,10 @@ If you want benchmark scripts to drive network/canonicalization through environm
 to:
 
 ```rust
-.network(NetworkType::from_env("GUARDIAN_NETWORK_TYPE"))
+.network(
+    NetworkType::from_env("GUARDIAN_NETWORK_TYPE")
+        .unwrap_or_else(|error| panic!("Failed to resolve network type: {error}")),
+)
 .with_canonicalization({
     let canonicalization_enabled = std::env::var("GUARDIAN_CANONICALIZATION_ENABLED")
         .ok()

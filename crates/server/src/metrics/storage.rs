@@ -26,8 +26,9 @@ use super::names::{
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::StateObject;
 use crate::storage::{
-    AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
-    GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalRecord, StorageBackend,
+    AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
+    CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromoteWrite, ProposalRecord, StorageBackend,
     StorageType,
 };
 
@@ -130,6 +131,53 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn pull_candidate_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
+        timed(
+            "pull_candidate_deltas",
+            self.inner.pull_candidate_deltas(account_id),
+        )
+        .await
+    }
+
+    async fn pull_recent_candidate_deltas(
+        &self,
+        since: DateTime<Utc>,
+        cursor: Option<&crate::storage::RecentCandidateCursor>,
+        limit: u32,
+    ) -> Result<Vec<DeltaObject>, String> {
+        timed(
+            "pull_recent_candidate_deltas",
+            self.inner
+                .pull_recent_candidate_deltas(since, cursor, limit),
+        )
+        .await
+    }
+
+    async fn pull_recoverable_deltas(
+        &self,
+        account_id: &str,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        timed(
+            "pull_recoverable_deltas",
+            self.inner
+                .pull_recoverable_deltas(account_id, abandoned_since),
+        )
+        .await
+    }
+
+    async fn list_accounts_with_recoverable_deltas(
+        &self,
+        abandoned_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<String>, String> {
+        timed(
+            "list_accounts_with_recoverable_deltas",
+            self.inner
+                .list_accounts_with_recoverable_deltas(abandoned_since),
+        )
+        .await
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -204,6 +252,76 @@ impl StorageBackend for InstrumentedStorage {
         timed("delete_delta", self.inner.delete_delta(account_id, nonce)).await
     }
 
+    async fn request_candidate_abandon(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: &str,
+    ) -> Result<AbandonIntent, String> {
+        timed(
+            "request_candidate_abandon",
+            self.inner.request_candidate_abandon(account_id, nonce, now),
+        )
+        .await
+    }
+
+    async fn submit_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        delta: &DeltaObject,
+        now: &str,
+    ) -> Result<CandidateSubmission, String> {
+        timed(
+            "submit_candidate",
+            self.inner.submit_candidate(metadata, delta, now),
+        )
+        .await
+    }
+
+    async fn promote_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        promotion: CandidatePromotion,
+    ) -> Result<PromoteWrite, String> {
+        timed(
+            "promote_candidate",
+            self.inner.promote_candidate(metadata, promotion),
+        )
+        .await
+    }
+
+    async fn discard_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        account_id: &str,
+        nonce: u64,
+        kind: crate::storage::DeltaStatusKind,
+        now: &str,
+        fence: Option<&LeaseFence>,
+    ) -> Result<CanonicalWrite, String> {
+        timed(
+            "discard_candidate",
+            self.inner
+                .discard_candidate(metadata, account_id, nonce, kind, now, fence),
+        )
+        .await
+    }
+
+    async fn update_candidate_status(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        status: DeltaStatus,
+        fence: Option<&LeaseFence>,
+    ) -> Result<CanonicalWrite, String> {
+        timed(
+            "update_candidate_status",
+            self.inner
+                .update_candidate_status(account_id, nonce, status, fence),
+        )
+        .await
+    }
+
     async fn update_delta_status(
         &self,
         account_id: &str,
@@ -227,6 +345,20 @@ impl StorageBackend for InstrumentedStorage {
             "list_account_deltas_paged",
             self.inner
                 .list_account_deltas_paged(account_id, limit, cursor),
+        )
+        .await
+    }
+
+    async fn list_canonical_deltas_paged(
+        &self,
+        account_id: &str,
+        limit: u32,
+        cursor: Option<AccountDeltaCursor>,
+    ) -> Result<Vec<DeltaObject>, String> {
+        timed(
+            "list_canonical_deltas_paged",
+            self.inner
+                .list_canonical_deltas_paged(account_id, limit, cursor),
         )
         .await
     }

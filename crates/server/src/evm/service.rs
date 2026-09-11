@@ -130,9 +130,9 @@ pub async fn register_account(
             created_at,
             updated_at: now,
             has_pending_candidate: false,
-            last_auth_timestamp: existing.as_ref().and_then(|m| m.last_auth_timestamp),
             paused_at: existing.as_ref().and_then(|m| m.paused_at),
             paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
+            released_at: existing.as_ref().and_then(|m| m.released_at),
         })
         .await
         .map_err(|e| {
@@ -500,7 +500,6 @@ mod tests {
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::TimeZone;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     fn paused_evm_metadata(account_id: &str) -> AccountMetadata {
         AccountMetadata {
@@ -516,13 +515,13 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".into(),
             updated_at: "2026-05-01T00:00:00Z".into(),
             has_pending_candidate: false,
-            last_auth_timestamp: None,
             paused_at: Some(
                 chrono::Utc
                     .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
                     .unwrap(),
             ),
             paused_reason: Some("compliance".to_string()),
+            released_at: None,
         }
     }
 
@@ -532,7 +531,7 @@ mod tests {
         let metadata = MockMetadataStore::new().with_get(Ok(Some(paused_evm_metadata(account_id))));
         let state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(Mutex::new(network)),
+            Arc::new(network),
             Arc::new(metadata),
         );
         (state, storage)

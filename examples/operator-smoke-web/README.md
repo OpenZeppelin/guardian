@@ -11,11 +11,17 @@ This example does only four things:
 
 ## Setup
 
-Start the example first so it can generate the local Falcon signer public key:
+Install the shared TypeScript workspace dependencies once from the repository
+root. The example's `dev`, `build`, and `typecheck` commands rebuild the local
+operator client automatically. Then start the example so it can generate the
+local Falcon signer public key:
 
 ```bash
-cd /Users/marcos/repos/guardian/examples/operator-smoke-web
-npm install
+cd packages
+npm ci
+
+cd ../examples/operator-smoke-web
+npm ci
 npm run typecheck
 npm run dev -- --host 127.0.0.1 --port 3003
 ```
@@ -26,6 +32,7 @@ Create a local operator public keys file and start Guardian with that path:
 mkdir -p /tmp/guardian-operator-smoke
 printf '[]\n' > /tmp/guardian-operator-smoke/operator-public-keys.json
 
+GUARDIAN_NETWORK_TYPE=MidenLocal \
 GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/tmp/guardian-operator-smoke/operator-public-keys.json \
 cargo run -p guardian-server --bin server
 ```
