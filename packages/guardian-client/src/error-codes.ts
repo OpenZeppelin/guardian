@@ -36,6 +36,7 @@ export const GUARDIAN_ERROR_CODES = [
   'invalid_network_config',
   'invalid_proposal_signature',
   'invalid_status_filter',
+  'invalid_timestamp',
   'network_error',
   'pending_proposals_limit',
   'proposal_already_signed',

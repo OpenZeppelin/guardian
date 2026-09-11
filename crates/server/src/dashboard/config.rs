@@ -17,6 +17,12 @@ pub(crate) const DEFAULT_PUBKEY_RATE_BURST_PER_SEC: u32 = 6;
 pub(crate) const DEFAULT_PUBKEY_RATE_PER_MIN: u32 = 30;
 const ENV_COMMITMENT_RATE_BURST_PER_SEC: &str = "GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC";
 const ENV_COMMITMENT_RATE_PER_MIN: &str = "GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN";
+const ENV_STATS_REFRESH_INTERVAL_SECS: &str = "GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS";
+/// Default cadence of the background `/dashboard/stats` aggregate
+/// refresh (issue #371 FR-7). Matches the cross-operator dashboard's
+/// own 60-second cache so the published `as_of` is never staler than
+/// what the consumer already tolerates.
+pub(crate) const DEFAULT_STATS_REFRESH_INTERVAL_SECS: u32 = 60;
 /// Default account-count threshold above which dashboard cross-account
 /// aggregates may return a degraded marker on filesystem-backed
 /// deployments, per FR-029 of `005-operator-dashboard-metrics`.
@@ -37,6 +43,10 @@ pub struct DashboardConfig {
     pub(crate) max_outstanding_challenges: usize,
     pub(crate) commitment_rate_limit: RateLimitConfig,
     pub(crate) filesystem_aggregate_threshold: usize,
+    /// Cadence of the background refresh that maintains the
+    /// `/dashboard/stats` aggregate
+    /// (`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`).
+    pub(crate) stats_refresh_interval: std::time::Duration,
     /// The Miden network this server is configured against
     /// (`GUARDIAN_NETWORK_TYPE`, threaded through the server builder).
     /// A server talks to exactly one Miden network, so
@@ -77,10 +87,16 @@ impl DashboardConfig {
             partition_limit(commitment_rate_burst_per_sec, max_replicas).max(1),
             partition_limit(commitment_rate_per_min, max_replicas).max(1),
         );
+        let stats_refresh_interval =
+            std::time::Duration::from_secs(u64::from(positive_u32_from_env(
+                ENV_STATS_REFRESH_INTERVAL_SECS,
+                DEFAULT_STATS_REFRESH_INTERVAL_SECS,
+            )?));
         Ok(Self {
             network_type,
             cursor_secret,
             commitment_rate_limit,
+            stats_refresh_interval,
             ..Self::default()
         })
     }
@@ -91,6 +107,10 @@ impl DashboardConfig {
 
     pub(crate) fn filesystem_aggregate_threshold(&self) -> usize {
         self.filesystem_aggregate_threshold
+    }
+
+    pub(crate) fn stats_refresh_interval(&self) -> std::time::Duration {
+        self.stats_refresh_interval
     }
 
     pub(crate) fn environment(&self) -> &'static str {
@@ -128,6 +148,9 @@ impl Default for DashboardConfig {
                 per_min: DEFAULT_PUBKEY_RATE_PER_MIN,
             },
             filesystem_aggregate_threshold: DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD,
+            stats_refresh_interval: std::time::Duration::from_secs(u64::from(
+                DEFAULT_STATS_REFRESH_INTERVAL_SECS,
+            )),
             network_type: DEFAULT_NETWORK_TYPE,
             cursor_secret: None,
         }

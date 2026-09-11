@@ -1369,6 +1369,104 @@
           }
         ]
       }
+    },
+    "/dashboard/stats": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "`GET /dashboard/stats` — account and Miden vault aggregates in one\nrequest (issue #371). Served from a background-maintained snapshot:\nno per-account reads at request time; `as_of` reports its age.",
+        "operationId": "get_dashboard_stats_handler",
+        "parameters": [
+          {
+            "name": "updated_since",
+            "in": "query",
+            "description": "Optional RFC3339 timestamp. Restricts the **asset** aggregate to\naccounts whose metadata `updated_at >= updated_since`; account\ncounts are always unfiltered. Omitted or empty aggregates every\naccount.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account counts, asset totals, and coverage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardStatsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "updated_since is not an RFC3339 timestamp (`invalid_timestamp`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing dashboard:read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Aggregate not yet computed since startup (`data_unavailable`, retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -1628,6 +1726,59 @@
           "unavailable"
         ]
       },
+      "DashboardAccountStats": {
+        "type": "object",
+        "description": "Unfiltered account counts (FR-3). `updated_since` does not apply.",
+        "required": [
+          "total",
+          "by_lifecycle",
+          "by_auth_method",
+          "by_auth_method_and_signer_count",
+          "updated_within_7d",
+          "updated_within_30d"
+        ],
+        "properties": {
+          "by_auth_method": {
+            "type": "object",
+            "description": "Counts by stable auth-method label. Never omitted above an\ninventory threshold: the aggregate is maintained incrementally.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "by_auth_method_and_signer_count": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardAuthMethodSignerCount"
+            },
+            "description": "Sorted by `(auth_method, authorized_signer_count)`."
+          },
+          "by_lifecycle": {
+            "$ref": "#/components/schemas/DashboardLifecycleCounts"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "updated_within_30d": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Same, for the last 30 days.",
+            "minimum": 0
+          },
+          "updated_within_7d": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Accounts whose metadata `updated_at` is within the last 7 days,\nanchored to `as_of`.",
+            "minimum": 0
+          }
+        }
+      },
       "DashboardAccountSummary": {
         "type": "object",
         "required": [
@@ -1692,6 +1843,88 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "DashboardAssetStats": {
+        "type": "object",
+        "description": "Asset totals over eligible Miden accounts plus the coverage that\nqualifies them (FR-1 / FR-4). `covered + sum(skipped) == eligible`.",
+        "required": [
+          "eligible",
+          "covered",
+          "skipped",
+          "complete",
+          "fungible",
+          "non_fungible"
+        ],
+        "properties": {
+          "complete": {
+            "type": "boolean",
+            "description": "`true` only when every eligible account is covered. A skipped\naccount never appears as a zero balance."
+          },
+          "covered": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Eligible accounts whose vault was decoded into the totals.",
+            "minimum": 0
+          },
+          "eligible": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Miden accounts passing the `updated_since` filter (EVM accounts\nare never eligible — they have no Miden vault).",
+            "minimum": 0
+          },
+          "fungible": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardFungibleTotal"
+            },
+            "description": "Sorted by `faucet_id`."
+          },
+          "non_fungible": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardNonFungibleTotal"
+            },
+            "description": "Sorted by `faucet_id`."
+          },
+          "skipped": {
+            "type": "object",
+            "description": "Eligible accounts not covered, by stable reason\n(`state_unavailable`, `state_undecodable`).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "DashboardAuthMethodSignerCount": {
+        "type": "object",
+        "description": "Accounts sharing one `(auth_method, authorized_signer_count)` shape.\nLets a consumer reproduce its account-shape heuristics without\nGuardian asserting which client a shape belongs to.",
+        "required": [
+          "auth_method",
+          "authorized_signer_count",
+          "count"
+        ],
+        "properties": {
+          "auth_method": {
+            "type": "string",
+            "description": "Stable `Auth::method_label()` (`miden_falcon`, `miden_ecdsa`, `evm`)."
+          },
+          "authorized_signer_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct authorized signers, as on `DashboardAccountSummary`.",
+            "minimum": 0
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -2075,6 +2308,23 @@
           }
         }
       },
+      "DashboardFungibleTotal": {
+        "type": "object",
+        "description": "Base-unit fungible total for one faucet across covered accounts.",
+        "required": [
+          "faucet_id",
+          "total_amount"
+        ],
+        "properties": {
+          "faucet_id": {
+            "type": "string"
+          },
+          "total_amount": {
+            "type": "string",
+            "description": "Base-10 decimal string; may exceed `u64` and JavaScript's safe\ninteger range. No decimals normalization or pricing is applied."
+          }
+        }
+      },
       "DashboardGlobalDeltaEntry": {
         "type": "object",
         "description": "One entry in the global delta feed wire shape per `data-model.md`.\nCarries every field of a per-account [`DashboardDeltaEntry`] plus\n`account_id` so the dashboard can group / link without a second\nrequest.",
@@ -2243,7 +2493,7 @@
         "properties": {
           "accounts_by_auth_method": {
             "type": "object",
-            "description": "Counts of accounts grouped by stable `Auth::method_label()`.\nKeys never collide with internal enum names. Absent when the\naggregate is marked degraded (see `degraded_aggregates`).",
+            "description": "Counts of accounts grouped by stable `Auth::method_label()`.\nKeys never collide with internal enum names. Served from the\nsame snapshot as `GET /dashboard/stats` (`accounts.by_auth_method`),\nso the two endpoints agree; empty and listed in\n`degraded_aggregates` only until that snapshot first publishes\nafter startup.",
             "additionalProperties": {
               "type": "integer",
               "format": "int64",
@@ -2290,7 +2540,52 @@
           "total_account_count": {
             "type": "integer",
             "format": "int64",
+            "description": "Total registered accounts. Once the `/dashboard/stats` snapshot\nhas published this is `accounts.total` from that snapshot, so it\nalways equals the sum of `accounts_by_auth_method` and matches\n`/dashboard/stats`; before the first refresh it is a live count.",
             "minimum": 0
+          }
+        }
+      },
+      "DashboardLifecycleCounts": {
+        "type": "object",
+        "description": "Mutually exclusive lifecycle counts: `released` when `released_at`\nis set, otherwise `paused` when `paused_at` is set, otherwise\n`active`. Sums to `total`.",
+        "required": [
+          "active",
+          "paused",
+          "released"
+        ],
+        "properties": {
+          "active": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "paused": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "released": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DashboardNonFungibleTotal": {
+        "type": "object",
+        "description": "Non-fungible asset count for one faucet across covered accounts.",
+        "required": [
+          "faucet_id",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "faucet_id": {
+            "type": "string"
           }
         }
       },
@@ -2357,6 +2652,50 @@
           "healthy",
           "degraded"
         ]
+      },
+      "DashboardStatsResponse": {
+        "type": "object",
+        "required": [
+          "as_of",
+          "refresh_interval_seconds",
+          "accounts",
+          "assets",
+          "degraded_aggregates"
+        ],
+        "properties": {
+          "accounts": {
+            "$ref": "#/components/schemas/DashboardAccountStats"
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC3339 time the published aggregate was computed. Consumers\nderive the result's age from this; it advances by at most\n`refresh_interval_seconds` at steady state."
+          },
+          "assets": {
+            "$ref": "#/components/schemas/DashboardAssetStats"
+          },
+          "degraded_aggregates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Stable names of aggregates the server declined to compute for\nthis response. Reserved: the current implementation publishes\n`accounts` and `assets` atomically, so this is always empty and\nunavailability is reported as `503 data_unavailable` instead."
+          },
+          "refresh_interval_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Configured cadence of the background refresh\n(`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`).",
+            "minimum": 0
+          },
+          "updated_since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The applied filter, normalized to RFC3339, or `null` when the\nasset aggregate spans every account."
+          }
+        }
       },
       "DashboardVaultFungibleEntry": {
         "type": "object",

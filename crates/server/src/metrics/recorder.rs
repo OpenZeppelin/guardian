@@ -70,6 +70,13 @@ pub fn build_recorder() -> PrometheusRecorder {
             CANDIDATE_AGE_BUCKETS,
         )
         .expect("static age buckets are non-empty")
+        // A stats refresh walks the whole inventory, so it is scaled
+        // like a canonicalization run, not like a request.
+        .set_buckets_for_metric(
+            Matcher::Full(names::DASHBOARD_STATS_REFRESH_DURATION_SECONDS.to_string()),
+            CANONICALIZATION_RUN_BUCKETS,
+        )
+        .expect("static stats refresh buckets are non-empty")
         .build_recorder()
 }
 

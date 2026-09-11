@@ -69,6 +69,15 @@ VITE_GUARDIAN_TARGET=https://your-guardian.example npm run dev
 5. Click `Request challenge`.
 6. Click `Login`.
 7. Use `List accounts`, `Fetch account`, `Get session`, and `Logout`.
+8. Use `Dashboard stats` / `Dashboard stats (7d)` for the one-call account and
+   asset aggregate (`GET /dashboard/stats`, issue #371). Right after Guardian
+   starts the call returns `503 data_unavailable` until the first background
+   refresh completes (60 s default; set
+   `GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS=5` for a quicker smoke
+   loop). `Dashboard stats (invalid since)` exercises the `400
+   invalid_timestamp` path. Compare `accounts.by_auth_method` with
+   `accounts_by_auth_method` from `Dashboard info` — both read the same
+   snapshot and must agree.
 
 `Get session` calls `GET /dashboard/session` (feature `006-operator-authz`
 US6) and shows the operator's identity and effective permission set as
