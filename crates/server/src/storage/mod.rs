@@ -492,7 +492,7 @@ pub trait StorageBackend: Send + Sync {
 
     /// Batch fetch states for `account_ids` in a single round trip
     /// (Postgres: one `SELECT ... WHERE account_id = ANY($1)`;
-    /// filesystem: bounded-concurrency parallel reads). Missing
+    /// filesystem: this default, one sequential read per id). Missing
     /// accounts are simply absent from the returned map — callers
     /// must distinguish "no state yet" from "metadata-without-state"
     /// at the service layer if needed. Used by the dashboard account
@@ -520,6 +520,15 @@ pub trait StorageBackend: Send + Sync {
             match self.pull_state(id).await {
                 Ok(state) => {
                     out.insert((*id).to_string(), state);
+                }
+                // A genuinely absent row is the expected
+                // metadata-without-state case (and is re-read on every
+                // stats refresh), so it is not worth a warning.
+                Err(e) if is_storage_not_found(&e) => {
+                    tracing::debug!(
+                        account_id = %id,
+                        "pull_states_batch: no state row; treating as missing-state at dashboard layer",
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(

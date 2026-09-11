@@ -7,8 +7,9 @@ use tower_http::cors::CorsLayer;
 
 use crate::api::dashboard::{
     challenge_operator_login, get_dashboard_info_handler, get_dashboard_session_handler,
-    get_operator_account, get_operator_account_snapshot, list_operator_accounts, logout_operator,
-    pause_account_handler, unpause_account_handler, verify_operator_login,
+    get_dashboard_stats_handler, get_operator_account, get_operator_account_snapshot,
+    list_operator_accounts, logout_operator, pause_account_handler, unpause_account_handler,
+    verify_operator_login,
 };
 use crate::api::dashboard_feeds::{
     list_account_delta_detail_handler, list_account_deltas_handler, list_account_proposals_handler,
@@ -129,6 +130,12 @@ impl ServerHandle {
         }
 
         start_session_sweep_worker(self.app_state.clone());
+        // Issue #371: maintain the /dashboard/stats aggregate per replica.
+        tracing::info!(
+            interval_secs = self.app_state.dashboard.stats_refresh_interval().as_secs(),
+            "Starting dashboard stats refresher"
+        );
+        crate::dashboard::stats::start_stats_refresher(self.app_state.clone());
 
         // One store for both transports, so HTTP and gRPC draw from a
         // single budget instead of one each.
@@ -297,6 +304,7 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
             get(list_account_proposals_handler),
         )
         .route("/info", get(get_dashboard_info_handler))
+        .route("/stats", get(get_dashboard_stats_handler))
         .route("/deltas", get(list_global_deltas_handler))
         .route("/proposals", get(list_global_proposals_handler))
         .route_layer(from_fn_with_state(dashboard_read_authz, enforce_authz))

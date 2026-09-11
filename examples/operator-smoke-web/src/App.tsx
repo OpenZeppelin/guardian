@@ -386,6 +386,24 @@ export default function App() {
     await runAction('dashboardInfo', () => client.getDashboardInfo());
   }
 
+  async function dashboardStats() {
+    await runAction('dashboardStats', () => client.getDashboardStats());
+  }
+
+  async function dashboardStats7d() {
+    await runAction('dashboardStats7d', () => {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      return client.getDashboardStats({ updatedSince: sevenDaysAgo });
+    });
+  }
+
+  async function dashboardStatsInvalidSince() {
+    // Exercises the `invalid_timestamp` (400) error path.
+    await runAction('dashboardStatsInvalidSince', () =>
+      client.getDashboardStats({ updatedSince: 'not-a-timestamp' }),
+    );
+  }
+
   async function getSession() {
     await runAction('getSession', () => client.getSession());
   }
@@ -568,6 +586,11 @@ export default function App() {
             <button onClick={() => void listActiveAccounts()}>List active accounts</button>
             <button onClick={() => void paginateAccounts()}>Paginate accounts</button>
             <button onClick={() => void dashboardInfo()}>Dashboard info</button>
+            <button onClick={() => void dashboardStats()}>Dashboard stats</button>
+            <button onClick={() => void dashboardStats7d()}>Dashboard stats (7d)</button>
+            <button onClick={() => void dashboardStatsInvalidSince()}>
+              Dashboard stats (invalid since)
+            </button>
             <button onClick={() => void getSession()}>Get session</button>
             <button onClick={() => void listGlobalDeltas()}>List global deltas</button>
             <button onClick={() => void listGlobalProposals()}>List global proposals</button>

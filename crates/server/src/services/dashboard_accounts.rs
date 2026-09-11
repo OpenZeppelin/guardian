@@ -290,6 +290,14 @@ fn bech32_for_account(metadata: &AccountMetadata, network_type: NetworkType) -> 
     Some(account_id.to_bech32(MidenNetworkType::from(network_type).to_miden_network_id()))
 }
 
+/// Number of distinct authorized signers, as reported by
+/// `DashboardAccountSummary.authorized_signer_count`. Shared with the
+/// `/dashboard/stats` aggregate so both surfaces bucket accounts the
+/// same way.
+pub fn normalized_authorized_signer_count(auth: &Auth) -> usize {
+    normalized_authorized_signer_ids(auth).len()
+}
+
 fn normalized_authorized_signer_ids(auth: &Auth) -> Vec<String> {
     let mut signer_ids = match auth {
         Auth::MidenFalconRpo {

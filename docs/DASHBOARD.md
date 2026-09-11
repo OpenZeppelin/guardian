@@ -145,6 +145,95 @@ are not being reconsidered — note that individual accounts back off as
 their recoverable rows age, so a retained row being probed less often
 than the configured interval is expected.
 
+## Aggregate stats
+
+`GET /dashboard/stats` (issue #371) answers the two questions the
+cross-operator dashboard asks of every Guardian — *how many accounts of
+what kind* and *what assets are under guard* — in **one request**. Before
+it existed the dashboard walked the full account list and fetched one
+snapshot per recently-updated account (≈1,100 requests per refresh on a
+2,400-account server), which the code-default HTTP rate limits cut off.
+
+The response carries:
+
+- `accounts` — unfiltered counts: `total`, mutually exclusive
+  `by_lifecycle` (`released` if `released_at` is set, else `paused` if
+  `paused_at` is set, else `active`), `by_auth_method`,
+  `by_auth_method_and_signer_count` (so a consumer can reproduce its own
+  account-shape heuristics without Guardian claiming what client a shape
+  belongs to), and `updated_within_7d` / `updated_within_30d` anchored to
+  `as_of`.
+- `assets` — Miden vault totals over *eligible* accounts: fungible base
+  units per `faucet_id` as **base-10 decimal strings** (sums are computed
+  in 128-bit and may exceed `u64` / JavaScript safe integers) and
+  non-fungible counts per `faucet_id`. No decimals normalization, token
+  metadata, pricing, or fiat valuation — those stay consumer concerns.
+- Coverage: `eligible`, `covered`, `skipped` (by stable reason —
+  `state_unavailable`, `state_undecodable`) and `complete`.
+  `covered + Σskipped == eligible` always holds, and any skipped account
+  makes `complete: false`. A missing or undecodable state is never
+  reported as a zero balance.
+- `as_of`, the echoed `updated_since` (or `null`), the configured
+  `refresh_interval_seconds`, and `degraded_aggregates` (reserved; the
+  current implementation publishes everything atomically, so it is
+  always empty).
+
+`?updated_since=<RFC3339>` restricts the **asset** aggregate to accounts
+whose metadata `updated_at` — the same value `GET /dashboard/accounts`
+exposes as `updated_at` — is `>=` the cutoff. Account counts are always
+unfiltered. A blank value is treated as absent; anything else that is
+not RFC3339 is `400 invalid_timestamp`. Percent-encode the value: a
+literal `+` in a UTC offset decodes as a space and is rejected, so send
+`2026-09-04T00:00:00Z` or `...%2B00:00`. Eligibility is Miden-only: EVM
+accounts have no Miden vault and never count as eligible or skipped.
+Lifecycle does not affect eligibility (a paused or released account's
+vault is still under guard).
+
+**Freshness.** The aggregate is computed by a background task on every
+replica and published atomically; each refresh starts a full
+`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS` (default 60 s, matching
+the dashboard's own cache) after the previous one finished, so a slow
+walk never runs back-to-back. A request never reads storage or decodes
+a vault: it reads the latest snapshot and, when `updated_since` is set,
+folds the in-memory per-account totals of the eligible accounts
+(microseconds per account; the unfiltered aggregate is precomputed).
+`as_of` is the time the snapshot's walk began — use it to judge age;
+worst case is one interval plus one refresh's duration. Until the first
+refresh completes after startup the endpoint returns
+`503 data_unavailable` (retryable) rather than zeros. A refresh that
+fails at any storage read (metadata listing or paging, or a batched
+state pull) leaves the previous snapshot published and increments
+`guardian_dashboard_stats_refresh_failures_total`, so a transient
+database error never replaces a complete aggregate with a partial one;
+only a state row that is genuinely absent is reported as
+`state_unavailable`. The last successful `as_of` is exported as
+`guardian_dashboard_stats_refresh_timestamp_seconds` and the walk
+duration as `guardian_dashboard_stats_refresh_duration_seconds`.
+
+**Bounded refresh cost.** The walk reads metadata in pages of 200
+(`STATS_PAGE_SIZE`), then batch-pulls the Miden accounts' states in
+chunks of 200 and decodes a vault only when its state commitment
+differs from the previous snapshot — an unchanged commitment reuses the
+previous decoded vault, or the previous "undecodable" verdict — so a
+steady-state refresh decodes just the accounts that changed. Decoding
+runs on Tokio's blocking pool. Because every replica keeps its own
+snapshot, two replicas behind one load balancer may answer with slightly
+different `as_of` values; consumers should treat the value as a cache
+timestamp, not a global clock.
+
+**Relationship to `/dashboard/info`.** `accounts_by_auth_method` and
+`total_account_count` on `/dashboard/info` are served from the *same*
+snapshot once it exists, so the two endpoints never contradict each
+other, the per-method counts always sum to the total, and the old
+inventory threshold no longer degrades that field. It is listed in `degraded_aggregates`
+only during the window between process start and the first published
+refresh. The remaining fan-out aggregates on `/dashboard/info` keep
+their filesystem threshold behavior (see below).
+
+The operator client exposes this as `getDashboardStats({ updatedSince })`
+and `examples/operator-smoke-web` has "Dashboard stats" buttons for the
+unfiltered, 7-day, and invalid-cutoff paths.
+
 ## Permission vocabulary
 
 Permissions are server-defined; unknown strings are rejected at allowlist
@@ -308,15 +397,21 @@ point the harness at `http://localhost:3000`. The
 
 ## Storage-mode caveats
 
-The dashboard surfaces a few aggregates (account counts, global feeds)
-that are cheap on Postgres but expensive on the filesystem backend. The
-server has a defensive cap: above
-`DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD` (1,000 accounts by default,
-[`config.rs:16`](../crates/server/src/dashboard/config.rs#L16)),
-cross-account aggregates on filesystem deployments may return a degraded
-marker rather than a count. This is intentional — filesystem mode is a
-dev convenience, not a production backend. See
+The dashboard surfaces a few aggregates (delta status counts, in-flight
+proposals, latest activity, global feeds) that are cheap on Postgres but
+expensive on the filesystem backend. The server has a defensive cap:
+above `DEFAULT_FILESYSTEM_AGGREGATE_THRESHOLD` (1,000 accounts by
+default, [`config.rs`](../crates/server/src/dashboard/config.rs)),
+those cross-account aggregates on filesystem deployments return a
+degraded marker rather than a count. This is intentional — filesystem
+mode is a dev convenience, not a production backend. See
 [Storage modes](./architecture/services.md#storage-modes).
+
+The threshold does **not** apply to `GET /dashboard/stats` or to
+`accounts_by_auth_method` on `/dashboard/info`: both are served from the
+background-maintained snapshot described under
+[Aggregate stats](#aggregate-stats), which reads the inventory in
+bounded pages on either backend.
 
 ## Operations checklist
 

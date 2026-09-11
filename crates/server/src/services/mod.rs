@@ -19,6 +19,7 @@ mod dashboard_global_deltas;
 mod dashboard_global_proposals;
 mod dashboard_info;
 mod dashboard_pagination;
+mod dashboard_stats;
 mod delta_commit;
 mod get_delta;
 mod get_delta_history;
@@ -57,6 +58,7 @@ pub use dashboard_account_snapshot::{
 pub use dashboard_accounts::{
     DashboardAccountDetail, DashboardAccountStateStatus, DashboardAccountSummary,
     GetDashboardAccountResult, get_dashboard_account, list_dashboard_accounts_paged,
+    normalized_authorized_signer_count,
 };
 pub use dashboard_global_deltas::{
     DashboardGlobalDeltaEntry, list_global_deltas, parse_status_filter,
@@ -68,6 +70,11 @@ pub use dashboard_info::{
 };
 pub use dashboard_pagination::{
     DEFAULT_LIMIT, MAX_LIMIT, PagedResult, parse_cursor, parse_limit, validate_limit,
+};
+pub use dashboard_stats::{
+    DashboardAccountStats, DashboardAssetStats, DashboardAuthMethodSignerCount,
+    DashboardFungibleTotal, DashboardLifecycleCounts, DashboardNonFungibleTotal,
+    DashboardStatsResponse, get_dashboard_stats, parse_updated_since,
 };
 pub use get_delta::{GetDeltaParams, GetDeltaResult, get_delta};
 pub use get_delta_history::{

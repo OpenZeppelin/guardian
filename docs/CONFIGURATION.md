@@ -255,6 +255,7 @@ one-command Grafana dashboard stack.
 |---|---|---|
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` | _unset_ | AWS Secrets Manager secret name/ARN holding the operator allowlist JSON. Hot-reloaded on every challenge and authenticated `/dashboard/*` request. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | _unset_ | Local JSON path for the same payload. Local dev only. |
+| `GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS` | `60` | Cadence of the per-replica background refresh that maintains the `GET /dashboard/stats` aggregate (account counts, Miden asset totals, coverage) and the `accounts_by_auth_method` field of `GET /dashboard/info`. A request never triggers a refresh; responses carry the snapshot time as `as_of`, so the worst-case staleness is this interval plus one refresh's duration. Must be a positive integer. See [DASHBOARD.md](./DASHBOARD.md#aggregate-stats). |
 | `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process if unset | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. The prod Terraform profile injects a pre-created Secrets Manager value into every task. If unset outside that profile, the server **warns** and generates an ephemeral per-process key and still boots (in every stage); an ephemeral key breaks pagination cursors across replicas and restarts — the dashboard feeds and the client `GET /delta/history` endpoint — nothing else, so it is not a startup guard. |
 
 `GET /dashboard/info.environment` is derived from `GUARDIAN_NETWORK_TYPE`

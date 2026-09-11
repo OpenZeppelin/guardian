@@ -28,6 +28,8 @@ import type {
   DashboardGlobalProposalEntry,
   DashboardInfoResponse,
   DashboardProposalEntry,
+  DashboardStatsOptions,
+  DashboardStatsResponse,
   DashboardVaultFungibleEntry,
   DashboardVaultNonFungibleEntry,
   DashboardVaultSnapshot,
@@ -79,6 +81,7 @@ const DASHBOARD_ERROR_CODES = new Set<DashboardErrorCode>([
   'invalid_cursor',
   'invalid_limit',
   'invalid_status_filter',
+  'invalid_timestamp',
   'data_unavailable',
   // Snapshot-specific codes (FR-045).
   'unsupported_for_network',
@@ -415,6 +418,31 @@ export class GuardianOperatorHttpClient {
       { method: 'GET' },
       parseDashboardInfo,
     );
+  }
+
+  /**
+   * Account counts, Miden asset totals, and coverage in one request
+   * (issue #371). Replaces the full account-list walk plus per-account
+   * snapshot reads the dashboard used to need. Served from a
+   * background-maintained snapshot: check `asOf` for its age. Throws
+   * `GuardianOperatorHttpError` with code `data_unavailable` (503,
+   * retryable) until the server has completed its first refresh after
+   * startup, and `invalid_timestamp` (400) for a malformed
+   * `updatedSince`.
+   */
+  async getDashboardStats(
+    options: DashboardStatsOptions = {},
+  ): Promise<DashboardStatsResponse> {
+    const url = new URL('dashboard/stats', this.baseUrl);
+    if (options.updatedSince !== undefined) {
+      url.searchParams.set(
+        'updated_since',
+        options.updatedSince instanceof Date
+          ? options.updatedSince.toISOString()
+          : options.updatedSince,
+      );
+    }
+    return this.request(url, { method: 'GET' }, parseDashboardStats);
   }
 
   /**
@@ -893,20 +921,10 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
     canonicalization,
   };
 
-  const authMethodsRecord = asRecord(
+  const accountsByAuthMethod = requireCountMap(
     requireField(record, 'accounts_by_auth_method', 'dashboard info'),
     'dashboard info.accounts_by_auth_method',
   );
-  const accountsByAuthMethod: Record<string, number> = {};
-  for (const [key, raw] of Object.entries(authMethodsRecord)) {
-    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
-      throw new GuardianOperatorContractError(
-        'dashboard info.accounts_by_auth_method',
-        `expected non-negative integer count for "${key}", got ${JSON.stringify(raw)}`,
-      );
-    }
-    accountsByAuthMethod[key] = raw;
-  }
 
   return {
     serviceStatus,
@@ -962,6 +980,138 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
       'dashboard info',
     ),
   };
+}
+
+function parseDashboardStats(value: unknown): DashboardStatsResponse {
+  const ctx = 'dashboard stats';
+  const record = asRecord(value, ctx);
+
+  const accountsCtx = `${ctx}.accounts`;
+  const accountsRecord = asRecord(requireField(record, 'accounts', ctx), accountsCtx);
+  const lifecycleCtx = `${accountsCtx}.by_lifecycle`;
+  const lifecycleRecord = asRecord(
+    requireField(accountsRecord, 'by_lifecycle', accountsCtx),
+    lifecycleCtx,
+  );
+  const shapesCtx = `${accountsCtx}.by_auth_method_and_signer_count`;
+  const byAuthMethodAndSignerCount = requireArray(
+    accountsRecord,
+    'by_auth_method_and_signer_count',
+    accountsCtx,
+  ).map((entry, idx) => {
+    const entryCtx = `${shapesCtx}[${idx}]`;
+    const r = asRecord(entry, entryCtx);
+    return {
+      authMethod: requireString(r, 'auth_method', entryCtx),
+      authorizedSignerCount: requireCount(
+        r,
+        'authorized_signer_count',
+        entryCtx,
+      ),
+      count: requireCount(r, 'count', entryCtx),
+    };
+  });
+  const accounts: DashboardStatsResponse['accounts'] = {
+    total: requireCount(accountsRecord, 'total', accountsCtx),
+    byLifecycle: {
+      active: requireCount(lifecycleRecord, 'active', lifecycleCtx),
+      paused: requireCount(lifecycleRecord, 'paused', lifecycleCtx),
+      released: requireCount(lifecycleRecord, 'released', lifecycleCtx),
+    },
+    byAuthMethod: requireCountMap(
+      requireField(accountsRecord, 'by_auth_method', accountsCtx),
+      `${accountsCtx}.by_auth_method`,
+    ),
+    byAuthMethodAndSignerCount,
+    updatedWithin7d: requireCount(
+      accountsRecord,
+      'updated_within_7d',
+      accountsCtx,
+    ),
+    updatedWithin30d: requireCount(
+      accountsRecord,
+      'updated_within_30d',
+      accountsCtx,
+    ),
+  };
+
+  const assetsCtx = `${ctx}.assets`;
+  const assetsRecord = asRecord(requireField(record, 'assets', ctx), assetsCtx);
+  const fungible = requireArray(assetsRecord, 'fungible', assetsCtx).map(
+    (entry, idx) => {
+      const entryCtx = `${assetsCtx}.fungible[${idx}]`;
+      const r = asRecord(entry, entryCtx);
+      const totalAmount = requireString(r, 'total_amount', entryCtx);
+      // Base-10 decimal string by contract; anything else (hex,
+      // negative, exponent form) is a server/client drift, not data.
+      if (!/^[0-9]+$/.test(totalAmount)) {
+        throw new GuardianOperatorContractError(
+          entryCtx,
+          `expected total_amount to be a base-10 decimal string, got ${JSON.stringify(totalAmount)}`,
+        );
+      }
+      return { faucetId: requireString(r, 'faucet_id', entryCtx), totalAmount };
+    },
+  );
+  const nonFungible = requireArray(assetsRecord, 'non_fungible', assetsCtx).map(
+    (entry, idx) => {
+      const entryCtx = `${assetsCtx}.non_fungible[${idx}]`;
+      const r = asRecord(entry, entryCtx);
+      return {
+        faucetId: requireString(r, 'faucet_id', entryCtx),
+        count: requireCount(r, 'count', entryCtx),
+      };
+    },
+  );
+  const assets: DashboardStatsResponse['assets'] = {
+    eligible: requireCount(assetsRecord, 'eligible', assetsCtx),
+    covered: requireCount(assetsRecord, 'covered', assetsCtx),
+    skipped: requireCountMap(
+      requireField(assetsRecord, 'skipped', assetsCtx),
+      `${assetsCtx}.skipped`,
+    ),
+    complete: requireBoolean(assetsRecord, 'complete', assetsCtx),
+    fungible,
+    nonFungible,
+  };
+
+  return {
+    asOf: requireString(record, 'as_of', ctx),
+    updatedSince: requireNullableString(record, 'updated_since', ctx),
+    refreshIntervalSeconds: requireCount(
+      record,
+      'refresh_interval_seconds',
+      ctx,
+    ),
+    accounts,
+    assets,
+    degradedAggregates: requireStringArray(record, 'degraded_aggregates', ctx),
+  };
+}
+
+/** Record-keyed form of {@link requireNonNegativeInteger}. */
+function requireCount(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): number {
+  return requireNonNegativeInteger(requireField(record, key, context), key, context);
+}
+
+/** Decode a `{ [label]: non-negative integer }` map. */
+function requireCountMap(value: unknown, context: string): Record<string, number> {
+  const record = asRecord(value, context);
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(record)) {
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+      throw new GuardianOperatorContractError(
+        context,
+        `expected non-negative integer count for "${key}", got ${JSON.stringify(raw)}`,
+      );
+    }
+    out[key] = raw;
+  }
+  return out;
 }
 
 function parseAccountResponse(value: unknown): DashboardAccountResponse {

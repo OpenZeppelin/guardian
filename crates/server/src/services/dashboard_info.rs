@@ -15,7 +15,11 @@
 //! `in_flight_proposal_count`, `latest_activity`) are short-circuited
 //! to a degraded marker when the configured filesystem threshold is
 //! exceeded, per FR-029. Total account count is always returned (cheap
-//! single-call to the metadata store).
+//! single-call to the metadata store). `accounts_by_auth_method` is
+//! served from the background-maintained `/dashboard/stats` aggregate
+//! (issue #371 FR-9) — never threshold-gated, and never contradicting
+//! `/dashboard/stats` because both read the same snapshot; it is
+//! degraded only until the first refresh has published.
 //!
 //! Per the v1 Miden-oriented scope, `GROUP BY` and `MAX` aggregates are
 //! computed via service-layer fan-out using the existing
@@ -115,10 +119,17 @@ pub struct DashboardInfoResponse {
     pub environment: String,
     pub build: DashboardBuildInfo,
     pub backend: DashboardBackendInfo,
+    /// Total registered accounts. Once the `/dashboard/stats` snapshot
+    /// has published this is `accounts.total` from that snapshot, so it
+    /// always equals the sum of `accounts_by_auth_method` and matches
+    /// `/dashboard/stats`; before the first refresh it is a live count.
     pub total_account_count: u64,
     /// Counts of accounts grouped by stable `Auth::method_label()`.
-    /// Keys never collide with internal enum names. Absent when the
-    /// aggregate is marked degraded (see `degraded_aggregates`).
+    /// Keys never collide with internal enum names. Served from the
+    /// same snapshot as `GET /dashboard/stats` (`accounts.by_auth_method`),
+    /// so the two endpoints agree; empty and listed in
+    /// `degraded_aggregates` only until that snapshot first publishes
+    /// after startup.
     pub accounts_by_auth_method: BTreeMap<String, u64>,
     /// Greater of the most recent delta status timestamp and the most
     /// recent proposal originating timestamp across all accounts;
@@ -190,6 +201,28 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
         degraded_aggregates: Vec::new(),
     };
 
+    // accounts_by_auth_method: read from the background-maintained
+    // `/dashboard/stats` snapshot (issue #371 FR-9). This replaces the
+    // former N-point-read fan-out and its inventory threshold: the
+    // aggregate is bucketed once per refresh regardless of inventory
+    // size, and `/dashboard/info` and `/dashboard/stats` cannot
+    // disagree because they read the same snapshot — including the
+    // total, which is taken from the snapshot too so it always equals
+    // the sum of the per-method counts. The only degraded window is
+    // between process start and the first published refresh.
+    match state.dashboard.stats().current() {
+        Some(snapshot) => {
+            response.total_account_count = snapshot.accounts.total;
+            response.accounts_by_auth_method = snapshot.accounts.by_auth_method.clone();
+        }
+        None => {
+            response.service_status = DashboardServiceStatus::Degraded;
+            response
+                .degraded_aggregates
+                .push(AGG_ACCOUNTS_BY_AUTH_METHOD.to_string());
+        }
+    }
+
     // FR-029: filesystem-only threshold. Postgres serves these
     // aggregates from indexed `GROUP BY` / `MAX` queries and is not
     // bounded by inventory size. Above-threshold filesystem
@@ -203,62 +236,8 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
                 AGG_DELTA_STATUS_COUNTS.to_string(),
                 AGG_IN_FLIGHT_PROPOSAL_COUNT.to_string(),
                 AGG_LATEST_ACTIVITY.to_string(),
-                AGG_ACCOUNTS_BY_AUTH_METHOD.to_string(),
             ]);
             return Ok(response);
-        }
-    }
-
-    // accounts_by_auth_method: fan out over metadata to bucket each
-    // account by its stable `Auth::method_label()`. Unlike the
-    // delta/proposal aggregates above, this fan-out is N point reads
-    // on *both* backends today (Postgres serves it from per-row JSONB
-    // metadata; no SQL `GROUP BY` over a typed column exists yet), so
-    // the FR-029 inventory threshold is applied to *both* backends
-    // here rather than filesystem-only. Above the threshold we mark
-    // the aggregate degraded and skip the scan. A future migration
-    // that promotes `Auth::method_label()` to a typed indexed column
-    // would let us push this down to SQL and lift the cap.
-    let aggregate_threshold = state.dashboard.filesystem_aggregate_threshold();
-    if account_ids.len() > aggregate_threshold {
-        response.service_status = DashboardServiceStatus::Degraded;
-        response
-            .degraded_aggregates
-            .push(AGG_ACCOUNTS_BY_AUTH_METHOD.to_string());
-    } else {
-        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
-        let mut counts_degraded = false;
-        for id in &account_ids {
-            match state.metadata.get(id).await {
-                Ok(Some(meta)) => {
-                    *counts
-                        .entry(meta.auth.method_label().to_string())
-                        .or_insert(0) += 1;
-                }
-                Ok(None) => {
-                    // Account ID was listed but metadata is missing —
-                    // race against deletion. Skip rather than fail;
-                    // the row simply won't be counted in this
-                    // snapshot.
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        account_id = %id,
-                        "dashboard info: metadata.get failed during auth-method aggregation"
-                    );
-                    counts_degraded = true;
-                    break;
-                }
-            }
-        }
-        if counts_degraded {
-            response.service_status = DashboardServiceStatus::Degraded;
-            response
-                .degraded_aggregates
-                .push(AGG_ACCOUNTS_BY_AUTH_METHOD.to_string());
-        } else {
-            response.accounts_by_auth_method = counts;
         }
     }
 
@@ -358,75 +337,49 @@ mod tests {
         }
     }
 
+    /// Publish a `/dashboard/stats` snapshot with the given
+    /// `(auth_method, count)` composition so `/dashboard/info` can
+    /// serve `accounts_by_auth_method` from it (issue #371 FR-9).
+    fn publish_stats_snapshot(state: &AppState, composition: &[(&'static str, usize)]) {
+        use crate::dashboard::stats::{
+            AccountLifecycle, AccountStatsRecord, StatsSnapshot, VaultOutcome,
+        };
+        let mut records = Vec::new();
+        for (auth_method, count) in composition {
+            for i in 0..*count {
+                records.push(AccountStatsRecord {
+                    account_id: format!("{auth_method}-{i}"),
+                    updated_at: Some(state.clock.now()),
+                    auth_method,
+                    authorized_signer_count: 1,
+                    lifecycle: AccountLifecycle::Active,
+                    state_commitment: None,
+                    vault: VaultOutcome::NotApplicable,
+                });
+            }
+        }
+        state
+            .dashboard
+            .stats()
+            .publish(Arc::new(StatsSnapshot::new(state.clock.now(), records)));
+    }
+
     #[tokio::test]
-    async fn accounts_by_auth_method_buckets_each_metadata_entry() {
-        use crate::ack::AckRegistry;
-        use crate::builder::clock::test::MockClock;
-        use crate::metadata::auth::Auth;
-        use crate::metadata::{AccountMetadata, NetworkConfig};
-        use crate::testing::mocks::MockNetworkClient;
-
-        let account_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-
-        let make = |id: &str, auth: Auth| AccountMetadata {
-            account_id: id.to_string(),
-            auth,
-            network_config: NetworkConfig::miden_default(),
-            created_at: "2026-05-11T00:00:00Z".to_string(),
-            updated_at: "2026-05-11T00:00:00Z".to_string(),
-            has_pending_candidate: false,
-            paused_at: None,
-            paused_reason: None,
-            released_at: None,
-        };
-        let metadata = MockMetadataStore::new()
-            .with_list(Ok(account_ids))
-            .with_get(Ok(Some(make(
-                "a",
-                Auth::MidenFalconRpo {
-                    cosigner_commitments: vec![],
-                },
-            ))))
-            .with_get(Ok(Some(make(
-                "b",
-                Auth::MidenFalconRpo {
-                    cosigner_commitments: vec![],
-                },
-            ))))
-            .with_get(Ok(Some(make(
-                "c",
-                Auth::MidenEcdsa {
-                    cosigner_commitments: vec![],
-                },
-            ))));
-
-        let storage = MockStorageBackend::new()
-            .with_count_deltas_by_status(Ok(Default::default()))
-            .with_count_in_flight_proposals(Ok(0))
-            .with_latest_activity_timestamp(Ok(None));
-
-        let keystore_dir =
-            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
-        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
-
-        let state = AppState {
-            storage: Arc::new(storage),
-            metadata: Arc::new(metadata),
-            network_client: Arc::new(MockNetworkClient::new()),
-            ack,
-            canonicalization: None,
-            clock: Arc::new(MockClock::default()),
-            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
-            auditor: Arc::new(crate::audit::LogAuditor::new()),
-            #[cfg(feature = "evm")]
-            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
-        };
+    async fn accounts_by_auth_method_is_served_from_stats_snapshot() {
+        let state = build_state(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            Default::default(),
+            0,
+            None,
+        )
+        .await;
+        publish_stats_snapshot(&state, &[("miden_falcon", 2), ("miden_ecdsa", 1)]);
 
         let info = get_dashboard_info(&state).await.unwrap();
         assert_eq!(info.total_account_count, 3);
         assert_eq!(info.accounts_by_auth_method.get("miden_falcon"), Some(&2));
         assert_eq!(info.accounts_by_auth_method.get("miden_ecdsa"), Some(&1));
+        assert_eq!(info.service_status, DashboardServiceStatus::Healthy);
         // The aggregate is not degraded on the happy path.
         assert!(
             !info
@@ -437,46 +390,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accounts_by_auth_method_marks_degraded_when_metadata_get_fails() {
-        use crate::ack::AckRegistry;
-        use crate::builder::clock::test::MockClock;
-        use crate::testing::mocks::MockNetworkClient;
-
-        // List has two accounts; the first metadata.get returns Err.
-        // The aggregator should bail and mark the aggregate degraded
-        // without failing the overall response.
-        let metadata = MockMetadataStore::new()
-            .with_list(Ok(vec!["a".to_string(), "b".to_string()]))
-            .with_get(Err("synthetic metadata read failure".to_string()));
-        let storage = MockStorageBackend::new()
-            .with_count_deltas_by_status(Ok(Default::default()))
-            .with_count_in_flight_proposals(Ok(0))
-            .with_latest_activity_timestamp(Ok(None));
-        let keystore_dir =
-            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
-        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
-
-        let state = AppState {
-            storage: Arc::new(storage),
-            metadata: Arc::new(metadata),
-            network_client: Arc::new(MockNetworkClient::new()),
-            ack,
-            canonicalization: None,
-            clock: Arc::new(MockClock::default()),
-            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
-            auditor: Arc::new(crate::audit::LogAuditor::new()),
-            #[cfg(feature = "evm")]
-            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
-        };
+    async fn accounts_by_auth_method_marks_degraded_until_first_stats_refresh() {
+        // No snapshot published yet (process just started). The
+        // aggregate is reported degraded — never as an empty map
+        // masquerading as "no accounts" — without failing the response
+        // or degrading the other aggregates.
+        let state = build_state(
+            vec!["a".to_string(), "b".to_string()],
+            Default::default(),
+            0,
+            None,
+        )
+        .await;
 
         let info = get_dashboard_info(&state).await.unwrap();
         assert_eq!(info.total_account_count, 2);
         assert_eq!(info.service_status, DashboardServiceStatus::Degraded);
-        assert!(
-            info.degraded_aggregates
-                .iter()
-                .any(|s| s == AGG_ACCOUNTS_BY_AUTH_METHOD)
+        assert_eq!(
+            info.degraded_aggregates,
+            vec![AGG_ACCOUNTS_BY_AUTH_METHOD.to_string()]
         );
         // Counts map left empty when the aggregate is marked degraded.
         assert!(info.accounts_by_auth_method.is_empty());
@@ -491,6 +423,9 @@ mod tests {
             None,
         )
         .await;
+        // An empty inventory still needs a published (empty) stats
+        // snapshot for the auth-method aggregate to count as computed.
+        publish_stats_snapshot(&state, &[]);
         let info = get_dashboard_info(&state).await.unwrap();
         assert_eq!(info.total_account_count, 0);
         assert_eq!(info.delta_status_counts.candidate, 0);
@@ -747,9 +682,22 @@ mod tests {
             #[cfg(feature = "evm")]
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         };
+        // Issue #371 FR-9: the auth-method aggregate comes from the
+        // stats snapshot and is NOT subject to the inventory threshold.
+        publish_stats_snapshot(&state, &[("miden_falcon", 1001)]);
         let info = get_dashboard_info(&state).await.unwrap();
         assert_eq!(info.total_account_count, 1001);
         assert_eq!(info.service_status, DashboardServiceStatus::Degraded);
+        assert_eq!(
+            info.accounts_by_auth_method.get("miden_falcon"),
+            Some(&1001)
+        );
+        assert!(
+            !info
+                .degraded_aggregates
+                .iter()
+                .any(|s| s == AGG_ACCOUNTS_BY_AUTH_METHOD)
+        );
         assert!(
             info.degraded_aggregates
                 .iter()

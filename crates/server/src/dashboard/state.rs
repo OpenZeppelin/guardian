@@ -10,6 +10,7 @@ use super::allowlist::{
 };
 use super::config::DashboardConfig;
 use super::cursor::CursorSecret;
+use super::stats::DashboardStatsCache;
 use super::types::{
     AuthenticatedOperator, IssuedOperatorSession, OperatorChallenge, OperatorChallengePayload,
 };
@@ -34,6 +35,10 @@ pub struct DashboardState {
     cursor_secret: CursorSecret,
     cursor_secret_configured: bool,
     started_at: DateTime<Utc>,
+    /// Latest `/dashboard/stats` aggregate published by the background
+    /// refresher (issue #371); shared by `/dashboard/info` for
+    /// `accounts_by_auth_method`.
+    stats: Arc<DashboardStatsCache>,
 }
 
 impl std::fmt::Debug for DashboardState {
@@ -42,6 +47,7 @@ impl std::fmt::Debug for DashboardState {
             .field("config", &self.config)
             .field("cursor_secret_configured", &self.cursor_secret_configured)
             .field("started_at", &self.started_at)
+            .field("stats", &self.stats)
             .finish_non_exhaustive()
     }
 }
@@ -437,6 +443,7 @@ impl DashboardState {
             cursor_secret,
             cursor_secret_configured,
             started_at: Utc::now(),
+            stats: Arc::new(DashboardStatsCache::default()),
         })
     }
 
@@ -474,6 +481,17 @@ impl DashboardState {
     /// per FR-029.
     pub fn filesystem_aggregate_threshold(&self) -> usize {
         self.config.filesystem_aggregate_threshold()
+    }
+
+    /// Process-local `/dashboard/stats` aggregate cache (issue #371).
+    pub fn stats(&self) -> &DashboardStatsCache {
+        &self.stats
+    }
+
+    /// Cadence of the background stats refresh
+    /// (`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`).
+    pub fn stats_refresh_interval(&self) -> std::time::Duration {
+        self.config.stats_refresh_interval()
     }
 
     /// Deployment environment identifier surfaced on

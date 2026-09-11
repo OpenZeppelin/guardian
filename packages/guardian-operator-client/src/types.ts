@@ -221,6 +221,9 @@ export type DashboardErrorCode =
   | 'invalid_cursor'
   | 'invalid_limit'
   | 'invalid_status_filter'
+  // `GET /dashboard/stats?updated_since=` rejected a non-RFC3339 value
+  // (issue #371 FR-2).
+  | 'invalid_timestamp'
   | 'data_unavailable'
   // Snapshot endpoint distinguishes EVM (permanent) from
   // missing/undecodable state (transient) via separate codes — both
@@ -551,6 +554,102 @@ export interface DashboardAccountSnapshot {
    * rather than silently display stale data. */
   hasPendingCandidate: boolean;
   vault: DashboardVaultSnapshot;
+}
+
+/** Query options for {@link GuardianOperatorHttpClient.getDashboardStats}. */
+export interface DashboardStatsOptions {
+  /** Restrict the **asset** aggregate to accounts whose metadata
+   * `updatedAt >= updatedSince` (RFC3339 string or `Date`). Account
+   * counts are always unfiltered. Omitted → every account. */
+  updatedSince?: string | Date;
+}
+
+/** Mutually exclusive lifecycle counts: `released` when `releasedAt`
+ * is set, else `paused` when `pausedAt` is set, else `active`. */
+export interface DashboardLifecycleCounts {
+  active: number;
+  paused: number;
+  released: number;
+}
+
+/** Accounts sharing one `(authMethod, authorizedSignerCount)` shape.
+ * Lets a consumer reproduce its own account-shape heuristics without
+ * Guardian asserting which client a shape belongs to. */
+export interface DashboardAuthMethodSignerCount {
+  /** Stable auth-method label (`miden_falcon`, `miden_ecdsa`, `evm`). */
+  authMethod: string;
+  authorizedSignerCount: number;
+  count: number;
+}
+
+/** Unfiltered account counts (`updatedSince` does not apply). */
+export interface DashboardAccountStats {
+  total: number;
+  byLifecycle: DashboardLifecycleCounts;
+  /** Never omitted above an inventory threshold: the aggregate is
+   * maintained incrementally server-side. */
+  byAuthMethod: Record<string, number>;
+  /** Sorted by `(authMethod, authorizedSignerCount)`. */
+  byAuthMethodAndSignerCount: DashboardAuthMethodSignerCount[];
+  /** Accounts whose metadata `updatedAt` is within 7 days of `asOf`. */
+  updatedWithin7d: number;
+  /** Same, for 30 days. */
+  updatedWithin30d: number;
+}
+
+/** Base-unit fungible total for one faucet across covered accounts.
+ * `totalAmount` is a base-10 decimal string that may exceed `u64` and
+ * `Number.MAX_SAFE_INTEGER`; use `BigInt(totalAmount)`. No decimals
+ * normalization or pricing is applied. */
+export interface DashboardFungibleTotal {
+  faucetId: string;
+  totalAmount: string;
+}
+
+/** Non-fungible asset count for one faucet across covered accounts. */
+export interface DashboardNonFungibleTotal {
+  faucetId: string;
+  count: number;
+}
+
+/** Asset totals over eligible Miden accounts plus the coverage that
+ * qualifies them. `covered + sum(skipped) === eligible` always holds. */
+export interface DashboardAssetStats {
+  /** Miden accounts passing the `updatedSince` filter. EVM accounts
+   * have no Miden vault and are never eligible. */
+  eligible: number;
+  /** Eligible accounts whose vault was decoded into the totals. */
+  covered: number;
+  /** Eligible accounts not covered, by stable reason
+   * (`state_unavailable`, `state_undecodable`). */
+  skipped: Record<string, number>;
+  /** `true` only when every eligible account is covered; a skipped
+   * account never appears as a zero balance. */
+  complete: boolean;
+  /** Sorted by `faucetId`. */
+  fungible: DashboardFungibleTotal[];
+  /** Sorted by `faucetId`. */
+  nonFungible: DashboardNonFungibleTotal[];
+}
+
+/**
+ * `GET /dashboard/stats` (issue #371): account and Miden vault
+ * aggregates in one request, served from a background-maintained
+ * snapshot. No per-account follow-up requests are needed.
+ */
+export interface DashboardStatsResponse {
+  /** RFC3339 time the aggregate was computed; derive its age from
+   * this. Advances by at most `refreshIntervalSeconds` at steady state. */
+  asOf: string;
+  /** The applied filter, normalized to RFC3339, or `null`. */
+  updatedSince: string | null;
+  /** Configured server refresh cadence. */
+  refreshIntervalSeconds: number;
+  accounts: DashboardAccountStats;
+  assets: DashboardAssetStats;
+  /** Stable names of aggregates the server declined to compute.
+   * Currently always empty: unavailability is a `503 data_unavailable`. */
+  degradedAggregates: string[];
 }
 
 export interface DeltaDetailOptions {

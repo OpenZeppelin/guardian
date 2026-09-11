@@ -85,6 +85,10 @@ pub enum GuardianError {
     /// `invalid_status_filter`. See FR-033 of
     /// `005-operator-dashboard-metrics`.
     InvalidStatusFilter(String),
+    /// Dashboard `updated_since` query parameter is not an RFC3339
+    /// timestamp. Maps to HTTP 400 with stable code `invalid_timestamp`.
+    /// See FR-2 of issue #371 (`GET /dashboard/stats`).
+    InvalidTimestamp(String),
     /// Operator session is valid but lacks one or more required
     /// permissions. Feature 006-operator-authz FR-015 / FR-016. Maps
     /// to HTTP 403 with stable code
@@ -182,6 +186,7 @@ impl GuardianError {
             GuardianError::InvalidCursor(_) => StatusCode::BAD_REQUEST,
             GuardianError::InvalidLimit(_) => StatusCode::BAD_REQUEST,
             GuardianError::InvalidStatusFilter(_) => StatusCode::BAD_REQUEST,
+            GuardianError::InvalidTimestamp(_) => StatusCode::BAD_REQUEST,
             GuardianError::InsufficientOperatorPermission { .. } => StatusCode::FORBIDDEN,
             GuardianError::DataUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             GuardianError::AccountPaused { .. } => StatusCode::CONFLICT,
@@ -227,6 +232,7 @@ impl GuardianError {
             GuardianError::InvalidCursor(_) => tonic::Code::InvalidArgument,
             GuardianError::InvalidLimit(_) => tonic::Code::InvalidArgument,
             GuardianError::InvalidStatusFilter(_) => tonic::Code::InvalidArgument,
+            GuardianError::InvalidTimestamp(_) => tonic::Code::InvalidArgument,
             // Operator surface is HTTP-only; this gRPC mapping exists only
             // for `tonic::Status` parity at the conversion boundary and
             // is not exposed to any production gRPC consumer in v1.
@@ -275,6 +281,7 @@ impl GuardianError {
             GuardianError::InvalidCursor(_) => "invalid_cursor",
             GuardianError::InvalidLimit(_) => "invalid_limit",
             GuardianError::InvalidStatusFilter(_) => "invalid_status_filter",
+            GuardianError::InvalidTimestamp(_) => "invalid_timestamp",
             GuardianError::InsufficientOperatorPermission { .. } => {
                 "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION"
             }
@@ -319,7 +326,8 @@ impl GuardianError {
             | GuardianError::InvalidEvmProposal(_)
             | GuardianError::InvalidCursor(_)
             | GuardianError::InvalidLimit(_)
-            | GuardianError::InvalidStatusFilter(_) => {
+            | GuardianError::InvalidStatusFilter(_)
+            | GuardianError::InvalidTimestamp(_) => {
                 "That request couldn't be processed. Please check the details and try again."
             }
             // Pending-change conflicts.
@@ -493,6 +501,7 @@ impl fmt::Display for GuardianError {
             GuardianError::InvalidStatusFilter(msg) => {
                 write!(f, "Invalid status filter: {msg}")
             }
+            GuardianError::InvalidTimestamp(msg) => write!(f, "Invalid timestamp: {msg}"),
             GuardianError::InsufficientOperatorPermission {
                 missing_permissions,
             } => {
@@ -1198,6 +1207,16 @@ mod tests {
     }
 
     #[test]
+    fn invalid_timestamp_maps_to_400_with_stable_code() {
+        let err = GuardianError::InvalidTimestamp("updated_since 'yesterday'".into());
+        assert_eq!(err.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(err.code(), "invalid_timestamp");
+        assert_eq!(err.grpc_status(), tonic::Code::InvalidArgument);
+        assert!(!err.retryable());
+        assert!(err.to_string().contains("Invalid timestamp"));
+    }
+
+    #[test]
     fn data_unavailable_maps_to_503_with_stable_code() {
         let err = GuardianError::DataUnavailable("delta store unreadable".into());
         assert_eq!(err.http_status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1217,6 +1236,10 @@ mod tests {
             (
                 GuardianError::InvalidStatusFilter("x".into()),
                 "invalid_status_filter",
+            ),
+            (
+                GuardianError::InvalidTimestamp("x".into()),
+                "invalid_timestamp",
             ),
             (
                 GuardianError::DataUnavailable("x".into()),
@@ -1432,6 +1455,7 @@ mod tests {
             GuardianError::InvalidCursor("0xTAMPERED".into()),
             GuardianError::InvalidLimit("9999".into()),
             GuardianError::InvalidStatusFilter("'; DROP TABLE".into()),
+            GuardianError::InvalidTimestamp("not-a-date".into()),
             GuardianError::InsufficientOperatorPermission {
                 missing_permissions: vec!["accounts:pause".into()],
             },

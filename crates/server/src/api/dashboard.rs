@@ -13,9 +13,9 @@ use crate::services::pause_account::PauseResponse;
 use crate::services::unpause_account::UnpauseResponse;
 use crate::services::{
     DashboardAccountDetail, DashboardAccountSnapshot, DashboardAccountSummary,
-    DashboardInfoResponse, PagedResult, get_account_snapshot, get_dashboard_account,
-    get_dashboard_info, list_dashboard_accounts_paged, parse_cursor, parse_limit, pause_account,
-    unpause_account,
+    DashboardInfoResponse, DashboardStatsResponse, PagedResult, get_account_snapshot,
+    get_dashboard_account, get_dashboard_info, get_dashboard_stats, list_dashboard_accounts_paged,
+    parse_cursor, parse_limit, parse_updated_since, pause_account, unpause_account,
 };
 use crate::state::AppState;
 
@@ -71,6 +71,18 @@ pub struct DashboardAccountsResponse {
     pub success: bool,
     pub total_count: usize,
     pub accounts: Vec<DashboardAccountSummary>,
+}
+
+/// `?updated_since=` query parameter for `GET /dashboard/stats`.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct StatsQuery {
+    /// Optional RFC3339 timestamp. Restricts the **asset** aggregate to
+    /// accounts whose metadata `updated_at >= updated_since`; account
+    /// counts are always unfiltered. Omitted or empty aggregates every
+    /// account.
+    #[serde(default)]
+    pub updated_since: Option<String>,
 }
 
 /// `?limit=&cursor=` query parameters for the paginated account list.
@@ -251,6 +263,33 @@ pub async fn get_dashboard_info_handler(
 ) -> Result<Json<DashboardInfoResponse>> {
     let info = get_dashboard_info(&state).await?;
     Ok(Json(info))
+}
+
+/// `GET /dashboard/stats` — account and Miden vault aggregates in one
+/// request (issue #371). Served from a background-maintained snapshot:
+/// no per-account reads at request time; `as_of` reports its age.
+#[utoipa::path(
+    get,
+    path = "/dashboard/stats",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(StatsQuery),
+    responses(
+        (status = 200, description = "Account counts, asset totals, and coverage", body = DashboardStatsResponse),
+        (status = 400, description = "updated_since is not an RFC3339 timestamp (`invalid_timestamp`)", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "Aggregate not yet computed since startup (`data_unavailable`, retryable)", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_dashboard_stats_handler(
+    State(state): State<AppState>,
+    Extension(_operator): Extension<AuthenticatedOperator>,
+    Query(query): Query<StatsQuery>,
+) -> Result<Json<DashboardStatsResponse>> {
+    let updated_since = parse_updated_since(query.updated_since.as_deref())?;
+    let stats = get_dashboard_stats(&state, updated_since)?;
+    Ok(Json(stats))
 }
 
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -919,6 +958,12 @@ mod tests {
             )
             .await;
         }
+        // `accounts_by_auth_method` is served from the /dashboard/stats
+        // snapshot (issue #371 FR-9); the background refresher is not
+        // running under the test router, so publish one refresh here.
+        crate::dashboard::stats::refresh_dashboard_stats(&state)
+            .await
+            .expect("stats refresh");
         let app = create_router(state);
         let cookie = authenticate_operator(&app, &operator).await;
 
@@ -983,6 +1028,242 @@ mod tests {
         let by_method = body["accounts_by_auth_method"].as_object().unwrap();
         let summed: u64 = by_method.values().map(|v| v.as_u64().unwrap()).sum();
         assert_eq!(summed, 3);
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #371: GET /dashboard/stats
+    // -----------------------------------------------------------------
+
+    async fn get_stats(
+        app: &axum::Router,
+        cookie: Option<&str>,
+        query: &str,
+    ) -> axum::response::Response {
+        let mut request = Request::builder().uri(format!("/dashboard/stats{query}"));
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        app.clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn dashboard_stats_requires_operator_session() {
+        let state = create_test_app_state().await;
+        let app = create_router(state);
+        let response = get_stats(&app, None, "").await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["code"], "authentication_failed");
+    }
+
+    #[tokio::test]
+    async fn dashboard_stats_returns_503_until_first_refresh() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests(vec![(
+            "operator-1".into(),
+            operator.commitment_hex.clone(),
+        )]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let response = get_stats(&app, Some(&cookie), "").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["code"], "data_unavailable");
+        assert_eq!(body["meta"]["retryable"], true);
+    }
+
+    #[tokio::test]
+    async fn dashboard_stats_rejects_non_rfc3339_updated_since() {
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests(vec![(
+            "operator-1".into(),
+            operator.commitment_hex.clone(),
+        )]));
+        crate::dashboard::stats::refresh_dashboard_stats(&state)
+            .await
+            .expect("stats refresh");
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        for query in [
+            "?updated_since=yesterday",
+            "?updated_since=2026-09-04",
+            "?updated_since=1757548800",
+        ] {
+            let response = get_stats(&app, Some(&cookie), query).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+            let body: serde_json::Value = read_json(response).await;
+            assert_eq!(body["code"], "invalid_timestamp", "{query}");
+            assert_eq!(body["meta"]["retryable"], false);
+        }
+
+        // Blank is treated as absent, not as an invalid timestamp.
+        let response = get_stats(&app, Some(&cookie), "?updated_since=").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = read_json(response).await;
+        assert!(body["updated_since"].is_null());
+    }
+
+    /// Acceptance criteria 1–6 of issue #371 on a small inventory: one
+    /// request answers account composition, activity windows, lifecycle,
+    /// account shape, asset totals, and coverage; `/dashboard/info` agrees
+    /// with it; skipped states surface as explicit coverage, never as
+    /// zero balances.
+    #[tokio::test]
+    async fn dashboard_stats_answers_in_one_call_and_agrees_with_info() {
+        use crate::dashboard::stats::test_support::{faucet, miden_state};
+
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests(vec![(
+            "operator-1".into(),
+            operator.commitment_hex.clone(),
+        )]));
+        let now = state.clock.now();
+        let rfc = |dt: chrono::DateTime<chrono::Utc>| dt.to_rfc3339();
+        let recent = rfc(now - chrono::Duration::days(1));
+        let last_month = rfc(now - chrono::Duration::days(20));
+        let stale = rfc(now - chrono::Duration::days(90));
+        let f1 = faucet(0x11);
+        let f2 = faucet(0x22);
+
+        // Active, recently updated, real vault: 1_000 f1 + 7 f2.
+        let a = miden_state("acc-a", 0x01, &[(f1, 1_000), (f2, 7)]);
+        seed_account(&state, create_metadata("acc-a", &recent), Some(a)).await;
+        // Paused, updated 20 days ago, real vault: 500 f1.
+        let b = miden_state("acc-b", 0x02, &[(f1, 500)]);
+        let mut b_meta = create_metadata("acc-b", &last_month);
+        b_meta.paused_at = Some(now - chrono::Duration::days(20));
+        b_meta.paused_reason = Some("incident".into());
+        seed_account(&state, b_meta, Some(b)).await;
+        // Released, updated long ago, real vault: 9 f2 (outside the 7d cutoff).
+        let c = miden_state("acc-c", 0x03, &[(f2, 9)]);
+        let mut c_meta = create_metadata("acc-c", &stale);
+        c_meta.released_at = Some(now - chrono::Duration::days(90));
+        seed_account(&state, c_meta, Some(c)).await;
+        // Recently updated but no state row: eligible, skipped.
+        let mut d_meta = create_metadata("acc-d", &recent);
+        d_meta.auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0x1".into(), "0x2".into()],
+        };
+        seed_account(&state, d_meta, None).await;
+        // Recently updated, garbage state: eligible, skipped as undecodable.
+        seed_account(
+            &state,
+            create_metadata("acc-e", &recent),
+            Some(StateObject {
+                account_id: "acc-e".to_string(),
+                state_json: serde_json::json!({ "data": "!!not-base64!!" }),
+                commitment: "0xbad".to_string(),
+                created_at: recent.clone(),
+                updated_at: recent.clone(),
+                auth_scheme: "falcon".to_string(),
+            }),
+        )
+        .await;
+
+        crate::dashboard::stats::refresh_dashboard_stats(&state)
+            .await
+            .expect("stats refresh");
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        let since = now - chrono::Duration::days(7);
+        let query = format!("?updated_since={}", url_escape(&since.to_rfc3339()));
+        let response = get_stats(&app, Some(&cookie), &query).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stats: serde_json::Value = read_json(response).await;
+
+        assert!(chrono::DateTime::parse_from_rfc3339(stats["as_of"].as_str().unwrap()).is_ok());
+        assert_eq!(stats["updated_since"], since.to_rfc3339());
+        assert_eq!(stats["refresh_interval_seconds"], 60);
+        assert_eq!(stats["degraded_aggregates"], serde_json::json!([]));
+
+        let accounts = &stats["accounts"];
+        assert_eq!(accounts["total"], 5);
+        assert_eq!(
+            accounts["by_lifecycle"],
+            serde_json::json!({ "active": 3, "paused": 1, "released": 1 })
+        );
+        assert_eq!(
+            accounts["by_auth_method"],
+            serde_json::json!({ "miden_falcon": 5 })
+        );
+        assert_eq!(
+            accounts["by_auth_method_and_signer_count"],
+            serde_json::json!([
+                { "auth_method": "miden_falcon", "authorized_signer_count": 1, "count": 4 },
+                { "auth_method": "miden_falcon", "authorized_signer_count": 2, "count": 1 },
+            ])
+        );
+        assert_eq!(accounts["updated_within_7d"], 3);
+        assert_eq!(accounts["updated_within_30d"], 4);
+
+        let assets = &stats["assets"];
+        assert_eq!(assets["eligible"], 3);
+        assert_eq!(assets["covered"], 1);
+        assert_eq!(
+            assets["skipped"],
+            serde_json::json!({ "state_unavailable": 1, "state_undecodable": 1 })
+        );
+        assert_eq!(assets["complete"], false);
+        assert_eq!(
+            assets["fungible"],
+            serde_json::json!([
+                { "faucet_id": f1.to_hex(), "total_amount": "1000" },
+                { "faucet_id": f2.to_hex(), "total_amount": "7" },
+            ])
+        );
+        assert_eq!(assets["non_fungible"], serde_json::json!([]));
+
+        // Unfiltered: every Miden account is eligible and the totals
+        // include the paused and released vaults.
+        let response = get_stats(&app, Some(&cookie), "").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let all: serde_json::Value = read_json(response).await;
+        assert!(all["updated_since"].is_null());
+        assert_eq!(all["assets"]["eligible"], 5);
+        assert_eq!(all["assets"]["covered"], 3);
+        assert_eq!(
+            all["assets"]["fungible"],
+            serde_json::json!([
+                { "faucet_id": f1.to_hex(), "total_amount": "1500" },
+                { "faucet_id": f2.to_hex(), "total_amount": "16" },
+            ])
+        );
+
+        // /dashboard/info reads the same snapshot: no contradiction and
+        // no degraded auth-method aggregate.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/info")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let info: serde_json::Value = read_json(response).await;
+        assert_eq!(
+            info["accounts_by_auth_method"],
+            stats["accounts"]["by_auth_method"]
+        );
+        assert_eq!(info["total_account_count"], stats["accounts"]["total"]);
+        assert_eq!(info["service_status"], "healthy");
+        assert_eq!(info["degraded_aggregates"], serde_json::json!([]));
+    }
+
+    fn url_escape(value: &str) -> String {
+        value.replace('+', "%2B").replace(':', "%3A")
     }
 
     #[tokio::test]
@@ -1211,12 +1492,18 @@ mod tests {
         state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
             op_with_perms(&operator, &[Permission::DashboardRead]),
         ]));
+        // /dashboard/stats answers 503 until its first refresh; publish
+        // one so the route can prove a 200 for an authorized operator.
+        crate::dashboard::stats::refresh_dashboard_stats(&state)
+            .await
+            .expect("stats refresh");
         let app = create_router(state);
         let cookie = authenticate_operator(&app, &operator).await;
 
         for path in [
             "/dashboard/accounts",
             "/dashboard/info",
+            "/dashboard/stats",
             "/dashboard/deltas",
             "/dashboard/proposals",
         ] {
@@ -1258,6 +1545,7 @@ mod tests {
         for path in [
             "/dashboard/accounts",
             "/dashboard/info",
+            "/dashboard/stats",
             "/dashboard/deltas",
             "/dashboard/proposals",
         ] {

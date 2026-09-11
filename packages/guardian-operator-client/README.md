@@ -103,6 +103,36 @@ if (info.serviceStatus === 'degraded') {
 }
 ```
 
+### Aggregate Stats (Assets Under Guard)
+
+One request replaces the full account-list walk plus per-account
+snapshot reads (issue #371). The server maintains the aggregate in the
+background; `asOf` tells you how old it is.
+
+```typescript
+const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+const stats = await client.getDashboardStats({ updatedSince: sevenDaysAgo });
+
+console.log(stats.asOf, stats.accounts.total, stats.accounts.byLifecycle);
+console.log(stats.accounts.updatedWithin7d, stats.accounts.byAuthMethod);
+for (const shape of stats.accounts.byAuthMethodAndSignerCount) {
+  console.log(shape.authMethod, shape.authorizedSignerCount, shape.count);
+}
+
+// Asset totals cover Miden accounts whose metadata `updatedAt` is on or
+// after `updatedSince`; account counts are always unfiltered.
+for (const total of stats.assets.fungible) {
+  console.log(total.faucetId, BigInt(total.totalAmount)); // base units, may exceed 2^53
+}
+if (!stats.assets.complete) {
+  console.warn('partial coverage:', stats.assets.covered, 'of', stats.assets.eligible, stats.assets.skipped);
+}
+```
+
+Until the server finishes its first refresh after startup the call throws a
+`GuardianOperatorHttpError` with code `data_unavailable` (503, retryable); a
+malformed `updatedSince` yields `invalid_timestamp` (400).
+
 ### Per-Account Delta Feed
 
 Each entry carries the dashboard-ready activity fields spread directly
