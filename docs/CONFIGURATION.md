@@ -320,7 +320,7 @@ turns them into Terraform variables or build-time choices.
 | `CPU_ARCHITECTURE` | `X86_64` | `X86_64` or `ARM64`. Picks the Docker buildx platform and the ECS task arch. |
 | `AWS_REGION` | _required_ | All AWS API calls. |
 | `DOMAIN_NAME` | `openzeppelin.com` | Root domain for the canonical public hostname. |
-| `SUBDOMAIN` | `guardian` | Host portion of the public hostname. |
+| `SUBDOMAIN` | `guardian` | Host portion of the public hostname. The OZ stacks override it with `guardian-devnet` (devnet) or `guardian-testnet` (testnet). |
 | `ACM_CERTIFICATE_ARN` | _unset_ | ACM certificate for HTTPS on the canonical hostname. |
 | `ROUTE53_ZONE_ID` | _unset_ | Optional Route 53 hosted zone for an alias record. |
 | `CLOUDFLARE_ZONE_ID` | _unset_ | Optional Cloudflare zone for CNAME management. |

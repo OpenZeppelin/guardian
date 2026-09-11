@@ -26,7 +26,7 @@ set -euo pipefail
 #   DEPLOY_STAGE          - Deployment profile (dev or prod, default: dev)
 #   ECR_REPO_NAME         - ECR repository/image name (default: <stack-name>-server)
 #   DOMAIN_NAME           - Root domain (default: openzeppelin.com)
-#   SUBDOMAIN             - Subdomain (default: guardian)
+#   SUBDOMAIN             - Subdomain (default: guardian; the OZ stacks override it with guardian-devnet or guardian-testnet)
 #   ROUTE53_ZONE_ID       - Route 53 hosted zone ID (optional)
 #   CLOUDFLARE_ZONE_ID    - Cloudflare zone ID (optional)
 #   CLOUDFLARE_API_TOKEN  - Cloudflare API token (optional)
@@ -1012,7 +1012,7 @@ case "${COMMAND:-}" in
     echo "Options:"
     echo "  --skip-build  Skip Docker build and push (use existing image)"
     echo "  --domain=     Override root domain (default: openzeppelin.com)"
-    echo "  --subdomain=  Override subdomain (default: guardian)"
+    echo "  --subdomain=  Override subdomain (default: guardian; OZ stacks use guardian-devnet or guardian-testnet)"
     echo "  --route53-zone-id=  Route 53 hosted zone ID (optional)"
     echo "  --cloudflare-zone-id=  Cloudflare zone ID (optional)"
     echo "  --cloudflare-proxied=  Cloudflare proxied setting (true/false)"
@@ -1052,8 +1052,8 @@ case "${COMMAND:-}" in
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-storage-encryption-key  # prints the name to export"
     echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret"
     echo "  GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-prod/server/storage-encryption-key DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh deploy --skip-build"
-    echo "  DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-stg ./scripts/aws-deploy.sh deploy"
-    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian ./scripts/aws-deploy.sh deploy --skip-build"
+    echo "  DEPLOY_STAGE=dev STACK_NAME=guardian SUBDOMAIN=guardian-devnet ./scripts/aws-deploy.sh deploy"
+    echo "  DEPLOY_STAGE=prod STACK_NAME=guardian-prod SUBDOMAIN=guardian-testnet ./scripts/aws-deploy.sh deploy --skip-build"
     echo "  ./scripts/aws-deploy.sh status"
     echo "  ./scripts/aws-deploy.sh cleanup"
     ;;

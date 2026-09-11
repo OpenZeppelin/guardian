@@ -77,8 +77,8 @@ the environment name:
 
 | Environment | Network | Stack (`STACK_NAME`) | Profile | Hostname |
 |---|---|---|---|---|
-| `devnet` | MidenDevnet | `guardian` | dev | `guardian-stg.openzeppelin.com` |
-| `testnet` | MidenTestnet | `guardian-prod` | prod | `guardian.openzeppelin.com` |
+| `devnet` | MidenDevnet | `guardian` | dev | `guardian-devnet.openzeppelin.com` |
+| `testnet` | MidenTestnet | `guardian-prod` | prod | `guardian-testnet.openzeppelin.com` |
 
 Run it from the Actions tab with:
 
@@ -181,9 +181,11 @@ export GUARDIAN_NETWORK_TYPE=MidenTestnet
 export DEPLOY_STAGE=dev
 # export DEPLOY_STAGE=prod
 
-# Optional: override the stack base name or public hostname
+# Stack base name and canonical public hostname. SUBDOMAIN defaults to
+# guardian, which no OZ stack uses: set guardian-devnet for the devnet stack
+# or guardian-testnet for the testnet stack.
 export STACK_NAME=guardian
-# export SUBDOMAIN=guardian-stg
+export SUBDOMAIN=guardian-devnet
 
 aws sts get-caller-identity
 ./scripts/aws-deploy.sh deploy
@@ -547,8 +549,8 @@ export TF_VAR_guardian_rate_limit_enabled=false
 
 ```bash
 ./scripts/aws-deploy.sh status
-curl https://guardian.openzeppelin.com/pubkey
-grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
+curl https://guardian-testnet.openzeppelin.com/pubkey
+grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian-testnet.openzeppelin.com:443 guardian.Guardian/GetPubkey
 ```
 
 ## Metrics, Dashboard, And Alarms
