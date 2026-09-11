@@ -72,7 +72,7 @@ diesel-async = { version = "0.5", features = ["postgres", "deadpool"], optional 
 diesel_migrations = { version = "2.2", optional = true }
 
 # Optional dependencies for e2e tests
-miden-client = { workspace = true, features = ["testing"], optional = true }
+miden-client = { workspace = true, features = ["testing", "tonic"], optional = true }
 miden-confidential-contracts = { path = "../contracts", optional = true }
 miden-testing = { workspace = true, optional = true }
 miden-tx = { workspace = true, optional = true }
@@ -107,7 +107,9 @@ postgres = [
     "tokio-postgres-rustls",
 ]
 integration = []
+proving = ["miden-tx"]
 e2e = [
+    "proving",
     "miden-client",
     "miden-confidential-contracts",
     "miden-confidential-contracts/testing",

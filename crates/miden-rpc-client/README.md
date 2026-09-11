@@ -43,10 +43,10 @@ let header = client.get_block_header(Some(12345), true).await?;
 // Submit transaction
 let response = client.submit_transaction(proven_tx_bytes).await?;
 
-// Sync state for accounts and notes
-let sync_response = client.sync_state(
-    block_num,
-    account_ids,
+// Fetch one page of matching notes, pinned to an inclusive block range
+let sync_response = client.sync_notes(
+    block_from,
+    block_to,
     note_tags,
 ).await?;
 
@@ -59,3 +59,7 @@ let notes = client.get_notes_by_id(note_ids).await?;
 // Get account commitment (convenience wrapper)
 let commitment = client.get_account_commitment(&account_id).await?;
 ```
+
+The generated block headers, Merkle paths, MMR deltas, and digests support checked
+`TryFrom` conversion into the corresponding `miden-protocol` types for witness
+assembly. Invalid field elements and missing required header fields are rejected.

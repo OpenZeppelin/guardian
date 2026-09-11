@@ -36,6 +36,7 @@ If a behavior changes in a lower layer, verify and propagate impact upward acros
 - `crates/shared`: shared Rust primitives/utilities
 - `spec/`: system and protocol-level behavior docs
 - `docs/`: contributor- and operator-facing documentation hub (start at `docs/CONCEPTS.md`)
+- `docs/rfcs/`: design decisions written for readers outside the team — upstream partners, integrators, public. The reviewable surface over `speckit/features/`; see `docs/rfcs/README.md`
 - `infra/`: Terraform for the AWS reference deployment
 - `examples/`: validation apps and reference flows
 
