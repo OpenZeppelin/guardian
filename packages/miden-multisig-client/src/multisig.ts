@@ -233,6 +233,13 @@ const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 /** A `Word` is four field elements: 64 hex digits. Anything longer is not a salt. */
 const MAX_SALT_HEX_DIGITS = 64;
 
+/**
+ * Consecutive successful listings that must omit a guardian-known proposal
+ * not yet listed (a fresh create during read-your-writes lag, or one
+ * orphaned by a GUARDIAN repoint) before the sync prunes it.
+ */
+const UNREPORTED_LISTING_MISS_LIMIT = 2;
+
 export class Multisig {
   account: Account;
   threshold: number;
@@ -250,6 +257,24 @@ export class Multisig {
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
+  /** Ids GUARDIAN returned on the most recent sync; these prune immediately when dropped. */
+  private lastReportedProposalIds: Set<string> = new Set();
+  /**
+   * Ids GUARDIAN is known to hold: acknowledged `createProposal` pushes,
+   * acknowledged `signProposal` signatures, plus every listed id. Only these
+   * are subject to miss-based pruning; offline creations and imports GUARDIAN
+   * never received are exempt.
+   */
+  private guardianKnownProposalIds: Set<string> = new Set();
+  /**
+   * Consecutive successful listings that omitted a guardian-known proposal
+   * not yet listed; at {@link UNREPORTED_LISTING_MISS_LIMIT} it is pruned.
+   */
+  private unreportedMissCounts: Map<string, number> = new Map();
+  /** Bumped by {@link setGuardianClient}; a sync spanning a bump aborts unapplied. */
+  private syncGeneration = 0;
+  /** Pending sync shared by overlapping {@link syncProposals} callers. */
+  private syncProposalsInFlight?: Promise<Proposal[]>;
 
   constructor(
     account: Account,
@@ -456,11 +481,19 @@ export class Multisig {
    * survive a switch, and the notes embedded in them can only be imported
    * while the old GUARDIAN is still the current client.
    *
+   * Repointing abandons a {@link syncProposals} still in flight (it rejects
+   * without applying its listing) and resets the sync-reconciliation
+   * bookkeeping.
+   *
    * @param guardianClient - The new GUARDIAN HTTP client
    */
   setGuardianClient(guardianClient: GuardianHttpClient): void {
     this.guardian = guardianClient;
     this.guardian.setSigner(this.signer);
+    this.syncGeneration += 1;
+    this.syncProposalsInFlight = undefined;
+    this.lastReportedProposalIds = new Set();
+    this.unreportedMissCounts = new Map();
   }
 
   /**
@@ -717,12 +750,54 @@ export class Multisig {
   }
 
   /**
-   * Sync proposals from the GUARDIAN server.
+   * Sync proposals from the GUARDIAN server, reconciling the local cache to
+   * the response. GUARDIAN reports only pending proposals, so a proposal it
+   * reported on an earlier sync and now omits is pruned immediately. A
+   * proposal GUARDIAN holds but has not listed yet (a fresh `createProposal`
+   * its read-your-writes has not caught up with, or a proposal orphaned by a
+   * {@link setGuardianClient} repoint) is pruned only after
+   * {@link UNREPORTED_LISTING_MISS_LIMIT} consecutive listings omit it.
+   * Proposals GUARDIAN never received (an `importProposal`, or a
+   * `createSwitchGuardianProposalOffline`) are not pruned by listings; an
+   * import graduates to the pruned classes once GUARDIAN acknowledges it
+   * (listed, or a successful online `signProposal`).
+   * Proposals cached or replaced after the sync started are not evaluated
+   * by it.
+   *
+   * The response is verified in full before the cache or the pruning state
+   * changes; a listing that fails metadata-binding verification throws and
+   * leaves both untouched. Signatures added to a cached proposal while the
+   * sync was verifying are preserved by its apply. Overlapping callers share
+   * the same in-flight promise. A sync that spans a
+   * {@link setGuardianClient} repoint rejects without applying its listing.
+   *
+   * Nonce-based staleness hiding is the caller's job (see the examples'
+   * `filterVisibleProposals`): callers of this shared client disagree on
+   * whether a proposal's `nonce` is the pre-execution or the next account
+   * nonce, so the Rust client's `proposal.nonce <= account.nonce()` filter
+   * cannot be applied here. This is an intentional TS/Rust surface
+   * difference.
    */
-  async syncProposals(): Promise<Proposal[]> {
+  syncProposals(): Promise<Proposal[]> {
+    if (this.syncProposalsInFlight) {
+      return this.syncProposalsInFlight;
+    }
+    const inFlight = this.reconcileProposals().finally(() => {
+      if (this.syncProposalsInFlight === inFlight) {
+        this.syncProposalsInFlight = undefined;
+      }
+    });
+    this.syncProposalsInFlight = inFlight;
+    return inFlight;
+  }
+
+  private async reconcileProposals(): Promise<Proposal[]> {
+    const generation = this.syncGeneration;
+    const candidates = new Map(this.proposals);
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
+    const reported = new Map<string, { delta: (typeof deltas)[number]; verified: Proposal }>();
     for (const delta of deltas) {
       const proposalId = normalizeHexWord(
         computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
@@ -735,9 +810,52 @@ export class Multisig {
         existingProposal?.signatures ?? [],
       );
       await this.verifyProposalMetadataBinding(proposal);
-
-      this.proposals.set(proposal.id, proposal);
+      reported.set(proposal.id, { delta, verified: proposal });
     }
+
+    if (generation !== this.syncGeneration) {
+      throw new Error(
+        'Sync aborted: the GUARDIAN client was replaced while the sync was in flight'
+      );
+    }
+
+    const applied: Proposal[] = [];
+    for (const { delta, verified } of reported.values()) {
+      const current = this.proposals.get(verified.id);
+      applied.push(
+        current === undefined
+          ? verified
+          : factory.fromDelta(delta, verified.id, verified.metadata, current.signatures)
+      );
+    }
+    for (const proposal of applied) {
+      this.proposals.set(proposal.id, proposal);
+      this.guardianKnownProposalIds.add(proposal.id);
+    }
+
+    const missCounts = new Map<string, number>();
+    for (const [id, snapshot] of candidates) {
+      if (reported.has(id) || this.proposals.get(id) !== snapshot) {
+        continue;
+      }
+      if (this.lastReportedProposalIds.has(id)) {
+        this.proposals.delete(id);
+        this.guardianKnownProposalIds.delete(id);
+        continue;
+      }
+      if (!this.guardianKnownProposalIds.has(id)) {
+        continue;
+      }
+      const misses = (this.unreportedMissCounts.get(id) ?? 0) + 1;
+      if (misses >= UNREPORTED_LISTING_MISS_LIMIT) {
+        this.proposals.delete(id);
+        this.guardianKnownProposalIds.delete(id);
+      } else {
+        missCounts.set(id, misses);
+      }
+    }
+    this.unreportedMissCounts = missCounts;
+    this.lastReportedProposalIds = new Set(reported.keys());
 
     return Array.from(this.proposals.values());
   }
@@ -804,7 +922,10 @@ export class Multisig {
   }
 
   /**
-   * List all known proposals
+   * Returns the proposals cached by the most recent {@link syncProposals}
+   * call, plus any locally created or imported proposals GUARDIAN has not
+   * reported yet (see {@link syncProposals} for their retention). Not a
+   * durable history: proposals GUARDIAN no longer reports were pruned.
    */
   listProposals(): Proposal[] {
     return Array.from(this.proposals.values());
@@ -833,6 +954,7 @@ export class Multisig {
     const proposal = this.proposalFactory().fromDelta(response.delta, response.commitment, metadata);
     await this.verifyProposalMetadataBinding(proposal);
     this.proposals.set(proposal.id, proposal);
+    this.guardianKnownProposalIds.add(proposal.id);
 
     return proposal;
   }
@@ -1789,6 +1911,7 @@ export class Multisig {
     await this.verifyProposalMetadataBinding(signedProposal);
 
     this.proposals.set(signedProposal.id, signedProposal);
+    this.guardianKnownProposalIds.add(signedProposal.id);
 
     return signedProposal;
   }
