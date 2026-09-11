@@ -1384,7 +1384,8 @@
             "description": "Optional RFC3339 timestamp. Restricts the **asset** aggregate to\naccounts whose metadata `updated_at >= updated_since`; account\ncounts are always unfiltered. Omitted or empty aggregates every\naccount.",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "date-time"
             }
           }
         ],
@@ -2667,6 +2668,7 @@
           },
           "as_of": {
             "type": "string",
+            "format": "date-time",
             "description": "RFC3339 time the published aggregate was computed. Consumers\nderive the result's age from this; it advances by at most\n`refresh_interval_seconds` at steady state."
           },
           "assets": {
@@ -2690,6 +2692,7 @@
               "string",
               "null"
             ],
+            "format": "date-time",
             "description": "The applied filter, normalized to RFC3339, or `null` when the\nasset aggregate spans every account."
           }
         }

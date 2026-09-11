@@ -102,9 +102,11 @@ pub struct DashboardStatsResponse {
     /// RFC3339 time the published aggregate was computed. Consumers
     /// derive the result's age from this; it advances by at most
     /// `refresh_interval_seconds` at steady state.
+    #[schema(format = DateTime)]
     pub as_of: String,
     /// The applied filter, normalized to RFC3339, or `null` when the
     /// asset aggregate spans every account.
+    #[schema(format = DateTime)]
     pub updated_since: Option<String>,
     /// Configured cadence of the background refresh
     /// (`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`).

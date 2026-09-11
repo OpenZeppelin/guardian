@@ -1699,6 +1699,14 @@ describe('getDashboardStats (issue #371)', () => {
     );
   });
 
+  it('rejects an invalid Date cutoff before sending anything', async () => {
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(
+      client.getDashboardStats({ updatedSince: new Date('not a date') }),
+    ).rejects.toThrow(/updatedSince is an invalid Date/);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it('passes a string cutoff through verbatim', async () => {
     mockFetch.mockResolvedValueOnce(okJson(statsPayload()));
     const client = new GuardianOperatorHttpClient('https://guardian.example');

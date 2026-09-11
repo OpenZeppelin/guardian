@@ -435,12 +435,18 @@ export class GuardianOperatorHttpClient {
   ): Promise<DashboardStatsResponse> {
     const url = new URL('dashboard/stats', this.baseUrl);
     if (options.updatedSince !== undefined) {
-      url.searchParams.set(
-        'updated_since',
-        options.updatedSince instanceof Date
-          ? options.updatedSince.toISOString()
-          : options.updatedSince,
-      );
+      let updatedSince: string;
+      if (options.updatedSince instanceof Date) {
+        // `toISOString()` throws a bare RangeError on an invalid Date;
+        // fail with a message that names the option instead.
+        if (Number.isNaN(options.updatedSince.getTime())) {
+          throw new TypeError('getDashboardStats: updatedSince is an invalid Date');
+        }
+        updatedSince = options.updatedSince.toISOString();
+      } else {
+        updatedSince = options.updatedSince;
+      }
+      url.searchParams.set('updated_since', updatedSince);
     }
     return this.request(url, { method: 'GET' }, parseDashboardStats);
   }

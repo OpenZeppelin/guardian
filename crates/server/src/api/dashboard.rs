@@ -82,6 +82,7 @@ pub struct StatsQuery {
     /// counts are always unfiltered. Omitted or empty aggregates every
     /// account.
     #[serde(default)]
+    #[param(format = DateTime)]
     pub updated_since: Option<String>,
 }
 

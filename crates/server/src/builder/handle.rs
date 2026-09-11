@@ -503,6 +503,7 @@ mod tests {
             ("POST", "/auth/verify"),
             ("POST", "/auth/logout"),
             ("GET", "/dashboard/info"),
+            ("GET", "/dashboard/stats"),
             ("GET", "/dashboard/session"),
             ("GET", "/dashboard/accounts"),
             ("GET", "/dashboard/accounts/0x1"),
