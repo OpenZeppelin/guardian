@@ -11,6 +11,7 @@ pub mod miden_ecdsa;
 pub mod miden_falcon_rpo;
 mod secrets_manager;
 
+use crate::config::account_schemes::AllowedAccountSchemes;
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use guardian_shared::SignatureScheme;
@@ -41,13 +42,29 @@ const PROVIDER_NONE: &str = "none";
 pub struct AckRegistry {
     falcon: MidenFalconRpoSigner,
     ecdsa: MidenEcdsaSigner,
+    account_schemes: AllowedAccountSchemes,
 }
 
 impl AckRegistry {
     pub async fn new(keystore_path: PathBuf) -> Result<Self> {
         let ecdsa_backend = EcdsaBackendKind::from_env()?;
+        let account_schemes = AllowedAccountSchemes::from_env()?;
         let provider = AckSecretProviderKind::from_env()?.build().await?;
-        Self::from_provider(keystore_path, ecdsa_backend, provider.as_deref()).await
+        Self::from_provider(keystore_path, ecdsa_backend, provider.as_deref())
+            .await
+            .map(|registry| registry.with_account_schemes(account_schemes))
+    }
+
+    /// Restrict which signature schemes new accounts may register with. Both
+    /// ACK signers stay loaded regardless, because accounts registered before
+    /// a restriction keep their scheme for life.
+    pub fn with_account_schemes(mut self, account_schemes: AllowedAccountSchemes) -> Self {
+        self.account_schemes = account_schemes;
+        self
+    }
+
+    pub fn account_schemes(&self) -> AllowedAccountSchemes {
+        self.account_schemes
     }
 
     pub fn pubkey(&self, scheme: &SignatureScheme) -> String {
@@ -86,7 +103,11 @@ impl AckRegistry {
     ) -> Result<Self> {
         let falcon = build_falcon_signer(&keystore_path, provider).await?;
         let ecdsa = build_ecdsa_signer(keystore_path, ecdsa_backend, provider).await?;
-        Ok(Self { falcon, ecdsa })
+        Ok(Self {
+            falcon,
+            ecdsa,
+            account_schemes: AllowedAccountSchemes::ALL,
+        })
     }
 }
 

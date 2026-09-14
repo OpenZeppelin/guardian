@@ -21,7 +21,7 @@ storage, or network), not after Compose.
 
 | Guide | Mode |
 |---|---|
-| [Production deployment](./production/README.md) | AWS ECS/Fargate reference (`aws-deploy.sh` + Terraform, RDS + Secrets Manager + KMS, verified DB TLS, storage encryption, multi-replica HA), plus a self-hosted single-replica Docker Compose track using the same AWS-managed secrets |
+| [Production deployment](./production/README.md) | Three tracks to the same hardened shape: AWS ECS/Fargate reference (`aws-deploy.sh` + Terraform, RDS + Secrets Manager + KMS, verified DB TLS, storage encryption, multi-replica HA); the published Docker image self-managed with no AWS (file-based ACK identity, your own TLS-verified Postgres, your ingress); and the Docker image with AWS Secrets Manager/KMS custody (the recommended track for non-ECS deployments) |
 | [AWS-managed ACK signers](./aws-signers/README.md) | Self-hosted Compose: Postgres + Secrets Manager (Falcon) + KMS (ECDSA) |
 | [Miden Dashboard UI](./miden-dashboard/README.md) | Self-hosted Compose: Postgres + Guardian server + the Miden Dashboard operator UI |
 | [Observability](./observability/README.md) | Local Compose: server + Prometheus + pre-provisioned Grafana dashboard |
@@ -34,9 +34,11 @@ runnable artifacts (e.g. `docker-compose.yml` + `.env.example`), so the guide
 and the config you copy live together and the config can be smoke-tested. Keep
 variable explanations in `CONFIGURATION.md` rather than restating them here.
 
-The [Production deployment](./production/README.md) guide carries two artifacts:
-its primary path drives the real AWS ECS/Terraform stack via
+The [Production deployment](./production/README.md) guide carries one
+artifact set per track: its AWS track drives the real ECS/Terraform stack via
 `scripts/aws-deploy.sh` + `infra/` (smoke = post-deploy validation against the
-live stack), and it also ships a committed `docker-compose.yml` + `.env.example`
-for the self-hosted single-replica track (smoke = `docker compose up` +
-`curl /pubkey`).
+live stack); its self-managed Docker track ships `docker-compose.yml` +
+`.env.example` + `smoke.sh` (runnable with no AWS credentials, so it is the
+candidate for a CI job; none exists yet); and its recommended Docker + AWS
+track ships `docker-compose.aws.yml` + `.env.aws.example` (smoke =
+`docker compose up` + `curl /pubkey`).

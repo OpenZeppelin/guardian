@@ -46,12 +46,14 @@ must be owner-only or the server refuses to start:
 
 ```sh
 mkdir -p ack-keys
-cargo run --quiet -p guardian-server --bin ack-keygen \
-  | { read -r json; \
-      jq -rj '.falcon_secret_key' <<<"$json" > ack-keys/ack-falcon-secret-key; \
-      jq -rj '.ecdsa_secret_key'  <<<"$json" > ack-keys/ack-ecdsa-secret-key; }
-chmod 600 ack-keys/ack-falcon-secret-key ack-keys/ack-ecdsa-secret-key
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/ack-keys:/out" \
+  ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:-latest} /app/ack-keygen --out-dir /out
 ```
+
+(`ack-keygen` is the image's own identity generator; it writes both files as
+`0600` and refuses to overwrite existing ones. From a checkout,
+`cargo run --quiet -p guardian-server --bin ack-keygen -- --out-dir ack-keys`
+does the same.)
 
 `ack-keys/` is git-ignored. Treat it like any private key material — and note
 that regenerating it changes the Guardian's identity, freezing any multisig

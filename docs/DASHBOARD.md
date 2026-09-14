@@ -243,7 +243,7 @@ removing operators does not require a task restart:
 | Env var | Source |
 |---|---|
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` | Secrets Manager secret name or ARN (set by Terraform on the ECS task). |
-| `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | Local JSON file path — local development only. |
+| `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | Local JSON file path: local development, or self-managed deployments without Secrets Manager ([production guide](./guides/production/README.md#track-b-self-managed-docker-image-no-aws)). |
 
 ## Enrolling an operator
 
