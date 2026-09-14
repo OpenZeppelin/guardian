@@ -233,7 +233,11 @@ impl MultisigClient {
             .as_ref()
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
         Self::ensure_proposal_account_id(&updated_raw.account_id, &account_id)?;
-        let updated = Proposal::from(updated_raw)?;
+        // GUARDIAN's response is a fresh payload: parse it and re-verify it, so
+        // the returned proposal carries a real verification outcome (and is
+        // actionable once the threshold is met) rather than `Unchecked`.
+        let mut updated = Proposal::from(updated_raw)?;
+        self.verify_proposal_summary_binding(&mut updated).await?;
         Ok(updated)
     }
 

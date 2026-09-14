@@ -529,3 +529,101 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
     }
     assert!(!unverifiable[0].is_actionable());
 }
+
+/// Issue #462 review: the proposal `sign_proposal` returns is parsed from
+/// GUARDIAN's fresh response, so it must be re-verified there, or it comes
+/// back `Unchecked` and is never actionable even after the final signature.
+#[tokio::test]
+async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_signature() {
+    use crate::transaction::build_update_signers_transaction_request;
+    use guardian_client::{GetDeltaProposalResponse, SignDeltaProposalResponse};
+
+    let keystore = Arc::new(GuardianKeyStore::generate());
+    let signer_commitment = keystore.commitment();
+    let signer_hex = word_to_hex(&signer_commitment);
+    let account = multisig_account(signer_commitment, Word::from([9u32, 9, 9, 9]), 51);
+    let api = chain_with_notes(Vec::new());
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, _store) =
+        offline_client_parts_with_keystore(dir.path(), api.clone(), None, keystore.clone()).await;
+    client.set_node_rpc_client(api.clone());
+    client.add_or_update_account(&account, true).await.unwrap();
+    client.account = Some(MultisigAccount::new(account.clone()));
+    client.miden_client.sync_state().await.unwrap();
+
+    // A 1-of-1 add-cosigner proposal, served unsigned; the signer's own
+    // signature is the final one.
+    let new_cosigner = Word::from([7u32, 7, 7, 7]);
+    let signers = vec![signer_commitment, new_cosigner];
+    let signers_hex: Vec<String> = signers.iter().map(word_to_hex).collect();
+    let salt = Word::from([5u32, 6, 7, 8]);
+    let (tx_request, _) = build_update_signers_transaction_request(
+        1,
+        &signers,
+        salt,
+        std::iter::empty(),
+        client.key_manager.scheme(),
+    )
+    .unwrap();
+    let (tx_summary, chain_anchor) =
+        execute_for_summary(&mut client.miden_client, account.id(), tx_request)
+            .await
+            .unwrap();
+    let proposal_id = word_to_hex(&tx_summary.to_commitment());
+    let payload = ProposalPayload::new(&tx_summary)
+        .with_add_signer_metadata(1, signers_hex.clone(), word_to_hex(&salt))
+        .with_required_signatures(1)
+        .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+    let unsigned = pending_proto_delta(&account, 1, payload.to_json().to_string(), &signer_hex);
+
+    // What GUARDIAN hands back after accepting the signature: the same
+    // payload carrying it, which meets the 1-of-1 threshold.
+    let mut signed_payload = payload;
+    signed_payload
+        .signatures
+        .push(guardian_shared::DeltaSignature {
+            signer_id: signer_hex.clone(),
+            signature: guardian_shared::ProposalSignature::Falcon {
+                signature: client.key_manager.sign_word_hex(tx_summary.to_commitment()),
+            },
+        });
+    let signed = pending_proto_delta(
+        &account,
+        1,
+        signed_payload.to_json().to_string(),
+        &signer_hex,
+    );
+
+    let service =
+        MockGuardianService::default().with_sign_delta_proposal(Ok(SignDeltaProposalResponse {
+            success: true,
+            message: String::new(),
+            delta: Some(signed),
+        }));
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    handle.set_persistent_get_state(registered_state(&account));
+    handle.set_persistent_get_delta_proposal(GetDeltaProposalResponse {
+        success: true,
+        message: String::new(),
+        proposal: Some(unsigned),
+    });
+    client
+        .set_guardian_endpoint(&endpoint, false)
+        .await
+        .unwrap();
+
+    let updated = client.sign_proposal(&proposal_id).await.unwrap();
+    assert!(
+        updated.is_verified(),
+        "the signed response must be re-verified, got {:?}",
+        updated.verification
+    );
+    assert!(
+        updated.status.is_ready(),
+        "1-of-1 threshold met: {:?}",
+        updated.status
+    );
+    assert!(updated.is_actionable());
+}
