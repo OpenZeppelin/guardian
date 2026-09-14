@@ -57,6 +57,7 @@ Prefer the deploy script over raw `terraform apply` and `terraform destroy` unle
 - `./scripts/aws-deploy.sh bootstrap-ack-keys` is the create-only command for the prod Falcon/ECDSA ack key secrets used by `prod`.
 - The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so a new image push should produce a new ECS task-definition revision even if the repo tag stays `latest`.
 - The deploy script keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default.
+- When `TF_WORKSPACE` is set, the script uses that workspace on the remote backend declared in an untracked `infra/*_override.tf` instead of a local state file. A non-local backend block and `TF_WORKSPACE` must be present together (the script refuses either half alone), and `deploy`/`cleanup` refuse a workspace with no resources in state unless `--bootstrap` is passed. The script's own AWS CLI calls use ambient credentials, not the provider's `assume_role`. Full behaviour and the state-migration steps are in `docs/SERVER_AWS_DEPLOY.md` under "Remote state backend".
 - If an older local state still exists at `infra/terraform.tfstate`, handle that move explicitly instead of relying on the script to migrate it.
 - Do not tell the user to preserve or re-enable the retired Postgres ECS or Cloud Map resources.
 - If the task involves an old stack that still has ECS-hosted Postgres data, treat it as an operator-managed cutover outside the steady-state Terraform design.
@@ -70,6 +71,7 @@ Use the deploy script env vars for the normal workflow:
 - `STACK_NAME`
 - `DEPLOY_STAGE`
 - `TF_STATE_PATH`
+- `TF_WORKSPACE`
 - `DOMAIN_NAME`
 - `SUBDOMAIN`
 - `ACM_CERTIFICATE_ARN`

@@ -256,9 +256,12 @@ flowchart LR
 ```
 
 State is kept **locally** per stack+stage at
-`infra/terraform.<stack>.<stage>.tfstate`. There is no remote backend
-configured; the deploy script is the source of truth for which state file is
-in use.
+`infra/terraform.<stack>.<stage>.tfstate` by default. The tracked module
+declares no backend; operators who want shared state add an untracked
+`infra/*_override.tf` with a backend block and set `TF_WORKSPACE`, and the
+deploy script then defers state resolution to Terraform (see
+[`docs/SERVER_AWS_DEPLOY.md`](../SERVER_AWS_DEPLOY.md#remote-state-backend)).
+Either way the deploy script is the source of truth for which state is in use.
 
 ## Observability surface
 

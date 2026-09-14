@@ -408,7 +408,7 @@ become the only trusted ones.
 ```
 
 The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so image pushes always produce a real ECS task-definition revision instead of relying on tag reuse.
-It also keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default.
+It also keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default. See [Remote state backend](#remote-state-backend) to keep state in S3 or another backend instead.
 
 AWS deployments must include the `postgres` server feature. The script defaults `GUARDIAN_SERVER_FEATURES` to `postgres`; set `GUARDIAN_SERVER_FEATURES=postgres,evm` only when deploying the optional EVM API surface.
 
@@ -512,6 +512,66 @@ If you still have an older local state file at `infra/terraform.tfstate`, move i
 ```bash
 cp infra/terraform.tfstate infra/terraform.guardian.dev.tfstate
 cp infra/terraform.tfstate.backup infra/terraform.guardian.dev.tfstate.backup 2>/dev/null || true
+```
+
+### Remote state backend
+
+The Terraform module declares no backend, so the reference workflow above uses
+local state files. Operators who want shared, locked state keep the module
+untouched and add two things: an untracked override file declaring the backend,
+and `TF_WORKSPACE` naming the workspace for the stack being deployed.
+
+```bash
+cp infra/backend_override.tf.example infra/backend_override.tf   # edit bucket, key, region
+export TF_WORKSPACE=prod                                          # one workspace per STACK_NAME/DEPLOY_STAGE
+./scripts/aws-deploy.sh plan
+```
+
+Terraform merges `*_override.tf` files into the configuration, and the pattern
+is gitignored, so bucket names, account IDs and role ARNs never enter the
+tracked module. The override may also add an `assume_role` block to the AWS
+provider; the region and default tags from `infra/versions.tf` are kept. An
+override that only carries provider settings works with local state.
+
+A non-local backend block and `TF_WORKSPACE` must be set together; the script
+refuses either one alone. With both set it:
+
+- stops passing `-state=` and `-backup=` and lets Terraform resolve state
+  through the configured backend, so `TF_STATE_PATH` is ignored
+- always runs `terraform init -reconfigure -input=false`, so a changed bucket
+  or key is picked up and an existing local state file is never migrated
+  implicitly
+- creates the workspace if it does not exist yet
+  (`terraform workspace select -or-create`), so a typo in `TF_WORKSPACE`
+  creates an empty workspace on the backend; delete a stray one with
+  `terraform workspace delete`
+- refuses `deploy` and `cleanup` when the workspace has no resources in
+  state, because Terraform would otherwise plan to create every resource of a
+  stack that already exists (`plan` only warns). Pass `--bootstrap` for a
+  genuinely new stack.
+
+The script's own AWS CLI calls (ECR, Secrets Manager, STS) use the ambient
+credentials, not the provider's `assume_role`. If your override assumes a role
+into another account, make sure the shell is authenticated to that same
+account before running the script.
+
+Do not run `terraform` directly in `infra/` while the override is present and
+`TF_WORKSPACE` is unset. Terraform would use the backend's default workspace
+with the module's default variables, which is a separate, unrelated state.
+
+Move existing local state into the backend deliberately, one workspace per
+stack. Run `init` and `workspace select` with `TF_WORKSPACE` unset, since
+workspace commands refuse to run while it is set, then push with it set.
+`terraform state push` refuses a lineage mismatch or an older serial:
+
+```bash
+cd infra
+unset TF_WORKSPACE
+terraform init -reconfigure -input=false
+terraform workspace select -or-create prod
+TF_WORKSPACE=prod terraform state push terraform.guardian-prod.prod.tfstate
+cd ..
+TF_WORKSPACE=prod ./scripts/aws-deploy.sh plan   # must report no changes
 ```
 
 Use `--skip-build` when the image already exists in ECR and you only need infra/runtime changes, or when you are applying immediately after a reviewed `plan`:
@@ -685,7 +745,9 @@ The script reads the state file for the active `STACK_NAME` and `DEPLOY_STAGE`. 
 infra/terraform.<stack>.<stage>.tfstate
 ```
 
-You can override that with `TF_STATE_PATH` if needed.
+You can override that with `TF_STATE_PATH` if needed. With `TF_WORKSPACE` set,
+the script reads the named workspace from the remote backend instead; see
+[Remote state backend](#remote-state-backend).
 
 ### Destroy
 

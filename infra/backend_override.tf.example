@@ -1,0 +1,30 @@
+# Copy this file to infra/backend_override.tf (gitignored) to keep Terraform
+# state in a remote backend instead of the per-stack local files that
+# scripts/aws-deploy.sh uses by default.
+#
+# Terraform merges every *_override.tf file into the module, so the tracked
+# configuration stays free of organisation-specific bucket names, account IDs
+# and role ARNs. Select the stack with TF_WORKSPACE when running the deploy
+# script; one workspace per STACK_NAME/DEPLOY_STAGE pair.
+
+terraform {
+  required_version = ">= 1.10.0"
+
+  backend "s3" {
+    bucket               = "my-terraform-state-bucket"
+    workspace_key_prefix = "environments"
+    key                  = "guardian/terraform.tfstate"
+    region               = "us-east-1"
+    encrypt              = true
+    use_lockfile         = true
+  }
+}
+
+# Optional: run the AWS provider through a deployment role. The region and
+# default tags from infra/versions.tf are kept; only assume_role is added.
+#
+# provider "aws" {
+#   assume_role {
+#     role_arn = "arn:aws:iam::123456789012:role/Terraform"
+#   }
+# }
