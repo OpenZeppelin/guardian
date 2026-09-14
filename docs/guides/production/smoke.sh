@@ -12,9 +12,10 @@
 #
 # Requires: docker (Compose v2), jq, curl, openssl. The ACK identity comes from
 # the image's own ack-keygen, so no Rust toolchain is needed.
-# Usage:    GUARDIAN_VERSION=<release later than v0.17.0> ./smoke.sh
-# The version is required: the stack depends on server features v0.17.0 lacks,
-# and this script's first step (ack-keygen from the image) fails on older tags.
+# Usage:    ./smoke.sh                                    # tag from ./.env, else .env.example
+#           GUARDIAN_VERSION=<release later than v0.17.0> ./smoke.sh
+# A tag is required: the stack depends on server features v0.17.0 lacks, and
+# this script's first step (ack-keygen from the image) fails on older tags.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -23,7 +24,9 @@ for tool in docker jq curl openssl; do
   command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
 done
 
-GUARDIAN_VERSION="${GUARDIAN_VERSION:-$(grep -E '^GUARDIAN_VERSION=' .env.example | cut -d= -f2-)}"
+version_from() { [ -f "$1" ] && grep -E '^GUARDIAN_VERSION=' "$1" | cut -d= -f2- || true; }
+GUARDIAN_VERSION="${GUARDIAN_VERSION:-$(version_from .env)}"
+GUARDIAN_VERSION="${GUARDIAN_VERSION:-$(version_from .env.example)}"
 [ -n "$GUARDIAN_VERSION" ] || { echo "set GUARDIAN_VERSION to a Guardian release later than v0.17.0 (this stack needs ack-keygen in the image)" >&2; exit 1; }
 HTTP_PORT="${SMOKE_HTTP_PORT:-3300}"
 GRPC_PORT="${SMOKE_GRPC_PORT:-53051}"
@@ -116,6 +119,9 @@ wait_for_pubkey || {
   fail "server did not answer /pubkey after 60 attempts"
 }
 pass "server is up"
+
+http "${BASE}/" >/dev/null || fail "GET / (liveness) did not return 2xx"
+pass "/ answers (liveness)"
 
 falcon="$(http "${BASE}/pubkey")"
 ecdsa="$(http "${BASE}/pubkey?scheme=ecdsa")"

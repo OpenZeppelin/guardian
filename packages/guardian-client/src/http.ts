@@ -123,10 +123,11 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   if (typeof rawMeta.paused_at === 'string') meta.pausedAt = rawMeta.paused_at;
   if (typeof rawMeta.released_at === 'string') meta.releasedAt = rawMeta.released_at;
   if (typeof rawMeta.scheme === 'string') meta.scheme = rawMeta.scheme;
-  if (Array.isArray(rawMeta.allowed_schemes)) {
-    meta.allowedSchemes = rawMeta.allowed_schemes.filter(
-      (x): x is string => typeof x === 'string'
-    );
+  if (
+    Array.isArray(rawMeta.allowed_schemes) &&
+    rawMeta.allowed_schemes.every((x): x is string => typeof x === 'string')
+  ) {
+    meta.allowedSchemes = rawMeta.allowed_schemes;
   }
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
     meta.pausedReason = rawMeta.paused_reason as string | null;

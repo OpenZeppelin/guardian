@@ -27,9 +27,9 @@ procedures see the [runbooks](../../runbooks/).
 
 | Track | You run | Guardian secrets live in | Database | HA |
 |---|---|---|---|---|
-| [**A. AWS ECS/Fargate**](#track-a-aws-ecsfargate-reference-deployment) (reference) | `scripts/aws-deploy.sh` + Terraform in `infra/` | AWS Secrets Manager + KMS (task role, nothing on disk) | Amazon RDS via RDS Proxy, Terraform-managed backups | 2 to 6 tasks with autoscaling |
+| [**A. AWS ECS/Fargate**](#track-a-aws-ecsfargate-reference-deployment) (reference, **recommended**) | `scripts/aws-deploy.sh` + Terraform in `infra/` | AWS Secrets Manager + KMS (task role, nothing on disk) | Amazon RDS via RDS Proxy, Terraform-managed backups | 2 to 6 tasks with autoscaling |
 | [**B. Docker image, self-managed**](#track-b-self-managed-docker-image-no-aws) | The published image on your own host, VM, or Kubernetes | Files and an env file you protect | Your own Postgres (managed or self-hosted) | Yours to build; step 7 says how |
-| [**C. Docker image + AWS secret custody**](#track-c-self-managed-docker-image-with-aws-secret-custody) (**recommended**) | The published image on your own host, AWS only for secrets | AWS Secrets Manager + KMS | Your own Postgres | Same as B |
+| [**C. Docker image + AWS secret custody**](#track-c-self-managed-docker-image-with-aws-secret-custody) (recommended outside ECS) | The published image on your own host, AWS only for secrets | AWS Secrets Manager + KMS | Your own Postgres | Same as B |
 
 Files in this directory, by track:
 
@@ -39,14 +39,17 @@ Files in this directory, by track:
 | B | [`docker-compose.yml`](./docker-compose.yml), [`.env.example`](./.env.example), [`operators.example.json`](./operators.example.json), [`smoke.sh`](./smoke.sh) (plus the `ack-keys/` and `storage-encryption-keys.json` you generate in B1 and B2) |
 | C | [`docker-compose.aws.yml`](./docker-compose.aws.yml), [`.env.aws.example`](./.env.aws.example) |
 
-**Recommendation, for now: track C**, unless you are deploying the reference
-stack itself (track A). Guardian's secret custody, hosted ECDSA signer, key
-rotation procedures, and runbooks are built around AWS Secrets Manager and KMS
-today, and those are the paths exercised in production. Track C gives you that
-custody on any Docker host without committing to ECS. Track B is the fallback
-for operators with no AWS account: it works and reaches the same shape, but it
-hands you more to protect (the ACK private keys and the encryption key document
-live as files on your host) and is the least-travelled configuration.
+**Recommendation: track A**, the reference deployment. It is what OpenZeppelin
+runs, what the Terraform, deploy script, runbooks, and CloudWatch dashboards
+are written against, and the only track where the database, HA, backups, and
+alarms are built for you. If you cannot run on ECS, use **track C**: it keeps
+the part that matters most, secret custody in AWS Secrets Manager and KMS
+(the hosted ECDSA signer never exposes its key to the process), on any Docker
+host, and leaves the database, ingress, and backups to you. Track B is the
+fallback for operators with no AWS account at all: it works and reaches the
+same shape, but it hands you more to protect (the ACK private keys and the
+encryption key document live as files on your host) and is the
+least-travelled configuration.
 
 ## Decisions every track shares
 
@@ -54,7 +57,7 @@ live as files on your host) and is the least-travelled configuration.
 |---|---|
 | **Miden network** | Set `GUARDIAN_NETWORK_TYPE` explicitly: `MidenTestnet`, `MidenDevnet`, or `MidenLocal`. The server refuses to start when it is unset or unrecognized; there is no fallback network. |
 | **Image version** | Pin an explicit release tag, **later than `v0.17.0`**. This guide depends on server features that v0.17.0 does not have: `ack-keygen` in the image, `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, and the `GUARDIAN_ENV=prod` runtime defaults. An older server does not fail on the unknown variables: it boots, stores payloads in **plaintext**, accepts every scheme, and runs the development rate limits. The tell is the startup banner: the `ack signers` line carries `account_schemes` only on a new enough image, and `smoke.sh` fails at its first step on an old one. Guardian 0.17.x runs on Miden 0.16; check [`MIDEN_COMPATIBILITY.md`](../../MIDEN_COMPATIBILITY.md) before choosing, and read [Upgrading to Miden 0.16](../../PRODUCTION.md#upgrading-to-miden-016) if you are moving an existing deployment. Never run `latest` in production. |
-| **Server features** | The published `ghcr.io/openzeppelin/guardian` image is built with `postgres` only. If you serve the EVM API you need `postgres,evm`, which means building your own image (`scripts/aws-deploy.sh build` on track A, `docker build --build-arg GUARDIAN_SERVER_FEATURES=postgres,evm --target server-runner .` elsewhere). |
+| **Server features** | The published `ghcr.io/openzeppelin/guardian` image is built with the `postgres` feature, which is the production storage backend; that is the image every track in this guide runs. |
 | **Storage backend** | Postgres, always. The filesystem backend is dev-only and refused at startup in the prod stage. |
 | **Account signature scheme** | Set `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` on a new deployment, and treat it as required on the AWS tracks (A and C): only ECDSA has a hosted signer (KMS), so an ECDSA-only fleet is the only one whose account-facing ACK key never enters the process. Falcon has no remote signer, so every Falcon account is acked by a key that has to be loaded into memory from Secrets Manager; Falcon is second-class ([`PRODUCTION.md`](../../PRODUCTION.md#account-signature-scheme)). The gate applies to **new** registrations only, so it is safe on a fleet that already has Falcon accounts, and it has no effect on which ACK keys the server needs: the Falcon ACK key is still required today, so bootstrap and protect it exactly as below. Rejected registrations get `signature_scheme_not_allowed`; `GET /dashboard/info` shows `accounts_by_auth_method` if you want to check what exists before tightening. All three templates carry the variable. |
 | **ECDSA ACK signer backend** | AWS KMS where AWS is available (tracks A and C): the private key never enters the process. Track B keeps it in a `0600` file. Whichever you choose, the ACK keys **are Guardian's identity**: changing them later is a `SwitchGuardian` migration for every existing account, not a routine rotation ([`runbooks/secrets.md`](../../runbooks/secrets.md#ack-signing-keys)). |
@@ -185,7 +188,7 @@ What **you** provide in `.env.ecs`:
 | Variable | Notes |
 |---|---|
 | `DEPLOY_STAGE=prod`, `STACK_NAME`, `AWS_REGION`, `GUARDIAN_NETWORK_TYPE` | Stack identity and network. |
-| `GUARDIAN_SERVER_FEATURES` | `postgres`, or `postgres,evm` (then also the `GUARDIAN_EVM_*` variables; see the template). |
+| `GUARDIAN_SERVER_FEATURES` | `postgres`. |
 | `GUARDIAN_CORS_ALLOWED_ORIGINS` | Exact browser origins, comma-separated; wildcards are rejected. Unset means permissive `Any` with credentials disabled, which is not for production. |
 | `TF_VAR_guardian_ack_ecdsa_kms_key_arn` | From A1. |
 | `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` | From A1: new accounts must use the KMS-backed scheme. Terraform injects it only when set; unset keeps both schemes. |
@@ -418,14 +421,13 @@ retarget the stack. Compose reads the shell only for `GUARDIAN_VERSION` and
 the host port and bind settings, where an exported name does win over `.env`.
 A missing `.env` aborts `up`.
 
-The three secret files are copied into the container when it is created
-(Compose does that for `secrets:` entries with a `mode:`), not bind-mounted.
-Editing a file on the host therefore changes nothing in a running container,
-and `docker compose restart server` keeps the old copy. After rotating the
-storage-encryption key document, recreate the container:
-`docker compose up -d --force-recreate server`. `operators.json` is a
-`configs:` entry without a mode, so it stays a bind mount and its edits are
-picked up live.
+The three secret files and `operators.json` are bind-mounted from the host
+(the compose file deliberately sets no `uid`, `gid`, or `mode` on them: with
+those, Compose copies the file in at creation and a restart keeps the stale
+copy). Their host permissions carry through, which is why they must be `0600`.
+After rotating the storage-encryption key document, `docker compose restart
+server` re-reads it; `operators.json` is re-read on every request with no
+restart at all.
 
 Tracks B and C use distinct Compose project names, so running both from this
 directory never shares a database or keystore volume between them. A reused
@@ -464,7 +466,7 @@ startup, before the listeners bind, on every track. No Rust toolchain: the
 identity comes from the image's `ack-keygen`.
 
 ```bash
-./smoke.sh
+./smoke.sh                              # image tag from ./.env (B2); or GUARDIAN_VERSION=<tag> ./smoke.sh
 ```
 
 By hand, against your real stack:
@@ -563,8 +565,8 @@ section).
 
 ## Track C: Self-managed Docker image with AWS secret custody
 
-The recommended track for anyone not running the ECS reference stack. It is
-track B with the secrets moved off the host: the Falcon ACK key comes from
+The recommended track when you cannot run the ECS reference stack (track A).
+It is track B with the secrets moved off the host: the Falcon ACK key comes from
 Secrets Manager, the ECDSA ACK key lives in KMS and never enters the process,
 the storage-encryption key document (optional, with multi-key rotation) and
 the operator allowlist can be Secrets Manager secrets. Because only ECDSA has
@@ -610,7 +612,7 @@ item is satisfied, per track:
 | Checklist item | A (ECS) | B (Docker) | C (Docker + AWS secrets) |
 |---|---|---|---|
 | `DEPLOY_STAGE=prod` / prod-stage guards and runtime defaults | `.env.ecs`, profile sets `GUARDIAN_ENV=prod` and injects the values | compose sets `GUARDIAN_ENV=prod`; the server applies the same defaults | same as B |
-| `postgres` (+ `evm`) features, no filesystem backend | A2 | Decisions (published image is `postgres`) | same |
+| `postgres` feature, no filesystem backend | A2 | Decisions (published image is `postgres`) | same |
 | Stable ACK identity; ECDSA backend decision | A1 (KMS + Secrets Manager) | B1 (`file` provider) | C1 (KMS + Secrets Manager) |
 | New accounts restricted to ECDSA | `.env.ecs` (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, Terraform-injected) | `.env` | `.env.aws` |
 | `DATABASE_URL` from a managed secret; verified DB TLS | A1 CA bundle, Terraform-managed RDS secret | B3 (`verify-full` + mounted CA) | B3 |

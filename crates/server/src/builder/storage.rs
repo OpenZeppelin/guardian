@@ -199,7 +199,7 @@ where
 /// Where the storage encryption key material comes from. Exactly one source
 /// may be configured; presence of any source turns encryption on.
 enum StorageKeySource {
-    DirectKey(String),
+    DirectKey(SecretString),
     DocumentFile(PathBuf),
     SecretsManager(String),
 }
@@ -207,7 +207,7 @@ enum StorageKeySource {
 impl StorageKeySource {
     fn from_env() -> Result<Option<Self>, String> {
         let configured = [
-            non_empty_env(ENV_KEY).map(Self::DirectKey),
+            non_empty_env(ENV_KEY).map(|key| Self::DirectKey(SecretString::new(key))),
             non_empty_env(ENV_KEY_FILE).map(|path| Self::DocumentFile(PathBuf::from(path))),
             non_empty_env(ENV_SECRET_ID).map(Self::SecretsManager),
         ];
@@ -223,7 +223,8 @@ impl StorageKeySource {
         match self {
             Self::DirectKey(key) => {
                 let kid = non_empty_env(ENV_KEY_ID).unwrap_or_else(|| DEFAULT_KID.to_string());
-                InMemoryKeyProvider::from_dev_key(&key, &kid).map_err(|e| e.to_string())
+                InMemoryKeyProvider::from_dev_key(key.expose_secret(), &kid)
+                    .map_err(|e| e.to_string())
             }
             Self::DocumentFile(path) => {
                 InMemoryKeyProvider::from_document_file(&path).map_err(|e| e.to_string())

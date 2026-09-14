@@ -385,11 +385,12 @@ rm -f "$f"
 
 On the file source, rewrite the file with the same document (keep it `0600`;
 edit in place rather than re-running the creation one-liner, which refuses to
-overwrite) and then **recreate** each replica's container, not just restart it:
-Compose copies a `secrets:` file with a `mode:` into the container at creation,
-so `docker compose restart` keeps the old copy. Use
-`docker compose up -d --force-recreate server`; on Kubernetes, roll the
-Deployment after updating the Secret. The document is read once at startup. New records use
+overwrite) and restart each replica; the document is read once at startup.
+With the production guide's Compose stack the file is bind-mounted, so
+`docker compose restart server` is enough. If your own compose file sets
+`uid`, `gid`, or `mode` on the secret, Compose copies it in at container
+creation and you must `docker compose up -d --force-recreate server` instead.
+On Kubernetes, roll the Deployment after updating the Secret. New records use
 `k2`; old `k1` records keep decrypting. Do **not** remove a key that any stored
 record still references. Bulk re-encryption tooling is not yet provided.
 

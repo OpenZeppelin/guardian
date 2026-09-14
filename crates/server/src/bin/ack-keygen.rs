@@ -70,8 +70,12 @@ fn write_owner_only(path: &Path, contents: &str) -> Result<(), String> {
     let mut file = options
         .open(path)
         .map_err(|error| format!("cannot create {}: {error}", path.display()))?;
-    std::io::Write::write_all(&mut file, contents.as_bytes())
-        .map_err(|error| format!("cannot write {}: {error}", path.display()))
+    if let Err(error) = std::io::Write::write_all(&mut file, contents.as_bytes()) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(format!("cannot write {}: {error}", path.display()));
+    }
+    Ok(())
 }
 
 #[derive(Debug)]

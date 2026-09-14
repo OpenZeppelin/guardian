@@ -20,9 +20,12 @@
 #
 # Compose auto-loads .env from this directory: for ${VAR} interpolation of the
 # image tag and host ports, and as the server's env_file for everything else.
-# The ACK key files and operators.json are declared as Compose secrets/configs
-# rather than bind mounts, so a missing file aborts `up` instead of silently
-# mounting an empty directory.
+# The ACK key files, the key document, and operators.json are declared as
+# Compose secrets/configs so a missing file aborts `up` instead of silently
+# mounting an empty directory. Without uid/gid/mode they are bind mounts that
+# keep the host file's 0600 permissions, so an edited key document is picked up
+# by `docker compose restart server`. Do not add `mode:`: Compose then copies
+# the file in at creation and a restart would keep the stale copy.
 # Walkthrough: ./README.md   Full server config reference: ../../CONFIGURATION.md
 
 # Distinct from docker-compose.aws.yml so the two tracks never share
@@ -52,13 +55,10 @@ services:
     secrets:
       - source: ack-falcon-secret-key
         target: /etc/guardian/ack/ack-falcon-secret-key
-        mode: 0400
       - source: ack-ecdsa-secret-key
         target: /etc/guardian/ack/ack-ecdsa-secret-key
-        mode: 0400
       - source: storage-encryption-keys
         target: /etc/guardian/storage-encryption-keys.json
-        mode: 0400
     configs:
       - source: operators
         target: /etc/guardian/operators.json

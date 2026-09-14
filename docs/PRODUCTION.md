@@ -20,15 +20,15 @@ Every production Guardian, wherever it runs, has the same shape:
 - Verified TLS to the database, storage encryption where the threat model
   warrants it, and a metrics endpoint that is never publicly reachable.
 
-The **reference deployment** is AWS ECS/Fargate built by `scripts/aws-deploy.sh`
-and the Terraform in `infra/`: `DEPLOY_STAGE=prod` selects the stage profile,
-Amazon RDS holds state, deltas, proposals, account metadata, and audit rows,
-and AWS Secrets Manager (or KMS for the ECDSA signer) holds the ACK keys and
-deploy-time secrets.
+The **reference deployment**, and the recommended one, is AWS ECS/Fargate
+built by `scripts/aws-deploy.sh` and the Terraform in `infra/`:
+`DEPLOY_STAGE=prod` selects the stage profile, Amazon RDS holds state, deltas,
+proposals, account metadata, and audit rows, and AWS Secrets Manager (or KMS
+for the ECDSA signer) holds the ACK keys and deploy-time secrets.
 
 Running the published Docker image on your own host, VM, or Kubernetes is
-supported and reaches the same shape. The recommended way to do it today keeps
-secret custody in AWS: the ACK keys in Secrets Manager and KMS, the
+supported and reaches the same shape. When ECS is not an option, the
+recommended way to do it keeps secret custody in AWS: the ACK keys in Secrets Manager and KMS, the
 storage-encryption key document in Secrets Manager, and everything else
 (Postgres, ingress, backups, metrics) yours
 ([production guide, track C](./guides/production/README.md#track-c-self-managed-docker-image-with-aws-secret-custody)).

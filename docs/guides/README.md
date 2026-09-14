@@ -21,7 +21,7 @@ storage, or network), not after Compose.
 
 | Guide | Mode |
 |---|---|
-| [Production deployment](./production/README.md) | Three tracks to the same hardened shape: AWS ECS/Fargate reference (`aws-deploy.sh` + Terraform, RDS + Secrets Manager + KMS, verified DB TLS, storage encryption, multi-replica HA); the published Docker image self-managed with no AWS (file-based ACK identity, your own TLS-verified Postgres, your ingress); and the Docker image with AWS Secrets Manager/KMS custody (the recommended track for non-ECS deployments) |
+| [Production deployment](./production/README.md) | Three tracks to the same hardened shape: AWS ECS/Fargate reference (`aws-deploy.sh` + Terraform, RDS + Secrets Manager + KMS, verified DB TLS, storage encryption, multi-replica HA); the published Docker image self-managed with no AWS (file-based ACK identity, your own TLS-verified Postgres, your ingress); and the Docker image with AWS Secrets Manager/KMS custody (recommended when ECS is not an option; the ECS reference is the recommended deployment) |
 | [AWS-managed ACK signers](./aws-signers/README.md) | Self-hosted Compose: Postgres + Secrets Manager (Falcon) + KMS (ECDSA) |
 | [Miden Dashboard UI](./miden-dashboard/README.md) | Self-hosted Compose: Postgres + Guardian server + the Miden Dashboard operator UI |
 | [Observability](./observability/README.md) | Local Compose: server + Prometheus + pre-provisioned Grafana dashboard |
@@ -39,6 +39,6 @@ artifact set per track: its AWS track drives the real ECS/Terraform stack via
 `scripts/aws-deploy.sh` + `infra/` (smoke = post-deploy validation against the
 live stack); its self-managed Docker track ships `docker-compose.yml` +
 `.env.example` + `smoke.sh` (runnable with no AWS credentials, so it is the
-candidate for a CI job; none exists yet); and its recommended Docker + AWS
-track ships `docker-compose.aws.yml` + `.env.aws.example` (smoke =
+candidate for a CI job; none exists yet); and its Docker + AWS custody track
+(recommended outside ECS) ships `docker-compose.aws.yml` + `.env.aws.example` (smoke =
 `docker compose up` + `curl /pubkey`).
