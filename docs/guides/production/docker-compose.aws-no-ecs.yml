@@ -6,15 +6,15 @@
 # GUARDIAN_ENV=prod, so every prod-stage guard is active.
 #
 # Run from this directory:
-#   cp .env.aws.example .env.aws      # then fill in the values
-#   docker compose --env-file .env.aws -f docker-compose.aws.yml up -d
+#   cp .env.aws-no-ecs.example .env.aws-no-ecs      # then fill in the values
+#   docker compose --env-file .env.aws-no-ecs -f docker-compose.aws-no-ecs.yml up -d
 #
 # The bundled Postgres exists so the stack runs standalone. For real production
-# point DATABASE_URL in .env.aws at your own TLS-verified Postgres and
+# point DATABASE_URL in .env.aws-no-ecs at your own TLS-verified Postgres and
 # start only the server (append `--no-deps server` to the command above).
 #
 # The container calls Secrets Manager and KMS, so it needs AWS credentials. Put
-# static keys in .env.aws (loaded as the container's env_file), or set
+# static keys in .env.aws-no-ecs (loaded as the container's env_file), or set
 # nothing and let the SDK's default chain use the host's instance/container
 # role; AWS credentials are never taken from your shell, and neither is any
 # other server variable (see the env_file note on the service).
@@ -22,11 +22,11 @@
 
 # Distinct from docker-compose.yml so the two tracks never share volumes when
 # run from this directory.
-name: guardian-production-aws
+name: guardian-production-aws-no-ecs
 
 services:
   server:
-    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:?set GUARDIAN_VERSION in .env.aws (pin an explicit release, never latest, in production)}
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:?set GUARDIAN_VERSION in .env.aws-no-ecs (pin an explicit release, never latest, in production)}
     pull_policy: always
     restart: unless-stopped
     ports:
@@ -44,14 +44,14 @@ services:
     # Every operator-provided value (DATABASE_URL, AWS_REGION, secret ids, the
     # KMS key, network, cursor secret, CORS, metrics,
     # GUARDIAN_ALLOWED_ACCOUNT_SCHEMES, GUARDIAN_MAX_REPLICAS, ...) comes from
-    # .env.aws through env_file and nowhere else. Nothing below interpolates a
+    # .env.aws-no-ecs through env_file and nowhere else. Nothing below interpolates a
     # server variable, so an exported shell variable cannot override the file:
     # Compose gives the shell precedence during ${VAR} interpolation, which is
     # why the only interpolated values in this file are the image tag and the
     # host-side port/bind settings above. The file is required so a missing
-    # .env.aws aborts `up` instead of starting an unconfigured server.
+    # .env.aws-no-ecs aborts `up` instead of starting an unconfigured server.
     env_file:
-      - path: .env.aws
+      - path: .env.aws-no-ecs
         required: true
     # Fixed by this stack's topology; not operator input. GUARDIAN_ENV=prod also
     # applies the production defaults for rate limits, pool sizes,

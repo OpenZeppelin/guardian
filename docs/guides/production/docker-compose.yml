@@ -28,7 +28,7 @@
 # the file in at creation and a restart would keep the stale copy.
 # Walkthrough: ./README.md   Full server config reference: ../../CONFIGURATION.md
 
-# Distinct from docker-compose.aws.yml so the two tracks never share
+# Distinct from docker-compose.aws-no-ecs.yml so the two tracks never share
 # volumes when run from this directory.
 name: guardian-production
 

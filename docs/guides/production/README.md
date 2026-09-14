@@ -29,23 +29,27 @@ procedures see the [runbooks](../../runbooks/).
 |---|---|---|---|---|
 | [**A. AWS ECS/Fargate**](#track-a-aws-ecsfargate-reference-deployment) (reference, **recommended**) | `scripts/aws-deploy.sh` + Terraform in `infra/` | AWS Secrets Manager + KMS (task role, nothing on disk) | Amazon RDS via RDS Proxy, Terraform-managed backups | 2 to 6 tasks with autoscaling |
 | [**B. Docker image, self-managed**](#track-b-self-managed-docker-image-no-aws) | The published image on your own host, VM, or Kubernetes | Files and an env file you protect | Your own Postgres (managed or self-hosted) | Yours to build; step 7 says how |
-| [**C. Docker image + AWS secret custody**](#track-c-self-managed-docker-image-with-aws-secret-custody) (recommended outside ECS) | The published image on your own host, AWS only for secrets | AWS Secrets Manager + KMS | Your own Postgres | Same as B |
+| [**C. Docker image + AWS secret custody**](#track-c-self-managed-docker-image-with-aws-secret-custody) (only when ECS is not possible for you) | The published image on your own host, AWS only for secrets | AWS Secrets Manager + KMS | Your own Postgres | Same as B |
 
 Files in this directory, by track:
 
 | Track | Files |
 |---|---|
-| A | [`.env.ecs.example`](./.env.ecs.example) |
+| A | [`.env.aws-ecs.example`](./.env.aws-ecs.example) |
 | B | [`docker-compose.yml`](./docker-compose.yml), [`.env.example`](./.env.example), [`operators.example.json`](./operators.example.json), [`smoke.sh`](./smoke.sh) (plus the `ack-keys/` and `storage-encryption-keys.json` you generate in B1 and B2) |
-| C | [`docker-compose.aws.yml`](./docker-compose.aws.yml), [`.env.aws.example`](./.env.aws.example) |
+| C | [`docker-compose.aws-no-ecs.yml`](./docker-compose.aws-no-ecs.yml), [`.env.aws-no-ecs.example`](./.env.aws-no-ecs.example) |
 
 **Recommendation: track A**, the reference deployment. It is what OpenZeppelin
 runs, what the Terraform, deploy script, runbooks, and CloudWatch dashboards
 are written against, and the only track where the database, HA, backups, and
-alarms are built for you. If you cannot run on ECS, use **track C**: it keeps
-the part that matters most, secret custody in AWS Secrets Manager and KMS
-(the hosted ECDSA signer never exposes its key to the process), on any Docker
-host, and leaves the database, ingress, and backups to you. Track B is the
+alarms are built for you. Use **track C** only when running the reference
+stack is not possible for you (no ECS in your organization, a platform
+mandate, an existing Docker or Kubernetes estate you must deploy into). It
+keeps the part that matters most, secret custody in AWS Secrets Manager and
+KMS (the hosted ECDSA signer never exposes its key to the process), on any
+Docker host, and leaves the database, ingress, and backups to you. It is not
+a lighter alternative to track A: everything Terraform builds for you there
+becomes your job here. Track B is the
 fallback for operators with no AWS account at all: it works and reaches the
 same shape, but it hands you more to protect (the ACK private keys and the
 encryption key document live as files on your host) and is the
@@ -85,8 +89,8 @@ Copy the template and source it before **every** command in this track. It
 carries the stack identity, region, network, and every deploy-time choice:
 
 ```bash
-cp docs/guides/production/.env.ecs.example .env.ecs   # gitignored; fill it in
-set -a && source .env.ecs && set +a
+cp docs/guides/production/.env.aws-ecs.example .env.aws-ecs   # gitignored; fill it in
+set -a && source .env.aws-ecs && set +a
 aws sts get-caller-identity                            # right account, right role
 ```
 
@@ -114,7 +118,7 @@ the script skips the ECDSA Secrets Manager secret:
 
 ```bash
 ./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key             # creates the key, prints the ARN
-export TF_VAR_guardian_ack_ecdsa_kms_key_arn="arn:aws:kms:...:key/<key-id>"   # also put it in .env.ecs
+export TF_VAR_guardian_ack_ecdsa_kms_key_arn="arn:aws:kms:...:key/<key-id>"   # also put it in .env.aws-ecs
 ./scripts/aws-deploy.sh bootstrap-ack-keys                  # Falcon only; skips ECDSA
 ```
 
@@ -128,7 +132,7 @@ Staying on Secrets Manager for ECDSA instead? Skip the KMS step and run
 **Accept only ECDSA accounts.** The KMS key above protects ECDSA acks only;
 Falcon has no hosted signer, so any Falcon account this stack registers is
 acked by the Secrets Manager key loaded into the task. Set
-`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` in `.env.ecs` (the template does)
+`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` in `.env.aws-ecs` (the template does)
 so new accounts cannot bypass KMS. The Falcon secret is still bootstrapped and
 still required at startup; with the gate on it stays dormant unless a Falcon
 account already exists ([`PRODUCTION.md`](../../PRODUCTION.md#account-signature-scheme)).
@@ -140,7 +144,7 @@ account already exists ([`PRODUCTION.md`](../../PRODUCTION.md#account-signature-
 ```
 
 Bootstrapping creates the key but does **not** turn encryption on. The
-on-switch is `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` in `.env.ecs`, set to
+on-switch is `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` in `.env.aws-ecs`, set to
 the secret **name** the command printed (Terraform resolves the ARN, wires the
 task-role `secretsmanager:GetSecretValue` grant, and injects the runtime
 `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID`). Enable it on a stack whose store
@@ -151,7 +155,7 @@ is still empty. Rotation and compromise response:
 `sslmode=require` (encrypted, certificate not verified). For `verify-full`,
 build the combined CA bundle (regional RDS roots plus Amazon Trust Services
 roots, because RDS Proxy presents an ACM certificate), store it as a secret,
-and set `TF_VAR_rds_ca_bundle_secret_arn` in `.env.ecs`. Procedure:
+and set `TF_VAR_rds_ca_bundle_secret_arn` in `.env.aws-ecs`. Procedure:
 [`SERVER_AWS_DEPLOY.md` → Database TLS verification](../../SERVER_AWS_DEPLOY.md#database-tls-verification).
 For a stack that is already live, follow
 [`runbooks/enable-db-tls.md`](../../runbooks/enable-db-tls.md) instead.
@@ -183,7 +187,7 @@ rather than overriding them:
 | Metrics | `GUARDIAN_METRICS_ENABLED=true` bound to loopback inside the task, scraped by the ADOT sidecar into CloudWatch (namespace `<Stack>/Server`) with a dashboard and alarms. No bearer token is involved because nothing outside the task can reach the port. Set `TF_VAR_alarm_actions` to an SNS topic ARN or the alarms notify nobody. |
 | `GUARDIAN_LOG_FORMAT=json` | For CloudWatch Logs Insights. |
 
-What **you** provide in `.env.ecs`:
+What **you** provide in `.env.aws-ecs`:
 
 | Variable | Notes |
 |---|---|
@@ -565,8 +569,8 @@ section).
 
 ## Track C: Self-managed Docker image with AWS secret custody
 
-The recommended track when you cannot run the ECS reference stack (track A).
-It is track B with the secrets moved off the host: the Falcon ACK key comes from
+Take this track only when running the ECS reference stack (track A) is not
+possible for you. It is track B with the secrets moved off the host: the Falcon ACK key comes from
 Secrets Manager, the ECDSA ACK key lives in KMS and never enters the process,
 the storage-encryption key document (optional, with multi-key rotation) and
 the operator allowlist can be Secrets Manager secrets. Because only ECDSA has
@@ -586,17 +590,17 @@ This is the full-hardening sibling of the focused
 
    ```bash
    cd docs/guides/production
-   cp .env.aws.example .env.aws      # fill in region, secret ids, KMS key, cursor secret, origins, version; keep GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa
-   docker compose --env-file .env.aws -f docker-compose.aws.yml up -d
+   cp .env.aws-no-ecs.example .env.aws-no-ecs      # fill in region, secret ids, KMS key, cursor secret, origins, version; keep GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa
+   docker compose --env-file .env.aws-no-ecs -f docker-compose.aws-no-ecs.yml up -d
    ```
 
    The container needs AWS credentials because `GUARDIAN_ENV=prod` makes it
    call Secrets Manager and KMS. AWS credentials are not read from your shell:
-   put static keys in `.env.aws` (it is the container's env file), or leave
+   put static keys in `.env.aws-no-ecs` (it is the container's env file), or leave
    them out and let the SDK's default chain use the host's instance or
    container role, which is the right choice for a long-lived host. The IAM
    principal needs `secretsmanager:GetSecretValue` on the secrets and
-   `kms:GetPublicKey` + `kms:Sign` on the key. As on track B, `.env.aws` is
+   `kms:GetPublicKey` + `kms:Sign` on the key. As on track B, `.env.aws-no-ecs` is
    the only source of server values: the compose file never interpolates
    them, so an exported `DATABASE_URL` in your shell cannot retarget the
    stack. Only `GUARDIAN_VERSION` and the host port and bind settings are
@@ -611,16 +615,16 @@ item is satisfied, per track:
 
 | Checklist item | A (ECS) | B (Docker) | C (Docker + AWS secrets) |
 |---|---|---|---|
-| `DEPLOY_STAGE=prod` / prod-stage guards and runtime defaults | `.env.ecs`, profile sets `GUARDIAN_ENV=prod` and injects the values | compose sets `GUARDIAN_ENV=prod`; the server applies the same defaults | same as B |
+| `DEPLOY_STAGE=prod` / prod-stage guards and runtime defaults | `.env.aws-ecs`, profile sets `GUARDIAN_ENV=prod` and injects the values | compose sets `GUARDIAN_ENV=prod`; the server applies the same defaults | same as B |
 | `postgres` feature, no filesystem backend | A2 | Decisions (published image is `postgres`) | same |
 | Stable ACK identity; ECDSA backend decision | A1 (KMS + Secrets Manager) | B1 (`file` provider) | C1 (KMS + Secrets Manager) |
-| New accounts restricted to ECDSA | `.env.ecs` (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, Terraform-injected) | `.env` | `.env.aws` |
+| New accounts restricted to ECDSA | `.env.aws-ecs` (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, Terraform-injected) | `.env` | `.env.aws-no-ecs` |
 | `DATABASE_URL` from a managed secret; verified DB TLS | A1 CA bundle, Terraform-managed RDS secret | B3 (`verify-full` + mounted CA) | B3 |
 | Storage encryption against an empty store | A1 + `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` | B2 (`storage-encryption-keys.json` via `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, rotatable) | C1 (the same document in Secrets Manager) |
 | RDS durability: backups, deletion protection, final snapshot, Multi-AZ decision | A2, A4 | B3 (your database) | B3 |
 | `GUARDIAN_CORS_ALLOWED_ORIGINS` | A2 | B2 | B2 |
 | Operator allowlist, object entries for `accounts:pause` | A1 (`_SECRET_ARN` path) | B2 (`operators.json`) | C (Secrets Manager secret id) |
-| Pinned `GUARDIAN_DASHBOARD_CURSOR_SECRET` | A1 bootstrap, injected by Terraform | B2 | `.env.aws` |
+| Pinned `GUARDIAN_DASHBOARD_CURSOR_SECRET` | A1 bootstrap, injected by Terraform | B2 | `.env.aws-no-ecs` |
 | `GUARDIAN_MAX_REPLICAS` for HA rate partitioning | A2 (profile) | B7 | B7 |
 | Rate limits sized for HTTP + gRPC; keying verified on staging | A2, A4 | B2 tuning, B5 probes | same |
 | Metrics protected | A2 (loopback + ADOT, CloudWatch alarms with `alarm_actions`) | B2 + B6 (loopback publish + bearer token) | same |

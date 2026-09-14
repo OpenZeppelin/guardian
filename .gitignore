@@ -12,8 +12,8 @@ templates/
 .env.prod
 .env.stg
 .env.registry
-.env.ecs
-.env.aws
+.env.aws-ecs
+.env.aws-no-ecs
 docs/guides/miden-dashboard/operators.json
 docs/guides/miden-dashboard/guardian-dashboard/
 docs/guides/horizontal-scaling/operators.json

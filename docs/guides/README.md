@@ -21,7 +21,7 @@ storage, or network), not after Compose.
 
 | Guide | Mode |
 |---|---|
-| [Production deployment](./production/README.md) | Three tracks to the same hardened shape: AWS ECS/Fargate reference (`aws-deploy.sh` + Terraform, RDS + Secrets Manager + KMS, verified DB TLS, storage encryption, multi-replica HA); the published Docker image self-managed with no AWS (file-based ACK identity, your own TLS-verified Postgres, your ingress); and the Docker image with AWS Secrets Manager/KMS custody (recommended when ECS is not an option; the ECS reference is the recommended deployment) |
+| [Production deployment](./production/README.md) | Three tracks to the same hardened shape: AWS ECS/Fargate reference (`aws-deploy.sh` + Terraform, RDS + Secrets Manager + KMS, verified DB TLS, storage encryption, multi-replica HA); the published Docker image self-managed with no AWS (file-based ACK identity, your own TLS-verified Postgres, your ingress); and the Docker image with AWS Secrets Manager/KMS custody (only when ECS is not possible; the ECS reference is the recommended deployment) |
 | [AWS-managed ACK signers](./aws-signers/README.md) | Self-hosted Compose: Postgres + Secrets Manager (Falcon) + KMS (ECDSA) |
 | [Miden Dashboard UI](./miden-dashboard/README.md) | Self-hosted Compose: Postgres + Guardian server + the Miden Dashboard operator UI |
 | [Observability](./observability/README.md) | Local Compose: server + Prometheus + pre-provisioned Grafana dashboard |
@@ -40,5 +40,5 @@ artifact set per track: its AWS track drives the real ECS/Terraform stack via
 live stack); its self-managed Docker track ships `docker-compose.yml` +
 `.env.example` + `smoke.sh` (runnable with no AWS credentials, so it is the
 candidate for a CI job; none exists yet); and its Docker + AWS custody track
-(recommended outside ECS) ships `docker-compose.aws.yml` + `.env.aws.example` (smoke =
+(for when ECS is not possible) ships `docker-compose.aws-no-ecs.yml` + `.env.aws-no-ecs.example` (smoke =
 `docker compose up` + `curl /pubkey`).
