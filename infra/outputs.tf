@@ -254,7 +254,7 @@ output "guardian_metrics_enabled" {
 }
 
 output "cloudwatch_metrics_enabled" {
-  description = "Whether the ADOT metrics sidecar, dashboard, and alarms are deployed (cascades off with the metrics endpoint)"
+  description = "Whether the ADOT metrics sidecar, dashboard, and metric-based alarms are deployed (cascades off with the metrics endpoint; the log-based alarm is gated separately)"
   value       = local.cloudwatch_metrics_enabled
 }
 
@@ -276,4 +276,19 @@ output "metrics_emf_log_group" {
 output "metrics_missing_alarm_name" {
   description = "Name of the metrics-pipeline heartbeat alarm for this stack"
   value       = local.cloudwatch_metrics_enabled ? aws_cloudwatch_metric_alarm.metrics_missing[0].alarm_name : ""
+}
+
+output "cloudwatch_log_alarms_enabled" {
+  description = "Whether the server log group's ERROR metric filter and log-errors alarm are deployed (the WARN filter additionally needs the dashboard)"
+  value       = var.cloudwatch_log_alarms_enabled
+}
+
+output "log_metrics_namespace" {
+  description = "CloudWatch namespace receiving the server log-level metric-filter counts (<metrics_namespace>/Logs)"
+  value       = var.cloudwatch_log_alarms_enabled ? local.log_metrics_namespace : ""
+}
+
+output "server_log_errors_alarm_name" {
+  description = "Name of the alarm on ERROR-level server log lines for this stack"
+  value       = var.cloudwatch_log_alarms_enabled ? aws_cloudwatch_metric_alarm.server_log_errors[0].alarm_name : ""
 }

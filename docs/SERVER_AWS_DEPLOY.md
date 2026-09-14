@@ -286,6 +286,8 @@ aws_region = "us-east-1"
 # alarm_latency_threshold_seconds = 1
 # alarm_cpu_threshold_percent = 85
 # alarm_memory_threshold_percent = 90
+# cloudwatch_log_alarms_enabled = true # ERROR log metric filter + log-errors alarm, WARN filter with the dashboard (needs guardian_log_format = "json")
+# alarm_log_error_threshold = 0
 
 # Optional: Route 53 hosted zone ID
 # route53_zone_id = "Z1234567890ABC"
@@ -556,9 +558,10 @@ grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.
 Application metrics ship to CloudWatch by default. Two switches control
 this: `guardian_metrics_enabled` turns on the server's Prometheus endpoint,
 and `cloudwatch_metrics_enabled` deploys the ADOT sidecar, EMF log group,
-IAM policy, dashboard, and alarms on top of it. The export pipeline
-cascades off with the endpoint, so `guardian_metrics_enabled = false` alone
-turns everything off. Disabling only `cloudwatch_metrics_enabled` keeps the
+IAM policy, dashboard, and metric-based alarms on top of it. The export
+pipeline cascades off with the endpoint, so `guardian_metrics_enabled =
+false` alone turns all of that off (the [log-level alarm](#log-level-alarms)
+is gated separately). Disabling only `cloudwatch_metrics_enabled` keeps the
 endpoint without publishing CloudWatch custom metrics — but note the
 endpoint stays **loopback-only**, so that mode is useful only for an
 alternative in-task collector you add by customizing the module; the stack
@@ -617,6 +620,7 @@ exposes no knobs for a routable bind address.
 | `<stack>-metrics-refresh-failures` | Slow-aggregate refresher attempts are failing; delta/proposal/account gauges are stale |
 | `<stack>-metrics-refresh-stale` | The refresh timestamp stopped advancing for ≥ 10 min (hung or dead refresher — catches what the failures counter cannot) |
 | `<stack>-ecs-cpu-high` / `<stack>-ecs-memory-high` | ECS service average CPU/memory exceeds `alarm_cpu_threshold_percent` (85%) / `alarm_memory_threshold_percent` (90%); must sit above the autoscaling targets (enforced at plan time) |
+| `<stack>-server-log-errors` | More than `alarm_log_error_threshold` (default 0) ERROR-level server log lines per 5-minute period for two consecutive periods. Absolute count from a log metric filter, so it catches low-volume faults the rate alarms cannot; independent of the metrics pipeline. See [Log-level alarms](#log-level-alarms) |
 
 To receive notifications, point the alarms at one or more SNS topics:
 
@@ -634,10 +638,68 @@ alarms fire both `alarm_actions` and `ok_actions`, so the channel sees
 recovery too.
 
 Set `guardian_metrics_enabled = false` to turn everything off (no metrics env
-vars, no sidecar, no dashboard, no alarms — the CloudWatch flag cascades off
-with it), or only `cloudwatch_metrics_enabled = false` to keep the
-loopback-only endpoint without any CloudWatch export (see the caveat above
-about what that mode is useful for).
+vars, no sidecar, no dashboard, no metric-based alarms — the CloudWatch flag
+cascades off with it), or only `cloudwatch_metrics_enabled = false` to keep
+the loopback-only endpoint without any CloudWatch export (see the caveat
+above about what that mode is useful for). The log-level alarm below is
+independent of both flags and stays on.
+
+### Log-level alarms
+
+Independently of the metrics pipeline, CloudWatch Logs **metric filters** on
+the server log group (`infra/log_alarms.tf`) count the server's own log lines
+by level and publish them as custom metrics under `<metrics_namespace>/Logs`
+(the `log_metrics_namespace` output; kept apart from the scraped metrics so
+"metrics arriving in `metrics_namespace`" stays a pipeline health check):
+`log_error_events` (lines with `level = "ERROR"`) and, when the dashboard is
+deployed, `log_warn_events` (`level = "WARN"`). They read the container's log
+output directly, so they need neither the metrics endpoint nor the ADOT
+sidecar; the ERROR filter and its alarm keep working with
+`guardian_metrics_enabled = false`, and in that mode they are the only alarm
+left. They cover *logged* faults, not process liveness: a task that panics
+or crash-loops at startup prints plain-text panic output, not JSON, which
+the filters never see (the metrics-missing and ECS alarms cover that when
+the pipeline is on).
+
+- The filters match the JSON `level` field the server emits with
+  `guardian_log_format = "json"` (the default). Terraform rejects the plan if
+  `cloudwatch_log_alarms_enabled` is true with a `text` or `compact` format;
+  set `cloudwatch_log_alarms_enabled = false` to run those formats.
+- `<stack>-server-log-errors` alarms on `log_error_events`: more than
+  `alarm_log_error_threshold` (default 0) ERROR lines in *each* of two
+  consecutive 5-minute periods. A persistent fault, however slow, pages
+  within 10 minutes; one isolated line does not; a burst confined to a single
+  period does not page on its own either (it shows on the dashboard and, if
+  large enough, through the rate alarms). It overlaps with the rate alarms on
+  purpose: on a low-traffic stack a few failures never move a percentage that
+  ALB health checks dominate, but every one is an ERROR line.
+- What counts as `ERROR`: the centralized HTTP 5xx / gRPC-internal log line,
+  background-job and canonicalization failures, **and** some client-caused
+  rejections the server logs at `ERROR` before mapping them to 4xx (rejected
+  signatures or unauthorized cosigner keys in `metadata/auth`, invalid
+  credentials in `configure_account`). A persistently misconfigured client
+  retrying every minute therefore trips the alarm at the default threshold;
+  if that is expected on a stack, raise `alarm_log_error_threshold` so a
+  known trickle is tolerated while a burst still pages. Tightening the
+  server's log levels is the longer-term fix.
+- `WARN` is dashboard-only (the *Server log lines by level* widget) and its
+  filter is created only alongside the dashboard, since nothing else reads
+  it. No alarm: the server logs `WARN` for client-caused and self-healing
+  conditions (retried RPC, rate limiting), so one would page for normal
+  operation.
+- A metric filter applies to the whole log group, which also carries the
+  `adot` and `ca-init` streams. The ADOT Collector writes console-encoded
+  lines (not JSON, lowercase level), which a JSON pattern never matches —
+  collector faults surface through `<stack>-metrics-missing` — and the
+  one-shot CA initializer prints nothing on success.
+- To see what fired, query the log group in CloudWatch Logs Insights:
+
+```sql
+fields @timestamp, message, code, detail, target, span.account_id
+| filter level = "ERROR"
+| sort @timestamp desc
+| limit 50
+```
 
 ### Verify metrics after a deploy
 
@@ -647,6 +709,8 @@ NS=$(terraform -chdir=infra output -raw metrics_namespace)
 DASH=$(terraform -chdir=infra output -raw metrics_dashboard_name)
 LOG_GROUP=$(terraform -chdir=infra output -raw server_log_group)
 ALARM=$(terraform -chdir=infra output -raw metrics_missing_alarm_name)
+LOG_ALARM=$(terraform -chdir=infra output -raw server_log_errors_alarm_name)
+LOG_NS=$(terraform -chdir=infra output -raw log_metrics_namespace)
 
 # 1. Metrics arriving in the namespace (allow ~2 minutes after task start)
 aws cloudwatch list-metrics --namespace "$NS" --output table | head -40
@@ -663,6 +727,22 @@ aws logs tail "$LOG_GROUP" --log-stream-name-prefix adot --since 15m
 aws cloudwatch set-alarm-state --alarm-name "$ALARM" \
   --state-value ALARM --state-reason "notification path test"
 # the next evaluation returns it to OK automatically
+
+# 5. Log metric filters are attached and counting (skipped when
+#    cloudwatch_log_alarms_enabled = false: LOG_ALARM is empty then).
+#    Datapoints appear only while log lines flow, i.e. once the service is
+#    healthy (ALB health checks log a span-close line every 30s per task);
+#    an empty Datapoints list before that is expected, zeros afterwards.
+if [ -n "$LOG_ALARM" ]; then
+  aws logs describe-metric-filters --log-group-name "$LOG_GROUP" \
+    --query 'metricFilters[].{name:filterName,pattern:filterPattern}'
+  aws cloudwatch get-metric-statistics --namespace "$LOG_NS" \
+    --metric-name log_error_events --statistics Sum --period 300 \
+    --start-time "$(( $(date +%s) - 1800 ))" --end-time "$(date +%s)"
+  aws cloudwatch set-alarm-state --alarm-name "$LOG_ALARM" \
+    --state-value ALARM --state-reason "notification path test"
+  # returns to OK on the next evaluation (real zeros or missing data)
+fi
 ```
 
 ## Operations
@@ -721,10 +801,11 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | Secrets Manager | Secrets containing the Falcon and ECDSA ack private keys used to seed the server keystore in prod |
 | Security Groups | ALB, server, and database security groups |
 | CloudWatch Log Groups | Cluster execute-command logs, server logs, and the EMF metrics log group |
+| CloudWatch Log Metric Filters | ERROR (and, with the dashboard, WARN) line counts from the server log group, published as custom metrics |
 | IAM Role | ECS task execution and runtime roles |
 | ADOT Sidecar | OpenTelemetry Collector container in the server task exporting Prometheus metrics to CloudWatch |
 | CloudWatch Dashboard | `<stack>-server` application and ECS overview |
-| CloudWatch Alarms | Error rate, latency, canonicalization, metrics pipeline, and ECS saturation alarms |
+| CloudWatch Alarms | Error rate, latency, canonicalization, metrics pipeline, ECS saturation, and server log-error alarms |
 
 ## Outputs
 
@@ -754,6 +835,9 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `metrics_dashboard_name` | CloudWatch dashboard name |
 | `metrics_emf_log_group` | Log group the ADOT sidecar writes EMF metric events into |
 | `metrics_missing_alarm_name` | Name of the metrics-pipeline heartbeat alarm for this stack |
+| `cloudwatch_log_alarms_enabled` | Whether the server log group's ERROR metric filter and the log-errors alarm are deployed |
+| `log_metrics_namespace` | CloudWatch namespace receiving the log-level metric-filter counts (`<metrics_namespace>/Logs`) |
+| `server_log_errors_alarm_name` | Name of the alarm on ERROR-level server log lines for this stack |
 
 ## Stage Profiles
 

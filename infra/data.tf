@@ -187,6 +187,15 @@ locals {
   emf_log_group_name         = "${local.server_log_group_name}/emf"
   dashboard_name             = "${var.stack_name}-server"
 
+  # Log-level monitoring (log_alarms.tf): metric-filter counts of the
+  # server's ERROR / WARN lines. Own sub-namespace so metrics_namespace
+  # keeps meaning "what the ADOT pipeline exported" (its presence is the
+  # documented pipeline health check).
+  effective_guardian_log_format = lower(trimspace(var.guardian_log_format))
+  log_metrics_namespace         = "${local.metrics_namespace}/Logs"
+  log_error_metric_name         = "log_error_events"
+  log_warn_metric_name          = "log_warn_events"
+
   # Custom domain configuration
   domain_enabled      = var.domain_name != ""
   service_fqdn        = var.domain_name == "" ? "" : (var.subdomain != "" ? "${var.subdomain}.${var.domain_name}" : var.domain_name)

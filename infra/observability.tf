@@ -25,9 +25,9 @@ locals {
   # low-traffic multi-task fleet they dilute the observed rate — e.g.
   # six tasks contribute ~60 successful probes per 5-minute period, so
   # three real failures read as ~4.8% and stay under the default 5%
-  # threshold. Treat the rate alarms as sustained-fault signals; an
-  # absolute server-error alarm is the follow-up if low-volume
-  # detection is needed.
+  # threshold. Treat the rate alarms as sustained-fault signals; the
+  # absolute complement for low-volume detection is the log-based
+  # server-log-errors alarm in log_alarms.tf.
   http_error_statuses = ["500", "501", "502", "503", "504"]
   grpc_error_codes    = ["internal", "unavailable", "unknown", "data_loss", "deadline_exceeded"]
 
@@ -267,7 +267,7 @@ resource "aws_cloudwatch_dashboard" "server" {
   dashboard_name = local.dashboard_name
 
   dashboard_body = jsonencode({
-    widgets = [
+    widgets = concat([
       # --- Row 0: request volume, errors, latency --------------------------
       {
         type = "metric", x = 0, y = 0, width = 8, height = 6
@@ -505,14 +505,30 @@ resource "aws_cloudwatch_dashboard" "server" {
           ]
         }
       },
-    ]
+      ], var.cloudwatch_log_alarms_enabled ? [
+      # Metric-filter counts from the server log group (log_alarms.tf), not
+      # scraped metrics; present only when the filters are deployed.
+      {
+        type = "metric", x = 16, y = 36, width = 8, height = 6
+        properties = {
+          title  = "Server log lines by level"
+          region = var.aws_region, view = "timeSeries", period = 300
+          yAxis  = { left = { min = 0 } }
+          metrics = [
+            [local.log_metrics_namespace, local.log_error_metric_name, { stat = "Sum", label = "ERROR", color = "#d62728" }],
+            [local.log_metrics_namespace, local.log_warn_metric_name, { stat = "Sum", label = "WARN", color = "#ff7f0e" }],
+          ]
+        }
+      },
+    ] : [])
   })
 }
 
 # --- Alarms ----------------------------------------------------------------
-# All application-metric alarms treat missing data as notBreaching except
-# the metrics-missing alarm, whose entire job is to catch the pipeline
-# going dark (server metrics disabled, sidecar dead, or scrape failing).
+# All application-metric alarms here treat missing data as notBreaching
+# except the metrics-missing alarm, whose entire job is to catch the
+# pipeline going dark (server metrics disabled, sidecar dead, or scrape
+# failing). The log-based alarm lives in log_alarms.tf.
 
 resource "aws_cloudwatch_metric_alarm" "http_error_rate" {
   count = local.cloudwatch_metrics_enabled ? 1 : 0

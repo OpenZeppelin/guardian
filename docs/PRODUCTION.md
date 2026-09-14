@@ -121,8 +121,10 @@ Before treating a deployment as production-ready:
 - On the AWS reference deployment, metrics are on by default: the endpoint
   binds loopback inside the ECS task and an ADOT sidecar exports selected
   metrics to CloudWatch dashboards and alarms — no external exposure, no
-  bearer token needed. See
-  [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms).
+  bearer token needed. ERROR-level server log lines additionally feed a
+  metric-filter alarm that does not depend on the metrics pipeline. See
+  [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms)
+  and [its log-level alarms section](./SERVER_AWS_DEPLOY.md#log-level-alarms).
 - If you scrape Prometheus yourself in a **self-managed deployment**, set
   `GUARDIAN_METRICS_ENABLED=true`, bind an explicitly routable
   `GUARDIAN_METRICS_ADDR` only if the scraper lives outside the host or task,

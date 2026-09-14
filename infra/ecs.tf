@@ -122,7 +122,7 @@ resource "aws_ecs_task_definition" "server" {
           },
           {
             name  = "GUARDIAN_LOG_FORMAT"
-            value = lower(trimspace(var.guardian_log_format))
+            value = local.effective_guardian_log_format
           },
           {
             name  = "GUARDIAN_NETWORK_TYPE"

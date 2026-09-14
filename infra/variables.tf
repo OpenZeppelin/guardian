@@ -650,6 +650,30 @@ variable "alarm_memory_threshold_percent" {
   }
 }
 
+variable "cloudwatch_log_alarms_enabled" {
+  description = <<-EOT
+    Whether CloudWatch Logs metric filters count the server's ERROR (and,
+    with the dashboard, WARN) log lines under <metrics_namespace>/Logs and
+    an alarm fires on sustained ERROR output. Independent of the metrics
+    pipeline. Requires
+    guardian_log_format = json (plan-time check); set to false to run text
+    or compact logs. See docs/SERVER_AWS_DEPLOY.md#log-level-alarms.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "alarm_log_error_threshold" {
+  description = "ERROR-level server log lines per 5-minute period above which the log-errors alarm fires when exceeded in two consecutive periods. 0 fires on any sustained ERROR output."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.alarm_log_error_threshold >= 0 && floor(var.alarm_log_error_threshold) == var.alarm_log_error_threshold
+    error_message = "alarm_log_error_threshold must be a non-negative integer."
+  }
+}
+
 # Resource naming
 variable "cluster_name" {
   description = "ECS cluster name"
