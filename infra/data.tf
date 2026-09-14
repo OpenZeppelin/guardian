@@ -187,6 +187,20 @@ locals {
   emf_log_group_name         = "${local.server_log_group_name}/emf"
   dashboard_name             = "${var.stack_name}-server"
 
+  # Alarm notifications (alerting.tf). The managed topic only makes sense
+  # with alarms to route into it, so it cascades off with the metrics
+  # pipeline just like the alarms do; the Slack channel cascades with it.
+  alarm_notifications_enabled    = local.cloudwatch_metrics_enabled && var.alarm_notifications_enabled
+  alarm_slack_ids_complete       = var.alarm_slack_workspace_id != "" && var.alarm_slack_channel_id != ""
+  alarm_slack_enabled            = local.alarm_notifications_enabled && local.alarm_slack_ids_complete
+  alarm_sns_topic_name           = "${var.stack_name}-alarms"
+  alarm_sns_topic_arn            = local.alarm_notifications_enabled ? aws_sns_topic.alarms[0].arn : ""
+  alarm_slack_configuration_name = "${var.stack_name}-alarms-slack"
+  chatbot_role_name              = "${var.stack_name}-chatbot-alarms"
+  # Effective alarm/ok action list consumed by every alarm: operator ARNs
+  # first, managed topic appended.
+  effective_alarm_actions = concat(var.alarm_actions, local.alarm_notifications_enabled ? [aws_sns_topic.alarms[0].arn] : [])
+
   # Custom domain configuration
   domain_enabled      = var.domain_name != ""
   service_fqdn        = var.domain_name == "" ? "" : (var.subdomain != "" ? "${var.subdomain}.${var.domain_name}" : var.domain_name)

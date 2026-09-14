@@ -601,9 +601,55 @@ variable "metrics_namespace" {
 }
 
 variable "alarm_actions" {
-  description = "ARNs (e.g. SNS topics) notified when a Guardian CloudWatch alarm transitions to ALARM or back to OK. Empty leaves alarms visible in the console only."
+  description = "ARNs (e.g. SNS topics) notified when a Guardian CloudWatch alarm transitions to ALARM or back to OK. Appended to the Terraform-managed topic when alarm_notifications_enabled is true; with neither, alarms are visible in the console only."
   type        = list(string)
   default     = []
+}
+
+variable "alarm_notifications_enabled" {
+  description = <<-EOT
+    Whether Terraform provisions an SNS topic (<stack_name>-alarms) and routes
+    every Guardian CloudWatch alarm's ALARM and OK transitions to it, in
+    addition to any alarm_actions ARNs. Effective only while the metrics
+    pipeline (cloudwatch_metrics_enabled) is on, since that is what creates
+    the alarms. Set alarm_slack_workspace_id and alarm_slack_channel_id to
+    deliver the topic to a Slack channel.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "alarm_slack_workspace_id" {
+  description = <<-EOT
+    Slack workspace (team) ID, e.g. T0123456789, that Amazon Q Developer in
+    chat applications has been authorized for in this AWS account (a one-time
+    console step; the ID is shown on the workspace details page). Together
+    with alarm_slack_channel_id, creates a channel configuration subscribed
+    to the managed alarm topic; requires alarm_notifications_enabled.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.alarm_slack_workspace_id == "" || can(regex("^[A-Z0-9]+$", var.alarm_slack_workspace_id))
+    error_message = "alarm_slack_workspace_id must be a Slack workspace ID (e.g. T0123456789), not a name or URL."
+  }
+}
+
+variable "alarm_slack_channel_id" {
+  description = <<-EOT
+    Slack channel ID, e.g. C0123456789, that receives this stack's alarm
+    notifications (public or private; the Amazon Q app must be invited to
+    the channel). Use one channel per environment so the destination itself
+    carries the environment context.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.alarm_slack_channel_id == "" || can(regex("^[A-Z0-9]+$", var.alarm_slack_channel_id))
+    error_message = "alarm_slack_channel_id must be a Slack channel ID (e.g. C0123456789), not a channel name."
+  }
 }
 
 variable "alarm_error_rate_threshold_percent" {
