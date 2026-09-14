@@ -8,6 +8,7 @@
 # script; one workspace per STACK_NAME/DEPLOY_STAGE pair.
 
 terraform {
+  # Raises the module's own ">= 1.0" floor: use_lockfile below needs 1.10.
   required_version = ">= 1.10.0"
 
   backend "s3" {
@@ -20,8 +21,17 @@ terraform {
   }
 }
 
-# Optional: run the AWS provider through a deployment role. The region and
-# default tags from infra/versions.tf are kept; only assume_role is added.
+# Optional: run the AWS provider through a deployment role, for a cross-account
+# deploy or to keep deploy rights off your own identity. The region and default
+# tags from infra/versions.tf are kept; only assume_role is added.
+#
+# Before enabling this, note that it covers Terraform only. scripts/aws-deploy.sh
+# talks to ECR, Secrets Manager and STS with your ambient credentials, not with
+# this role. If the role is in another account, the image is pushed to one
+# account's ECR while Terraform provisions in another, and the script's secret
+# checks inspect the wrong account. Either keep your shell authenticated to the
+# same account the role lives in, or use assume_role only to raise privileges
+# within one account.
 #
 # provider "aws" {
 #   assume_role {
