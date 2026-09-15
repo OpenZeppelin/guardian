@@ -16,8 +16,8 @@ const PROD_ENV: &str = "prod";
 /// Readers with fallible constructors (storage, canonicalization) propagate a
 /// non-UTF-8 `GUARDIAN_ENV` as a startup error; the infallible ones (rate
 /// limit, log format) warn and use the `Dev` defaults. The server binary
-/// builds storage first, so it never reaches the infallible readers with an
-/// invalid value.
+/// resolves the stage with [`Stage::from_env`] and aborts on an invalid value
+/// before it constructs the infallible readers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Dev,

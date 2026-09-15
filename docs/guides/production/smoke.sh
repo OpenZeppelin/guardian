@@ -14,6 +14,11 @@
 # the image's own ack-keygen, so no Rust toolchain is needed.
 # Usage:    ./smoke.sh                                    # tag from ./.env, else .env.example
 #           GUARDIAN_VERSION=<release later than v0.17.0> ./smoke.sh
+#           SMOKE_PULL_POLICY=missing GUARDIAN_VERSION=<tag> ./smoke.sh
+#             # image built locally as ghcr.io/openzeppelin/guardian:<tag>
+#             # (docker build -t ghcr.io/openzeppelin/guardian:<tag> .); the
+#             # committed compose file pins pull_policy: always, which a CI
+#             # job testing a branch image must relax to missing or never.
 # A tag is required: the stack depends on server features v0.17.0 lacks, and
 # this script's first step (ack-keygen from the image) fails on older tags.
 set -euo pipefail
@@ -28,6 +33,11 @@ version_from() { [ -f "$1" ] && grep -E '^GUARDIAN_VERSION=' "$1" | cut -d= -f2-
 GUARDIAN_VERSION="${GUARDIAN_VERSION:-$(version_from .env)}"
 GUARDIAN_VERSION="${GUARDIAN_VERSION:-$(version_from .env.example)}"
 [ -n "$GUARDIAN_VERSION" ] || { echo "set GUARDIAN_VERSION to a Guardian release later than v0.17.0 (this stack needs ack-keygen in the image)" >&2; exit 1; }
+PULL_POLICY="${SMOKE_PULL_POLICY:-always}"
+case "$PULL_POLICY" in
+  always|missing|never) ;;
+  *) echo "SMOKE_PULL_POLICY must be always, missing, or never (got '$PULL_POLICY')" >&2; exit 1 ;;
+esac
 HTTP_PORT="${SMOKE_HTTP_PORT:-3300}"
 GRPC_PORT="${SMOKE_GRPC_PORT:-53051}"
 METRICS_PORT="${SMOKE_METRICS_PORT:-9564}"
@@ -67,13 +77,19 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok   $*"; }
 
-cp docker-compose.yml "$WORK/docker-compose.yml"
+# The scratch copy is the committed compose file with only pull_policy
+# rewritten, so a locally built image can be exercised without editing the
+# guide's artifact.
+sed "s/^\([[:space:]]*\)pull_policy: always$/\1pull_policy: ${PULL_POLICY}/" docker-compose.yml \
+  > "$WORK/docker-compose.yml"
+grep -q "^[[:space:]]*pull_policy: ${PULL_POLICY}$" "$WORK/docker-compose.yml" \
+  || fail "could not set pull_policy: ${PULL_POLICY} in the scratch compose file"
 echo '[]' > "$WORK/operators.json"
 
 IMAGE="ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION}"
 echo "Generating a throwaway ACK identity with the image's ack-keygen..."
 mkdir -p "$WORK/ack-keys"
-docker run --rm --user "$(id -u):$(id -g)" -v "$WORK/ack-keys:/out" \
+docker run --rm --pull "$PULL_POLICY" --user "$(id -u):$(id -g)" -v "$WORK/ack-keys:/out" \
   "$IMAGE" /app/ack-keygen --out-dir /out
 [ -s "$WORK/ack-keys/ack-falcon-secret-key" ] && [ -s "$WORK/ack-keys/ack-ecdsa-secret-key" ] \
   || fail "ack-keygen did not write both key files"

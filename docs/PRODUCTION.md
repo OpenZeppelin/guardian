@@ -250,8 +250,10 @@ Two Guardian-specific caveats when restoring from a backup:
   re-syncs it (see the failure table in
   [`CONCEPTS.md`](./CONCEPTS.md#failure-and-recovery)).
 - If storage encryption is enabled, database backups contain ciphertext.
-  The Secrets Manager encryption key is part of the recovery set: losing
-  it makes every restored payload unrecoverable. Keep an out-of-band copy.
+  The storage-encryption key document is part of the recovery set whether it
+  comes from Secrets Manager or from `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`:
+  losing it makes every restored payload unrecoverable. Keep a protected
+  out-of-band copy alongside the database backups.
 
 The verification and restore procedure is in
 [`runbooks/backup-restore.md`](./runbooks/backup-restore.md).

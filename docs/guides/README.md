@@ -38,7 +38,8 @@ The [Production deployment](./production/README.md) guide carries one
 artifact set per track: its AWS track drives the real ECS/Terraform stack via
 `scripts/aws-deploy.sh` + `infra/` (smoke = post-deploy validation against the
 live stack); its self-managed Docker track ships `docker-compose.yml` +
-`.env.example` + `smoke.sh` (runnable with no AWS credentials, so it is the
-candidate for a CI job; none exists yet); and its Docker + AWS custody track
+`.env.example` + `smoke.sh` (runnable with no AWS credentials, and
+`SMOKE_PULL_POLICY=missing` runs it against a locally built branch image, so it
+is the candidate for a CI job; none exists yet); and its Docker + AWS custody track
 (for when ECS is not possible) ships `docker-compose.aws-no-ecs.yml` + `.env.aws-no-ecs.example` (smoke =
 `docker compose up` + `curl /pubkey`).

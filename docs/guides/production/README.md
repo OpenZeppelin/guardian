@@ -262,7 +262,12 @@ Then, outside the server:
   [checklist](../../PRODUCTION.md#production-checklist) describes.
 - Run the relevant SDK or dashboard smoke path against the public hostname
   (`smoke-test-rust-multisig-sdk`, `smoke-test-ts-multisig-sdk`, or
-  `smoke-test-operator-dashboard`).
+  `smoke-test-operator-dashboard`). The SDK smoke paths default to Falcon:
+  the demo's scheme prompt (`[1]`), `examples/smoke-web` (`falcon`), and
+  `examples/rust`, which has no ECDSA option. Against the `ecdsa`-only gate
+  this template sets, select ECDSA (`[2]` in the demo, `ecdsa` in smoke-web)
+  or registration fails with `signature_scheme_not_allowed`; `examples/rust`
+  cannot register on this stack until it gains an ECDSA path.
 
 ### A5. Day two
 
@@ -471,7 +476,13 @@ identity comes from the image's `ack-keygen`.
 
 ```bash
 ./smoke.sh                              # image tag from ./.env (B2); or GUARDIAN_VERSION=<tag> ./smoke.sh
+SMOKE_PULL_POLICY=missing GUARDIAN_VERSION=<tag> ./smoke.sh   # image you built locally under that tag
 ```
+
+The committed compose file pins `pull_policy: always`, so without the
+override Compose refuses any tag that is not on GHCR. `SMOKE_PULL_POLICY`
+(`always`, `missing`, `never`) is rewritten into the script's scratch copy
+only; the guide's artifact is unchanged.
 
 By hand, against your real stack:
 
@@ -504,7 +515,11 @@ of 10); `"message":"listeners"` with `"metrics":"0.0.0.0:9464"` rather than
 backend="postgres" stage="prod" …`.) Record both commitments. Storage encryption and database TLS have no success log line:
 they are validated at startup and a bad key or certificate prevents the
 listeners from binding. Then run an SDK or dashboard smoke path through your
-ingress, and the rate-limit probes from B5.
+ingress, and the rate-limit probes from B5. The SDK smoke paths default to
+Falcon (demo prompt `[1]`, `examples/smoke-web`, `examples/rust`); if you kept
+`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`, select ECDSA (`[2]` in the demo,
+`ecdsa` in smoke-web) or registration fails with
+`signature_scheme_not_allowed`. `examples/rust` has no ECDSA option yet.
 
 ### B7. Scaling out
 
