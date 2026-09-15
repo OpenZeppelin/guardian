@@ -4,6 +4,8 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::config::stage::Stage;
+
 /// Builds the JSON formatting layer shared by [`LoggingConfig::init`] and the
 /// tests, so the two cannot drift apart.
 fn json_layer<S, W>(writer: W) -> impl Layer<S>
@@ -58,11 +60,14 @@ impl LogFormat {
         }
     }
 
-    /// Resolves the format from `GUARDIAN_LOG_FORMAT`.
+    /// Resolves the format from `GUARDIAN_LOG_FORMAT`, falling back to the
+    /// [`Stage`] default (`json` when `GUARDIAN_ENV=prod`, `text` otherwise).
     pub fn from_env() -> Self {
         match std::env::var("GUARDIAN_LOG_FORMAT") {
             Ok(v) => Self::parse(&v),
-            Err(_) => Self::Text,
+            Err(_) => Stage::from_env()
+                .map(Stage::default_log_format)
+                .unwrap_or(Self::Text),
         }
     }
 
@@ -363,6 +368,33 @@ mod tests {
         let events = capture_events("info", nested_probe);
 
         assert!(events.is_empty(), "unexpected log output: {events:?}");
+    }
+
+    #[test]
+    fn from_env_takes_the_stage_default_when_unset() {
+        let _guard = crate::testing::env_lock::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are restored below.
+        unsafe {
+            std::env::remove_var("GUARDIAN_LOG_FORMAT");
+            std::env::remove_var("GUARDIAN_ENV");
+        }
+        assert_eq!(LogFormat::from_env(), LogFormat::Text);
+
+        // SAFETY: serialized by ENV_LOCK.
+        unsafe { std::env::set_var("GUARDIAN_ENV", "prod") };
+        assert_eq!(LogFormat::from_env(), LogFormat::Json);
+
+        // SAFETY: serialized by ENV_LOCK.
+        unsafe { std::env::set_var("GUARDIAN_LOG_FORMAT", "compact") };
+        assert_eq!(LogFormat::from_env(), LogFormat::Compact);
+
+        // SAFETY: serialized by ENV_LOCK.
+        unsafe {
+            std::env::remove_var("GUARDIAN_LOG_FORMAT");
+            std::env::remove_var("GUARDIAN_ENV");
+        }
     }
 
     #[test]

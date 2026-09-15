@@ -6,6 +6,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use base64::Engine as _;
+use guardian_client::{
+    AccountState, DeltaObject as ProtoDeltaObject, DeltaStatus, GetStateResponse, PendingStatus,
+    delta_status,
+};
 use miden_client::Serializable;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
@@ -31,6 +36,10 @@ use super::MultisigClient;
 use crate::keystore::GuardianKeyStore;
 use crate::prover::ProverConfig;
 use crate::rpc::RpcConfig;
+use crate::transaction::word_to_hex;
+
+const BASE64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::STANDARD;
 
 /// Core offline constructor: SQLite store in `dir`, `node` as the inner
 /// Miden client's RPC, optional note transport, and an unreachable GUARDIAN
@@ -203,4 +212,66 @@ pub(crate) fn p2id_note_for(target: &Account, seed: u32, note_type: NoteType) ->
         .build()
         .expect("p2id note builds")
         .into()
+}
+
+/// A real 1-of-1 multisig-guardian account whose cosigner is `signer` — the
+/// same construction `MultisigClient::create_account` performs, minus the
+/// GUARDIAN pubkey fetch (the guardian commitment is fixed by the test).
+pub(crate) fn multisig_account(signer: Word, guardian_commitment: Word, seed: u8) -> Account {
+    let config = MultisigGuardianConfig::new(1, vec![signer], guardian_commitment);
+    MultisigGuardianBuilder::new(config)
+        .with_seed([seed; 32])
+        .build()
+        .expect("multisig account builds")
+}
+
+/// The canned `get_state` a mock GUARDIAN serves for `account`: the same
+/// commitment the client holds, so guardian sync is a no-op.
+pub(crate) fn registered_state(account: &Account) -> GetStateResponse {
+    GetStateResponse {
+        success: true,
+        message: String::new(),
+        state: Some(AccountState {
+            account_id: account.id().to_string(),
+            state_json: serde_json::json!({
+                "data": BASE64.encode(account.to_bytes()),
+            })
+            .to_string(),
+            commitment: word_to_hex(&account.to_commitment()),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }),
+    }
+}
+
+/// Wraps a delta payload as the pending proto `DeltaObject` a GUARDIAN
+/// listing would serve.
+pub(crate) fn pending_proto_delta(
+    account: &Account,
+    nonce: u64,
+    delta_payload: String,
+    proposer_hex: &str,
+) -> ProtoDeltaObject {
+    ProtoDeltaObject {
+        account_id: account.id().to_string(),
+        nonce,
+        prev_commitment: word_to_hex(&account.to_commitment()),
+        delta_payload,
+        new_commitment: String::new(),
+        ack_sig: String::new(),
+        candidate_at: String::new(),
+        canonical_at: None,
+        discarded_at: None,
+        status: Some(DeltaStatus {
+            status: Some(delta_status::Status::Pending(PendingStatus {
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+                proposer_id: proposer_hex.to_string(),
+                cosigner_sigs: vec![],
+            })),
+            discard_reason: String::new(),
+            retain_reason: String::new(),
+        }),
+        ack_pubkey: None,
+        ack_scheme: None,
+    }
 }

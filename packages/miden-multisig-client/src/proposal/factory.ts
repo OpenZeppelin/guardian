@@ -92,6 +92,7 @@ export class ProposalFactory {
       txSummary: delta.deltaPayload.txSummary.data,
       signatures,
       metadata: resolvedMetadata,
+      verification: { status: 'unchecked' },
     };
   }
 
@@ -148,6 +149,7 @@ export class ProposalFactory {
       txSummary: exported.txSummaryBase64,
       signatures,
       metadata,
+      verification: { status: 'unchecked' },
     };
   }
 

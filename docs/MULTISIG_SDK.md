@@ -27,14 +27,14 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0-rc.7
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "0.17.0-rc.3"
-miden-client = "=0.16.0-rc.4"
+miden-multisig-client = "0.17.0"
+miden-client = "=0.16.0"
 ```
 
 ### 5-Minute Example
@@ -357,6 +357,59 @@ and its block commitment against the one signed into the summary — before
 anything executes against it. A proposal without an anchor cannot be verified
 or executed.
 
+#### Authenticated note consumption
+
+The anchor pins the block, but a `consume_notes` summary also depends on
+*how* each input note is consumed. miden-client decides that per note, at
+execution time and from the local store alone: a note whose record carries
+its inclusion proof is consumed **authenticated**, anything else
+**unauthenticated**, and the two commit differently into the summary
+(`hash(nullifier || note_id_or_ZERO)`). Left to the store, a proposer that
+had synced the notes and a cosigner on a fresh store would therefore sign
+different commitments (issue #409).
+
+Authenticated is the canonical mode. `createConsumeNotesProposal` /
+`TransactionType::consume_notes` authenticates the notes in the proposer's
+store before the summary and its anchor are captured, and every verifier
+(`syncProposals`, `signProposal`, `executeProposal`, and their Rust
+counterparts) authenticates the proposal's embedded notes before it
+rebuilds: notes already authenticated locally are left alone, the rest get
+their inclusion proofs from the Miden node in one round trip and are
+imported as committed. Verification therefore needs the node, and a
+consume-notes proposal can only be created for notes already committed on
+chain; a note that cannot be authenticated fails with
+`ConsumeNoteNotAuthenticatedError` (`consume_notes_note_not_authenticated`)
+naming the note, rather than with a summary mismatch.
+> **Anchor lifetime.** Re-executing at the anchor also loads every foreign
+> account the transaction touches at that block, and every fee-paying
+> transaction touches the fee faucet (the kernel's asset callbacks check it).
+> Nodes serve historical account state only for a limited window — devnet
+> serves about 50 blocks, roughly 2.5 minutes — after which the node answers
+> `block N has been pruned` and the proposal can no longer be verified or
+> executed by anyone, the proposer included. Until proposals can carry those
+> inputs themselves (tracked in issue #462), collect signatures and execute
+> promptly, and re-propose once a proposal has aged out. A listing keeps
+> working: such a proposal is returned with `verification` set to `failed`
+> (`retryable: false`) rather than failing the whole sync.
+
+#### Proposal verification status
+
+Every proposal a listing returns carries the outcome of its summary-binding
+check: `verification` on the TS `Proposal` (`{ status: 'unchecked' }`,
+`{ status: 'verified' }`, or `{ status: 'failed', retryable, message }`) and
+`ProposalVerification` on the Rust one (`Unchecked`, `Verified`,
+`Failed { retryable, message }`). Only the check itself writes `verified`;
+a freshly parsed or imported proposal is `unchecked`. `failed` with
+`retryable: true` means the re-execution hit a transient node error and
+the same proposal may verify on the next sync; `retryable: false` means
+the proposal cannot be reproduced (tampered metadata, a pruned anchor
+block) and has to be re-proposed. Verification is kept out of `status`
+on purpose: a proposal can be fully signed and dead at the same time, so
+`status: 'ready'` keeps meaning "threshold met" and
+`isProposalActionable(proposal)` / `proposal.is_actionable()` answers
+"verified and ready". Signing and executing re-verify the one proposal
+they act on and refuse a failed one with the real error.
+
 ### Custom Proposal Types
 
 Guardian accepts any non-empty `proposal_type`, not just the first-party
@@ -638,7 +691,11 @@ them from GUARDIAN (isolating per-proposal parse or binding failures as
 `invalid` outcomes instead of failing the whole step), validates each
 embedded note against the proposal's declared note ids, fetches on-chain
 inclusion proofs, and imports per note — so it works for private notes too;
-the node never needs to hold the note body.
+the node never needs to hold the note body. Binding verification itself
+already authenticates a proposal's embedded notes into the store (see
+*Authenticated note consumption*), so a proposal that verified reports its
+notes as already present here; the import step still covers notes whose
+proposal failed verification for an unrelated reason.
 
 Each unique embedded note gets a `NoteImportOutcome` in
 `report.proposalImport` (`imported`, `already-present`, `already-consumed`,
@@ -790,14 +847,13 @@ await multisig.exportNoteToFile(noteId);
 const importedNoteId = await multisig.importNoteFromBytes(noteFileBytes);
 ```
 
-> **Note:** every cosigner device that verifies or signs the consume-notes
-> proposal needs the note in its local store with the on-chain inclusion
-> proof — deliver the note file to each of them (import + sync), not just to
-> the proposer. A cosigner whose store lacks the authenticated note rebuilds
-> the transaction differently (the input-notes commitment distinguishes
-> authenticated from unauthenticated consumption) and rejects the proposal
-> with `metadata does not match tx_summary`. The sender's own device heals
-> itself: it already knows the full note, so a post-commit sync is enough.
+> **Note:** only the proposer needs the note file. The proposal embeds the
+> note, and every cosigner device that verifies or signs it authenticates
+> that embedded note from the node's inclusion proof before rebuilding (see
+> *Authenticated note consumption* above), so the store contents of the other
+> devices no longer matter. The proposer must wait for the note to commit on
+> chain before proposing: an uncommitted note cannot be authenticated and
+> proposal creation fails with `ConsumeNoteNotAuthenticatedError`.
 
 #### Consume Notes (Claim Received Funds)
 
@@ -898,6 +954,13 @@ const exported = await multisig.createSwitchGuardianProposalOffline(
 const proposals = await multisig.syncProposals();
 
 for (const proposal of proposals) {
+  if (proposal.verification.status === 'failed') {
+    // The signed summary could not be reproduced from the metadata (for
+    // example, its anchor block is pruned). Signing and executing refuse it.
+    const { retryable, message } = proposal.verification;
+    console.log(`${proposal.id}: ${retryable ? 'retry later' : 're-propose'} — ${message}`);
+    continue;
+  }
   console.log(`${proposal.id}: ${proposal.status.type}`);
 
   if (proposal.status.type === 'pending') {
@@ -1230,7 +1293,11 @@ them from GUARDIAN (isolating per-proposal parse or binding failures as
 `Invalid` outcomes instead of failing the whole step), validates each
 embedded note against the proposal's declared note ids, fetches on-chain
 inclusion proofs, and imports per note — so it works for private notes too;
-the node never needs to hold the note body.
+the node never needs to hold the note body. Binding verification itself
+already authenticates a proposal's embedded notes into the store (see
+*Authenticated note consumption*), so a proposal that verified reports its
+notes as already present here; the import step still covers notes whose
+proposal failed verification for an unrelated reason.
 
 Each unique embedded note gets a `NoteImportOutcome` in
 `report.proposal_import` (`Imported`, `AlreadyPresent`, `AlreadyConsumed`,
@@ -1382,6 +1449,13 @@ match client.propose_with_fallback(tx).await? {
 let proposals = client.list_proposals().await?;
 
 for proposal in &proposals {
+    if let ProposalVerification::Failed { retryable, message } = &proposal.verification {
+        // The signed summary could not be reproduced from the metadata (for
+        // example, its anchor block is pruned). Signing and executing refuse it.
+        let hint = if *retryable { "retry later" } else { "re-propose" };
+        println!("{}: {hint} — {message}", proposal.id);
+        continue;
+    }
     match &proposal.status {
         ProposalStatus::Pending => {
             let (signatures_collected, signatures_required) = proposal.signature_counts();

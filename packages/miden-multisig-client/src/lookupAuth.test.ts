@@ -23,12 +23,16 @@ interface FakeWord {
 const hashCalls: { input: FakeFelt[] }[] = [];
 
 vi.mock('@miden-sdk/miden-sdk', () => {
-  const Felt = vi.fn().mockImplementation((value: bigint) => ({
-    __felt: true,
-    value,
-  }));
+  const Felt = vi.fn().mockImplementation(function (value: bigint) {
+    return {
+      __felt: true,
+      value,
+    };
+  });
 
-  const FeltArray = vi.fn().mockImplementation((felts: FakeFelt[]) => felts);
+  const FeltArray = vi.fn().mockImplementation(function (felts: FakeFelt[]) {
+    return felts;
+  });
 
   const makeWord = (felts: FakeFelt[], hex = '0xMOCKED'): FakeWord => ({
     __word: true,

@@ -49,6 +49,12 @@ variable "guardian_cors_allowed_origins" {
   default     = ""
 }
 
+variable "guardian_allowed_account_schemes" {
+  description = "Comma-separated signature schemes new accounts may register with (falcon, ecdsa). Empty keeps the server default of every scheme; existing accounts are never affected"
+  type        = string
+  default     = ""
+}
+
 variable "vpc_id" {
   description = "VPC ID. If not specified, uses the default VPC"
   type        = string

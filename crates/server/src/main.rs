@@ -3,6 +3,7 @@ pub use guardian_shared::{FromJson, ToJson};
 use server::ack::AckRegistry;
 use server::builder::{ServerBuilder, storage::StorageMetadataBuilder};
 use server::canonicalization::CanonicalizationConfig;
+use server::config::stage::Stage;
 use server::logging::LoggingConfig;
 use server::middleware::{BodyLimitConfig, CorsConfig, RateLimitConfig};
 use server::network::{NetworkType, RpcSettings};
@@ -34,12 +35,15 @@ async fn main() {
     let network_type =
         NetworkType::from_env("GUARDIAN_NETWORK_TYPE").expect("Failed to resolve network type");
 
+    let stage = Stage::from_env().expect("Invalid GUARDIAN_ENV");
+
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(network_type)
         .with_rpc(RpcSettings::from_env(network_type).expect("Invalid RPC configuration"))
         .with_canonicalization(Some(
             CanonicalizationConfig::new(10, 48)
+                .with_stage_defaults(stage)
                 .with_submission_grace_period_seconds(600)
                 .with_fast_promotion_enabled_from_env()
                 .expect("Invalid fast promotion configuration")

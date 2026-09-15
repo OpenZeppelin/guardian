@@ -20,7 +20,7 @@ use crate::builder::create_miden_client;
 use crate::error::{MultisigError, Result, error_chain};
 use crate::execution::build_final_transaction_request;
 use crate::keystore::word_from_hex;
-use crate::proposal::{Proposal, TransactionType};
+use crate::proposal::{Proposal, ProposalVerification, TransactionType};
 use crate::transaction::word_to_hex;
 
 /// True for note-less storage-config transactions, whose post-submit state miden-client persists
@@ -204,11 +204,27 @@ impl MultisigClient {
             .map_err(MultisigError::Signature)
     }
 
-    /// Verifies that a proposals metadata reconstructs the same tx_summary commitment.
+    /// Verifies that a proposal's metadata reconstructs the same tx_summary
+    /// commitment, and records the outcome on the proposal: `Verified`, or
+    /// `Failed` with the message and whether the failure looked transient.
+    /// Returns the error as well, so strict callers keep failing closed and
+    /// listings can keep going with the outcome recorded.
     pub(crate) async fn verify_proposal_summary_binding(
         &mut self,
-        proposal: &Proposal,
+        proposal: &mut Proposal,
     ) -> Result<()> {
+        let outcome = self.check_proposal_summary_binding(proposal).await;
+        proposal.verification = match &outcome {
+            Ok(()) => ProposalVerification::Verified,
+            Err(e) => ProposalVerification::Failed {
+                retryable: crate::rpc::is_transient_multisig_error(e),
+                message: e.to_string(),
+            },
+        };
+        outcome
+    }
+
+    async fn check_proposal_summary_binding(&mut self, proposal: &Proposal) -> Result<()> {
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
         let proposal_id_commitment = word_to_hex(&tx_summary_commitment);
@@ -256,6 +272,30 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let salt = proposal.metadata.salt()?;
         let signer_commitments = proposal.metadata.signer_commitments()?;
+
+        // A consume-notes summary commits to *authenticated* consumption
+        // (see `ensure_notes_authenticated`), which miden-client decides
+        // from this store alone. Put the store in that mode before the
+        // rebuild, or a cosigner that never held these notes reproduces a
+        // different commitment (issue #409).
+        if let TransactionType::ConsumeNotes {
+            metadata_version: Some(crate::proposal::CONSUME_NOTES_METADATA_VERSION_V2),
+            notes,
+            ..
+        } = &proposal.transaction_type
+        {
+            let decoded = notes
+                .iter()
+                .map(crate::proposal::SerializedNote::to_note)
+                .collect::<Result<Vec<_>>>()?;
+            let node_rpc = self.node_rpc_client();
+            crate::transaction::ensure_notes_authenticated(
+                &mut self.miden_client,
+                &node_rpc,
+                &decoded,
+            )
+            .await?;
+        }
 
         let tx_request = build_final_transaction_request(
             &self.miden_client,

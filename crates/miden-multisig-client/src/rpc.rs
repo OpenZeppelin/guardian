@@ -158,6 +158,15 @@ pub(crate) fn is_transient_rpc_error(error: &RpcError) -> bool {
     is_transient_error_with(error, rpc_link_evidence, &RPC_TRANSPORT_SIGNALS)
 }
 
+/// Whether a client-level error is worth retrying as-is: the same
+/// RPC-transport evidence as [`is_transient_rpc_error`], read off the
+/// error's source chain and its flattened message, so a wrapped node
+/// hiccup (unavailable, timeout) counts and a definitive answer (invalid
+/// argument such as a pruned block, a failed assertion) does not.
+pub(crate) fn is_transient_multisig_error(error: &MultisigError) -> bool {
+    is_transient_error_with(error, rpc_link_evidence, &RPC_TRANSPORT_SIGNALS)
+}
+
 /// `Connection` wraps endpoint parsing, TLS configuration, and actual
 /// connect failures indiscriminately; only the last class is worth another
 /// attempt, so the wrapped chain decides.

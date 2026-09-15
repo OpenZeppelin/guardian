@@ -415,6 +415,7 @@ Stable error codes include:
 - `authentication_failed`
 - `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))
 - `authorization_failed`
+- `signature_scheme_not_allowed` (new-account registration used a scheme excluded by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`; HTTP 403 / gRPC `PermissionDenied`, `meta.scheme` + `meta.allowed_schemes`)
 - `invalid_input`
 - `storage_error`
 - `network_error`

@@ -28,10 +28,10 @@ the runtime env vars in this document.
 | `GUARDIAN_STORAGE_PATH` | `/var/guardian/storage` | filesystem | Path for state + delta blobs. |
 | `GUARDIAN_METADATA_PATH` | `/var/guardian/metadata` | filesystem | Path for accounts, auth credentials, network config. Holds `.metadata/accounts.json` (account records) and `.metadata/auth_state.json` (replay-protection timestamps). Back up and restore the two files together: the server refuses to start if `auth_state.json` is missing while migrated accounts exist, because empty replay state would re-accept previously seen requests (see [Troubleshooting](./TROUBLESHOOTING.md#server-fails-to-start)). |
 | `GUARDIAN_KEYSTORE_PATH` | `/var/guardian/keystore` | any | Local Falcon/ECDSA key files (ACK signers and per-account creds). |
-| `GUARDIAN_DB_POOL_MAX_SIZE` | `16` (code default); `32` set by the prod Terraform profile | `postgres` | Storage backend pool size. |
+| `GUARDIAN_DB_POOL_MAX_SIZE` | `16`; `32` when `GUARDIAN_ENV=prod` | `postgres` | Storage backend pool size. |
 | `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | matches storage | `postgres` | Metadata backend pool size; usually leave equal. |
 | `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED` | `true` | any | Enables the additional promotion-only pass for recent candidates. Set to `false` to use only the full canonicalization interval; AWS deployments can set Terraform variable `guardian_canonicalization_fast_promotion_enabled = false`. |
-| `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` | `10` (code default); `50` set by the prod Terraform profile | any | Accounts one canonicalization pass processes in parallel; `1` = fully sequential. Each account holds a DB connection only during its short fenced transactions — the dominant cost is a connectionless chain RPC — so this may exceed `GUARDIAN_DB_POOL_MAX_SIZE`; simultaneous write bursts just queue briefly at the pool. |
+| `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` | `10`; `50` when `GUARDIAN_ENV=prod` | any | Accounts one canonicalization pass processes in parallel; `1` = fully sequential. Each account holds a DB connection only during its short fenced transactions (the dominant cost is a connectionless chain RPC), so this may exceed `GUARDIAN_DB_POOL_MAX_SIZE`; simultaneous write bursts just queue briefly at the pool. |
 | `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in. Not read at runtime — controls how the image is built. |
 
 Canonicalization settings apply as follows:
@@ -100,8 +100,9 @@ DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GUARDIAN_ENV` | _unset_ | Selects the **default** ACK secret source: `prod` → AWS Secrets Manager; anything else (or unset) → ephemeral filesystem keys, regenerated each restart. Override explicitly with `GUARDIAN_ACK_SECRET_PROVIDER` (below) — e.g. `file` for a stable identity without AWS. |
-| `AWS_REGION` | _unset_ | **Required** when `GUARDIAN_ENV=prod`. Region for Secrets Manager calls. |
+| `GUARDIAN_ENV` | _unset_ | Deployment stage. `prod` turns on the [prod-stage startup guards](#prod-stage-startup-guards--ha-behavior), switches the runtime defaults to the production profile (rate limits `200`/`5000`, pool size `32`, canonicalization concurrency `50`, `json` logs; an explicitly set variable always wins), and selects AWS Secrets Manager as the **default** ACK secret source. Anything else (or unset) keeps the development defaults and ephemeral filesystem ACK keys, regenerated each restart. Override the ACK source explicitly with `GUARDIAN_ACK_SECRET_PROVIDER` (below), e.g. `file` for a stable identity without AWS. |
+| `AWS_REGION` | _unset_ | **Required** whenever an AWS-backed source is selected: the default `aws` ACK provider under `GUARDIAN_ENV=prod`, `GUARDIAN_ACK_ECDSA_BACKEND=aws-kms`, `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID`, or `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID`. Not needed on the no-AWS path (`GUARDIAN_ACK_SECRET_PROVIDER=file` with file-backed keys), even in prod. |
+| `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` | unset (`falcon,ecdsa`) | Comma-separated signature schemes that **new** accounts may register with: `falcon`, `ecdsa`, case-insensitive. A `/configure` for a new account with any other scheme is rejected with stable code `signature_scheme_not_allowed` (HTTP 403, gRPC `PERMISSION_DENIED`; `meta.scheme` and `meta.allowed_schemes` name the rejected scheme and the accepted set). Accounts already in **this** Guardian's metadata are never affected: the scheme is fixed on-chain at creation and every later request is verified with the scheme stored for that account, so re-configuring a known Falcon account still works with `ecdsa` alone. An on-chain Falcon account that is *not* in the metadata (re-onboarding after a metadata restore, or a `SwitchGuardian` from another Guardian) counts as new and is rejected; allow `falcon,ecdsa` for the duration of such a migration. Both ACK signers stay loaded regardless. Unset or blank allows every scheme; a value naming an unknown scheme fails startup. The check runs before signature verification so a rejected registration costs no chain call; the only information it reveals to an unauthenticated caller is the policy itself (`meta.allowed_schemes`) and whether an account id is already registered here. The startup banner reports the set as `account_schemes` on the `ack signers` line. New production deployments should set `ecdsa` ([Falcon is second-class](./PRODUCTION.md#account-signature-scheme)). |
 | `GUARDIAN_NETWORK_TYPE` | _none — **required**_ | Miden network identifier: `MidenLocal` (`local`), `MidenTestnet` (`testnet`), `MidenDevnet` (`devnet`); case-insensitive. Pins the network *identity* (bech32 address prefixes, dashboard rendering) and the default Miden RPC endpoint. The server refuses to start when it is unset or unrecognized — there is no fallback network. |
 | `GUARDIAN_MIDEN_RPC_ENDPOINT` | per-network default | Overrides the Miden node RPC endpoint (self-hosted node, private RPC, sidecar container) without changing network identity. Must be an origin-only `http(s)` URL (`scheme://host[:port]`); userinfo, non-root paths, queries, and fragments are rejected because tonic does not send them as authentication. An invalid value fails startup. Startup logs the validated origin. Combining an override with `MidenTestnet`/`MidenDevnet` logs a warning (legitimate for a mirror). A configured endpoint never falls back to the network default. |
 | `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` | `10000` | Per-request deadline on the node channel (the same 10s default every Miden RPC surface uses). Positive integer; `0` or a malformed value fails startup. |
@@ -128,7 +129,7 @@ Outside prod the default (`GUARDIAN_ACK_SECRET_PROVIDER=none`) generates a fresh
 ACK keypair on every restart, which changes the Guardian's on-chain ack-key
 commitment and freezes accounts that pinned the old one. Set the provider to
 `file` to load fixed keys from local files instead — a stable identity without
-AWS Secrets Manager. Each file holds the hex string emitted by `ack-keygen`
+AWS Secrets Manager. Each file holds the hex string emitted by `ack-keygen` (shipped in the image as `/app/ack-keygen`; `--out-dir` writes both files directly)
 (identical to what Secrets Manager stores). See the
 [Secrets runbook](./runbooks/secrets.md#self-hosted-stable-identity-without-aws).
 
@@ -146,31 +147,35 @@ a key and the server encrypts; configure none and it stores plaintext exactly as
 before. Routing/index fields (account id, nonce, commitments, status, timestamps)
 always stay plaintext.
 
-**Which variable do I set?** Choose **one key source** — the dev key for local
-work, or the Secrets Manager secret for production. You never set both (doing so
-is a startup error). `GUARDIAN_STORAGE_ENCRYPTION_KEY_ID` is **not** a key — it is
-an optional label, and most users leave it unset.
+**Which variable do I set?** Choose **one key source**: the direct key for
+local work, the key-document file for self-managed deployments without Secrets
+Manager, or the Secrets Manager secret where AWS is available. The file and
+the secret hold the same `{active, keys}` document, so both support multi-key
+rotation. You never set more than one (doing so is a startup error).
+`GUARDIAN_STORAGE_ENCRYPTION_KEY_ID` is **not** a key: it is an optional label,
+and most users leave it unset.
 
 **Key sources** (set exactly one; presence is what turns encryption on):
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GUARDIAN_STORAGE_ENCRYPTION_KEY` | _unset_ | **Dev key source.** The actual 32-byte key, base64-encoded (`openssl rand -base64 32`). |
-| `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` | _unset_ | **Prod key source.** AWS Secrets Manager name/ARN of a secret holding a structured `{ "active": kid, "keys": { kid: base64-32-bytes } }` document (one or more keys). Reuses `AWS_REGION`. |
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY` | _unset_ | **Direct key source.** The actual 32-byte key, base64-encoded (`openssl rand -base64 32`). Single key: no multi-key rotation reads, and it lives in the process environment. For local development; self-managed production should prefer the key-document file below. |
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE` | _unset_ | **Key-document file source.** Path to a file holding the structured `{ "active": kid, "keys": { kid: base64-32-bytes } }` document (one or more keys), read once at startup. The file must be owner-only (`0600`; a Kubernetes secret mount needs `defaultMode: 0400`) or startup fails, as for the ACK key files. This is the self-managed counterpart of the Secrets Manager source, with the same rotation procedure (see the [production guide](./guides/production/README.md#track-b-self-managed-docker-image-no-aws)). |
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` | _unset_ | **Secrets Manager key source.** AWS Secrets Manager name/ARN of a secret holding a structured `{ "active": kid, "keys": { kid: base64-32-bytes } }` document (one or more keys). Reuses `AWS_REGION`. |
 
 **Optional label:**
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GUARDIAN_STORAGE_ENCRYPTION_KEY_ID` | `k1` | Only used with the dev key source. Sets the key id (`kid`) recorded on each encrypted record so the key can be identified later. The default is fine for almost everyone — leave it unset unless you specifically need the dev key's id to match an id used elsewhere. (With Secrets Manager the ids come from the secret's `keys`/`active` fields instead, so this variable is ignored.) |
+| `GUARDIAN_STORAGE_ENCRYPTION_KEY_ID` | `k1` | Only used with the direct key source. Sets the key id (`kid`) recorded on each encrypted record so the key can be identified later. The default is fine for almost everyone: leave it unset unless you specifically need the dev key's id to match an id used elsewhere. (With a key document, from the file or from Secrets Manager, the ids come from its `keys`/`active` fields instead, so this variable is ignored.) |
 
 Every encrypted record stores the `kid` of the key that wrote it, and on read the
-key is resolved by that id — this is what lets Secrets Manager hold several keys
-and rotate them (add a new key, repoint `active`, keep the old key so existing
-records still decrypt). The dev key source holds a single key, so it cannot do
-multi-key rotation reads; that is a production capability.
+key is resolved by that id. This is what lets a key document (in Secrets
+Manager or in a mounted file) hold several keys and rotate them (add a new key,
+repoint `active`, keep the old key so existing records still decrypt). The
+direct key source holds a single key, so it cannot do multi-key rotation reads.
 
-Rules: configure **exactly one** key source (both set → startup error). When a key
+Rules: configure **exactly one** key source (more than one set → startup error). When a key
 source is set the server validates it at startup and fails fast on a
 missing/malformed/wrong-length key — it never silently falls back to plaintext.
 Encryption is fixed for a populated store: the server records a marker on the
@@ -220,8 +225,8 @@ multi-stack deployments get scoped IDs.
 | Variable | Default | Notes |
 |---|---|---|
 | `GUARDIAN_RATE_LIMIT_ENABLED` | `true` | Master kill-switch for rate limiting on **both** transports (HTTP and gRPC; there is no per-transport toggle). Set `false` only in test environments. Client identity for keying comes from the ingress (rightmost `X-Forwarded-For` entry, then `X-Real-IP`, then the socket peer); deployments not behind the reference ALB must forward the client address on both listeners, strip any client-supplied `X-Forwarded-For` if they identify callers with `X-Real-IP`, and restrict direct access to the server ports; see [PRODUCTION.md](./PRODUCTION.md#running-behind-your-own-ingress-non-aws). |
-| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (code default); `200` set by the prod Terraform profile | Requests allowed in any one-second window, keyed per IP **and** endpoint, where the endpoint is the HTTP path or the gRPC method. Both transports are metered from one store, but because their endpoint names differ, a burst bucket is never shared across transports. |
-| `GUARDIAN_RATE_PER_MIN` | `60` (code default); `5000` set by the prod Terraform profile | Sustained rate, keyed per IP only, so HTTP and gRPC calls from one client draw on the same allowance. This is the cross-transport limit: deployments sized for HTTP-only traffic should re-check it, since gRPC traffic (the Rust SDK's default transport) counts against it since the transport-bypass fix. |
+| `GUARDIAN_RATE_BURST_PER_SEC` | `10`; `200` when `GUARDIAN_ENV=prod` | Requests allowed in any one-second window, keyed per IP **and** endpoint, where the endpoint is the HTTP path or the gRPC method. Both transports are metered from one store, but because their endpoint names differ, a burst bucket is never shared across transports. |
+| `GUARDIAN_RATE_PER_MIN` | `60`; `5000` when `GUARDIAN_ENV=prod` | Sustained rate, keyed per IP only, so HTTP and gRPC calls from one client draw on the same allowance. This is the cross-transport limit: deployments sized for HTTP-only traffic should re-check it, since gRPC traffic (the Rust SDK's default transport) counts against it since the transport-bypass fix. |
 | `GUARDIAN_MAX_REPLICAS` | `1` (code default); greater of desired count and autoscaling max when enabled, or desired count otherwise, set by Terraform | Per-replica rate-limit divisor used by global HTTP+gRPC and dashboard per-commitment limits. Each replica enforces `global / GUARDIAN_MAX_REPLICAS`, keeping the aggregate at or below the configured limit through steady-state autoscaling. During a rolling deployment the temporary aggregate may rise by up to `deployment_maximum_percent / 100` (2× by default). Drives rate-limiting only — coordination mode is backend-derived. Running below the steady-state maximum over-throttles; HTTP keep-alive can pin a client to one replica. An override is clamped up to steady-state capacity by Terraform. Must be a positive integer when set: an invalid value **fails startup in prod** and is treated as `1` with a warning elsewhere. See [`runbooks/horizontal-scaling.md`](./runbooks/horizontal-scaling.md). |
 | `GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC` | `6` | Fleet-wide dashboard challenge and verification burst budget for one operator commitment. Divided by `GUARDIAN_MAX_REPLICAS` and clamped to at least 1 per replica. A custom value below the divisor can therefore exceed its nominal fleet-wide budget. |
 | `GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN` | `30` | Fleet-wide dashboard challenge and verification sustained budget for one operator commitment. Divided by `GUARDIAN_MAX_REPLICAS` and clamped to at least 1 per replica. A custom value below the divisor can therefore exceed its nominal fleet-wide budget. |
@@ -254,7 +259,7 @@ one-command Grafana dashboard stack.
 | Variable | Default | Notes |
 |---|---|---|
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID` | _unset_ | AWS Secrets Manager secret name/ARN holding the operator allowlist JSON. Hot-reloaded on every challenge and authenticated `/dashboard/*` request. |
-| `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | _unset_ | Local JSON path for the same payload. Local dev only. |
+| `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` | _unset_ | Local JSON path for the same payload; re-read on every challenge and authenticated request. For local dev and for self-managed deployments without Secrets Manager (see the [production guide](./guides/production/README.md#track-b-self-managed-docker-image-no-aws)); protect it like the ACK key files. |
 | `GUARDIAN_DASHBOARD_CURSOR_SECRET` | random per process if unset | 32-byte hex HMAC key for dashboard pagination cursors. Pin a shared value across replicas so cursors validate everywhere. The prod Terraform profile injects a pre-created Secrets Manager value into every task. If unset outside that profile, the server **warns** and generates an ephemeral per-process key and still boots (in every stage); an ephemeral key breaks pagination cursors across replicas and restarts — the dashboard feeds and the client `GET /delta/history` endpoint — nothing else, so it is not a startup guard. |
 
 `GET /dashboard/info.environment` is derived from `GUARDIAN_NETWORK_TYPE`
@@ -262,8 +267,26 @@ one-command Grafana dashboard stack.
 
 ### Prod-stage startup guards & HA behavior
 
-When `GUARDIAN_ENV=prod`, the server fails fast on misconfigurations that are
-silently broken across replicas:
+When `GUARDIAN_ENV=prod`, the server switches its runtime defaults to the
+production profile: `GUARDIAN_RATE_BURST_PER_SEC=200`, `GUARDIAN_RATE_PER_MIN=5000`,
+`GUARDIAN_DB_POOL_MAX_SIZE=32` (the metadata pool follows it),
+`GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS=50`, and `GUARDIAN_LOG_FORMAT=json`.
+These are the values the AWS Terraform profile injects explicitly, so a
+self-managed deployment gets them from the stage alone; a variable you set
+always wins. `GUARDIAN_MAX_REPLICAS` is deliberately not part of the profile
+(it is your topology, not a stage).
+
+> **Upgrade note:** before this release `GUARDIAN_ENV=prod` only enabled the
+> guards and selected Secrets Manager; the tuning values stayed at the
+> development defaults unless set. A deployment that sets `GUARDIAN_ENV=prod`
+> without setting the five variables above (for example the
+> [aws-signers guide](./guides/aws-signers/README.md) stack) moves to the
+> production values on upgrade, including `json` logs. Set any of them
+> explicitly to keep the previous value. Terraform-managed stacks are
+> unaffected because the profile injects every value explicitly.
+
+It also fails fast on misconfigurations that are silently broken across
+replicas:
 
 - the **filesystem** storage backend is refused (single-instance only — use the
   Postgres image with `DATABASE_URL`);
@@ -298,7 +321,7 @@ separate variable.
 | Variable | Default | Notes |
 |---|---|---|
 | `RUST_LOG` | `info` | Standard `tracing-subscriber` filter. Module-scoped filters work: `RUST_LOG=server::jobs::canonicalization=debug`. Hot-path request *events* (`get_state`, `get_delta`, `push_delta`, proposal create/sign, `lookup_account`) are `debug`; use `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug` to see them. At `info` each request instead emits a single span-close line carrying the span's fields (account ID, nonce, commitment, signer/match counts) plus `time.busy` / `time.idle`. That line is emitted on the success *and* the error path, which is what correlates the centralized 5xx log (see below) back to an account. |
-| `GUARDIAN_LOG_FORMAT` | `text` | Log output format. `text` — human-readable (ANSI when TTY, plain otherwise). `json` — flattened JSON with span context for CloudWatch Logs Insights. `compact` — single-line text. Value is trimmed and case-insensitive; unknown values fall back to `text` with a stderr warn (emitted before the tracing subscriber is installed). Defaults to `text` when unset. ECS default is `json` (see `infra/variables.tf` `guardian_log_format`). |
+| `GUARDIAN_LOG_FORMAT` | `text`; `json` when `GUARDIAN_ENV=prod` | Log output format. `text`: human-readable (ANSI when TTY, plain otherwise). `json`: flattened JSON with span context for CloudWatch Logs Insights. `compact`: single-line text. Value is trimmed and case-insensitive; unknown values fall back to `text` with a stderr warn (emitted before the tracing subscriber is installed). Unset follows the stage default; ECS sets it explicitly (see `infra/variables.tf` `guardian_log_format`). |
 
 The 5xx and 4xx lines emitted from `GuardianError`'s HTTP `IntoResponse` and
 `tonic::Status` conversions run *after* the service span has closed, so they
@@ -389,4 +412,5 @@ this saves you from grepping:
 | Use Secrets Manager for ACK keys | `GUARDIAN_ENV=prod` + `AWS_REGION=<region>` + secrets pre-created |
 | Run the dashboard locally | `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/path/to/allowlist.json` |
 | Multi-replica (HA) | Postgres backend + `GUARDIAN_DASHBOARD_CURSOR_SECRET=<64 hex>` pinned across tasks + `GUARDIAN_MAX_REPLICAS=<steady-state max capacity>`. The prod Terraform profile sets these after `bootstrap-dashboard-cursor-secret` creates the required Secrets Manager entry. |
-| Higher throughput in prod | `GUARDIAN_RATE_BURST_PER_SEC`, `GUARDIAN_RATE_PER_MIN`, `GUARDIAN_DB_POOL_MAX_SIZE`, `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` |
+| Production defaults without AWS | `GUARDIAN_ENV=prod` (applies the profile) + `GUARDIAN_ACK_SECRET_PROVIDER=file` + `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`; see the [production guide](./guides/production/README.md#track-b-self-managed-docker-image-no-aws) |
+| Higher throughput than the prod profile | `GUARDIAN_RATE_BURST_PER_SEC`, `GUARDIAN_RATE_PER_MIN`, `GUARDIAN_DB_POOL_MAX_SIZE`, `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` |

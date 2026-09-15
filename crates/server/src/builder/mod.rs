@@ -553,6 +553,7 @@ impl ServerBuilder {
             ack.ecdsa_backend_id(),
             ack.commitment(&SignatureScheme::Falcon),
             ack.commitment(&SignatureScheme::Ecdsa),
+            ack.account_schemes().to_string(),
             self.canonicalization.clone(),
             dashboard.operator_count().await,
             dashboard.cursor_secret_configured(),

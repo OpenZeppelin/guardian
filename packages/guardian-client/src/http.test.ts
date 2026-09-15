@@ -1235,6 +1235,65 @@ describe('GuardianHttpError', () => {
       mockFetch.mockReset();
     });
 
+    it('surfaces 403 signature_scheme_not_allowed with meta.scheme and meta.allowedSchemes', async () => {
+      client.setSigner(mockSigner);
+
+      const envelope = {
+        code: 'signature_scheme_not_allowed',
+        message: "This Guardian doesn't accept new accounts with that signature scheme.",
+        meta: { retryable: false, scheme: 'falcon', allowed_schemes: ['ecdsa'] },
+      };
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () => JSON.stringify(envelope),
+      });
+
+      const error = await client
+        .pushDeltaProposal({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          deltaPayload: { txSummary: { data: '' }, signatures: [] },
+        })
+        .catch((e) => e as GuardianHttpError);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      const e = error as GuardianHttpError;
+      expect(e.status).toBe(403);
+      expect(e.code).toBe('signature_scheme_not_allowed');
+      expect(e.meta?.retryable).toBe(false);
+      expect(e.meta?.scheme).toBe('falcon');
+      expect(e.meta?.allowedSchemes).toEqual(['ecdsa']);
+    });
+
+    it('omits meta.allowedSchemes rather than exposing a partial list when an element is malformed', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () =>
+          JSON.stringify({
+            code: 'signature_scheme_not_allowed',
+            message: 'x',
+            meta: { retryable: false, scheme: 'falcon', allowed_schemes: ['ecdsa', 7] },
+          }),
+      });
+      const e = (await client
+        .pushDeltaProposal({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          deltaPayload: { txSummary: { data: '' }, signatures: [] },
+        })
+        .catch((err) => err)) as GuardianHttpError;
+      expect(e.code).toBe('signature_scheme_not_allowed');
+      expect(e.meta?.scheme).toBe('falcon');
+      expect(e.meta?.allowedSchemes).toBeUndefined();
+    });
+
     it('surfaces 409 GUARDIAN_ACCOUNT_PAUSED with a parseable error envelope on pushDeltaProposal', async () => {
       client.setSigner(mockSigner);
 

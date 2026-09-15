@@ -6,19 +6,41 @@ configuration, and runbook docs.
 
 ## Supported shape
 
-The reference production deployment is AWS ECS/Fargate running the Guardian
-server with the Postgres backend, RDS for durable state, and AWS Secrets
-Manager for deployment secrets.
+Every production Guardian, wherever it runs, has the same shape:
 
-Production deployments should use:
-
-- `DEPLOY_STAGE=prod` for the Terraform stage profile.
-- `GUARDIAN_SERVER_FEATURES=postgres` for Miden-only deployments.
-- `GUARDIAN_SERVER_FEATURES=postgres,evm` when EVM proposal support is
-  required.
-- Amazon RDS for state, deltas, proposals, account metadata, and audit rows.
-- AWS Secrets Manager for ACK signing keys and deploy-time secrets.
+- The **Postgres** storage backend: `GUARDIAN_SERVER_FEATURES=postgres`, plus
+  `evm` when EVM proposal support is required. Filesystem mode is a local
+  development backend only: it has no durable admin audit table, no schema
+  migrations, and cannot safely back more than one replica. The prod stage
+  refuses it at startup.
+- `GUARDIAN_ENV=prod`, which turns on the prod-stage startup guards.
+- A **stable ACK signing identity** loaded from a secret store or from
+  owner-only key files, never minted per boot.
 - Explicit `GUARDIAN_CORS_ALLOWED_ORIGINS` for browser clients.
+- Verified TLS to the database, storage encryption where the threat model
+  warrants it, and a metrics endpoint that is never publicly reachable.
+
+The **reference deployment**, and the recommended one, is AWS ECS/Fargate
+built by `scripts/aws-deploy.sh` and the Terraform in `infra/`:
+`DEPLOY_STAGE=prod` selects the stage profile, Amazon RDS holds state, deltas,
+proposals, account metadata, and audit rows, and AWS Secrets Manager (or KMS
+for the ECDSA signer) holds the ACK keys and deploy-time secrets.
+
+Running the published Docker image on your own host, VM, or Kubernetes is
+supported and reaches the same shape. When ECS is not an option, the
+recommended way to do it keeps secret custody in AWS: the ACK keys in Secrets Manager and KMS, the
+storage-encryption key document in Secrets Manager, and everything else
+(Postgres, ingress, backups, metrics) yours
+([production guide, track C](./guides/production/README.md#track-c-self-managed-docker-image-with-aws-secret-custody)).
+Running with no AWS account at all is also supported, with file-based ACK keys
+(written by the image's `ack-keygen`) and the same rotatable `{active, keys}`
+encryption key document in an owner-only file
+([track B](./guides/production/README.md#track-b-self-managed-docker-image-no-aws)).
+On both, `GUARDIAN_ENV=prod` applies the production runtime defaults inside
+the server, so only the topology-dependent values (`GUARDIAN_MAX_REPLICAS`, the
+cursor secret, metrics, CORS) are set by hand; the guide walks through it,
+including what becomes your responsibility (database backups, TLS termination,
+client-IP forwarding, metrics scraping).
 
 ### ECDSA ACK signer: Secrets Manager or KMS
 
@@ -34,8 +56,37 @@ switching an existing deployment changes Guardian's ECDSA identity and requires
 the `SwitchGuardian` migration for existing accounts. Create the key and read
 the trade-offs in [`runbooks/secrets.md`](./runbooks/secrets.md#hosted-ecdsa-backend-aws-kms).
 
-Filesystem mode is a local development backend only. It has no durable admin
-audit table, no schema migrations, and cannot safely back multiple ECS tasks.
+KMS covers ECDSA acks only. Falcon has no hosted signer, so a Falcon account is
+always acked by a key resident in the process. A KMS deployment therefore only
+realizes its custody benefit if new accounts are ECDSA, which is what the next
+section enforces.
+
+### Account signature scheme
+
+Each account picks its signature scheme (Falcon or ECDSA) once, at creation;
+the choice selects the account's on-chain auth code and cannot change later.
+ECDSA is the scheme with hosted-signer support (the KMS backend above) and the
+default direction for Guardian; Falcon has no remote signer and is second-class.
+New production deployments should therefore accept only ECDSA registrations:
+
+```bash
+GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa      # Terraform: guardian_allowed_account_schemes
+```
+
+The gate acts on `/configure` for accounts that do not exist yet, returning
+`signature_scheme_not_allowed` (HTTP 403) with the rejected scheme and the
+accepted set in `meta`. Accounts already in this Guardian's metadata are never
+affected, because every later request is verified with the scheme stored for
+that account, so the variable is safe to set on a fleet that already has Falcon
+accounts. An on-chain Falcon account that this Guardian does not know yet (a
+re-onboard after a metadata restore, or a `SwitchGuardian` from another
+Guardian) counts as new: widen the list to `falcon,ecdsa` for that migration
+and tighten it again afterwards.
+`GET /dashboard/info` reports `accounts_by_auth_method` if you want to see what
+exists first. The gate does not change which ACK keys the server needs: the
+Falcon ACK key is still loaded and still required today, so bootstrap and
+protect it as described above. Reference:
+[`CONFIGURATION.md`](./CONFIGURATION.md#runtime--ack-signing-and-network).
 
 ### Running behind your own ingress (non-AWS)
 
@@ -76,33 +127,58 @@ forged `X-Forwarded-For` prefix and confirm it stays throttled.
 
 ## Production checklist
 
+For a copy-pasteable, end-to-end walkthrough that satisfies every item below,
+follow the [Production deployment guide](./guides/production/README.md). This
+checklist is the summary; the guide is the step-by-step.
+
 Before treating a deployment as production-ready:
 
-- Set `DEPLOY_STAGE=prod`.
+- Set `DEPLOY_STAGE=prod` (AWS) or `GUARDIAN_ENV=prod` (anywhere else). The
+  stage turns on the fail-fast guards and applies the production runtime
+  defaults (rate limits, pool sizes, canonicalization concurrency, JSON logs)
+  inside the server, so a self-managed deployment lists only what depends on
+  its topology: `GUARDIAN_MAX_REPLICAS`, the cursor secret, metrics, and CORS.
+  The [production guide](./guides/production/README.md#b2-configure) has the
+  table.
 - Build with `postgres`, plus `evm` if the EVM API must be served.
-- Bootstrap ACK secrets once with
-  `DEPLOY_STAGE=prod ./scripts/aws-deploy.sh bootstrap-ack-keys`.
+- Establish a stable ACK identity once. AWS: `DEPLOY_STAGE=prod
+  ./scripts/aws-deploy.sh bootstrap-ack-keys`. Self-managed:
+  `GUARDIAN_ACK_SECRET_PROVIDER=file` with two owner-only key files written by
+  the image's `ack-keygen --out-dir`
+  ([`runbooks/secrets.md`](./runbooks/secrets.md#self-hosted-stable-identity-without-aws)).
 - For the ECDSA signer, decide between Secrets Manager (default) and KMS
-  (preferred for new deployments); if using KMS, create the key and set
-  `guardian_ack_ecdsa_kms_key_arn` per
+  (preferred for new deployments where AWS is available); if using KMS, create
+  the key and set `guardian_ack_ecdsa_kms_key_arn` per
   [`runbooks/secrets.md`](./runbooks/secrets.md#hosted-ecdsa-backend-aws-kms).
-- Confirm `DATABASE_URL` is supplied through the Terraform-managed RDS secret.
-- Optionally enable storage encryption at rest: run
+- Restrict new accounts to ECDSA with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`
+  (see [Account signature scheme](#account-signature-scheme)). Safe to set
+  even when Falcon accounts already exist; the Falcon ACK key stays required.
+- Confirm `DATABASE_URL`. AWS: supplied through the Terraform-managed RDS
+  secret. Self-managed: points at your own Postgres with
+  `sslmode=verify-full&sslrootcert=…` (see "Database TLS" in
+  [`CONFIGURATION.md`](./CONFIGURATION.md#database-tls)).
+- Optionally enable storage encryption at rest against an empty store (the
+  Miden 0.16 reset is the natural window). AWS: run
   `./scripts/aws-deploy.sh bootstrap-storage-encryption-key`, then deploy with
-  `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` set, against an empty store (the Miden
-  0.16 reset is the natural window). See "Storage encryption" below.
-- Review the RDS durability settings for the stack. The prod stage defaults
-  to 7-day backup retention (point-in-time recovery), deletion protection
-  on, and a final snapshot on destroy; Multi-AZ is opt-in via
-  `rds_multi_az`. See "Durability and recovery" below.
+  `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` set. Self-managed: the same
+  `{active, keys}` document in an owner-only file named by
+  `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, rotatable the same way. See "Storage
+  encryption" below.
+- Review database durability. AWS: the prod stage defaults to 7-day backup
+  retention (point-in-time recovery), deletion protection on, and a final
+  snapshot on destroy; Multi-AZ is opt-in via `rds_multi_az`. Self-managed:
+  your database's backups and point-in-time recovery, with the encryption key
+  kept alongside them. See "Durability and recovery" below.
 - Set `GUARDIAN_CORS_ALLOWED_ORIGINS` to the exact browser origins that need
   access.
 - If the operator dashboard is enabled, configure the operator allowlist
   secret and use object entries when permissions beyond `dashboard:read` are
   needed.
-- Before the first managed prod deploy, run
-  `./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret`; Terraform then injects the same
-  `GUARDIAN_DASHBOARD_CURSOR_SECRET` into every ECS task.
+- Pin `GUARDIAN_DASHBOARD_CURSOR_SECRET` identically on every replica. AWS:
+  run `./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret` before the
+  first prod deploy; Terraform then injects the same value into every ECS
+  task. Self-managed: one `openssl rand -hex 32` value in every replica's
+  environment.
 - Validate `/`, `/pubkey`, and the relevant SDK or dashboard smoke path after
   deploy.
 - Size `GUARDIAN_RATE_PER_MIN` for the combined HTTP **and** gRPC volume:
@@ -174,8 +250,10 @@ Two Guardian-specific caveats when restoring from a backup:
   re-syncs it (see the failure table in
   [`CONCEPTS.md`](./CONCEPTS.md#failure-and-recovery)).
 - If storage encryption is enabled, database backups contain ciphertext.
-  The Secrets Manager encryption key is part of the recovery set: losing
-  it makes every restored payload unrecoverable. Keep an out-of-band copy.
+  The storage-encryption key document is part of the recovery set whether it
+  comes from Secrets Manager or from `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`:
+  losing it makes every restored payload unrecoverable. Keep a protected
+  out-of-band copy alongside the database backups.
 
 The verification and restore procedure is in
 [`runbooks/backup-restore.md`](./runbooks/backup-restore.md).
@@ -197,13 +275,16 @@ none and behavior is unchanged.
   lineage, and proposal status. Use disk/database-level encryption if the index
   metadata itself is sensitive in your threat model.
 
-- Production key source: AWS Secrets Manager, holding
-  `{ "active": "k1", "keys": { "k1": "<base64 32 bytes>" } }`. On the standard
-  stack, `./scripts/aws-deploy.sh bootstrap-storage-encryption-key` creates it and
-  a deploy with `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` set wires
+- Production key source: the key document
+  `{ "active": "k1", "keys": { "k1": "<base64 32 bytes>" } }`, held either in
+  AWS Secrets Manager or in an owner-only file. On the standard stack,
+  `./scripts/aws-deploy.sh bootstrap-storage-encryption-key` creates the secret
+  and a deploy with `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` set wires
   `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` plus the task-role
-  `secretsmanager:GetSecretValue` grant (same pattern as the ACK keys). `AWS_REGION`
-  is reused.
+  `secretsmanager:GetSecretValue` grant (same pattern as the ACK keys); `AWS_REGION`
+  is reused. Self-managed deployments mount the same document and set
+  `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`
+  ([production guide, track B](./guides/production/README.md#b2-configure)).
 - Enable against an **empty** store. The server writes a one-time marker on the
   first encrypted write and then refuses to mix plaintext and ciphertext, so it
   fails fast if a key is configured against a store that already holds plaintext
@@ -214,8 +295,9 @@ none and behavior is unchanged.
   fail fast against the mixed store.
 - Startup is fail-fast: a missing/malformed/wrong-length key, or more than one
   key source, prevents startup rather than degrading to plaintext.
-- Key rotation: add a new entry to `keys` and move `active`; keep the old key so
-  existing records still decrypt. Bulk re-encryption tooling is not yet provided.
+- Key rotation, on either source: add a new entry to `keys` and move `active`;
+  keep the old key so existing records still decrypt. Bulk re-encryption tooling
+  is not yet provided.
 
 Full configuration and a dev walkthrough are in
 [`CONFIGURATION.md`](./CONFIGURATION.md#storage-encryption-at-rest).
@@ -284,6 +366,7 @@ and metadata directories, and preserve the keystore directory.
 
 | Need | Read |
 |---|---|
+| End-to-end production walkthrough (AWS ECS, self-managed Docker, Docker + AWS secrets) | [`guides/production/`](./guides/production/README.md) |
 | Match a Guardian release to a Miden version | [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md) |
 | Step-by-step setup for a specific run mode | [`guides/`](./guides/README.md) |
 | Deploy or update the AWS stack | [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md) |

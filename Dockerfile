@@ -1,7 +1,7 @@
 # Build stage
 # For reproducible builds across machines, specify --platform:
 #   docker build --platform linux/amd64 ...
-FROM rust:1.98.0-bookworm as base-builder
+FROM rust:1.98.1-bookworm as base-builder
 
 # Install protobuf compiler (pinned to upstream 3.21.12; the Debian
 # packaging revision floats so point-release rebuilds don't break the build)
@@ -31,9 +31,9 @@ FROM base-builder as server-builder
 ARG GUARDIAN_GIT_SHA
 
 RUN if [ -n "$GUARDIAN_SERVER_FEATURES" ]; then \
-      cargo build --release --package guardian-server --bin server --features "$GUARDIAN_SERVER_FEATURES"; \
+      cargo build --release --package guardian-server --bin server --bin ack-keygen --features "$GUARDIAN_SERVER_FEATURES"; \
     else \
-      cargo build --release --package guardian-server --bin server; \
+      cargo build --release --package guardian-server --bin server --bin ack-keygen; \
     fi
 
 FROM base-builder as benchmark-builder
@@ -65,8 +65,11 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy the binary from builder
+# Copy the server and the ACK identity generator from builder. ack-keygen lets a
+# self-managed deployment mint its stable identity from the image alone:
+#   docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/ack-keys:/out" <image> /app/ack-keygen --out-dir /out
 COPY --from=server-builder /app/target/release/server /app/server
+COPY --from=server-builder /app/target/release/ack-keygen /app/ack-keygen
 
 # Expose HTTP and gRPC ports
 EXPOSE 3000 50051

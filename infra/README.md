@@ -123,6 +123,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
 # guardian_evm_entrypoint_address = "0x433709009b8330fda32311df1c2afa402ed8d009"
 # guardian_cors_allowed_origins = "https://accounts.openzeppelin.com"
+# guardian_allowed_account_schemes = "ecdsa"   # new accounts only; recommended in production
 
 # Optional: Route 53 hosted zone ID
 # route53_zone_id = "Z1234567890ABC"
@@ -136,6 +137,12 @@ terraform init
 terraform plan
 terraform apply
 ```
+
+Image-only rollouts of a published GHCR version go through the **AWS Deploy**
+GitHub Actions workflow instead (OIDC, no local credentials or state). It also
+moves the ECR `latest` tag so the `server_image_uri` resolved by
+`scripts/aws-deploy.sh` stays in step with what is running. See
+[`docs/SERVER_AWS_DEPLOY.md`](../docs/SERVER_AWS_DEPLOY.md#deploying-a-published-image-from-github-actions).
 
 For direct prod Terraform usage, create the dashboard cursor secret before
 planning. Its value must be exactly 64 hexadecimal characters. Terraform checks
@@ -236,6 +243,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_evm_rpc_urls_secret_arn` | `""` | Existing EVM RPC URLs secret ARN; takes precedence over the managed value |
 | `guardian_evm_entrypoint_address` | `""` | Shared EVM EntryPoint address injected into the server task |
 | `guardian_cors_allowed_origins` | `""` | Comma-separated explicit HTTP origins allowed by credentialed CORS |
+| `guardian_allowed_account_schemes` | `""` (every scheme) | Comma-separated signature schemes new accounts may register with (`falcon`, `ecdsa`); the production checklist recommends `ecdsa`. Existing accounts unaffected |
 | `vpc_id` | (default VPC) | VPC ID |
 | `subnet_ids` | (all subnets in VPC) | Subnet IDs for ECS tasks and ALB |
 | `rds_proxy_subnet_ids` | filtered `subnet_ids` | Optional dedicated subnet IDs for RDS Proxy |
@@ -304,6 +312,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
 | `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
+| `guardian_allowed_account_schemes` | Signature schemes new accounts may register with (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`) |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `dashboard_cursor_secret_name` | Secrets Manager name for the shared dashboard cursor key |

@@ -5,6 +5,7 @@ use crate::metadata::auth::{Auth, Credentials};
 use crate::services::{consume_auth_timestamp, validate_request_timestamp};
 use crate::state::AppState;
 use crate::state_object::StateObject;
+use guardian_shared::SignatureScheme;
 
 #[derive(Debug, Clone)]
 pub struct ConfigureAccountParams {
@@ -63,6 +64,9 @@ pub async fn configure_account(
         GuardianError::StorageError(format!("Failed to check existing account: {e}"))
     })?;
     let scheme = params.auth.scheme();
+    if existing.is_none() {
+        reject_disallowed_scheme(state, scheme)?;
+    }
 
     let (commitment, signer_commitment) = {
         let client = &state.network_client;
@@ -277,6 +281,22 @@ pub async fn configure_account(
     })
 }
 
+fn reject_disallowed_scheme(state: &AppState, scheme: SignatureScheme) -> Result<()> {
+    let allowed = state.ack.account_schemes();
+    if allowed.allows(scheme) {
+        return Ok(());
+    }
+    tracing::warn!(
+        scheme = scheme.as_str(),
+        allowed_schemes = %allowed,
+        "Rejected account registration: signature scheme not allowed"
+    );
+    Err(GuardianError::SignatureSchemeNotAllowed {
+        scheme: scheme.as_str().to_string(),
+        allowed_schemes: allowed.names(),
+    })
+}
+
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
@@ -379,6 +399,104 @@ mod tests {
                 verified_signer_commitment,
                 timestamp,
             )]
+        );
+    }
+
+    #[tokio::test]
+    async fn configure_rejects_new_account_whose_scheme_is_not_allowed() {
+        use crate::config::account_schemes::AllowedAccountSchemes;
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        let mut state = create_test_app_state(
+            MockNetworkClient::new(),
+            MockStorageBackend::new(),
+            MockMetadataStore::new().with_get(Ok(None)),
+        )
+        .await;
+        state.ack = state
+            .ack
+            .clone()
+            .with_account_schemes(AllowedAccountSchemes::parse("ecdsa").unwrap());
+
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({}),
+            credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+        };
+
+        match configure_account(&state, params).await {
+            Err(GuardianError::SignatureSchemeNotAllowed {
+                scheme,
+                allowed_schemes,
+            }) => {
+                assert_eq!(scheme, "falcon");
+                assert_eq!(allowed_schemes, vec!["ecdsa".to_string()]);
+            }
+            other => panic!("expected SignatureSchemeNotAllowed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn configure_keeps_serving_existing_accounts_whose_scheme_is_no_longer_allowed() {
+        use crate::config::account_schemes::AllowedAccountSchemes;
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        let existing_metadata = AccountMetadata {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        };
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_commitment(Ok("0x5678".to_string()));
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(existing_metadata)))
+            .with_set(Ok(()));
+
+        let mut state =
+            create_test_app_state(network_client, storage_backend, metadata_store).await;
+        state.ack = state
+            .ack
+            .clone()
+            .with_account_schemes(AllowedAccountSchemes::parse("ecdsa").unwrap());
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state,
+            credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+        };
+
+        let result = configure_account(&state, params).await;
+        assert!(
+            result.is_ok(),
+            "existing Falcon account must reconfigure: {result:?}"
         );
     }
 

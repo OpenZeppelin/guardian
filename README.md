@@ -9,13 +9,12 @@
 Warning: This is a work in progress.
 
 > **Miden version baseline**: the Rust workspace and the TypeScript
-> multisig SDK both track the Miden **v0.16 pre-release line**
-> (exact-pinned pre-releases; devnet already runs the v0.16 node). Package
-> releases wait for upstream 0.16 to stabilize. The Para wallet packages
-> (`@miden-sdk/miden-para`) still ship against 0.15 and are held back via
-> npm overrides in the browser examples until upstream updates them.
+> multisig SDK both track the stable Miden **v0.16 line** with exact pins
+> (`miden-client` 0.16.0, `miden-protocol` / `miden-standards` 0.16.1,
+> `@miden-sdk/miden-sdk` 0.16.0). Run against a node on protocol 0.16.
 > Accounts, local stores, and networks from v0.15 do not interoperate
-> with v0.16 — see [Troubleshooting](docs/TROUBLESHOOTING.md).
+> with v0.16 — see [Troubleshooting](docs/TROUBLESHOOTING.md) and
+> [Miden compatibility](docs/MIDEN_COMPATIBILITY.md).
 
 ### Documentation
 
