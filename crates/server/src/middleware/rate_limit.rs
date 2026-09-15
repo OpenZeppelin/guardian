@@ -21,10 +21,8 @@ use std::{
 };
 use tower::{Layer, Service};
 
-/// Default burst limit: requests per second
-const DEFAULT_BURST_PER_SEC: u32 = 10;
-/// Default sustained limit: requests per minute
-const DEFAULT_PER_MIN: u32 = 60;
+use crate::config::stage::Stage;
+
 /// Environment variable for enabling or disabling rate limiting
 const ENV_RATE_LIMIT_ENABLED: &str = "GUARDIAN_RATE_LIMIT_ENABLED";
 /// Deployment's steady-state replica capacity; configured limits are divided
@@ -71,9 +69,18 @@ pub(crate) fn max_replicas_from_env() -> Result<u32, String> {
 }
 
 impl RateLimitConfig {
-    /// Load configuration from environment variables
+    /// Load configuration from environment variables. Unset limits take the
+    /// [`Stage`] default, so `GUARDIAN_ENV=prod` starts with production
+    /// limits without listing them.
     pub fn from_env() -> Self {
         let enabled = env_flag(ENV_RATE_LIMIT_ENABLED, true);
+        let stage = match Stage::from_env() {
+            Ok(stage) => stage,
+            Err(error) => {
+                tracing::warn!(%error, "invalid GUARDIAN_ENV; applying dev rate-limit defaults");
+                Stage::Dev
+            }
+        };
         let max_replicas = match max_replicas_from_env() {
             Ok(value) => value,
             Err(error) => {
@@ -90,14 +97,14 @@ impl RateLimitConfig {
             env::var("GUARDIAN_RATE_BURST_PER_SEC")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(DEFAULT_BURST_PER_SEC),
+                .unwrap_or_else(|| stage.default_rate_burst_per_sec()),
             max_replicas,
         );
         let per_min = partition_limit(
             env::var("GUARDIAN_RATE_PER_MIN")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(DEFAULT_PER_MIN),
+                .unwrap_or_else(|| stage.default_rate_per_min()),
             max_replicas,
         );
 
@@ -137,8 +144,8 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            burst_per_sec: DEFAULT_BURST_PER_SEC,
-            per_min: DEFAULT_PER_MIN,
+            burst_per_sec: Stage::Dev.default_rate_burst_per_sec(),
+            per_min: Stage::Dev.default_rate_per_min(),
         }
     }
 }
@@ -613,8 +620,8 @@ mod tests {
     fn test_rate_limit_config_default() {
         let config = RateLimitConfig::default();
         assert!(config.enabled);
-        assert_eq!(config.burst_per_sec, DEFAULT_BURST_PER_SEC);
-        assert_eq!(config.per_min, DEFAULT_PER_MIN);
+        assert_eq!(config.burst_per_sec, 10);
+        assert_eq!(config.per_min, 60);
     }
 
     #[test]
@@ -634,12 +641,59 @@ mod tests {
             env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");
             env::remove_var("GUARDIAN_RATE_PER_MIN");
             env::remove_var(ENV_MAX_REPLICAS);
+            env::remove_var("GUARDIAN_ENV");
         }
 
         let config = RateLimitConfig::from_env();
         assert!(config.enabled);
-        assert_eq!(config.burst_per_sec, DEFAULT_BURST_PER_SEC);
-        assert_eq!(config.per_min, DEFAULT_PER_MIN);
+        assert_eq!(config.burst_per_sec, 10);
+        assert_eq!(config.per_min, 60);
+    }
+
+    #[test]
+    fn from_env_applies_prod_stage_defaults_when_limits_are_unset() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");
+            env::remove_var("GUARDIAN_RATE_PER_MIN");
+            env::remove_var(ENV_MAX_REPLICAS);
+            env::set_var("GUARDIAN_ENV", "prod");
+        }
+
+        let config = RateLimitConfig::from_env();
+
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::remove_var("GUARDIAN_ENV");
+        }
+
+        assert_eq!(config.burst_per_sec, 200);
+        assert_eq!(config.per_min, 5000);
+    }
+
+    #[test]
+    fn explicit_limits_win_over_prod_stage_defaults() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::set_var("GUARDIAN_RATE_BURST_PER_SEC", "20");
+            env::set_var("GUARDIAN_RATE_PER_MIN", "300");
+            env::remove_var(ENV_MAX_REPLICAS);
+            env::set_var("GUARDIAN_ENV", "prod");
+        }
+
+        let config = RateLimitConfig::from_env();
+
+        // SAFETY: serialized by ENV_LOCK; vars are test-specific.
+        unsafe {
+            env::remove_var("GUARDIAN_RATE_BURST_PER_SEC");
+            env::remove_var("GUARDIAN_RATE_PER_MIN");
+            env::remove_var("GUARDIAN_ENV");
+        }
+
+        assert_eq!(config.burst_per_sec, 20);
+        assert_eq!(config.per_min, 300);
     }
 
     #[test]

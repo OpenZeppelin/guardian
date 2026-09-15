@@ -325,6 +325,45 @@ for (const p of proposals) {
 }
 ```
 
+### Proposal Verification Status
+
+`syncProposals()` checks every proposal's metadata against its signed
+summary and records the outcome in `proposal.verification`:
+`{ status: 'unchecked' }`, `{ status: 'verified' }`, or
+`{ status: 'failed', retryable, message }`. A proposal that fails the
+check is still returned, so one stale or corrupt proposal cannot hide the
+others; only the check itself writes `verified`, and a freshly parsed or
+imported proposal is `unchecked`. `retryable: true` means the
+re-execution hit a transient node error and the proposal may verify on
+the next sync; `retryable: false` means it cannot be reproduced (tampered
+metadata, or an anchor block the node has pruned) and has to be
+re-proposed. Verification is deliberately not part of `status`: a fully
+signed proposal can be dead, so `'ready'` keeps meaning "threshold met"
+and `isProposalActionable(proposal)` answers "verified and ready".
+`signProposal` and `executeProposal` re-verify the one proposal they act
+on and throw the real error. A payload that does not parse at all still
+rejects, so malformed GUARDIAN data is never silently dropped.
+
+```typescript
+import { isProposalActionable } from '@openzeppelin/miden-multisig-client';
+
+for (const p of await multisig.syncProposals()) {
+  if (p.verification.status === 'failed') {
+    const { retryable, message } = p.verification;
+    console.log(`${p.id}: ${retryable ? 'retry later' : 're-propose'} — ${message}`);
+  } else if (isProposalActionable(p)) {
+    await multisig.executeProposal(p.id);
+  }
+}
+```
+
+Anchored re-execution needs the node to serve account state at the
+proposal's reference block, and nodes keep that history only briefly
+(devnet: about 50 blocks); once it is gone the proposal is reported as
+`failed` with `retryable: false` for everyone, the proposer included.
+Collect signatures and execute promptly, and re-propose once a proposal
+has aged out.
+
 ### Execute a Proposal
 
 When a proposal has enough signatures:

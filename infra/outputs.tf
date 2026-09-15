@@ -277,3 +277,23 @@ output "metrics_missing_alarm_name" {
   description = "Name of the metrics-pipeline heartbeat alarm for this stack"
   value       = local.cloudwatch_metrics_enabled ? aws_cloudwatch_metric_alarm.metrics_missing[0].alarm_name : ""
 }
+
+output "alarm_actions" {
+  description = "Effective ARNs every Guardian alarm notifies on alarm/ok transitions (operator alarm_actions plus the managed topic when enabled)"
+  value       = local.effective_alarm_actions
+}
+
+output "alarm_sns_topic_arn" {
+  description = "ARN of the Terraform-managed alarm SNS topic, empty when alarm_notifications_enabled is false"
+  value       = local.alarm_sns_topic_arn
+}
+
+output "alarm_slack_configuration_name" {
+  description = "Name of the Amazon Q Developer in chat applications Slack channel configuration (its error log group is /aws/chatbot/<name> in us-east-1), empty when not configured"
+  value       = local.alarm_slack_enabled ? local.alarm_slack_configuration_name : ""
+}
+
+output "alarm_slack_configuration_arn" {
+  description = "ARN of the Amazon Q Developer in chat applications Slack channel configuration for this stack's alarms, empty when not configured"
+  value       = local.alarm_slack_enabled ? aws_chatbot_slack_channel_configuration.alarms[0].chat_configuration_arn : ""
+}

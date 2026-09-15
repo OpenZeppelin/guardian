@@ -1,0 +1,122 @@
+# Self-managed production Guardian from the published Docker image, with NO
+# AWS dependency: the ACK signing keys come from two local files (the `file`
+# secret provider), the storage-encryption key document is a mounted file, the
+# dashboard cursor secret comes from the env file, and the operator allowlist
+# is a mounted JSON file. The server runs with GUARDIAN_ENV=prod, which turns
+# on every prod-stage guard (filesystem backend refused, ephemeral ACK identity
+# refused, 0-req/replica rate limit refused) and applies the production
+# defaults for rate limits, pool sizes, canonicalization concurrency, and JSON
+# logs, so none of those need listing here.
+#
+# Run from this directory:
+#   cp .env.example .env                       # then fill in the values
+#   cp operators.example.json operators.json   # add operator keys, or leave []
+#   <generate ./ack-keys/ and ./storage-encryption-keys.json, README.md Track B steps 1 and 2>
+#   docker compose up -d
+#
+# The bundled Postgres exists so the stack runs (and smoke-tests) standalone.
+# For real production point DATABASE_URL in .env at your own TLS-verified
+# Postgres and start only the server: docker compose up -d --no-deps server
+#
+# Compose auto-loads .env from this directory: for ${VAR} interpolation of the
+# image tag and host ports, and as the server's env_file for everything else.
+# The ACK key files, the key document, and operators.json are declared as
+# Compose secrets/configs so a missing file aborts `up` instead of silently
+# mounting an empty directory. Without uid/gid/mode they are bind mounts that
+# keep the host file's 0600 permissions, so an edited key document is picked up
+# by `docker compose restart server`. Do not add `mode:`: Compose then copies
+# the file in at creation and a restart would keep the stale copy.
+# Walkthrough: ./README.md   Full server config reference: ../../CONFIGURATION.md
+
+# Distinct from docker-compose.aws-no-ecs.yml so the two tracks never share
+# volumes when run from this directory.
+name: guardian-production
+
+services:
+  server:
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:?set GUARDIAN_VERSION in .env (pin an explicit release, never latest, in production)}
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      # Bound to loopback by default: only an ingress on this host reaches the
+      # server. Set GUARDIAN_BIND_ADDR to the ingress-facing interface when the
+      # load balancer runs elsewhere, and never expose these ports publicly.
+      - "${GUARDIAN_BIND_ADDR:-127.0.0.1}:${GUARDIAN_HTTP_PORT:-3000}:3000"
+      - "${GUARDIAN_BIND_ADDR:-127.0.0.1}:${GUARDIAN_GRPC_PORT:-50051}:50051"
+      - "127.0.0.1:${GUARDIAN_METRICS_PORT:-9464}:9464"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - guardian-keystore:/var/guardian/keystore
+      # Verified DB TLS against your own Postgres: mount its CA bundle and use
+      # sslmode=verify-full&sslrootcert=/etc/guardian/tls/ca.pem in DATABASE_URL.
+      # - ./certs/ca.pem:/etc/guardian/tls/ca.pem:ro
+    secrets:
+      - source: ack-falcon-secret-key
+        target: /etc/guardian/ack/ack-falcon-secret-key
+      - source: ack-ecdsa-secret-key
+        target: /etc/guardian/ack/ack-ecdsa-secret-key
+      - source: storage-encryption-keys
+        target: /etc/guardian/storage-encryption-keys.json
+    configs:
+      - source: operators
+        target: /etc/guardian/operators.json
+    # Every operator-provided value (DATABASE_URL, network, cursor secret, CORS,
+    # metrics, GUARDIAN_ALLOWED_ACCOUNT_SCHEMES, GUARDIAN_MAX_REPLICAS, ...) comes
+    # from .env through env_file and nowhere else. Nothing below interpolates a
+    # server variable, so an exported shell variable cannot override the file:
+    # Compose gives the shell precedence during ${VAR} interpolation, which is
+    # why the only interpolated values in this file are the image tag and the
+    # host-side port/bind settings above. The file is required so a missing
+    # .env aborts `up` instead of starting an unconfigured server.
+    env_file:
+      - path: .env
+        required: true
+    # Fixed by this stack's topology; not operator input.
+    environment:
+      - GUARDIAN_ENV=prod
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - GUARDIAN_ACK_SECRET_PROVIDER=file
+      - GUARDIAN_ACK_FALCON_SECRET_PATH=/etc/guardian/ack/ack-falcon-secret-key
+      - GUARDIAN_ACK_ECDSA_SECRET_PATH=/etc/guardian/ack/ack-ecdsa-secret-key
+      - GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/etc/guardian/operators.json
+      - GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE=/etc/guardian/storage-encryption-keys.json
+      - GUARDIAN_METRICS_ADDR=0.0.0.0:9464
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=guardian
+      # Left non-fatal so a `--no-deps server` run against an external Postgres
+      # does not need it; the postgres image itself refuses to start when empty.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - POSTGRES_DB=guardian
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+# ack-keys/* are written by the image's ack-keygen (README.md, Track B step 1);
+# storage-encryption-keys.json is the {active, keys} key document (step 2).
+# Keep all three 0600 on the host.
+secrets:
+  ack-falcon-secret-key:
+    file: ./ack-keys/ack-falcon-secret-key
+  ack-ecdsa-secret-key:
+    file: ./ack-keys/ack-ecdsa-secret-key
+  storage-encryption-keys:
+    file: ./storage-encryption-keys.json
+
+# cp operators.example.json operators.json, then add operator entries.
+configs:
+  operators:
+    file: ./operators.json
+
+volumes:
+  guardian-keystore:
+  guardian-postgres:

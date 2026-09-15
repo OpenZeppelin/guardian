@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { isProposalActionable, type Proposal } from './types/proposal.js';
 import { Multisig } from './multisig.js';
 import { GuardianHttpClient, type Signer } from '@openzeppelin/guardian-client';
 import {
@@ -1449,9 +1450,13 @@ describe('Multisig', () => {
         }),
       } as any);
 
-      await expect(multisig.syncProposals()).rejects.toThrow(
-        'Invalid proposal: metadata does not match tx_summary'
-      );
+      // Issue #462: the listing reports the failure instead of failing.
+      const [listed] = await multisig.syncProposals();
+      expect(listed.verification).toMatchObject({
+        status: 'failed',
+        retryable: false,
+        message: expect.stringContaining('Invalid proposal: metadata does not match tx_summary'),
+      });
     });
 
     /// A structurally valid anchor pinned to the wrong block must be rejected
@@ -1507,11 +1512,92 @@ describe('Multisig', () => {
       } as never);
 
       const reExecutionsBefore = vi.mocked(executeForSummaryAt).mock.calls.length;
-      await expect(multisig.syncProposals()).rejects.toThrow(
-        'chain anchor does not match the block commitment bound into the tx_summary'
-      );
+      const [listed] = await multisig.syncProposals();
+      expect(listed.verification).toMatchObject({
+        status: 'failed',
+        retryable: false,
+        message: expect.stringContaining(
+          'chain anchor does not match the block commitment bound into the tx_summary'
+        ),
+      });
       expect(vi.mocked(executeForSummaryAt).mock.calls.length).toBe(reExecutionsBefore);
       expect(freed).toHaveBeenCalledTimes(1);
+    });
+
+    /// Issue #462: one proposal whose binding fails (here: a served salt that
+    /// rebuilds to a different summary) must not hide the healthy one. Both
+    /// are returned; only the bad one carries `verificationError`.
+    it('lists a verified and an unverifiable proposal side by side (issue #462)', async () => {
+      const config = {
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      const delta = (nonce: number, txSummary: string) => ({
+        account_id: '0x' + 'a'.repeat(30),
+        nonce,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: txSummary },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+            salt: MOCK_SALT_HEX,
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        // 'AQIDBA==' (4 bytes) commits to 0xdd…, 'AQID' (3 bytes) to 0xcc…; the
+        // mocked re-execution reproduces 0xcc… only, so the first is unverifiable.
+        json: async () => ({ proposals: [delta(1, 'AQIDBA=='), delta(2, 'AQID')] }),
+      });
+
+      const proposals = await multisig.syncProposals();
+      expect(proposals).toHaveLength(2);
+      const bad = proposals.find((p) => p.nonce === 1);
+      const good = proposals.find((p) => p.nonce === 2);
+      expect(bad?.verification).toMatchObject({
+        status: 'failed',
+        retryable: false,
+        message: expect.stringContaining('metadata does not match tx_summary'),
+      });
+      expect(good?.verification).toEqual({ status: 'verified' });
+
+      // Signing re-verifies and refuses the unverifiable one; the listing did
+      // not make it signable.
+      await expect(multisig.signProposal(bad!.id)).rejects.toThrow(
+        'metadata does not match tx_summary'
+      );
+    });
+
+    /// `status` keeps meaning "threshold met"; actionable is verified AND ready.
+    it('isProposalActionable requires both a verified check and a met threshold (issue #462)', async () => {
+      const base = {
+        id: '0x' + '1'.repeat(64),
+        accountId: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        txSummary: 'AQID',
+        signatures: [],
+        metadata: { proposalType: 'custom', description: '' },
+      } as unknown as Proposal;
+      const verified = { status: 'verified' } as const;
+      const failed = { status: 'failed', retryable: false, message: 'pruned' } as const;
+      expect(isProposalActionable({ ...base, status: 'ready', verification: verified })).toBe(true);
+      expect(isProposalActionable({ ...base, status: 'pending', verification: verified })).toBe(false);
+      expect(isProposalActionable({ ...base, status: 'ready', verification: failed })).toBe(false);
+      expect(isProposalActionable({ ...base, status: 'ready', verification: { status: 'unchecked' } })).toBe(false);
     });
 
     /// Issue #409: a cosigner syncing at a later block than the proposer must
@@ -1573,6 +1659,7 @@ describe('Multisig', () => {
 
       const proposals = await multisig.syncProposals();
       expect(proposals).toHaveLength(1);
+      expect(proposals[0].verification).toEqual({ status: 'verified' });
 
       expect(chainAnchorFromBase64).toHaveBeenCalledWith(MOCK_CHAIN_ANCHOR_B64);
       // Re-executed exactly once, at that decoded anchor object — not a
@@ -4401,9 +4488,11 @@ describe('Multisig', () => {
           }),
         });
 
-        await expect(multisig.syncProposals()).rejects.toThrow(
-          saltHex === '' ? 'has no salt' : 'malformed metadata salt'
-        );
+        const [listed] = await multisig.syncProposals();
+        expect(listed.verification).toMatchObject({
+          status: 'failed',
+          message: expect.stringContaining(saltHex === '' ? 'has no salt' : 'malformed metadata salt'),
+        });
       },
     );
 
@@ -4456,9 +4545,13 @@ describe('Multisig', () => {
         json: async () => ({ proposals: [saltlessDelta] }),
       });
 
-      // The binding check rebuilds the request to compare summaries, so it needs the salt
-      // and rejects here -- before the proposal is cached, rather than at execute.
-      await expect(multisig.syncProposals()).rejects.toThrow('has no salt');
+      // The binding check rebuilds the request to compare summaries, so it needs the salt;
+      // the listing reports that on the proposal instead of failing (issue #462).
+      const [listed] = await multisig.syncProposals();
+      expect(listed.verification).toMatchObject({
+        status: 'failed',
+        message: expect.stringContaining('has no salt'),
+      });
     });
 
     it('should fail when GUARDIAN ack signature is missing', async () => {

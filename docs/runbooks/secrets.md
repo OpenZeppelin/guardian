@@ -91,16 +91,19 @@ holding the hex-encoded secret keys
 format is the hex string emitted by `ack-keygen` — identical to what Secrets
 Manager stores — so the same key material is portable between the two providers.
 
-Generate the pair once and write each value to its own file:
+Generate the pair once. `ack-keygen` ships in the server image, and
+`--out-dir` writes `ack-falcon-secret-key` and `ack-ecdsa-secret-key` into the
+directory as `0600` files, refusing to overwrite existing ones:
 
 ```bash
-cargo run --quiet -p guardian-server --bin ack-keygen \
-  | tee /dev/stderr \
-  | { read -r json; \
-      jq -rj '.falcon_secret_key' <<<"$json" > ack-falcon-secret-key; \
-      jq -rj '.ecdsa_secret_key'  <<<"$json" > ack-ecdsa-secret-key; }
-chmod 600 ack-falcon-secret-key ack-ecdsa-secret-key
+mkdir -p ack-keys
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/ack-keys:/out" \
+  ghcr.io/openzeppelin/guardian:<version> /app/ack-keygen --out-dir /out
 ```
+
+From a checkout the same binary is `cargo run --quiet -p guardian-server --bin
+ack-keygen -- --out-dir ack-keys`; without `--out-dir` it prints both keys as
+one JSON object on stdout, which is what `aws-deploy.sh` consumes.
 
 Treat these files like any private key: keep them out of version control and
 image layers, and back them up — losing them is a Guardian identity change, with
@@ -306,8 +309,10 @@ If you believe an ACK secret leaked:
 ## Storage encryption key
 
 Optional. Encrypts account state and delta/proposal payloads at rest (see
-[`PRODUCTION.md`](../PRODUCTION.md#storage-encryption)). The key never leaves the
-process boundary beyond Secrets Manager; it is loaded once at startup and cached.
+[`PRODUCTION.md`](../PRODUCTION.md#storage-encryption)). The key document lives
+in Secrets Manager (AWS) or in an owner-only file (self-managed,
+`GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`); it is loaded once at startup and cached,
+and the same `{active, keys}` format is used on both.
 
 ### Bootstrap (against an empty store)
 
@@ -345,6 +350,20 @@ aws secretsmanager create-secret \
 rm -f "$f"
 ```
 
+Self-managed, without AWS: write the same document to an owner-only file and
+point `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE` at it (the production guide's
+Compose stack mounts it as a Compose secret). `umask 077` makes the file `0600`
+as it is created, which the server requires:
+
+```bash
+( umask 077; set -C; printf '{"active":"k1","keys":{"k1":"%s"}}\n' "$(openssl rand -base64 32)" > storage-encryption-keys.json )
+```
+
+`set -C` (noclobber) makes the redirection fail if the file already exists:
+overwriting a key document that has encrypted anything destroys the only key
+those records can be read with. `umask` only applies to a file being created,
+so an existing document keeps whatever mode it had.
+
 The server writes a one-time encryption marker on the first write; it will refuse
 to start if the key is configured against a store that already holds plaintext
 records.
@@ -364,9 +383,16 @@ aws secretsmanager put-secret-value \
 rm -f "$f"
 ```
 
-New records use `k2`; old `k1` records keep decrypting. Do **not** remove a key
-that any stored record still references. Bulk re-encryption tooling is not yet
-provided.
+On the file source, rewrite the file with the same document (keep it `0600`;
+edit in place rather than re-running the creation one-liner, which refuses to
+overwrite) and restart each replica; the document is read once at startup.
+With the production guide's Compose stack the file is bind-mounted, so
+`docker compose restart server` is enough. If your own compose file sets
+`uid`, `gid`, or `mode` on the secret, Compose copies it in at container
+creation and you must `docker compose up -d --force-recreate server` instead.
+On Kubernetes, roll the Deployment after updating the Secret. New records use
+`k2`; old `k1` records keep decrypting. Do **not** remove a key that any stored
+record still references. Bulk re-encryption tooling is not yet provided.
 
 ### Nonce budget
 
