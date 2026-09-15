@@ -29,6 +29,7 @@ import type {
   DashboardInfoResponse,
   DashboardProposalEntry,
   DashboardStatsOptions,
+  DashboardStatsRefreshResponse,
   DashboardStatsResponse,
   DashboardVaultFungibleEntry,
   DashboardVaultNonFungibleEntry,
@@ -452,6 +453,24 @@ export class GuardianOperatorHttpClient {
   }
 
   /**
+   * Request an out-of-cycle refresh of the `/dashboard/stats`
+   * aggregate (issue #371). Requires `stats:refresh`. Resolves with
+   * `202 Accepted`: `queued` (recorded; the lease holder walks on its
+   * next tick — also when a request was already pending) or
+   * `in_progress` (a walk is running; nothing duplicated). Throws
+   * `GuardianOperatorHttpError` with code `rate_limit_exceeded` (429,
+   * `retryAfterSecs` set) inside the cooldown of the last accepted
+   * request. Poll {@link getDashboardStats} for a newer `asOf`.
+   */
+  async requestDashboardStatsRefresh(): Promise<DashboardStatsRefreshResponse> {
+    return this.request(
+      new URL('dashboard/stats/refresh', this.baseUrl),
+      { method: 'POST' },
+      parseDashboardStatsRefresh,
+    );
+  }
+
+  /**
    * Pause mutating actions for the given account. Requires
    * `accounts:pause`. Idempotent: re-pausing an already-paused account
    * returns success with the original `pausedAt` preserved.
@@ -811,6 +830,7 @@ const KNOWN_OPERATOR_PERMISSIONS: ReadonlySet<string> = new Set<OperatorPermissi
   'dashboard:read',
   'accounts:pause',
   'policies:write',
+  'stats:refresh',
 ]);
 
 function parseAccountListPage(
@@ -932,6 +952,13 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
     'dashboard info.accounts_by_auth_method',
   );
 
+  // Issue #371: present on servers that serve the overview from the
+  // published stats snapshot; absent on older servers.
+  const aggregatesAsOf =
+    record.aggregates_as_of === undefined
+      ? undefined
+      : requireNullableString(record, 'aggregates_as_of', 'dashboard info');
+
   return {
     serviceStatus,
     environment: requireString(record, 'environment', 'dashboard info'),
@@ -942,6 +969,7 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
       'total_account_count',
       'dashboard info',
     ),
+    ...(aggregatesAsOf === undefined ? {} : { aggregatesAsOf }),
     accountsByAuthMethod,
     latestActivity: requireNullableString(
       record,
@@ -1089,9 +1117,29 @@ function parseDashboardStats(value: unknown): DashboardStatsResponse {
       'refresh_interval_seconds',
       ctx,
     ),
+    version: requireCount(record, 'version', ctx),
     accounts,
     assets,
     degradedAggregates: requireStringArray(record, 'degraded_aggregates', ctx),
+  };
+}
+
+function parseDashboardStatsRefresh(value: unknown): DashboardStatsRefreshResponse {
+  const ctx = 'dashboard stats refresh';
+  const record = asRecord(value, ctx);
+  const statusRaw = requireString(record, 'status', ctx);
+  if (statusRaw !== 'queued' && statusRaw !== 'in_progress') {
+    throw new GuardianOperatorContractError(
+      ctx,
+      `expected status to be "queued" or "in_progress", got ${JSON.stringify(statusRaw)}`,
+    );
+  }
+  return {
+    status: statusRaw,
+    requestedAt: requireNullableString(record, 'requested_at', ctx),
+    startedAt: requireNullableString(record, 'started_at', ctx),
+    currentAsOf: requireNullableString(record, 'current_as_of', ctx),
+    cooldownSeconds: requireCount(record, 'cooldown_seconds', ctx),
   };
 }
 

@@ -18,11 +18,11 @@ pub(crate) const DEFAULT_PUBKEY_RATE_PER_MIN: u32 = 30;
 const ENV_COMMITMENT_RATE_BURST_PER_SEC: &str = "GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC";
 const ENV_COMMITMENT_RATE_PER_MIN: &str = "GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN";
 const ENV_STATS_REFRESH_INTERVAL_SECS: &str = "GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS";
-/// Default cadence of the background `/dashboard/stats` aggregate
-/// refresh (issue #371 FR-7). Matches the cross-operator dashboard's
-/// own 60-second cache so the published `as_of` is never staler than
-/// what the consumer already tolerates.
-pub(crate) const DEFAULT_STATS_REFRESH_INTERVAL_SECS: u32 = 60;
+/// Default cadence at which the `/dashboard/stats` lease holder starts a
+/// new inventory walk (issue #371; five minutes per the maintainers'
+/// revision of FR-7). Not a bound on snapshot age: a slow or failed walk
+/// keeps the previous publication, and `as_of` reports the real age.
+pub(crate) const DEFAULT_STATS_REFRESH_INTERVAL_SECS: u32 = 300;
 /// Default account-count threshold above which dashboard cross-account
 /// aggregates may return a degraded marker on filesystem-backed
 /// deployments, per FR-029 of `005-operator-dashboard-metrics`.

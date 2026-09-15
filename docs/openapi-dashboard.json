@@ -1467,6 +1467,72 @@
           }
         ]
       }
+    },
+    "/dashboard/stats/refresh": {
+      "post": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "`POST /dashboard/stats/refresh` — request an out-of-cycle refresh of\nthe `/dashboard/stats` aggregate (issue #371). Requires\n`stats:refresh`. Returns `202` with the request's status; the walk\nitself runs on the lease holder, so poll `GET /dashboard/stats` for a\nnewer `as_of`.",
+        "operationId": "request_dashboard_stats_refresh_handler",
+        "responses": {
+          "202": {
+            "description": "Refresh queued, or already running (no duplicate work started)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardStatsRefreshResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing stats:refresh permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Within the cooldown of the last accepted request (`rate_limit_exceeded`, `Retry-After` set)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2503,6 +2569,13 @@
               "type": "string"
             }
           },
+          "aggregates_as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC3339 time the published snapshot that backs every\ncross-account aggregate below was computed; `null` until the\nfirst publication after startup (all of them are then listed in\n`degraded_aggregates`). Same value as `/dashboard/stats.as_of`."
+          },
           "backend": {
             "$ref": "#/components/schemas/DashboardBackendInfo"
           },
@@ -2532,7 +2605,7 @@
               "string",
               "null"
             ],
-            "description": "Greater of the most recent delta status timestamp and the most\nrecent proposal originating timestamp across all accounts;\n`None` (serialized as `null`) when the inventory has produced\nno activity yet, OR when this aggregate is degraded."
+            "description": "Greater of the most recent delta status timestamp and the most\nrecent proposal originating timestamp across all accounts as of\n`aggregates_as_of`; `None` (serialized as `null`) when the\ninventory has produced no activity yet, OR when this aggregate\nis degraded."
           },
           "service_status": {
             "$ref": "#/components/schemas/DashboardServiceStatus"
@@ -2540,7 +2613,7 @@
           "total_account_count": {
             "type": "integer",
             "format": "int64",
-            "description": "Total registered accounts. Once the `/dashboard/stats` snapshot\nhas published this is `accounts.total` from that snapshot, so it\nalways equals the sum of `accounts_by_auth_method` and matches\n`/dashboard/stats`; before the first refresh it is a live count.",
+            "description": "Total registered accounts. Once the `/dashboard/stats` snapshot\nis available this is `accounts.total` from that snapshot, so it\nalways equals the sum of `accounts_by_auth_method` and matches\n`/dashboard/stats`; before the first publication it is a live\ncount.",
             "minimum": 0
           }
         }
@@ -2653,11 +2726,59 @@
           "degraded"
         ]
       },
+      "DashboardStatsRefreshResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "cooldown_seconds"
+        ],
+        "properties": {
+          "cooldown_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Minimum seconds between accepted operator requests.",
+            "minimum": 0
+          },
+          "current_as_of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`as_of` of the snapshot currently served, or `null` before the\nfirst publication. Poll `GET /dashboard/stats` for a newer value."
+          },
+          "requested_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC3339 time the pending request was recorded (`queued`)."
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC3339 time the running walk started (`in_progress`)."
+          },
+          "status": {
+            "$ref": "#/components/schemas/DashboardStatsRefreshStatus"
+          }
+        }
+      },
+      "DashboardStatsRefreshStatus": {
+        "type": "string",
+        "description": "Outcome of an operator-triggered refresh request (`202 Accepted`).",
+        "enum": [
+          "queued",
+          "in_progress"
+        ]
+      },
       "DashboardStatsResponse": {
         "type": "object",
         "required": [
           "as_of",
           "refresh_interval_seconds",
+          "version",
           "accounts",
           "assets",
           "degraded_aggregates"
@@ -2679,12 +2800,12 @@
             "items": {
               "type": "string"
             },
-            "description": "Stable names of aggregates the server declined to compute for\nthis response. Reserved: the current implementation publishes\n`accounts` and `assets` atomically, so this is always empty and\nunavailability is reported as `503 data_unavailable` instead."
+            "description": "Stable names of aggregates the server declined to compute for\nthis response. `accounts` and `assets` are published atomically,\nso this is always empty here; unavailability of the whole\nsnapshot is `503 data_unavailable`. The inventory aggregates the\nsame walk feeds into `/dashboard/info` report their own\ndegradation there."
           },
           "refresh_interval_seconds": {
             "type": "integer",
             "format": "int64",
-            "description": "Configured cadence of the background refresh\n(`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`).",
+            "description": "Configured cadence at which the lease holder starts a new walk\n(`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`). Not a bound\non the age of `as_of`: a slow or failed walk keeps the previous\npublication.",
             "minimum": 0
           },
           "updated_since": {
@@ -2694,6 +2815,11 @@
             ],
             "format": "date-time",
             "description": "The applied filter, normalized to RFC3339, or `null` when the\nasset aggregate spans every account."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Publication counter of the snapshot this response was served\nfrom; identical across replicas for the same publication."
           }
         }
       },

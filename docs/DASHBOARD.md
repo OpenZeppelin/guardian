@@ -169,14 +169,16 @@ The response carries:
   non-fungible counts per `faucet_id`. No decimals normalization, token
   metadata, pricing, or fiat valuation — those stay consumer concerns.
 - Coverage: `eligible`, `covered`, `skipped` (by stable reason —
-  `state_unavailable`, `state_undecodable`) and `complete`.
+  `state_unavailable` for a missing state row, `state_undecodable` for a
+  row that does not decrypt or does not deserialize) and `complete`.
   `covered + Σskipped == eligible` always holds, and any skipped account
-  makes `complete: false`. A missing or undecodable state is never
-  reported as a zero balance.
-- `as_of`, the echoed `updated_since` (or `null`), the configured
-  `refresh_interval_seconds`, and `degraded_aggregates` (reserved; the
-  current implementation publishes everything atomically, so it is
-  always empty).
+  makes `complete: false`. A missing or corrupt state is never reported
+  as a zero balance.
+- `as_of` and `version` of the published snapshot, the echoed
+  `updated_since` (or `null`), the configured `refresh_interval_seconds`,
+  and `degraded_aggregates` (always empty here: `accounts` and `assets`
+  are published atomically, and the inventory aggregates the same walk
+  feeds into `/dashboard/info` report their own degradation there).
 
 `?updated_since=<RFC3339>` restricts the **asset** aggregate to accounts
 whose metadata `updated_at` — the same value `GET /dashboard/accounts`
@@ -189,50 +191,97 @@ accounts have no Miden vault and never count as eligible or skipped.
 Lifecycle does not affect eligibility (a paused or released account's
 vault is still under guard).
 
-**Freshness.** The aggregate is computed by a background task on every
-replica and published atomically; each refresh starts a full
-`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS` (default 60 s, matching
-the dashboard's own cache) after the previous one finished, so a slow
-walk never runs back-to-back. A request never reads storage or decodes
-a vault: it reads the latest snapshot and, when `updated_since` is set,
-folds the in-memory per-account totals of the eligible accounts
-(microseconds per account; the unfiltered aggregate is precomputed).
-`as_of` is the time the snapshot's walk began — use it to judge age;
-worst case is one interval plus one refresh's duration. Until the first
-refresh completes after startup the endpoint returns
-`503 data_unavailable` (retryable) rather than zeros. A refresh that
-fails at any storage read (metadata listing or paging, or a batched
-state pull) leaves the previous snapshot published and increments
-`guardian_dashboard_stats_refresh_failures_total`, so a transient
-database error never replaces a complete aggregate with a partial one;
-only a state row that is genuinely absent is reported as
-`state_unavailable`. The last successful `as_of` is exported as
+### One published snapshot per fleet
+
+The aggregate is computed by **one replica** and read by all of them, so
+requests routed to different replicas never disagree on totals or
+`as_of`:
+
+- The holder of the `dashboard_stats` row in `worker_leases` (the same
+  lease mechanism as the canonicalization worker, with its own lease
+  name) walks the inventory and publishes the result to the shared
+  store — the `dashboard_stats_snapshots` / `dashboard_stats_control`
+  tables on Postgres, an in-process store on the filesystem backend.
+  Publication is fenced: it validates the lease inside the same
+  transaction as the write and refuses to overwrite a snapshot
+  published under a newer fence token, so a holder that lost leadership
+  mid-walk can never replace a newer result.
+- Every replica polls the store's head version every 5 seconds and
+  loads a new publication into memory. Requests read only that copy:
+  no storage reads, no vault decoding, and an `updated_since` cutoff
+  folds at most one 256-record prefix block on top of precomputed
+  cumulative aggregates, so per-request work does not grow with the
+  inventory.
+- Requests that straddle a publication may observe different versions
+  (`version` tells them apart); the shared snapshot removes the
+  differences that independent per-replica refresh schedules would
+  cause.
+
+### Freshness
+
+The lease holder starts a new walk every
+`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS` (default **300 s**;
+this revises the original 60-second target of issue #371 FR-7) after the
+previous publication, or sooner when an operator requests one. The
+interval is **not** a bound on snapshot age: a slow walk publishes when
+it finishes, and a walk that fails at any systemic storage read
+(metadata listing, a batched state pull, a key-provider failure, or
+every previously decodable state suddenly failing to decode) leaves the
+previous snapshot published, increments
+`guardian_dashboard_stats_refresh_failures_total`, and is retried after
+a 60-second backoff. `as_of` is therefore
+the only truthful age signal; the last successful one is exported as
 `guardian_dashboard_stats_refresh_timestamp_seconds` and the walk
-duration as `guardian_dashboard_stats_refresh_duration_seconds`.
+duration as `guardian_dashboard_stats_refresh_duration_seconds`. Until
+the first publication after a fresh deployment the endpoint returns
+`503 data_unavailable` (retryable) rather than zeros.
 
-**Bounded refresh cost.** The walk reads metadata in pages of 200
-(`STATS_PAGE_SIZE`), then batch-pulls the Miden accounts' states in
-chunks of 200 and decodes a vault only when its state commitment
-differs from the previous snapshot — an unchanged commitment reuses the
-previous decoded vault, or the previous "undecodable" verdict — so a
-steady-state refresh decodes just the accounts that changed. Decoding
-runs on Tokio's blocking pool. Because every replica keeps its own
-snapshot, two replicas behind one load balancer may answer with slightly
-different `as_of` values; consumers should treat the value as a cache
-timestamp, not a global clock.
+### Operator-triggered refresh
 
-**Relationship to `/dashboard/info`.** `accounts_by_auth_method` and
-`total_account_count` on `/dashboard/info` are served from the *same*
-snapshot once it exists, so the two endpoints never contradict each
+`POST /dashboard/stats/refresh` (requires the `stats:refresh`
+permission) asks the lease holder for an out-of-cycle walk and returns
+`202 Accepted` with `status: "queued"` (also when a request was already
+pending) or `status: "in_progress"` (a walk started within the last two
+minutes is running; nothing is duplicated), plus `current_as_of` so the caller can poll
+`GET /dashboard/stats` for a newer value. Accepted requests are spaced by
+a 60-second cooldown; a request inside it is refused with
+`429 rate_limit_exceeded` and a `Retry-After` header. Automatic and
+operator-triggered refreshes share the same lease and control row, and
+every request writes a `stats.refresh` audit event.
+
+### Bounded walk cost
+
+The walk reads metadata in one in-memory snapshot (filesystem) or in
+indexed pages of 200 (Postgres), batch-pulls the Miden accounts' states
+in chunks of 200, and decodes a vault only when its state commitment
+differs from the previous snapshot; only successful decodes are reused,
+so a repaired blob is picked up on the next walk. A failed batch is
+retried one account at a time so a single corrupt or undecryptable row
+becomes explicit `state_undecodable` coverage while a systemic failure
+aborts the walk. Decoding runs on Tokio's blocking pool, and the lease
+is renewed every 15 seconds while a walk runs (60-second TTL, so a
+crashed holder is replaced within a minute).
+
+### Relationship to `/dashboard/info`
+
+Every cross-account aggregate on `/dashboard/info` —
+`total_account_count`, `accounts_by_auth_method`, `delta_status_counts`,
+`in_flight_proposal_count`, and `latest_activity` — is served from the
+same published snapshot, and the response reports its time as
+`aggregates_as_of`. The two endpoints therefore never contradict each
 other, the per-method counts always sum to the total, and the old
-inventory threshold no longer degrades that field. It is listed in `degraded_aggregates`
-only during the window between process start and the first published
-refresh. The remaining fan-out aggregates on `/dashboard/info` keep
-their filesystem threshold behavior (see below).
+filesystem inventory threshold no longer degrades those fields on its
+own: the walk applies the threshold to the fan-out aggregates it reads
+and lists anything it declined or failed to compute in
+`degraded_aggregates`, keeping the fields it did get. Until the first
+publication the snapshot-served aggregates are all listed as degraded
+(the live account count is still returned). This deliberately trades
+freshness — Postgres used to compute the delta and proposal aggregates
+live — for one consistent cached overview.
 
-The operator client exposes this as `getDashboardStats({ updatedSince })`
-and `examples/operator-smoke-web` has "Dashboard stats" buttons for the
-unfiltered, 7-day, and invalid-cutoff paths.
+The operator client exposes `getDashboardStats({ updatedSince })` and
+`requestDashboardStatsRefresh()`, and `examples/operator-smoke-web` has
+buttons for the unfiltered, 7-day, invalid-cutoff, and refresh paths.
 
 ## Permission vocabulary
 
@@ -245,6 +294,7 @@ load time so a typo surfaces explicitly
 | `dashboard:read` | Read access to all `/dashboard/*` read endpoints. |
 | `accounts:pause` | Pause/unpause accounts. |
 | `policies:write` | Reserved for future policy writes — no endpoint currently requires it. |
+| `stats:refresh` | Request an out-of-cycle refresh of the `/dashboard/stats` aggregate (`POST /dashboard/stats/refresh`, issue #371). |
 
 Wire strings are **case-sensitive** and **must not contain whitespace** —
 the parser rejects both.
@@ -407,11 +457,11 @@ degraded marker rather than a count. This is intentional — filesystem
 mode is a dev convenience, not a production backend. See
 [Storage modes](./architecture/services.md#storage-modes).
 
-The threshold does **not** apply to `GET /dashboard/stats` or to
-`accounts_by_auth_method` on `/dashboard/info`: both are served from the
-background-maintained snapshot described under
-[Aggregate stats](#aggregate-stats), which reads the inventory in
-bounded pages on either backend.
+The threshold is applied by the `/dashboard/stats` walk when it reads
+the fan-out inventory aggregates; the affected names surface in
+`degraded_aggregates` on `/dashboard/info`, while account counts and
+asset totals are always complete. See
+[Aggregate stats](#aggregate-stats).
 
 ## Operations checklist
 

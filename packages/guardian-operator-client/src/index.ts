@@ -12,6 +12,7 @@ export {
   ACCOUNTS_PAUSE,
   DASHBOARD_READ,
   POLICIES_WRITE,
+  STATS_REFRESH,
 } from './permissions.js';
 
 export type { OperatorPermission } from './permissions.js';
@@ -55,6 +56,7 @@ export type {
   DashboardNonFungibleTotal,
   DashboardProposalEntry,
   DashboardStatsOptions,
+  DashboardStatsRefreshResponse,
   DashboardStatsResponse,
   GlobalDeltasOptions,
   DeltaDetailOptions,

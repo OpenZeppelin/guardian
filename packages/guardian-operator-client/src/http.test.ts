@@ -1596,7 +1596,8 @@ describe('getDashboardStats (issue #371)', () => {
     return {
       as_of: '2026-09-11T12:00:00+00:00',
       updated_since: '2026-09-04T12:00:00+00:00',
-      refresh_interval_seconds: 60,
+      refresh_interval_seconds: 300,
+      version: 42,
       accounts: {
         total: 2379,
         by_lifecycle: { active: 2300, paused: 70, released: 9 },
@@ -1637,7 +1638,8 @@ describe('getDashboardStats (issue #371)', () => {
     expect(stats).toEqual({
       asOf: '2026-09-11T12:00:00+00:00',
       updatedSince: '2026-09-04T12:00:00+00:00',
-      refreshIntervalSeconds: 60,
+      refreshIntervalSeconds: 300,
+      version: 42,
       accounts: {
         total: 2379,
         byLifecycle: { active: 2300, paused: 70, released: 9 },
@@ -1757,6 +1759,7 @@ describe('getDashboardStats (issue #371)', () => {
     ],
     ['missing accounts block', { accounts: undefined }],
     ['missing as_of', { as_of: undefined }],
+    ['missing version', { version: undefined }],
   ];
 
   for (const [name, overrides] of contractViolations) {
@@ -1768,6 +1771,100 @@ describe('getDashboardStats (issue #371)', () => {
       );
     });
   }
+});
+
+describe('requestDashboardStatsRefresh (issue #371)', () => {
+  const mockFetch = vi.fn();
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockFetch);
+    mockFetch.mockReset();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('posts and decodes a queued response', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: async () => ({
+        status: 'queued',
+        requested_at: '2026-09-15T10:00:00+00:00',
+        started_at: null,
+        current_as_of: '2026-09-15T09:55:00+00:00',
+        cooldown_seconds: 60,
+      }),
+    });
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const result = await client.requestDashboardStatsRefresh();
+    expect(result).toEqual({
+      status: 'queued',
+      requestedAt: '2026-09-15T10:00:00+00:00',
+      startedAt: null,
+      currentAsOf: '2026-09-15T09:55:00+00:00',
+      cooldownSeconds: 60,
+    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/stats/refresh',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('decodes an in-progress response', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        status: 'in_progress',
+        requested_at: null,
+        started_at: '2026-09-15T10:00:00+00:00',
+        current_as_of: null,
+        cooldown_seconds: 60,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const result = await client.requestDashboardStatsRefresh();
+    expect(result.status).toBe('in_progress');
+    expect(result.startedAt).toBe('2026-09-15T10:00:00+00:00');
+    expect(result.currentAsOf).toBeNull();
+  });
+
+  it('rejects an unknown status as a contract error', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        status: 'done',
+        requested_at: null,
+        started_at: null,
+        current_as_of: null,
+        cooldown_seconds: 60,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(client.requestDashboardStatsRefresh()).rejects.toBeInstanceOf(
+      GuardianOperatorContractError,
+    );
+  });
+
+  it('surfaces the cooldown as rate_limit_exceeded with retryAfterSecs', async () => {
+    mockFetch.mockResolvedValueOnce(
+      errorResponse({
+        status: 429,
+        statusText: 'Too Many Requests',
+        body: {
+          code: 'rate_limit_exceeded',
+          message: 'Too many requests — please try again shortly.',
+          meta: { retryable: true, retry_after_secs: 37 },
+        },
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const err = (await client
+      .requestDashboardStatsRefresh()
+      .catch((v) => v)) as GuardianOperatorHttpError;
+    expect(err).toBeInstanceOf(GuardianOperatorHttpError);
+    expect(err.status).toBe(429);
+    expect(err.data?.code).toBe('rate_limit_exceeded');
+    expect(err.retryAfterSecs).toBe(37);
+  });
 });
 
 describe('isDashboardErrorCode', () => {

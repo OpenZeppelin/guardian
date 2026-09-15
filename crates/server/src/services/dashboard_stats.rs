@@ -17,7 +17,14 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::dashboard::stats::{AssetAggregate, StatsSnapshot};
+use serde_json::json;
+
+use crate::audit::{AuditEvent, AuditOutcome, kinds};
+use crate::coordination::RefreshRequestOutcome;
+use crate::dashboard::AuthenticatedOperator;
+use crate::dashboard::stats::{
+    AssetAggregate, STATS_REFRESH_COOLDOWN, STATS_REFRESH_STALE_AFTER, StatsSnapshot,
+};
 use crate::error::{GuardianError, Result};
 use crate::state::AppState;
 
@@ -108,16 +115,48 @@ pub struct DashboardStatsResponse {
     /// asset aggregate spans every account.
     #[schema(format = DateTime)]
     pub updated_since: Option<String>,
-    /// Configured cadence of the background refresh
-    /// (`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`).
+    /// Configured cadence at which the lease holder starts a new walk
+    /// (`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`). Not a bound
+    /// on the age of `as_of`: a slow or failed walk keeps the previous
+    /// publication.
     pub refresh_interval_seconds: u64,
+    /// Publication counter of the snapshot this response was served
+    /// from; identical across replicas for the same publication.
+    pub version: i64,
     pub accounts: DashboardAccountStats,
     pub assets: DashboardAssetStats,
     /// Stable names of aggregates the server declined to compute for
-    /// this response. Reserved: the current implementation publishes
-    /// `accounts` and `assets` atomically, so this is always empty and
-    /// unavailability is reported as `503 data_unavailable` instead.
+    /// this response. `accounts` and `assets` are published atomically,
+    /// so this is always empty here; unavailability of the whole
+    /// snapshot is `503 data_unavailable`. The inventory aggregates the
+    /// same walk feeds into `/dashboard/info` report their own
+    /// degradation there.
     pub degraded_aggregates: Vec<String>,
+}
+
+/// Outcome of an operator-triggered refresh request (`202 Accepted`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DashboardStatsRefreshStatus {
+    /// The request is recorded; the lease holder starts a walk on its
+    /// next tick. Also returned when a request was already pending.
+    Queued,
+    /// A walk is already running; no duplicate work was started.
+    InProgress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct DashboardStatsRefreshResponse {
+    pub status: DashboardStatsRefreshStatus,
+    /// RFC3339 time the pending request was recorded (`queued`).
+    pub requested_at: Option<String>,
+    /// RFC3339 time the running walk started (`in_progress`).
+    pub started_at: Option<String>,
+    /// `as_of` of the snapshot currently served, or `null` before the
+    /// first publication. Poll `GET /dashboard/stats` for a newer value.
+    pub current_as_of: Option<String>,
+    /// Minimum seconds between accepted operator requests.
+    pub cooldown_seconds: u64,
 }
 
 /// Parse the optional `updated_since` query value. Empty / blank is
@@ -136,6 +175,91 @@ pub fn parse_updated_since(raw: Option<&str>) -> Result<Option<DateTime<Utc>>> {
         })
 }
 
+/// Record an operator request for an out-of-cycle refresh (issue #371).
+/// Requires `stats:refresh`. Automatic and operator-triggered refreshes
+/// share the lease holder and the control row, so a request never
+/// starts duplicate work: while a walk runs the response reports it,
+/// and requests within [`STATS_REFRESH_COOLDOWN`] of the last accepted
+/// one are refused with `429 rate_limit_exceeded` (`Retry-After` set).
+///
+/// Errors:
+///   - [`GuardianError::RateLimitExceeded`] (`429`) during the cooldown.
+///   - [`GuardianError::StorageError`] when the shared control row
+///     cannot be read or written.
+pub async fn request_dashboard_stats_refresh(
+    state: &AppState,
+    operator: &AuthenticatedOperator,
+    client_ip: Option<String>,
+) -> Result<DashboardStatsRefreshResponse> {
+    let outcome = state
+        .dashboard
+        .stats_store()
+        .request_refresh(
+            &operator.operator_id,
+            state.clock.now(),
+            STATS_REFRESH_COOLDOWN,
+            STATS_REFRESH_STALE_AFTER,
+        )
+        .await?;
+    let current_as_of = state
+        .dashboard
+        .stats()
+        .current()
+        .map(|s| s.as_of.to_rfc3339());
+    let (status, requested_at, started_at, error) = match outcome {
+        RefreshRequestOutcome::Queued { requested_at }
+        | RefreshRequestOutcome::AlreadyQueued { requested_at } => (
+            DashboardStatsRefreshStatus::Queued,
+            Some(requested_at.to_rfc3339()),
+            None,
+            None,
+        ),
+        RefreshRequestOutcome::InProgress { started_at } => (
+            DashboardStatsRefreshStatus::InProgress,
+            None,
+            Some(started_at.to_rfc3339()),
+            None,
+        ),
+        RefreshRequestOutcome::Cooldown { retry_after } => (
+            DashboardStatsRefreshStatus::Queued,
+            None,
+            None,
+            Some(RefreshRequestOutcome::cooldown_error(retry_after)),
+        ),
+    };
+    let audit_status = match (&error, status) {
+        (Some(_), _) => "cooldown",
+        (None, DashboardStatsRefreshStatus::Queued) => "queued",
+        (None, DashboardStatsRefreshStatus::InProgress) => "in_progress",
+    };
+    state.auditor.record(AuditEvent {
+        operator_identity: operator.operator_id.clone(),
+        action_kind: kinds::STATS_REFRESH,
+        target_account_id: None,
+        payload: json!({
+            "status": audit_status,
+            "current_as_of": current_as_of,
+        }),
+        outcome: if error.is_some() {
+            AuditOutcome::Denied
+        } else {
+            AuditOutcome::Success
+        },
+        error_code: error.as_ref().map(|e| e.code().to_string()),
+        client_ip,
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(DashboardStatsRefreshResponse {
+        status,
+        requested_at,
+        started_at,
+        current_as_of,
+        cooldown_seconds: STATS_REFRESH_COOLDOWN.as_secs(),
+    })
+}
+
 /// Build the stats response from the latest published snapshot.
 ///
 /// Errors:
@@ -147,7 +271,7 @@ pub fn get_dashboard_stats(
 ) -> Result<DashboardStatsResponse> {
     let snapshot = state.dashboard.stats().current().ok_or_else(|| {
         GuardianError::DataUnavailable(
-            "dashboard stats aggregate has not been computed yet; retry after the first refresh"
+            "dashboard stats aggregate has not been published yet; retry after the first refresh"
                 .to_string(),
         )
     })?;
@@ -190,6 +314,7 @@ fn render(
         as_of: snapshot.as_of.to_rfc3339(),
         updated_since: updated_since.map(|ts| ts.to_rfc3339()),
         refresh_interval_seconds,
+        version: snapshot.version,
         accounts,
         assets: render_assets(&snapshot.assets_since(updated_since)),
         degraded_aggregates: Vec::new(),
@@ -231,7 +356,8 @@ mod tests {
     use crate::ack::AckRegistry;
     use crate::builder::clock::test::MockClock;
     use crate::dashboard::stats::{
-        AccountLifecycle, AccountStatsRecord, SkipReason, StatsSnapshot, VaultOutcome, VaultSummary,
+        AccountLifecycle, AccountStatsRecord, InventoryAggregates, SkipReason, StatsSnapshot,
+        VaultOutcome, VaultSummary,
     };
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
@@ -264,7 +390,7 @@ mod tests {
     fn record(
         id: &str,
         updated_at: &str,
-        auth_method: &'static str,
+        auth_method: &str,
         signers: usize,
         lifecycle: AccountLifecycle,
         vault: VaultOutcome,
@@ -272,7 +398,7 @@ mod tests {
         AccountStatsRecord {
             account_id: id.to_string(),
             updated_at: Some(ts(updated_at)),
-            auth_method,
+            auth_method: auth_method.to_string(),
             authorized_signer_count: signers,
             lifecycle,
             state_commitment: None,
@@ -280,14 +406,20 @@ mod tests {
         }
     }
 
-    fn decoded(fungible: &[(&str, u128)], non_fungible: &[(&str, u64)]) -> VaultOutcome {
-        VaultOutcome::Decoded(VaultSummary {
-            fungible: fungible.iter().map(|(f, a)| (f.to_string(), *a)).collect(),
-            non_fungible: non_fungible
-                .iter()
-                .map(|(f, c)| (f.to_string(), *c))
-                .collect(),
-        })
+    fn decoded(fungible: &[(&str, u64)], non_fungible: &[(&str, u64)]) -> VaultOutcome {
+        VaultOutcome::Decoded {
+            vault: VaultSummary {
+                fungible: fungible.iter().map(|(f, a)| (f.to_string(), *a)).collect(),
+                non_fungible: non_fungible
+                    .iter()
+                    .map(|(f, c)| (f.to_string(), *c))
+                    .collect(),
+            },
+        }
+    }
+
+    fn snapshot(as_of: DateTime<Utc>, records: Vec<AccountStatsRecord>) -> StatsSnapshot {
+        StatsSnapshot::new(3, as_of, as_of, records, InventoryAggregates::default())
     }
 
     #[test]
@@ -331,7 +463,7 @@ mod tests {
     async fn renders_snapshot_into_wire_shape_with_coverage_and_decimal_strings() {
         let state = test_state().await;
         let as_of = ts("2026-09-11T00:00:00Z");
-        let huge = u128::from(u64::MAX) + 1;
+        let huge = u64::MAX;
         let records = vec![
             record(
                 "a",
@@ -347,7 +479,9 @@ mod tests {
                 "miden_falcon",
                 1,
                 AccountLifecycle::Paused,
-                VaultOutcome::Skipped(SkipReason::StateUnavailable),
+                VaultOutcome::Skipped {
+                    reason: SkipReason::StateUnavailable,
+                },
             ),
             record(
                 "c",
@@ -369,7 +503,7 @@ mod tests {
         state
             .dashboard
             .stats()
-            .publish(Arc::new(StatsSnapshot::new(as_of, records)));
+            .publish(Arc::new(snapshot(as_of, records)));
 
         let since = ts("2026-09-01T00:00:00Z");
         let stats = get_dashboard_stats(&state, Some(since)).unwrap();
@@ -378,7 +512,8 @@ mod tests {
             stats.updated_since.as_deref(),
             Some("2026-09-01T00:00:00+00:00")
         );
-        assert_eq!(stats.refresh_interval_seconds, 60);
+        assert_eq!(stats.refresh_interval_seconds, 300);
+        assert_eq!(stats.version, 3);
         assert!(stats.degraded_aggregates.is_empty());
 
         // Account counts are unfiltered.
@@ -431,7 +566,7 @@ mod tests {
             assets.fungible,
             vec![DashboardFungibleTotal {
                 faucet_id: "0xf1".into(),
-                total_amount: "18446744073709551616".into()
+                total_amount: "18446744073709551615".into()
             }]
         );
         assert_eq!(
@@ -447,7 +582,7 @@ mod tests {
         assert_eq!(all.updated_since, None);
         assert_eq!((all.assets.eligible, all.assets.covered), (3, 2));
         assert_eq!(all.assets.fungible.len(), 2);
-        assert_eq!(all.assets.fungible[0].total_amount, "18446744073709551621");
+        assert_eq!(all.assets.fungible[0].total_amount, "18446744073709551620");
         assert_eq!(
             all.assets.fungible[1],
             DashboardFungibleTotal {

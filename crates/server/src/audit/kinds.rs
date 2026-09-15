@@ -35,12 +35,18 @@ pub const ACCOUNTS_RELEASE: &str = "accounts.release";
 
 /// All registered kinds in v1, for tests and introspection. Append
 /// new consts above and add them to this slice in the same commit.
+/// Operator requested an out-of-cycle `/dashboard/stats` refresh
+/// (`POST /dashboard/stats/refresh`, issue #371). Payload: the
+/// request outcome (`queued` / `in_progress` / `cooldown`).
+pub const STATS_REFRESH: &str = "stats.refresh";
+
 pub const ALL_KINDS: &[&str] = &[
     AUTH_DENIED,
     PROBE_ACCESS,
     ACCOUNTS_PAUSE,
     ACCOUNTS_UNPAUSE,
     ACCOUNTS_RELEASE,
+    STATS_REFRESH,
 ];
 
 #[cfg(test)]
@@ -57,6 +63,7 @@ mod tests {
                 ACCOUNTS_PAUSE,
                 ACCOUNTS_UNPAUSE,
                 ACCOUNTS_RELEASE,
+                STATS_REFRESH,
             ]
         );
     }

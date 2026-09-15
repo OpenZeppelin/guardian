@@ -397,6 +397,11 @@ export default function App() {
     });
   }
 
+  async function dashboardStatsRefresh() {
+    // Requires `stats:refresh`; 202 queued / in_progress, 429 inside the cooldown.
+    await runAction('dashboardStatsRefresh', () => client.requestDashboardStatsRefresh());
+  }
+
   async function dashboardStatsInvalidSince() {
     // Exercises the `invalid_timestamp` (400) error path.
     await runAction('dashboardStatsInvalidSince', () =>
@@ -591,6 +596,7 @@ export default function App() {
             <button onClick={() => void dashboardStatsInvalidSince()}>
               Dashboard stats (invalid since)
             </button>
+            <button onClick={() => void dashboardStatsRefresh()}>Request stats refresh</button>
             <button onClick={() => void getSession()}>Get session</button>
             <button onClick={() => void listGlobalDeltas()}>List global deltas</button>
             <button onClick={() => void listGlobalProposals()}>List global proposals</button>

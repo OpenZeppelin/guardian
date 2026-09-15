@@ -643,13 +643,37 @@ export interface DashboardStatsResponse {
   asOf: string;
   /** The applied filter, normalized to RFC3339, or `null`. */
   updatedSince: string | null;
-  /** Configured server refresh cadence. */
+  /** Configured cadence at which the lease holder starts a new walk.
+   * Not a bound on the age of `asOf`: a slow or failed walk keeps the
+   * previous publication. */
   refreshIntervalSeconds: number;
+  /** Publication counter; identical across replicas for one
+   * publication. */
+  version: number;
   accounts: DashboardAccountStats;
   assets: DashboardAssetStats;
   /** Stable names of aggregates the server declined to compute.
    * Currently always empty: unavailability is a `503 data_unavailable`. */
   degradedAggregates: string[];
+}
+
+/**
+ * `POST /dashboard/stats/refresh` (issue #371, `202 Accepted`): the
+ * request is `queued` for the lease holder (also when one was already
+ * pending) or a walk is already `in_progress`. A request inside the
+ * cooldown is rejected with `rate_limit_exceeded` (429) instead.
+ */
+export interface DashboardStatsRefreshResponse {
+  status: 'queued' | 'in_progress';
+  /** RFC3339 time the pending request was recorded (`queued`). */
+  requestedAt: string | null;
+  /** RFC3339 time the running walk started (`in_progress`). */
+  startedAt: string | null;
+  /** `asOf` of the snapshot currently served, or `null` before the
+   * first publication. */
+  currentAsOf: string | null;
+  /** Minimum seconds between accepted operator requests. */
+  cooldownSeconds: number;
 }
 
 export interface DeltaDetailOptions {
@@ -721,6 +745,11 @@ export interface DashboardInfoResponse {
   build: DashboardBuildInfo;
   backend: DashboardBackendInfo;
   totalAccountCount: number;
+  /** RFC3339 time of the published `/dashboard/stats` snapshot every
+   * cross-account aggregate below is served from; `null` until the
+   * first publication (they are then all listed in
+   * `degradedAggregates`). Absent on servers predating issue #371. */
+  aggregatesAsOf?: string | null;
   /** Counts of accounts grouped by stable auth-method label
    * (`"miden_falcon"`, `"miden_ecdsa"`, `"evm"`). Empty when marked
    * degraded — check `degradedAggregates` for

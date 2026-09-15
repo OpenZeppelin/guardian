@@ -13,9 +13,10 @@ use crate::services::pause_account::PauseResponse;
 use crate::services::unpause_account::UnpauseResponse;
 use crate::services::{
     DashboardAccountDetail, DashboardAccountSnapshot, DashboardAccountSummary,
-    DashboardInfoResponse, DashboardStatsResponse, PagedResult, get_account_snapshot,
-    get_dashboard_account, get_dashboard_info, get_dashboard_stats, list_dashboard_accounts_paged,
-    parse_cursor, parse_limit, parse_updated_since, pause_account, unpause_account,
+    DashboardInfoResponse, DashboardStatsRefreshResponse, DashboardStatsResponse, PagedResult,
+    get_account_snapshot, get_dashboard_account, get_dashboard_info, get_dashboard_stats,
+    list_dashboard_accounts_paged, parse_cursor, parse_limit, parse_updated_since, pause_account,
+    request_dashboard_stats_refresh, unpause_account,
 };
 use crate::state::AppState;
 
@@ -291,6 +292,33 @@ pub async fn get_dashboard_stats_handler(
     let updated_since = parse_updated_since(query.updated_since.as_deref())?;
     let stats = get_dashboard_stats(&state, updated_since)?;
     Ok(Json(stats))
+}
+
+/// `POST /dashboard/stats/refresh` — request an out-of-cycle refresh of
+/// the `/dashboard/stats` aggregate (issue #371). Requires
+/// `stats:refresh`. Returns `202` with the request's status; the walk
+/// itself runs on the lease holder, so poll `GET /dashboard/stats` for a
+/// newer `as_of`.
+#[utoipa::path(
+    post,
+    path = "/dashboard/stats/refresh",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    responses(
+        (status = 202, description = "Refresh queued, or already running (no duplicate work started)", body = DashboardStatsRefreshResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing stats:refresh permission", body = crate::openapi::ApiErrorResponse),
+        (status = 429, description = "Within the cooldown of the last accepted request (`rate_limit_exceeded`, `Retry-After` set)", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn request_dashboard_stats_refresh_handler(
+    State(state): State<AppState>,
+    Extension(operator): Extension<AuthenticatedOperator>,
+    request: axum::extract::Request,
+) -> Result<(StatusCode, Json<DashboardStatsRefreshResponse>)> {
+    let client_ip = crate::middleware::client_ip::extract_client_ip(&request);
+    let response = request_dashboard_stats_refresh(&state, &operator, client_ip).await?;
+    Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -1183,7 +1211,8 @@ mod tests {
 
         assert!(chrono::DateTime::parse_from_rfc3339(stats["as_of"].as_str().unwrap()).is_ok());
         assert_eq!(stats["updated_since"], since.to_rfc3339());
-        assert_eq!(stats["refresh_interval_seconds"], 60);
+        assert_eq!(stats["refresh_interval_seconds"], 300);
+        assert_eq!(stats["version"], 1);
         assert_eq!(stats["degraded_aggregates"], serde_json::json!([]));
 
         let accounts = &stats["accounts"];
@@ -1259,8 +1288,124 @@ mod tests {
             stats["accounts"]["by_auth_method"]
         );
         assert_eq!(info["total_account_count"], stats["accounts"]["total"]);
+        assert_eq!(info["aggregates_as_of"], stats["as_of"]);
         assert_eq!(info["service_status"], "healthy");
         assert_eq!(info["degraded_aggregates"], serde_json::json!([]));
+        assert_eq!(info["delta_status_counts"]["canonical"], 0);
+        assert_eq!(info["in_flight_proposal_count"], 0);
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #371: POST /dashboard/stats/refresh
+    // -----------------------------------------------------------------
+
+    async fn post_refresh(app: &axum::Router, cookie: &str) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/dashboard/stats/refresh")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stats_refresh_requires_the_stats_refresh_permission() {
+        use crate::dashboard::permissions::Permission;
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(&operator, &[Permission::DashboardRead]),
+        ]));
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+        let response = post_refresh(&app, &cookie).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["code"], "GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION");
+        assert_eq!(
+            body["meta"]["missing_permissions"],
+            serde_json::json!(["stats:refresh"])
+        );
+
+        // No session at all: 401 before authz.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/dashboard/stats/refresh")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn stats_refresh_queues_once_then_reports_status_and_cooldown() {
+        use crate::dashboard::permissions::Permission;
+        let operator = TestSigner::new();
+        let mut state = create_test_app_state().await;
+        state.dashboard = Arc::new(DashboardState::for_tests_with_permissions(vec![
+            op_with_perms(
+                &operator,
+                &[Permission::DashboardRead, Permission::StatsRefresh],
+            ),
+        ]));
+        seed_account(
+            &state,
+            create_metadata("acc-a", "2026-09-10T00:00:00Z"),
+            None,
+        )
+        .await;
+        let shared = state.clone();
+        let app = create_router(state);
+        let cookie = authenticate_operator(&app, &operator).await;
+
+        // Nothing published yet: the request is queued and says so.
+        let response = post_refresh(&app, &cookie).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["status"], "queued");
+        assert!(body["requested_at"].is_string());
+        assert!(body["current_as_of"].is_null());
+        assert_eq!(body["cooldown_seconds"], 60);
+
+        // A second request while the first is pending is idempotent.
+        let response = post_refresh(&app, &cookie).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["status"], "queued");
+
+        // The lease holder walks and publishes, consuming the request;
+        // the next request lands inside the cooldown.
+        crate::dashboard::stats::refresh_dashboard_stats(&shared)
+            .await
+            .expect("refresh");
+        let response = post_refresh(&app, &cookie).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry_after: u64 = response
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .expect("Retry-After header");
+        assert!((1..=60).contains(&retry_after), "retry_after={retry_after}");
+        let body: serde_json::Value = read_json(response).await;
+        assert_eq!(body["code"], "rate_limit_exceeded");
+        assert_eq!(body["meta"]["retryable"], true);
+
+        // The published snapshot is now served.
+        let response = get_stats(&app, Some(&cookie), "").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stats: serde_json::Value = read_json(response).await;
+        assert_eq!(stats["accounts"]["total"], 1);
     }
 
     fn url_escape(value: &str) -> String {

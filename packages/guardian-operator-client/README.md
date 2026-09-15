@@ -129,9 +129,24 @@ if (!stats.assets.complete) {
 }
 ```
 
-Until the server finishes its first refresh after startup the call throws a
-`GuardianOperatorHttpError` with code `data_unavailable` (503, retryable); a
-malformed `updatedSince` yields `invalid_timestamp` (400).
+The aggregate is one snapshot per fleet: the holder of the `dashboard_stats`
+lease walks the inventory every `GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`
+(300 s by default) and every replica serves the same `version`. Until the first
+publication the call throws a `GuardianOperatorHttpError` with code
+`data_unavailable` (503, retryable); a malformed `updatedSince` yields
+`invalid_timestamp` (400). `asOf` is the only truthful age signal — a slow or
+failed walk keeps the previous publication.
+
+Operators holding `stats:refresh` can ask for an out-of-cycle walk:
+
+```typescript
+const refresh = await client.requestDashboardStatsRefresh(); // 202
+console.log(refresh.status, refresh.requestedAt ?? refresh.startedAt, refresh.currentAsOf);
+// 'queued' (recorded for the lease holder, also when one was already pending)
+// or 'in_progress' (a walk is running; nothing duplicated). Inside the
+// 60-second cooldown the call throws `rate_limit_exceeded` (429) with
+// `retryAfterSecs` set. Poll getDashboardStats() for a newer asOf/version.
+```
 
 ### Per-Account Delta Feed
 
@@ -396,7 +411,7 @@ shapes:
 ```
 
 Recognized permissions in v1: `dashboard:read`, `accounts:pause`,
-`policies:write`.
+`policies:write`, `stats:refresh` (issue #371: `requestDashboardStatsRefresh()`).
 
 When the server denies a request for insufficient permissions, the
 response body extends the existing flat envelope additively:
