@@ -8,7 +8,8 @@ use std::pin::Pin;
 use miden_client::Serializable;
 use miden_multisig_client::{
     build_p2id_transaction_request, build_transfer_asset, ensure_hex_prefix, generate_salt,
-    word_from_hex, Asset, ExportedProposal, NoteId, P2ideHeights, ProcedureName, TransactionType,
+    word_from_hex, Asset, ExportedProposal, NoteId, P2ideHeights, ProcedureName, Proposal,
+    ProposalVerification, TransactionType,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -244,7 +245,7 @@ async fn create_proposal_with_retry(
     state: &mut SessionState,
     transaction_type: TransactionType,
     _editor: &mut DefaultEditor,
-) -> Result<miden_multisig_client::Proposal, String> {
+) -> Result<Proposal, String> {
     let mut last_error = String::new();
     let mut commitment_mismatch_retried = false;
 
@@ -362,6 +363,7 @@ async fn action_view_proposals(state: &mut SessionState) -> Result<(), String> {
         println!("      Type: {:?}", proposal.transaction_type);
         print_full_hex("      Proposal ID", &proposal.id);
         println!("      Signatures: {}/{}", collected, required);
+        print_verification(proposal);
 
         if proposal.status.is_pending() && !proposal.metadata.signers.is_empty() {
             println!("      Signers:");
@@ -406,6 +408,7 @@ async fn action_sign_proposal(
         println!("  [{}] {}", idx + 1, shorten_hex(&proposal.id));
         println!("      Type: {:?}", proposal.transaction_type);
         println!("      Signatures: {}/{}", collected, required);
+        print_verification(proposal);
     }
 
     let selection = prompt_input(editor, "\nSelect proposal to sign (number): ")?;
@@ -443,7 +446,7 @@ async fn action_sign_proposal(
     let (collected, required) = updated.signature_counts();
     print_info(&format!("Signatures: {}/{}", collected, required));
 
-    if updated.signatures_needed() == 0 {
+    if updated.is_actionable() {
         print_success("All signatures collected! Ready to execute with [4].");
     }
 
@@ -477,7 +480,7 @@ async fn action_execute_proposal(
     println!("\nPending Proposals:");
     for (idx, proposal) in proposals.iter().enumerate() {
         let (collected, required) = proposal.signature_counts();
-        let ready = if proposal.signatures_needed() == 0 {
+        let ready = if proposal.is_actionable() {
             " ✓ READY"
         } else {
             ""
@@ -486,6 +489,7 @@ async fn action_execute_proposal(
         println!("  [{}] {}{}", idx + 1, shorten_hex(&proposal.id), ready);
         println!("      Type: {:?}", proposal.transaction_type);
         println!("      Signatures: {}/{}", collected, required);
+        print_verification(proposal);
     }
 
     let selection = prompt_input(editor, "\nSelect proposal to execute (number): ")?;
@@ -691,6 +695,7 @@ async fn action_export_proposal(
         println!("  [{}] {}", idx + 1, shorten_hex(&proposal.id));
         println!("      Type: {:?}", proposal.transaction_type);
         println!("      Signatures: {}/{}", collected, required);
+        print_verification(proposal);
     }
 
     let choice = prompt_input(editor, "\nSelect proposal to export (number): ")?;
@@ -1632,5 +1637,19 @@ fn print_proposal_details(proposal: &ExportedProposal) {
         for signer in signers {
             println!("    - {}", shorten_hex(signer));
         }
+    }
+}
+
+/// One line under a listed proposal when its summary-binding check failed:
+/// a transient node error is worth listing again, anything else means the
+/// proposal cannot be reproduced and has to be re-proposed.
+fn print_verification(proposal: &Proposal) {
+    if let ProposalVerification::Failed { retryable, message } = &proposal.verification {
+        let hint = if *retryable {
+            "transient node error, list again"
+        } else {
+            "cannot be signed or executed, re-propose"
+        };
+        println!("      ⚠ UNVERIFIABLE ({}): {}", hint, message);
     }
 }

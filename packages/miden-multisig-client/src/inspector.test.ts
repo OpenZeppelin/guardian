@@ -65,10 +65,12 @@ vi.mock('@miden-sdk/miden-sdk', () => {
       }),
     },
     Word: Object.assign(
-      vi.fn().mockImplementation((arr: BigUint64Array) => ({
-        toU64s: () => Array.from(arr),
-        toHex: () => '0x' + Array.from(arr).map(v => v.toString(16).padStart(16, '0')).join(''),
-      })),
+      vi.fn().mockImplementation(function (arr: BigUint64Array) {
+        return {
+          toU64s: () => Array.from(arr),
+          toHex: () => '0x' + Array.from(arr).map(v => v.toString(16).padStart(16, '0')).join(''),
+        };
+      }),
       {
         fromHex: vi.fn((hex: string) => ({
           toU64s: () => [0n, 0n, 0n, 0n],

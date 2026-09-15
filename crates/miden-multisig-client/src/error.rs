@@ -164,6 +164,13 @@ pub enum MultisigError {
     /// store does not contain the referenced note. Not reachable on v2.
     #[error("consume_notes legacy verification: note not found in local store: {note_id}")]
     LegacyConsumeNotesNoteMissing { note_id: NoteId },
+
+    /// consume_notes: a note the proposal consumes could not be authenticated
+    /// (its inclusion proof fetched from the node and imported into the local
+    /// store). The signed summary commits to authenticated consumption, so
+    /// an unauthenticated rebuild would never match it (issue #409).
+    #[error("consume_notes: note {note_id} could not be authenticated: {reason}")]
+    ConsumeNoteNotAuthenticated { note_id: NoteId, reason: String },
 }
 
 impl MultisigError {
@@ -178,6 +185,9 @@ impl MultisigError {
             }
             Self::ConsumeNotesMetadataOversize { .. } => Some("consume_notes_metadata_oversize"),
             Self::LegacyConsumeNotesNoteMissing { .. } => Some("consume_notes_legacy_note_missing"),
+            Self::ConsumeNoteNotAuthenticated { .. } => {
+                Some("consume_notes_note_not_authenticated")
+            }
             Self::UnsupportedTransactionType(_) => Some("unsupported_transaction_type"),
             _ => None,
         }
@@ -234,6 +244,7 @@ impl MultisigError {
 fn rpc_kind_from_client_error(error: &miden_client::ClientError) -> Option<&GrpcError> {
     match error {
         miden_client::ClientError::RpcError(error) => rpc_kind(error),
+        miden_client::ClientError::SubmissionOutcomeUnknown { source, .. } => rpc_kind(source),
         miden_client::ClientError::ApplyTransactionAfterSubmitFailed { source, .. } => {
             rpc_kind_from_client_error(source)
         }

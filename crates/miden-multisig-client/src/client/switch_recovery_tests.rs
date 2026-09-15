@@ -10,28 +10,19 @@
 //! survive the repoint to a new GUARDIAN that serves nothing.
 use std::sync::Arc;
 
-use base64::Engine as _;
 use guardian_client::testing::mocks::{MockGuardianService, start_mock_server};
-use guardian_client::{
-    AccountState, DeltaObject as ProtoDeltaObject, DeltaStatus, GetDeltaProposalResponse,
-    GetDeltaProposalsResponse, GetStateResponse, PendingStatus, delta_status,
-};
+use guardian_client::{GetDeltaProposalResponse, GetDeltaProposalsResponse};
 use guardian_shared::FromJson;
-use miden_client::Serializable;
 use miden_client::store::NoteFilter as StoreNoteFilter;
 use miden_client::transaction::TransactionSummary;
-use miden_confidential_contracts::multisig_guardian::{
-    MultisigGuardianBuilder, MultisigGuardianConfig,
-};
 use miden_protocol::Word;
-use miden_protocol::account::Account;
 use miden_protocol::note::NoteType;
 
 use super::note_recovery::NoteRecoveryOptions;
 use super::proposal_note_import::NoteImportStatus;
 use super::test_support::{
-    chain_with_notes, offline_client_parts_with_keystore, offline_client_with_node_parts,
-    p2id_note_for,
+    chain_with_notes, multisig_account, offline_client_parts_with_keystore,
+    offline_client_with_node_parts, p2id_note_for, pending_proto_delta, registered_state,
 };
 use crate::account::MultisigAccount;
 use crate::execution::build_final_transaction_request;
@@ -39,71 +30,6 @@ use crate::keystore::{GuardianKeyStore, KeyManager};
 use crate::payload::ProposalPayload;
 use crate::proposal::{SerializedNote, TransactionType};
 use crate::transaction::word_to_hex;
-
-const BASE64: base64::engine::general_purpose::GeneralPurpose =
-    base64::engine::general_purpose::STANDARD;
-
-/// A real 1-of-1 multisig-guardian account whose cosigner is `signer` — the
-/// same construction `MultisigClient::create_account` performs, minus the
-/// GUARDIAN pubkey fetch (the guardian commitment is fixed by the test).
-fn multisig_account(signer: Word, guardian_commitment: Word, seed: u8) -> Account {
-    let config = MultisigGuardianConfig::new(1, vec![signer], guardian_commitment);
-    MultisigGuardianBuilder::new(config)
-        .with_seed([seed; 32])
-        .build()
-        .expect("multisig account builds")
-}
-
-/// The canned `get_state` a mock GUARDIAN serves for `account`: the same
-/// commitment the client holds, so guardian sync is a no-op.
-fn registered_state(account: &Account) -> GetStateResponse {
-    GetStateResponse {
-        success: true,
-        message: String::new(),
-        state: Some(AccountState {
-            account_id: account.id().to_string(),
-            state_json: serde_json::json!({
-                "data": BASE64.encode(account.to_bytes()),
-            })
-            .to_string(),
-            commitment: word_to_hex(&account.to_commitment()),
-            created_at: String::new(),
-            updated_at: String::new(),
-        }),
-    }
-}
-
-/// Wraps a delta payload as the pending proto `DeltaObject` a GUARDIAN
-/// listing would serve.
-fn pending_proto_delta(
-    account: &Account,
-    nonce: u64,
-    delta_payload: String,
-    proposer_hex: &str,
-) -> ProtoDeltaObject {
-    ProtoDeltaObject {
-        account_id: account.id().to_string(),
-        nonce,
-        prev_commitment: word_to_hex(&account.to_commitment()),
-        delta_payload,
-        new_commitment: String::new(),
-        ack_sig: String::new(),
-        candidate_at: String::new(),
-        canonical_at: None,
-        discarded_at: None,
-        status: Some(DeltaStatus {
-            status: Some(delta_status::Status::Pending(PendingStatus {
-                timestamp: "2026-01-01T00:00:00Z".to_string(),
-                proposer_id: proposer_hex.to_string(),
-                cosigner_sigs: vec![],
-            })),
-            discard_reason: String::new(),
-            retain_reason: String::new(),
-        }),
-        ack_pubkey: None,
-        ack_scheme: None,
-    }
-}
 
 /// Issue #417 continuity: a note embedded in a proposal still pending on the
 /// pre-switch GUARDIAN is imported by `preserve_pre_switch_proposal_notes`
@@ -128,11 +54,11 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
         note.clone(),
     )]);
 
-    // The author builds the pending consume-notes v2 proposal from the
-    // embedded bytes exactly the way binding verification replays it: the
-    // same request builder and an abort-execution for the summary, from a
-    // store that does not hold the note's proof — the self-contained v2
-    // reconstruction path every verifier can reproduce.
+    // The author builds the pending consume-notes v2 proposal exactly the way
+    // proposal creation does: the note authenticated in its store first (the
+    // canonical consumption mode every verifier's rebuild reproduces, issue
+    // #409), then the same request builder and an abort-execution for the
+    // summary, with the anchor tracking the note's block.
     let dir1 = tempfile::tempdir().unwrap();
     let (mut author, _store1) =
         offline_client_parts_with_keystore(dir1.path(), api.clone(), None, keystore.clone()).await;
@@ -140,6 +66,14 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
     author.add_or_update_account(&account, true).await.unwrap();
     author.account = Some(MultisigAccount::new(account.clone()));
     author.miden_client.sync_state().await.unwrap();
+    let author_rpc = author.node_rpc_client();
+    crate::transaction::ensure_notes_authenticated(
+        &mut author.miden_client,
+        &author_rpc,
+        std::slice::from_ref(&note),
+    )
+    .await
+    .unwrap();
 
     let salt = Word::from([5u32, 6, 7, 8]);
     let tx_type =
@@ -227,18 +161,28 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
         "problems: {:?}",
         report.problems
     );
+    // Binding verification authenticates the proposal's notes before it
+    // rebuilds (issue #409), so by the time the import step runs the note is
+    // already in the store with its proof and the step reports it as such.
     let outcomes = report.proposal_import.expect("proposal import ran");
     assert_eq!(outcomes.len(), 1, "outcomes: {outcomes:?}");
     assert_eq!(
         outcomes[0].status,
-        NoteImportStatus::Imported,
+        NoteImportStatus::AlreadyPresent,
         "{outcomes:?}"
     );
     assert_eq!(outcomes[0].identifier, note.id().to_hex());
-    assert_eq!(report.imported, 1);
+    assert_eq!(report.imported, 0);
+    let held = executor
+        .miden_client
+        .get_input_note(note.id())
+        .await
+        .unwrap()
+        .expect("the pre-switch listing brought the note into the store");
+    assert!(held.is_authenticated(), "with its inclusion proof");
 
     // Repoint to the new GUARDIAN, which serves no proposals: the note must
-    // already be in the local store, proof-backed — the pre-switch import
+    // already be in the local store, proof-backed — the pre-switch listing
     // was its only way in.
     executor
         .set_guardian_endpoint(&endpoint_b, false)

@@ -30,7 +30,9 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       afterBlockNum,
     })),
   },
-  NoteFilter: vi.fn().mockImplementation((noteType: number) => ({ noteType })),
+  NoteFilter: vi.fn().mockImplementation(function (noteType: number) {
+    return { noteType };
+  }),
   NoteFilterTypes: {
     All: 0,
     Consumed: 1,
@@ -45,14 +47,20 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   InputNote: {
     authenticated: vi.fn((note: unknown, proof: unknown) => ({ note, proof })),
   },
-  NoteDetails: vi.fn().mockImplementation((assets: unknown, recipient: unknown) => ({
-    assets,
-    recipient,
-  })),
-  Endpoint: vi.fn().mockImplementation((url: string) => ({ url })),
-  RpcClient: vi.fn().mockImplementation(() => ({
-    getNotesById: mockGetNotesById,
-  })),
+  NoteDetails: vi.fn().mockImplementation(function (assets: unknown, recipient: unknown) {
+    return {
+      assets,
+      recipient,
+    };
+  }),
+  Endpoint: vi.fn().mockImplementation(function (url: string) {
+    return { url };
+  }),
+  RpcClient: vi.fn().mockImplementation(function () {
+    return {
+      getNotesById: mockGetNotesById,
+    };
+  }),
 }));
 
 const FILTER_ALL = 0;

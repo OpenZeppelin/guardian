@@ -36,7 +36,9 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     withAccountTarget: vi.fn((accountId: { hex: string }) => ({ target: accountId.hex })),
   },
   NoteType: { Private: 0, Public: 1 },
-  NoteFilter: vi.fn().mockImplementation((noteType: number) => ({ noteType })),
+  NoteFilter: vi.fn().mockImplementation(function (noteType: number) {
+    return { noteType };
+  }),
   NoteFilterTypes: {
     All: 0,
     Consumed: 1,
@@ -54,12 +56,16 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   NoteFile: {
     fromInputNote: vi.fn((inputNote: unknown) => ({ kind: 'with-proof', inputNote })),
   },
-  Endpoint: vi.fn().mockImplementation((url: string) => ({ url })),
-  RpcClient: vi.fn().mockImplementation(() => ({
-    syncNotes: mockSyncNotes,
-    getNotesById: mockGetNotesById,
-    getBlockHeaderByNumber: mockGetBlockHeaderByNumber,
-  })),
+  Endpoint: vi.fn().mockImplementation(function (url: string) {
+    return { url };
+  }),
+  RpcClient: vi.fn().mockImplementation(function () {
+    return {
+      syncNotes: mockSyncNotes,
+      getNotesById: mockGetNotesById,
+      getBlockHeaderByNumber: mockGetBlockHeaderByNumber,
+    };
+  }),
 }));
 
 const FILTER_ALL = 0;

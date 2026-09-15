@@ -55,9 +55,11 @@ import {
   type P2ideHeightOptions,
 } from './transaction.js';
 import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
+import { ensureNotesAuthenticated } from './transaction/noteAuthentication.js';
 import {
   CONSUME_NOTES_METADATA_VERSION_V2,
   MAX_CONSUME_NOTES_METADATA_BYTES,
+  type ConsumeNotesProposalMetadata,
 } from './types/proposal.js';
 import { LEGACY_CONSUME_NOTES_ENABLED } from './multisig/config.js';
 import {
@@ -116,6 +118,7 @@ import {
   resolveRpcConfig,
   type ResolvedRpcConfig,
 } from './rpc/config.js';
+import { isTransientRpcError } from './rpc/errors.js';
 import { retryRpcRead } from './rpc/retry.js';
 
 /**
@@ -762,12 +765,24 @@ export class Multisig {
    * Proposals cached or replaced after the sync started are not evaluated
    * by it.
    *
-   * The response is verified in full before the cache or the pruning state
-   * changes; a listing that fails metadata-binding verification throws and
-   * leaves both untouched. Signatures added to a cached proposal while the
-   * sync was verifying are preserved by its apply. Overlapping callers share
-   * the same in-flight promise. A sync that spans a
-   * {@link setGuardianClient} repoint rejects without applying its listing.
+   * Every synced proposal's metadata is checked against its signed summary
+   * and the outcome is recorded in {@link Proposal.verification}. One that
+   * fails is still cached and returned, so a single stale or corrupt
+   * proposal cannot hide the others (issue #462: once the node prunes a
+   * proposal's anchor block its re-execution fails for everyone). `failed`
+   * with `retryable: true` means a transient node error, worth syncing
+   * again; `retryable: false` means the proposal cannot be reproduced and
+   * must be re-proposed. `signProposal` and `executeProposal` re-verify and
+   * refuse a failed proposal. A failed proposal still counts as reported, so
+   * it is pruned like any other once GUARDIAN stops listing it.
+   *
+   * The response is parsed in full before the cache or the pruning state
+   * changes; a payload that does not parse at all rejects and leaves both
+   * untouched, so malformed GUARDIAN data is never silently dropped.
+   * Signatures added to a cached proposal while the sync was verifying are
+   * preserved by its apply. Overlapping callers share the same in-flight
+   * promise. A sync that spans a {@link setGuardianClient} repoint rejects
+   * without applying its listing.
    *
    * Nonce-based staleness hiding is the caller's job (see the examples'
    * `filterVisibleProposals`): callers of this shared client disagree on
@@ -807,7 +822,9 @@ export class Multisig {
         existingProposal?.metadata,
         existingProposal?.signatures ?? [],
       );
-      await this.verifyProposalMetadataBinding(proposal);
+      // The outcome lands on the proposal either way; a failure is reported
+      // there rather than failing the sync.
+      await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
       reported.set(proposal.id, { delta, verified: proposal });
     }
 
@@ -823,7 +840,10 @@ export class Multisig {
       applied.push(
         current === undefined
           ? verified
-          : factory.fromDelta(delta, verified.id, verified.metadata, current.signatures)
+          : {
+              ...factory.fromDelta(delta, verified.id, verified.metadata, current.signatures),
+              verification: verified.verification,
+            }
       );
     }
     for (const proposal of applied) {
@@ -1306,6 +1326,10 @@ export class Multisig {
       }
       fetchedNotes.push(inputNoteRecord.toNote());
     }
+    // Canonical consumption mode is authenticated (issue #409): the summary this
+    // proposal signs must be the one every cosigner's rebuild reproduces, so
+    // the notes are authenticated here first, before the anchor is captured.
+    await this.ensureNotesAuthenticated(fetchedNotes);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
     const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes);
@@ -1563,6 +1587,18 @@ export class Multisig {
    * store, reusing this client's Miden RPC endpoint and retry
    * configuration.
    */
+  /**
+   * Puts the local store in the canonical (authenticated) consumption mode
+   * for `notes`, fetching missing inclusion proofs from this client's Miden
+   * node; see {@link ensureNotesAuthenticated}.
+   */
+  private async ensureNotesAuthenticated(notes: readonly Note[]): Promise<void> {
+    await ensureNotesAuthenticated(this.midenClient, notes, {
+      midenRpcEndpoint: this.getMidenRpcEndpoint(),
+      rpc: { retry: { maxAttempts: this.rpcConfig.maxAttempts } },
+    });
+  }
+
   private async importNotesFromProposals(
     proposals: ReadonlyArray<Pick<Proposal, 'id' | 'metadata'>>,
     cancelled?: () => boolean,
@@ -2616,7 +2652,29 @@ export class Multisig {
     return txSummaryCommitment;
   }
 
+  /**
+   * Verifies that a proposal's metadata reconstructs its signed summary
+   * commitment and records the outcome in {@link Proposal.verification}:
+   * `verified`, or `failed` with the message and whether the failure looked
+   * transient. Rethrows the failure so strict callers keep failing closed
+   * while `syncProposals` keeps going with the outcome recorded.
+   */
   private async verifyProposalMetadataBinding(proposal: Proposal): Promise<string> {
+    try {
+      const commitment = await this.checkProposalMetadataBinding(proposal);
+      proposal.verification = { status: 'verified' };
+      return commitment;
+    } catch (error) {
+      proposal.verification = {
+        status: 'failed',
+        retryable: isTransientRpcError(error),
+        message: error instanceof Error ? error.message : String(error),
+      };
+      throw error;
+    }
+  }
+
+  private async checkProposalMetadataBinding(proposal: Proposal): Promise<string> {
     const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
 
     const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
@@ -2651,6 +2709,17 @@ export class Multisig {
       const salt = Word.fromHex(
         normalizeHexWord(this.requireProposalSaltHex(proposal.id, proposal.metadata)),
       );
+
+      // A consume-notes summary commits to *authenticated* consumption (see
+      // ensureNotesAuthenticated), which miden-client decides from this store
+      // alone. Put the store in that mode before the rebuild, or a cosigner
+      // that never held these notes reproduces a different commitment.
+      if (
+        proposal.metadata.proposalType === 'consume_notes' &&
+        proposal.metadata.metadataVersion === CONSUME_NOTES_METADATA_VERSION_V2
+      ) {
+        await this.ensureNotesAuthenticated(decodeEmbeddedConsumeNotes(proposal.metadata));
+      }
 
       const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
       const webClient = await this.getRawClient();
@@ -2777,25 +2846,7 @@ export class Multisig {
         // v1/v2 dispatch for issue #229 / FR-009.
         const version = metadata.metadataVersion;
         if (version === CONSUME_NOTES_METADATA_VERSION_V2) {
-          const embedded = metadata.notes ?? [];
-          if (embedded.length !== metadata.noteIds.length) {
-            throw new NoteBindingMismatchError(
-              `consume_notes v2: notes.length=${embedded.length} does not match noteIds.length=${metadata.noteIds.length}`,
-            );
-          }
-          const decoded: Note[] = [];
-          for (let i = 0; i < embedded.length; i++) {
-            const note = noteFromBase64(embedded[i], Note);
-            // Normalize both sides; matches the file's other hex comparisons.
-            const embeddedId = normalizeHexWord(note.id().toString());
-            const declaredId = normalizeHexWord(metadata.noteIds[i]);
-            if (embeddedId !== declaredId) {
-              throw new NoteBindingMismatchError(
-                `consume_notes v2: notes[${i}] id ${embeddedId} != noteIds[${i}] ${declaredId}`,
-              );
-            }
-            decoded.push(note);
-          }
+          const decoded = decodeEmbeddedConsumeNotes(metadata);
           const { request } = buildConsumeNotesTransactionRequestFromNotes(decoded, {
             salt,
             signatureAdviceMap,
@@ -2840,4 +2891,32 @@ export class Multisig {
     }
   }
 
+}
+
+/**
+ * Decodes a v2 `consume_notes` proposal's embedded notes, asserting each one
+ * is the note its declared id names (spec 006 FR-007).
+ */
+function decodeEmbeddedConsumeNotes(metadata: ConsumeNotesProposalMetadata): Note[] {
+  const embedded = metadata.notes ?? [];
+  const noteIds = metadata.noteIds ?? [];
+  if (embedded.length !== noteIds.length) {
+    throw new NoteBindingMismatchError(
+      `consume_notes v2: notes.length=${embedded.length} does not match noteIds.length=${noteIds.length}`,
+    );
+  }
+  const decoded: Note[] = [];
+  for (let i = 0; i < embedded.length; i++) {
+    const note = noteFromBase64(embedded[i], Note);
+    // Normalize both sides; matches the file's other hex comparisons.
+    const embeddedId = normalizeHexWord(note.id().toString());
+    const declaredId = normalizeHexWord(noteIds[i]);
+    if (embeddedId !== declaredId) {
+      throw new NoteBindingMismatchError(
+        `consume_notes v2: notes[${i}] id ${embeddedId} != noteIds[${i}] ${declaredId}`,
+      );
+    }
+    decoded.push(note);
+  }
+  return decoded;
 }

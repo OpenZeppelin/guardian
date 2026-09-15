@@ -1,6 +1,6 @@
 {
   "name": "@openzeppelin/guardian-evm-client",
-  "version": "0.17.0-rc.3",
+  "version": "0.17.0",
   "description": "TypeScript EVM client for Guardian server proposal workflows",
   "repository": {
     "type": "git",
@@ -38,7 +38,7 @@
   },
   "devDependencies": {
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^5.0.0"
   },
   "engines": {
     "node": ">=18"
