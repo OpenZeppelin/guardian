@@ -85,7 +85,7 @@ resource "aws_cloudwatch_metric_alarm" "server_log_errors" {
   count = var.cloudwatch_log_alarms_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-server-log-errors"
-  alarm_description   = "Guardian server logged more than ${var.alarm_log_error_threshold} ERROR-level line(s) per 5-minute period in two consecutive periods (absolute count, independent of request volume; query the server log group for level = \"ERROR\")${local.alarm_description_links}"
+  alarm_description   = "Guardian server logged more than ${var.alarm_log_error_threshold} ERROR-level line(s) per 5-minute period in two consecutive periods (absolute count, independent of request volume; query the server log group for level = \"ERROR\")${local.log_alarm_description_links}"
   namespace           = local.log_metrics_namespace
   metric_name         = aws_cloudwatch_log_metric_filter.server_log_errors[0].metric_transformation[0].name
   statistic           = "Sum"

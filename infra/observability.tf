@@ -543,6 +543,9 @@ locals {
   # The console encodes log-group paths twice ("/" -> "$252F").
   server_logs_console_url = "${local.cloudwatch_console_base}#logsV2:log-groups/log-group/${replace(local.server_log_group_name, "/", "$252F")}"
   alarm_description_links = " | Stack: ${var.stack_name} | Dashboard: ${local.dashboard_console_url} | Logs: ${local.server_logs_console_url} (streams ecs/* server, adot/* sidecar)"
+  # Variant for the log-based alarm (log_alarms.tf), which also exists with
+  # the metrics pipeline off: no dashboard or sidecar to link to then.
+  log_alarm_description_links = local.cloudwatch_metrics_enabled ? local.alarm_description_links : " | Stack: ${var.stack_name} | Logs: ${local.server_logs_console_url} (streams ecs/* server)"
 }
 
 resource "aws_cloudwatch_metric_alarm" "http_error_rate" {

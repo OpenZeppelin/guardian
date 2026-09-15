@@ -808,6 +808,8 @@ fields @timestamp, message, code, detail, target, span.account_id
 
 ```bash
 # Every name below is per stack; read them all from Terraform outputs.
+# Steps 1-4 need the metrics pipeline (their outputs are empty with
+# cloudwatch_metrics_enabled = false); step 5 is independent of it.
 NS=$(terraform -chdir=infra output -raw metrics_namespace)
 DASH=$(terraform -chdir=infra output -raw metrics_dashboard_name)
 LOG_GROUP=$(terraform -chdir=infra output -raw server_log_group)
