@@ -13,7 +13,11 @@ no Miden dependency and no chain access to move an account forward.
 Gate 0 spike produced a working `DataStore` over Guardian's own state
 (`crates/server/src/network/miden/execution/` on the [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch, commit `769e2a90`; not on `main`), assembled a `PartialBlockchain`
 from node RPC alone, and proved a witness through a remote prover against public
-testnet — with **no new dependencies**. See [research.md](./research.md) and
+testnet — with **no new dependencies**. Two 0.16 inputs postdate the spike and change what
+workstream D feeds the seam: the reference header and partial blockchain come from the
+proposal's `ChainAnchor` (FR-056), not from a tip-anchored `SyncChainMmr`, and the fee
+conversion advice must be derived and injected by Guardian (FR-057). The spike's RPC assembly
+becomes the fallback path. See [research.md](./research.md) and
 [RFC 0001](../../../docs/rfcs/0001-server-side-transaction-execution.md).
 
 **Gate 0 is narrowed, not fully passed, and the residue is named.** P2ID and
@@ -311,7 +315,10 @@ asserted by a test that the router exposes no route reaching it.
 three normative orderings encoded structurally rather than by comment:
 
 - **Steps 2 before 3** — never acknowledge a transaction that does not
-  reproduce the signed summary.
+  reproduce the signed summary. Step 2 deserializes the proposal's `ChainAnchor`,
+  compares its block commitment with the signed summary's, authenticates the anchored header
+  against the node, attaches the fee conversion advice derived from that header, and only then
+  executes (FR-056, FR-057).
 - **Step 8 before 9** — admissibility (FR-048) and finite expiration (FR-046)
   are checked *before* the boundary; after it, FR-047 forbids the
   fail-and-release that FR-048 would demand, so the account would be held until

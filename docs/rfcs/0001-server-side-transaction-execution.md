@@ -6,7 +6,7 @@
 | **Feature** | [#254](https://github.com/OpenZeppelin/guardian/issues/254) (parent [#253](https://github.com/OpenZeppelin/guardian/issues/253), "Transaction Orchestration") |
 | **Audience** | Integrators, operators, and upstream reviewers (Miden team or anyone reading publicly) |
 | **Working artifacts** | [`speckit/features/254-guardian-prove-and-commit/`](../../speckit/features/254-guardian-prove-and-commit/) — see appendix |
-| **Revision** | 15 (2026-09-15): Gate 0 spike code moved to the `254-execution-spike` branch; this document and its working artifacts are the only content merged to `main` |
+| **Revision** | 16 (2026-09-15): re-verified against the stable Miden 0.16 pins on `main`. The signed summary now binds the reference block and the expiration delta, so reproduction runs at the proposal's `ChainAnchor` and the revision 13 expiration correction is itself withdrawn (Appendix A.3). Gate 0 spike code moved to the `254-execution-spike` branch; this document and its working artifacts are the only content merged to `main` |
 
 > **Implementation status:** this RFC describes the **proposed end state**. The wire API, execution lifecycle, and SDK changes are not implemented yet; the one exception is the Gate 0 witness-assembly spike, which lives on the [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch (commit `769e2a90`) and is **not on `main`**. Every spike code path and test name cited in this document (`crates/server/src/network/miden/execution/`, `crates/miden-rpc-client/src/`) resolves against that branch; its tests passed there against the Miden 0.16 rc pins. The linked working artifacts are the implementation plan, and numeric defaults given here are proposals unless the linked contract marks them normative.
 
@@ -89,7 +89,11 @@ default.
 
 Proposal creation does not execute the request. The existing Miden validation parses
 the supplied summary and verifies that the stored account state matches its recorded
-commitment. Guardian records that commitment as the proposal's base. These checks do
+commitment. Guardian records that commitment as the proposal's base. Since protocol 0.16 the
+proposal also carries the serialized `ChainAnchor` it was built at (wire field `chain_anchor`,
+`crates/miden-multisig-client/src/payload.rs:82-88` on `main`), and the signed summary binds
+that anchor's block commitment; admission checks that the two agree, as the SDKs already do
+before signing (`crates/miden-multisig-client/src/client/helpers.rs:239-249`). These checks do
 not establish that the request produces the supplied summary. Guardian reproduces the
 request and checks the signed-summary binding after delegated execution is accepted,
 before acknowledgment or remote proving.
@@ -229,14 +233,14 @@ console.log("Execution state:", res.state); // "pending"
 
 ### US2 — Security & Binding: Verifying Signed State Commitments
 
-Before initiating remote proving or writing to chain, Guardian reproduces the transaction against current account state and verifies that the generated summary commitment matches what cosigners signed.
+Before initiating remote proving or writing to chain, Guardian reproduces the transaction at the proposal's `ChainAnchor` against current account state and verifies that the generated summary commitment matches what cosigners signed. The anchor is not optional on protocol 0.16: the signed summary binds the reference block commitment, so re-executing at any other block yields a different commitment.
 
 ```mermaid
 flowchart TD
   Req[Execution Request] --> ThreshCheck{Valid Cosigner<br/>Threshold Met?}
   ThreshCheck -->|No| Refuse1[Refuse synchronously: PROPOSAL_NOT_READY<br/>no reservation created]
   ThreshCheck -->|Yes| Reserve[Acceptance: durable reservation created]
-  Reserve --> Reproduce[Reproduce Tx in Guardian DataStore]
+  Reserve --> Reproduce[Reproduce Tx at the proposal's ChainAnchor<br/>in Guardian DataStore]
   Reproduce --> SummaryCheck{Generated Summary ==<br/>Signed Summary?}
   SummaryCheck -->|No| Fail[Async failed: BINDING_MISMATCH / STATE_MISMATCH<br/>reservation released]
   SummaryCheck -->|Yes| RemoteProve[Send to Remote Prover]
@@ -309,7 +313,7 @@ println!("Execution state: {:?}", status.state);
 |---|---|
 | **Opt-in** | Omitting `executionMode` uses `self_executed`. Existing behavior is unchanged. |
 | **Payload Attachment** | `guardian_executable` attaches a serialized `TransactionRequest` (~26 KB binary; ~35 KB after base64 in JSON). |
-| **Expiration Guard** | For built-in proposal families, both SDKs construct the transaction with the shared 256-block finite expiration. An opaque custom request cannot be generically rewritten on Miden 0.15, so its producer must construct it to expire finitely. Guardian verifies the executed transaction's resulting expiration and refuses a non-expiring or out-of-horizon transaction before the boundary. |
+| **Expiration Guard** | For built-in proposal families, both SDKs construct the transaction with the shared 256-block finite expiration. On protocol 0.16 the expiration delta is part of the signed summary (`miden-protocol-0.16.1/src/transaction/tx_summary.rs:29-36`), so the same effects produce a different proposal id under `guardian_executable` than under `self_executed`, and nobody can change the expiration after cosigners sign. An opaque custom request cannot be generically rewritten on the pinned 0.16 line either, so its producer must construct it to expire finitely. Guardian verifies the proven transaction's resulting expiration and refuses a non-expiring or out-of-horizon transaction before the boundary. |
 
 ---
 
@@ -358,7 +362,7 @@ Defaults below are **proposed by this RFC**; the normative contract ([`contracts
 | Parameter | Required | Proposed Default | Description |
 |---|---|---|---|
 | `GUARDIAN_TX_PROVER_URL` | **Yes** (to enable) | None | Remote transaction prover endpoint URL. Unset disables the capability (no fallback). |
-| `GUARDIAN_TX_PROVER_TIMEOUT_SECS` | No | `300` | Remote prover RPC timeout per attempt (observed proving: 6–20 s; upstream client default of 10 s is too low). |
+| `GUARDIAN_TX_PROVER_TIMEOUT_SECS` | No | `300` | Remote prover RPC timeout per attempt (observed proving: 6–20 s; the upstream client default of 10 s, `miden-client-0.16.0/src/remote_prover/tx_prover.rs:43`, is too low). |
 | `GUARDIAN_PROVING_ENABLED` | No | `true` | Kill-switch to disable proving without unsetting prover URL. |
 | `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES` | No | TBD | Size cap on a stored `TransactionRequest`; an oversized proposal is refused at creation, not at execution. |
 | `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES` | No | TBD | Aggregate cap on stored requests per account. |
@@ -394,7 +398,7 @@ Two architectural options were evaluated for server-side transaction execution:
 flowchart TB
   subgraph ArchA [Architecture A: Guardian Executes — CHOSEN]
     ReqA[TransactionRequest ~26 KB binary / ~35 KB base64] --> StoreA[Guardian DataStore]
-    StoreA --> WitnessA[Assemble Witness from State & Node MMR]
+    StoreA --> WitnessA[Assemble Witness from State & the proposal's ChainAnchor]
     WitnessA --> ProveA[Prove & Submit]
   end
 
@@ -407,7 +411,7 @@ flowchart TB
 | Dimension | Architecture A (Chosen) | Architecture B (Delegated Proving) |
 |---|---|---|
 | **Client Sends** | Serialized `TransactionRequest` (~26 KB binary; ~35 KB base64) | Serialized `TransactionInputs` (~270 KB binary) |
-| **Witness Built By** | **Guardian** (server-side `miden-tx::DataStore` & node MMR) | A Miden-capable party outside Guardian, per transaction |
+| **Witness Built By** | **Guardian** (server-side `miden-tx::DataStore` over stored state plus the proposal's `ChainAnchor`) | A Miden-capable party outside Guardian, per transaction |
 | **Triggering Caller Needs Miden SDK** | **NO** (thin cosigners trigger and poll) | No for the literal trigger — but some external party must execute locally to build each witness |
 | **Eliminates Per-Execution Miden Requirement** | **YES** (only proposal *creation* stays Miden-capable) | No |
 
@@ -415,11 +419,18 @@ flowchart TB
 
 ### 3.1 Chain View & Witness Assembly — the Inner Flow
 
-The apparent complexity has two parts. The **account and reference-chain snapshot is required for every transaction**. Historical block authentication is **only required for authenticated input notes**. Guardian makes that decision from the prepared Miden `InputNotes`, because a serialized `TransactionRequest` contains note bodies but does not say which notes have authenticated inclusion proofs. No-input-note transactions, and transactions containing only unauthenticated notes, skip `SyncNotes` and all historical note-path work.
+The **account and reference-chain snapshot is required for every transaction**, and historical block authentication is **only required for authenticated input notes**. Since protocol 0.16 both come from the proposal itself. The proposer captures a `ChainAnchor` at the block it derived the summary at: the reference `BlockHeader` plus a `PartialBlockchain` that tracks the creation block of every authenticated input note (`miden-client-0.16.0/src/transaction/chain_anchor.rs:45-48`, `.../transaction/mod.rs:470-500`) **[READ]**. The anchor ships with the proposal, and the signed summary binds its block commitment (`miden-protocol-0.16.1/src/transaction/tx_summary.rs:29-36`) **[READ]**, so it is exactly the chain data `TransactionInputs` needs, at the only block that reproduces what the cosigners signed.
 
-The chain view is ephemeral: it is assembled for one worker attempt and discarded afterward. There is no long-lived per-account sync loop.
+Guardian therefore does not assemble the chain view from node RPC. It deserializes the anchor, which already rejects a `PartialBlockchain` whose length or peaks disagree with its header or that tracks more blocks than a transaction may reference (`chain_anchor.rs:58-84,110-130`) **[READ]**; checks the anchor's block commitment against the one bound into the signed summary, the same check the SDKs make before signing (`crates/miden-multisig-client/src/client/helpers.rs:239-249` on `main`); and authenticates the anchored header against the node by fetching the header at that height (`GetBlockHeaderByNumber`, `miden-node-proto-build-0.16.0/proto/rpc.proto:225-242`) and comparing commitments. That last step is what turns a proposer-supplied anchor into a chain-anchored one; see question 2 below for the trust root it rests on.
 
-**Future optimization:** if production measurements show that repeated chain or note-reference lookups are material, Guardian may keep a rebuildable shared cache of validated references to shorten later assembly. This is not a v1 requirement or a commitment to a particular storage design; node data remains authoritative and correctness must not depend on the cache.
+The chain view remains ephemeral: it is built for one worker attempt and discarded afterward. There is no long-lived per-account sync loop, and the genesis-seeded `SyncChainMmr` and bounded `SyncNotes` assembly that the Gate 0 spike validated (Appendix A) is no longer on the execution path. It stays documented as the fallback for a proposal without an anchor, which protocol 0.16 does not produce.
+
+**Future optimization:** if production measurements show that the per-execution header authentication read, or the fallback assembly, is material, Guardian may keep a rebuildable cache of validated headers to shorten later executions. This is not a v1 requirement or a commitment to a particular storage design; node data remains authoritative and correctness must not depend on the cache.
+
+Two further 0.16 inputs are the executor's responsibility because Guardian drives `TransactionExecutor` directly rather than through the `miden-client` façade:
+
+- **Fee conversion info.** The `AuthGuardedMultisig` auth procedure pays fees before it builds the summary, reading `hash(CONVERSION_INFO || SALT)` from the auth arg and the preimage from the advice map. The SDKs declare the salt on the request (`fee_conversion_salt`, serialized with the request), and the pinned client derives the chain-native conversion info from the anchored header and commits it at execution time (`miden-client-0.16.0/src/transaction/mod.rs:1528-1550`, `.../request/mod.rs:278-284`) **[READ]**. Those helpers are `pub(crate)`, so Guardian must derive and inject the same advice itself; see question 7.
+- **Expiration.** The delta counts from the anchored reference block, so a stale anchor can yield an already-expired transaction. `miden-client` refuses that after execution (`.../transaction/mod.rs:395-403`) **[READ]**; Guardian applies the same check through the horizon rule before proving.
 
 ```mermaid
 sequenceDiagram
@@ -428,37 +439,31 @@ sequenceDiagram
   participant Node as Miden Node RPC
   participant Prover as Remote Prover
 
-  W->>GS: Load account, TransactionRequest, signatures
-  W->>W: Prepare InputNotes and select valid signatures
-  W->>Node: GetBlockHeaderByNumber (genesis)
-  W->>Node: SyncChainMmr from genesis (Q4)
-  Node-->>W: Compact MMR delta + reference header + block signature
-  W->>W: Apply delta, verify peaks against reference header (Q2)
-  alt At least one authenticated input note
-    W->>W: Derive note block numbers and tags from inclusion data
-    W->>Node: SyncNotes(earliest note block, reference - 1, tags) (Q3)
-    Node-->>W: Snapshot-pinned note-block headers and MMR paths
-    W->>W: Keep required blocks, stop once all are found
-  else No authenticated input notes
-    W->>W: Skip SyncNotes and historical note paths
-  end
-  W->>W: Build ephemeral DataStore and PartialBlockchain (Q5)
+  W->>GS: Load account, TransactionRequest, ChainAnchor, signatures
+  W->>W: Deserialize anchor (header/chain consistency enforced on read)
+  W->>W: Check anchor block commitment == signed summary block commitment
+  W->>Node: GetBlockHeaderByNumber(anchor block)
+  Node-->>W: Header at that height
+  W->>W: Compare header commitment with the anchor (Q2)
+  W->>W: Prepare InputNotes; every authenticated note block must be tracked by the anchor
+  W->>W: Derive and inject fee conversion advice from the anchored header (Q7)
+  W->>W: Build ephemeral DataStore over stored state + anchor (Q5)
   W->>W: Reproduce unsigned, verify signed-summary binding
   W->>W: Add signatures and Guardian acknowledgment, execute, verify again
   W->>Prover: Self-contained TransactionInputs witness (~270 KB)
   Prover-->>W: ZK proof
   W->>W: Re-check, fence, and atomically cross no-retry boundary
   W->>Node: Submit proven transaction
-  W->>W: Resolve by chain observation (Q7)
+  W->>W: Resolve by chain observation
 ```
 
 Reading guide for the upstream questions:
 
-- **Q2** anchors at the peaks verification and the response's existing block signature.
-- **Q3** anchors at the conditional `SyncNotes` branch. Its `block_to + 1` forest rule is why execution at reference block `N` requests through `N - 1`.
-- **Q4** anchors at the `SyncChainMmr` call — one genesis-anchored cold sync per execution, by choice, instead of a persistent cross-execution MMR cache.
-- **Q5** anchors at the `DataStore` note — the seam Guardian implements directly.
-- **Q7** anchors at outcome observation — inclusion is inferred from the observed account commitment.
+- **Q1** anchors at the signed summary: the expiration delta is inside it on 0.16, so it is fixed at signing time.
+- **Q2** anchors at the header comparison: the anchor comes from the proposer, the node read is what Guardian trusts, and the response's `block_signatures` are the stronger root we do not yet validate.
+- **Q3** and **Q4** are narrowed: the anchor carries the note-block paths and the peaks, so `SyncNotes` and a cold `SyncChainMmr` are only needed for a proposal that arrives without one.
+- **Q5** anchors at the `DataStore` note, the seam Guardian implements directly.
+- **Q7** anchors at the fee conversion step, the one piece of `miden-client` execution logic Guardian has to re-derive.
 
 ---
 
@@ -491,17 +496,19 @@ Reading guide for the upstream questions:
 
 Each question below states what Guardian does, what we observed, and the specific confirmation or guidance we are asking for. Verification tags follow Appendix A.1, and §3.1 diagrams the witness-assembly flow the questions anchor to.
 
-1. **Finite expiration, its binding, and custom scripts.** A transaction built without an explicit expiration is non-expiring — the proven transaction reports the `u32::MAX` sentinel **[RAN]**. Guardian resolves an absent or ambiguous send only by chain observation, and the recorded expiration block supplies the finite chain height at which that watch can terminate once trustworthy observation is available. Guardian therefore refuses to cross the no-retry boundary for a non-expiring or out-of-horizon transaction. For built-in proposal families, the SDKs construct transactions with a shared 256-block finite expiration. For opaque custom requests, Miden 0.15 exposes no mutation API, and `TransactionRequestBuilder` rejects combining `expiration_delta` with a custom script; the producer must currently include an expiration update in its script. Separately, `TransactionSummary` commits to account delta, input notes, output notes, and salt — not expiration **[READ]** (`miden-protocol-0.15.3/src/transaction/tx_summary.rs:20-24,77-86`). Thus expiration does not change the signed summary or proposal id, and Guardian's v1 rule not to rewrite it is an architectural ownership/reproducibility choice, not a binding limitation. **Questions**: (a) is a finite expiration on every delegated-execution transaction the recommended pattern? (b) is expiration intentionally outside `TransactionSummary`, and may a delegated executor safely tighten it after cosigners sign? (c) what is the supported way to impose finite expiration on an existing custom-script request — should the producer call `tx::update_expiration_block_delta`, or would upstream consider a request transformation API? (d) is a transaction-status or inclusion lookup planned, and would it distinguish "not yet included" from "will never be included"? Expiration would remain the terminal backstop unless such an API provides definitive absence.
+1. **Finite expiration, its binding, and custom scripts.** A transaction built without an explicit expiration is non-expiring: the proven transaction reports the `u32::MAX` sentinel **[RAN]**, and on 0.16 the summary carries an expiration delta of `0` for it (`miden-protocol-0.16.1/src/transaction/tx_summary.rs:99-101`) **[READ]**. Guardian resolves an absent or ambiguous send only by chain observation, and the recorded expiration block supplies the finite chain height at which that watch can terminate, so Guardian refuses to cross the no-retry boundary for a non-expiring or out-of-horizon transaction. For built-in proposal families the SDKs construct transactions with a shared 256-block finite expiration. For opaque custom requests the pinned client still exposes no expiration mutator on `TransactionRequest` (`miden-client-0.16.0/src/transaction/request/mod.rs:145-259`, only `advice_map_mut`) and `TransactionRequestBuilder::build` rejects `expiration_delta` together with a custom script (`.../request/builder.rs:630,644-647`) **[READ]**; the producer must include the expiration update in its own script. **What changed on 0.16**: `TransactionSummary` now commits to the account delta, input notes, output notes, the reference block commitment, the expiration delta, and seven user parameters, the salt among them (`tx_summary.rs:29-36,110-121,235-244`) **[READ]**. Expiration is therefore signed: adding it changes the summary and the proposal id, and no party can tighten it after cosigners sign. Guardian's v1 rule not to rewrite the request is now enforced by the protocol, not only an ownership choice. **Questions**: (a) is a finite expiration on every delegated-execution transaction the recommended pattern? (b) what is the supported way to impose a finite expiration on an existing custom-script request; should the producer call `tx::update_expiration_block_delta`, or would upstream consider a request transformation API that runs before summary derivation? (c) is a transaction-status or inclusion lookup planned, and would it distinguish "not yet included" from "will never be included"? Expiration would remain the terminal backstop unless such an API provides definitive absence.
 
-2. **Reference block authentication and trust root.** Guardian assembles the `PartialBlockchain` per execution from node RPC: fetch the genesis header, seed a one-leaf `PartialMmr`, call `SyncChainMmr` from genesis, and adopt the **sync-target header returned by that response** as the reference block. We verify the applied delta by checking `hash_peaks()` against the header's `chain_commitment` **[RAN]** (`live_cold_start_chain_mmr_matches_the_reference_block`). This proves internal consistency between two values returned by the same node; it does not independently authenticate the header. `SyncChainMmrResponse` also already carries `block_signature`, which the current spike does not validate **[READ]** (`miden-node-proto-build-0.15.0/proto/rpc.proto:546-558`). **Questions**: (a) is a sync-target reference header with no MMR path the correct executor construction? (b) what validator key set or other trust root should a server use to validate `block_signature`, including key rotation, and is signature validation the intended way to bind this snapshot to the canonical chain?
+2. **Reference block authentication and trust root.** On 0.16 the reference block is fixed by the proposal: the signed summary binds the block commitment of the `ChainAnchor` the proposer executed at, and the anchor itself enforces that its `PartialBlockchain` has that header's length and hashes to its chain commitment (`miden-client-0.16.0/src/transaction/chain_anchor.rs:58-84`) **[READ]**. That proves internal consistency of proposer-supplied data; it does not show the header is a real block. Guardian authenticates it by reading the header at that height from its configured node and comparing commitments. The Gate 0 spike validated the older construction, a genesis-seeded `SyncChainMmr` whose applied delta hashes to the sync-target header's `chain_commitment` **[RAN]** (`live_cold_start_chain_mmr_matches_the_reference_block`), which has the same limitation: two values from one node. `SyncChainMmrResponse` now carries `repeated BlockSignature block_signatures`, ordered against the validator set committed by the parent header (`miden-node-proto-build-0.16.0/proto/rpc.proto:557-571`, `proto/types/blockchain.proto:112-116`) **[READ]**, and `GetBlockHeaderByNumber` can return an MMR path at the current chain length (`rpc.proto:225-242`) **[READ]**; Guardian validates neither yet. **Questions**: (a) is comparing the anchored header against the node's header at the same height the intended way for an executor to accept a third-party `ChainAnchor`, or should it also require the MMR path? (b) what validator key set or other trust root should a server use to validate `block_signatures`, including rotation, and is signature validation the intended way to bind a header to the canonical chain?
 
-3. **Authenticated note-block paths for a stateless executor.** This branch is conditional: Guardian derives it from prepared `InputNotes`; no-input-note and unauthenticated-note-only transactions make no `SyncNotes` call. `GetBlockHeaderByNumber` cannot pin its proof forest, and a live check showed its current proof at stable tip had `chain_length = reference + 1`, not the `reference`-leaf forest required by `TransactionInputs`. `SyncNotes` does provide an explicit upper bound: its paths are valid at forest `block_to + 1`, so execution against reference block `N` requests through `N - 1` **[READ]**. The off-by-one and paths were validated against public testnet at reference block 1,174,436 **[RAN]** (`live_sync_notes_paths_track_against_the_execution_reference_forest`). The spike starts at the earliest required note block, queries the authenticated notes' tags, retains only required blocks, follows pagination only until all are found, and then stops. However, `SyncNotes` filters by tags rather than exact note IDs; a diagnostic full-range query for just tag `0` returned 91,465 matching blocks and took 59.9 s. **Questions**: (a) is this bounded `SyncNotes` use the recommended stateless assembly path? (b) would upstream consider an exact-note or exact-block MMR-proof query against an explicit target forest, avoiding potentially broad tag scans? (c) should Guardian additionally match each returned `NoteSyncRecord` by exact note ID before accepting its block, or is verifying the already-held note inclusion proof against the returned block header sufficient?
+3. **Authenticated note-block paths for a stateless executor.** On 0.16 the proposer's `ChainAnchor` tracks the creation block of every authenticated input note (`miden-client-0.16.0/src/transaction/mod.rs:470-500`) **[READ]**, and `execute_transaction_at` fails when a note's block is not tracked (`.../transaction/mod.rs:370-376`) **[READ]**, so Guardian no longer assembles note-block paths from RPC on the execution path. The spike's bounded `SyncNotes` assembly remains validated **[RAN]** (`live_sync_notes_paths_track_against_the_execution_reference_forest`, reference block 1,174,436) and documented in Appendix A: `SyncNotes` paths are valid at forest `block_to + 1`, so execution against reference block `N` requests through `N - 1`, and a diagnostic full-range query for tag `0` returned 91,465 blocks in 59.9 s. **Questions**: (a) is a proposer-captured anchor the recommended way to give a stateless executor its note-block paths, or should the executor re-derive them? (b) if an executor does have to assemble paths itself, would upstream consider an exact-note or exact-block MMR-proof query against an explicit target forest, avoiding broad tag scans?
 
-4. **`SyncChainMmr` load.** There is no RPC that returns MMR peaks at a block from scratch — `SyncChainMmr` is by construction a delta against a height the caller already holds **[READ]**. A stateless executor therefore cold-starts each execution with `SyncChainMmr` from genesis (seeding the `PartialMmr` with the genesis block commitment first). The delta payload is logarithmic in chain length — peaks plus merge siblings (`miden-crypto-0.25.1/src/merkle/mmr/tests.rs:1241-1245`) **[READ]** — and a cold start against a 1,002,185-block chain completed in ~0.6 s **[RAN]** (`live_cold_start_chain_mmr_matches_the_reference_block`), so we chose one cold `SyncChainMmr` call per execution over maintaining a persistent MMR cache across executions and replicas. Two separate questions: **(a) Load guidance** — is one genesis-anchored `SyncChainMmr` call per execution acceptable node load at high execution throughput, and is there a request rate at which you would want executors to cache instead? **(b) API** — would upstream consider a direct peaks accessor (a peaks field on the block header response, or a `GetChainMmrPeaks` RPC)? Nothing blocks on it — it would save the genesis seeding step and one round trip.
+4. **`SyncChainMmr` load.** With the anchor carrying the peaks, Guardian makes no `SyncChainMmr` call per execution; one header read replaces it. The spike's finding stands for the fallback path: `SyncChainMmr` is a delta against a height the caller already holds (`rpc.proto:547-554`) **[READ]**, its payload is logarithmic in chain length, peaks plus merge siblings (`miden-crypto-0.29.4/src/merkle/mmr/tests.rs:1269-1273`, previously `0.25.1:1241-1245`) **[READ]**, and a cold start against a 1,002,185-block chain completed in ~0.6 s **[RAN]**. **Question**: would upstream consider a direct peaks accessor (a peaks field on the block header response, or a `GetChainMmrPeaks` RPC)? Nothing blocks on it.
 
-5. **Architecture A alignment and the `DataStore` seam.** Guardian implements the five `miden_tx::DataStore` methods plus the `MastForestStore::get` supertrait obligation directly over its own stored account state (`PartialAccount::from(&Account)`, header and peaks from RPC as above) and drives `TransactionExecutor` with it, bypassing the `miden-client` `Client` façade entirely — no sync loop, no long-lived per-account store. We could not reuse `ClientDataStore`: its module is crate-private (`miden-client-0.15.0/src/store/mod.rs:62` declares `pub(crate) mod data_store;` with no re-export — the struct itself is `pub` but unreachable from outside the crate; unchanged in `0.16.0-alpha.1`) **[READ]**, and even if it were exported, it is constructed over the full `Store` trait — 57 methods, 46 required, on the pinned 0.15.0 line (`store/mod.rs:119-686`) **[READ]** — far more surface than an ephemeral per-execution store needs. Spike tests validated unsigned reproduction, signature-advice injection, the on-chain Guardian authorization gate, authorized execution, and proving (`crates/server/src/network/miden/execution/tests.rs`) **[RAN]**; separately, a witness assembled from live testnet data executed and proved through the public remote prover (`live_prove_a_guardian_assembled_witness`) **[RAN]**. Service-level stored-signature selection, proposal binding, and the internal acknowledgment path remain implementation work, and live submission remains deferred. **Questions**: (a) is direct third-party implementation of `miden_tx::DataStore` an intended, supported seam that upstream will keep stable? (b) would upstream consider a smaller maintained chain-view / transaction-input assembly helper that does not require the complete `Store` interface, so server-side executors don't each re-derive the same assembly logic?
+5. **Architecture A alignment and the `DataStore` seam.** Guardian implements the five `miden_tx::DataStore` methods (`get_transaction_inputs`, `get_foreign_account_inputs`, `get_vault_asset_witnesses`, `get_storage_map_witness`, `get_note_script`) plus the `MastForestStore` supertrait obligation (`miden-tx-0.16.1/src/executor/data_store.rs:18-72`) **[READ]** directly over its own stored account state and the proposal's anchor, and drives `TransactionExecutor` with it, bypassing the `miden-client` `Client` façade: no sync loop, no long-lived per-account store. We could not reuse `ClientDataStore`: its module is still `pub(crate)` (`miden-client-0.16.0/src/store/mod.rs:65-71`) and the only re-export is inside the `testing` feature module (`.../src/lib.rs:355-370`) **[READ]**, and it is constructed over the full `Store` trait, 61 methods of which 45 are required on 0.16.0 (`store/mod.rs:191-858`; 57 and 46 on 0.15.0) **[READ]**, far more surface than an ephemeral per-execution store needs. Spike tests on the 0.16 rc pins validated unsigned reproduction, signature-advice injection, the on-chain Guardian authorization gate, authorized execution, and proving (`crates/server/src/network/miden/execution/tests.rs` on `254-execution-spike`) **[RAN]**; a witness assembled from live testnet data executed and proved through the public remote prover (`live_prove_a_guardian_assembled_witness`) **[RAN]**. Those tests predate the `ChainAnchor` and fee-conversion inputs and must be re-run with them. **Questions**: (a) is direct third-party implementation of `miden_tx::DataStore` an intended, supported seam that upstream will keep stable? (b) would upstream consider a smaller maintained helper that turns a `ChainAnchor` plus an account into `TransactionInputs` without the complete `Store` interface, so server-side executors do not each re-derive the same assembly logic?
 
 6. **Prover concurrency expectations.** Exploratory load runs against the public testnet prover produced transport-level i/o timeouts under concurrency rather than well-formed prover errors (Appendix A.4, finding 4) **[RAN]**. The raw report is not committed, so we treat this as a qualitative observation, not a capacity measurement. Guardian retries transient prover failures server-side (§1.2, rule 4), but retries do not add capacity. **Question**: what concurrency should a single prover endpoint be expected to sustain, and is running a dedicated prover (or pool) the intended pattern for server-side executors like Guardian?
+
+7. **Fee conversion info for a non-`Client` executor.** Since 0.16 the `AuthGuardedMultisig` auth procedure pays fees before building the summary, so the fee note and the vault withdrawal funding it fall inside what cosigners sign, and the auth arg is the commitment `hash(CONVERSION_INFO || SALT)` whose preimage the executor must place in the advice map (see `docs/MIDEN_COMPATIBILITY.md`). The SDKs declare the salt on every built-in request (`TransactionRequestBuilder::fee_conversion_salt`, serialized with the request: `miden-client-0.16.0/src/transaction/request/mod.rs:436-451`) **[READ]**, and `miden-client` derives the chain-native conversion info from the reference header and commits it during request preparation (`.../transaction/mod.rs:1528-1550`, `.../request/mod.rs:278-284`) **[READ]**. Both helpers are `pub(crate)`, so an executor that drives `TransactionExecutor` directly has to re-implement them, and a mismatch is a binding failure rather than an execution error, because the committed conversion info is part of the reproduced summary. **Questions**: (a) would upstream make `attach_native_fee_conversion_info` (or an equivalent over a `ChainAnchor` and a `TransactionRequest`) public? (b) is the 1/1 chain-native rate the SDKs commit today the long-term contract, or should an executor expect requests committing other assets and rates?
 
 ---
 
@@ -535,6 +542,17 @@ Historical live results do not establish compatibility with the current public p
 | `miden-tx` | 0.15.3 | `miden-remote-prover-client` | 0.15.0 |
 | `miden-crypto` | 0.25.1 | `miden-testing` | 0.15.3 |
 
+The **[READ]** citations in this revision were re-verified against the stable pins `main`
+carries today (`Cargo.toml` / `Cargo.lock`, 2026-09-15). `miden-remote-prover-client` is no
+longer a separate dependency; the remote prover lives in `miden-client::remote_prover`.
+
+| Crate | Version | Crate | Version |
+|---|---|---|---|
+| `miden-protocol` | 0.16.1 | `miden-processor` | 0.29.4 |
+| `miden-client` | 0.16.0 | `miden-node-proto-build` | 0.16.0 |
+| `miden-tx` | 0.16.1 | `miden-standards` | 0.16.1 |
+| `miden-crypto` | 0.29.4 | `miden-testing` | 0.16.1 |
+
 ### A.3 Historical Corrections Record
 - **Revision 1 Claim (Withdrawn)**: Initially claimed that fetching chain MMR peaks via `SyncChainMmr` was linear in chain length and blocked server execution.
 - **Correction (Revision 2)**: Source code inspection of `miden-crypto` (`.../mmr/tests.rs:1241`) proved that `SyncChainMmr` delta size is **logarithmic in chain length** (returning peaks and merge siblings). Cold start against public testnet at block 1,002,185 took **0.6 seconds** **[RAN]**.
@@ -545,6 +563,21 @@ Historical live results do not establish compatibility with the current public p
   an unsigned liveness constraint. Built-in SDK builders apply the shared finite policy; opaque
   custom producers encode it in their scripts; Guardian verifies the executed/proven result and
   preserves the stored request bytes for reproducibility.
+- **Revision 13 Correction (Withdrawn, Revision 16)**: that correction was true of `miden-protocol`
+  0.15.3 and is false on the 0.16 line the workspace now pins. `TransactionSummary` 0.16.1 commits
+  to the account delta, input notes, output notes, the reference block commitment, the expiration
+  delta, and seven user parameters (`miden-protocol-0.16.1/src/transaction/tx_summary.rs:29-36,
+  110-121`). Expiration is signed; the original design text was right for 0.16. The v1 rule that
+  Guardian never rewrites the request stands, now as a protocol constraint as well as an ownership
+  choice, and the sdk contract no longer promises an unchanged proposal id across execution modes.
+- **Chain-view assembly superseded (Revision 16)**: the genesis-seeded `SyncChainMmr` and bounded
+  `SyncNotes` assembly validated by the spike (questions 2 to 4) is no longer the execution path.
+  Since 0.16 proposals carry a `ChainAnchor` whose block commitment the signed summary binds, so
+  Guardian reproduces at that anchor and authenticates its header against the node instead of
+  assembling a chain view at the tip. The spike evidence stays as the fallback construction.
+- **Fee conversion (Revision 16)**: earlier revisions did not mention transaction fees. On 0.16
+  the auth component pays them inside the signed summary and the executor must supply the fee
+  conversion advice; question 7 records the gap.
 
 ### A.4 Testnet Benchmark Findings
 1. **Payload Overhead**: `TransactionRequest` is ~26 KB binary (~35 KB after base64 in JSON), while the full binary `TransactionInputs` witness is ~270 KB (~10× larger) **[RAN]**.

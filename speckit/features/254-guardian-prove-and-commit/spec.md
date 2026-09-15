@@ -2,7 +2,7 @@
 
 **Feature Branch**: `254-guardian-prove-and-commit`
 **Created**: 2026-07-27
-**Last Revised**: 2026-09-08 (review revision 9: admission validation, proposer quotas, committed status, and future extensions)
+**Last Revised**: 2026-09-15 (review revision 10: re-verified against the stable Miden 0.16 pins; the signed summary binds the reference block and expiration, reproduction runs at the proposal's `ChainAnchor`, fee conversion advice named)
 **Status**: Draft
 **Input**: Issue #254 (parent: #253 META - Transaction Orchestration): "Enable the Guardian to handle the full prove-and-commit lifecycle for a transaction. The user submits a signed `TransactionSummary` to the Guardian; the Guardian generates the ZK proof; the Guardian submits the proven transaction to the Miden network."
 
@@ -55,7 +55,10 @@ established the architecture below empirically, not by reading upstream code:
 
 - The `DataStore` seam works against Guardian's own state, with **no new dependencies**.
 - `PartialBlockchain` assembly from node RPC alone was validated against public testnet,
-  including cold-start peak acquisition (~0.6 s on a 1,002,185-block chain).
+  including cold-start peak acquisition (~0.6 s on a 1,002,185-block chain). On protocol 0.16
+  this is the fallback path only: proposals carry a `ChainAnchor` (header plus
+  `PartialBlockchain`) and the signed summary binds its block commitment, so the executor
+  reproduces at the anchor (see the 0.16 note below).
 - The full authorized path — select signatures, verify binding, acknowledge, execute,
   prove — completed end to end, with the proof produced by a **remote prover**.
 
@@ -74,14 +77,32 @@ surprise (the live note-block path and submission itself) are called out there e
 **Guardian implements `miden_tx::DataStore` directly, answering each query from the account
 state it already holds plus chain data read at execution time.** For each execution it builds
 ephemeral, per-execution state — an SMT forest over the account for witness queries, and the
-reference block header and blockchain peaks read from the Miden node at the chain tip — runs
-the transaction, and discards that state when the execution reaches a terminal state.
+reference block header and partial blockchain taken from the proposal's `ChainAnchor` and
+authenticated against the Miden node — runs the transaction, and discards that state when the
+execution reaches a terminal state.
 
 Gate 0 round 1 established that the ready-made bridge from miden-client (`ClientDataStore`) is
-crate-private and unusable, so implementing miden-client's 46-method `Store` trait would be
-pointless — nothing public consumes it. The direct `DataStore` surface is five methods plus
-`MastForestStore::get`, and the witness assembly is largely supplied by the public
-`AccountSmtForest`. See `research.md`.
+crate-private and unusable, so implementing miden-client's `Store` trait would be pointless —
+nothing public consumes it. Re-verified on `miden-client` 0.16.0: the module is still
+`pub(crate)` (`src/store/mod.rs:65-71`), the only re-export sits inside the `testing` feature
+module (`src/lib.rs:355-370`), and `Store` has 61 methods of which 45 are required
+(`src/store/mod.rs:191-858`). The direct `DataStore` surface is five methods plus the
+`MastForestStore` supertrait (`miden-tx-0.16.1/src/executor/data_store.rs:18-72`), and the
+witness assembly is largely supplied by the public `AccountSmtForest`. See `research.md`.
+
+**Protocol 0.16 changes two inputs (re-verified 2026-09-15).** First, `TransactionSummary`
+now commits to the reference block commitment and the expiration delta alongside the delta,
+notes, and user parameters (`miden-protocol-0.16.1/src/transaction/tx_summary.rs:29-36`), so
+the transaction reproduces the signed summary only at the block the proposer executed at. The
+SDKs already ship that block as a serialized `ChainAnchor` on every proposal (wire field
+`chain_anchor`), verify its block commitment against the summary before signing, and re-execute
+at it. Guardian does the same (FR-056) instead of assembling a chain view at the tip; the
+`SyncChainMmr` and `SyncNotes` assembly below is the fallback for an anchorless proposal, which
+0.16 SDKs do not produce. Second, the `AuthGuardedMultisig` auth procedure pays fees inside
+the signed summary and reads the fee conversion info from the advice map under the request's
+`fee_conversion_salt`; `miden-client` derives and commits it during request preparation through
+`pub(crate)` helpers (`miden-client-0.16.0/src/transaction/mod.rs:1528-1550`). Guardian's
+executor must supply the same advice (FR-057).
 
 The consequences are normative:
 
@@ -95,13 +116,16 @@ The consequences are normative:
   purely a question of what the execution record says. It is *not* trivial for an execution
   that had already submitted — that requires chain reconciliation (FR-040) — but the
   ephemeral store contributes nothing to that problem.
-- **The reference block is always the tip observed at execution time**, so the reference
-  block equals the store's sync height. This avoids a known upstream limitation where a
-  reference block behind the sync height yields an invalid partial blockchain.
+- **The reference block is the proposal's anchored block, not the tip.** The signed summary
+  binds it, so executing at any other block cannot reproduce the summary. The anchor supplies a
+  `PartialBlockchain` consistent with that header, which is what avoided the upstream limitation
+  the tip rule used to work around.
 - **There is no `Store` and no embedded database.** Guardian answers `DataStore` queries
   from data it already holds plus chain reads performed at execution time: no sqlite
   dependency, no temporary directory, no persisted MMR.
-- **Cold start per execution is more than one read.** Acquiring the chain MMR requires the
+- **Cold start per execution is one header read on 0.16.** The anchor carries the peaks and the
+  note-block paths; Guardian reads the header at the anchored height to authenticate it. The
+  fallback assembly costs more: acquiring the chain MMR requires the
   genesis block commitment (trusted configuration or a read) plus a `SyncChainMmr` call seeded
   at genesis; transactions consuming input notes need a further read per note block. The
   `SyncChainMmr` delta is **compact — the peak set, logarithmic in chain length, not
@@ -458,7 +482,8 @@ This is an admission/execution policy, not a universal property of signed summar
   Execution MUST fail only when the *valid* set is below the effective threshold, reported as
   not-ready rather than as a signature error.
 - **FR-007**: Before any proving or network submission, Guardian MUST reproduce the
-  transaction from the stored serialized request against the account's current state and
+  transaction from the stored serialized request, at the proposal's chain anchor (FR-056),
+  against the account's current state and
   MUST confirm the result reproduces exactly the summary commitment the cosigners
   signed. On any mismatch it MUST refuse with a binding error. This is the same binding
   invariant as feature 008 FR-007, relocated server-side and not weakened.
@@ -492,9 +517,9 @@ This is an admission/execution policy, not a universal property of signed summar
   argument: for every proposal type, built-in and custom, the SDK already possesses the serialized
   request at creation time, so attachment is internal to the SDK's write path. Built-in proposal
   methods also own their transaction construction and MUST apply FR-051 internally. A custom
-  producer already owns its opaque transaction recipe; on Miden 0.15 it MUST include a finite
-  expiration in that recipe because the SDK cannot generically rewrite an already-built custom
-  request (FR-051).
+  producer already owns its opaque transaction recipe; on the pinned Miden 0.16 line it MUST
+  include a finite expiration in that recipe because the SDK cannot generically rewrite an
+  already-built custom request (FR-051).
 - **FR-012**: Adding a serialized transaction request to a proposal payload MUST NOT
   change the proposal's identity. Proposal identity remains derived from the transaction
   summary alone.
@@ -515,12 +540,13 @@ This is an admission/execution policy, not a universal property of signed summar
   - **Checksum encoding**: lowercase hex, `0x`-prefixed — the same boundary convention the
     rest of the codebase uses for hex values.
   - **Protocol-line grammar**: `MAJOR.MINOR` decimal, no prefix, no patch component and no
-    pre-release suffix (e.g. `"0.15"`), taken from the Miden dependency line the serializing
+    pre-release suffix (e.g. `"0.16"`), taken from the Miden dependency line the serializing
     SDK was built against.
   - **Serializer identity**: the exact serializing package version **including any
-    prerelease** (e.g. `"0.16.0-alpha.4"`), carried alongside the protocol line. The coarse
-    `MAJOR.MINOR` line cannot distinguish prereleases, and upstream alphas have changed
-    serialization between them, so the line alone cannot detect an incompatible writer.
+    prerelease** (e.g. `"0.16.1"`, or `"0.16.0-alpha.4"` for a prerelease writer), carried
+    alongside the protocol line. The coarse `MAJOR.MINOR` line cannot distinguish prereleases,
+    and the 0.16 alphas changed serialization between them, so the line alone cannot detect an
+    incompatible writer.
   - **Compatibility rule**: exact string equality against the server's own protocol line, and
     the serializer identity must be admitted by the server's configured allowlist. Guardian
     MUST NOT attempt range or ordering comparisons; a differing line or an unadmitted
@@ -636,7 +662,8 @@ This is an admission/execution policy, not a universal property of signed summar
 - **FR-045 — execution sequence**: A Guardian execution MUST perform these steps in exactly
   this order, aborting without side effects at the first failure:
   1. select the valid signature subset and confirm the effective threshold (FR-005, FR-006)
-  2. reproduce the transaction and verify the binding to the signed summary (FR-007)
+  2. reproduce the transaction at the proposal's chain anchor, with the fee conversion advice
+     attached, and verify the binding to the signed summary (FR-007, FR-056, FR-057)
   3. issue the Guardian acknowledgment via the internal path (FR-044)
   4. inject the signature advice and the acknowledgment
   5. execute the authorized transaction
@@ -834,20 +861,26 @@ This is an admission/execution policy, not a universal property of signed summar
   this refusal every execution would be unbounded and FR-040's `expired` path would never fire.
 - **FR-051 — delegated transactions MUST be built with a finite expiration**: For every built-in
   proposal family, a Guardian-executable SDK MUST construct the transaction with a finite
-  expiration. The shared default is **256 blocks**, identical in Rust and TypeScript. On Miden
-  0.15 the mechanism depends on the request family: send scripts receive the delta when built,
-  no-script requests use `TransactionRequestBuilder::expiration_delta`, and Guardian-owned custom
+  expiration. The shared default is **256 blocks**, identical in Rust and TypeScript. On the
+  pinned Miden 0.16 line the mechanism depends on the request family: send scripts receive the
+  delta when built, no-script requests use `TransactionRequestBuilder::expiration_delta`
+  (`miden-client-0.16.0/src/transaction/request/builder.rs:286`), and Guardian-owned custom
   scripts explicitly call `tx::update_expiration_block_delta`.
   An opaque custom-producer request is the exception to automatic SDK insertion, not to the finite
-  requirement. `TransactionRequest` has no public expiration mutator and its builder rejects
-  combining `expiration_delta` with a custom script, so the producer MUST include a finite
-  expiration in its own script. The SDK attaches those bytes unchanged. Guardian verifies the
-  resulting executed/proven expiration and refuses the transaction before the boundary otherwise.
-  `TransactionSummary` does **not** commit to expiration on the pinned Miden line: it commits to
-  account delta, input notes, output notes, and salt. Therefore adding a finite expiration does not
-  alter the signed summary or proposal identity. Guardian still MUST NOT rewrite it in v1: exact
-  request-byte preservation, FR-014 checksum reproducibility, and the SDK/producer construction
-  boundary in FR-013 are the reasons — not FR-007 binding.
+  requirement. `TransactionRequest` has no public expiration mutator
+  (`miden-client-0.16.0/src/transaction/request/mod.rs:145-259`) and its builder rejects
+  combining `expiration_delta` with a custom script (`.../request/builder.rs:644-647`), so the
+  producer MUST include a finite expiration in its own script. The SDK attaches those bytes
+  unchanged. Guardian verifies the resulting executed/proven expiration and refuses the
+  transaction before the boundary otherwise.
+  `TransactionSummary` **does** commit to the expiration delta on the pinned Miden 0.16 line
+  (`miden-protocol-0.16.1/src/transaction/tx_summary.rs:29-36`; a request without one signs
+  `0`, `tx_summary.rs:99-101`). Adding the finite expiration therefore changes the signed summary
+  and the proposal identity relative to the same effects built without it, and nobody can alter
+  the expiration after cosigners sign. Guardian MUST NOT rewrite it in v1 for that reason first,
+  and also for exact request-byte preservation, FR-014 checksum reproducibility, and the
+  SDK/producer construction boundary in FR-013. (An earlier revision stated the opposite against
+  `miden-protocol` 0.15.3, where the summary had no expiration field; see RFC 0001 Appendix A.3.)
   **The client's obligation is finiteness only, not conformance to a deployment's horizon.**
   The client MUST NOT be required to match the server's reconciliation horizon: US3 forbids
   capability negotiation, so the client has no way to learn that value, and requiring it would
@@ -967,6 +1000,23 @@ This is an admission/execution policy, not a universal property of signed summar
 - **FR-035**: Self-execution through the existing SDK flow MUST remain fully supported
   and behaviorally unchanged for both kinds of proposal. It MUST NOT be deprecated,
   gated, or degraded by this feature.
+
+- **FR-056 (reproduction runs at the proposal's chain anchor)**: A Guardian-executable proposal
+  MUST carry the serialized `ChainAnchor` its summary was derived at (the existing `chain_anchor`
+  payload field). At admission Guardian MUST refuse a proposal whose anchor fails to deserialize
+  or whose block commitment differs from the one bound into the signed summary. At execution
+  Guardian MUST read the block header at the anchored height from its configured node and refuse
+  with a binding error when its commitment differs from the anchor's, MUST take the reference
+  header and partial blockchain for `TransactionInputs` from the anchor, and MUST refuse an
+  authenticated input note whose creation block the anchor does not track. Guardian MUST NOT
+  substitute the chain tip for the anchored block.
+- **FR-057 (fee conversion advice is the executor's responsibility)**: When the stored request
+  declares a `fee_conversion_salt`, Guardian MUST derive the chain-native fee conversion info
+  from the anchored reference header exactly as the pinned Miden client does and place its
+  commitment preimage in the advice map before reproduction, so the auth procedure's fee payment
+  falls inside the reproduced summary. A request that declares no salt MUST be reproduced
+  unchanged; if fee payment then fails, the result is a reproduction failure surfaced as such,
+  not a request Guardian repairs.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -1160,8 +1210,8 @@ This is an admission/execution policy, not a universal property of signed summar
   deriving the summary; the custom producer path (#266 / feature 008) receives it as its
   first argument. Configuring a client Guardian-executable therefore requires no new input
   for attachment. Built-in methods add the finite expiration internally. A custom producer
-  already owns the transaction recipe and must make that opaque request finite on Miden 0.15;
-  the SDK cannot retrofit it.
+  already owns the transaction recipe and must make that opaque request finite on the pinned
+  Miden 0.16 line; the SDK cannot retrofit it.
 - **The stored request is verified by re-execution, not trusted.** Storing it creates no
   authority: a tampered or stale request cannot produce the signed commitment, so it
   fails closed at FR-007. This is why persisting it is safe even though Guardian is not

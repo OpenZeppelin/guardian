@@ -178,12 +178,16 @@ Creation under a `GuardianExecutable`-configured client MUST:
 
 1. For every **built-in** proposal family, construct the transaction with the shared finite
    expiration policy from FR-051 (256 blocks), then derive the summary exactly as today. How the
-   builder expresses that policy is family-specific on Miden 0.15: send scripts receive the
-   delta while being built, no-script requests use `TransactionRequestBuilder::expiration_delta`,
-   and Guardian-owned custom scripts call `tx::update_expiration_block_delta`.
+   builder expresses that policy is family-specific on the pinned Miden 0.16 line: send scripts
+   receive the delta while being built, no-script requests use
+   `TransactionRequestBuilder::expiration_delta`
+   (`miden-client-0.16.0/src/transaction/request/builder.rs:286`), and Guardian-owned custom
+   scripts call `tx::update_expiration_block_delta`.
 2. For an opaque **custom producer** request, preserve the supplied serialized request exactly.
-   Miden 0.15 exposes no mutation API on `TransactionRequest`, and its builder rejects combining
-   `expiration_delta` with a custom script, so the SDK cannot generically retrofit expiration
+   Miden 0.16.0 exposes no expiration mutator on `TransactionRequest`
+   (`miden-client-0.16.0/src/transaction/request/mod.rs:145-259`), and its builder rejects
+   combining `expiration_delta` with a custom script (`.../request/builder.rs:644-647`), so the
+   SDK cannot generically retrofit expiration
    without rebuilding producer-owned code. The producer MUST construct the custom transaction to
    expire finitely; Guardian verifies the resulting executed/proven expiration and refuses it
    before the boundary otherwise.
@@ -193,24 +197,35 @@ Creation under a `GuardianExecutable`-configured client MUST:
 
 ### What identity is and is not preserved (FR-012)
 
-`TransactionSummary` on the pinned Miden 0.15 line commits to the account delta, input notes,
-output notes, and salt. It does **not** include expiration
-(`miden-protocol-0.15.3/src/transaction/tx_summary.rs:20-24,77-86`). Therefore:
+`TransactionSummary` on the pinned Miden 0.16 line commits to the account delta, input notes,
+output notes, the reference block commitment, the expiration delta, and seven user parameters,
+the salt among them (`miden-protocol-0.16.1/src/transaction/tx_summary.rs:29-36,110-121`). A
+request built without an expiration signs a delta of `0` (`tx_summary.rs:99-101`). Therefore:
 
 - Attaching `transaction_request` MUST NOT change the derived proposal identity, because the
-  server derives it from `tx_summary` alone via `delta_proposal_id`.
-- For the same effects and salt, adding the built-in finite-expiration policy MUST leave the
-  summary and proposal ID unchanged across `SelfExecuted` and `GuardianExecutable` modes. The
-  serialized request bytes legitimately differ; the signed summary does not.
+  server derives it from `tx_summary` alone via `delta_proposal_id`, and the envelope is not part
+  of the summary.
+- Adding the built-in finite-expiration policy **does** change the summary, and with it the
+  proposal ID, relative to the same effects built under `SelfExecuted`. The two modes are
+  therefore not interchangeable for one proposal: a proposal is created in one mode and signed as
+  such. Cosigners see the expiration they are signing, and no later party can change it.
 - **`SelfExecuted` output remains byte-identical to pre-feature output.** No expiration is added,
   no envelope is attached, and nothing about the payload shape changes (SC-009).
 
-Expiration is consequently an unsigned liveness constraint, not part of the cosigner-authorized
-effects. Guardian v1 still MUST NOT rewrite it: preserving the proposal builder's exact request
-keeps transaction construction in the SDK/producer boundary (FR-013), preserves the FR-014
-checksum, and avoids inventing transformation semantics for opaque custom scripts. The server's
-role is enforcement: it refuses any executed transaction whose resulting expiration is non-finite
-or outside its configured horizon.
+Expiration is consequently part of the cosigner-authorized summary on 0.16, not an unsigned
+liveness constraint as an earlier revision stated against `miden-protocol` 0.15.3 (RFC 0001
+Appendix A.3 records the correction). Guardian v1 MUST NOT rewrite it, first because the
+protocol would reject the result as a binding mismatch, and also because preserving the proposal
+builder's exact request keeps transaction construction in the SDK/producer boundary (FR-013),
+preserves the FR-014 checksum, and avoids inventing transformation semantics for opaque custom
+scripts. The server's role is enforcement: it refuses any executed transaction whose resulting
+expiration is non-finite or outside its configured horizon.
+
+The same summary binds the reference block commitment, which is why every proposal already
+carries its `ChainAnchor` (`chain_anchor` payload field) and why both SDKs check the anchor's
+block commitment against the summary before signing. Guardian reproduces at that anchor
+(FR-056); the SDK contract here is unchanged except that a `GuardianExecutable` client MUST
+never omit the anchor.
 
 The SDK MUST NOT enforce its own size limit. The limits in FR-016 are server configuration,
 and capability negotiation is prohibited (FR-009), so a client-side copy could only be a

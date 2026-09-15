@@ -127,8 +127,13 @@ revision of this document carried only the expiration block, which left the supe
 stated but unimplementable.
 
 **`expiration_block` source is normative.** `TransactionRequest::expiration_delta`
-is `Option<u16>` where `None` means non-expiring; the authoritative value is the
-proven transaction's own expiration block. Measured: the default is
+is `Option<u16>` where `None` means non-expiring
+(`miden-client-0.16.0/src/transaction/request/mod.rs:119`); on protocol 0.16 the signed
+`TransactionSummary` also carries the delta as a `u16`, `0` when unset
+(`miden-protocol-0.16.1/src/transaction/tx_summary.rs:34,99-101`), counted from the anchored
+reference block. Neither is the stored value: the authoritative value is the
+proven transaction's own expiration block
+(`miden-protocol-0.16.1/src/transaction/proven_tx.rs:165`). Measured: the default is
 `u32::MAX` — never expires. FR-046 refuses that, which is precisely what makes
 FR-040's `expired` path able to fire at all. Reading the delta instead of the
 proven value was a real defect in an earlier revision.

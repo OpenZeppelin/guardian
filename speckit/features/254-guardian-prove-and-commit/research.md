@@ -3,6 +3,13 @@
 Findings gathered while specifying issue #254. Every claim below was verified against
 the tree at the time of writing; file references are `path:line`.
 
+> **2026-09-15**: this log was written against Miden 0.15.x and the 0.16 alphas and is kept as
+> the historical record. `main` now pins stable 0.16 (`miden-protocol`/`miden-tx` 0.16.1,
+> `miden-client`/`miden-node-proto-build` 0.16.0, `miden-crypto` 0.29.4). The re-verified
+> citations and the two design consequences that postdate this log, `ChainAnchor`-based
+> reproduction and fee conversion advice, live in RFC 0001 revision 16 and `spec.md` FR-056 and
+> FR-057. Where a claim below names a 0.15 file, the RFC carries the 0.16 equivalent.
+
 ## CORRECTED: note-path assembly is conditional, and `SyncNotes` supplies the pinned forest
 
 The account and reference-chain snapshot is required for every transaction. Historical block

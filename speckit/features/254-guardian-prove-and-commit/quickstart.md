@@ -61,7 +61,10 @@ Two consequences:
   with `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` rather than trying to
   rebuild the transaction (FR-013).
 - For built-in proposal families, the SDK applies the shared 256-block finite
-  expiration internally (FR-051). For an opaque custom-producer request, the producer's
+  expiration internally (FR-051). On protocol 0.16 that expiration is part of the signed
+  summary, so a Guardian-executable proposal has a different id than the same transfer created
+  by a self-executing client, and cosigners sign the expiration along with the effects. For an
+  opaque custom-producer request, the producer's
   script must set a finite expiration; the SDK preserves those bytes unchanged. A transaction
   whose resulting expiration is unbounded can never be Guardian-executed: the default is
   `u32::MAX` (never expires), and FR-046 refuses it because an unbounded execution would leave

@@ -50,7 +50,7 @@ libraries are dynamically linked and are not in `account.code().mast()`.
 
 **The MMR blocker recorded in round 2 was refuted on review and is withdrawn.**
 `Mmr::get_delta` returns merge nodes plus peaks, not intervening blocks
-(`miden-crypto-0.25.1/src/merkle/mmr/tests.rs:1241-1245`), so a cold-start `SyncChainMmr` is
+(`miden-crypto-0.29.4/src/merkle/mmr/tests.rs:1269-1273`; `0.25.1:1241-1245` when first cited), so a cold-start `SyncChainMmr` is
 logarithmic in chain length. Architecture A proceeds with **no persistent MMR cache** and **no
 wait on Miden 0.16**, which adds no blocker-removing capability.
 
@@ -80,6 +80,13 @@ of it.
 > and configuration transactions driven with their real tx scripts; the SC-011 figure; and whether
 > the route holds at the Miden 0.16 line if #329 lands first. Until round 2 passes, treat the
 > Execution Architecture section as provisional.
+>
+> **2026-09-15 addendum**: #329 landed and `main` pins stable 0.16. The spike ran on the 0.16 rc
+> pins and predates two inputs the execution path now needs: the proposal's `ChainAnchor` as the
+> source of the reference header and partial blockchain (FR-056), and the fee conversion advice
+> (FR-057). Its `SyncChainMmr`/`SyncNotes` live checks now validate the fallback path only; the
+> anchored path and the fee advice need their own offline tests before the residue below counts
+> as covered.
 
 **Genuinely still deferred**: live **submission**; the live-RPC **note-block** path joined to
 note-consuming execution in one flow; and the **custom family** (#266).

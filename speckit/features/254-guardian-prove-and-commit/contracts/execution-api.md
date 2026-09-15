@@ -277,11 +277,11 @@ pre-feature byte shape (FR-010, SC-009).
 {
   "tx_summary": { },
   "signatures": [],
-  "metadata": { },
+  "metadata": { "chain_anchor": "<base64 ChainAnchor, already present since 0.16>" },
   "transaction_request": {
     "format_version": 1,
-    "protocol_line": "0.15",
-    "serializer_id": "0.15.2",
+    "protocol_line": "0.16",
+    "serializer_id": "0.16.1",
     "checksum": "0x…",
     "bytes": "<base64>"
   }
@@ -289,8 +289,9 @@ pre-feature byte shape (FR-010, SC-009).
 ```
 
 **Why `serializer_id` exists alongside `protocol_line`.** `MAJOR.MINOR` alone treats every
-`0.16` prerelease as mutually compatible, and upstream alphas have changed serialization
-between prereleases — Guardian's own 0.15→0.16 work is tracked against alpha builds. A
+`0.16` prerelease as mutually compatible, and the 0.16 alphas changed serialization
+between prereleases; Guardian's own 0.15→0.16 work was tracked against those alpha builds before
+`main` moved to the stable 0.16.1 protocol pin. A
 `protocol_line` match with a `serializer_id` mismatch MUST be refused as
 `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` unless the server's configured allowlist admits the
 declared value. Deserializing bytes written by a different serializer is the failure this
@@ -300,7 +301,7 @@ envelope exists to prevent, and the coarser field cannot detect it.
 |---|---|---|
 | `format_version` | yes | Envelope version; integer (FR-014) |
 | `protocol_line` | yes | Miden protocol line the bytes were serialized against; refused if incompatible (FR-015) |
-| `serializer_id` | yes | Exact serialization identity — the full `miden-protocol` version **including prerelease** (e.g. `0.16.0-alpha.4`), not just `MAJOR.MINOR` |
+| `serializer_id` | yes | Exact serialization identity — the full `miden-protocol` version **including prerelease** (e.g. `0.16.1`, or `0.16.0-alpha.4` for a prerelease writer), not just `MAJOR.MINOR` |
 | `checksum` | yes | Integrity check over `bytes` before any deserialization attempt (FR-014) |
 | `bytes` | yes | Base64 serialized `TransactionRequest`; subject to FR-016 size limits |
 
@@ -325,7 +326,7 @@ changes no proposal ID (FR-012).
 | Variable | Required | Effect |
 |---|---|---|
 | `GUARDIAN_TX_PROVER_URL` | to enable | `{protocol}://{host}:{port}` of the remote prover. Unset ⇒ capability unavailable, no fallback (FR-021) |
-| `GUARDIAN_TX_PROVER_TIMEOUT_SECS` | no | Explicit prover timeout; MUST default well above the client library's 10 s (FR-020) |
+| `GUARDIAN_TX_PROVER_TIMEOUT_SECS` | no | Explicit prover timeout; MUST default well above the client library's 10 s (`miden-client-0.16.0/src/remote_prover/tx_prover.rs:43`) (FR-020) |
 | `GUARDIAN_PROVING_ENABLED` | no | Operator kill-switch, independent of prover reachability |
 | `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES` | no | Per-request size cap (FR-016) |
 | `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES` | no | Per-account aggregate cap (FR-016) |
