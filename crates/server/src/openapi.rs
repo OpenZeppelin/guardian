@@ -230,6 +230,8 @@ pub struct ClientApiDoc;
         crate::api::dashboard::logout_operator,
         crate::api::dashboard::list_operator_accounts,
         crate::api::dashboard::get_dashboard_info_handler,
+        crate::api::dashboard::get_dashboard_stats_handler,
+        crate::api::dashboard::request_dashboard_stats_refresh_handler,
         crate::api::dashboard::get_dashboard_session_handler,
         crate::api::dashboard::get_operator_account,
         crate::api::dashboard::get_operator_account_snapshot,

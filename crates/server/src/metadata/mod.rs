@@ -109,6 +109,44 @@ pub trait MetadataStore: Send + Sync {
         paused: Option<bool>,
     ) -> Result<Vec<AccountMetadata>, String>;
 
+    /// Every account's metadata, read in bounded pages of `page_size`
+    /// through [`Self::list_paged`] (indexed on Postgres). Backends that
+    /// hold the inventory in memory override this with a single
+    /// snapshot instead of re-scanning per page. Used by the
+    /// `/dashboard/stats` refresher; the `(updated_at, account_id)`
+    /// cursor may skip a row bumped past it mid-walk, which the caller
+    /// reconciles against [`Self::list`].
+    async fn list_all(&self, page_size: u32) -> Result<Vec<AccountMetadata>, String> {
+        let page_size = page_size.max(1);
+        let mut out = Vec::new();
+        let mut cursor: Option<AccountListCursor> = None;
+        loop {
+            let page = self.list_paged(page_size, cursor.take(), None).await?;
+            let page_len = page.len();
+            let last = page
+                .last()
+                .map(|m| (m.updated_at.clone(), m.account_id.clone()));
+            out.extend(page);
+            if page_len < page_size as usize {
+                break;
+            }
+            match last.and_then(|(updated_at, account_id)| {
+                DateTime::parse_from_rfc3339(&updated_at)
+                    .ok()
+                    .map(|ts| AccountListCursor {
+                        last_updated_at: ts.with_timezone(&Utc),
+                        last_account_id: account_id,
+                    })
+            }) {
+                Some(next) => cursor = Some(next),
+                // Cannot continue from an unparseable timestamp; the
+                // caller's id reconciliation fills any gap.
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
     /// Update the authentication configuration for an account
     async fn update_auth(&self, account_id: &str, new_auth: Auth, now: &str) -> Result<(), String> {
         let mut metadata = self
