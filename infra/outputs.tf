@@ -312,3 +312,13 @@ output "server_log_errors_alarm_name" {
   description = "Name of the alarm on ERROR-level server log lines for this stack"
   value       = var.cloudwatch_log_alarms_enabled ? aws_cloudwatch_metric_alarm.server_log_errors[0].alarm_name : ""
 }
+
+output "github_oidc_role_arn" {
+  description = "OIDC bootstrap role ARN for the AWS Deploy workflow (GitHub environment variable ROLE_FOR_OIDC)"
+  value       = var.github_oidc_enabled ? aws_iam_role.github_oidc[0].arn : ""
+}
+
+output "github_deploy_role_arn" {
+  description = "Deploy role ARN for the AWS Deploy workflow (GitHub environment variable ROLE_TO_ASSUME)"
+  value       = var.github_oidc_enabled ? aws_iam_role.github_deploy[0].arn : ""
+}
