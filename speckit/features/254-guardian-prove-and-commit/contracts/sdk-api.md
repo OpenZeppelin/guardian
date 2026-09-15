@@ -223,9 +223,20 @@ expiration is non-finite or outside its configured horizon.
 
 The same summary binds the reference block commitment, which is why every proposal already
 carries its `ChainAnchor` (`chain_anchor` payload field) and why both SDKs check the anchor's
-block commitment against the summary before signing. Guardian reproduces at that anchor
-(FR-056); the SDK contract here is unchanged except that a `GuardianExecutable` client MUST
-never omit the anchor.
+block commitment against the summary before signing (Rust
+`crates/miden-multisig-client/src/client/helpers.rs:239-249`, TypeScript `requireProposalAnchor`
+in `packages/miden-multisig-client/src/multisig.ts`). Guardian reproduces at that anchor
+(FR-056). Two SDK obligations follow for a `GuardianExecutable` client:
+
+- it MUST never omit the anchor, and the anchor MUST track the creation block of every
+  authenticated input note (`Client::chain_anchor_for_request` does this);
+- for consume-notes it MUST pin every input note in the request through
+  `TransactionRequestBuilder::explicit_input_notes`. The anchor pins the reference block only;
+  the mode each note is consumed in also enters the summary and is otherwise classified from the
+  executing client's store (`miden-client-0.16.0/src/transaction/mod.rs:357-360`). Today both
+  SDKs classify from the local store and import proofs to force authenticated mode
+  (`crates/miden-multisig-client/src/transaction/consume.rs:108-120`); Guardian has no store, so
+  a request that is not pinned reproduces a different summary and fails the binding check.
 
 The SDK MUST NOT enforce its own size limit. The limits in FR-016 are server configuration,
 and capability negotiation is prohibited (FR-009), so a client-side copy could only be a

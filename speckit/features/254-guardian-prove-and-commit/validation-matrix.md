@@ -84,9 +84,10 @@ of it.
 > **2026-09-15 addendum**: #329 landed and `main` pins stable 0.16. The spike ran on the 0.16 rc
 > pins and predates two inputs the execution path now needs: the proposal's `ChainAnchor` as the
 > source of the reference header and partial blockchain (FR-056), and the fee conversion advice
-> (FR-057). Its `SyncChainMmr`/`SyncNotes` live checks now validate the fallback path only; the
-> anchored path and the fee advice need their own offline tests before the residue below counts
-> as covered.
+> (FR-057), plus the stale-anchor pre-proving check (FR-058). Its `SyncChainMmr`/`SyncNotes`
+> live checks are historical evidence and cover nothing in v1; the anchored path, pinned-note
+> reproduction, the fee decision, and the stale-anchor check need their own offline tests before
+> the residue below counts as covered.
 
 **Genuinely still deferred**: live **submission**; the live-RPC **note-block** path joined to
 note-consuming execution in one flow; and the **custom family** (#266).
@@ -215,7 +216,11 @@ happy-path tests:
 | Candidate deletion | Atomically persists the terminal failure before the row disappears (FR-041, SC-025) |
 | `SwitchGuardian` canonicalizes during proving | Pre-submission re-check fails the execution; nothing submitted (FR-048, SC-026) |
 | Proven transaction with no finite expiration | Refused before the no-retry boundary with `GUARDIAN_EXECUTION_NO_FINITE_EXPIRATION` (FR-046, SC-027) |
-| Built-in proposal family in Guardian mode, Rust and TS | Produces a finite expiration using the shared 256-block default; same effects and salt preserve the self-executed summary and proposal ID (FR-012, FR-051, SC-033) |
+| Stale anchor: executed expiration block at or below the observed chain height, still inside the FR-046 horizon | Refused before proving with a distinct pre-boundary error; nothing proved or submitted (FR-058) |
+| Anchor header matches the summary but its `PartialBlockchain` does not track an authenticated note's creation block | Refused at proposal admission, no reservation ever created (FR-056) |
+| Consume-notes request without `explicit_input_notes` | Refused at proposal admission (FR-056) |
+| Request that already carries an auth arg | Reproduced unchanged; Guardian does not overwrite the producer's fee commitment (FR-057) |
+| Built-in proposal family in Guardian mode, Rust and TS | Produces a finite expiration using the shared 256-block default; both SDKs derive the same summary and proposal ID for the same effects, salt, and anchor, and that ID differs from self-executed mode because the expiration delta is signed on 0.16 (FR-012, FR-051, SC-033) |
 | Opaque custom request whose script sets finite expiration | Request bytes are attached unchanged and execution passes the finite-expiration gate (FR-051, SC-033) |
 | Opaque custom request with no finite expiration | Request bytes are attached unchanged; execution is refused before the boundary with `GUARDIAN_EXECUTION_NO_FINITE_EXPIRATION` (FR-046, FR-051, SC-033) |
 | Guardian's own candidate admission | Succeeds under the matching reservation owner + fence; an unrelated caller's candidate is still rejected (FR-037, SC-028) |

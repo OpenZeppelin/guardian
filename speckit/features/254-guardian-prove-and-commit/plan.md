@@ -16,8 +16,9 @@ from node RPC alone, and proved a witness through a remote prover against public
 testnet — with **no new dependencies**. Two 0.16 inputs postdate the spike and change what
 workstream D feeds the seam: the reference header and partial blockchain come from the
 proposal's `ChainAnchor` (FR-056), not from a tip-anchored `SyncChainMmr`, and the fee
-conversion advice must be derived and injected by Guardian (FR-057). The spike's RPC assembly
-becomes the fallback path. See [research.md](./research.md) and
+conversion advice must be derived and injected by Guardian before the unsigned reproduction
+(FR-057). A stale anchor is refused before proving (FR-058). The spike's RPC assembly is
+historical and non-normative for v1. See [research.md](./research.md) and
 [RFC 0001](../../../docs/rfcs/0001-server-side-transaction-execution.md).
 
 **Gate 0 is narrowed, not fully passed, and the residue is named.** P2ID and
@@ -317,8 +318,12 @@ three normative orderings encoded structurally rather than by comment:
 - **Steps 2 before 3** — never acknowledge a transaction that does not
   reproduce the signed summary. Step 2 deserializes the proposal's `ChainAnchor`,
   compares its block commitment with the signed summary's, authenticates the anchored header
-  against the node, attaches the fee conversion advice derived from that header, and only then
+  against the node, makes the fee conversion decision (leave an existing auth arg alone,
+  otherwise commit chain-native info under the declared salt), and only then
   executes (FR-056, FR-057).
+- **Step 6 before 7**: never prove a transaction whose executed expiration block the
+  observed chain height has already reached; the FR-046 horizon is measured from the
+  reference block and does not catch a stale anchor (FR-058).
 - **Step 8 before 9** — admissibility (FR-048) and finite expiration (FR-046)
   are checked *before* the boundary; after it, FR-047 forbids the
   fail-and-release that FR-048 would demand, so the account would be held until

@@ -56,9 +56,9 @@ established the architecture below empirically, not by reading upstream code:
 - The `DataStore` seam works against Guardian's own state, with **no new dependencies**.
 - `PartialBlockchain` assembly from node RPC alone was validated against public testnet,
   including cold-start peak acquisition (~0.6 s on a 1,002,185-block chain). On protocol 0.16
-  this is the fallback path only: proposals carry a `ChainAnchor` (header plus
-  `PartialBlockchain`) and the signed summary binds its block commitment, so the executor
-  reproduces at the anchor (see the 0.16 note below).
+  this is historical evidence only: proposals carry a `ChainAnchor` (header plus
+  `PartialBlockchain`), the signed summary binds its block commitment, and the executor
+  reproduces at the anchor and nowhere else (FR-056; see the 0.16 note below).
 - The full authorized path — select signatures, verify binding, acknowledge, execute,
   prove — completed end to end, with the proof produced by a **remote prover**.
 
@@ -69,10 +69,12 @@ unexercised; the custom family (#266) is unrun and is structurally identical to 
 (an opaque script through the same seam). Live **submission** is unvalidated and needs a
 funded, Guardian-registered account.
 
-None of that residue can falsify the architecture — it is the same `DataStore` and the same
-witness assembly in every case — so it does not block lifecycle implementation. It remains
-tracked in `validation-matrix.md` as deferred coverage, and the two items that could still
-surprise (the live note-block path and submission itself) are called out there explicitly.
+That residue does not falsify the `DataStore` seam — it is the same seam in every case — but
+the consume-notes item is no longer only deferred coverage: on 0.16 the note consumption mode
+enters the signed summary and is classified from the executing client's store, so a storeless
+executor reproduces a different summary unless the request pins its notes (FR-056). It remains
+tracked in `validation-matrix.md`, and the two items that could still surprise (pinned-note
+reproduction and submission itself) are called out there explicitly.
 
 **Guardian implements `miden_tx::DataStore` directly, answering each query from the account
 state it already holds plus chain data read at execution time.** For each execution it builds
@@ -97,12 +99,16 @@ the transaction reproduces the signed summary only at the block the proposer exe
 SDKs already ship that block as a serialized `ChainAnchor` on every proposal (wire field
 `chain_anchor`), verify its block commitment against the summary before signing, and re-execute
 at it. Guardian does the same (FR-056) instead of assembling a chain view at the tip; the
-`SyncChainMmr` and `SyncNotes` assembly below is the fallback for an anchorless proposal, which
-0.16 SDKs do not produce. Second, the `AuthGuardedMultisig` auth procedure pays fees inside
+`SyncChainMmr` and `SyncNotes` assembly the spike validated is historical and non-normative,
+because FR-056 admits no anchorless proposal and forbids substituting the tip. Second, the `AuthGuardedMultisig` auth procedure pays fees inside
 the signed summary and reads the fee conversion info from the advice map under the request's
 `fee_conversion_salt`; `miden-client` derives and commits it during request preparation through
-`pub(crate)` helpers (`miden-client-0.16.0/src/transaction/mod.rs:1528-1550`). Guardian's
-executor must supply the same advice (FR-057).
+a private helper and a `pub(crate)` commit step
+(`miden-client-0.16.0/src/transaction/mod.rs:1528-1560`, `.../request/mod.rs:278-284`).
+Guardian's executor must make the same decision (FR-057). Third, a stale anchor can yield a
+transaction that is already expired while still inside the FR-046 horizon; the client refuses
+that after execution (`.../transaction/mod.rs:393-402`) and Guardian does the same before
+proving (FR-058).
 
 The consequences are normative:
 
@@ -125,9 +131,9 @@ The consequences are normative:
   dependency, no temporary directory, no persisted MMR.
 - **Cold start per execution is one header read on 0.16.** The anchor carries the peaks and the
   note-block paths; Guardian reads the header at the anchored height to authenticate it. The
-  fallback assembly costs more: acquiring the chain MMR requires the
+  historical spike assembly cost more: acquiring the chain MMR required the
   genesis block commitment (trusted configuration or a read) plus a `SyncChainMmr` call seeded
-  at genesis; transactions consuming input notes need a further read per note block. The
+  at genesis; transactions consuming input notes needed a further read per note block. The
   `SyncChainMmr` delta is **compact — the peak set, logarithmic in chain length, not
   proportional to it** — so a per-execution cold start is affordable and **no persistent MMR
   cache is required**. A process-local cache is permitted only if measured latency justifies
@@ -667,7 +673,8 @@ This is an admission/execution policy, not a universal property of signed summar
   3. issue the Guardian acknowledgment via the internal path (FR-044)
   4. inject the signature advice and the acknowledgment
   5. execute the authorized transaction
-  6. re-verify the binding on the executed result
+  6. re-verify the binding on the executed result, and refuse a stale anchor whose executed
+     expiration block the observed chain height has already reached (FR-058)
   7. prove (FR-019)
   8. re-check account admissibility against freshly read state (FR-048), and confirm the
      expiration is within the horizon (FR-046) — both still **before** the boundary, so a
@@ -1001,22 +1008,44 @@ This is an admission/execution policy, not a universal property of signed summar
   and behaviorally unchanged for both kinds of proposal. It MUST NOT be deprecated,
   gated, or degraded by this feature.
 
-- **FR-056 (reproduction runs at the proposal's chain anchor)**: A Guardian-executable proposal
-  MUST carry the serialized `ChainAnchor` its summary was derived at (the existing `chain_anchor`
-  payload field). At admission Guardian MUST refuse a proposal whose anchor fails to deserialize
-  or whose block commitment differs from the one bound into the signed summary. At execution
-  Guardian MUST read the block header at the anchored height from its configured node and refuse
-  with a binding error when its commitment differs from the anchor's, MUST take the reference
-  header and partial blockchain for `TransactionInputs` from the anchor, and MUST refuse an
-  authenticated input note whose creation block the anchor does not track. Guardian MUST NOT
-  substitute the chain tip for the anchored block.
-- **FR-057 (fee conversion advice is the executor's responsibility)**: When the stored request
-  declares a `fee_conversion_salt`, Guardian MUST derive the chain-native fee conversion info
-  from the anchored reference header exactly as the pinned Miden client does and place its
-  commitment preimage in the advice map before reproduction, so the auth procedure's fee payment
-  falls inside the reproduced summary. A request that declares no salt MUST be reproduced
-  unchanged; if fee payment then fails, the result is a reproduction failure surfaced as such,
-  not a request Guardian repairs.
+- **FR-056 (reproduction runs at the proposal's chain anchor)**: This is new server behavior;
+  today the server stores `chain_anchor` without reading it and only the SDKs check it. A
+  Guardian-executable proposal MUST carry the serialized `ChainAnchor` its summary was derived at
+  (the existing `chain_anchor` payload field) and MUST pin every input note it consumes in the
+  request itself (`TransactionRequestBuilder::explicit_input_notes`), because the signed summary
+  binds each note's consumption mode and a storeless executor cannot classify notes from a
+  store. At admission Guardian MUST refuse a proposal whose anchor is missing or fails to
+  deserialize, whose anchor block commitment differs from the one bound into the signed summary,
+  or whose anchor does not track the creation block of every authenticated input note in the
+  request; the summary binds the header commitment only, so the tracked set is Guardian's check
+  to make, and making it at execution instead would let a signature-complete proposal take the
+  account's reservation only to fail closed. At execution Guardian MUST read the block header at
+  the anchored height from its configured node and refuse with a binding error when its
+  commitment differs from the anchor's, and MUST take the reference header and partial
+  blockchain for `TransactionInputs` from the anchor. Guardian MUST NOT substitute the chain tip
+  for the anchored block, and MUST NOT accept an anchorless proposal by assembling a chain view
+  itself; the spike's `SyncChainMmr`/`SyncNotes` assembly is not part of v1.
+- **FR-057 (fee conversion advice is the executor's responsibility)**: Before the unsigned
+  reproduction in FR-045 step 2, Guardian MUST make the same fee conversion decision the pinned
+  Miden client makes during request preparation
+  (`miden-client-0.16.0/src/transaction/mod.rs:1528-1560`): a request that already carries an
+  auth arg is reproduced unchanged, since the auth arg is the producer's own commitment and may
+  name a different fee asset or rate; otherwise, when the anchored header's verification base fee
+  is non-zero or the request declares a `fee_conversion_salt`, Guardian derives the chain-native
+  1/1 conversion info from that header and commits it under the declared salt (or the client's
+  fixed empty salt for a fixed-salt auth component), placing the commitment preimage in the
+  advice map so the auth procedure's fee payment falls inside the reproduced summary. Guardian
+  MUST NOT overwrite an existing auth arg. A caller-chosen-salt component with no declared salt
+  is a reproduction failure surfaced as such, not a request Guardian repairs.
+- **FR-058 (stale anchor is refused before proving)**: After executing the authorized
+  transaction and before proving, Guardian MUST read the current chain height from its configured
+  node and refuse, with a distinct pre-boundary error, any transaction whose executed expiration
+  block is at or below that height, mirroring the pinned client
+  (`miden-client-0.16.0/src/transaction/mod.rs:393-402`). This is separate from FR-046: the
+  horizon is measured from the reference block, so a 256-block delta on an anchor 300 blocks
+  behind the tip is already expired yet inside a 512-block horizon; without this check it would be
+  proved, rejected by the node, and after the no-retry boundary would hold the account until the
+  expired path fires.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -1038,8 +1067,9 @@ This is an admission/execution policy, not a universal property of signed summar
   execution, per FR-024, mapped onto the delta lifecycle by FR-025. Distinct from delta
   status, which continues to describe the resulting delta's canonicalization.
 - **Ephemeral execution data store**: the per-execution store seeded from Guardian's held
-  account state plus tip block data fetched at execution time, used to reproduce the
-  transaction and discarded at terminal state. Carries no state between executions.
+  account state plus the proposal's `ChainAnchor`, authenticated against the node at execution
+  time, used to reproduce the transaction and discarded at terminal state. Carries no state
+  between executions.
 - **Effective threshold**: the signature count a proposal must reach — the invoked
   procedure's override when configured, otherwise the account default; the account default
   for custom types.
@@ -1170,8 +1200,10 @@ This is an admission/execution policy, not a universal property of signed summar
   proving or submission, with an error naming foreign procedure invocation as the reason — never
   executed against absent foreign state (FR-050).
 - **SC-033**: Every built-in Guardian-executable proposal built by either SDK produces a finite
-  expiration using the shared 256-block default, while the same effects and salt produce the same
-  summary and proposal ID as self-executed mode. A custom producer request with a finite script-set
+  expiration using the shared 256-block default, and both SDKs derive the same summary and
+  proposal ID for the same effects, salt, and anchor. Because the expiration delta is part of the
+  signed summary on protocol 0.16, that ID differs from the self-executed ID for the same
+  effects; a test that keeps the two IDs equal has omitted the expiration. A custom producer request with a finite script-set
   expiration is accepted; any transaction whose resulting expiration is non-finite or outside the
   deployment horizon is refused before the boundary with the FR-046 error. Explicit tests cover
   all built-in families, custom finite/non-finite requests, and Rust/TypeScript parity (FR-046,
