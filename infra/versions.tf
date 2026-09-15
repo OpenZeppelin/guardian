@@ -33,6 +33,31 @@ provider "aws" {
   }
 }
 
+# Root-account provider used only for the GitHub OIDC bootstrap role
+# (infra/oidc.tf). It reaches the root account either through a named profile
+# or by assuming a role from the caller's credentials; with neither set it
+# falls back to the caller's own credentials and nothing references it.
+provider "aws" {
+  alias   = "root_account"
+  region  = var.aws_region
+  profile = var.github_oidc_root_account_profile != "" ? var.github_oidc_root_account_profile : null
+
+  dynamic "assume_role" {
+    for_each = var.github_oidc_root_account_role_arn != "" ? [1] : []
+
+    content {
+      role_arn = var.github_oidc_root_account_role_arn
+    }
+  }
+
+  default_tags {
+    tags = {
+      Project   = "guardian"
+      ManagedBy = "terraform"
+    }
+  }
+}
+
 provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
