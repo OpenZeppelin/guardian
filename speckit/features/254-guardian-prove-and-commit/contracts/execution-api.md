@@ -224,6 +224,7 @@ gRPC read; never by the execution `POST`:
 | `GUARDIAN_EXECUTION_FOREIGN_INPUTS_UNSUPPORTED` | The transaction requires foreign-account (FPI) inputs, which v1 refuses before any execution (FR-050) |
 | `GUARDIAN_EXECUTION_PROVING_FAILED` | Prover error or timeout (FR-019, FR-020) |
 | `GUARDIAN_EXECUTION_NO_FINITE_EXPIRATION` | The proven transaction's expiration block falls outside the reconciliation horizon; refused **before** submission (FR-046) |
+| `GUARDIAN_EXECUTION_ANCHOR_EXPIRED` | The executed transaction's expiration block is at or below the chain height observed before proving or before a proving retry: the proposal's anchor is stale. Distinct from the horizon check, which is measured from the reference block; refused **before** proving (FR-058, FR-055) |
 | `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | The pre-submission re-check found the account moved, paused, released, or no longer guarded by this Guardian (FR-048) |
 | `GUARDIAN_EXECUTION_SUBMISSION_REJECTED` | Node definitively rejected the proven transaction |
 | `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` | Submitted, but the candidate reached `discarded`, or the account was observed superseded (FR-040) |

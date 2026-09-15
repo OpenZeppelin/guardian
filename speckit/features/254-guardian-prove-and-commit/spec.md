@@ -604,9 +604,12 @@ This is an admission/execution policy, not a universal property of signed summar
   dominant prover failure family is transport-level (`connection error: i/o timeout`), so a
   classifier that recognizes only structured errors retries nothing precisely when the
   prover is the bottleneck. Retrying MUST stop — settling `failed` through the ordinary
-  pre-boundary path — when the failure is permanent, or when the transaction's expiration
+  pre-boundary path — when the failure is permanent, when the transaction's expiration
   (known from the executed transaction before proving starts) can no longer be met within
-  the FR-046 horizon. There is deliberately no separate retry-budget configuration: the
+  the FR-046 horizon, or when that expiration block is at or below the chain height observed
+  at the retry (FR-058). The horizon is measured from the reference block and does not move as
+  the tip advances, so without the second stop a transient prover error plus a few new blocks
+  would let Guardian retry, then submit, a transaction the node rejects. There is deliberately no separate retry-budget configuration: the
   transaction's own finite expiration (FR-051) is the bound, so the retry span scales with
   the built-in SDK default or custom producer's chosen expiration and can never outlive what FR-046 would refuse to
   submit anyway. Retries are strictly pre-boundary; FR-047 is untouched — once the boundary
@@ -1031,15 +1034,20 @@ This is an admission/execution policy, not a universal property of signed summar
   (`miden-client-0.16.0/src/transaction/mod.rs:1528-1560`): a request that already carries an
   auth arg is reproduced unchanged, since the auth arg is the producer's own commitment and may
   name a different fee asset or rate; otherwise, when the anchored header's verification base fee
-  is non-zero or the request declares a `fee_conversion_salt`, Guardian derives the chain-native
-  1/1 conversion info from that header and commits it under the declared salt (or the client's
-  fixed empty salt for a fixed-salt auth component), placing the commitment preimage in the
-  advice map so the auth procedure's fee payment falls inside the reproduced summary. Guardian
-  MUST NOT overwrite an existing auth arg. A caller-chosen-salt component with no declared salt
-  is a reproduction failure surfaced as such, not a request Guardian repairs.
+  is non-zero or the request declares a `fee_conversion_salt`, Guardian classifies the account's
+  auth component exactly as `FeeAuth::of` does (`.../transaction/mod.rs:1576-1637`) and acts per
+  branch: `FixedSalt` commits the chain-native 1/1 conversion info from that header under the
+  declared salt or, absent one, the client's fixed empty salt; `CallerChosenSalt` commits it
+  under the declared salt and fails when none is declared; `Ignored` fails when a salt is
+  declared and otherwise leaves the request alone. Committing means placing the commitment
+  preimage in the advice map and the commitment in the auth arg, so the auth procedure's fee
+  payment falls inside the reproduced summary. Guardian MUST NOT overwrite an existing auth arg.
+  Each failing branch is a reproduction failure surfaced as such, not a request Guardian
+  repairs. Implement by copying the cited function's decision, not by re-deriving it.
 - **FR-058 (stale anchor is refused before proving)**: After executing the authorized
-  transaction and before proving, Guardian MUST read the current chain height from its configured
-  node and refuse, with a distinct pre-boundary error, any transaction whose executed expiration
+  transaction and before proving, and again before each proving retry under FR-055, Guardian
+  MUST read the current chain height from its configured node and refuse, with the distinct
+  pre-boundary error `GUARDIAN_EXECUTION_ANCHOR_EXPIRED`, any transaction whose executed expiration
   block is at or below that height, mirroring the pinned client
   (`miden-client-0.16.0/src/transaction/mod.rs:393-402`). This is separate from FR-046: the
   horizon is measured from the reference block, so a 256-block delta on an anchor 300 blocks

@@ -216,7 +216,9 @@ happy-path tests:
 | Candidate deletion | Atomically persists the terminal failure before the row disappears (FR-041, SC-025) |
 | `SwitchGuardian` canonicalizes during proving | Pre-submission re-check fails the execution; nothing submitted (FR-048, SC-026) |
 | Proven transaction with no finite expiration | Refused before the no-retry boundary with `GUARDIAN_EXECUTION_NO_FINITE_EXPIRATION` (FR-046, SC-027) |
-| Stale anchor: executed expiration block at or below the observed chain height, still inside the FR-046 horizon | Refused before proving with a distinct pre-boundary error; nothing proved or submitted (FR-058) |
+| Stale anchor: executed expiration block at or below the observed chain height, still inside the FR-046 horizon | Refused before proving with `GUARDIAN_EXECUTION_ANCHOR_EXPIRED`; nothing proved or submitted (FR-058) |
+| Transient prover failures while the tip advances past the executed expiration | Retrying stops on the chain-height check, not only the horizon; settles `failed` / `GUARDIAN_EXECUTION_ANCHOR_EXPIRED` pre-boundary (FR-055, FR-058) |
+| Custom producer request consuming a note absent from `explicit_input_notes` | Refused at proposal admission, same as built-in consume-notes (FR-056) |
 | Anchor header matches the summary but its `PartialBlockchain` does not track an authenticated note's creation block | Refused at proposal admission, no reservation ever created (FR-056) |
 | Consume-notes request without `explicit_input_notes` | Refused at proposal admission (FR-056) |
 | Request that already carries an auth arg | Reproduced unchanged; Guardian does not overwrite the producer's fee commitment (FR-057) |
