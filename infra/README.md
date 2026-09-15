@@ -1,13 +1,5 @@
 # GUARDIAN Server AWS Infrastructure (Terraform)
 
-> **Mirrored copy.** This directory is kept in sync with `guardian/` in the
-> private `OpenZeppelin/oz-terraform` repository, which holds the S3-backed
-> state for the deployed stacks (workspaces `stg`, `prod`, `evm-prod`). Until
-> the team decides where Guardian infrastructure lives, land every change in
-> both places; the two trees differ only in how the stage is selected
-> (`deployment_stage` here, the Terraform workspace there), the backend and
-> provider blocks, and the OIDC roles that exist only there.
-
 This directory contains the Terraform configuration for the current Guardian AWS deployment: ECS/Fargate behind an ALB, backed by Amazon RDS for PostgreSQL.
 
 The deployment is stage-aware:
