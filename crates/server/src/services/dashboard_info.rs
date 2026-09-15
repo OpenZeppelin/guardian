@@ -149,15 +149,26 @@ pub struct DashboardInfoResponse {
 /// Compute the dashboard info snapshot.
 ///
 /// Errors:
-///   - [`GuardianError::StorageError`] if even the cheap account-count
-///     read fails. Per-aggregate fan-out failures are downgraded to
-///     `degraded_aggregates` entries rather than failing the whole
-///     response.
+///   - [`GuardianError::StorageError`] if no snapshot is published yet
+///     and the fallback account-count read fails. Aggregates the walk
+///     declined are `degraded_aggregates` entries, never errors.
 pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoResponse> {
-    let account_ids = state.metadata.list().await.map_err(|e| {
-        GuardianError::StorageError(format!("Failed to list account metadata: {e}"))
-    })?;
-    let total_account_count = account_ids.len() as u64;
+    // Every cross-account aggregate comes from the published snapshot;
+    // the live inventory count is read only while no snapshot exists yet,
+    // so a metadata-store blip never fails the overview once one is
+    // published and steady-state requests do no inventory reads.
+    let snapshot = state.dashboard.stats().current();
+    let total_account_count = match &snapshot {
+        Some(snapshot) => snapshot.accounts.total,
+        None => state
+            .metadata
+            .list()
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to list account metadata: {e}"))
+            })?
+            .len() as u64,
+    };
 
     // Storage label reflects the *runtime* backend selected by the
     // builder, not the cargo feature the binary was compiled with — a
@@ -212,10 +223,9 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
     // the live account count is still returned. An aggregate the walk
     // itself declined (filesystem inventory threshold, storage failure)
     // carries its stable name in `degraded_aggregates`.
-    match state.dashboard.stats().current() {
+    match snapshot {
         Some(snapshot) => {
             response.aggregates_as_of = Some(snapshot.as_of.to_rfc3339());
-            response.total_account_count = snapshot.accounts.total;
             response.accounts_by_auth_method = snapshot.accounts.by_auth_method.clone();
             let inventory = &snapshot.inventory;
             if let Some(counts) = inventory.delta_status_counts {
@@ -331,7 +341,26 @@ mod tests {
 
     #[tokio::test]
     async fn every_cross_account_aggregate_is_served_from_the_stats_snapshot() {
-        let state = build_state(vec!["stale-live-id".to_string()], MockStorageBackend::new()).await;
+        // Once a snapshot exists the live inventory is not consulted at
+        // all: a failing metadata store must not fail the overview.
+        let keystore_dir =
+            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
+        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
+        let state = AppState {
+            storage: Arc::new(MockStorageBackend::new()),
+            metadata: Arc::new(
+                MockMetadataStore::new().with_list(Err("metadata store unreachable".into())),
+            ),
+            network_client: Arc::new(MockNetworkClient::new()),
+            ack,
+            canonicalization: None,
+            clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
+            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
+            auditor: Arc::new(crate::audit::LogAuditor::new()),
+            #[cfg(feature = "evm")]
+            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
+        };
         let latest = state.clock.now() - chrono::Duration::minutes(3);
         publish_stats_snapshot(
             &state,
@@ -349,8 +378,8 @@ mod tests {
         );
 
         let info = get_dashboard_info(&state).await.unwrap();
-        // The total comes from the snapshot (3), not the live list (1),
-        // so it always equals the sum of the per-method counts.
+        // The total comes from the snapshot (3), never the live list, so
+        // it always equals the sum of the per-method counts.
         assert_eq!(info.total_account_count, 3);
         assert_eq!(info.accounts_by_auth_method.get("miden_falcon"), Some(&2));
         assert_eq!(info.accounts_by_auth_method.get("miden_ecdsa"), Some(&1));

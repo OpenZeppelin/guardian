@@ -459,8 +459,9 @@ mode is a dev convenience, not a production backend. See
 
 The threshold is applied by the `/dashboard/stats` walk when it reads
 the fan-out inventory aggregates; the affected names surface in
-`degraded_aggregates` on `/dashboard/info`, while account counts and
-asset totals are always complete. See
+`degraded_aggregates` on `/dashboard/info`; account counts are always
+complete and asset totals carry their own explicit coverage
+(`complete` / `skipped`). See
 [Aggregate stats](#aggregate-stats).
 
 ## Operations checklist

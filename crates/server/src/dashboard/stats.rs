@@ -435,7 +435,10 @@ impl StatsSnapshot {
                 .by_auth_method_and_signer_count
                 .entry((record.auth_method.clone(), record.authorized_signer_count))
                 .or_insert(0) += 1;
-            if let Some(updated_at) = record.updated_at {
+            // Windows are anchored to `as_of` on both sides: a row bumped
+            // past `as_of` while the walk ran is not "within the last 7
+            // days" of the time this snapshot represents.
+            if let Some(updated_at) = record.updated_at.filter(|ts| *ts <= as_of) {
                 if updated_at >= seven_days_ago {
                     counts.updated_within_7d += 1;
                 }
@@ -604,6 +607,15 @@ async fn refresh_if_due(
 /// Run one walk as the holder of `lease` and publish it through the
 /// shared store (fenced). Returns the snapshot as loaded into this
 /// replica's cache. On error the previous publication stays in place.
+///
+/// Fencing note: `PgLeaseElector` keeps the fence token when the *same*
+/// holder re-acquires its own expired lease and only advances it on a
+/// change of holder. That is sufficient here because each holder runs
+/// exactly one walk at a time from [`run_leader_loop`] (the next
+/// `try_acquire` happens only after this function returns), so a stale
+/// walk can never race a newer walk of the same holder id; any walk by a
+/// different holder carries a strictly newer token and the publication
+/// predicate refuses the older one.
 pub async fn refresh_dashboard_stats_as(
     state: &AppState,
     leader: &Arc<dyn LeaderElector>,
@@ -1333,17 +1345,27 @@ mod tests {
                 AccountLifecycle::Active,
                 VaultOutcome::NotApplicable,
             ),
+            // Bumped past as_of while the walk ran: counted in totals, but
+            // the windows are anchored to as_of on both sides.
+            record(
+                "f",
+                Some("2026-09-11T00:00:01Z"),
+                "miden_falcon",
+                1,
+                AccountLifecycle::Active,
+                VaultOutcome::NotApplicable,
+            ),
         ];
         let snapshot = snapshot(as_of, records);
         let counts = &snapshot.accounts;
-        assert_eq!(counts.total, 5);
-        assert_eq!((counts.active, counts.paused, counts.released), (3, 1, 1));
-        assert_eq!(counts.by_auth_method["miden_falcon"], 3);
+        assert_eq!(counts.total, 6);
+        assert_eq!((counts.active, counts.paused, counts.released), (4, 1, 1));
+        assert_eq!(counts.by_auth_method["miden_falcon"], 4);
         assert_eq!(counts.by_auth_method["miden_ecdsa"], 1);
         assert_eq!(counts.by_auth_method["evm"], 1);
         assert_eq!(
             counts.by_auth_method_and_signer_count[&("miden_falcon".to_string(), 1)],
-            2
+            3
         );
         assert_eq!(
             counts.by_auth_method_and_signer_count[&("miden_falcon".to_string(), 2)],
@@ -1360,7 +1382,7 @@ mod tests {
             .iter()
             .map(|r| r.account_id.as_str())
             .collect();
-        assert_eq!(order, vec!["a", "c", "b", "d", "e"]);
+        assert_eq!(order, vec!["f", "a", "c", "b", "d", "e"]);
     }
 
     #[test]
