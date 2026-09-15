@@ -678,13 +678,27 @@ recovery too. There are two ways to receive them, and they compose:
 
   **Migrating from bring-your-own**: if this stack already notifies a
   hand-made topic with a console-created Amazon Q channel configuration,
-  either import them (`aws_sns_topic.alarms[0]` by ARN,
-  `aws_chatbot_slack_channel_configuration.alarms[0]` by its
-  `arn:aws:chatbot::<account>:chat-configuration/slack-channel/<name>`
-  ARN, and the role) or delete the console configuration and drop the old
+  either import them or delete the console configuration and drop the old
   ARN from `alarm_actions` before applying. Leaving both in place posts
-  every ALARM/OK twice in the channel, and a hand-made topic already named
-  `<stack>-alarms` makes the apply fail on the name collision.
+  every ALARM/OK twice in the channel. Do not rely on a name collision to
+  stop you: SNS `CreateTopic` is idempotent, so an existing topic already
+  named `<stack>-alarms` is silently adopted on apply and its access policy
+  replaced (or the apply fails on mismatched attributes). Import it
+  explicitly and review the plan before applying:
+
+  ```bash
+  terraform -chdir=infra import 'aws_sns_topic.alarms[0]' arn:aws:sns:<region>:<account>:<stack>-alarms
+  terraform -chdir=infra import 'aws_chatbot_slack_channel_configuration.alarms[0]' \
+    arn:aws:chatbot::<account>:chat-configuration/slack-channel/<configuration-name>
+  terraform -chdir=infra import 'aws_iam_role.chatbot_alarms[0]' <channel-role-name>
+  terraform -chdir=infra plan
+  ```
+
+  A topic or configuration with a different name is not preserved by
+  importing alone: the configured names are fixed, so the plan proposes
+  replacing the imported resource. Rename the Slack channel configuration
+  (its name cannot be edited in place) or accept the replacement, and move
+  any out-of-band subscriptions to the new topic afterwards.
 
 #### Slack setup (once per AWS account and workspace)
 
