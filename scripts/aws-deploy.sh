@@ -18,7 +18,7 @@ set -euo pipefail
 #
 # Options:
 #   --skip-build - Skip Docker build and push during deploy
-#   --bootstrap  - Allow deploy/cleanup on a remote workspace that has no resources in state yet (new stack only)
+#   --bootstrap  - Create the TF_WORKSPACE workspace if missing and allow deploy/cleanup on it with no resources in state yet (new stack only)
 #
 # Optional environment variables:
 #   AWS_REGION            - AWS region (default: us-east-1)
@@ -283,6 +283,13 @@ backend_override_files() {
   find "$TF_DIR" -maxdepth 1 \( -name '*_override.tf' -o -name 'override.tf' \) 2>/dev/null
 }
 
+override_declares_backend() {
+  local files
+  files=$(backend_override_files)
+  [ -n "$files" ] || return 1
+  grep -lqE '^[[:space:]]*(backend[[:space:]]+"|cloud[[:space:]]*\{)' $files 2>/dev/null
+}
+
 initialized_backend_type() {
   local metadata="$TF_DIR/.terraform/terraform.tfstate"
   [ -f "$metadata" ] || return 0
@@ -290,22 +297,28 @@ initialized_backend_type() {
 }
 
 remote_state_resource_count() {
-  local out
-  if out=$(terraform -chdir="$TF_DIR" state list 2>&1); then
-    grep -c . <<<"$out" || true
-  elif grep -q "No state file was found" <<<"$out"; then
-    echo 0
-  else
-    log_error "Unable to read state for workspace ${TF_WORKSPACE}:" >&2
-    printf '%s\n' "$out" >&2
-    return 1
+  local addresses errors err_file
+  err_file=$(mktemp)
+  if addresses=$(terraform -chdir="$TF_DIR" state list 2>"$err_file"); then
+    rm -f "$err_file"
+    grep -cE '^[A-Za-z_][A-Za-z0-9_-]*\.' <<<"$addresses" || true
+    return 0
   fi
+  errors=$(<"$err_file")
+  rm -f "$err_file"
+  if grep -q "No state file was found" <<<"$errors"; then
+    echo 0
+    return 0
+  fi
+  log_error "Unable to read state for workspace ${TF_WORKSPACE}:" >&2
+  printf '%s\n' "$errors" >&2
+  return 1
 }
 
 require_remote_state_populated() {
   remote_state_enabled || return 0
   if [ "$ALLOW_EMPTY_REMOTE_STATE" = true ]; then
-    log_warn "--bootstrap given: proceeding even if workspace ${TF_WORKSPACE} has no resources yet"
+    log_warn "--bootstrap given: proceeding even though workspace ${TF_WORKSPACE} may have no resources yet"
     return 0
   fi
   local resource_count
@@ -357,9 +370,17 @@ ensure_terraform_init() {
     return 0
   fi
 
+  local backend_type backend_is_remote=false
+  backend_type=$(initialized_backend_type)
+  if [ -n "$backend_type" ] && [ "$backend_type" != "local" ] && ! override_declares_backend; then
+    log_error "${TF_DIR}/.terraform was initialized with a '${backend_type}' backend but no infra/*_override.tf declares a backend block anymore."
+    log_error "Refusing to reconfigure down to local state, which would leave every live resource unmanaged."
+    log_error "Restore the override file, or return to local state deliberately with: terraform -chdir=${TF_DIR} init -reconfigure"
+    return 1
+  fi
+
   log_info "Initializing Terraform (reconfigure, no state migration)..."
   env -u TF_WORKSPACE terraform -chdir="$TF_DIR" init -reconfigure -input=false || return 1
-  local backend_type backend_is_remote=false
   backend_type=$(initialized_backend_type)
   if [ -n "$backend_type" ] && [ "$backend_type" != "local" ]; then
     backend_is_remote=true
@@ -379,7 +400,13 @@ ensure_terraform_init() {
   fi
 
   if remote_state_enabled; then
-    env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace select -or-create "$TF_WORKSPACE" >/dev/null || return 1
+    if [ "$ALLOW_EMPTY_REMOTE_STATE" = true ]; then
+      env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace select -or-create "$TF_WORKSPACE" >/dev/null || return 1
+    elif ! env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace select "$TF_WORKSPACE" >/dev/null; then
+      log_error "Workspace ${TF_WORKSPACE} does not exist on the '${backend_type}' backend."
+      log_error "Check TF_WORKSPACE for a typo, or pass --bootstrap to create it for a genuinely new stack."
+      return 1
+    fi
     log_info "Initialized backend: ${backend_type}, workspace ${TF_WORKSPACE}"
   fi
 }
@@ -1125,7 +1152,7 @@ case "${COMMAND:-}" in
     echo ""
     echo "Options:"
     echo "  --skip-build  Skip Docker build and push (use existing image)"
-    echo "  --bootstrap   Allow deploy/cleanup on a remote workspace that has no resources in state yet (new stack only)"
+    echo "  --bootstrap   Create the TF_WORKSPACE workspace if missing and allow deploy/cleanup on it with no resources in state (new stack only)"
     echo "  --domain=     Override root domain (default: openzeppelin.com)"
     echo "  --subdomain=  Override subdomain (default: guardian)"
     echo "  --route53-zone-id=  Route 53 hosted zone ID (optional)"

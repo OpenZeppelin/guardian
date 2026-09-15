@@ -523,9 +523,16 @@ and `TF_WORKSPACE` naming the workspace for the stack being deployed.
 
 ```bash
 cp infra/backend_override.tf.example infra/backend_override.tf   # edit bucket, key, region
-export TF_WORKSPACE=prod                                          # one workspace per STACK_NAME/DEPLOY_STAGE
+export STACK_NAME=guardian-prod DEPLOY_STAGE=prod
+export TF_WORKSPACE=prod                                          # one workspace per STACK_NAME/DEPLOY_STAGE pair
 ./scripts/aws-deploy.sh plan
 ```
+
+`TF_WORKSPACE` only selects which remote state Terraform reads. It does not
+change `STACK_NAME` or `DEPLOY_STAGE`, which still default to `guardian` and
+`dev`, and `stack_name` feeds resource names. Always export all three
+together: a `prod` workspace planned with the default variables proposes
+renaming, and for most resources recreating, the live stack.
 
 Terraform merges `*_override.tf` files into the configuration, and the pattern
 is gitignored, so bucket names, account IDs and role ARNs never enter the
@@ -541,14 +548,19 @@ refuses either one alone. With both set it:
 - always runs `terraform init -reconfigure -input=false`, so a changed bucket
   or key is picked up and an existing local state file is never migrated
   implicitly
-- creates the workspace if it does not exist yet
-  (`terraform workspace select -or-create`), so a typo in `TF_WORKSPACE`
-  creates an empty workspace on the backend; delete a stray one with
-  `terraform workspace delete`
+- selects the workspace and refuses if it does not exist, so a typo in
+  `TF_WORKSPACE` fails instead of minting an empty workspace on the backend.
+  `--bootstrap` creates it (`terraform workspace select -or-create`) for a
+  genuinely new stack
 - refuses `deploy` and `cleanup` when the workspace has no resources in
   state, because Terraform would otherwise plan to create every resource of a
-  stack that already exists (`plan` only warns). Pass `--bootstrap` for a
-  genuinely new stack.
+  stack that already exists (`plan` only warns). `--bootstrap` lifts this
+  guard too, so a new stack needs it on the first `deploy` only
+- refuses to run at all when `infra/.terraform` was initialized with a
+  non-local backend but no override declares a backend block anymore
+  (deleted or reduced to provider settings). Reconfiguring would silently
+  drop to empty local state; restore the override, or return to local state
+  deliberately with `terraform -chdir=infra init -reconfigure`
 
 The script's own AWS CLI calls (ECR, Secrets Manager, STS) use the ambient
 credentials, not the provider's `assume_role`. If your override assumes a role
@@ -571,8 +583,12 @@ terraform init -reconfigure -input=false
 terraform workspace select -or-create prod
 TF_WORKSPACE=prod terraform state push terraform.guardian-prod.prod.tfstate
 cd ..
-TF_WORKSPACE=prod ./scripts/aws-deploy.sh plan   # must report no changes
+STACK_NAME=guardian-prod DEPLOY_STAGE=prod TF_WORKSPACE=prod ./scripts/aws-deploy.sh plan   # must report no changes
 ```
+
+The final `plan` must use the same `STACK_NAME` and `DEPLOY_STAGE` the pushed
+state was created with. If it proposes changes, stop and compare the variables
+before deploying.
 
 Use `--skip-build` when the image already exists in ECR and you only need infra/runtime changes, or when you are applying immediately after a reviewed `plan`:
 

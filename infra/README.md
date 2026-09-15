@@ -173,13 +173,16 @@ stack through `TF_WORKSPACE`:
 
 ```bash
 cp infra/backend_override.tf.example infra/backend_override.tf   # edit bucket, key, region
-export TF_WORKSPACE=prod
+export STACK_NAME=guardian-prod DEPLOY_STAGE=prod
+export TF_WORKSPACE=prod                                          # only selects state; export all three together
 ./scripts/aws-deploy.sh plan
 ```
 
 A non-local backend block and `TF_WORKSPACE` must be set together; the deploy
-script refuses either one alone, and refuses `deploy` or `cleanup` on a
-workspace with no resources in state unless `--bootstrap` is given. See
+script refuses either one alone. The workspace must already exist, and
+`deploy` or `cleanup` refuse a workspace with no resources in state; pass
+`--bootstrap` for a genuinely new stack to create the workspace and lift the
+guard. See
 [`docs/SERVER_AWS_DEPLOY.md`](../docs/SERVER_AWS_DEPLOY.md#remote-state-backend)
 for the full behaviour and for moving existing local state into the backend.
 

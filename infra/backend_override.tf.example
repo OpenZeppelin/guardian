@@ -5,7 +5,8 @@
 # Terraform merges every *_override.tf file into the module, so the tracked
 # configuration stays free of organisation-specific bucket names, account IDs
 # and role ARNs. Select the stack with TF_WORKSPACE when running the deploy
-# script; one workspace per STACK_NAME/DEPLOY_STAGE pair.
+# script; one workspace per STACK_NAME/DEPLOY_STAGE pair. TF_WORKSPACE only
+# picks the state, so export STACK_NAME and DEPLOY_STAGE alongside it.
 
 terraform {
   # Raises the module's own ">= 1.0" floor: use_lockfile below needs 1.10.
