@@ -30,8 +30,8 @@ Default startup choices:
 
 - one GUARDIAN at the chosen Deployment Target (see the table in `SKILL.md`):
   - Local dev: `http://localhost:3000`
-  - Staging (devnet): `https://guardian-stg.openzeppelin.com`
-  - Production (testnet): `https://guardian.openzeppelin.com`
+  - Staging (devnet): `https://guardian-devnet.openzeppelin.com`
+  - Production (testnet): `https://guardian-testnet.openzeppelin.com`
 - one `examples/smoke-web` dev server at `http://localhost:3002` (or the scratch deployed-SDK project when smoking the published npm package)
 - one real browser or fully isolated browser profile per cosigner (Chrome MCP's `tabs_create_mcp` tabs count as one profile, not three — see Browser Automation in `SKILL.md`)
 - Miden RPC matching the chosen target:

@@ -1,5 +1,5 @@
 profile_name = "ecdsa-burst-scale"
-guardian_endpoint = "https://guardian.openzeppelin.com"
+guardian_endpoint = "https://guardian-testnet.openzeppelin.com"
 transport = "grpc"
 duration_seconds = 300
 warmup_seconds = 0
