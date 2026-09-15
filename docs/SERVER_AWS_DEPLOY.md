@@ -408,7 +408,7 @@ become the only trusted ones.
 ```
 
 The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so image pushes always produce a real ECS task-definition revision instead of relying on tag reuse.
-It also keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default. See [Remote state backend](#remote-state-backend) to keep state in S3 or another backend instead.
+It also keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default. See [Remote state backend](#remote-state-backend) to keep state in S3 or another workspace-capable backend instead.
 
 AWS deployments must include the `postgres` server feature. The script defaults `GUARDIAN_SERVER_FEATURES` to `postgres`; set `GUARDIAN_SERVER_FEATURES=postgres,evm` only when deploying the optional EVM API surface.
 
@@ -540,6 +540,10 @@ tracked module. The override may also add an `assume_role` block to the AWS
 provider; the region and default tags from `infra/versions.tf` are kept. An
 override that only carries provider settings works with local state.
 
+The backend must support CLI workspaces, as S3, GCS, azurerm, Consul, pg and
+Kubernetes do. The `http` backend does not, and the script has no
+default-workspace mode, so it is outside this contract.
+
 A non-local backend block and `TF_WORKSPACE` must be set together; the script
 refuses either one alone. With both set it:
 
@@ -551,7 +555,7 @@ refuses either one alone. With both set it:
 - selects the workspace and refuses if it does not exist, so a typo in
   `TF_WORKSPACE` fails instead of minting an empty workspace on the backend.
   `deploy --bootstrap` (or `plan --bootstrap`) creates it
-  (`terraform workspace select -or-create`) for a genuinely new stack
+  (`terraform workspace new`) for a genuinely new stack
 - refuses `deploy` and `cleanup` when the workspace has no resources in
   state, because Terraform would otherwise plan to create every resource of a
   stack that already exists (`plan` only warns). `deploy --bootstrap` lifts
@@ -583,7 +587,7 @@ workspace commands refuse to run while it is set, then push with it set.
 cd infra
 unset TF_WORKSPACE
 terraform init -reconfigure -input=false
-terraform workspace select -or-create prod
+terraform workspace new prod
 TF_WORKSPACE=prod terraform state push terraform.guardian-prod.prod.tfstate
 cd ..
 STACK_NAME=guardian-prod DEPLOY_STAGE=prod TF_WORKSPACE=prod ./scripts/aws-deploy.sh plan   # must report no changes

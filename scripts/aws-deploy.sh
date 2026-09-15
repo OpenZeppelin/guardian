@@ -401,7 +401,8 @@ ensure_terraform_init() {
 
   if remote_state_enabled; then
     if [ "$ALLOW_EMPTY_REMOTE_STATE" = true ]; then
-      env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace select -or-create "$TF_WORKSPACE" >/dev/null || return 1
+      env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace select "$TF_WORKSPACE" >/dev/null 2>&1 \
+        || env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace new "$TF_WORKSPACE" >/dev/null || return 1
     elif ! env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace select "$TF_WORKSPACE" >/dev/null; then
       log_error "Workspace ${TF_WORKSPACE} does not exist on the '${backend_type}' backend."
       log_error "Check TF_WORKSPACE for a typo, or pass --bootstrap to create it for a genuinely new stack."

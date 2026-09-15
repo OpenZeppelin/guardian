@@ -168,8 +168,9 @@ cp infra/terraform.tfstate.backup infra/terraform.guardian.dev.tfstate.backup 2>
 #### Remote state (optional)
 
 The module declares no backend, so state is local by default. To keep it in a
-remote backend, drop an untracked override file into `infra/` and select the
-stack through `TF_WORKSPACE`:
+remote backend that supports CLI workspaces (S3, GCS, azurerm and the like, not
+`http`), drop an untracked override file into `infra/` and select the stack
+through `TF_WORKSPACE`:
 
 ```bash
 cp infra/backend_override.tf.example infra/backend_override.tf   # edit bucket, key, region
