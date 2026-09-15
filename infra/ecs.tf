@@ -212,6 +212,12 @@ resource "aws_ecs_task_definition" "server" {
               value = var.guardian_cors_allowed_origins
             }
           ] : [],
+          var.guardian_allowed_account_schemes != "" ? [
+            {
+              name  = "GUARDIAN_ALLOWED_ACCOUNT_SCHEMES"
+              value = var.guardian_allowed_account_schemes
+            }
+          ] : [],
           var.guardian_evm_entrypoint_address != "" ? [
             {
               name  = "GUARDIAN_EVM_ENTRYPOINT_ADDRESS"

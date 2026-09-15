@@ -7,7 +7,7 @@
 # Run from this directory:
 #   cp .env.example .env                       # then fill in the values
 #   cp operators.example.json operators.json   # for the operator-login walkthrough
-#   <generate ./ack-keys/ with ack-keygen — see README.md "Configure and run">
+#   <generate ./ack-keys/ with the image's ack-keygen, see README.md "Configure and run">
 #   docker compose up
 #
 # Compose auto-loads .env for both ${VAR} interpolation and each server's runtime

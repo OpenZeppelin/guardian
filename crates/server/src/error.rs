@@ -111,6 +111,16 @@ pub enum GuardianError {
         paused_at: DateTime<Utc>,
         paused_reason: Option<String>,
     },
+    /// A new account asked to register with a signature scheme this Guardian
+    /// does not accept (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`). Stable code
+    /// `signature_scheme_not_allowed`, HTTP 403 Forbidden, gRPC
+    /// `PERMISSION_DENIED`. The rejected scheme and the accepted set travel
+    /// in `meta` so the wallet can tell the user which scheme to create the
+    /// account with. Existing accounts are never affected.
+    SignatureSchemeNotAllowed {
+        scheme: String,
+        allowed_schemes: Vec<String>,
+    },
     /// The account switched to a different guardian and this server
     /// released it; mutating action rejected with stable code
     /// `GUARDIAN_ACCOUNT_RELEASED`. HTTP 409 Conflict, gRPC
@@ -185,6 +195,7 @@ impl GuardianError {
             GuardianError::InsufficientOperatorPermission { .. } => StatusCode::FORBIDDEN,
             GuardianError::DataUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             GuardianError::AccountPaused { .. } => StatusCode::CONFLICT,
+            GuardianError::SignatureSchemeNotAllowed { .. } => StatusCode::FORBIDDEN,
             GuardianError::AccountReleased { .. } => StatusCode::CONFLICT,
             GuardianError::CandidateLanded { .. } => StatusCode::CONFLICT,
         }
@@ -233,6 +244,7 @@ impl GuardianError {
             GuardianError::InsufficientOperatorPermission { .. } => tonic::Code::PermissionDenied,
             GuardianError::DataUnavailable(_) => tonic::Code::Unavailable,
             GuardianError::AccountPaused { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::SignatureSchemeNotAllowed { .. } => tonic::Code::PermissionDenied,
             GuardianError::AccountReleased { .. } => tonic::Code::FailedPrecondition,
             GuardianError::CandidateLanded { .. } => tonic::Code::FailedPrecondition,
         }
@@ -280,6 +292,7 @@ impl GuardianError {
             }
             GuardianError::DataUnavailable(_) => "data_unavailable",
             GuardianError::AccountPaused { .. } => "GUARDIAN_ACCOUNT_PAUSED",
+            GuardianError::SignatureSchemeNotAllowed { .. } => "signature_scheme_not_allowed",
             GuardianError::AccountReleased { .. } => "GUARDIAN_ACCOUNT_RELEASED",
             GuardianError::CandidateLanded { .. } => "GUARDIAN_CANDIDATE_LANDED",
         }
@@ -355,6 +368,9 @@ impl GuardianError {
             }
             GuardianError::AccountPaused { .. } => {
                 "This account is paused and can't approve transactions right now."
+            }
+            GuardianError::SignatureSchemeNotAllowed { .. } => {
+                "This Guardian doesn't accept new accounts with that signature scheme."
             }
             GuardianError::AccountReleased { .. } => {
                 "This account has moved to a different guardian. Reconnect it to continue."
@@ -507,6 +523,14 @@ impl fmt::Display for GuardianError {
                 Some(reason) => write!(f, "Account is paused: {reason}"),
                 None => write!(f, "Account is paused"),
             },
+            GuardianError::SignatureSchemeNotAllowed {
+                scheme,
+                allowed_schemes,
+            } => write!(
+                f,
+                "Signature scheme '{scheme}' is not allowed for new accounts (allowed: {})",
+                allowed_schemes.join(", ")
+            ),
             GuardianError::AccountReleased { .. } => write!(
                 f,
                 "Account was released: it switched to a different guardian. \
@@ -571,6 +595,14 @@ struct ErrorMeta {
     /// `GUARDIAN_ACCOUNT_PAUSED` (may itself be absent within that variant).
     #[serde(skip_serializing_if = "Option::is_none")]
     paused_reason: Option<String>,
+    /// Rejected signature scheme. Populated only for
+    /// `signature_scheme_not_allowed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheme: Option<String>,
+    /// Schemes this Guardian accepts for new accounts. Populated only for
+    /// `signature_scheme_not_allowed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed_schemes: Option<Vec<String>>,
     /// RFC 3339 UTC timestamp of the guardian-switch release. Populated
     /// only for `GUARDIAN_ACCOUNT_RELEASED`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -627,12 +659,21 @@ impl GuardianError {
             }
             _ => (None, None, None, None),
         };
+        let (scheme, allowed_schemes) = match self {
+            GuardianError::SignatureSchemeNotAllowed {
+                scheme,
+                allowed_schemes,
+            } => (Some(scheme.clone()), Some(allowed_schemes.clone())),
+            _ => (None, None),
+        };
         ErrorMeta {
             retryable: self.retryable(),
             retry_after_secs,
             missing_permissions,
             paused_at,
             paused_reason,
+            scheme,
+            allowed_schemes,
             released_at,
         }
     }
@@ -938,6 +979,40 @@ mod tests {
             serde_json::from_slice(status.details()).expect("details are JSON");
         assert_eq!(details["code"], "authentication_replay");
         assert_eq!(details["meta"]["retryable"], serde_json::Value::Bool(true));
+    }
+
+    // -- GUARDIAN_ALLOWED_ACCOUNT_SCHEMES: SignatureSchemeNotAllowed --
+
+    fn scheme_not_allowed() -> GuardianError {
+        GuardianError::SignatureSchemeNotAllowed {
+            scheme: "falcon".to_string(),
+            allowed_schemes: vec!["ecdsa".to_string()],
+        }
+    }
+
+    #[test]
+    fn signature_scheme_not_allowed_pins_http_grpc_code_and_is_terminal() {
+        let err = scheme_not_allowed();
+        assert_eq!(err.http_status(), StatusCode::FORBIDDEN);
+        assert_eq!(err.grpc_status(), tonic::Code::PermissionDenied);
+        assert_eq!(err.code(), "signature_scheme_not_allowed");
+        assert!(!err.retryable());
+        assert!(!err.user_message().contains("falcon"));
+    }
+
+    #[test]
+    fn signature_scheme_not_allowed_meta_names_the_scheme_and_allowed_set() {
+        let body = serde_json::to_value(scheme_not_allowed().error_body()).unwrap();
+        assert_eq!(body["code"], "signature_scheme_not_allowed");
+        assert_eq!(body["meta"]["retryable"], serde_json::Value::Bool(false));
+        assert_eq!(body["meta"]["scheme"], "falcon");
+        assert_eq!(
+            body["meta"]["allowed_schemes"],
+            serde_json::json!(["ecdsa"])
+        );
+        let other = serde_json::to_value(GuardianError::AuthenticationReplay.error_body()).unwrap();
+        assert!(other["meta"].get("scheme").is_none());
+        assert!(other["meta"].get("allowed_schemes").is_none());
     }
 
     #[test]

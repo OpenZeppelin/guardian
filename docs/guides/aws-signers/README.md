@@ -62,9 +62,23 @@ Set in `.env`:
 - `AWS_REGION` — the region holding the secret and key.
 - `GUARDIAN_ACK_FALCON_SECRET_ID` — the Falcon secret name from step 2.
 - `GUARDIAN_ACK_ECDSA_KMS_KEY_ID` — the alias or ARN from step 1.
+- `GUARDIAN_DASHBOARD_CURSOR_SECRET`, a 32-byte hex value (`openssl rand -hex
+  32`). This Compose stack requires it (the compose file fails fast if unset);
+  pin a stable value so dashboard pagination cursors stay valid across restarts.
 
 The Compose file already pins `GUARDIAN_ENV=prod` (the switch that makes the
 server load ACK keys from Secrets Manager) and `GUARDIAN_ACK_ECDSA_BACKEND=aws-kms`.
+
+For the full production hardening set (storage encryption at rest, Prometheus
+metrics, and multi-replica HA) use the [production guide](../production/README.md)
+and its Compose stack instead.
+
+> **Upgrading this stack past v0.17.0:** `GUARDIAN_ENV=prod` now also applies
+> the production runtime defaults (rate limits 200/5000, two 32-connection
+> pools, canonicalization concurrency 50, `json` logs) when the variables are
+> unset. This stack sets none of them, so it picks the new values up on
+> upgrade; add them to `.env` explicitly if you want the old ones (see
+> [`CONFIGURATION.md`](../../CONFIGURATION.md#prod-stage-startup-guards--ha-behavior)).
 
 ### AWS credentials for the container
 

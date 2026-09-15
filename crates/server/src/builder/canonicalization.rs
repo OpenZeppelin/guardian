@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::config::stage::Stage;
+
 /// Environment override for [`CanonicalizationConfig::fast_promotion_enabled`].
 pub const ENV_FAST_PROMOTION_ENABLED: &str = "GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED";
 
@@ -110,7 +112,7 @@ impl Default for CanonicalizationConfig {
             retained_ttl_seconds: 86_400,         // Reconcile a stuck base for up to a day (#345)
             reconcile_interval_seconds: 60,       // Recovery sweep; slower than the full pass
             reconcile_page_size: 100,             // Accounts per reconcile pass; cursor rotates
-            max_concurrent_accounts: 10, // Overlaps per-account chain RPCs; prod Terraform sets 50
+            max_concurrent_accounts: Stage::Dev.default_canonicalization_max_concurrent_accounts(),
         }
     }
 }
@@ -298,7 +300,17 @@ impl CanonicalizationConfig {
         self
     }
 
-    /// Apply the [`ENV_MAX_CONCURRENT_ACCOUNTS`] override when set. An
+    /// Start from the [`Stage`] defaults for the stage-dependent knobs
+    /// (`GUARDIAN_ENV=prod` raises `max_concurrent_accounts` to the production
+    /// value). Call it before explicit overrides and before the `*_from_env`
+    /// readers so that both keep precedence over the stage.
+    pub fn with_stage_defaults(self, stage: Stage) -> Self {
+        self.with_max_concurrent_accounts(stage.default_canonicalization_max_concurrent_accounts())
+    }
+
+    /// Apply the [`ENV_MAX_CONCURRENT_ACCOUNTS`] override when set; an unset
+    /// variable keeps the current value (see [`Self::with_stage_defaults`]
+    /// for the stage-dependent starting point). An
     /// unset variable keeps the built-in default; a present-but-invalid
     /// value fails startup loudly — a silently ignored typo here would
     /// run production at the wrong concurrency.
@@ -379,6 +391,48 @@ mod tests {
             .expect("missing variable is not an error");
 
         assert_eq!(config.max_concurrent_accounts, 10);
+    }
+
+    #[test]
+    fn stage_defaults_set_prod_concurrency() {
+        let config = CanonicalizationConfig::default().with_stage_defaults(Stage::Prod);
+        assert_eq!(config.max_concurrent_accounts, 50);
+        assert_eq!(
+            CanonicalizationConfig::default()
+                .with_stage_defaults(Stage::Dev)
+                .max_concurrent_accounts,
+            10
+        );
+    }
+
+    #[test]
+    fn env_override_missing_preserves_explicit_value_over_stage_default() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_CONCURRENCY_TEST_MISSING_EXPLICIT";
+        unsafe { std::env::remove_var(var_name) };
+
+        let config = CanonicalizationConfig::default()
+            .with_stage_defaults(Stage::Prod)
+            .with_max_concurrent_accounts(1)
+            .max_concurrent_accounts_from_var(var_name)
+            .expect("missing variable is not an error");
+
+        assert_eq!(config.max_concurrent_accounts, 1);
+    }
+
+    #[test]
+    fn env_override_wins_over_stage_default() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_CONCURRENCY_TEST_PRESENT_PROD";
+        unsafe { std::env::set_var(var_name, "7") };
+
+        let config = CanonicalizationConfig::default()
+            .with_stage_defaults(Stage::Prod)
+            .max_concurrent_accounts_from_var(var_name);
+
+        unsafe { std::env::remove_var(var_name) };
+
+        assert_eq!(config.unwrap().max_concurrent_accounts, 7);
     }
 
     #[test]

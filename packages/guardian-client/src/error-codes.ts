@@ -43,6 +43,7 @@ export const GUARDIAN_ERROR_CODES = [
   'rate_limit_exceeded',
   'rpc_unavailable',
   'rpc_validation_failed',
+  'signature_scheme_not_allowed',
   'signer_not_authorized',
   'signing_error',
   'state_not_found',

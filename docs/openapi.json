@@ -297,6 +297,16 @@
               }
             }
           },
+          "403": {
+            "description": "New account uses a signature scheme excluded by GUARDIAN_ALLOWED_ACCOUNT_SCHEMES (`signature_scheme_not_allowed`; meta.scheme and meta.allowed_schemes)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Request body exceeds the configured size limit",
             "content": {
@@ -3412,6 +3422,16 @@
           "retryable"
         ],
         "properties": {
+          "allowed_schemes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Signature schemes this Guardian accepts for new accounts. Present\nonly for `signature_scheme_not_allowed`."
+          },
           "missing_permissions": {
             "type": [
               "array",
@@ -3455,6 +3475,13 @@
           "retryable": {
             "type": "boolean",
             "description": "Whether retrying the same request could plausibly succeed."
+          },
+          "scheme": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Rejected signature scheme. Present only for\n`signature_scheme_not_allowed`."
           }
         }
       },

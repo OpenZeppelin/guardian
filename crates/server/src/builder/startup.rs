@@ -24,6 +24,7 @@ pub(crate) struct StartupInfo {
     ecdsa_backend: &'static str,
     falcon_commitment: String,
     ecdsa_commitment: String,
+    account_schemes: String,
     canonicalization: Option<CanonicalizationConfig>,
     operator_count: usize,
     cursor_secret_configured: bool,
@@ -42,6 +43,7 @@ impl StartupInfo {
         ecdsa_backend: &'static str,
         falcon_commitment: String,
         ecdsa_commitment: String,
+        account_schemes: String,
         canonicalization: Option<CanonicalizationConfig>,
         operator_count: usize,
         cursor_secret_configured: bool,
@@ -57,6 +59,7 @@ impl StartupInfo {
             ecdsa_backend,
             falcon_commitment,
             ecdsa_commitment,
+            account_schemes,
             canonicalization,
             operator_count,
             cursor_secret_configured,
@@ -104,6 +107,7 @@ impl StartupInfo {
             falcon_commitment = %self.falcon_commitment,
             ecdsa_backend = self.ecdsa_backend,
             ecdsa_commitment = %self.ecdsa_commitment,
+            account_schemes = %self.account_schemes,
             "ack signers"
         );
         tracing::info!(
@@ -123,6 +127,7 @@ impl StartupInfo {
                 fast_promotion_window_seconds = config.fast_promotion_window_seconds,
                 max_retries = config.max_retries,
                 submission_grace_period_seconds = config.submission_grace_period_seconds,
+                max_concurrent_accounts = config.max_concurrent_accounts,
                 "canonicalization"
             ),
             None => {
@@ -182,6 +187,7 @@ mod tests {
             "aws-kms",
             "0xfalcon".to_string(),
             "0xecdsa".to_string(),
+            "falcon,ecdsa".to_string(),
             Some(CanonicalizationConfig {
                 check_interval_seconds: 10,
                 fast_promotion_enabled: true,
@@ -231,6 +237,7 @@ mod tests {
             "in-memory",
             "0xfalcon".to_string(),
             "0xecdsa".to_string(),
+            "falcon,ecdsa".to_string(),
             None,
             0,
             false,
@@ -264,6 +271,7 @@ mod tests {
             "in-memory",
             "0xfalcon".to_string(),
             "0xecdsa".to_string(),
+            "falcon,ecdsa".to_string(),
             None,
             0,
             false,

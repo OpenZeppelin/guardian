@@ -230,6 +230,24 @@ try {
 }
 ```
 
+Branch on `error.code`, the server's stable machine-readable code, never on
+the message text. `error.meta` carries structured side-data for some codes.
+For example, a Guardian configured with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`
+rejects a new account whose signature scheme it does not accept:
+
+```typescript
+try {
+  await client.configure(request);
+} catch (error) {
+  if (error instanceof GuardianHttpError && error.code === 'signature_scheme_not_allowed') {
+    // HTTP 403, not retryable. Create the account with an accepted scheme.
+    console.error(
+      `scheme ${error.meta?.scheme} rejected; this Guardian accepts ${error.meta?.allowedSchemes?.join(', ')}`
+    );
+  }
+}
+```
+
 ### Rate limits and retries
 
 The server rate-limits both its HTTP and gRPC surfaces. The sustained
