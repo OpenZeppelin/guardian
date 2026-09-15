@@ -482,9 +482,13 @@ export class Multisig {
    * survive a switch, and the notes embedded in them can only be imported
    * while the old GUARDIAN is still the current client.
    *
-   * Repointing abandons a {@link syncProposals} still in flight (it rejects
-   * without applying its listing) and resets the sync-reconciliation
-   * bookkeeping.
+   * Repointing abandons a {@link syncProposals} still in flight: it rejects
+   * without applying its listing, though its request to the old GUARDIAN is
+   * not cancelled, so callers already awaiting it see the rejection only
+   * once that response settles. The reported-id and miss-count bookkeeping
+   * is reset; the set of ids GUARDIAN is known to hold is kept on purpose,
+   * so proposals orphaned by the repoint expire through the two-miss rule
+   * instead of lingering.
    *
    * @param guardianClient - The new GUARDIAN HTTP client
    */
@@ -780,8 +784,9 @@ export class Multisig {
    * changes; a payload that does not parse at all rejects and leaves both
    * untouched, so malformed GUARDIAN data is never silently dropped.
    * Signatures added to a cached proposal while the sync was verifying are
-   * preserved by its apply. Overlapping callers share the same in-flight
-   * promise. A sync that spans a {@link setGuardianClient} repoint rejects
+   * preserved by its apply, and a proposal executed locally in that window
+   * stays `finalized` rather than reverting to the listed pending state.
+   * Overlapping callers share the same in-flight promise. A sync that spans a {@link setGuardianClient} repoint rejects
    * without applying its listing.
    *
    * Nonce-based staleness hiding is the caller's job (see the examples'
@@ -837,6 +842,10 @@ export class Multisig {
     const applied: Proposal[] = [];
     for (const { delta, verified } of reported.values()) {
       const current = this.proposals.get(verified.id);
+      if (current?.status === 'finalized') {
+        applied.push(current);
+        continue;
+      }
       applied.push(
         current === undefined
           ? verified
@@ -2030,7 +2039,7 @@ export class Multisig {
       }
     }
 
-    proposal.status = 'finalized';
+    this.proposals.set(proposal.id, { ...proposal, status: 'finalized' });
   }
 
   /**
@@ -2626,14 +2635,17 @@ export class Multisig {
       this.signerCommitments,
       localSignatureContext,
     ).entries();
-    proposal.signatures = canonicalizedSignatures;
-
-    // Update status
     const proposalType = proposal.metadata?.proposalType;
     const signaturesRequired = proposalType
       ? this.getEffectiveThreshold(proposalType)
       : this.threshold;
-    proposal.status = proposal.signatures.length >= signaturesRequired ? 'ready' : 'pending';
+    // A fresh object rather than an in-place write: a sync that snapshotted
+    // the cache before this signature tells the two apart by identity.
+    this.proposals.set(proposal.id, {
+      ...proposal,
+      signatures: canonicalizedSignatures,
+      status: canonicalizedSignatures.length >= signaturesRequired ? 'ready' : 'pending',
+    });
 
     // Return updated JSON
     return this.exportProposalToJson(proposal.id);

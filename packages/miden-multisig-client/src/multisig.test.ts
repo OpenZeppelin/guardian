@@ -1697,6 +1697,121 @@ describe('Multisig', () => {
       ).toHaveLength(2);
     });
 
+    it('should keep a proposal executed while the listing was being verified finalized', async () => {
+      // executeProposal(P) completing while the sync stalls verifying Q must
+      // not be clobbered when the sync applies P's pre-execution pending
+      // delta: a UI keyed on status would show Execute again on a proposal
+      // that already landed on chain.
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const [seeded] = await multisig.syncProposals();
+      expect(seeded.status).toBe('ready');
+
+      let releaseVerify: (() => void) | undefined;
+      vi.mocked(executeForSummaryAt)
+        .mockResolvedValueOnce({
+          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+        } as any)
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              releaseVerify = () =>
+                resolve({
+                  toCommitment: () => ({ toHex: () => '0x' + 'd'.repeat(64) }),
+                } as any);
+            })
+        );
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          proposals: [pendingDeltaProposal('AQID'), pendingDeltaProposal('AQIDBA==', 2)],
+        }),
+      });
+      const sync = multisig.syncProposals();
+      await vi.waitFor(() => expect(releaseVerify).toBeTruthy());
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => pendingDeltaProposal('AQID'),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          ack_sig: '0x' + '6'.repeat(130),
+          ack_pubkey: '0x' + 'f'.repeat(64),
+          ack_scheme: 'falcon',
+        }),
+      });
+      await multisig.executeProposal(proposalId);
+      expect(multisig.listProposals().find((p) => p.id === proposalId)?.status).toBe('finalized');
+
+      releaseVerify!();
+      const synced = await sync;
+      expect(synced.map((p) => p.id).sort()).toEqual([proposalId, '0x' + 'd'.repeat(64)]);
+      expect(synced.find((p) => p.id === proposalId)?.status).toBe('finalized');
+      expect(multisig.listProposals().find((p) => p.id === proposalId)?.status).toBe('finalized');
+
+      // GUARDIAN drops the executed proposal on the next listing and the
+      // finalized entry prunes like any other reported id.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQIDBA==', 2)] }),
+      });
+      const after = await multisig.syncProposals();
+      expect(after.map((p) => p.id)).toEqual(['0x' + 'd'.repeat(64)]);
+    });
+
+    it('should not prune a reported proposal signed offline while a stale empty listing was in flight', async () => {
+      // signProposalOffline writes to the cache while the sync is awaiting
+      // GUARDIAN; the sync's pre-signing snapshot must not match the signed
+      // entry, or the empty listing deletes a proposal the user just signed.
+      const config = {
+        threshold: 2,
+        signerCommitments: [mockSigner.commitment, '0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config, mockSigner, '0x' + 'a'.repeat(30));
+      const proposalId = '0x' + 'c'.repeat(64);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [pendingDeltaProposal('AQID')] }),
+      });
+      const [seeded] = await multisig.syncProposals();
+      expect(seeded.signatures).toHaveLength(1);
+
+      let releaseListing!: (value: unknown) => void;
+      mockFetch.mockImplementationOnce(
+        () => new Promise((resolve) => { releaseListing = resolve; })
+      );
+      const sync = multisig.syncProposals();
+      await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+
+      await multisig.signProposalOffline(proposalId);
+      expect(multisig.listProposals().find((p) => p.id === proposalId)?.signatures).toHaveLength(2);
+
+      releaseListing({
+        ok: true,
+        json: async () => ({ proposals: [] }),
+      });
+      const synced = await sync;
+      expect(synced.map((p) => p.id)).toEqual([proposalId]);
+      expect(synced[0].signatures).toHaveLength(2);
+      expect(synced[0].status).toBe('ready');
+    });
+
     it('should leave the cache and pruning state untouched when a listing fails to parse', async () => {
       // A response of [valid, malformed] must not cache the valid proposal
       // before throwing on the malformed one: a proposal cached that way was
