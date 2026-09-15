@@ -242,6 +242,12 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `stack_name` | `guardian` | Base name used to derive stack resource names |
 | `deployment_stage` | `dev` | Deployment stage profile |
 | `server_image_uri` | (required) | ECR image URI for the server, preferably pinned to a digest |
+| `github_oidc_enabled` | `false` | Manage the GitHub Actions OIDC roles for the AWS Deploy workflow; enable on exactly one stack |
+| `github_oidc_provider_arn` | `""` | GitHub OIDC identity provider ARN in the root account (required when enabled) |
+| `github_oidc_root_account_role_arn` | `""` | Role assumed in the root account to manage the bootstrap role (required when enabled) |
+| `github_oidc_role_name` | `github-actions-solutions-account-guardian-oidc-role` | Bootstrap role name |
+| `github_deploy_role_name` | `GithubOIDCGuardianRole` | Deploy role name |
+| `github_oidc_subjects` | guardian `devnet`/`testnet` environments | OIDC subject claims allowed to assume the bootstrap role |
 | `guardian_operator_public_keys` | `[]` | Falcon public keys used to create a stack-scoped operator public keys secret |
 | `guardian_operator_public_keys_secret_arn` | `""` | Existing operator public keys secret ARN; takes precedence over the managed list |
 | `guardian_evm_allowed_chain_ids` | `""` | EVM chain IDs used to create a stack-scoped allowed chain IDs secret |
@@ -309,6 +315,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | Output | Description |
 |--------|-------------|
 | `alb_dns_name` | ALB DNS name for accessing the server |
+| `github_oidc_role_arn` | Bootstrap role ARN for the AWS Deploy workflow (`ROLE_FOR_OIDC`); empty unless `github_oidc_enabled` |
+| `github_deploy_role_arn` | Deploy role ARN for the AWS Deploy workflow (`ROLE_TO_ASSUME`); empty unless `github_oidc_enabled` |
 | `alb_url` | Full URL (http or https) |
 | `custom_domain_url` | Canonical service URL: https with a certificate, http when Terraform manages only the DNS record |
 | `alias_domain_url` | Migration-only legacy domain URL |
@@ -387,6 +395,61 @@ This Terraform stack is RDS-only. Existing stacks that still run ECS-hosted Post
 4. Restore the backup into the RDS database.
 5. Validate the public Guardian endpoints.
 6. Confirm the old Postgres ECS and Cloud Map resources are gone from AWS before considering the cutover complete.
+
+## GitHub Actions OIDC roles
+
+`oidc.tf` defines the two IAM roles behind the **AWS Deploy** workflow
+(`.github/workflows/aws-deploy.yml`): a bootstrap role in the organization's
+root account that GitHub's OIDC provider may assume, and a deploy role in the
+stack's account that the bootstrap role chains into. The trust policy admits
+one subject claim per GitHub environment (`github_oidc_subjects`), so only jobs
+running under those environments obtain the identity.
+
+The roles are shared by every Guardian stack in the account. Enable them on
+exactly one stack — `guardian-prod` — and leave `github_oidc_enabled` at its
+default `false` everywhere else, or the other stacks will try to create roles
+with the same names.
+
+```bash
+export TF_VAR_github_oidc_enabled=true
+export TF_VAR_github_oidc_provider_arn="arn:aws:iam::<root-account>:oidc-provider/token.actions.githubusercontent.com"
+export TF_VAR_github_oidc_root_account_profile="<aws-cli-profile-for-the-root-account>"
+```
+
+`scripts/aws-deploy.sh` passes `TF_VAR_*` through to Terraform, so export
+these before `plan`/`deploy` for the `guardian-prod` stack. The bootstrap role
+is managed through the `aws.root_account` provider alias, which needs
+root-account credentials while everything else (including the script's own
+AWS CLI calls) runs as the stack account. Point it at a named profile that
+resolves to the root account, or — if the stack credentials are allowed to
+assume a root-account role — set `github_oidc_root_account_role_arn` instead.
+
+### Adopting the existing roles
+
+The roles already exist in AWS. Import them into the `guardian-prod` state
+once, before the first apply with `github_oidc_enabled = true`, so the apply is
+a no-op rather than a name collision. `import` requires every required
+variable to be set but applies nothing, so `server_image_uri` can be a
+placeholder here; the subsequent `plan` resolves the real image as usual:
+
+```bash
+cd infra
+STATE=terraform.guardian-prod.prod.tfstate
+VARS=(-var "deployment_stage=prod" -var "stack_name=guardian-prod" -var "server_image_uri=import-placeholder")
+
+terraform import -state="$STATE" "${VARS[@]}" 'aws_iam_role.github_oidc[0]' \
+  github-actions-solutions-account-guardian-oidc-role
+terraform import -state="$STATE" "${VARS[@]}" 'aws_iam_role_policy.github_oidc_assume_deploy[0]' \
+  github-actions-solutions-account-guardian-oidc-role:github-actions-solutions-guardian-assume-role-policy
+terraform import -state="$STATE" "${VARS[@]}" 'aws_iam_role.github_deploy[0]' \
+  GithubOIDCGuardianRole
+terraform import -state="$STATE" "${VARS[@]}" 'aws_iam_role_policy_attachment.github_deploy_admin[0]' \
+  GithubOIDCGuardianRole/arn:aws:iam::aws:policy/AdministratorAccess
+```
+
+Then run `DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh plan`
+and confirm the only changes on the four resources are tags (`Project`,
+`ManagedBy`) and any trust-policy edit you intend.
 
 ## Storage encryption key
 
