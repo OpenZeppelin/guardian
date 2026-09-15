@@ -20,10 +20,12 @@
 # invisible to these filters too.
 #
 # default_value = "0" makes each filter emit 0 for every non-matching
-# event, so the series is continuous while log lines flow: the dashboard
-# draws zeros instead of gaps and the alarm clears on real datapoints.
-# With no lines at all (stopped task) nothing is published and the alarm
-# falls back to treat_missing_data.
+# event, so the series is continuous while log lines are being ingested:
+# the dashboard draws zeros instead of gaps and the alarm clears on real
+# datapoints. With no lines at all (a stopped task, or a healthy but quiet
+# one: ALB health checks log nothing at the default filter) nothing is
+# published, the data is missing, and treat_missing_data = notBreaching
+# keeps the alarm OK.
 #
 # Cost per stack: one custom metric per filter ($0.30/month each) plus one
 # standard-resolution alarm ($0.10/month); the filters themselves are free.

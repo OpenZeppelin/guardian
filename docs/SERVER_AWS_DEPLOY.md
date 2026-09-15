@@ -847,9 +847,11 @@ SLACK_CONFIG=$(terraform -chdir=infra output -raw alarm_slack_configuration_name
 
 # 5. Log metric filters are attached and counting (skipped when
 #    cloudwatch_log_alarms_enabled = false: LOG_ALARM is empty then).
-#    Datapoints appear only while log lines flow, i.e. once the service is
-#    healthy (ALB health checks log a span-close line every 30s per task);
-#    an empty Datapoints list before that is expected, zeros afterwards.
+#    default_value = "0" publishes zeros only while log lines are being
+#    ingested without matching ERROR events; a healthy but quiet service
+#    (ALB health checks log nothing at the default filter) ingests no
+#    lines, so an empty Datapoints list is expected and is handled by
+#    treat_missing_data = "notBreaching", not a sign the filter is missing.
 if [ -n "$LOG_ALARM" ]; then
   aws logs describe-metric-filters --log-group-name "$LOG_GROUP" \
     --query 'metricFilters[].{name:filterName,pattern:filterPattern}'
