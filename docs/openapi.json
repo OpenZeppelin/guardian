@@ -4290,6 +4290,17 @@
               }
             ]
           },
+          "fee": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AssetSummary",
+                "description": "The fee this transaction paid, kept out of `assets` so it does not read\nas a transfer. Reported rather than dropped: the fee is a real outflow."
+              }
+            ]
+          },
           "new_commitment": {
             "type": [
               "string",
@@ -4424,6 +4435,17 @@
               },
               {
                 "$ref": "#/components/schemas/CounterpartySummary"
+              }
+            ]
+          },
+          "fee": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AssetSummary",
+                "description": "The fee this transaction paid, kept out of `assets` so it does not read\nas a transfer. Reported rather than dropped: the fee is a real outflow."
               }
             ]
           },
@@ -4835,6 +4857,17 @@
               {
                 "$ref": "#/components/schemas/CounterpartySummary",
                 "description": "Counterparty of the transaction. `None` for transactions\nwithout a clear sender/recipient (admin ops, swaps, etc.)."
+              }
+            ]
+          },
+          "fee": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AssetSummary",
+                "description": "The asset moved by the fee note excluded from [`Self::assets`], when one\nwas excluded. Keeping the fee out of the asset list stops it reading as a\ntransfer, but dropping it entirely would make the listing a place where\nvalue disappears: the fee is a real outflow, and a transaction may commit\na conversion rate that makes it an arbitrarily large one. Reporting it\nseparately gives an operator both — an uncluttered asset list and no\nunaccounted movement."
               }
             ]
           },
@@ -5417,6 +5450,7 @@
       },
       "NoteCounts": {
         "type": "object",
+        "description": "Notes the transaction itself consumed and created. `output` excludes the\nfee note the protocol injects, so it does not grow by one on a fee-charging\nchain; the fee note is still visible in the delta detail view.",
         "properties": {
           "input": {
             "type": "integer",
@@ -5622,6 +5656,17 @@
                     }
                   ]
                 },
+                "fee": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AssetSummary",
+                      "description": "The fee this transaction paid, kept out of `assets` so it does not read\nas a transfer. Reported rather than dropped: the fee is a real outflow."
+                    }
+                  ]
+                },
                 "new_commitment": {
                   "type": [
                     "string",
@@ -5733,6 +5778,17 @@
                     },
                     {
                       "$ref": "#/components/schemas/CounterpartySummary"
+                    }
+                  ]
+                },
+                "fee": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AssetSummary",
+                      "description": "The fee this transaction paid, kept out of `assets` so it does not read\nas a transfer. Reported rather than dropped: the fee is a real outflow."
                     }
                   ]
                 },

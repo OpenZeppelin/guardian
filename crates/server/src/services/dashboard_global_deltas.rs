@@ -58,6 +58,10 @@ pub struct DashboardGlobalDeltaEntry {
     pub counterparty: Option<CounterpartySummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note_counts: Option<NoteCounts>,
+    /// The fee this transaction paid, kept out of `assets` so it does not read
+    /// as a transfer. Reported rather than dropped: the fee is a real outflow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee: Option<AssetSummary>,
 }
 
 /// Parse a comma-separated `?status=` filter into a typed allow-list
@@ -118,6 +122,7 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         assets: Vec::new(),
         counterparty: None,
         note_counts: None,
+        fee: None,
     };
     if let Some(meta) = delta.metadata.as_ref() {
         entry.category = Some(meta.category);
@@ -127,6 +132,7 @@ fn entry_from(delta: &DeltaObject, account_id: &str) -> Option<DashboardGlobalDe
         if meta.note_counts.input > 0 || meta.note_counts.output > 0 {
             entry.note_counts = Some(meta.note_counts.clone());
         }
+        entry.fee = meta.fee.clone();
     }
     Some(entry)
 }
@@ -403,6 +409,7 @@ mod tests {
                 input: 0,
                 output: 1,
             },
+            fee: None,
             proposal: None,
         });
         let d = canonical_with_metadata("0xacc1", 1, metadata);
