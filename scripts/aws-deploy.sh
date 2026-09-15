@@ -18,6 +18,7 @@ set -euo pipefail
 #
 # Options:
 #   --skip-build - Skip Docker build and push during deploy
+#   --bootstrap  - deploy/plan only: create the TF_WORKSPACE workspace if missing and allow deploy on it with no resources in state yet (new stack only)
 #
 # Optional environment variables:
 #   AWS_REGION            - AWS region (default: us-east-1)
@@ -48,6 +49,8 @@ set -euo pipefail
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN - Secrets Manager ARN with dashboard operator public keys JSON (optional)
 #   GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME - Secrets Manager secret name for the storage encryption key document. Setting it enables encryption at rest (prod): the stack wires the IAM grant and GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID. Unset leaves storage in plaintext. bootstrap-storage-encryption-key defaults to <stack-name>/server/storage-encryption-key (optional)
 #   GUARDIAN_DASHBOARD_CURSOR_SECRET_NAME - Secrets Manager secret name for the shared dashboard cursor key. Prod defaults to <stack-name>/server/dashboard-cursor-secret and requires it to exist
+#   TF_STATE_PATH         - Local Terraform state file (default: infra/terraform.<stack>.<stage>.tfstate)
+#   TF_WORKSPACE          - Terraform workspace on a remote backend declared in infra/*_override.tf; when set, no local state file is used
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 SKIP_BUILD=false
@@ -85,6 +88,8 @@ TF_STATE_PATH_OVERRIDE="${TF_STATE_PATH:-}"
 TF_STATE_BACKUP_PATH_OVERRIDE="${TF_STATE_BACKUP_PATH:-}"
 TF_STATE_PATH="${TF_STATE_PATH_OVERRIDE:-${TF_DIR}/terraform.${STACK_NAME}.${DEPLOY_STAGE}.tfstate}"
 TF_STATE_BACKUP_PATH="${TF_STATE_BACKUP_PATH_OVERRIDE:-${TF_STATE_PATH}.backup}"
+TF_WORKSPACE="${TF_WORKSPACE-}"
+ALLOW_EMPTY_REMOTE_STATE=false
 TF_VARS=()
 
 RED='\033[0;31m'
@@ -272,11 +277,140 @@ require_terraform_dir() {
   fi
 }
 
+remote_state_enabled() {
+  [ -n "$TF_WORKSPACE" ]
+}
+
+backend_override_files() {
+  find "$TF_DIR" -maxdepth 1 \( -name '*_override.tf' -o -name 'override.tf' \) 2>/dev/null
+}
+
+override_declares_backend() {
+  local files
+  files=$(backend_override_files)
+  [ -n "$files" ] || return 1
+  grep -lqE '^[[:space:]]*(backend[[:space:]]+"|cloud[[:space:]]*\{)' $files 2>/dev/null
+}
+
+initialized_backend_type() {
+  local metadata="$TF_DIR/.terraform/terraform.tfstate"
+  [ -f "$metadata" ] || return 0
+  [[ $(<"$metadata") =~ \"type\":[[:space:]]*\"([A-Za-z0-9_-]+)\" ]] && printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+remote_state_resource_count() {
+  local addresses errors err_file
+  err_file=$(mktemp)
+  if addresses=$(terraform -chdir="$TF_DIR" state list 2>"$err_file"); then
+    rm -f "$err_file"
+    grep -cE '^[A-Za-z_][A-Za-z0-9_-]*\.' <<<"$addresses" || true
+    return 0
+  fi
+  errors=$(<"$err_file")
+  rm -f "$err_file"
+  if grep -q "No state file was found" <<<"$errors"; then
+    echo 0
+    return 0
+  fi
+  log_error "Unable to read state for workspace ${TF_WORKSPACE}:" >&2
+  printf '%s\n' "$errors" >&2
+  return 1
+}
+
+require_remote_state_populated() {
+  remote_state_enabled || return 0
+  if [ "$ALLOW_EMPTY_REMOTE_STATE" = true ]; then
+    log_warn "--bootstrap given: proceeding even though workspace ${TF_WORKSPACE} may have no resources yet"
+    return 0
+  fi
+  local resource_count
+  resource_count=$(remote_state_resource_count) || return 1
+  [ "$resource_count" -gt 0 ] && return 0
+  log_error "Workspace ${TF_WORKSPACE} has no resources in state. Refusing: Terraform would try to create every resource of an existing stack."
+  log_error "Push the existing state first (terraform state push <file>). For a genuinely new stack, deploy accepts --bootstrap; cleanup never does."
+  return 1
+}
+
+warn_if_remote_state_empty() {
+  remote_state_enabled || return 0
+  local resource_count
+  resource_count=$(remote_state_resource_count 2>/dev/null) || return 0
+  if [ "$resource_count" -eq 0 ]; then
+    log_warn "Workspace ${TF_WORKSPACE} has no resources in state, so this plan proposes creating everything."
+    log_warn "If the stack already exists, push its state before deploying; deploy refuses an empty workspace without --bootstrap."
+  fi
+}
+
+terraform_state_cmd() {
+  local subcommand="$1"
+  shift
+  local state_args=()
+  if ! remote_state_enabled; then
+    state_args=("-state=${TF_STATE_PATH}")
+    case "$subcommand" in
+      apply|destroy) state_args+=("-backup=${TF_STATE_BACKUP_PATH}") ;;
+    esac
+  fi
+  terraform -chdir="$TF_DIR" "$subcommand" ${state_args[@]+"${state_args[@]}"} "$@"
+}
+
+describe_state() {
+  if remote_state_enabled; then
+    echo "workspace ${TF_WORKSPACE} on the backend declared in ${TF_DIR}/*_override.tf"
+  else
+    echo "${TF_STATE_PATH}"
+  fi
+}
+
 ensure_terraform_init() {
   require_terraform_dir || return 1
-  if [ ! -d "$TF_DIR/.terraform" ]; then
-    log_info "Initializing Terraform..."
-    terraform -chdir="$TF_DIR" init
+  if ! remote_state_enabled && [ -z "$(backend_override_files)" ] && [ -z "$(initialized_backend_type)" ]; then
+    if [ ! -d "$TF_DIR/.terraform" ]; then
+      log_info "Initializing Terraform..."
+      terraform -chdir="$TF_DIR" init || return 1
+    fi
+    return 0
+  fi
+
+  local backend_type backend_is_remote=false
+  backend_type=$(initialized_backend_type)
+  if [ -n "$backend_type" ] && [ "$backend_type" != "local" ] && ! override_declares_backend; then
+    log_error "${TF_DIR}/.terraform was initialized with a '${backend_type}' backend but no infra/*_override.tf declares a backend block anymore."
+    log_error "Refusing to reconfigure down to local state, which would leave every live resource unmanaged."
+    log_error "Restore the override file, or return to local state deliberately with: terraform -chdir=${TF_DIR} init -reconfigure"
+    return 1
+  fi
+
+  log_info "Initializing Terraform (reconfigure, no state migration)..."
+  env -u TF_WORKSPACE terraform -chdir="$TF_DIR" init -reconfigure -input=false || return 1
+  backend_type=$(initialized_backend_type)
+  if [ -n "$backend_type" ] && [ "$backend_type" != "local" ]; then
+    backend_is_remote=true
+  fi
+
+  if remote_state_enabled && [ "$backend_is_remote" = false ]; then
+    log_error "TF_WORKSPACE=${TF_WORKSPACE} is set but the initialized backend is '${backend_type:-local}'."
+    log_error "Without a remote backend Terraform would use a fresh local state and try to recreate every live resource."
+    log_error "Copy an override declaring a non-local backend into infra/ (see infra/backend_override.tf.example) or unset TF_WORKSPACE."
+    return 1
+  fi
+  if ! remote_state_enabled && [ "$backend_is_remote" = true ]; then
+    log_error "${TF_DIR} declares a '${backend_type}' backend (override file) but TF_WORKSPACE is unset."
+    log_error "This script would pass -state=${TF_STATE_PATH}, which only applies to the local backend."
+    log_error "Set TF_WORKSPACE to this stack's workspace, or remove the backend block from the override to keep local state."
+    return 1
+  fi
+
+  if remote_state_enabled; then
+    if [ "$ALLOW_EMPTY_REMOTE_STATE" = true ]; then
+      env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace select "$TF_WORKSPACE" >/dev/null 2>&1 \
+        || env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace new "$TF_WORKSPACE" >/dev/null || return 1
+    elif ! env -u TF_WORKSPACE terraform -chdir="$TF_DIR" workspace select "$TF_WORKSPACE" >/dev/null; then
+      log_error "Workspace ${TF_WORKSPACE} does not exist on the '${backend_type}' backend."
+      log_error "Check TF_WORKSPACE for a typo, or pass --bootstrap to create it for a genuinely new stack."
+      return 1
+    fi
+    log_info "Initialized backend: ${backend_type}, workspace ${TF_WORKSPACE}"
   fi
 }
 
@@ -346,7 +480,7 @@ build_tf_vars() {
 
 terraform_output_raw() {
   local output_name="$1"
-  terraform -chdir="$TF_DIR" output -state="$TF_STATE_PATH" -raw "$output_name" 2>/dev/null || true
+  terraform_state_cmd output -raw "$output_name" 2>/dev/null || true
 }
 
 ack_falcon_secret_name() {
@@ -717,10 +851,12 @@ cmd_plan() {
   ensure_terraform_init || return 1
   build_tf_vars "$IMAGE_URI"
 
+  warn_if_remote_state_empty
+
   log_info "Using image ${IMAGE_URI}"
-  log_info "Using Terraform state ${TF_STATE_PATH}"
+  log_info "Using Terraform state $(describe_state)"
   log_info "Running terraform plan..."
-  terraform -chdir="$TF_DIR" plan -state="$TF_STATE_PATH" "${TF_VARS[@]}"
+  terraform_state_cmd plan "${TF_VARS[@]}"
 }
 
 cmd_deploy() {
@@ -729,6 +865,8 @@ cmd_deploy() {
   validate_ack_secrets_exist || return 1
   validate_storage_encryption_secret_exists || return 1
   validate_dashboard_cursor_secret_exists || return 1
+  ensure_terraform_init || return 1
+  require_remote_state_populated || return 1
 
   if [ "$SKIP_BUILD" = false ]; then
     cmd_build_and_push
@@ -738,13 +876,12 @@ cmd_deploy() {
 
   local IMAGE_URI
   IMAGE_URI=$(resolve_deploy_image_uri) || return 1
-  ensure_terraform_init || return 1
   build_tf_vars "$IMAGE_URI"
 
   log_info "Deploying image ${IMAGE_URI}"
-  log_info "Using Terraform state ${TF_STATE_PATH}"
+  log_info "Using Terraform state $(describe_state)"
   log_info "Applying Terraform..."
-  terraform -chdir="$TF_DIR" apply -state="$TF_STATE_PATH" -backup="$TF_STATE_BACKUP_PATH" "${TF_VARS[@]}"
+  terraform_state_cmd apply "${TF_VARS[@]}"
 
   local ALB_URL
   local ALB_DNS
@@ -881,13 +1018,13 @@ cmd_status() {
   require_terraform_dir || return 1
   ensure_terraform_init || return 1
 
-  if [ ! -f "$TF_STATE_PATH" ]; then
+  if ! remote_state_enabled && [ ! -f "$TF_STATE_PATH" ]; then
     log_warn "No Terraform state found at ${TF_STATE_PATH} (run deploy first)"
     return 0
   fi
 
-  log_info "Using Terraform state ${TF_STATE_PATH}"
-  terraform -chdir="$TF_DIR" output -state="$TF_STATE_PATH" 2>/dev/null || log_warn "No Terraform outputs found (run deploy first)"
+  log_info "Using Terraform state $(describe_state)"
+  terraform_state_cmd output 2>/dev/null || log_warn "No Terraform outputs found (run deploy first)"
 }
 
 cmd_logs() {
@@ -906,8 +1043,12 @@ cmd_logs() {
 }
 
 cmd_cleanup() {
-  log_warn "This will delete ALL GUARDIAN server AWS resources (Terraform destroy)"
   validate_deploy_config
+  ensure_terraform_init || return 1
+  require_remote_state_populated || return 1
+  log_warn "This will delete ALL GUARDIAN server AWS resources (Terraform destroy)"
+  log_warn "Stack: ${STACK_NAME}  Stage: ${DEPLOY_STAGE}  Region: ${AWS_REGION}"
+  log_warn "State: $(describe_state)"
   read -p "Are you sure? (yes/no): " confirm
   if [ "$confirm" != "yes" ]; then
     echo "Aborted"
@@ -916,12 +1057,10 @@ cmd_cleanup() {
 
   local AWS_ACCOUNT_ID=$(get_aws_account_id)
   local IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:latest"
-  ensure_terraform_init || return 1
   build_tf_vars "$IMAGE_URI"
 
-  log_info "Using Terraform state ${TF_STATE_PATH}"
   log_info "Running Terraform destroy..."
-  terraform -chdir="$TF_DIR" destroy -auto-approve -state="$TF_STATE_PATH" -backup="$TF_STATE_BACKUP_PATH" "${TF_VARS[@]}"
+  terraform_state_cmd destroy -auto-approve "${TF_VARS[@]}"
 
   log_info "Cleanup complete!"
 }
@@ -932,6 +1071,9 @@ for arg in "$@"; do
   case "$arg" in
     --skip-build)
       SKIP_BUILD=true
+      ;;
+    --bootstrap)
+      ALLOW_EMPTY_REMOTE_STATE=true
       ;;
     --domain=*)
       DOMAIN_NAME="${arg#*=}"
@@ -966,6 +1108,16 @@ for arg in "$@"; do
 done
 
 # Main
+if [ "$ALLOW_EMPTY_REMOTE_STATE" = true ]; then
+  case "${COMMAND:-}" in
+    deploy|plan) ;;
+    *)
+      log_error "--bootstrap is only accepted with deploy or plan. '${COMMAND:-<none>}' must run against an existing, populated workspace."
+      exit 1
+      ;;
+  esac
+fi
+
 case "${COMMAND:-}" in
   deploy)
     cmd_deploy
@@ -1016,6 +1168,7 @@ case "${COMMAND:-}" in
     echo ""
     echo "Options:"
     echo "  --skip-build  Skip Docker build and push (use existing image)"
+    echo "  --bootstrap   deploy/plan only: create the TF_WORKSPACE workspace if missing and allow deploy with no resources in state (new stack only)"
     echo "  --domain=     Override root domain (default: openzeppelin.com)"
     echo "  --subdomain=  Override subdomain (default: guardian)"
     echo "  --route53-zone-id=  Route 53 hosted zone ID (optional)"
@@ -1029,7 +1182,8 @@ case "${COMMAND:-}" in
     echo "  STACK_NAME=   Base stack name for AWS resources (default: guardian)"
     echo "  DEPLOY_STAGE= Deployment profile (dev or prod, default: dev)"
     echo "  ECR_REPO_NAME= Override the ECR/image repository name (default: <stack-name>-server)"
-    echo "  TF_STATE_PATH= Override the Terraform state file path (default: infra/terraform.<stack>.<stage>.tfstate)"
+    echo "  TF_STATE_PATH= Override the local Terraform state file path (default: infra/terraform.<stack>.<stage>.tfstate)"
+    echo "  TF_WORKSPACE= Use the named Terraform workspace on the remote backend declared in infra/*_override.tf instead of a local state file"
     echo "  DOMAIN_NAME/SUBDOMAIN= Canonical public hostname"
     echo "  ALIAS_SUBDOMAIN= Migration-only legacy subdomain under DOMAIN_NAME"
     echo "  ALIAS_ACM_CERTIFICATE_ARN= Migration-only legacy certificate attached through SNI"
