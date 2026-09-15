@@ -550,12 +550,15 @@ refuses either one alone. With both set it:
   implicitly
 - selects the workspace and refuses if it does not exist, so a typo in
   `TF_WORKSPACE` fails instead of minting an empty workspace on the backend.
-  `--bootstrap` creates it (`terraform workspace select -or-create`) for a
-  genuinely new stack
+  `deploy --bootstrap` (or `plan --bootstrap`) creates it
+  (`terraform workspace select -or-create`) for a genuinely new stack
 - refuses `deploy` and `cleanup` when the workspace has no resources in
   state, because Terraform would otherwise plan to create every resource of a
-  stack that already exists (`plan` only warns). `--bootstrap` lifts this
-  guard too, so a new stack needs it on the first `deploy` only
+  stack that already exists (`plan` only warns). `deploy --bootstrap` lifts
+  this guard, so a new stack needs it on the first `deploy` only. `cleanup`
+  never accepts `--bootstrap`: a destroy against an empty workspace would
+  report success while the intended stack stays up, so the script rejects the
+  flag for every command other than `deploy` and `plan`
 - refuses to run at all when `infra/.terraform` was initialized with a
   non-local backend but no override declares a backend block anymore
   (deleted or reduced to provider settings). Reconfiguring would silently

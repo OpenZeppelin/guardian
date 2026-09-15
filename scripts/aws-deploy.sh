@@ -18,7 +18,7 @@ set -euo pipefail
 #
 # Options:
 #   --skip-build - Skip Docker build and push during deploy
-#   --bootstrap  - Create the TF_WORKSPACE workspace if missing and allow deploy/cleanup on it with no resources in state yet (new stack only)
+#   --bootstrap  - deploy/plan only: create the TF_WORKSPACE workspace if missing and allow deploy on it with no resources in state yet (new stack only)
 #
 # Optional environment variables:
 #   AWS_REGION            - AWS region (default: us-east-1)
@@ -325,7 +325,7 @@ require_remote_state_populated() {
   resource_count=$(remote_state_resource_count) || return 1
   [ "$resource_count" -gt 0 ] && return 0
   log_error "Workspace ${TF_WORKSPACE} has no resources in state. Refusing: Terraform would try to create every resource of an existing stack."
-  log_error "Push the existing state first (terraform state push <file>), or pass --bootstrap for a genuinely new stack."
+  log_error "Push the existing state first (terraform state push <file>). For a genuinely new stack, deploy accepts --bootstrap; cleanup never does."
   return 1
 }
 
@@ -1102,6 +1102,16 @@ for arg in "$@"; do
 done
 
 # Main
+if [ "$ALLOW_EMPTY_REMOTE_STATE" = true ]; then
+  case "${COMMAND:-}" in
+    deploy|plan) ;;
+    *)
+      log_error "--bootstrap is only accepted with deploy or plan. '${COMMAND:-<none>}' must run against an existing, populated workspace."
+      exit 1
+      ;;
+  esac
+fi
+
 case "${COMMAND:-}" in
   deploy)
     cmd_deploy
@@ -1152,7 +1162,7 @@ case "${COMMAND:-}" in
     echo ""
     echo "Options:"
     echo "  --skip-build  Skip Docker build and push (use existing image)"
-    echo "  --bootstrap   Create the TF_WORKSPACE workspace if missing and allow deploy/cleanup on it with no resources in state (new stack only)"
+    echo "  --bootstrap   deploy/plan only: create the TF_WORKSPACE workspace if missing and allow deploy with no resources in state (new stack only)"
     echo "  --domain=     Override root domain (default: openzeppelin.com)"
     echo "  --subdomain=  Override subdomain (default: guardian)"
     echo "  --route53-zone-id=  Route 53 hosted zone ID (optional)"

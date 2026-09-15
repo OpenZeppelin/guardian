@@ -180,9 +180,9 @@ export TF_WORKSPACE=prod                                          # only selects
 
 A non-local backend block and `TF_WORKSPACE` must be set together; the deploy
 script refuses either one alone. The workspace must already exist, and
-`deploy` or `cleanup` refuse a workspace with no resources in state; pass
-`--bootstrap` for a genuinely new stack to create the workspace and lift the
-guard. See
+`deploy` or `cleanup` refuse a workspace with no resources in state. For a
+genuinely new stack, `deploy --bootstrap` creates the workspace and lifts the
+guard; `cleanup` never accepts the flag. See
 [`docs/SERVER_AWS_DEPLOY.md`](../docs/SERVER_AWS_DEPLOY.md#remote-state-backend)
 for the full behaviour and for moving existing local state into the backend.
 
