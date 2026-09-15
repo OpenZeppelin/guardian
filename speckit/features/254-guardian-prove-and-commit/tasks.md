@@ -14,7 +14,7 @@
 ## What is already done
 
 **The proving architecture is ratified — do not re-plan it.** The Gate 0 spike produced
-`crates/server/src/network/miden/execution/` (a `DataStore` over Guardian's own state,
+`crates/server/src/network/miden/execution/` (on the [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch, commit `769e2a90`; not on `main`; a `DataStore` over Guardian's own state,
 `PartialBlockchain` assembly from node RPC) and proved a witness through the remote prover
 against public testnet — with **no new dependencies**. Seven offline tests and three live
 tests exist and pass.

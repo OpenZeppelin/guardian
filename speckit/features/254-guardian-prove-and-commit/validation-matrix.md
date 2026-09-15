@@ -40,7 +40,7 @@ sqlite-versus-in-memory question is **moot**: there is no `Store`, so no embedde
 no seeding I/O. See `research.md`.
 
 **Round 2 (partly done): the `DataStore` seam works.** Implemented at
-`crates/server/src/network/miden/execution/` behind a new `proving` feature and driven under
+`crates/server/src/network/miden/execution/` (on the [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch, commit `769e2a90`; not on `main`) behind a new `proving` feature and driven under
 `MockChain`; two tests pass, including `consume_notes` with a real chain-committed note. Two
 round-1 conclusions were corrected: `AccountSmtForest` cannot produce non-inclusion witnesses,
 so the account's own `AssetVault::open` / `StorageMap::open` are used instead — which removes

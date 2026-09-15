@@ -6,9 +6,9 @@
 | **Feature** | [#254](https://github.com/OpenZeppelin/guardian/issues/254) (parent [#253](https://github.com/OpenZeppelin/guardian/issues/253), "Transaction Orchestration") |
 | **Audience** | Integrators, operators, and upstream reviewers (Miden team or anyone reading publicly) |
 | **Working artifacts** | [`speckit/features/254-guardian-prove-and-commit/`](../../speckit/features/254-guardian-prove-and-commit/) — see appendix |
-| **Revision** | 14 (2026-09-08): upstream review clarifications |
+| **Revision** | 15 (2026-09-15): Gate 0 spike code moved to the `254-execution-spike` branch; this document and its working artifacts are the only content merged to `main` |
 
-> **Implementation status:** this RFC describes the **proposed end state**. The wire API, execution lifecycle, and SDK changes are not implemented yet; the one exception is the Gate 0 witness-assembly spike (`crates/server/src/network/miden/execution/`), which exists and passes its tests. The linked working artifacts are the implementation plan, and numeric defaults given here are proposals unless the linked contract marks them normative.
+> **Implementation status:** this RFC describes the **proposed end state**. The wire API, execution lifecycle, and SDK changes are not implemented yet; the one exception is the Gate 0 witness-assembly spike, which lives on the [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch (commit `769e2a90`) and is **not on `main`**. Every spike code path and test name cited in this document (`crates/server/src/network/miden/execution/`, `crates/miden-rpc-client/src/`) resolves against that branch; its tests passed there against the Miden 0.16 rc pins. The linked working artifacts are the implementation plan, and numeric defaults given here are proposals unless the linked contract marks them normative.
 
 ---
 
@@ -517,9 +517,12 @@ Technical assertions carry verification tags:
 
 ### A.2 Dependency versions used for the original spike
 
-The table below records the historical 0.15 validation environment. After merging
-`main`, the workspace uses its exact-pinned Miden 0.16 RC dependencies. The spike now
-converts locally generated RPC types and implements the 0.16 data-store interfaces.
+The table below records the historical 0.15 validation environment. The spike itself is
+kept on the [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch (commit `769e2a90`), where it was last built against the
+workspace's Miden 0.16 rc pins, converting locally generated RPC types and implementing the
+0.16 data-store interfaces. `main` has since moved to the stable 0.16 release
+(`miden-protocol`/`miden-tx` 0.16.1, `miden-client`/`miden-node-proto-build` 0.16.0); the
+spike has not been rebuilt against those pins.
 The remote-prover live test uses `miden_client::remote_prover::RemoteTransactionProver`
 under `e2e`; `proving` alone enables `miden-tx` and does not depend on `miden-client`.
 Historical live results do not establish compatibility with the current public prover.

@@ -630,7 +630,7 @@ though we no longer need it and ended up with fewer dependencies without it.
 
 ## Gate 0 spike, round 2: the DataStore seam works
 
-Implemented at `crates/server/src/network/miden/execution/` behind a new `proving` feature,
+Implemented at `crates/server/src/network/miden/execution/` (on the [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch, commit `769e2a90`; not on `main`) behind a new `proving` feature,
 driven under `miden-testing`'s `MockChain`. Two tests pass:
 
 | Test | What it proves |

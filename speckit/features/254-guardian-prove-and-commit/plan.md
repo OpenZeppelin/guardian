@@ -11,7 +11,7 @@ no Miden dependency and no chain access to move an account forward.
 
 **The proving architecture is ratified and is not what this plan builds.** The
 Gate 0 spike produced a working `DataStore` over Guardian's own state
-(`crates/server/src/network/miden/execution/`), assembled a `PartialBlockchain`
+(`crates/server/src/network/miden/execution/` on the [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch, commit `769e2a90`; not on `main`), assembled a `PartialBlockchain`
 from node RPC alone, and proved a witness through a remote prover against public
 testnet — with **no new dependencies**. See [research.md](./research.md) and
 [RFC 0001](../../../docs/rfcs/0001-server-side-transaction-execution.md).
@@ -60,7 +60,8 @@ and batching remain future work. No v1 implementation tasks are added for those 
   (base + multisig clients).
 - **Server**: `crates/server`, axum HTTP + tonic gRPC, Diesel-backed Postgres
   plus the filesystem backend in `src/storage/filesystem.rs`.
-- **Proving**: `crates/server/src/network/miden/execution/` behind the
+- **Proving**: `crates/server/src/network/miden/execution/` (spike code on the
+  `254-execution-spike` branch, to be brought onto the implementation branch) behind the
   `proving` Cargo feature (`miden-tx`); `e2e` includes `proving` and uses the remote prover client
   exposed by `miden-client` on the 0.16 line. Production proving remains remote.
 - **Concurrency substrate**: `LeaseFence { lease_name, holder_id, fence_token }`
@@ -217,7 +218,7 @@ The external review document for this feature is
 
 ```text
 crates/server/src/
-├── network/miden/execution/     # EXISTS — validated proving seam
+├── network/miden/execution/     # on branch 254-execution-spike — validated proving seam
 │   ├── store.rs                 # DataStore over Guardian's own state
 │   ├── blockchain.rs            # PartialBlockchain from RPC
 │   ├── tests.rs                 # 7 offline tests (MockChain)
