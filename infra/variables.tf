@@ -836,10 +836,16 @@ variable "github_deploy_role_name" {
 }
 
 variable "github_oidc_subjects" {
-  description = "GitHub OIDC subject claims allowed to assume the bootstrap role; one per GitHub environment of the AWS Deploy workflow"
+  description = "GitHub OIDC subject claims allowed to assume the bootstrap role, matched exactly; one per GitHub environment of the AWS Deploy workflow"
   type        = list(string)
   default = [
     "repo:OpenZeppelin/guardian:environment:devnet",
     "repo:OpenZeppelin/guardian:environment:testnet",
   ]
+}
+
+variable "github_deploy_stack_names" {
+  description = "Stacks (stack_name values) the AWS Deploy workflow may roll out; scopes the deploy role to their ECR repositories, ECS services, task definitions, and task roles under the default resource naming"
+  type        = list(string)
+  default     = ["guardian", "guardian-prod"]
 }

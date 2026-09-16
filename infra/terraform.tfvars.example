@@ -143,3 +143,4 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 #   "repo:OpenZeppelin/guardian:environment:devnet",
 #   "repo:OpenZeppelin/guardian:environment:testnet",
 # ]
+# github_deploy_stack_names = ["guardian", "guardian-prod"]

@@ -133,13 +133,12 @@ One-time setup per target (infra):
   `:testnet`) via `github_oidc_subjects`. Adding an environment means adding
   its claim there and applying. See the "GitHub Actions OIDC roles" section of
   `infra/README.md`.
-- The deploy role needs ECR push/pull on `<stack>-server`
-  (`ecr:GetAuthorizationToken`, `ecr:DescribeRepositories`,
-  `ecr:BatchCheckLayerAvailability`, `ecr:BatchGetImage`,
-  `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`,
-  `ecr:PutImage`), `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`,
-  `ecs:RegisterTaskDefinition`, `ecs:UpdateService`, and `iam:PassRole` on the
-  stack's task and task-execution roles.
+- The deploy role's permissions are managed in `infra/oidc.tf` too: ECR
+  push/pull on `<stack>-server`, `ecs:DescribeServices` / `ecs:UpdateService`
+  on `<stack>-server`, task-definition describe/register, and `iam:PassRole`
+  on the stack's task and task-execution roles, for every stack listed in
+  `github_deploy_stack_names`. Add a stack there before deploying it from the
+  workflow.
 - The ECR repository must already exist; `scripts/aws-deploy.sh build` creates
   it on a new stack.
 
