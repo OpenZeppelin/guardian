@@ -370,7 +370,8 @@ impl MultisigClient {
             new_commitment,
         } = transaction_type
         {
-            verify_endpoint_commitment(new_endpoint, *new_commitment).await?;
+            verify_endpoint_commitment(new_endpoint, *new_commitment, self.key_manager.scheme())
+                .await?;
         }
 
         let new_guardian_endpoint =
