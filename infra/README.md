@@ -244,10 +244,12 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `server_image_uri` | (required) | ECR image URI for the server, preferably pinned to a digest |
 | `github_oidc_enabled` | `false` | Manage the GitHub Actions OIDC roles for the AWS Deploy workflow; enable on exactly one stack |
 | `github_oidc_provider_arn` | `""` | GitHub OIDC identity provider ARN in the root account (required when enabled) |
-| `github_oidc_root_account_role_arn` | `""` | Role assumed in the root account to manage the bootstrap role (required when enabled) |
+| `github_oidc_root_account_role_arn` | `""` | Role assumed from the stack credentials to manage the bootstrap role; required when enabled unless `github_oidc_root_account_profile` is set |
+| `github_oidc_root_account_profile` | `""` | Named AWS CLI profile resolving to root-account credentials; alternative to `github_oidc_root_account_role_arn` when the stack credentials cannot assume a root-account role |
 | `github_oidc_role_name` | `github-actions-solutions-account-guardian-oidc-role` | Bootstrap role name |
 | `github_deploy_role_name` | `GithubOIDCGuardianRole` | Deploy role name |
-| `github_oidc_subjects` | guardian `devnet`/`testnet` environments | OIDC subject claims allowed to assume the bootstrap role |
+| `github_oidc_subjects` | guardian `devnet`/`testnet` environments | OIDC subject claims allowed to assume the bootstrap role (exact match) |
+| `github_deploy_stack_names` | `["guardian", "guardian-prod"]` | Stacks the deploy role may roll out; scopes its ECR/ECS/PassRole permissions |
 | `guardian_operator_public_keys` | `[]` | Falcon public keys used to create a stack-scoped operator public keys secret |
 | `guardian_operator_public_keys_secret_arn` | `""` | Existing operator public keys secret ARN; takes precedence over the managed list |
 | `guardian_evm_allowed_chain_ids` | `""` | EVM chain IDs used to create a stack-scoped allowed chain IDs secret |
@@ -408,7 +410,10 @@ running under those environments obtain the identity.
 The roles are shared by every Guardian stack in the account. Enable them on
 exactly one stack — `guardian-prod` — and leave `github_oidc_enabled` at its
 default `false` everywhere else, or the other stacks will try to create roles
-with the same names.
+with the same names. The deploy role's inline policy is scoped to the ECR
+repositories, ECS services, task definitions, and task roles of the stacks in
+`github_deploy_stack_names` (default resource naming), so add a stack there
+before deploying it from the workflow.
 
 ```bash
 export TF_VAR_github_oidc_enabled=true
@@ -443,13 +448,19 @@ terraform import -state="$STATE" "${VARS[@]}" 'aws_iam_role_policy.github_oidc_a
   github-actions-solutions-account-guardian-oidc-role:github-actions-solutions-guardian-assume-role-policy
 terraform import -state="$STATE" "${VARS[@]}" 'aws_iam_role.github_deploy[0]' \
   GithubOIDCGuardianRole
-terraform import -state="$STATE" "${VARS[@]}" 'aws_iam_role_policy_attachment.github_deploy_admin[0]' \
-  GithubOIDCGuardianRole/arn:aws:iam::aws:policy/AdministratorAccess
 ```
 
 Then run `DEPLOY_STAGE=prod STACK_NAME=guardian-prod ./scripts/aws-deploy.sh plan`
-and confirm the only changes on the four resources are tags (`Project`,
-`ManagedBy`) and any trust-policy edit you intend.
+and confirm the only changes on the imported roles are tags (`Project`,
+`ManagedBy`), any trust-policy edit you intend, and the new scoped inline
+policy. A role that previously carried a managed policy (the original
+definition used `AdministratorAccess`) keeps it until you detach it by hand;
+Terraform does not manage attachments it did not create:
+
+```bash
+aws iam detach-role-policy --role-name GithubOIDCGuardianRole \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+```
 
 ## Storage encryption key
 
