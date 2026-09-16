@@ -1,0 +1,245 @@
+---
+name: Qualification (live)
+
+# The live profile drives real transactions funded from a treasury, so the
+# treasury key must never enter a process running code from an unreviewed ref.
+#
+# There is exactly one checkout, and it is always the default branch. The ref
+# under test is not checked out here: a second checkout of an unreviewed ref in
+# this job is the original leak, because editing the harness that ref carries is
+# enough to read the key without touching this file. Qualifying another ref
+# therefore requires the funding handoff first, where a trusted step funds
+# ephemeral accounts and hands the driver only those ephemeral keys.
+#
+# BEFORE ARMING QUAL_TREASURY_KEY: lock the deployment branches of the
+# qualification-devnet and qualification-testnet environments to the default
+# branch. The guard job below inspects `inputs.ref` but cannot constrain
+# `github.ref`: anyone with write access can dispatch this workflow from a
+# branch whose edited copy of this file drops the guard entirely, and the job
+# would still enter the environment. Only the environment's own branch
+# restriction closes that, so the guard job is defence in depth, never the
+# control.
+#
+# The schedule is deliberately absent. It stays off until the per-network
+# environments exist, an environment-blocked run stops failing the job, and a
+# failure notification is wired. A cron that goes red on merge and notifies
+# nobody trains people to ignore it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Target network"
+        type: choice
+        required: true
+        options:
+          - testnet
+          - devnet
+      ref:
+        description: "Ref to qualify (must be the default branch until the treasury handoff exists)"
+        type: string
+        required: false
+      image-tag:
+        description: "Published image to qualify, e.g. v1.2.3 (leave blank to build from ref)"
+        type: string
+        required: false
+      pairing:
+        description: "Image and SDK pairing"
+        type: choice
+        required: false
+        default: branch
+        options:
+          - branch
+          - release
+          # `published` is deliberately absent: it would have to install the
+          # SDKs from the registry outside this workspace, and until it does a
+          # pass would claim consumer coverage nobody has.
+      sdk:
+        description: "Restrict to one SDK (leave blank for both)"
+        type: choice
+        required: false
+        default: both
+        options:
+          - both
+          - rust
+          - typescript
+      core-only:
+        description: "Run only the core subset"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: qualification-live-${{ inputs.network }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Guard
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'OpenZeppelin'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      # Runs before the environment's protection rules so an unsafe request is
+      # rejected without the treasury environment ever being entered.
+      - name: Reject a ref the treasury must not follow
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ -z "${REQUESTED_REF}" || "${REQUESTED_REF}" == "${DEFAULT_BRANCH}" ]]; then
+            echo "ref is the default branch; proceeding"
+            exit 0
+          fi
+          if [[ "${REQUESTED_REF}" == refs/pull/* || "${REQUESTED_REF}" == pull/* ]]; then
+            echo "::error::Refusing a pull-request ref. The scenario driver would run from that ref with the treasury key in its environment."
+            exit 1
+          fi
+          echo "::error::Refusing ref '${REQUESTED_REF}'. Until funding is separated from scenario execution, the treasury is only exposed to the default branch's harness."
+          echo "::error::Fund ephemeral accounts from a trusted step and hand the scenario driver only those ephemeral keys, then relax this guard."
+          exit 1
+
+  live:
+    name: Live Profile (${{ inputs.network }})
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    if: github.repository_owner == 'OpenZeppelin'
+    environment: qualification-${{ inputs.network }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout the harness from the default branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
+        with:
+          toolchain: 1.98.1
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          cache-on-failure: true
+
+      - name: Install Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: packages/package-lock.json
+
+      # The stack script drives the TypeScript leg through `test:qualification`,
+      # which needs the workspace installed and guardian-client built. Without
+      # this the TypeScript scenarios cannot start on a clean runner.
+      - name: Install workspace dependencies
+        working-directory: packages
+        run: npm ci
+
+      - name: Build the GUARDIAN client
+        working-directory: packages
+        run: npm run build -w @openzeppelin/guardian-client
+
+      - name: Verify the environment carries a treasury
+        env:
+          TREASURY_KEY: ${{ secrets.QUAL_TREASURY_KEY }}
+        run: |
+          if [[ -z "${TREASURY_KEY}" ]]; then
+            echo "::error::GitHub environment 'qualification-${{ inputs.network }}' is missing QUAL_TREASURY_KEY"
+            exit 1
+          fi
+
+      - name: Run the live profile
+        id: run
+        env:
+          QUAL_TREASURY_KEY: ${{ secrets.QUAL_TREASURY_KEY }}
+          NETWORK: ${{ inputs.network }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          PAIRING: ${{ inputs.pairing }}
+          SDK: ${{ inputs.sdk }}
+          CORE_ONLY: ${{ inputs.core-only }}
+          REQUESTED_BY: ${{ github.actor }}
+        run: |
+          args=(--profile live --network "${NETWORK}" --trigger dispatch)
+          args+=(--requested-by "${REQUESTED_BY}")
+          args+=(--out "${GITHUB_WORKSPACE}/qualification-results")
+          if [[ -n "${IMAGE_TAG}" ]]; then
+            args+=(--image-source pulled --image-tag "ghcr.io/openzeppelin/guardian:${IMAGE_TAG}")
+          fi
+          if [[ -n "${PAIRING}" ]]; then
+            args+=(--pairing "${PAIRING}")
+          fi
+          if [[ -n "${SDK}" && "${SDK}" != "both" ]]; then
+            args+=(--sdk "${SDK}")
+          fi
+          if [[ "${CORE_ONLY}" == "true" ]]; then
+            args+=(--core-only)
+          fi
+
+          set +e
+          qualification/stack/run.sh "${args[@]}"
+          code=$?
+          set -e
+          echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
+
+          # An environment-blocked run is not a failure. Leaving the job red
+          # through a Miden upgrade window is how a signal stops being read.
+          if [[ "${code}" == "3" ]]; then
+            echo "::notice::Environment blocked; the network could not serve this run."
+            exit 0
+          fi
+          exit "${code}"
+
+      - name: Confirm the secret scan passed
+        if: always()
+        id: scan
+        run: |
+          if [[ -f qualification-results/.scan-passed ]]; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Artifacts are not being uploaded because the secret scan did not pass."
+          fi
+
+      - name: Upload results and diagnostics
+        if: always() && steps.scan.outputs.clean == 'true'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: qualification-live-${{ inputs.network }}-${{ github.run_id }}
+          path: qualification-results/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          NETWORK: ${{ inputs.network }}
+          EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        run: |
+          {
+            echo "## Live qualification: ${NETWORK}"
+            echo
+            echo "Status: ${JOB_STATUS} (harness exit ${EXIT_CODE:-unknown})"
+            echo
+            echo "This result informs the release decision; it does not block publication."
+            echo "Read \`qualification_claim\` for what it proved, and \`classification\`"
+            echo "on any failure to tell a product defect from a network outage."
+          } >> "$GITHUB_STEP_SUMMARY"

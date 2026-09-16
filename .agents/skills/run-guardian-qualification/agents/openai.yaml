@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Guardian Qualification"
+  short_description: "Set up and run the end-to-end qualification suite"
+  default_prompt: "Use $run-guardian-qualification to set up and run the Guardian qualification suite, or to debug a scenario or a run result."

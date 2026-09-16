@@ -1,0 +1,429 @@
+# Scenario definitions. Read by both drivers; defined by neither.
+# See speckit/features/001-system-e2e-qualification/contracts/scenario-manifest.md
+
+[[scenario]]
+id = "det-status-identity"
+title = "Server reports the identity of the artifact under test"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["status-identity"]
+step_budget = "30s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-fixture-grpc"
+title = "Fixture account registers and reads back over gRPC"
+profile = "deterministic"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-register", "commitment-verify"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-fixture-http"
+title = "Fixture account registers and reads back over HTTP"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-register", "commitment-verify"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-error-envelope-grpc"
+title = "Structured error envelope survives a real gRPC socket"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["error-envelope"]
+step_budget = "30s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-error-envelope-http"
+title = "Structured error envelope survives a real HTTP socket"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["error-envelope"]
+step_budget = "30s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-restart-durability"
+title = "Account, state and proposal data survive restarting only the server"
+profile = "deterministic"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-register", "restart-durability"]
+step_budget = "180s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-discarded-delta-hidden"
+title = "Discarded deltas stay out of default retrieval flows"
+profile = "deterministic"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-register", "discarded-delta-hidden"]
+step_budget = "120s"
+required = false
+core = false
+
+[[scenario]]
+id = "det-operator-session"
+title = "Operator authenticates and inspects a session"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session"]
+step_budget = "60s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-accounts"
+title = "Operator lists accounts and reads account detail"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session", "operator-accounts"]
+step_budget = "60s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-denial"
+title = "Operator lacking a permission is denied with a structured error"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session", "operator-denial"]
+step_budget = "60s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-allowlist-reload"
+title = "Allowlist change takes effect without restarting the server"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session", "operator-allowlist-reload"]
+step_budget = "90s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-logout"
+title = "Logout invalidates the session"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session", "operator-logout"]
+step_budget = "60s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-audit"
+title = "Operator activity leaves the expected audit records"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-audit"]
+step_budget = "60s"
+required = false
+core = false
+
+[[scenario]]
+id = "live-register-falcon-1of1"
+title = "1-of-1 Falcon account is created and registered"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "commitment-verify"]
+step_budget = "60s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-register-ecdsa-1of1"
+title = "1-of-1 ECDSA account is created and registered"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "commitment-verify"]
+step_budget = "60s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-execute-2of3-falcon"
+title = "2-of-3 Falcon proposal reaches threshold and executes"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "proposal-execute", "commitment-verify"]
+step_budget = "90s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-execute-2of3-ecdsa"
+title = "2-of-3 ECDSA proposal reaches threshold and executes"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "proposal-execute", "commitment-verify"]
+step_budget = "90s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-execute-3of3-falcon"
+title = "3-of-3 Falcon proposal reaches threshold and executes"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "3-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "proposal-execute", "commitment-verify"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-below-threshold-2of3-falcon"
+title = "A proposal below threshold is not executable and stays pending"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-reject-below-threshold"]
+step_budget = "60s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-duplicate-signature-2of3-ecdsa"
+title = "A duplicate signature is rejected and does not count toward threshold"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "proposal-reject-duplicate-signature"]
+step_budget = "90s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-recover-by-cosigner-2of3-falcon"
+title = "An account is recovered by another cosigner's key"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "account-recover-by-cosigner"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-transfer-consume-1of1-ecdsa"
+title = "Assets transfer and the note is consumed, asserted against balances"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "balance-assert", "asset-transfer", "note-consume", "balance-assert"]
+step_budget = "180s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-offline-export-import-2of3-falcon"
+title = "A proposal is exported, signed externally, imported and executed"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "offline"
+actions = ["account-create", "account-register", "proposal-create", "proposal-export", "proposal-sign-external", "proposal-import", "proposal-execute", "commitment-verify"]
+step_budget = "240s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-guardian-migrate-offline-1of1-ecdsa"
+title = "Guardian migration created offline, signed, imported and executed"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "offline"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "proposal-create-offline", "guardian-migrate", "proposal-sign-external", "proposal-import", "proposal-execute"]
+step_budget = "240s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-handoff-rust-to-ts-2of3-falcon"
+title = "Rust creates and TypeScript signs and executes on a shared account"
+profile = "live"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "handoff-rust-to-ts", "proposal-execute", "commitment-verify"]
+step_budget = "210s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-handoff-ts-to-rust-2of3-ecdsa"
+title = "TypeScript creates and Rust signs and executes on a shared account"
+profile = "live"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "handoff-ts-to-rust", "proposal-execute", "commitment-verify"]
+step_budget = "210s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-add-signer-2of3-falcon"
+title = "A signer is admitted and the account reports the larger set"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "signer-add", "proposal-sign", "proposal-execute", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-remove-signer-2of3-falcon"
+title = "A signer is removed and the account reports the smaller set"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "signer-remove", "proposal-sign", "proposal-execute", "signer-removed-refused", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-change-threshold-2of3-ecdsa"
+title = "The threshold is raised and the account reports the new one"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "threshold-change", "proposal-sign", "proposal-execute", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-p2id-send-1of1-ecdsa"
+title = "The multisig sends assets out and the vault reflects it"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "asset-send", "proposal-sign", "proposal-execute", "asset-send-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-procedure-threshold-2of3-falcon"
+title = "One procedure requires every signer while the account threshold stays put"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "procedure-threshold-set", "proposal-sign", "proposal-execute", "procedure-threshold-assert"]
+step_budget = "480s"
+required = true
+core = false

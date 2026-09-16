@@ -555,3 +555,42 @@ jobs:
 
       - name: Check OpenAPI spec is up to date
         run: cargo run --features evm --bin gen-openapi -- --check docs
+
+  qualification-harness:
+    name: Qualification Harness
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'OpenZeppelin'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
+        with:
+          toolchain: 1.98.1
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          cache-on-failure: true
+
+      # The scenario manifest is the contract both drivers read. A run that
+      # discovers it is malformed has already built an image and started a
+      # database to find out.
+      - name: Validate the scenario manifest
+        run: cargo run --quiet -p guardian-qualification-driver -- validate
+
+      # These need the Docker CLI for the Compose cases but never a daemon.
+      - name: Test the stack shell libraries
+        run: ./qualification/stack/tests/harness-test.sh

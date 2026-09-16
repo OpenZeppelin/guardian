@@ -1,13 +1,21 @@
 use guardian_client::GuardianClient;
+use guardian_shared::SignatureScheme;
 use miden_protocol::Word;
 
 use crate::error::{MultisigError, Result};
 use crate::keystore::word_from_hex;
 use crate::transaction::word_to_hex;
 
+/// Confirms the GUARDIAN at `endpoint` is the one `expected_commitment` names.
+///
+/// The scheme is required, not optional: GUARDIAN holds one acknowledgement
+/// identity per signature scheme and an account's guardian slot holds the one
+/// matching its own. Asking without a scheme returns GUARDIAN's default, so a
+/// non-default account could never satisfy this check whatever it passed.
 pub(crate) async fn verify_endpoint_commitment(
     endpoint: &str,
     expected_commitment: Word,
+    scheme: SignatureScheme,
 ) -> Result<()> {
     let mut client = GuardianClient::connect(endpoint).await.map_err(|e| {
         MultisigError::GuardianConnection(format!(
@@ -16,12 +24,15 @@ pub(crate) async fn verify_endpoint_commitment(
         ))
     })?;
 
-    let (endpoint_commitment_hex, _raw_pubkey) = client.get_pubkey(None).await.map_err(|e| {
-        MultisigError::GuardianServer(format!(
-            "failed to get pubkey from GUARDIAN endpoint {}: {}",
-            endpoint, e
-        ))
-    })?;
+    let (endpoint_commitment_hex, _raw_pubkey) = client
+        .get_pubkey(Some(scheme.as_str()))
+        .await
+        .map_err(|e| {
+            MultisigError::GuardianServer(format!(
+                "failed to get pubkey from GUARDIAN endpoint {}: {}",
+                endpoint, e
+            ))
+        })?;
 
     let endpoint_commitment =
         word_from_hex(&endpoint_commitment_hex).map_err(MultisigError::HexDecode)?;

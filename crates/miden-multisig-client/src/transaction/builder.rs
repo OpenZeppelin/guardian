@@ -603,7 +603,12 @@ impl ProposalBuilder {
         let required_signatures =
             account.effective_threshold_for_procedure(ProcedureName::UpdateGuardian)? as usize;
 
-        verify_endpoint_commitment(&new_guardian_endpoint, new_guardian_pubkey).await?;
+        verify_endpoint_commitment(
+            &new_guardian_endpoint,
+            new_guardian_pubkey,
+            key_manager.scheme(),
+        )
+        .await?;
 
         // Generate salt for replay protection
         let salt = generate_salt();
