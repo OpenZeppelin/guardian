@@ -20,14 +20,14 @@ name: Qualification (live)
 # restriction closes that, so the guard job is defence in depth, never the
 # control.
 #
-# The nightly schedule covers both networks. Two of its three preconditions are
-# met: an environment-blocked run exits 0 rather than leaving the job red through
-# a Miden upgrade window, and a failure opens or updates a tracking issue so a
-# red night reaches someone. The third is not ours to set: until the
-# `qualification-devnet` and `qualification-testnet` environments exist and hold
-# QUAL_TREASURY_KEY, every scheduled run stops at the missing-secret check. That
-# is loud and correct rather than silently green, but it does mean the schedule
-# says nothing about the product until the environments are created.
+# The nightly schedule covers both networks, and all three of its preconditions
+# are met. An environment-blocked run exits 0 rather than leaving the job red
+# through a Miden upgrade window, and a live failure the network caused is
+# classified `environment` so it does not page as a product defect either. A
+# failure that is the product's opens or updates a tracking issue, so a red
+# night reaches someone. The `qualification-devnet` and `qualification-testnet`
+# environments exist, hold QUAL_TREASURY_KEY, and have their deployment branches
+# locked to the default branch.
 
 on:
   schedule:
