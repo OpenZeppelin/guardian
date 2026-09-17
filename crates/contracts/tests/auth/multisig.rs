@@ -350,6 +350,113 @@ async fn test_multisig_2_of_2_with_note_creation_with_guardian() -> anyhow::Resu
     Ok(())
 }
 
+/// One cosigner short of the threshold must not execute, even with GUARDIAN's
+/// signature present.
+///
+/// The clients refuse to submit below threshold, but that is a pre-flight
+/// convenience: GUARDIAN acknowledges a delta without counting cosigner
+/// signatures, so the contract is the only thing actually enforcing the quorum.
+/// This pins that, and pins the related property that GUARDIAN's signature does
+/// not substitute for a cosigner: the failing attempt carries it and still
+/// fails. The same transaction then succeeds once the missing cosigner signs,
+/// so the refusal can only be the count.
+#[tokio::test]
+async fn test_multisig_below_threshold_is_rejected_on_chain() -> anyhow::Result<()> {
+    let (
+        _secret_keys,
+        public_keys,
+        authenticators,
+        _guardian_secret_key,
+        guardian_public_key,
+        guardian_authenticator,
+    ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
+
+    let multisig_account =
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone())?;
+
+    let output_note_asset = FungibleAsset::mock(0);
+    let mut mock_chain_builder =
+        MockChainBuilder::with_accounts([multisig_account.clone()]).unwrap();
+    let output_note = mock_chain_builder.add_p2id_note(
+        multisig_account.id(),
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE
+            .try_into()
+            .unwrap(),
+        &[output_note_asset],
+        NoteType::Public,
+    )?;
+    let input_note = mock_chain_builder.add_spawn_note([&output_note])?;
+    let mock_chain = mock_chain_builder.build().unwrap();
+
+    let salt = Word::from([Felt::new_unchecked(1); 4]);
+
+    let tx_context_init = mock_chain
+        .build_transaction(multisig_account.id())
+        .authenticated_input_notes([input_note.id()])
+        .authenticator(None)
+        .expected_output_notes(vec![RawOutputNote::Full(output_note.clone())])
+        .auth_args(salt)
+        .build()?;
+
+    let tx_summary = match tx_context_init.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+
+    let msg = tx_summary.as_ref().to_commitment();
+    let tx_summary = SigningInputs::TransactionSummary(tx_summary);
+
+    let sig_1 = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
+        .await?;
+    let sig_2 = authenticators[1]
+        .get_signature(public_keys[1].to_commitment().into(), &tx_summary)
+        .await?;
+    let guardian_sig = guardian_authenticator
+        .get_signature(guardian_public_key.to_commitment().into(), &tx_summary)
+        .await?;
+
+    // One of two, plus GUARDIAN. GUARDIAN is a separate authorization input and
+    // is not counted toward the quorum, so this is still one signature short.
+    let below_threshold = mock_chain
+        .build_transaction(multisig_account.id())
+        .authenticated_input_notes([input_note.id()])
+        .authenticator(None)
+        .expected_output_notes(vec![RawOutputNote::Full(output_note.clone())])
+        .add_signature(public_keys[0].clone().into(), msg, sig_1.clone())
+        .add_signature(
+            guardian_public_key.clone().into(),
+            msg,
+            guardian_sig.clone(),
+        )
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await;
+
+    assert!(
+        below_threshold.is_err(),
+        "a 1-of-2 transaction carrying GUARDIAN's signature executed on chain"
+    );
+
+    // The same transaction with the missing cosigner added, so the refusal
+    // above can only have been the signature count.
+    mock_chain
+        .build_transaction(multisig_account.id())
+        .authenticated_input_notes([input_note.id()])
+        .authenticator(None)
+        .expected_output_notes(vec![RawOutputNote::Full(output_note)])
+        .add_signature(public_keys[0].clone().into(), msg, sig_1)
+        .add_signature(public_keys[1].clone().into(), msg, sig_2)
+        .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
+        .auth_args(salt)
+        .build()?
+        .execute()
+        .await?;
+
+    Ok(())
+}
+
 /// Tests updating multisig signers and threshold with GUARDIAN authentication.
 #[tokio::test]
 async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {

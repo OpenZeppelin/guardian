@@ -114,12 +114,23 @@ impl MultisigClient {
         Ok(exported)
     }
 
-    /// Signs an imported proposal locally (without GUARDIAN).
+    /// Signs an imported proposal without going through GUARDIAN.
     ///
     /// The signature is added directly to the proposal. After signing,
     /// export the proposal again to share with other cosigners.
     ///
-    /// Only `SwitchGuardian` proposals are supported in this mode.
+    /// Any proposal type may be signed this way. Signing is a local act over a
+    /// commitment, so it does not depend on whether execution will later need a
+    /// GUARDIAN acknowledgement, which is a separate question
+    /// `execute_imported_proposal` asks for itself.
+    ///
+    /// This is off-channel signing, not air-gapped signing. Except for
+    /// `SwitchGuardian` and `Custom`, the binding check below reproduces the
+    /// transaction to confirm the summary is what the metadata claims, so the
+    /// signer still needs a synced store and, for consume-notes, the node.
+    /// Verification is what decides whether a proposal can be signed here; a
+    /// type whose summary cannot be reproduced fails there rather than being
+    /// turned away in advance.
     ///
     /// # Example
     ///
@@ -131,11 +142,6 @@ impl MultisigClient {
     /// ```
     pub async fn sign_imported_proposal(&mut self, proposal: &mut ExportedProposal) -> Result<()> {
         let mut bound_proposal = proposal.to_proposal()?;
-        if !bound_proposal.transaction_type.supports_offline_execution() {
-            return Err(MultisigError::OfflineUnsupportedTransaction(
-                bound_proposal.transaction_type.type_name().to_string(),
-            ));
-        }
         self.verify_proposal_summary_binding(&mut bound_proposal)
             .await?;
         let account = self.require_account()?;
@@ -208,11 +214,6 @@ impl MultisigClient {
 
         // Parse the proposal
         let mut proposal = exported.to_proposal()?;
-        if !proposal.transaction_type.supports_offline_execution() {
-            return Err(MultisigError::OfflineUnsupportedTransaction(
-                proposal.transaction_type.type_name().to_string(),
-            ));
-        }
         self.verify_proposal_summary_binding(&mut proposal).await?;
         let tx_summary = proposal.tx_summary.clone();
         let tx_summary_commitment = tx_summary.to_commitment();
@@ -232,11 +233,28 @@ impl MultisigClient {
         // Build signature advice from cosigner signatures
         let required_commitments: HashSet<String> =
             account.cosigner_commitments_hex().into_iter().collect();
-        let signature_advice = collect_signature_advice(
+        let mut signature_advice = collect_signature_advice(
             signature_inputs,
             &required_commitments,
             tx_summary_commitment,
         )?;
+
+        // Cosigner signatures come from the document; the acknowledgement comes
+        // from GUARDIAN, exactly as on the online path. Without this the
+        // document could only ever execute a guardian switch, the one type that
+        // needs no acknowledgement, which is what tied off-channel signature
+        // collection to that single type.
+        if proposal.transaction_type.requires_guardian_ack() {
+            let guardian_advice = self
+                .get_guardian_ack_signature(
+                    &account,
+                    proposal.nonce,
+                    &tx_summary,
+                    tx_summary_commitment,
+                )
+                .await?;
+            signature_advice.push(guardian_advice);
+        }
 
         // Build the final transaction request with all signatures
         let salt = proposal.metadata.salt()?;
@@ -259,13 +277,20 @@ impl MultisigClient {
         )
         .await?;
 
-        // Make the deliberate import skip observable rather than a silent
-        // loss when the old GUARDIAN was in fact still reachable.
-        tracing::warn!(
-            "offline switch execution skips the pre-switch proposal-note import; if the \
-             old GUARDIAN is still reachable, call preserve_pre_switch_proposal_notes \
-             before executing to keep notes embedded in its pending proposals"
-        );
+        // Switch-only, and keyed on the type rather than on "ack-less" so a
+        // future ack-less type does not inherit it. Make the deliberate import
+        // skip observable rather than a silent loss when the old GUARDIAN was in
+        // fact still reachable.
+        if matches!(
+            proposal.transaction_type,
+            crate::proposal::TransactionType::SwitchGuardian { .. }
+        ) {
+            tracing::warn!(
+                "offline switch execution skips the pre-switch proposal-note import; if the \
+                 old GUARDIAN is still reachable, call preserve_pre_switch_proposal_notes \
+                 before executing to keep notes embedded in its pending proposals"
+            );
+        }
 
         self.finalize_transaction(
             account_id,

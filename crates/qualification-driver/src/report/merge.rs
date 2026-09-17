@@ -328,7 +328,11 @@ mod tests {
         )
         .expect("writes the orphan");
 
-        let mine = run(NetworkName::Testnet, Conclusion::Success, QualificationClaim::Full);
+        let mine = run(
+            NetworkName::Testnet,
+            Conclusion::Success,
+            QualificationClaim::Full,
+        );
         let my_id = mine.run_id.clone();
         std::fs::write(
             directory.path().join("mine.json"),

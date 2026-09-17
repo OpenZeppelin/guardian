@@ -247,7 +247,9 @@ pub async fn assert_scheme_gate(runner: &Runner) -> ActionOutcome {
     let falcon_signer = match fixtures.signer() {
         Ok(signer) => Arc::new(signer),
         Err(error) => {
-            return ActionOutcome::failed_setup(format!("cannot build the fixture signer: {error}"));
+            return ActionOutcome::failed_setup(format!(
+                "cannot build the fixture signer: {error}"
+            ));
         }
     };
     let mut falcon_client = match GuardianClient::connect(endpoint.clone()).await {

@@ -15,7 +15,7 @@ Evidence is from runs against testnet on 2026-09-16 with a locally built server,
 |---|---|---|
 | F1 | Rust cannot change a threshold | Rust SDK (**fixed**) |
 | F2 | `load()` returns an account whose reads come from a stale local store | TypeScript SDK (**fixed**) |
-| F3 | Offline signing tied to offline execution | Rust SDK |
+| F3 | Rust cannot collect signatures off-channel | Rust SDK (**fixed**) |
 | F4 | Proposal creation signs in Rust, not in TypeScript | Both SDKs |
 | F5 | Native Node entry cannot run the multisig client | Published packages |
 | F6 | Node needs an HTTP/2 shim to reach Miden gRPC | Published packages |
@@ -189,20 +189,60 @@ SDKs. And with the assertion pointed back at the store, the exact read that
 failed five times, `live-remove-signer-2of3-falcon` passes against a real
 testnet GUARDIAN.
 
-### F3. Offline signing is tied to offline execution in Rust
+### F3. Rust cannot collect signatures off-channel (fixed)
 
-`TransactionType::supports_offline_execution()` is true only for
-`SwitchGuardian`, and `requires_guardian_ack()` is defined as its inverse. So
-`sign_imported_proposal` refuses to collect signatures off-channel for any
-proposal type that needs a GUARDIAN acknowledgement at execution, which is every
-other type.
+A cosigner handed a proposal as JSON could add a signature to it in TypeScript
+but not in Rust. Two separate causes, and the first hid the second.
 
-The TypeScript SDK signs any proposal type offline and contacts GUARDIAN only to
-execute, which is what the Rust path would also do. The restriction blocks an
-air-gapped cosigning workflow the protocol allows.
+**Cause 1: the signing gate.** `sign_imported_proposal` refused anything but
+`SwitchGuardian`, on `supports_offline_execution()`. That predicate answers "can
+this execute without a GUARDIAN acknowledgement", which only a guardian switch
+can. Signing is a local act over a commitment and does not depend on it. The
+gate borrowed a predicate that is right about its own question to decide a
+different one, the same shape as F1, and it sat directly in front of the
+verification that does the real work, which is structurally identical to the
+TypeScript one.
+
+**Cause 2: the document could not be executed.** With signing allowed, the flow
+reached execution and stopped at `proposal not ready: need 2 signatures, have 1`.
+Off-channel signatures live in the document, the online path reads readiness from
+GUARDIAN's copy which never saw them, and `execute_imported_proposal` fetched no
+acknowledgement, so it could only ever execute the one type that needs none.
+
+**Fixed.** The signing gate is gone, and `execute_imported_proposal` now takes
+cosigner signatures from the document and the acknowledgement from GUARDIAN,
+exactly as the online path does. Its own gate went with it, since the reason for
+it was the missing acknowledgement. The switch-only note-import warning is now
+keyed on the type rather than on "ack-less", so a future ack-less type does not
+inherit it.
+
+**Checked first, because the client-side check is not what enforces the quorum.**
+GUARDIAN acknowledges a delta without counting cosigner signatures:
+`push_delta` calls `ack_delta` unconditionally and consults a matching proposal
+only to label a metric. So readiness checks in either client are pre-flight
+convenience, and the contract is the enforcement. That was assumed rather than
+demonstrated, so it is now pinned by
+`test_multisig_below_threshold_is_rejected_on_chain`: a 1-of-2 transaction
+carrying GUARDIAN's signature is rejected on chain, and the same transaction
+succeeds once the missing cosigner signs, so the refusal can only be the count.
+It also pins that GUARDIAN's signature does not substitute for a cosigner.
+
+`live-below-threshold-2of3-falcon` was part of the same gap. It accepted any
+error whose text contained `signature`, which the client's own
+`proposal not ready: need 2 signatures, have 1` satisfies, so it proved the
+client refused rather than that the quorum held. Both drivers now match the
+refusal precisely and confirm the account nonce did not advance.
+
+**Not air-gapped signing.** The earlier wording claimed this blocked an
+air-gapped workflow. It does not, on either SDK: except for `SwitchGuardian` and
+`Custom` the binding check reproduces the transaction, so the signer needs a
+synced store and, for consume-notes, the node. What was blocked is **off-channel**
+signature collection, where the proposal travels as JSON between cosigners
+instead of through GUARDIAN, each with a working client.
 
 **In the suite**: the Rust leg of `live-offline-export-import-2of3-falcon`
-reports a skip naming the gap.
+passes, having only ever skipped. Migration and the ordinary execute path were
+re-run against testnet to confirm the shared execute branch still behaves.
 
 ### F4. Creating a proposal signs it in Rust but not in TypeScript
 

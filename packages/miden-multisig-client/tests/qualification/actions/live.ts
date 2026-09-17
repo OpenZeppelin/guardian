@@ -451,6 +451,7 @@ export async function rejectBelowThreshold(
     };
   }
 
+  const nonceBefore = await chainNonce(session);
   try {
     await session.multisig.syncProposals();
     await session.multisig.executeProposal(session.proposalId);
@@ -461,6 +462,17 @@ export async function rejectBelowThreshold(
         kind: 'failed',
         classification: 'product',
         reason: `the proposal was refused, but not for being below threshold: ${message}`,
+      };
+    }
+    // The refusal here is the client's own pre-flight check, and GUARDIAN
+    // acknowledges a delta without counting cosigner signatures, so confirm
+    // nothing reached the chain rather than assuming the refusal stopped it.
+    const nonceAfter = await chainNonce(session);
+    if (nonceBefore !== null && nonceAfter !== null && nonceAfter !== nonceBefore) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: 'the account nonce advanced after a below-threshold execution was refused',
       };
     }
     const remaining = await session.multisig.syncProposals();

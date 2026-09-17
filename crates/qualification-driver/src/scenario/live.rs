@@ -364,10 +364,12 @@ pub async fn execute_proposal(runner: &Runner) -> ActionOutcome {
     let client = &mut session.clients[0];
     let nonce_before = chain_nonce(client).await;
 
-    // An offline-created proposal was never pushed to GUARDIAN, so the online
-    // execute path cannot fetch it and reports the proposal as missing. The
-    // offline path takes the document the cosigners actually signed.
-    let executed = if migrating {
+    // Signatures collected off-channel live in the document and were never
+    // pushed, so GUARDIAN's copy is short of the threshold and the online path
+    // refuses. An offline-created proposal is not there at all. Either way the
+    // document is the thing the cosigners actually signed, so execute from it;
+    // the acknowledgement still comes from GUARDIAN.
+    let executed = if exported.is_some() {
         match exported
             .as_deref()
             .map(miden_multisig_client::ExportedProposal::from_json)
@@ -378,11 +380,7 @@ pub async fn execute_proposal(runner: &Runner) -> ActionOutcome {
                     "the offline proposal is not readable: {error}"
                 ));
             }
-            None => {
-                return ActionOutcome::failed_setup(
-                    "the migration has no offline proposal to execute".to_string(),
-                );
-            }
+            None => unreachable!("the document was just checked to be present"),
         }
     } else {
         client.execute_proposal(&proposal_id).await
@@ -515,17 +513,34 @@ pub async fn reject_below_threshold(runner: &Runner) -> ActionOutcome {
     }
 
     let client = &mut session.clients[0];
+    let nonce_before = chain_nonce(client).await;
     match client.execute_proposal(&proposal_id).await {
         Ok(()) => ActionOutcome::failed_product(format!(
             "a proposal with {target} of {} signatures executed",
             session.threshold
         )),
         Err(error) => {
-            let message = error.to_string().to_lowercase();
-            if !message.contains("signature") && !message.contains("threshold") {
+            // Matched on the variant, not on words in the message. `signature`
+            // appears in unrelated failures, so a substring match would accept a
+            // refusal that had nothing to do with the count and report it as
+            // threshold enforcement.
+            if !matches!(
+                error,
+                miden_multisig_client::MultisigError::ProposalNotReady { .. }
+            ) {
                 return ActionOutcome::failed_product(format!(
                     "the proposal was refused, but not for being below threshold: {error}"
                 ));
+            }
+            // The refusal here is the client's own pre-flight check, and
+            // GUARDIAN acknowledges a delta without counting cosigner
+            // signatures, so confirm nothing reached the chain rather than
+            // assuming the refusal stopped it.
+            if chain_nonce(client).await != nonce_before {
+                return ActionOutcome::failed_product(
+                    "the account nonce advanced after a below-threshold execution was refused"
+                        .to_string(),
+                );
             }
             match client.list_proposals().await {
                 Ok(proposals) if proposals.iter().any(|entry| entry.id == proposal_id) => {
@@ -928,19 +943,6 @@ pub async fn sign_proposal_external(runner: &Runner) -> ActionOutcome {
                 let message = error.to_string().to_lowercase();
                 if message.contains("already signed") {
                     continue;
-                }
-                // The Rust SDK ties offline signing to offline execution, so it
-                // refuses to sign any proposal that needs a GUARDIAN
-                // acknowledgement at execution time, which is every type except
-                // SwitchGuardian. TypeScript signs these offline and contacts
-                // GUARDIAN only to execute. Reported rather than failed: it is a
-                // standing capability difference, not a regression.
-                if message.contains("offline mode only supports") {
-                    return ActionOutcome::Skipped {
-                        reason: format!(
-                            "the Rust SDK cannot sign this proposal type offline: {error}"
-                        ),
-                    };
                 }
                 return ActionOutcome::failed_product(format!(
                     "cosigner {index} could not sign offline: {error}"
