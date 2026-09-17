@@ -43,8 +43,10 @@
 //!    aborts the walk and leaves the previous snapshot published.
 //! 3. Vaults are decoded on the blocking pool, once per commitment: an
 //!    account whose state commitment matches the previous snapshot
-//!    reuses its decoded vault. Only successful decodes are reused, so a
-//!    repaired blob is picked up on the next walk.
+//!    reuses its decoded vault (every state blob is still read and
+//!    decrypted each walk; only the `Account` deserialization is
+//!    skipped). Only successful decodes are reused, so a repaired blob
+//!    is picked up on the next walk.
 //! 4. Inventory aggregates (`delta_status_counts`,
 //!    `in_flight_proposal_count`, `latest_activity`) are read through
 //!    the storage aggregate methods; each is marked degraded on failure
@@ -146,7 +148,9 @@ impl AccountLifecycle {
 /// Stable reason an eligible account's vault was not aggregated.
 /// Serialized via [`SkipReason::as_str`]; new reasons must add a new
 /// label, never repurpose an existing one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SkipReason {
     /// Metadata exists but no state row could be read.
@@ -484,6 +488,16 @@ impl DashboardStatsCache {
             .write()
             .unwrap_or_else(|poison| poison.into_inner()) = Some(snapshot);
     }
+
+    /// Drop the loaded copy when the store confirms there is no
+    /// publication to serve (row deleted, control table reset, restore
+    /// from a pre-feature backup, plaintext row refused).
+    pub fn clear(&self) {
+        *self
+            .current
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = None;
+    }
 }
 
 /// Spawn the two background loops: the leader refresh loop and the
@@ -529,7 +543,16 @@ pub async fn sync_from_store(state: &AppState) -> Result<Option<Arc<StatsSnapsho
         return Ok(loaded);
     }
     let Some(published) = store.load_current().await.map_err(|e| e.to_string())? else {
-        return Ok(loaded);
+        // The store confirms there is nothing to serve (or refused what
+        // it holds): cache and store must not diverge.
+        if loaded.is_some() {
+            tracing::warn!(
+                target: "dashboard.stats",
+                "dashboard stats: store has no publication; dropping the loaded snapshot"
+            );
+            cache.clear();
+        }
+        return Ok(None);
     };
     let snapshot = Arc::new(StatsSnapshot::from_published(&published)?);
     cache.publish(snapshot.clone());
@@ -546,29 +569,69 @@ async fn run_leader_loop(state: AppState, leader: Arc<dyn LeaderElector>) {
     let interval = state.dashboard.stats_refresh_interval();
     let mut backoff_until: Option<Instant> = None;
     loop {
-        match leader.try_acquire(STATS_LEASE_TTL).await {
-            // Still backing off after a failed walk: hold the lease, skip.
-            Ok(Some(_)) if backoff_until.is_some_and(|until| Instant::now() < until) => {}
-            Ok(Some(lease)) => match refresh_if_due(&state, &leader, lease, interval).await {
-                Ok(_) => backoff_until = None,
-                Err(error) => {
-                    backoff_until = Some(Instant::now() + STATS_FAILURE_BACKOFF);
-                    tracing::warn!(
-                        target: "dashboard.stats",
-                        %error,
-                        backoff_secs = STATS_FAILURE_BACKOFF.as_secs(),
-                        "dashboard stats refresh failed; previous snapshot left published"
-                    );
-                }
-            },
-            Ok(None) => {}
-            Err(error) => tracing::warn!(
+        // While backing off after a failed walk this replica does not
+        // touch the lease at all: acquiring would renew it and keep every
+        // healthy replica locked out for as long as the local fault lasts.
+        if backoff_until.is_none_or(|until| Instant::now() >= until) {
+            backoff_until = match leader_tick(&state, &leader, interval).await {
+                TickOutcome::WalkFailed => Some(Instant::now() + STATS_FAILURE_BACKOFF),
+                _ => None,
+            };
+        }
+        tokio::time::sleep(STATS_TICK).await;
+    }
+}
+
+/// One leader-loop tick.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TickOutcome {
+    /// Another replica holds the lease (or acquisition failed).
+    NotLeader,
+    /// Leader, but nothing was due.
+    Idle,
+    /// Leader and a walk was published.
+    Published,
+    /// Leader and the walk failed; the lease was released so a healthy
+    /// replica can take over immediately instead of after the TTL.
+    WalkFailed,
+}
+
+pub(crate) async fn leader_tick(
+    state: &AppState,
+    leader: &Arc<dyn LeaderElector>,
+    interval: Duration,
+) -> TickOutcome {
+    let lease = match leader.try_acquire(STATS_LEASE_TTL).await {
+        Ok(Some(lease)) => lease,
+        Ok(None) => return TickOutcome::NotLeader,
+        Err(error) => {
+            tracing::warn!(
                 target: "dashboard.stats",
                 %error,
                 "dashboard stats: could not acquire the refresher lease"
-            ),
+            );
+            return TickOutcome::NotLeader;
         }
-        tokio::time::sleep(STATS_TICK).await;
+    };
+    match refresh_if_due(state, leader, lease.clone(), interval).await {
+        Ok(Some(_)) => TickOutcome::Published,
+        Ok(None) => TickOutcome::Idle,
+        Err(error) => {
+            tracing::warn!(
+                target: "dashboard.stats",
+                %error,
+                backoff_secs = STATS_FAILURE_BACKOFF.as_secs(),
+                "dashboard stats refresh failed; previous snapshot left published, lease released"
+            );
+            if let Err(release_error) = leader.release(lease).await {
+                tracing::warn!(
+                    target: "dashboard.stats",
+                    error = %release_error,
+                    "dashboard stats: could not release the refresher lease after a failed walk"
+                );
+            }
+            TickOutcome::WalkFailed
+        }
     }
 }
 
@@ -636,7 +699,22 @@ pub async fn refresh_dashboard_stats_as(
     }
     let cancel = CancellationToken::new();
     let renewal = spawn_renewal(leader.clone(), lease, cancel.clone());
-    let previous = state.dashboard.stats().current();
+    // Establish the stored baseline before walking: the previous
+    // publication (possibly by another holder, or from before a restart)
+    // supplies the decoded vaults to reuse and the reference for the
+    // systemic-failure guard. A replica whose sync loop has not run yet
+    // must not walk against an empty local cache.
+    let previous = match sync_from_store(state).await {
+        Ok(previous) => previous,
+        Err(error) => {
+            cancel.cancel();
+            let _ = renewal.await;
+            clear_marker(store, &fence).await;
+            return Err(format!(
+                "load the published baseline before walking: {error}"
+            ));
+        }
+    };
     let started = Instant::now();
     let threshold = (state.storage.kind() == StorageType::Filesystem)
         .then(|| state.dashboard.filesystem_aggregate_threshold());
@@ -895,7 +973,11 @@ pub async fn build_payload(
                 .collect()
         })
         .unwrap_or_default();
-    if !previously_decoded.is_empty()
+    let decoded_now = vault_outcomes
+        .values()
+        .any(|v| matches!(v, VaultOutcome::Decoded { .. }));
+    if !decoded_now
+        && !previously_decoded.is_empty()
         && previously_decoded.iter().all(|id| {
             matches!(
                 vault_outcomes.get(*id),
@@ -2109,8 +2191,9 @@ mod tests {
     }
 
     /// Encrypted storage: one row that does not decrypt is explicit
-    /// `state_undecodable` coverage; a key-provider failure (unknown key
-    /// id for every row) is systemic and fails the walk.
+    /// `state_undecodable` coverage — including a row sealed under a
+    /// retired key id — while "nothing decodes any more" against a
+    /// previously decodable inventory is systemic and fails the walk.
     #[tokio::test]
     async fn build_payload_distinguishes_a_corrupt_encrypted_row_from_a_systemic_key_failure() {
         let dir = tempfile::tempdir().unwrap();
@@ -2187,6 +2270,13 @@ mod tests {
         let metadata_store: Arc<dyn MetadataStore> = Arc::new(
             MockMetadataStore::new()
                 .with_list(Ok(vec!["acc-ok".to_string()]))
+                .with_list(Ok(vec!["acc-ok".to_string()]))
+                .with_list_paged(Ok(vec![metadata(
+                    "acc-ok",
+                    falcon(&["0x1"]),
+                    NetworkConfig::miden_default(),
+                    "2026-09-10T00:00:00Z",
+                )]))
                 .with_list_paged(Ok(vec![metadata(
                     "acc-ok",
                     falcon(&["0x1"]),
@@ -2194,7 +2284,10 @@ mod tests {
                     "2026-09-10T00:00:00Z",
                 )])),
         );
-        let err = build_payload(
+        // With no previous publication the row is reported as explicit
+        // `state_undecodable` coverage (a retired key id is a per-record
+        // verdict) ...
+        let (_, payload) = build_payload(
             &wrong_key,
             &metadata_store,
             &clock,
@@ -2203,8 +2296,34 @@ mod tests {
             &CancellationToken::new(),
         )
         .await
+        .expect("a single row under a retired key id is explicit coverage");
+        assert_eq!(
+            by_id(&payload)["acc-ok"].vault,
+            skipped(SkipReason::StateUndecodable)
+        );
+        // ... but when the previous publication decoded that row and
+        // nothing decodes now, the walk is escalated to a systemic
+        // failure so the good snapshot stays published.
+        let mut prev = record(
+            "acc-ok",
+            Some("2026-09-10T00:00:00Z"),
+            "miden_falcon",
+            1,
+            AccountLifecycle::Active,
+            decoded(&[("0xf1", 1)], &[]),
+        );
+        prev.state_commitment = Some("0xold".into());
+        let err = build_payload(
+            &wrong_key,
+            &metadata_store,
+            &clock,
+            Some(&snapshot(ts("2026-09-11T00:00:00Z"), vec![prev])),
+            None,
+            &CancellationToken::new(),
+        )
+        .await
         .unwrap_err();
-        assert!(err.contains("systemic failure"), "{err}");
+        assert!(err.contains("systemic"), "{err}");
     }
 
     // --- publication, leadership, and sync ---------------------------------------
@@ -2318,13 +2437,16 @@ mod tests {
             )
             .await
             .unwrap();
-        // The single-process lease carries fence token 0: refused.
+        // The single-process lease carries fence token 0: refused. The
+        // walk synced the newer publication as its baseline first, and
+        // that is what stays loaded.
         let err = refresh_dashboard_stats(&state).await.unwrap_err();
         assert!(err.contains("no longer current"), "{err}");
         assert_eq!(store.current_version().await.unwrap(), Some(1));
-        assert!(
-            state.dashboard.stats().current().is_none(),
-            "nothing loaded from a refused publish"
+        assert_eq!(
+            state.dashboard.stats().current().map(|s| s.version),
+            Some(1),
+            "the refused walk must not replace the synced baseline"
         );
     }
 
@@ -2379,5 +2501,255 @@ mod tests {
             "publication consumed the request"
         );
         task.abort();
+    }
+
+    /// A store that can be made to report "no publication" so the
+    /// follower's cache-clearing path is observable without Postgres.
+    struct VanishingStore {
+        inner: InMemoryStatsStore,
+        vanished: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl StatsStore for VanishingStore {
+        async fn current_version(&self) -> crate::error::Result<Option<i64>> {
+            if self.vanished.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(None);
+            }
+            self.inner.current_version().await
+        }
+        async fn load_current(&self) -> crate::error::Result<Option<PublishedStats>> {
+            if self.vanished.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(None);
+            }
+            self.inner.load_current().await
+        }
+        async fn read_control(
+            &self,
+            now: DateTime<Utc>,
+        ) -> crate::error::Result<crate::coordination::StatsControl> {
+            self.inner.read_control(now).await
+        }
+        async fn mark_refresh_started(
+            &self,
+            fence: &LeaseFence,
+            now: DateTime<Utc>,
+        ) -> crate::error::Result<bool> {
+            self.inner.mark_refresh_started(fence, now).await
+        }
+        async fn clear_refresh_started(&self, fence: &LeaseFence) -> crate::error::Result<()> {
+            self.inner.clear_refresh_started(fence).await
+        }
+        async fn publish(
+            &self,
+            fence: &LeaseFence,
+            as_of: DateTime<Utc>,
+            now: DateTime<Utc>,
+            payload: serde_json::Value,
+        ) -> crate::error::Result<PublishOutcome> {
+            self.inner.publish(fence, as_of, now, payload).await
+        }
+        async fn request_refresh(
+            &self,
+            requested_by: &str,
+            now: DateTime<Utc>,
+            cooldown: Duration,
+            stale_after: Duration,
+        ) -> crate::error::Result<crate::coordination::RefreshRequestOutcome> {
+            self.inner
+                .request_refresh(requested_by, now, cooldown, stale_after)
+                .await
+        }
+    }
+
+    #[tokio::test]
+    async fn follower_drops_its_copy_when_the_store_confirms_no_publication() {
+        let vanishing = Arc::new(VanishingStore {
+            inner: InMemoryStatsStore::new(),
+            vanished: std::sync::atomic::AtomicBool::new(false),
+        });
+        let store: Arc<dyn StatsStore> = vanishing.clone();
+        let state = mock_state_with_dashboard(
+            MockMetadataStore::new(),
+            MockStorageBackend::new(),
+            DashboardState::for_tests_with_stats_store(Vec::new(), store.clone()),
+        )
+        .await;
+        refresh_dashboard_stats(&state).await.expect("publish");
+        assert_eq!(
+            state.dashboard.stats().current().map(|s| s.version),
+            Some(1)
+        );
+
+        // The row is gone (deleted, control reset, pre-feature restore):
+        // the replica must stop serving it rather than diverge.
+        vanishing
+            .vanished
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(sync_from_store(&state).await.unwrap(), None);
+        assert!(state.dashboard.stats().current().is_none());
+        let err = crate::services::get_dashboard_stats(&state, None).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::GuardianError::DataUnavailable(_)
+        ));
+    }
+
+    /// A failed walk hands the lease back so a healthy replica can take
+    /// over on its next tick; a healthy walk keeps it.
+    #[tokio::test]
+    async fn leader_tick_releases_the_lease_on_a_failed_walk() {
+        let store: Arc<dyn StatsStore> = Arc::new(InMemoryStatsStore::new());
+        let failing = mock_state_with_dashboard(
+            MockMetadataStore::new().with_list(Err("metadata store unreachable".into())),
+            MockStorageBackend::new(),
+            DashboardState::for_tests_with_stats_store(Vec::new(), store.clone()),
+        )
+        .await;
+        let leader: Arc<dyn LeaderElector> =
+            Arc::new(AlwaysLeader::new(DASHBOARD_STATS_LEASE, "a"));
+        assert_eq!(
+            leader_tick(&failing, &leader, Duration::from_secs(300)).await,
+            TickOutcome::WalkFailed
+        );
+        assert_eq!(store.current_version().await.unwrap(), None);
+        assert_eq!(
+            store
+                .read_control(failing.clock.now())
+                .await
+                .unwrap()
+                .refresh_started_at,
+            None,
+            "failed walk leaves no in-progress marker behind"
+        );
+
+        let healthy = mock_state_with_dashboard(
+            MockMetadataStore::new(),
+            MockStorageBackend::new(),
+            DashboardState::for_tests_with_stats_store(Vec::new(), store.clone()),
+        )
+        .await;
+        assert_eq!(
+            leader_tick(&healthy, &leader, Duration::from_secs(300)).await,
+            TickOutcome::Published
+        );
+        assert_eq!(
+            leader_tick(&healthy, &leader, Duration::from_secs(300)).await,
+            TickOutcome::Idle
+        );
+    }
+}
+
+#[cfg(all(test, feature = "postgres"))]
+mod postgres_tests {
+    use super::*;
+    use crate::ack::AckRegistry;
+    use crate::builder::clock::test::MockClock;
+    use crate::coordination::StatsStore;
+    use crate::coordination::postgres::{PgLeaseElector, PgStatsStore};
+    use crate::dashboard::DashboardState;
+    use crate::storage::postgres::build_postgres_pool_lazy;
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
+    use crate::testing::pg::test_database_url;
+
+    async fn replica(metadata: MockMetadataStore, store: Arc<dyn StatsStore>) -> AppState {
+        let keystore_dir =
+            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
+        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
+        AppState {
+            storage: Arc::new(MockStorageBackend::new()),
+            metadata: Arc::new(metadata),
+            network_client: Arc::new(MockNetworkClient::new()),
+            ack,
+            canonicalization: None,
+            clock: Arc::new(MockClock::fixed("2026-09-17T12:00:00Z")),
+            dashboard: Arc::new(DashboardState::for_tests_with_stats_store(
+                Vec::new(),
+                store,
+            )),
+            auditor: Arc::new(crate::audit::LogAuditor::new()),
+            #[cfg(feature = "evm")]
+            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
+        }
+    }
+
+    /// Replica A holds the lease and its walk fails (a replica-local
+    /// fault). It must hand the lease back immediately so replica B can
+    /// acquire and publish on its next tick, without waiting for the TTL.
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn failed_walk_releases_the_lease_so_another_replica_publishes() {
+        let url = test_database_url().await;
+        let pool = build_postgres_pool_lazy(&url, 8).unwrap();
+        {
+            let mut conn = pool.get().await.unwrap();
+            diesel_async::RunQueryDsl::execute(
+                diesel::sql_query("DELETE FROM dashboard_stats_snapshots"),
+                &mut conn,
+            )
+            .await
+            .unwrap();
+            diesel_async::RunQueryDsl::execute(
+                diesel::sql_query(
+                    "UPDATE dashboard_stats_control SET last_published_at = NULL, \
+                     refresh_requested_at = NULL, refresh_requested_by = NULL, \
+                     refresh_started_at = NULL, refresh_started_by = NULL, \
+                     last_operator_request_at = NULL WHERE id = TRUE",
+                ),
+                &mut conn,
+            )
+            .await
+            .unwrap();
+        }
+        let store: Arc<dyn StatsStore> = Arc::new(PgStatsStore::new(pool.clone(), None));
+        let lease_name = format!("stats-failover-{}", Utc::now().timestamp_micros());
+        let leader_a: Arc<dyn LeaderElector> =
+            Arc::new(PgLeaseElector::new(pool.clone(), &lease_name, "replica-a"));
+        let leader_b: Arc<dyn LeaderElector> =
+            Arc::new(PgLeaseElector::new(pool.clone(), &lease_name, "replica-b"));
+        let interval = Duration::from_secs(300);
+
+        let replica_a = replica(
+            MockMetadataStore::new().with_list(Err("replica-local fault".into())),
+            store.clone(),
+        )
+        .await;
+        let replica_b = replica(MockMetadataStore::new(), store.clone()).await;
+
+        // A acquires first and fails its walk.
+        assert_eq!(
+            leader_tick(&replica_a, &leader_a, interval).await,
+            TickOutcome::WalkFailed
+        );
+        assert_eq!(store.current_version().await.unwrap(), None);
+
+        // B's very next tick takes the released lease and publishes.
+        assert_eq!(
+            leader_tick(&replica_b, &leader_b, interval).await,
+            TickOutcome::Published
+        );
+        assert_eq!(store.current_version().await.unwrap(), Some(1));
+
+        // While B holds the lease, A (out of backoff) is not the leader.
+        assert_eq!(
+            leader_tick(&replica_a, &leader_a, interval).await,
+            TickOutcome::NotLeader
+        );
+        // A queued operator request is served by B on its next tick.
+        store
+            .request_refresh(
+                "op",
+                Utc::now(),
+                STATS_REFRESH_COOLDOWN,
+                STATS_REFRESH_STALE_AFTER,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            leader_tick(&replica_b, &leader_b, interval).await,
+            TickOutcome::Published
+        );
+        assert_eq!(store.current_version().await.unwrap(), Some(2));
     }
 }

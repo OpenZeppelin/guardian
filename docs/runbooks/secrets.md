@@ -314,6 +314,13 @@ in Secrets Manager (AWS) or in an owner-only file (self-managed,
 `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`); it is loaded once at startup and cached,
 and the same `{active, keys}` format is used on both.
 
+The same key seals the published `/dashboard/stats` snapshot
+(`dashboard_stats_snapshots.payload`, a copy of every account's vault
+totals refreshed on the stats cadence), so the bootstrap, rotation, and
+compromise procedures below cover it automatically; a snapshot published
+before the key was configured is ignored, not decrypted, and is replaced
+by the next publication.
+
 ### Bootstrap (against an empty store)
 
 On the standard AWS stack, use the deploy script. It generates the key locally,

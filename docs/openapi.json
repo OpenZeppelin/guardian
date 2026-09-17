@@ -4118,7 +4118,7 @@
         "properties": {
           "by_auth_method": {
             "type": "object",
-            "description": "Counts by stable auth-method label. Never omitted above an\ninventory threshold: the aggregate is maintained incrementally.",
+            "description": "Counts by stable auth-method label. A map because the key is\nthe closed `Auth::method_label()` vocabulary and it is the very\nsame aggregate `/dashboard/info.accounts_by_auth_method` serves\n(FR-9). Never omitted above an inventory threshold.",
             "additionalProperties": {
               "type": "integer",
               "format": "int64",
@@ -4133,7 +4133,7 @@
             "items": {
               "$ref": "#/components/schemas/DashboardAuthMethodSignerCount"
             },
-            "description": "Sorted by `(auth_method, authorized_signer_count)`."
+            "description": "Sorted by `(auth_method, authorized_signer_count)`. An array\nrather than a nested map because the signer count is an\nunbounded integer, which JSON object keys cannot type."
           },
           "by_lifecycle": {
             "$ref": "#/components/schemas/DashboardLifecycleCounts"
@@ -4268,14 +4268,19 @@
           },
           "skipped": {
             "type": "object",
-            "description": "Eligible accounts not covered, by stable reason\n(`state_unavailable`, `state_undecodable`).",
+            "description": "Eligible accounts not covered, by stable reason. Keys are the\nclosed [`SkipReason`] vocabulary; a new reason is additive and\n`covered + Σskipped == eligible` always holds.",
             "additionalProperties": {
               "type": "integer",
               "format": "int64",
               "minimum": 0
             },
             "propertyNames": {
-              "type": "string"
+              "type": "string",
+              "description": "Stable reason an eligible account's vault was not aggregated.\nSerialized via [`SkipReason::as_str`]; new reasons must add a new\nlabel, never repurpose an existing one.",
+              "enum": [
+                "state_unavailable",
+                "state_undecodable"
+              ]
             }
           }
         }
@@ -5092,8 +5097,7 @@
           "refresh_interval_seconds",
           "version",
           "accounts",
-          "assets",
-          "degraded_aggregates"
+          "assets"
         ],
         "properties": {
           "accounts": {
@@ -5102,17 +5106,10 @@
           "as_of": {
             "type": "string",
             "format": "date-time",
-            "description": "RFC3339 time the published aggregate was computed. Consumers\nderive the result's age from this; it advances by at most\n`refresh_interval_seconds` at steady state."
+            "description": "RFC3339 time the published aggregate's walk began. Consumers\nderive the result's age from this; it is the only truthful age\nsignal, since a slow or failed walk keeps the previous\npublication."
           },
           "assets": {
             "$ref": "#/components/schemas/DashboardAssetStats"
-          },
-          "degraded_aggregates": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Stable names of aggregates the server declined to compute for\nthis response. `accounts` and `assets` are published atomically,\nso this is always empty here; unavailability of the whole\nsnapshot is `503 data_unavailable`. The inventory aggregates the\nsame walk feeds into `/dashboard/info` report their own\ndegradation there."
           },
           "refresh_interval_seconds": {
             "type": "integer",

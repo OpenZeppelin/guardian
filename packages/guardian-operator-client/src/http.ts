@@ -1120,7 +1120,6 @@ function parseDashboardStats(value: unknown): DashboardStatsResponse {
     version: requireCount(record, 'version', ctx),
     accounts,
     assets,
-    degradedAggregates: requireStringArray(record, 'degraded_aggregates', ctx),
   };
 }
 

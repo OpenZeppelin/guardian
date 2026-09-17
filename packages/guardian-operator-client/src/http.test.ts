@@ -1623,7 +1623,6 @@ describe('getDashboardStats (issue #371)', () => {
         ],
         non_fungible: [{ faucet_id: '0xnf1', count: 12 }],
       },
-      degraded_aggregates: [],
       ...overrides,
     };
   }
@@ -1664,7 +1663,6 @@ describe('getDashboardStats (issue #371)', () => {
         ],
         nonFungible: [{ faucetId: '0xnf1', count: 12 }],
       },
-      degradedAggregates: [],
     });
     // Precision survives the wire: consumers can widen with BigInt.
     expect(BigInt(stats.assets.fungible[0].totalAmount)).toBe(36893488147419103230n);

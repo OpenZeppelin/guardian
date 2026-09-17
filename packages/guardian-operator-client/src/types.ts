@@ -620,8 +620,9 @@ export interface DashboardAssetStats {
   eligible: number;
   /** Eligible accounts whose vault was decoded into the totals. */
   covered: number;
-  /** Eligible accounts not covered, by stable reason
-   * (`state_unavailable`, `state_undecodable`). */
+  /** Eligible accounts not covered, by stable reason. Keys are the
+   * server's closed `SkipReason` vocabulary (`state_unavailable`,
+   * `state_undecodable`); a new reason is additive. */
   skipped: Record<string, number>;
   /** `true` only when every eligible account is covered; a skipped
    * account never appears as a zero balance. */
@@ -638,8 +639,9 @@ export interface DashboardAssetStats {
  * snapshot. No per-account follow-up requests are needed.
  */
 export interface DashboardStatsResponse {
-  /** RFC3339 time the aggregate was computed; derive its age from
-   * this. Advances by at most `refreshIntervalSeconds` at steady state. */
+  /** RFC3339 time the published aggregate's walk began; derive its age
+   * from this. It is the only truthful age signal: a slow or failed
+   * walk keeps the previous publication. */
   asOf: string;
   /** The applied filter, normalized to RFC3339, or `null`. */
   updatedSince: string | null;
@@ -652,9 +654,6 @@ export interface DashboardStatsResponse {
   version: number;
   accounts: DashboardAccountStats;
   assets: DashboardAssetStats;
-  /** Stable names of aggregates the server declined to compute.
-   * Currently always empty: unavailability is a `503 data_unavailable`. */
-  degradedAggregates: string[];
 }
 
 /**

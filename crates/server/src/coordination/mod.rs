@@ -78,10 +78,15 @@ impl CoordinationHandles {
         }
     }
 
+    /// `cipher` is the storage cipher when at-rest encryption is
+    /// configured; the published `/dashboard/stats` snapshot is sealed
+    /// with it so the at-rest boundary stays the one the encryption
+    /// config describes.
     #[cfg(feature = "postgres")]
-    pub fn postgres(
+    pub(crate) fn postgres(
         pool: diesel_async::pooled_connection::deadpool::Pool<diesel_async::AsyncPgConnection>,
         holder_id: String,
+        cipher: Option<Arc<dyn crate::storage::encryption::cipher::StorageCipher>>,
     ) -> Self {
         use postgres::{PgChallengeStore, PgLeaseElector, PgSessionStore, PgStatsStore};
         Self {
@@ -98,7 +103,7 @@ impl CoordinationHandles {
                 DASHBOARD_STATS_LEASE,
                 holder_id,
             )),
-            stats_store: Arc::new(PgStatsStore::new(pool.clone())),
+            stats_store: Arc::new(PgStatsStore::new(pool.clone(), cipher)),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Evm)),
             #[cfg(feature = "evm")]

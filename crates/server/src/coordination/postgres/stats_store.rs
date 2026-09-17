@@ -4,8 +4,17 @@
 //! that locks the control row, validates the caller's `worker_leases`
 //! row (the same predicate canonicalization writes use), and refuses
 //! to overwrite a snapshot published under a newer fence token.
+//!
+//! When storage encryption is configured the payload is sealed with the
+//! same cipher as `states.state_json` (AAD bound to the publication
+//! version), so the snapshot — a copy of every account's vault totals —
+//! never widens the at-rest boundary. A plaintext row found while
+//! encryption is on (published before the key was configured) is
+//! treated as absent and superseded by the next publication.
 
 use std::time::Duration;
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -20,14 +29,49 @@ use crate::coordination::stats_store::{
 };
 use crate::error::{GuardianError, Result};
 use crate::storage::LeaseFence;
+use crate::storage::encryption::cipher::{CipherError, StorageCipher};
+use crate::storage::encryption::envelope::RecordAad;
 
 pub struct PgStatsStore {
     pool: Pool<AsyncPgConnection>,
+    cipher: Option<Arc<dyn StorageCipher>>,
 }
 
 impl PgStatsStore {
-    pub fn new(pool: Pool<AsyncPgConnection>) -> Self {
-        Self { pool }
+    pub(crate) fn new(
+        pool: Pool<AsyncPgConnection>,
+        cipher: Option<Arc<dyn StorageCipher>>,
+    ) -> Self {
+        Self { pool, cipher }
+    }
+
+    fn seal(&self, version: i64, payload: &serde_json::Value) -> Result<serde_json::Value> {
+        match &self.cipher {
+            None => Ok(payload.clone()),
+            Some(cipher) => cipher
+                .encrypt(&RecordAad::DashboardStats { version }, payload)
+                .map_err(|e| storage_err("encrypt snapshot payload", e)),
+        }
+    }
+
+    /// `Ok(None)` when encryption is on but the stored payload is not an
+    /// envelope: a pre-encryption plaintext row is never trusted or
+    /// served; it is simply superseded by the next publication.
+    fn open(&self, version: i64, stored: serde_json::Value) -> Result<Option<serde_json::Value>> {
+        match &self.cipher {
+            None => Ok(Some(stored)),
+            Some(cipher) => match cipher.decrypt(&RecordAad::DashboardStats { version }, &stored) {
+                Ok(plain) => Ok(Some(plain)),
+                Err(CipherError::NotAnEnvelope) => {
+                    tracing::warn!(
+                        version,
+                        "dashboard stats: stored snapshot is plaintext while storage encryption is on; ignoring it until the next publication"
+                    );
+                    Ok(None)
+                }
+                Err(e) => Err(storage_err("decrypt snapshot payload", e)),
+            },
+        }
     }
 }
 
@@ -111,6 +155,21 @@ fn storage_err(context: &str, error: impl std::fmt::Display) -> GuardianError {
     GuardianError::StorageError(format!("dashboard stats store: {context}: {error}"))
 }
 
+/// Error type of the publish transaction: a database error (rolled back
+/// and reported as a storage error) or a sealing failure carried through
+/// unchanged.
+#[derive(Debug)]
+enum PublishTxError {
+    Db(diesel::result::Error),
+    Seal(GuardianError),
+}
+
+impl From<diesel::result::Error> for PublishTxError {
+    fn from(e: diesel::result::Error) -> Self {
+        Self::Db(e)
+    }
+}
+
 /// The lease predicate canonicalization writes use, evaluated inside the
 /// caller's transaction so publication and fencing are one atomic step.
 async fn lease_is_current(
@@ -155,12 +214,17 @@ impl StatsStore for PgStatsStore {
         .await
         .optional()
         .map_err(|e| storage_err("load snapshot", e))?;
-        Ok(row.map(|r| PublishedStats {
-            version: r.version,
-            as_of: r.as_of,
-            published_at: r.published_at,
-            payload: r.payload,
-        }))
+        let Some(r) = row else {
+            return Ok(None);
+        };
+        Ok(self
+            .open(r.version, r.payload)?
+            .map(|payload| PublishedStats {
+                version: r.version,
+                as_of: r.as_of,
+                published_at: r.published_at,
+                payload,
+            }))
     }
 
     async fn read_control(&self, _now: DateTime<Utc>) -> Result<StatsControl> {
@@ -215,7 +279,8 @@ impl StatsStore for PgStatsStore {
     ) -> Result<PublishOutcome> {
         let mut conn = super::checkout(&self.pool, "dashboard stats").await?;
         let fence = fence.clone();
-        conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        let sealed_for = |version: i64| self.seal(version, &payload);
+        conn.transaction::<_, PublishTxError, _>(|conn| {
             async move {
                 // Serialize publishers on the control row.
                 diesel::sql_query(
@@ -236,17 +301,26 @@ impl StatsStore for PgStatsStore {
                 if newer.is_some() {
                     return Ok(PublishOutcome::StaleLease);
                 }
+                // The version is assigned under the control-row lock and
+                // bound into the envelope's AAD before the row is written.
+                let next = diesel::sql_query(
+                    "SELECT COALESCE(MAX(version), 0) + 1 AS version FROM dashboard_stats_snapshots",
+                )
+                .get_result::<VersionRow>(conn)
+                .await?
+                .version;
+                let sealed = sealed_for(next).map_err(PublishTxError::Seal)?;
                 let published = diesel::sql_query(
                     "INSERT INTO dashboard_stats_snapshots \
                          (version, fence_token, holder_id, as_of, published_at, payload) \
-                     VALUES ((SELECT COALESCE(MAX(version), 0) + 1 FROM dashboard_stats_snapshots), \
-                             $1, $2, $3, now(), $4) \
+                     VALUES ($1, $2, $3, $4, now(), $5) \
                      RETURNING version, published_at",
                 )
+                .bind::<BigInt, _>(next)
                 .bind::<BigInt, _>(fence.fence_token)
                 .bind::<Text, _>(&fence.holder_id)
                 .bind::<Timestamptz, _>(as_of)
-                .bind::<Jsonb, _>(&payload)
+                .bind::<Jsonb, _>(&sealed)
                 .get_result::<PublishedRow>(conn)
                 .await?;
                 diesel::sql_query("DELETE FROM dashboard_stats_snapshots WHERE version < $1")
@@ -281,7 +355,10 @@ impl StatsStore for PgStatsStore {
             .scope_boxed()
         })
         .await
-        .map_err(|e| storage_err("publish", e))
+        .map_err(|e| match e {
+            PublishTxError::Db(e) => storage_err("publish", e),
+            PublishTxError::Seal(e) => e,
+        })
     }
 
     async fn request_refresh(
@@ -362,7 +439,7 @@ mod postgres_tests {
         let url = test_database_url().await;
         let pool = build_postgres_pool_lazy(&url, 4).unwrap();
         reset(&pool).await;
-        let store = PgStatsStore::new(pool.clone());
+        let store = PgStatsStore::new(pool.clone(), None);
         let lease_name = format!("stats-test-{}", Utc::now().timestamp_micros());
         let a = PgLeaseElector::new(pool.clone(), &lease_name, "replica-a");
         let b = PgLeaseElector::new(pool.clone(), &lease_name, "replica-b");
@@ -442,11 +519,90 @@ mod postgres_tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn payload_is_sealed_with_the_storage_cipher_and_plaintext_rows_are_ignored() {
+        use crate::storage::encryption::cipher::Aes256GcmCipher;
+        use crate::storage::encryption::key_provider::{InMemoryKeyProvider, StorageKeyProvider};
+        use base64::Engine as _;
+
+        let url = test_database_url().await;
+        let pool = build_postgres_pool_lazy(&url, 4).unwrap();
+        reset(&pool).await;
+        let key = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
+        let provider: Arc<dyn StorageKeyProvider> =
+            Arc::new(InMemoryKeyProvider::from_dev_key(&key, "k1").unwrap());
+        let cipher: Arc<dyn StorageCipher> = Arc::new(Aes256GcmCipher::new(provider));
+        let store = PgStatsStore::new(pool.clone(), Some(cipher));
+        let lease_name = format!("stats-enc-{}", Utc::now().timestamp_micros());
+        let a = PgLeaseElector::new(pool.clone(), &lease_name, "replica-a");
+        let lease = a
+            .try_acquire(Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let now = Utc::now();
+        let secret = serde_json::json!({ "records": [{ "account_id": "0xacc", "vault": { "0xfaucet": 1000 } }] });
+
+        store
+            .publish(&fence_of(&lease), now, now, secret.clone())
+            .await
+            .unwrap();
+
+        // At rest the row is an envelope, not the payload.
+        #[derive(diesel::QueryableByName)]
+        struct RawRow {
+            #[diesel(sql_type = Jsonb)]
+            payload: serde_json::Value,
+        }
+        let mut conn = pool.get().await.unwrap();
+        let raw = diesel::sql_query("SELECT payload FROM dashboard_stats_snapshots")
+            .get_result::<RawRow>(&mut conn)
+            .await
+            .unwrap();
+        assert!(
+            raw.payload.get("ct").is_some() && raw.payload.get("kid").is_some(),
+            "{:?}",
+            raw.payload
+        );
+        assert!(
+            !raw.payload.to_string().contains("0xfaucet"),
+            "vault data leaked in the clear"
+        );
+
+        // Through the store it round-trips, bound to the version.
+        let loaded = store.load_current().await.unwrap().unwrap();
+        assert_eq!(loaded.payload, secret);
+        assert_eq!(loaded.version, 1);
+
+        // A plaintext row (published before encryption was enabled) is
+        // never served while encryption is on.
+        diesel::sql_query("UPDATE dashboard_stats_snapshots SET payload = $1 WHERE version = 1")
+            .bind::<Jsonb, _>(&secret)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(store.current_version().await.unwrap(), Some(1));
+        assert_eq!(store.load_current().await.unwrap(), None);
+
+        // An envelope under a different version fails authentication
+        // (AAD mismatch) and is reported as a storage error, not served.
+        let sealed_v2 = store.seal(2, &secret).unwrap();
+        diesel::sql_query("UPDATE dashboard_stats_snapshots SET payload = $1 WHERE version = 1")
+            .bind::<Jsonb, _>(&sealed_v2)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        assert!(store.load_current().await.is_err());
+
+        a.release(lease).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn request_refresh_is_deduplicated_and_consumed_by_publication() {
         let url = test_database_url().await;
         let pool = build_postgres_pool_lazy(&url, 8).unwrap();
         reset(&pool).await;
-        let store = std::sync::Arc::new(PgStatsStore::new(pool.clone()));
+        let store = std::sync::Arc::new(PgStatsStore::new(pool.clone(), None));
         let lease_name = format!("stats-req-{}", Utc::now().timestamp_micros());
         let a = PgLeaseElector::new(pool.clone(), &lease_name, "replica-a");
         let cooldown = Duration::from_secs(60);

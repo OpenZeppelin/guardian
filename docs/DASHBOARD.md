@@ -175,10 +175,11 @@ The response carries:
   makes `complete: false`. A missing or corrupt state is never reported
   as a zero balance.
 - `as_of` and `version` of the published snapshot, the echoed
-  `updated_since` (or `null`), the configured `refresh_interval_seconds`,
-  and `degraded_aggregates` (always empty here: `accounts` and `assets`
-  are published atomically, and the inventory aggregates the same walk
-  feeds into `/dashboard/info` report their own degradation there).
+  `updated_since` (or `null`), and the configured
+  `refresh_interval_seconds`. `accounts` and `assets` are published
+  atomically, so there is no partial-degradation marker on this
+  endpoint; the inventory aggregates the same walk feeds into
+  `/dashboard/info` report their degradation there.
 
 `?updated_since=<RFC3339>` restricts the **asset** aggregate to accounts
 whose metadata `updated_at` — the same value `GET /dashboard/accounts`
@@ -205,7 +206,13 @@ requests routed to different replicas never disagree on totals or
   Publication is fenced: it validates the lease inside the same
   transaction as the write and refuses to overwrite a snapshot
   published under a newer fence token, so a holder that lost leadership
-  mid-walk can never replace a newer result.
+  mid-walk can never replace a newer result. When storage encryption is
+  configured (`GUARDIAN_STORAGE_ENCRYPTION_KEY` or its Secrets Manager
+  counterpart) the published payload — a copy of every account's vault
+  totals — is sealed with the same cipher as `states.state_json`, bound
+  to its publication version, so the snapshot never widens the at-rest
+  boundary; a plaintext row published before encryption was enabled is
+  ignored and superseded by the next publication.
 - Every replica polls the store's head version every 5 seconds and
   loads a new publication into memory. Requests read only that copy:
   no storage reads, no vault decoding, and an `updated_since` cutoff
@@ -228,8 +235,9 @@ it finishes, and a walk that fails at any systemic storage read
 (metadata listing, a batched state pull, a key-provider failure, or
 every previously decodable state suddenly failing to decode) leaves the
 previous snapshot published, increments
-`guardian_dashboard_stats_refresh_failures_total`, and is retried after
-a 60-second backoff. `as_of` is therefore
+`guardian_dashboard_stats_refresh_failures_total`, releases the lease so
+a healthy replica can take over on its next tick, and is retried by
+this replica only after a 60-second backoff. `as_of` is therefore
 the only truthful age signal; the last successful one is exported as
 `guardian_dashboard_stats_refresh_timestamp_seconds` and the walk
 duration as `guardian_dashboard_stats_refresh_duration_seconds`. Until
@@ -244,7 +252,8 @@ permission) asks the lease holder for an out-of-cycle walk and returns
 pending) or `status: "in_progress"` (a walk started within the last two
 minutes is running; nothing is duplicated), plus `current_as_of` so the caller can poll
 `GET /dashboard/stats` for a newer value. Accepted requests are spaced by
-a 60-second cooldown; a request inside it is refused with
+a 60-second cooldown that is **fleet-wide, not per operator** (the
+walk it triggers is shared work); a request inside it is refused with
 `429 rate_limit_exceeded` and a `Retry-After` header. Automatic and
 operator-triggered refreshes share the same lease and control row, and
 every request writes a `stats.refresh` audit event.

@@ -122,11 +122,12 @@ impl StorageMetadataBuilder {
             let metadata = PostgresMetadataStore::new(raw_url, metadata_pool_max_size).await?;
             let auditor: SharedAuditor = Arc::new(PostgresAuditor::new(metadata.pool_handle()));
 
-            let storage = wrap_with_encryption(storage).await?;
+            let (storage, cipher) = wrap_with_encryption(storage).await?;
             let holder_id = format!("{}-{:016x}", std::process::id(), rand::random::<u64>());
             let coordination = crate::coordination::CoordinationHandles::postgres(
                 metadata.pool_handle(),
                 holder_id,
+                cipher,
             );
 
             Ok((storage, Arc::new(metadata), auditor, coordination))
@@ -156,7 +157,9 @@ impl StorageMetadataBuilder {
             );
             let auditor: SharedAuditor = Arc::new(LogAuditor::new());
 
-            let storage = wrap_with_encryption(storage).await?;
+            // The in-memory stats store never touches disk, so the
+            // cipher is not needed on this path.
+            let (storage, _cipher) = wrap_with_encryption(storage).await?;
             let coordination = crate::coordination::CoordinationHandles::in_memory();
 
             Ok((storage, Arc::new(metadata), auditor, coordination))
@@ -180,7 +183,13 @@ fn reject_filesystem_in_prod(is_prod: bool) -> Result<(), String> {
     Ok(())
 }
 
-async fn wrap_with_encryption<S>(storage: S) -> Result<Arc<dyn StorageBackend>, String>
+/// Wrap `storage` in the encryption decorator when a key source is
+/// configured. Also returns the cipher so other at-rest writers that
+/// bypass `StorageBackend` (the published `/dashboard/stats` snapshot)
+/// seal their payloads under the same key material.
+async fn wrap_with_encryption<S>(
+    storage: S,
+) -> Result<(Arc<dyn StorageBackend>, Option<Arc<dyn StorageCipher>>), String>
 where
     S: StorageBackend + MarkerStore + 'static,
 {
@@ -190,9 +199,12 @@ where
         Some(provider) => {
             let cipher: Arc<dyn StorageCipher> = Arc::new(Aes256GcmCipher::new(provider));
             let inner: Arc<dyn StorageBackend> = Arc::new(storage);
-            Ok(Arc::new(EncryptedStorage::new(inner, cipher)))
+            Ok((
+                Arc::new(EncryptedStorage::new(inner, cipher.clone())),
+                Some(cipher),
+            ))
         }
-        None => Ok(Arc::new(storage)),
+        None => Ok((Arc::new(storage), None)),
     }
 }
 

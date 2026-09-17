@@ -398,7 +398,8 @@ Semantics not captured by the OpenAPI shapes:
   one snapshot per fleet: the holder of the `dashboard_stats` lease walks
   the inventory every `GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`
   (default 300 s) and publishes to the shared store with lease-fenced,
-  atomic publication; every replica polls and serves the same
+  atomic publication (sealed with the storage cipher when at-rest
+  encryption is configured); every replica polls and serves the same
   `version`. A request never reads storage or decodes a vault, and
   reports the snapshot time as `as_of` (the interval is not a bound on
   its age). `POST /dashboard/stats/refresh` (`stats:refresh`) queues an

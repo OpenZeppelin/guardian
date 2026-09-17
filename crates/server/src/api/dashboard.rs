@@ -1213,7 +1213,7 @@ mod tests {
         assert_eq!(stats["updated_since"], since.to_rfc3339());
         assert_eq!(stats["refresh_interval_seconds"], 300);
         assert_eq!(stats["version"], 1);
-        assert_eq!(stats["degraded_aggregates"], serde_json::json!([]));
+        assert!(stats.get("degraded_aggregates").is_none());
 
         let accounts = &stats["accounts"];
         assert_eq!(accounts["total"], 5);

@@ -23,7 +23,7 @@ use crate::audit::{AuditEvent, AuditOutcome, kinds};
 use crate::coordination::RefreshRequestOutcome;
 use crate::dashboard::AuthenticatedOperator;
 use crate::dashboard::stats::{
-    AssetAggregate, STATS_REFRESH_COOLDOWN, STATS_REFRESH_STALE_AFTER, StatsSnapshot,
+    AssetAggregate, STATS_REFRESH_COOLDOWN, STATS_REFRESH_STALE_AFTER, SkipReason, StatsSnapshot,
 };
 use crate::error::{GuardianError, Result};
 use crate::state::AppState;
@@ -55,10 +55,14 @@ pub struct DashboardAuthMethodSignerCount {
 pub struct DashboardAccountStats {
     pub total: u64,
     pub by_lifecycle: DashboardLifecycleCounts,
-    /// Counts by stable auth-method label. Never omitted above an
-    /// inventory threshold: the aggregate is maintained incrementally.
+    /// Counts by stable auth-method label. A map because the key is
+    /// the closed `Auth::method_label()` vocabulary and it is the very
+    /// same aggregate `/dashboard/info.accounts_by_auth_method` serves
+    /// (FR-9). Never omitted above an inventory threshold.
     pub by_auth_method: BTreeMap<String, u64>,
-    /// Sorted by `(auth_method, authorized_signer_count)`.
+    /// Sorted by `(auth_method, authorized_signer_count)`. An array
+    /// rather than a nested map because the signer count is an
+    /// unbounded integer, which JSON object keys cannot type.
     pub by_auth_method_and_signer_count: Vec<DashboardAuthMethodSignerCount>,
     /// Accounts whose metadata `updated_at` is within the last 7 days,
     /// anchored to `as_of`.
@@ -92,9 +96,10 @@ pub struct DashboardAssetStats {
     pub eligible: u64,
     /// Eligible accounts whose vault was decoded into the totals.
     pub covered: u64,
-    /// Eligible accounts not covered, by stable reason
-    /// (`state_unavailable`, `state_undecodable`).
-    pub skipped: BTreeMap<String, u64>,
+    /// Eligible accounts not covered, by stable reason. Keys are the
+    /// closed [`SkipReason`] vocabulary; a new reason is additive and
+    /// `covered + Σskipped == eligible` always holds.
+    pub skipped: BTreeMap<SkipReason, u64>,
     /// `true` only when every eligible account is covered. A skipped
     /// account never appears as a zero balance.
     pub complete: bool,
@@ -106,9 +111,10 @@ pub struct DashboardAssetStats {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardStatsResponse {
-    /// RFC3339 time the published aggregate was computed. Consumers
-    /// derive the result's age from this; it advances by at most
-    /// `refresh_interval_seconds` at steady state.
+    /// RFC3339 time the published aggregate's walk began. Consumers
+    /// derive the result's age from this; it is the only truthful age
+    /// signal, since a slow or failed walk keeps the previous
+    /// publication.
     #[schema(format = DateTime)]
     pub as_of: String,
     /// The applied filter, normalized to RFC3339, or `null` when the
@@ -125,13 +131,6 @@ pub struct DashboardStatsResponse {
     pub version: i64,
     pub accounts: DashboardAccountStats,
     pub assets: DashboardAssetStats,
-    /// Stable names of aggregates the server declined to compute for
-    /// this response. `accounts` and `assets` are published atomically,
-    /// so this is always empty here; unavailability of the whole
-    /// snapshot is `503 data_unavailable`. The inventory aggregates the
-    /// same walk feeds into `/dashboard/info` report their own
-    /// degradation there.
-    pub degraded_aggregates: Vec<String>,
 }
 
 /// Outcome of an operator-triggered refresh request (`202 Accepted`).
@@ -317,7 +316,6 @@ fn render(
         version: snapshot.version,
         accounts,
         assets: render_assets(&snapshot.assets_since(updated_since)),
-        degraded_aggregates: Vec::new(),
     }
 }
 
@@ -325,11 +323,7 @@ fn render_assets(aggregate: &AssetAggregate) -> DashboardAssetStats {
     DashboardAssetStats {
         eligible: aggregate.eligible,
         covered: aggregate.covered,
-        skipped: aggregate
-            .skipped
-            .iter()
-            .map(|(reason, count)| (reason.as_str().to_string(), *count))
-            .collect(),
+        skipped: aggregate.skipped.clone(),
         complete: aggregate.complete(),
         fungible: aggregate
             .fungible
@@ -514,7 +508,6 @@ mod tests {
         );
         assert_eq!(stats.refresh_interval_seconds, 300);
         assert_eq!(stats.version, 3);
-        assert!(stats.degraded_aggregates.is_empty());
 
         // Account counts are unfiltered.
         let accounts = &stats.accounts;
@@ -560,7 +553,7 @@ mod tests {
         // Assets are filtered: `c` is too old, `d` is EVM, `b` is skipped.
         let assets = &stats.assets;
         assert_eq!((assets.eligible, assets.covered), (2, 1));
-        assert_eq!(assets.skipped.get("state_unavailable"), Some(&1));
+        assert_eq!(assets.skipped.get(&SkipReason::StateUnavailable), Some(&1));
         assert!(!assets.complete);
         assert_eq!(
             assets.fungible,
@@ -596,6 +589,6 @@ mod tests {
         assert!(json["assets"]["fungible"][0]["total_amount"].is_string());
         assert_eq!(json["assets"]["complete"], false);
         assert_eq!(json["assets"]["skipped"]["state_unavailable"], 1);
-        assert_eq!(json["degraded_aggregates"], serde_json::json!([]));
+        assert!(json.get("degraded_aggregates").is_none());
     }
 }
