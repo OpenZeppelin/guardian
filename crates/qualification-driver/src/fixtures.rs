@@ -1,8 +1,11 @@
 use anyhow::{Context, anyhow};
+use guardian_shared::FromJson;
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
+use miden_multisig_client::ProposalPayload;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::serde::Deserializable;
 use serde_json::Value;
 
@@ -16,7 +19,7 @@ pub struct Fixtures {
     pub account: Value,
     pub account_id: String,
     pub cosigner_commitments: Vec<String>,
-    pub proposal: Value,
+    pub delta: Value,
     signer_key: SecretKey,
 }
 
@@ -33,7 +36,7 @@ impl Fixtures {
         let keys = read("keys.json")?;
         let commitments = read("commitments.json")?;
         let account = read("account.json")?;
-        let proposal = read("proposal_1.json")?;
+        let delta = read("delta_1.json")?;
 
         let account_id = commitments["account_id"]
             .as_str()
@@ -59,7 +62,7 @@ impl Fixtures {
             account,
             account_id,
             cosigner_commitments,
-            proposal,
+            delta,
             signer_key,
         })
     }
@@ -79,6 +82,21 @@ impl Fixtures {
 
     pub fn signer_commitment_hex(&self) -> String {
         self.signer_key.public_key().to_commitment().into_hex()
+    }
+
+    /// The proposal payload a real client sends: the SDK's own
+    /// [`ProposalPayload`] carrying the generated fixture's transaction
+    /// summary. Built through the SDK type rather than hand-written JSON so
+    /// the scenario cannot drift from the wire shape the multisig client
+    /// actually produces.
+    pub fn proposal_payload(&self) -> anyhow::Result<ProposalPayload> {
+        let summary = TransactionSummary::from_json(&self.delta["delta_payload"])
+            .map_err(|error| anyhow!("the fixture transaction summary does not load: {error}"))?;
+        Ok(ProposalPayload::new(&summary).with_custom_metadata("qualification".to_string()))
+    }
+
+    pub fn proposal_nonce(&self) -> u64 {
+        self.delta["nonce"].as_u64().unwrap_or(1)
     }
 
     pub fn sign_account_request(&self, timestamp: i64) -> anyhow::Result<String> {

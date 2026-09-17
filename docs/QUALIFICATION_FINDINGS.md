@@ -24,7 +24,7 @@ Evidence is from runs against testnet on 2026-09-16 with a locally built server,
 | F9 | A change stays pending briefly after its proposal clears | GUARDIAN |
 | F10 | Absence from pending is not evidence of completion | GUARDIAN, both drivers |
 | F11 | Devnet does not serve gRPC-web | Environment |
-| F12 | A grown allowlist reads truncated through a macOS bind mount | Environment, GUARDIAN |
+| F12 | A grown allowlist reads truncated through a macOS bind mount | Environment, GUARDIAN — **fixed** |
 | F13 | An ECDSA account cannot migrate GUARDIAN through the Rust SDK | Rust SDK — **fixed** |
 
 ## Cross-SDK divergences
@@ -278,7 +278,7 @@ Devnet's separate constraint is structural and persists: it serves historical
 account state for roughly fifty blocks (~150s), so flows whose step budget
 exceeds that window are excluded from its required set.
 
-### F12. A grown allowlist file reads truncated through a Docker Desktop bind mount
+### F12. A grown allowlist file reads truncated through a Docker Desktop bind mount — fixed
 
 `det-operator-allowlist-reload` fails on macOS with a 500 and this server-side
 error, at the same position every time:
@@ -310,9 +310,25 @@ on *every* authenticated request and a partial read is answered with a 500 and
 no retry. Any writer that is not atomic from the server's point of view takes
 the operator dashboard down for the duration.
 
+**Measured.** A reader looping inside a container while the host performed 400
+staged-write-plus-rename swaps saw **26,299 of 260,853 reads** fail to parse,
+every one with the same signature the scenario hits. The same loop with both
+writer and reader inside the container saw **0 of 1,135,457**. The rename is
+atomic on the host; the container's view of the shared directory is not
+coherent during the swap.
+
+**Fixed in GUARDIAN, not in the scenario.** The note above turned out to be the
+actionable half: `AllowlistSource::load` now retries a failed load three times
+over 100ms before surfacing it
+(`crates/server/src/dashboard/allowlist.rs`). A source that stays unreadable
+still fails closed, so a genuinely misconfigured allowlist behaves exactly as
+before; only the torn-write window is absorbed. This also covers a transient
+Secrets Manager error on the `AwsSecret` source, and it means an operator
+editing the file non-atomically no longer takes the dashboard down for the
+duration of the write.
+
 **In the suite**: the scenario keeps the atomic write, which is correct on a
-real filesystem, and is left failing on macOS rather than contorted to suit one
-host's caching.
+real filesystem. `det-operator-allowlist-reload` now passes on macOS.
 
 ### F13. An ECDSA account cannot migrate GUARDIAN through the Rust SDK
 

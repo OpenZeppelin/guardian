@@ -132,12 +132,17 @@ pub async fn create_proposal(runner: &Runner) -> ActionOutcome {
         Err(outcome) => return outcome,
     };
 
-    let nonce = fixtures.proposal["nonce"].as_u64().unwrap_or(1);
+    let nonce = fixtures.proposal_nonce();
+    let payload = match fixtures.proposal_payload() {
+        Ok(payload) => payload,
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "building the fixture proposal payload: {error}"
+            ));
+        }
+    };
 
-    if let Err(error) = client
-        .push_delta_proposal(&id, nonce, &fixtures.proposal)
-        .await
-    {
+    if let Err(error) = client.push_delta_proposal(&id, nonce, &payload).await {
         return match error.guardian_code() {
             Some(code) => ActionOutcome::failed_product(format!(
                 "pushing the fixture proposal failed with `{code}`: {error}"

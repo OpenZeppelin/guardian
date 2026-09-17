@@ -42,6 +42,19 @@ required = true
 core = false
 
 [[scenario]]
+id = "det-proposal-lifecycle"
+title = "Proposal is accepted and comes back in the account's pending list"
+profile = "deterministic"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-register", "proposal-create"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
 id = "det-error-envelope-grpc"
 title = "Structured error envelope survives a real gRPC socket"
 profile = "deterministic"

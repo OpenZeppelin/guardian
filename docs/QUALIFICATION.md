@@ -157,6 +157,12 @@ recovers.
 - **Devnet retention window.** Devnet serves historical account state for a
   short window, so multi-step flows cannot be required there. They run
   opportunistically and report environment-blocked when the anchor is pruned.
+- **Deterministic multisig coverage stops at submission.** GUARDIAN's request
+  path never calls the chain, so the proposal API is testable without one and
+  `det-proposal-lifecycle` exercises it from a committed fixture summary.
+  Creating a proposal means executing a transaction locally against synced
+  chain state, and executing one means proving and submitting, so both stay in
+  the live profile.
 
 **A single-SDK run produces no merged report.** `--sdk rust` or
 `--sdk typescript` is a debugging convenience: the run is filtered, so it claims
@@ -177,10 +183,14 @@ required check. Three things have to land first.
 **The deterministic profile is not a required check.** Its required scenarios
 are implemented and pass; two optional ones are not (`discarded-delta-hidden`
 and `operator-audit`), and actions without a driver implementation fail closed on
-a required scenario so a gap can never read as a pass. What keeps the
-pull-request trigger off is not missing coverage: it is F12, and the rule that a
-gate should be seen to go red on a real regression before anything depends on
-it. A gate that has never failed is not known to be a gate.
+a required scenario so a gap can never read as a pass. F12, previously the
+blocker here, is fixed. What is left is the rule that a gate should be seen to
+go red on a real defect before anything depends on it. It has now done that
+twice: F12, and `det-proposal-lifecycle`, which failed on its first run because
+the proposal fixture predated the metadata requirement and the driver was
+sending the wrong object. Whether that clears the bar is a judgement for
+whoever owns the gate, since both were found by adding the scenario rather than
+by catching a regression in existing coverage.
 
 **Consuming the published TypeScript SDK from Node needs two workarounds.**
 Both are carried by this suite and both apply to any Node consumer, so they are
@@ -229,11 +239,13 @@ reproduce: two cold `cargo fetch --locked` runs of the whole workspace succeed
 with multiplexing on, and disabling it is measurably slower, so it is recorded
 here as a transient network failure rather than carried as a build setting.
 
-One scenario still fails there, `det-operator-allowlist-reload`, and the cause
-is the host rather than the product: a grown allowlist file reads truncated
-through Docker Desktop's bind mount. See F12 in
-[QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md). It is expected to pass
-on a Linux runner.
+`det-operator-allowlist-reload` failed there at first, and the host turned out
+to be only half the cause: Docker Desktop's bind mount serves a torn view of a
+replaced file, but GUARDIAN answered that transient read with a 500 and no
+retry. The allowlist load now retries within a bounded budget, so the scenario
+passes and an operator editing the file in place no longer takes the dashboard
+down. See F12 in
+[QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md).
 
 **The live profile has run through the stack** against testnet on both SDKs,
 including the treasury preflight, funding, the full proposal lifecycle, both

@@ -64,6 +64,23 @@
     },
     {
       "actions": [
+        "account-register",
+        "proposal-create"
+      ],
+      "core": false,
+      "id": "det-proposal-lifecycle",
+      "mode": "online",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "falcon",
+      "sdk": "rust",
+      "shape": "2-of-3",
+      "step_budget": "PT2M",
+      "title": "Proposal is accepted and comes back in the account's pending list"
+    },
+    {
+      "actions": [
         "error-envelope"
       ],
       "core": false,
