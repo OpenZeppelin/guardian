@@ -37,11 +37,15 @@ pub(crate) async fn verify_endpoint_commitment(
     let endpoint_commitment =
         word_from_hex(&endpoint_commitment_hex).map_err(MultisigError::HexDecode)?;
 
-    ensure_commitment_match(endpoint, expected_commitment, endpoint_commitment)
+    ensure_commitment_match(endpoint, scheme, expected_commitment, endpoint_commitment)
 }
 
+/// The scheme is named in the failure: the commitment served depends on which
+/// acknowledgement identity was asked for, so a mismatch is as likely to mean
+/// the wrong identity was queried as the wrong endpoint.
 pub(crate) fn ensure_commitment_match(
     endpoint: &str,
+    scheme: SignatureScheme,
     expected_commitment: Word,
     endpoint_commitment: Word,
 ) -> Result<()> {
@@ -50,8 +54,9 @@ pub(crate) fn ensure_commitment_match(
     }
 
     Err(MultisigError::InvalidConfig(format!(
-        "refusing to use GUARDIAN endpoint {}: endpoint pubkey commitment {} does not match expected {}",
+        "refusing to use GUARDIAN endpoint {}: its {} acknowledgement commitment {} does not match expected {}",
         endpoint,
+        scheme.as_str(),
         word_to_hex(&endpoint_commitment),
         word_to_hex(&expected_commitment)
     )))
@@ -65,19 +70,33 @@ mod tests {
     #[test]
     fn ensure_commitment_match_accepts_equal_commitments() {
         let commitment = Word::from([1u32, 2, 3, 4]);
-        let result = ensure_commitment_match("http://localhost:50051", commitment, commitment);
+        let result = ensure_commitment_match(
+            "http://localhost:50051",
+            SignatureScheme::Falcon,
+            commitment,
+            commitment,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
-    fn ensure_commitment_match_rejects_mismatch() {
+    fn ensure_commitment_match_rejects_mismatch_and_names_the_queried_scheme() {
         let expected = Word::from([1u32, 2, 3, 4]);
         let actual = Word::from([5u32, 6, 7, 8]);
-        let error = ensure_commitment_match("http://localhost:50051", expected, actual)
-            .expect_err("expected mismatch error");
+        let error = ensure_commitment_match(
+            "http://localhost:50051",
+            SignatureScheme::Ecdsa,
+            expected,
+            actual,
+        )
+        .expect_err("expected mismatch error");
 
         let message = error.to_string();
         assert!(message.contains("refusing to use GUARDIAN endpoint"));
         assert!(message.contains("does not match expected"));
+        assert!(
+            message.contains(SignatureScheme::Ecdsa.as_str()),
+            "the mismatch must name the scheme that was queried: {message}"
+        );
     }
 }

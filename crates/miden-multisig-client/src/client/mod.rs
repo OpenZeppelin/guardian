@@ -17,6 +17,8 @@ mod account;
 #[cfg(test)]
 mod anchor_binding_tests;
 mod delta_history;
+#[cfg(test)]
+mod endpoint_scheme_tests;
 mod helpers;
 mod io;
 mod note_recovery;
