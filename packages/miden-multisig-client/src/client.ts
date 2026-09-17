@@ -13,6 +13,8 @@ import { createMultisigAccount } from './account/index.js';
 import { AccountInspector, assertCompleteDetectedConfig } from './inspector.js';
 import { getRawMidenClient, requireConfigValue, requireMidenRpcEndpoint } from './raw-client.js';
 import type { MultisigConfig, Signer } from './types.js';
+import { isSafeToAdoptGuardianState, readOnChainCommitment } from './state/adopt.js';
+import { normalizeHexWord } from './utils/encoding.js';
 import {
   resolveProverConfig,
   type ProverConfig,
@@ -211,7 +213,9 @@ export class MultisigClient {
     for (let i = 0; i < binaryString.length; i++) {
       accountBytes[i] = binaryString.charCodeAt(i);
     }
-    const account = Account.deserialize(accountBytes);
+    const incomingAccount = Account.deserialize(accountBytes);
+
+    const account = await this.adoptGuardianAccount(accountId, incomingAccount);
 
     const detected = AccountInspector.fromAccount(account);
     // Fail closed on a partial read: the detected signer set becomes the
@@ -226,10 +230,6 @@ export class MultisigClient {
       ),
     };
 
-    const existingAccount = await this.midenClient.accounts.get(AccountId.fromHex(accountId));
-    if (!existingAccount) {
-      await this.midenClient.accounts.insert({ account, overwrite: true });
-    }
     await bindSignerAccountKey(signer, this.midenClient, accountId);
 
     return new Multisig(
@@ -243,5 +243,54 @@ export class MultisigClient {
       this.proverConfig,
       this.rpcConfig,
     );
+  }
+
+  /**
+   * Reconcile the account GUARDIAN returned with the local store, and answer
+   * with the one that is actually current.
+   *
+   * Writing GUARDIAN's account only when the store held nothing meant a caller
+   * that already had the account kept its own copy while the returned
+   * `Multisig` carried a config derived from GUARDIAN's. One object, two
+   * sources, silently disagreeing: after a membership change the config said
+   * one thing and every account read said another, with no error.
+   *
+   * Overwriting unconditionally is not the fix either. Between pushing a delta
+   * and GUARDIAN canonicalizing it, local is legitimately ahead, and clobbering
+   * it would build the next transaction on a stale nonce. So this applies the
+   * same rule `syncState` does, and returns whichever account wins so the
+   * caller describes the state it will actually read.
+   */
+  private async adoptGuardianAccount(
+    accountId: string,
+    incomingAccount: Account,
+  ): Promise<Account> {
+    const localAccount = await this.midenClient.accounts.get(AccountId.fromHex(accountId));
+    if (!localAccount) {
+      await this.midenClient.accounts.insert({ account: incomingAccount, overwrite: true });
+      return incomingAccount;
+    }
+
+    const localCommitment = normalizeHexWord(localAccount.to_commitment().toHex());
+    const incomingCommitment = normalizeHexWord(incomingAccount.to_commitment().toHex());
+    // Equal commitments are the same state, and the safety rule reads an equal
+    // nonce as divergence, so it must not be asked about a pair that agrees.
+    if (localCommitment === incomingCommitment) {
+      return localAccount;
+    }
+
+    const adopt = await isSafeToAdoptGuardianState({
+      accountId,
+      incomingAccount,
+      localAccount,
+      readCommitment: () =>
+        readOnChainCommitment(this.midenRpcEndpoint, AccountId.fromHex(accountId), this.rpcConfig),
+    });
+    if (!adopt) {
+      return localAccount;
+    }
+
+    await this.midenClient.accounts.insert({ account: incomingAccount, overwrite: true });
+    return incomingAccount;
   }
 }

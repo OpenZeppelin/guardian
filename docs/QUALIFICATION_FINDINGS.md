@@ -14,7 +14,7 @@ Evidence is from runs against testnet on 2026-09-16 with a locally built server,
 | | Finding | Affects |
 |---|---|---|
 | F1 | Rust cannot change a threshold | Rust SDK |
-| F2 | GUARDIAN serves a stale signer set after a TypeScript remove-signer (enforcement is correct) | GUARDIAN, TypeScript path |
+| F2 | `load()` returns an account whose reads come from a stale local store | TypeScript SDK (**fixed**) |
 | F3 | Offline signing tied to offline execution | Rust SDK |
 | F4 | Proposal creation signs in Rust, not in TypeScript | Both SDKs |
 | F5 | Native Node entry cannot run the multisig client | Published packages |
@@ -52,70 +52,112 @@ proposal time.
 **Cost**: a threshold change requires the TypeScript SDK. **In the suite**: the
 Rust leg of `live-change-threshold-2of3-ecdsa` reports a skip naming the gap.
 
-### F2. GUARDIAN serves a stale signer set after a TypeScript remove-signer
+### F2. `load()` returns an account whose reads come from a stale local store (fixed)
 
-After `live-remove-signer-2of3-falcon` executes, GUARDIAN is left one nonce
-behind and keeps serving the pre-removal signer set indefinitely. Measured on a
-failing run, account `0xa3f26288fd49d6015fa0d80b7a7ef5`:
+`live-remove-signer-2of3-falcon` failed on TypeScript and passed on Rust, five
+times, against the same GUARDIAN in the same runs. The scenario reported:
 
-| | nonce | state commitment |
-|---|---|---|
-| Client's local store | 2 | `0x72c0918be6396559…` |
-| Chain | 2 | `0x72c0918be6396559…` |
-| GUARDIAN | 1 | `0x55be6e1e617ef20b…` |
+```
+GUARDIAN serves 0x27e3b76a…,0x6dc948c9…,0x82320d22…
+but             0x6dc948c9…,0x82320d22…  was expected after 180s
+```
 
-`verifyStateCommitment()` reports the local and on-chain commitments as equal,
-so the removal executed and the client is not stale. GUARDIAN alone is behind,
-and stays behind past a 180s deadline.
+**That message was wrong about who was stale.** It was measuring the client and
+reporting the result as GUARDIAN's. Logging both sources on every poll for the
+full 180s window:
 
-The proposal did leave GUARDIAN's pending set, which is what the driver treats
-as completion (see F10). GUARDIAN logs nothing for the account at `warn` level:
-no canonicalization failure, no discard, no error. So from the outside a
-discarded delta and an applied one look identical.
+```
+guardian-snapshot = 0xc1516905…,0xd27c08b4…                 (2 signers, correct)
+store-read        = 0x8fde6b3e…,0xc1516905…,0xd27c08b4…     (3 signers, stale)
+expected          = 0xc1516905…,0xd27c08b4…
+```
 
-Reproducible and SDK-specific: TypeScript failed four times, Rust passed three,
-same scenario and network. Both drivers read the same thing, GUARDIAN's stored
-account blob (`pull_account` in Rust, `load` in TypeScript), so this is not the
-two clients reading different sources. Whatever differs is in what each SDK
-pushes, or in how GUARDIAN handles it.
+GUARDIAN returned the correct post-removal set on the **first** poll and every
+poll after. The removal propagated immediately.
 
-**Not an artifact of a reused server.** The first three failures were against a
-long-lived local GUARDIAN on SQLite that had absorbed a full day of runs. The
-fourth was a container built from the current tree, on Postgres, with an empty
-database, started minutes earlier, through the qualification stack. It served
-the same stale three-signer set 180s after the removal executed. The Rust leg
-passed the same scenario against that same fresh GUARDIAN in the same session,
-so the storage backend and accumulated state are both ruled out.
+**Mechanism.** `MultisigClient.load()` fetches the account from GUARDIAN,
+deserializes it, derives the config from it, and then:
 
-Note the accounts are **private**, so the chain holds only a commitment and
-GUARDIAN's copy is the only full state a second party can read. A signer removed
-from a private account therefore still appears, to anyone asking GUARDIAN, to
-hold it.
+```ts
+const existingAccount = await this.midenClient.accounts.get(AccountId.fromHex(accountId));
+if (!existingAccount) {
+  await this.midenClient.accounts.insert({ account, overwrite: true });
+}
+```
 
-**The removal is enforced; only the listing is stale.** This was the open
-severity question, and it is now measured rather than inferred. After the
-removal, the removed key attempts an authenticated call of its own
-(`signer-removed-refused`, run before the listing assertion so it executes even
-when that fails). GUARDIAN **refuses it**, on both SDKs.
+`packages/miden-multisig-client/src/client.ts:229`
 
-So the removed cosigner cannot act. This is a correctness and observability
-defect, not an eviction failure: a compromised signer *is* locked out, GUARDIAN
-just keeps describing the account as though it were not.
+It writes GUARDIAN's account to the store only when the store has no record. A
+caller that already holds the account keeps its own copy, and
+`getSignerPublicKeyCommitments()` reads the store through `getStoreAccount()`,
+so the state GUARDIAN just returned is discarded for every read. The returned
+`Multisig` is internally inconsistent: its **config** comes from GUARDIAN, its
+**account reads** come from a store that may be arbitrarily old.
 
-**Cost**: after a removal on the TypeScript path, GUARDIAN serves a signer set
-that includes the removed signer, with no error anywhere to indicate it. Anything
-reading membership from GUARDIAN (an operator dashboard, a consumer checking who
-can sign, an audit) sees a signer who has in fact been removed. On a private
-account GUARDIAN's copy is the only full state a third party can read, so there
-is no second source to correct it.
+**Why Rust is unaffected.** `MultisigClient::pull_account` does the same fetch
+and then overwrites unconditionally, keeping the fetched account in memory as
+the one subsequent reads see:
 
-**In the suite**: the scenario is left failing rather than widening its window
-further; it is already 180s.
+```rust
+self.add_or_update_account(&account, true).await?;
+self.account = Some(MultisigAccount::new(account));
+```
 
-**Next diagnostic**: re-run with the server at `RUST_LOG=info` and read the
-canonicalization decisions for the account. That distinguishes "the delta was
-never applied" from "it was applied and the served state was not updated", which
-the `warn` level cannot.
+`crates/miden-multisig-client/src/client/account.rs:174`
+
+So this is a real divergence between the SDKs, not a harness artifact.
+
+**GUARDIAN is correct, on independent evidence.** For the same account, its
+canonicalization log shows both deltas applied and verified:
+
+```
+Canonicalizing delta (commitment matches on-chain) nonce=…
+Deleting matching proposal as delta is now canonical
+```
+
+and its auth path refuses the removed key (`public key commitment not
+authorized`). A GUARDIAN holding the pre-removal set could not produce either.
+
+**Refuted along the way.** The TypeScript SDK defaults a proposal nonce to
+`Date.now()` (`multisig.ts:214`) while Rust uses `account.nonce() + 1`. That is
+a genuine divergence, and it is **not** the cause here: pinning the Rust
+convention reproduced the failure unchanged.
+
+**Cost**: a TypeScript consumer calling `load()` for an account it already holds
+locally gets stale membership, silently, with no error and no staleness signal.
+On a private account GUARDIAN's copy is the only full state a third party can
+read, so `load()` is exactly the call that is supposed to correct a stale client,
+and it is the one that does not.
+
+**In the suite**: the assertion now reads the account `load()` returned from
+GUARDIAN rather than the store, which is what it always claimed to check, and
+`live-remove-signer-2of3-falcon` passes on both SDKs. The store value is still
+printed in the failure text when the two disagree, so this defect stays visible
+without being asserted on.
+
+**Fixed.** The SDK already contained the right rule and `load()` did not use it:
+`syncState()` reconciles by nonce and commitment before overwriting, `load()`
+did not. Copying Rust's unconditional overwrite would have been wrong, because
+between pushing a delta and GUARDIAN canonicalizing it the local account is
+legitimately ahead and independently verifiable against chain (#316, #312,
+#319); clobbering it would build the next transaction on a stale nonce.
+
+The rule now lives in `src/state/adopt.ts` and both paths use it. `load()`
+reconciles, then derives its config from whichever account won, so the returned
+`Multisig` no longer describes one state while reading another:
+
+| Store | Outcome |
+|---|---|
+| empty | adopt GUARDIAN's account |
+| same commitment as GUARDIAN's | keep local, and do not consult the rule, since equal nonce with differing commitments is read as divergence and throws |
+| behind GUARDIAN | adopt GUARDIAN's account |
+| ahead of GUARDIAN | keep local, and describe local |
+
+Verified three ways. Three unit tests in `client.test.ts` cover the table and
+all three fail against the previous behaviour. The live scenario passes on both
+SDKs. And with the assertion pointed back at the store, the exact read that
+failed five times, `live-remove-signer-2of3-falcon` passes against a real
+testnet GUARDIAN.
 
 ### F3. Offline signing is tied to offline execution in Rust
 

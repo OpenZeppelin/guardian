@@ -34,17 +34,18 @@ rather than a full matrix:
 
 - `live-guardian-migrate-offline-1of1-ecdsa` passes on **both** SDKs. It was the
   Rust failure and the TypeScript environment-blocked result above.
-- `live-remove-signer-2of3-falcon` still fails on TypeScript (F2) and passes on
-  Rust, now including the new `signer-removed-refused` assertion.
+- `live-remove-signer-2of3-falcon` now passes on **both** SDKs. Its TypeScript
+  failure was F2, and F2 turned out to be the assertion reading the reader's
+  local store while reporting the value as GUARDIAN's. GUARDIAN was correct
+  throughout. The assertion now reads what GUARDIAN returned.
 
 So the expected full-matrix result is Rust 15 passed / 2 skipped and TypeScript
-16 passed / 1 failed, but **that has not been run end to end** and should not be
-quoted as though it had.
+17 passed, but **that has not been run end to end** and should not be quoted as
+though it had.
 
 The Rust skips are documented capability gaps (F1 threshold change, F3 offline
-signing of acknowledgement-bearing proposals). The TypeScript failure is F2, a
-stale signer listing after a removal; the removal itself is enforced, which the
-`signer-removed-refused` action establishes rather than assumes.
+signing of acknowledgement-bearing proposals). The SDK defect behind F2 is now
+fixed as well, and the suite no longer depends on it either way.
 
 GUARDIAN migration reaching a pass took one product fix (F13, a scheme-blind
 endpoint check that made ECDSA migration impossible) and three harness fixes,

@@ -1226,11 +1226,24 @@ export async function assertSignerSet(_context: ActionContext, scenarioId: strin
     while (Date.now() < deadline) {
       try {
         const reloaded = await reader.multisigClient.load(session.accountId!, reader.signer);
-        const served = normalizeCommitments(await reloaded.getSignerPublicKeyCommitments());
+        // Read the account `load` fetched from GUARDIAN, not the client's stored
+        // one. `getSignerPublicKeyCommitments()` reads the store, so asserting
+        // on it measures the client while reporting the result as GUARDIAN's.
+        // That misattribution hid a correct GUARDIAN behind a client-side
+        // staleness bug for five reproductions.
+        const served = normalizeCommitments(
+          AccountInspector.getSignerPublicKeyCommitments(reloaded.account),
+        );
         if (JSON.stringify(served) === JSON.stringify(session.expectedSigners)) {
           return { kind: 'passed' };
         }
-        last = `serves ${served.join(',')}`;
+        const stored = normalizeCommitments(await reloaded.getSignerPublicKeyCommitments());
+        last =
+          `serves ${served.join(',')}` +
+          (JSON.stringify(stored) === JSON.stringify(served)
+            ? ''
+            : ` (the reader's store says ${stored.join(',')}, which is a client-side` +
+              ` staleness bug and not what is asserted here)`);
       } catch (error) {
         last = String(error);
       }

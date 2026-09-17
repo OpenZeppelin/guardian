@@ -41,6 +41,16 @@ vi.mock('./inspector.js', async (importOriginal) => {
   };
 });
 
+// Only the on-chain read is stubbed; isSafeToAdoptGuardianState stays real so
+// the nonce and commitment rules are the ones under test.
+vi.mock('./state/adopt.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./state/adopt.js')>();
+  return {
+    ...actual,
+    readOnChainCommitment: vi.fn().mockResolvedValue(null),
+  };
+});
+
 // Mock the account creation module
 vi.mock('./account/index.js', () => ({
   createMultisigAccount: vi.fn().mockResolvedValue({
@@ -371,6 +381,98 @@ describe('MultisigClient', () => {
       await client.load('0x' + 'd'.repeat(30), bindingSigner);
 
       expect(bindAccountKey).toHaveBeenCalledWith(webClient, '0x' + 'd'.repeat(30));
+    });
+
+    // Writing GUARDIAN's account only when the store held nothing meant a caller
+    // that already had the account read its own stale copy, while the returned
+    // Multisig carried a config derived from GUARDIAN's.
+    describe('reconciling the store with GUARDIAN', () => {
+      const ACCOUNT_ID = '0x' + 'd'.repeat(30);
+      const GUARDIAN_COMMITMENT = '0x' + '7'.repeat(64);
+      const LOCAL_COMMITMENT = '0x' + '8'.repeat(64);
+
+      function accountAt(nonce: bigint, commitment: string) {
+        return {
+          id: () => ({
+            toString: () => ACCOUNT_ID,
+            prefix: () => ({ asInt: () => BigInt(1) }),
+            suffix: () => ({ asInt: () => BigInt(2) }),
+          }),
+          nonce: () => ({ asInt: () => nonce }),
+          to_commitment: () => ({ toHex: () => commitment }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+          storage: vi.fn(),
+          vault: vi.fn(),
+        };
+      }
+
+      async function stubGuardianAccount(account: unknown) {
+        const { Account } = await import('@miden-sdk/miden-sdk');
+        vi.mocked(Account.deserialize).mockReturnValueOnce(account as never);
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            account_id: ACCOUNT_ID,
+            commitment: GUARDIAN_COMMITMENT,
+            state_json: { data: 'base64state' },
+            created_at: '2024-01-01T00:00:00Z',
+            updated_at: '2024-01-02T00:00:00Z',
+          }),
+        });
+      }
+
+      it('overwrites a store record GUARDIAN has moved past', async () => {
+        const { readOnChainCommitment } = await import('./state/adopt.js');
+        vi.mocked(readOnChainCommitment).mockResolvedValueOnce(GUARDIAN_COMMITMENT);
+
+        const incoming = accountAt(BigInt(2), GUARDIAN_COMMITMENT);
+        webClient.accounts.get.mockResolvedValueOnce(accountAt(BigInt(1), LOCAL_COMMITMENT));
+        await stubGuardianAccount(incoming);
+
+        const multisig = await new MultisigClient(webClient, CLIENT_CONFIG).load(
+          ACCOUNT_ID,
+          mockSigner,
+        );
+
+        expect(webClient.accounts.insert).toHaveBeenCalledWith({
+          account: incoming,
+          overwrite: true,
+        });
+        expect(multisig.account).toBe(incoming);
+      });
+
+      it('keeps a store record that is ahead of GUARDIAN, and describes that one', async () => {
+        // Between pushing a delta and GUARDIAN canonicalizing it, local is
+        // legitimately ahead; overwriting would build the next transaction on a
+        // stale nonce.
+        const local = accountAt(BigInt(3), LOCAL_COMMITMENT);
+        webClient.accounts.get.mockResolvedValueOnce(local);
+        await stubGuardianAccount(accountAt(BigInt(2), GUARDIAN_COMMITMENT));
+
+        const multisig = await new MultisigClient(webClient, CLIENT_CONFIG).load(
+          ACCOUNT_ID,
+          mockSigner,
+        );
+
+        expect(webClient.accounts.insert).not.toHaveBeenCalled();
+        expect(multisig.account).toBe(local);
+      });
+
+      it('leaves an already-matching store record alone rather than reading it as divergence', async () => {
+        // Equal nonce with differing commitments is divergence and throws, so a
+        // pair that already agrees must never reach that rule.
+        const local = accountAt(BigInt(2), GUARDIAN_COMMITMENT);
+        webClient.accounts.get.mockResolvedValueOnce(local);
+        await stubGuardianAccount(accountAt(BigInt(2), GUARDIAN_COMMITMENT));
+
+        const multisig = await new MultisigClient(webClient, CLIENT_CONFIG).load(
+          ACCOUNT_ID,
+          mockSigner,
+        );
+
+        expect(webClient.accounts.insert).not.toHaveBeenCalled();
+        expect(multisig.account).toBe(local);
+      });
     });
   });
 

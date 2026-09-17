@@ -474,12 +474,16 @@ copies the workspace, so a one-line driver edit costs a full release build
 before the stack starts. Iterate against a hand-started server and use the stack
 to confirm.
 
-**GUARDIAN never advances past a TypeScript remove-signer.**
-`live-remove-signer-2of3-falcon` fails on TypeScript and passes on Rust,
-reproducibly. GUARDIAN is left one nonce behind the chain and keeps serving the
-pre-removal signer set; the client's local and on-chain commitments agree, so
-the removal executed and the client is not stale. GUARDIAN logs nothing at
-`warn` level. Full evidence in
+**The TypeScript `load()` returns stale membership.** For five reproductions
+`live-remove-signer-2of3-falcon` failed on TypeScript and passed on Rust, and
+the suite reported it as GUARDIAN serving a pre-removal signer set. Measuring
+both sources on every poll showed GUARDIAN correct from the first poll: the
+stale value came from the reader's local store, because `load()` keeps an
+existing store record rather than overwriting it with what GUARDIAN returned,
+while reads go through the store. The assertion now reads what GUARDIAN
+returned and the scenario passes on both SDKs. The SDK defect behind it is also
+fixed: `load()` now reconciles with the store the way `syncState()` already did.
+Full evidence in
 [QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md) (F2).
 
 **The Rust SDK cannot change a threshold.** `TransactionType::UpdateSigners` is
