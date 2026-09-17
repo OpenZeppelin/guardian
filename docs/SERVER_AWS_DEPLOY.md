@@ -127,15 +127,18 @@ One-time setup per target (infra):
 - Each environment must restrict **deployment branches** to `main`. Without
   that, anyone able to dispatch the workflow could run an edited copy of it
   from a feature branch and obtain the environment's AWS OIDC identity.
-- The OIDC role's trust policy must accept this repository's environment
-  subject claims (`repo:OpenZeppelin/guardian:environment:devnet` / `:testnet`).
-- The deploy role needs ECR push/pull on `<stack>-server`
-  (`ecr:GetAuthorizationToken`, `ecr:DescribeRepositories`,
-  `ecr:BatchCheckLayerAvailability`, `ecr:BatchGetImage`,
-  `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`,
-  `ecr:PutImage`), `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`,
-  `ecs:RegisterTaskDefinition`, `ecs:UpdateService`, and `iam:PassRole` on the
-  stack's task and task-execution roles.
+- The OIDC roles are managed by `infra/oidc.tf` on the `guardian-prod` stack
+  (`github_oidc_enabled = true`); the trust policy admits this repository's
+  environment subject claims (`repo:OpenZeppelin/guardian:environment:devnet` /
+  `:testnet`) via `github_oidc_subjects`. Adding an environment means adding
+  its claim there and applying. See the "GitHub Actions OIDC roles" section of
+  `infra/README.md`.
+- The deploy role's permissions are managed in `infra/oidc.tf` too: ECR
+  push/pull on `<stack>-server`, `ecs:DescribeServices` / `ecs:UpdateService`
+  on `<stack>-server`, task-definition describe/register, and `iam:PassRole`
+  on the stack's task and task-execution roles, for every stack listed in
+  `github_deploy_stack_names`. Add a stack there before deploying it from the
+  workflow.
 - The ECR repository must already exist; `scripts/aws-deploy.sh build` creates
   it on a new stack.
 
