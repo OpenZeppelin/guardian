@@ -227,7 +227,6 @@ Common mappings:
 - Deployment, config, infrastructure, or secrets -> `docs/PRODUCTION.md`, `docs/architecture/infra.md`, `docs/runbooks/secrets.md`, `docs/SERVER_AWS_DEPLOY.md`, `infra/README.md`
 - Local dev or test startup -> `README.md`, `CONTRIBUTING.md`, relevant example README or quickstart
 - Qualification scenarios, the coverage matrix, or the treasury runbook -> `docs/QUALIFICATION.md`; scenario sources live in `qualification/manifest/` and `manifest.json` must be regenerated
-- A defect, capability gap or cross-SDK divergence found by the qualification suite -> `docs/QUALIFICATION_FINDINGS.md`
 
 When docs are not updated after a visible behavior change, note why in the final report or PR notes.
 

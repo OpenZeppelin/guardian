@@ -968,6 +968,14 @@ const exported = await multisig.createSwitchGuardianProposalOffline(
 
 ### Signing & Executing Proposals
 
+> **The two SDKs differ on who has signed a new proposal.** The Rust SDK
+> attaches the proposer's signature when the proposal is created; the TypeScript
+> SDK does not. The same 2-of-3 flow therefore needs one more signature
+> collected on the TypeScript path than on the Rust path. Neither is wrong, but
+> threshold arithmetic written against one SDK is wrong against the other. Offer
+> the proposal to every cosigner and let `signaturesCollected` decide, rather
+> than assuming who has already signed.
+
 ```typescript
 // List all pending proposals
 const proposals = await multisig.syncProposals();

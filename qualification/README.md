@@ -5,12 +5,9 @@ shipped server image against a real database over real sockets, driven by both
 base clients and both multisig SDKs, with the multisig flows executing real
 transactions on public Miden networks.
 
-Start here:
-
-- [Quickstart](../speckit/features/001-system-e2e-qualification/quickstart.md)
-- [Specification](../speckit/features/001-system-e2e-qualification/spec.md)
-- [Implementation plan](../speckit/features/001-system-e2e-qualification/plan.md)
-- [Harness CLI contract](../speckit/features/001-system-e2e-qualification/contracts/harness-cli.md)
+Start with [`docs/QUALIFICATION.md`](../docs/QUALIFICATION.md): what the suite
+covers, how to set up an environment, how to run each profile, how to read a
+result, and how to add a scenario.
 
 ## Layout
 

@@ -10,8 +10,7 @@ no chain; it is fast enough to gate merges. **Live** drives real transactions on
 a public Miden network and spends real funds.
 
 Read [`docs/QUALIFICATION.md`](../../../docs/QUALIFICATION.md) for what the suite
-covers and [`docs/QUALIFICATION_FINDINGS.md`](../../../docs/QUALIFICATION_FINDINGS.md)
-for defects it has already found. This skill is how to run it.
+covers and what it deliberately does not. This skill is how to run it.
 
 ## Pick the smallest thing that answers the question
 
@@ -183,13 +182,10 @@ an assertion is a switch that can be left on.
 
 ## Gotchas that cost real time
 
-- **Devnet currently returns 415 to gRPC-web** where testnet returns 200. It is
-  treated as an outage, so it stays declared available and recovers without a
-  manifest edit. Do not chase it as a client bug.
 - **TypeScript needs an HTTP/2 shim** to reach Miden at all from Node, and
   without a reachable remote prover the SDK silently falls back to in-WASM
-  proving at roughly twenty-five times the CPU. That is finding F6, and
-  `tests/qualification/h2Fetch.ts` is the workaround.
+  proving at roughly twenty-five times the CPU. `tests/qualification/h2Fetch.ts`
+  is the workaround.
 - **The qualification tests typecheck under their own config.** `tsconfig.json`
   covers only `src/`. Run `npm run typecheck:tests` in
   `packages/miden-multisig-client`, or a missing import ships.

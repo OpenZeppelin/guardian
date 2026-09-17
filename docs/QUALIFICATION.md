@@ -25,7 +25,7 @@ Neither workflow is wired to its intended triggers yet. See
 |---|---|---|
 | Rust `1.98.1` | builds the Rust driver | pinned in `rust-toolchain.toml`, so `rustup` selects it for you |
 | `protoc` | the driver's build tree includes `tonic-build` | a build failure mentioning protoc means this is missing |
-| Docker, daemon running | the stack: server, Postgres, RPC stub, migration target, scheme-gated server | Docker Desktop on macOS is supported; its bind-mount behaviour is what F12 covers, now fixed on the server side |
+| Docker, daemon running | the stack: server, Postgres, RPC stub, migration target, scheme-gated server | Docker Desktop on macOS is supported; its bind mount can serve a torn view of a replaced file, which the allowlist reload now retries through |
 | Node 18 or newer, `npm` | the TypeScript leg | |
 | `python3` | the shell harness parses JSON with it | any 3.x |
 | `curl` | health waits | |
@@ -277,9 +277,10 @@ is still cheaper to make all six at once:
 | `packages/miden-multisig-client/tests/qualification/actions/{live,account,identity,errorEnvelope,operator}.ts` | the TypeScript body |
 
 An action implemented on one SDK only is legitimate when it records a real
-capability gap, but it must report a skip naming the gap rather than a pass. See
-F3 in [QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md) for what that
-looks like, and F1 for a gap that was closed once the suite made it visible.
+capability gap, but it must report a skip naming the gap rather than a pass. Two
+such gaps (the Rust SDK could not change a threshold, and could not collect
+signatures off-channel) were closed once the suite made them visible, which is
+the outcome to aim for.
 
 **Then the matrix.** `required = true` in `scenarios.toml` means a pass is part
 of the qualification claim. `matrix.toml` decides where it must hold: list the
@@ -426,11 +427,36 @@ ephemeral accounts from the treasury through `fund`.
 no qualification, and the only artifact is that leg's own results file. Reach for
 it to reproduce one failure, not to qualify anything.
 
-## Findings
+## Why completion is asserted the way it is
 
-Defects, capability gaps and cross-SDK divergences the suite has found are
-logged in [QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md), with the
-evidence for each and the workarounds the suite carries.
+A proposal leaves GUARDIAN's pending set for two opposite reasons: because
+canonicalization **applied** its delta, or because it **gave up** on it, logged
+as `Deleting matching proposal as its delta left the candidate path`. The two
+are indistinguishable from the client side, so a discarded delta reads exactly
+like a successful execution. Absence from the pending set is therefore a
+precondition, never the proof.
+
+Both drivers assert completion directly instead: chain confirmation and
+commitment agreement through `verify_state_commitment` / `verifyStateCommitment`,
+plus a canonical delta in `delta_history` / `deltaHistory` carrying that
+commitment. A proposal that vanished without a canonical delta is a product
+failure, not a pass.
+
+Two things found while writing that assertion, both easy to trip over again:
+
+- the pending listing is the TypeScript client's own cache, and an executed
+  proposal stays in it marked `finalized`. Presence alone is not pending; the
+  status decides.
+- a GUARDIAN migration repoints the client at the GUARDIAN it moved to, which
+  has no history for an account it was just handed. Completion there is chain
+  agreement plus the new GUARDIAN serving the account.
+
+Separately, GUARDIAN's own view lags briefly after a change lands. Proposing
+again immediately is refused with `There's already a pending change for this
+account`, and a signer admitted by an executed add-signer is refused until
+`authorized_count` catches up. Both are races only a fast client hits: the Rust
+driver hit them where the TypeScript driver, about four times slower, did not.
+Both drivers poll against bounded deadlines rather than racing.
 
 ## Current limits
 
@@ -440,14 +466,14 @@ required check. Three things have to land first.
 **The deterministic profile is not a required check.** Its required scenarios
 are implemented and pass; two optional ones are not (`discarded-delta-hidden`
 and `operator-audit`), and actions without a driver implementation fail closed on
-a required scenario so a gap can never read as a pass. F12, previously the
-blocker here, is fixed. What is left is the rule that a gate should be seen to
-go red on a real defect before anything depends on it. It has now done that
-twice: F12, and `det-proposal-lifecycle`, which failed on its first run because
-the proposal fixture predated the metadata requirement and the driver was
-sending the wrong object. Whether that clears the bar is a judgement for
-whoever owns the gate, since both were found by adding the scenario rather than
-by catching a regression in existing coverage.
+a required scenario so a gap can never read as a pass. The allowlist-reload
+failure that previously blocked this is fixed. What is left is the rule that a
+gate should be seen to go red on a real defect before anything depends on it. It
+has now done that twice: the allowlist reload, and `det-proposal-lifecycle`,
+which failed on its first run because the proposal fixture predated the metadata
+requirement and the driver was sending the wrong object. Whether that clears the
+bar is a judgement for whoever owns the gate, since both were found by adding the
+scenario rather than by catching a regression in existing coverage.
 
 **Whether accounts created under an earlier contract pin are still drivable is
 not tested.** A deployed Miden account is immutable and its procedure roots fix
@@ -514,8 +540,7 @@ to be only half the cause: Docker Desktop's bind mount serves a torn view of a
 replaced file, but GUARDIAN answered that transient read with a 500 and no
 retry. The allowlist load now retries within a bounded budget, so the scenario
 passes and an operator editing the file in place no longer takes the dashboard
-down. See F12 in
-[QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md).
+down.
 
 **The live profile has run through the stack** against testnet on both SDKs,
 including the treasury preflight, funding, the full proposal lifecycle, both
@@ -536,8 +561,6 @@ existing store record rather than overwriting it with what GUARDIAN returned,
 while reads go through the store. The assertion now reads what GUARDIAN
 returned and the scenario passes on both SDKs. The SDK defect behind it is also
 fixed: `load()` now reconciles with the store the way `syncState()` already did.
-Full evidence in
-[QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md) (F2).
 
 **The Rust SDK could not change a threshold, and now can.** The transaction
 builder rejected `TransactionType::UpdateSigners` outright, redirecting callers
@@ -583,8 +606,3 @@ notification is wired.
 The reviewer opt-in on a pull request is specified but **not implemented**. The
 `core-only` checkbox on a dispatch against the default branch is not the same
 thing, and should not be recorded as satisfying it.
-
-## Design documents
-
-Specification, plan, research and contracts live in
-[`speckit/features/001-system-e2e-qualification/`](../speckit/features/001-system-e2e-qualification/).

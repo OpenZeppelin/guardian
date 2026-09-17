@@ -183,7 +183,6 @@ If your change is user- or operator-visible, update the matching doc:
 | Miden version bump, cross-line breaking change, or data reset | [`docs/MIDEN_COMPATIBILITY.md`](./docs/MIDEN_COMPATIBILITY.md), plus the package READMEs' compatibility tables |
 | New public API, builder option, or config field on a published crate or package | That crate's or package's own `README.md`, in the same PR. It is the crates.io / npm landing page, so `docs/` alone leaves it invisible to consumers. |
 | Qualification scenarios, the coverage matrix, or the treasury runbook | [`docs/QUALIFICATION.md`](./docs/QUALIFICATION.md); scenario sources live in `qualification/manifest/` and `manifest.json` must be regenerated |
-| A defect, capability gap or cross-SDK divergence found by the qualification suite | [`docs/QUALIFICATION_FINDINGS.md`](./docs/QUALIFICATION_FINDINGS.md) |
 
 Doc-only PRs are welcome and reviewed under the same process.
 

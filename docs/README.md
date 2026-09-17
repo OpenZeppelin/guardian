@@ -79,8 +79,6 @@ You are a contributor.
    components, per-RPC processes.
 9. [Qualification](./QUALIFICATION.md) — the black-box end-to-end suite:
    what it covers, how to run either profile, and what a run may claim.
-   Its defects and cross-SDK divergences are in
-   [Qualification findings](./QUALIFICATION_FINDINGS.md).
 
 ### I want to *integrate* my own operator dashboard or harness
 
@@ -108,7 +106,7 @@ You are a contributor.
 
 **Reference**
 - [Configuration (env vars)](./CONFIGURATION.md)
-- [Qualification](./QUALIFICATION.md) — end-to-end qualification suite ([findings](./QUALIFICATION_FINDINGS.md))
+- [Qualification](./QUALIFICATION.md) — end-to-end qualification suite
 - [OpenAPI specification](./OPENAPI.md) — HTTP API spec ([`openapi.json`](./openapi.json))
 - [`spec/`](../spec/index.md) — protocol specification
 - [`infra/README.md`](../infra/README.md) — Terraform variables
