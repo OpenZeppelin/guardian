@@ -77,10 +77,6 @@ on:
         required: false
         default: false
 
-concurrency:
-  group: qualification-live-${{ inputs.network || matrix.network }}
-  cancel-in-progress: false
-
 permissions:
   contents: read
   # Only so a failed scheduled run can open or comment on its tracking issue.
@@ -129,6 +125,15 @@ jobs:
       fail-fast: false
       matrix:
         network: ${{ github.event_name == 'schedule' && fromJSON('["testnet","devnet"]') || fromJSON(format('["{0}"]', inputs.network)) }}
+    # Per network, and on the job rather than the workflow: `matrix` is not in
+    # scope at workflow level, so grouping there collapsed every scheduled run
+    # into one key with an empty suffix and never queued it against a dispatched
+    # run of the same network. Two runs would then spend the same treasury
+    # concurrently, and the harness lock is a `flock` on one runner that cannot
+    # span GitHub-hosted VMs.
+    concurrency:
+      group: qualification-live-${{ matrix.network }}
+      cancel-in-progress: false
     environment: qualification-${{ matrix.network }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -174,33 +179,62 @@ jobs:
         working-directory: packages
         run: npm run build -w @openzeppelin/guardian-client
 
+      # A dispatched run was asked for, so a missing treasury is an error. A
+      # scheduled one is the standing nightly, and until the environments are
+      # created and branch-locked it has nothing to run with: reporting that as
+      # a failure every night, and opening an issue about it, is how a nightly
+      # becomes noise nobody reads.
       - name: Verify the environment carries a treasury
+        id: treasury
         env:
           TREASURY_KEY: ${{ secrets.QUAL_TREASURY_KEY }}
+          SCHEDULED: ${{ github.event_name == 'schedule' }}
         run: |
-          if [[ -z "${TREASURY_KEY}" ]]; then
-            echo "::error::GitHub environment 'qualification-${{ matrix.network }}' is missing QUAL_TREASURY_KEY"
-            exit 1
+          if [[ -n "${TREASURY_KEY}" ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "present=false" >> "$GITHUB_OUTPUT"
+          if [[ "${SCHEDULED}" == "true" ]]; then
+            echo "::notice::Environment 'qualification-${{ matrix.network }}' has no QUAL_TREASURY_KEY yet; nothing to qualify."
+            exit 0
+          fi
+          echo "::error::GitHub environment 'qualification-${{ matrix.network }}' is missing QUAL_TREASURY_KEY"
+          exit 1
 
       - name: Run the live profile
         id: run
+        if: steps.treasury.outputs.present == 'true'
         env:
           QUAL_TREASURY_KEY: ${{ secrets.QUAL_TREASURY_KEY }}
           NETWORK: ${{ matrix.network }}
+          EVENT_NAME: ${{ github.event_name }}
           IMAGE_TAG: ${{ inputs.image-tag }}
           PAIRING: ${{ inputs.pairing }}
           SDK: ${{ inputs.sdk }}
           CORE_ONLY: ${{ inputs.core-only }}
           REQUESTED_BY: ${{ github.actor }}
         run: |
-          args=(--profile live --network "${NETWORK}" --trigger dispatch)
+          # The nightly is a schedule, and the run result records the trigger
+          # it was actually started by; labelling every scheduled run as a
+          # dispatch would misattribute it to a person.
+          trigger=dispatch
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            trigger=schedule
+          fi
+          args=(--profile live --network "${NETWORK}" --trigger "${trigger}")
           args+=(--requested-by "${REQUESTED_BY}")
           args+=(--out "${GITHUB_WORKSPACE}/qualification-results")
           if [[ -n "${IMAGE_TAG}" ]]; then
             args+=(--image-source pulled --image-tag "ghcr.io/openzeppelin/guardian:${IMAGE_TAG}")
           fi
-          if [[ -n "${PAIRING}" ]]; then
+          # `pairing` defaults to `branch`, and `branch` means the image was
+          # built from this checkout. Forwarding that alongside a pulled image
+          # makes `qual_check_pairing` refuse the run, so the published-image
+          # path could never be taken from the default form. Let the harness
+          # infer it from the image source unless the caller asked for something
+          # other than the default.
+          if [[ -n "${PAIRING}" && ! ( -n "${IMAGE_TAG}" && "${PAIRING}" == "branch" ) ]]; then
             args+=(--pairing "${PAIRING}")
           fi
           if [[ -n "${SDK}" && "${SDK}" != "both" ]]; then
@@ -261,12 +295,17 @@ jobs:
           Read \`classification\` on the failing scenario before treating this as a
           product defect: exit 2 is the harness or the environment, exit 1 is the
           product. An environment-blocked run exits 0 and never reaches here."
-          existing="$(gh issue list --state open --search "\"${title}\" in:title" \
-            --json number --jq '.[0].number' || true)"
+          existing="$(gh issue list --state all --search "\"${title}\" in:title" \
+            --json number,state --jq '.[0].number' || true)"
+          state="$(gh issue list --state all --search "\"${title}\" in:title" \
+            --json number,state --jq '.[0].state' || true)"
           if [[ -n "${existing}" ]]; then
+            if [[ "${state}" == "CLOSED" ]]; then
+              gh issue reopen "${existing}"
+            fi
             gh issue comment "${existing}" --body "${body}"
           else
-            gh issue create --title "${title}" --body "${body}" --label enhancement
+            gh issue create --title "${title}" --body "${body}" --label bug
           fi
 
       - name: Summary

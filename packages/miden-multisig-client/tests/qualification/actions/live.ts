@@ -12,6 +12,7 @@ import { cosignWithRust } from '../handoff.js';
 import { fundAccount } from '../funding.js';
 import {
   buildCosigners,
+  buildPersistedCosigner,
   guardianCommitment,
   shapeOf,
   type LiveSession,
@@ -88,6 +89,71 @@ export async function createAccount(
       kind: 'failed',
       classification: 'product',
       reason: `creating the multisig account failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Opens a session on the long-lived account instead of creating a fresh one.
+ *
+ * Every other scenario proves this build can drive accounts it just made. This
+ * one asks whether an account created by an earlier build still works under
+ * this one: deployed accounts are immutable and their procedure roots fix at
+ * creation, so a contract pin bump strands them and nothing else here notices.
+ *
+ * A failure is therefore not automatically a regression. If the pin moved, the
+ * correct reading is that accounts created before it cannot be driven by this
+ * build, and the account has to be recreated the way the treasury is.
+ */
+export async function openHeritageAccount(
+  context: ActionContext,
+  scenarioId: string,
+  scheme: Scheme,
+): Promise<ActionOutcome> {
+  const missing = requireLive(context);
+  if (missing) return missing;
+
+  const network = context.live!.network;
+  const key = process.env[`QUAL_HERITAGE_KEY_${network}`]?.trim();
+  const accountId = process.env[`QUAL_HERITAGE_ACCOUNT_${network}`]?.trim();
+  if (!key || !accountId) {
+    return {
+      kind: 'environment_blocked',
+      reason:
+        `QUAL_HERITAGE_KEY_${network} and QUAL_HERITAGE_ACCOUNT_${network} are unset, so there ` +
+        'is no long-lived account to drive; create one with `heritage-new`',
+    };
+  }
+
+  try {
+    const cosigner = await buildPersistedCosigner(
+      context.live!,
+      scheme,
+      key,
+      `${scenarioId}-${Date.now()}`,
+    );
+    // Loaded from GUARDIAN rather than rebuilt locally: the stored state is
+    // what an earlier build wrote, and rebuilding it here would reconstruct it
+    // under today's contract, which is the thing under test.
+    const multisig = await cosigner.multisigClient.load(accountId, cosigner.signer);
+
+    sessions.set(scenarioId, {
+      cosigners: [cosigner],
+      threshold: 1,
+      scheme,
+      multisig,
+      accountId,
+      balanceSeen: false,
+    });
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason:
+        `the long-lived account ${accountId} could not be loaded from GUARDIAN. If the contract ` +
+        `pin moved since it was created, accounts created before the move cannot be driven by ` +
+        `this build and it needs recreating: ${String(error)}`,
     };
   }
 }

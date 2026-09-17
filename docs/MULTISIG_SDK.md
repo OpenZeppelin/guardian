@@ -485,14 +485,22 @@ integration extends rather than replaces its advice map.
 > Cosigners must verify the raw `tx_summary` they are signing — not trust the
 > label or description.
 
-### Offline Workflow
+### Side-channel (offline) workflow
 
-For air-gapped or offline signing scenarios:
+For moving a proposal between cosigners as a document instead of through
+GUARDIAN's pending set.
+
+> **This is off-channel signature collection, not air-gapped operation.**
+> Only a `switch_guardian` proposal can be signed and executed with no network
+> at all. For every other type the signing step reproduces the transaction to
+> verify the summary, so the signer needs a synced store (and, for
+> `consume_notes`, the node), and execution needs an acknowledgement from
+> GUARDIAN. A transfer executed this way still reaches GUARDIAN.
 
 ```
 ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
 │  Proposer   │         │  Cosigner   │         │  Executor   │
-│  (Online)   │         │ (Air-gapped)│         │  (Online)   │
+│  (Online)   │         │ (Off-channel)│        │  (Online)   │
 └──────┬──────┘         └──────┬──────┘         └──────┬──────┘
        │                       │                       │
        │  Export proposal.json │                       │
@@ -995,7 +1003,8 @@ if (signed.status.type === 'ready') {
 const json = multisig.exportProposalToJson(proposalId);
 // Share via file, QR code, etc.
 
-// On air-gapped machine: import and sign
+// On the cosigner's machine: import and sign. Needs a synced store
+// unless this is a switch_guardian proposal.
 const imported = multisig.importProposal(json);
 const signedJson = multisig.signProposalOffline(proposalId);
 
@@ -1497,7 +1506,8 @@ client.execute_proposal(&proposal_id).await?;
 let exported = client.create_proposal_offline(tx).await?;
 std::fs::write("proposal.json", exported.to_json()?)?;
 
-// On air-gapped machine: load and sign
+// On the cosigner's machine: load and sign. Needs a synced store
+// unless this is a switch_guardian proposal.
 let json = std::fs::read_to_string("proposal.json")?;
 let mut exported: ExportedProposal = serde_json::from_str(&json)?;
 client.sign_imported_proposal(&mut exported)?;
@@ -1758,7 +1768,7 @@ console.log('Notes consumed, funds now in vault');
 │                         OFFLINE SIGNING FLOW                         │
 └─────────────────────────────────────────────────────────────────────┘
 
-  PROPOSER (Online)           COSIGNER (Air-gapped)        EXECUTOR (Online)
+  PROPOSER (Online)           COSIGNER (Off-channel)       EXECUTOR (Online)
   ─────────────────           ────────────────────         ────────────────
         │                            │                            │
         │ create_proposal_offline()  │                            │

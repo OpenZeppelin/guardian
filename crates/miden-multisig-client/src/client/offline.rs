@@ -1,7 +1,11 @@
-//! Offline proposal operations for MultisigClient.
+//! Side-channel proposal operations for MultisigClient.
 //!
-//! This module handles creating, signing, and executing proposals
-//! without GUARDIAN coordination (offline/side-channel mode).
+//! These move a proposal between cosigners as a document rather than through
+//! GUARDIAN's pending set. That is off-channel signature collection, not
+//! air-gapped operation: only `SwitchGuardian` executes without contacting
+//! GUARDIAN at all, and only `SwitchGuardian` and `Custom` skip the binding
+//! check that reproduces the transaction. Every other type needs a synced store
+//! to verify, and an acknowledgement from GUARDIAN to execute.
 
 use std::collections::HashSet;
 
@@ -179,16 +183,23 @@ impl MultisigClient {
         Ok(())
     }
 
-    /// Executes an imported proposal (with all signatures already collected).
+    /// Executes an imported proposal whose signatures were collected off-channel.
     ///
-    /// This builds and submits the transaction directly to the Miden network
-    /// without contacting GUARDIAN.
+    /// Cosigner signatures come from the document; the acknowledgement comes
+    /// from GUARDIAN, as on the online path. **This contacts GUARDIAN for every
+    /// proposal type except `SwitchGuardian`**, which is the only type that
+    /// executes without an acknowledgement. Do not treat this as an air-gapped
+    /// path: a transfer executed here will reach GUARDIAN over the network.
     ///
-    /// Only `SwitchGuardian` transactions are supported in this mode.
+    /// Any type may be executed, provided its summary verifies. Verification
+    /// reproduces the transaction for every type but `SwitchGuardian` and
+    /// `Custom`, so the caller needs a synced store and, for consume-notes, the
+    /// node.
     ///
-    /// Deliberately skips the pre-switch proposal-note import (issue #417):
-    /// it would contact the very GUARDIAN this flow exists to avoid. When
-    /// the old GUARDIAN is in fact still reachable, call
+    /// For `SwitchGuardian` only, deliberately skips the pre-switch
+    /// proposal-note import (issue #417): it would contact the very GUARDIAN
+    /// that flow exists to avoid. When the old GUARDIAN is in fact still
+    /// reachable, call
     /// [`MultisigClient::preserve_pre_switch_proposal_notes`] before
     /// executing.
     ///

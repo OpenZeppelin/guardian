@@ -339,6 +339,19 @@ print(sum(1 for s in scenarios if s['profile'] == 'live'))
     echo "error: the treasury cannot cover this run; nothing was spent" >&2
     exit "${EXIT_SETUP_FAILURE}"
   fi
+
+  # Bound what this run can move, at twice what the preflight says it needs. A
+  # cap only the operator could set is a cap nobody sets, and the drain worth
+  # guarding against is an unattended run funding in a loop, which is exactly
+  # the nightly. Doubling leaves room for retries without leaving the treasury
+  # open. Override QUAL_SPEND_CAP deliberately for a run that needs more.
+  QUAL_SPEND_CAP="${QUAL_SPEND_CAP:-$(( QUAL_TREASURY_REQUIRED * 2 ))}"
+  export QUAL_SPEND_CAP
+  echo "==> capping this run at ${QUAL_SPEND_CAP} units"
+  # Cleared per run: the tally lives beside the treasury lock so it can span the
+  # processes the TypeScript leg spawns, which also means it would otherwise
+  # carry the previous run's spending into this one.
+  "${DRIVER[@]}" spend-reset --network "${NETWORK}" >/dev/null 2>&1 || true
 fi
 
 DRIVER_ARGS=(
@@ -487,7 +500,11 @@ if [[ "${PROFILE}" == "deterministic" && ( "${SDK}" == "both" || "${SDK}" == "ru
     "${DRIVER[@]}" "${RESTART_ARGS[@]}" --post-restart
     RESTART_EXIT=$?
     set -e
-    if (( RESTART_EXIT != 0 && DRIVER_EXIT == 0 )); then
+    # Ranked, like every other combination here. The old rule only promoted the
+    # restart result when the first pass was clean, so a first-pass setup or
+    # environment-blocked result would hide a durability product failure behind
+    # a less serious code.
+    if (( $(qual_exit_rank "${RESTART_EXIT}") > $(qual_exit_rank "${DRIVER_EXIT}") )); then
       DRIVER_EXIT=${RESTART_EXIT}
     fi
   else

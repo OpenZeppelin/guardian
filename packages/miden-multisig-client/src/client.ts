@@ -267,6 +267,28 @@ export class MultisigClient {
   ): Promise<Account> {
     const localAccount = await this.midenClient.accounts.get(AccountId.fromHex(accountId));
     if (!localAccount) {
+      // Still checked against chain. An empty store is the ordinary shape for
+      // loading an account this client has never held, and inserting without
+      // the check would make that the one path where GUARDIAN's word is taken
+      // on its own.
+      // An account GUARDIAN reports as having transacted is deployed, so the
+      // node must be able to confirm it. Nothing on chain there is an RPC or
+      // gateway failure, and `readOnChainCommitment` reports a missing account
+      // by matching `not found` in the error text, which a 404 also says.
+      // Adopting on that would make loading into a fresh store the one path
+      // that takes GUARDIAN's word with no reference to chain.
+      if (incomingAccount.nonce().asInt() > BigInt(0)) {
+        const onChain = await readOnChainCommitment(
+          this.midenRpcEndpoint,
+          AccountId.fromHex(accountId),
+          this.rpcConfig,
+        );
+        if (!onChain) {
+          throw new Error(
+            `Refusing to adopt GUARDIAN state for ${accountId}: it has transacted (nonce ${incomingAccount.nonce().asInt().toString()}) but the node reported no on-chain commitment, so it could not be checked against chain`
+          );
+        }
+      }
       await this.midenClient.accounts.insert({ account: incomingAccount, overwrite: true });
       return incomingAccount;
     }

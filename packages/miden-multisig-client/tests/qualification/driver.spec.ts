@@ -72,7 +72,11 @@ describe('qualification driver', () => {
       // from the required set rather than from an exit code. An unimplemented
       // action on a required scenario reports `failed`, so the fail-closed rule
       // is unaffected.
-      if (result.outcome === 'failed' && scenario.required) {
+      // Any product or setup failure, required or not. The Rust driver's
+      // `blocks_conclusion` treats both the same, and gating on `required` here
+      // let a TypeScript failure on an optional scenario leave this leg's exit
+      // code at 0, so the run reported success while carrying a failure.
+      if (result.outcome === 'failed') {
         throw new Error(`${result.scenario_id}: ${result.reason}`);
       }
     },

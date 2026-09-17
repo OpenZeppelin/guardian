@@ -1131,8 +1131,12 @@ pub async fn create_proposal_offline(runner: &Runner) -> ActionOutcome {
     };
     let Some(target) = context.migration_endpoint.clone() else {
         return ActionOutcome::EnvironmentBlocked {
+            // Named as the driver actually reads it. The Rust driver speaks
+            // gRPC, so it takes the gRPC endpoint; the TypeScript one takes
+            // the HTTP endpoint. Pointing a reader at a variable nothing reads
+            // sends them to configure the wrong thing.
             reason: "migration needs a second GUARDIAN deployment; set \
-                     QUAL_GUARDIAN_MIGRATION_ENDPOINT to one"
+                     QUAL_GUARDIAN_MIGRATION_GRPC to one"
                 .to_string(),
         };
     };

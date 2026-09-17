@@ -8,12 +8,18 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     fromHex: vi.fn((hex: string) => ({ toString: () => hex })),
   },
   Account: {
+    // `nonce` and `to_commitment` are part of the shape now: `load` reconciles
+    // the incoming account against the store and against chain, so a stub
+    // without them is not an account as far as that path is concerned. Nonce
+    // zero means never transacted, which is what these tests are about.
     deserialize: vi.fn(() => ({
       id: () => ({
         toString: () => '0x' + 'd'.repeat(30),
         prefix: () => ({ asInt: () => BigInt(1) }),
         suffix: () => ({ asInt: () => BigInt(2) }),
       }),
+      nonce: () => ({ asInt: () => BigInt(0) }),
+      to_commitment: () => ({ toHex: () => '0x' + 'e'.repeat(64) }),
       serialize: () => new Uint8Array([1, 2, 3]),
       storage: vi.fn(),
       vault: vi.fn(),
@@ -456,6 +462,60 @@ describe('MultisigClient', () => {
 
         expect(webClient.accounts.insert).not.toHaveBeenCalled();
         expect(multisig.account).toBe(local);
+      });
+
+      it('refuses to adopt when a transacted account reads as undeployed', async () => {
+        // `readOnChainCommitment` reports a missing account by matching `not
+        // found` in the error text, which a proxy or gateway 404 also says. An
+        // account with a non-zero nonce has transacted, so a null commitment
+        // there is an RPC failure, and adopting on it would skip the check
+        // against chain altogether.
+        const { readOnChainCommitment } = await import('./state/adopt.js');
+        vi.mocked(readOnChainCommitment).mockResolvedValueOnce(null);
+
+        webClient.accounts.get.mockResolvedValueOnce(accountAt(BigInt(4), LOCAL_COMMITMENT));
+        await stubGuardianAccount(accountAt(BigInt(5), GUARDIAN_COMMITMENT));
+
+        await expect(
+          new MultisigClient(webClient, CLIENT_CONFIG).load(ACCOUNT_ID, mockSigner),
+        ).rejects.toThrow(/has transacted/);
+        expect(webClient.accounts.insert).not.toHaveBeenCalled();
+      });
+
+      // The one shape a null on-chain commitment legitimately describes: an
+      // account that has never transacted, so there is nothing on chain to
+      // disagree with, loaded into a client that has never held it.
+      it('still adopts an undeployed account into an empty store', async () => {
+        const { readOnChainCommitment } = await import('./state/adopt.js');
+        vi.mocked(readOnChainCommitment).mockResolvedValueOnce(null);
+
+        const incoming = accountAt(BigInt(0), GUARDIAN_COMMITMENT);
+        webClient.accounts.get.mockResolvedValueOnce(null);
+        await stubGuardianAccount(incoming);
+
+        const multisig = await new MultisigClient(webClient, CLIENT_CONFIG).load(
+          ACCOUNT_ID,
+          mockSigner,
+        );
+        expect(multisig.account).toBe(incoming);
+        expect(webClient.accounts.insert).toHaveBeenCalled();
+      });
+
+      // An empty store is the ordinary shape for loading an account this client
+      // has never held, which is exactly what the heritage scenario does with a
+      // fresh store name. Without a check here that path would take GUARDIAN's
+      // word with no reference to chain at all.
+      it('checks against chain even when the store is empty', async () => {
+        const { readOnChainCommitment } = await import('./state/adopt.js');
+        vi.mocked(readOnChainCommitment).mockResolvedValueOnce(null);
+
+        webClient.accounts.get.mockResolvedValueOnce(null);
+        await stubGuardianAccount(accountAt(BigInt(7), GUARDIAN_COMMITMENT));
+
+        await expect(
+          new MultisigClient(webClient, CLIENT_CONFIG).load(ACCOUNT_ID, mockSigner),
+        ).rejects.toThrow(/has transacted/);
+        expect(webClient.accounts.insert).not.toHaveBeenCalled();
       });
 
       it('leaves an already-matching store record alone rather than reading it as divergence', async () => {

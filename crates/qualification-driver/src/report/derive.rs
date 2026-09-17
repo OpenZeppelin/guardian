@@ -42,6 +42,14 @@ pub fn qualification_claim(
     if filtered {
         return QualificationClaim::None;
     }
+    // An empty required set is not a satisfied one. `all()` is vacuously true on
+    // an empty iterator, so without this a run with nothing required claims
+    // `Full`, which is the strongest thing this suite can say and the easiest to
+    // reach by accident: a live profile with no network resolves to no required
+    // entries at all.
+    if required.is_empty() {
+        return QualificationClaim::None;
+    }
     let every_required_passed = required.iter().all(|(id, sdk)| {
         results
             .iter()
@@ -71,6 +79,18 @@ pub fn not_covered(operator_covered: bool) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    // `all()` is vacuously true on an empty iterator, so an empty required set
+    // used to claim the strongest verdict available. A live profile with no
+    // network produces exactly that set.
+    #[test]
+    fn an_empty_required_set_claims_nothing() {
+        assert_eq!(
+            qualification_claim(&[], &[], false),
+            QualificationClaim::None
+        );
+    }
+
     use super::*;
     use crate::duration::Budget;
     use crate::manifest::{Runtime, Sdk};

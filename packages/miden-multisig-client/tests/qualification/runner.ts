@@ -53,6 +53,8 @@ async function runLiveAction(
   scenario: Scenario,
 ): Promise<ActionOutcome | null> {
   switch (action) {
+    case 'account-heritage':
+      return live.openHeritageAccount(context, scenario.id, scenario.scheme as 'falcon' | 'ecdsa');
     case 'account-create':
       return live.createAccount(
         context,

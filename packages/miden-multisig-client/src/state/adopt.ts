@@ -97,6 +97,27 @@ export async function isSafeToAdoptGuardianState(params: {
 
   const onChainCommitment = await readCommitment();
   if (!onChainCommitment) {
+    // No on-chain commitment means the account is not deployed, and an
+    // undeployed account has nothing to disagree with. That reading is only
+    // safe when the account has never transacted: `readOnChainCommitment`
+    // reports a missing account by matching `not found` in the error text, and
+    // a proxy or gateway 404 says exactly that. An account with a non-zero
+    // nonce has transacted, so it is deployed, so this is an RPC failure rather
+    // than an undeployed account, and adopting on it would skip the commitment
+    // check entirely.
+    // Keyed on the *local* nonce only. An account this client has transacted is
+    // deployed, so a node reporting nothing for it is an RPC failure rather
+    // than an undeployed account, and adopting there would skip the check
+    // against chain. The incoming nonce is GUARDIAN's claim rather than
+    // evidence, and `syncState` legitimately meets a higher incoming nonce with
+    // no local history; the caller that has no local record at all applies its
+    // own rule.
+    const transacted = localAccount?.nonce().asInt() ?? BigInt(0);
+    if (transacted > BigInt(0)) {
+      throw new Error(
+        `Refusing to overwrite local state: account ${accountId} has transacted (nonce ${transacted.toString()}) but the node reported no on-chain commitment, so the incoming state could not be checked against chain`
+      );
+    }
     return true;
   }
 

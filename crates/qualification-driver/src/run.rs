@@ -108,7 +108,15 @@ pub async fn execute(manifest_dir: &Path, options: RunOptions) -> anyhow::Result
         .filter(|result| result.scenario_id.contains("operator"))
         .any(ScenarioResult::counts_as_pass);
 
-    let network = options.network.unwrap_or(NetworkName::Testnet);
+    // Refused rather than defaulted. A live run without a network resolves to an
+    // empty required set, and labelling the result testnet would attach that
+    // emptiness to a real network's name.
+    let network = match (options.profile, options.network) {
+        (Profile::Live, None) => {
+            anyhow::bail!("--network is required for the live profile");
+        }
+        (_, network) => network.unwrap_or(NetworkName::Testnet),
+    };
     let window = manifest
         .network(network)
         .map(|entry| entry.historical_window)

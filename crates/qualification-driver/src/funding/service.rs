@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use miden_protocol::account::AccountId;
 
 use crate::manifest::NetworkName;
@@ -8,6 +8,72 @@ use super::{fees, lock::TreasuryLock, network, transfer, treasury::Treasury, usa
 /// What this process has transferred out of the treasury, so a run can report
 /// its own spend instead of asserting that funding was not required.
 static SPENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The per-run cap, in the chain's fee asset, from `QUAL_SPEND_CAP`.
+///
+/// Absent means uncapped, which is what a local one-off wants. A value that is
+/// present but unparseable is an error rather than uncapped: someone set it
+/// meaning to bound the run, and silently ignoring a typo would remove the
+/// bound exactly when it was asked for.
+fn spend_cap() -> anyhow::Result<Option<u64>> {
+    let Ok(raw) = std::env::var("QUAL_SPEND_CAP") else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<u64>()
+        .map(Some)
+        .map_err(|_| anyhow!("QUAL_SPEND_CAP is set to `{raw}`, which is not a number of units"))
+}
+
+/// Where the run's spending is tallied, beside the treasury lock.
+///
+/// On disk rather than in memory because a run is not one process. The
+/// TypeScript leg funds by spawning `qualification-driver fund` once per
+/// account, so a counter held in a static would reset on every transfer and cap
+/// nothing. The tally is read and written under the treasury lock the caller
+/// already holds, which is the same lock that serialises the transfers.
+fn ledger_path(data_dir: &std::path::Path, network: NetworkName) -> std::path::PathBuf {
+    data_dir.join(format!("{}.spent", network.as_str()))
+}
+
+fn read_ledger(path: &std::path::Path) -> u64 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Reserves `amount` against the run's cap before anything is transferred.
+///
+/// A cap checked after the transfer is not a cap.
+fn reserve(data_dir: &std::path::Path, network: NetworkName, amount: u64) -> anyhow::Result<()> {
+    let path = ledger_path(data_dir, network);
+    let already = read_ledger(&path);
+    let would_total = already.saturating_add(amount);
+
+    if let Some(cap) = spend_cap()?
+        && would_total > cap
+    {
+        anyhow::bail!(
+            "this run would spend {would_total} but QUAL_SPEND_CAP is {cap}; raise the cap \
+             deliberately rather than letting an unattended run drain the treasury"
+        );
+    }
+
+    std::fs::write(&path, would_total.to_string())
+        .with_context(|| format!("recording spend in {}", path.display()))?;
+    SPENT.store(would_total, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// Clears the tally, so a new run starts from zero rather than inheriting the
+/// last one's spending through a reused data directory.
+pub fn reset_spend_ledger(data_dir: &std::path::Path, network: NetworkName) {
+    let _ = std::fs::remove_file(ledger_path(data_dir, network));
+}
 
 pub fn spent_so_far() -> u64 {
     SPENT.load(std::sync::atomic::Ordering::Relaxed)
@@ -56,8 +122,8 @@ pub async fn fund_once(
         return Err(anyhow!("{remediation}"));
     }
 
+    reserve(data_dir, network, amount)?;
     transfer::send(&mut client, treasury.id(), recipient, fees.faucet, amount).await?;
-    SPENT.fetch_add(amount, std::sync::atomic::Ordering::Relaxed);
     Ok(Some(Funded {
         amount,
         faucet: fees.faucet,

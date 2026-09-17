@@ -96,6 +96,12 @@ pub struct PartialRun {
 /// mean a leg died. Without the filter that verdict lands on whichever run
 /// merges next, failing a run that was fine. Left unset, every file is
 /// considered, which is what a standalone merge across runs wants.
+///
+/// The `-post-restart` pass counts as the same run. Durability can only be
+/// asserted once the process that wrote the data is gone, so that scenario
+/// skips on the first pass and passes on the second. Merging only the first
+/// leaves a required skip standing, which makes a full claim unreachable for
+/// any run that includes it.
 pub fn merge_directory(
     directory: &Path,
     manifest: Option<&Manifest>,
@@ -112,13 +118,13 @@ pub fn merge_directory(
         let raw = std::fs::read_to_string(&path)?;
         match serde_json::from_str::<RunResult>(&raw) {
             Ok(run) => {
-                if run_id.is_none_or(|wanted| run.run_id == wanted) {
+                if run_id.is_none_or(|wanted| belongs_to(&run.run_id, wanted)) {
                     runs.push(run);
                 }
             }
             Err(run_error) => match serde_json::from_str::<PartialRun>(&raw) {
                 Ok(partial) => {
-                    if run_id.is_none_or(|wanted| partial.run_id == wanted) {
+                    if run_id.is_none_or(|wanted| belongs_to(&partial.run_id, wanted)) {
                         partials.push(partial);
                     }
                 }
@@ -132,10 +138,53 @@ pub fn merge_directory(
         }
     }
 
+    /// Whether a result file belongs to the run being merged, including the extra
+    /// passes the harness runs under a suffixed id.
+    fn belongs_to(candidate: &str, wanted: &str) -> bool {
+        candidate == wanted
+            || candidate
+                .strip_prefix(wanted)
+                .is_some_and(|suffix| suffix.starts_with('-'))
+    }
+
+    // Fold the harness's extra passes into the run they belong to, rather than
+    // reporting one run per pass. Each pass carries the same scenarios, and the
+    // claim is derived once over the union: `restart-durability` skips on the
+    // first pass and passes on the second, and only the union shows it passed.
+    if let Some(wanted) = run_id {
+        let (mut base, extra): (Vec<RunResult>, Vec<RunResult>) =
+            runs.into_iter().partition(|run| run.run_id == wanted);
+        if let Some(run) = base.first_mut() {
+            // Later pass replaces earlier for the same scenario and SDK, rather
+            // than being appended. Appending makes the set an OR: a scenario
+            // that passed before a restart and failed after it would still read
+            // as passing, so a run could report `Failure` while claiming `Full`.
+            for pass in extra {
+                for result in pass.scenario_results {
+                    match run.scenario_results.iter_mut().find(|existing| {
+                        existing.scenario_id == result.scenario_id && existing.sdk == result.sdk
+                    }) {
+                        Some(existing) => *existing = result,
+                        None => run.scenario_results.push(result),
+                    }
+                }
+            }
+            runs = base;
+        } else {
+            // No base run: the extra passes are all there is, and merging them
+            // under another run's name would attribute them to a run that never
+            // wrote a result.
+            runs = extra;
+        }
+    }
+
     for partial in partials {
         // The run whose id this belongs to, so one run carries both SDKs'
         // results and the claim is derived once over the whole set.
-        let Some(run) = runs.iter_mut().find(|run| run.run_id == partial.run_id) else {
+        let Some(run) = runs
+            .iter_mut()
+            .find(|run| belongs_to(&partial.run_id, &run.run_id))
+        else {
             anyhow::bail!(
                 "results for run {} arrived without the run itself",
                 partial.run_id
@@ -173,9 +222,18 @@ fn restate(run: &mut RunResult, manifest: &Manifest) {
 
     let required = manifest.required_entries(profile, Some(run.network.name), None);
     let recomputed = derive::qualification_claim(&run.scenario_results, &required, false);
-    // Weaker of the two: a filtered run already claims nothing, and recomputing
-    // must never talk it back up.
-    run.qualification_claim = weakest_claim_of([run.qualification_claim, recomputed]);
+    // A filtered run claims nothing and recomputing must never talk it back up.
+    // Otherwise the recomputed claim stands, because the results it was computed
+    // over are the whole run: both SDKs' legs and every extra pass, with the
+    // latest outcome per scenario. Keeping the weaker of the two instead would
+    // pin the run to its first leg's verdict, and `restart-durability` can only
+    // pass on the second pass, so `Full` would be unreachable for any run that
+    // includes it.
+    run.qualification_claim = if run.qualification_claim == QualificationClaim::None {
+        QualificationClaim::None
+    } else {
+        recomputed
+    };
 
     let operator_covered = run
         .scenario_results
@@ -183,16 +241,6 @@ fn restate(run: &mut RunResult, manifest: &Manifest) {
         .filter(|result| result.scenario_id.contains("operator"))
         .any(ScenarioResult::counts_as_pass);
     run.not_covered = derive::not_covered(operator_covered);
-}
-
-fn weakest_claim_of(claims: [QualificationClaim; 2]) -> QualificationClaim {
-    if claims.contains(&QualificationClaim::None) {
-        return QualificationClaim::None;
-    }
-    if claims.contains(&QualificationClaim::Partial) {
-        return QualificationClaim::Partial;
-    }
-    QualificationClaim::Full
 }
 
 #[cfg(test)]
@@ -347,6 +395,121 @@ mod tests {
 
         // Unfiltered it is still fatal: results without their run mean a leg died.
         assert!(merge_directory(directory.path(), None, None).is_err());
+    }
+
+    // Durability can only be asserted after the process that wrote the data is
+    // gone, so `det-restart-durability` is required and can only pass on the
+    // second pass. Asserted against the committed manifest and on the claim
+    // itself: folding the files without recomputing the claim leaves the run
+    // pinned to the first pass's `Partial`, which is the state this test exists
+    // to catch.
+    #[test]
+    fn the_post_restart_pass_makes_a_full_claim_reachable() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("qualification/manifest");
+        let manifest = Manifest::load(
+            &manifest_dir.join("scenarios.toml"),
+            &manifest_dir.join("matrix.toml"),
+        )
+        .expect("the committed manifest loads");
+
+        let required =
+            manifest.required_entries(crate::manifest::Profile::Deterministic, None, None);
+        assert!(
+            required
+                .iter()
+                .any(|(id, _)| id == "det-restart-durability"),
+            "this test is only meaningful while durability is required"
+        );
+
+        // Everything required passes on the first pass except durability, which
+        // can only skip there.
+        let mut first = run(
+            NetworkName::Testnet,
+            Conclusion::Success,
+            QualificationClaim::Partial,
+        );
+        first.run_id = "run-3".to_string();
+        first.scenario_results = required
+            .iter()
+            .map(|(id, sdk)| {
+                let outcome = if id == "det-restart-durability" {
+                    Outcome::Skipped
+                } else {
+                    Outcome::Passed
+                };
+                result_for(id, *sdk, outcome)
+            })
+            .collect();
+        emit::write(&first, directory.path()).expect("writes the run");
+
+        let mut second = first.clone();
+        second.run_id = "run-3-post-restart".to_string();
+        second.scenario_results = vec![result_for(
+            "det-restart-durability",
+            Sdk::Rust,
+            Outcome::Passed,
+        )];
+        emit::write(&second, directory.path()).expect("writes the second pass");
+
+        let merged =
+            merge_directory(directory.path(), Some(&manifest), Some("run-3")).expect("merges");
+        let outcome = merged.networks.values().next().expect("one network");
+        assert_eq!(outcome.runs.len(), 1, "the two passes are one run");
+        assert_eq!(
+            outcome.runs[0].qualification_claim,
+            QualificationClaim::Full,
+            "durability passed on the second pass, so the run covered its required set"
+        );
+    }
+
+    // The fold is latest-wins, not a union: a scenario that passed before a
+    // restart and failed after it must read as failed, or a run could report a
+    // failure while claiming full coverage.
+    #[test]
+    fn a_later_pass_overturns_an_earlier_outcome() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut first = run(
+            NetworkName::Testnet,
+            Conclusion::Success,
+            QualificationClaim::Partial,
+        );
+        first.run_id = "run-4".to_string();
+        first.scenario_results = vec![result_for(
+            "det-restart-durability",
+            Sdk::Rust,
+            Outcome::Passed,
+        )];
+        emit::write(&first, directory.path()).expect("writes");
+
+        let mut second = first.clone();
+        second.run_id = "run-4-post-restart".to_string();
+        second.scenario_results = vec![result_for(
+            "det-restart-durability",
+            Sdk::Rust,
+            Outcome::Failed,
+        )];
+        emit::write(&second, directory.path()).expect("writes");
+
+        let merged = merge_directory(directory.path(), None, Some("run-4")).expect("merges");
+        let outcome = merged.networks.values().next().expect("one network");
+        assert_eq!(outcome.runs[0].scenario_results.len(), 1);
+        assert_eq!(outcome.runs[0].scenario_results[0].outcome, Outcome::Failed);
+    }
+
+    fn result_for(scenario_id: &str, sdk: Sdk, outcome: Outcome) -> ScenarioResult {
+        ScenarioResult {
+            scenario_id: scenario_id.to_string(),
+            sdk,
+            runtime: Runtime::ServerSide,
+            outcome,
+            reason: None,
+            classification: None,
+            embedded_retry: false,
+            duration: Budget::from_seconds(1),
+        }
     }
 
     fn run(network: NetworkName, conclusion: Conclusion, claim: QualificationClaim) -> RunResult {

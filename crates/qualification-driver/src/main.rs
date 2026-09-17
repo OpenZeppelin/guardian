@@ -39,6 +39,14 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Clear this run's spend tally, so a reused data directory does not carry
+    /// the previous run's spending into the cap.
+    SpendReset {
+        #[arg(long, value_enum)]
+        network: NetworkArg,
+        #[arg(long, default_value = "/tmp/qualification-treasury")]
+        data_dir: PathBuf,
+    },
     /// Create the long-lived account's key, printing the secret once.
     HeritageNew {
         /// Fixed at creation: the scheme is baked into the account's on-chain
@@ -356,6 +364,13 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
             println!("{}", serde_json::to_string_pretty(&merged)?);
             Ok(std::process::ExitCode::SUCCESS)
         }
+        Command::SpendReset { network, data_dir } => {
+            guardian_qualification_driver::funding::service::reset_spend_ledger(
+                &data_dir,
+                network.into(),
+            );
+            Ok(std::process::ExitCode::SUCCESS)
+        }
         Command::HeritageNew { scheme } => {
             // Printed, not written: the caller decides where it lives, the same
             // way the treasury secret is handled. The account id is not known
@@ -486,38 +501,27 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
                     anyhow::anyhow!("recipient `{recipient}` is malformed: {error}")
                 })?;
 
-            let _lock = funding::lock::TreasuryLock::acquire(&data_dir, network.as_str())?;
-            let treasury = funding::Treasury::from_env(network)?;
-            let mut client = funding::network::connect(network, &data_dir).await?;
-            funding::network::track_account(
-                &mut client,
-                &data_dir,
-                &treasury.account,
-                treasury.secret_key(),
-            )
-            .await?;
-
-            let view = funding::network::observe(&mut client, treasury.id()).await?;
-            let fees = funding::fees::observe(&client).await?;
-            if !fees.charges_fees() {
-                println!("this chain charges nothing; no funding was needed");
-                return Ok(std::process::ExitCode::SUCCESS);
+            // Through the shared path, not a copy of it. The copy that used to
+            // live here skipped the spend counter, and the TypeScript leg funds
+            // by shelling out to this command, so every TypeScript run
+            // under-reported what it moved. It also had no cap.
+            match funding::service::fund_once(network, &data_dir, recipient, amount).await {
+                Ok(Some(funded)) => {
+                    println!(
+                        "{{\"funded\":\"{recipient}\",\"amount\":{},\"faucet\":\"{}\",\"treasury\":\"{}\"}}",
+                        funded.amount, funded.faucet, funded.treasury
+                    );
+                    Ok(std::process::ExitCode::SUCCESS)
+                }
+                Ok(None) => {
+                    println!("this chain charges nothing; no funding was needed");
+                    Ok(std::process::ExitCode::SUCCESS)
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    Ok(std::process::ExitCode::from(2))
+                }
             }
-            let usability =
-                funding::usability::assess(view.account.as_ref(), &fees, amount, amount);
-            if let Some(remediation) = usability.remediation() {
-                eprintln!("{remediation}");
-                return Ok(std::process::ExitCode::from(2));
-            }
-
-            funding::transfer::send(&mut client, treasury.id(), recipient, fees.faucet, amount)
-                .await?;
-            println!(
-                "{{\"funded\":\"{recipient}\",\"amount\":{amount},\"faucet\":\"{}\",\"treasury\":\"{}\"}}",
-                fees.faucet,
-                treasury.id()
-            );
-            Ok(std::process::ExitCode::SUCCESS)
         }
         Command::TreasuryCheck {
             network,
@@ -572,6 +576,13 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
         }
         Command::TreasurySweep { network, data_dir } => {
             let network: NetworkName = network.into();
+            // Under the same lock every other treasury transaction takes. A
+            // sweep moves the treasury's own funds, so running it beside a
+            // funding transfer would build both on the same nonce.
+            let _lock = guardian_qualification_driver::funding::lock::TreasuryLock::acquire(
+                &data_dir,
+                network.as_str(),
+            )?;
             let secret = std::env::var("QUAL_TREASURY_KEY")
                 .map_err(|_| anyhow::anyhow!("QUAL_TREASURY_KEY is not set"))?;
             let legacy =
