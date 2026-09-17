@@ -75,6 +75,22 @@ step_budget = "60s"
 required = true
 core = false
 
+# Rust only, and one action rather than three: the fixture account is shared by
+# every scenario in the run, so pause, attempt and unpause have to stay together
+# or a failure between them leaves the account paused for whatever runs next.
+[[scenario]]
+id = "det-account-paused"
+title = "A paused account refuses a proposal, and pausing goes through the operator surface"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "account-paused-refuses"]
+step_budget = "60s"
+required = true
+core = false
+
 [[scenario]]
 id = "det-error-envelope-grpc"
 title = "Structured error envelope survives a real gRPC socket"

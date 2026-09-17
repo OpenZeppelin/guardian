@@ -40,7 +40,10 @@ out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(
     json.dumps(
         [
-            {"public_key": public_keys["reader"], "permissions": ["dashboard:read"]},
+            # accounts:pause as well as read: the pause scenario needs one
+            # identity that can actually pause, and the denial scenario proves
+            # the negative through the restricted operator instead.
+            {"public_key": public_keys["reader"], "permissions": ["dashboard:read", "accounts:pause"]},
             {"public_key": public_keys["restricted"], "permissions": restricted},
         ],
         indent=2,

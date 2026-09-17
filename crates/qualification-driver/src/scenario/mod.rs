@@ -66,6 +66,10 @@ impl Runner {
     pub fn new(endpoints: Endpoints, expectation: Expectation) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
+            // The operator dashboard authenticates with a session cookie, so a
+            // client without a store logs in and is then refused on the request
+            // the login was for.
+            .cookie_store(true)
             .build()?;
         Ok(Self {
             endpoints,
@@ -220,6 +224,9 @@ impl Runner {
                 Action::ProposalCreate => Some(account::create_proposal(self).await),
                 Action::RestartDurability => Some(account::assert_durability(self).await),
                 Action::SchemeGate => Some(account::assert_scheme_gate(self).await),
+                Action::AccountPausedRefuses => {
+                    Some(account::assert_paused_account_refuses(self).await)
+                }
                 _ => None,
             }
         };

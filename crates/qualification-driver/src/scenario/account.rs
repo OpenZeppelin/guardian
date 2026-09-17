@@ -1,4 +1,5 @@
 use guardian_client::{AuthConfig, GuardianClient, MidenFalconRpoAuth, auth_config::AuthType};
+use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use std::sync::Arc;
 
@@ -321,6 +322,183 @@ pub async fn assert_scheme_gate(runner: &Runner) -> ActionOutcome {
                     .to_string(),
             ),
             _ => ActionOutcome::Passed,
+        },
+    }
+}
+
+/// Proves a paused account refuses a proposal, through the operator surface an
+/// operator would actually use.
+///
+/// Pause, attempt, unpause in one action on purpose. The fixture account is
+/// shared by every scenario in the run, so a pause left behind would fail
+/// whatever ran next for a reason that had nothing to do with it. Unpausing on
+/// every path, including the failing ones, keeps that contained.
+///
+/// GUARDIAN enforces the pause at each write path and tests all of them, but
+/// nothing previously drove a paused account from the outside, so the chain from
+/// an operator's click to a refused proposal was only ever proven in pieces.
+pub async fn assert_paused_account_refuses(runner: &Runner) -> ActionOutcome {
+    let Some(fixtures) = runner.fixtures.as_ref() else {
+        return ActionOutcome::failed_setup("the server fixtures were not loaded");
+    };
+    let id = match account_id(fixtures) {
+        Ok(id) => id,
+        Err(outcome) => return outcome,
+    };
+
+    let base = runner.endpoints.http.trim_end_matches('/').to_string();
+
+    if let Err(outcome) = operator_login(runner, &base, fixtures).await {
+        return outcome;
+    }
+
+    if let Err(outcome) = set_paused(runner, &base, &id.to_string(), true).await {
+        return outcome;
+    }
+
+    let outcome = attempt_proposal_while_paused(runner, fixtures, id).await;
+
+    // Restored whatever the attempt concluded: leaving the shared fixture
+    // account paused would fail the next scenario for an unrelated reason.
+    if let Err(unpause_failure) = set_paused(runner, &base, &id.to_string(), false).await {
+        return match outcome {
+            ActionOutcome::Passed => unpause_failure,
+            other => other,
+        };
+    }
+
+    outcome
+}
+
+async fn operator_login(
+    runner: &Runner,
+    base: &str,
+    fixtures: &Fixtures,
+) -> Result<(), ActionOutcome> {
+    let (operator, commitment) = fixtures.operator();
+
+    let challenge: serde_json::Value = match runner
+        .http
+        .get(format!("{base}/auth/challenge"))
+        .query(&[("commitment", commitment.as_str())])
+        .send()
+        .await
+    {
+        Ok(response) => match response.json().await {
+            Ok(body) => body,
+            Err(error) => {
+                return Err(ActionOutcome::failed_product(format!(
+                    "the operator challenge was not JSON: {error}"
+                )));
+            }
+        },
+        Err(error) => {
+            return Err(ActionOutcome::failed_setup(format!(
+                "requesting an operator challenge failed: {error}"
+            )));
+        }
+    };
+
+    let Some(digest) = challenge
+        .pointer("/challenge/signing_digest")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Err(ActionOutcome::failed_product(format!(
+            "the operator challenge carried no signing_digest: {challenge}"
+        )));
+    };
+    let digest = match Word::try_from(digest) {
+        Ok(word) => word,
+        Err(error) => {
+            return Err(ActionOutcome::failed_product(format!(
+                "the challenge signing_digest is not a word: {error}"
+            )));
+        }
+    };
+
+    let signature = format!(
+        "0x{}",
+        hex::encode(miden_protocol::utils::serde::Serializable::to_bytes(
+            &operator.sign(digest)
+        ))
+    );
+
+    match runner
+        .http
+        .post(format!("{base}/auth/verify"))
+        .json(&serde_json::json!({ "commitment": commitment, "signature": signature }))
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => Ok(()),
+        Ok(response) => Err(ActionOutcome::failed_product(format!(
+            "the operator session was refused with {}",
+            response.status()
+        ))),
+        Err(error) => Err(ActionOutcome::failed_setup(format!(
+            "verifying the operator challenge failed: {error}"
+        ))),
+    }
+}
+
+async fn set_paused(
+    runner: &Runner,
+    base: &str,
+    account_id: &str,
+    paused: bool,
+) -> Result<(), ActionOutcome> {
+    let route = if paused { "pause" } else { "unpause" };
+    let body = serde_json::json!({ "reason": "qualification: paused-account scenario" });
+    match runner
+        .http
+        .post(format!("{base}/dashboard/accounts/{account_id}/{route}"))
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => Ok(()),
+        Ok(response) => Err(ActionOutcome::failed_product(format!(
+            "{route} was refused with {}",
+            response.status()
+        ))),
+        Err(error) => Err(ActionOutcome::failed_setup(format!(
+            "calling {route} failed: {error}"
+        ))),
+    }
+}
+
+async fn attempt_proposal_while_paused(
+    runner: &Runner,
+    fixtures: &Fixtures,
+    id: AccountId,
+) -> ActionOutcome {
+    let mut client = match connect(runner, fixtures).await {
+        Ok(client) => client,
+        Err(outcome) => return outcome,
+    };
+    let payload = match fixtures.proposal_payload() {
+        Ok(payload) => payload,
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "building the fixture proposal payload: {error}"
+            ));
+        }
+    };
+
+    // A different nonce from `det-proposal-lifecycle`, so a proposal that scenario
+    // already pushed cannot make this one look refused for being a duplicate.
+    let nonce = fixtures.proposal_nonce() + 1;
+    match client.push_delta_proposal(&id, nonce, &payload).await {
+        Ok(_) => ActionOutcome::failed_product("a paused account accepted a proposal".to_string()),
+        Err(error) => match error.guardian_code() {
+            Some(code) if code == "GUARDIAN_ACCOUNT_PAUSED" => ActionOutcome::Passed,
+            Some(code) => ActionOutcome::failed_product(format!(
+                "the proposal was refused with `{code}` rather than `GUARDIAN_ACCOUNT_PAUSED`, \
+                 so the pause is not what stopped it: {error}"
+            )),
+            None => ActionOutcome::failed_product(format!(
+                "the proposal failed without a GUARDIAN error code: {error}"
+            )),
         },
     }
 }

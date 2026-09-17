@@ -21,6 +21,9 @@ pub struct Fixtures {
     pub cosigner_commitments: Vec<String>,
     pub delta: Value,
     signer_key: SecretKey,
+    /// The operator identity the allowlist grants `accounts:pause`, kept whole
+    /// so a dashboard challenge can be signed rather than only recognised.
+    operator_key: SecretKey,
 }
 
 impl Fixtures {
@@ -58,12 +61,19 @@ impl Fixtures {
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
+        let operator_hex = keys["signer_4_secret_key"]
+            .as_str()
+            .ok_or_else(|| anyhow!("keys.json has no signer_4_secret_key"))?;
+        let operator_key = SecretKey::read_from_bytes(&hex::decode(operator_hex)?)
+            .map_err(|error| anyhow!("signer_4 is not a Falcon key: {error}"))?;
+
         Ok(Self {
             account,
             account_id,
             cosigner_commitments,
             delta,
             signer_key,
+            operator_key,
         })
     }
 
@@ -74,6 +84,17 @@ impl Fixtures {
             .as_str()
             .map(str::to_string)
             .ok_or_else(|| anyhow!("keys.json has no guardian_secret_key"))
+    }
+
+    /// The operator key and its commitment, as the dashboard expects them.
+    pub fn operator(&self) -> (&SecretKey, String) {
+        let commitment = format!(
+            "0x{}",
+            hex::encode(miden_protocol::utils::serde::Serializable::to_bytes(
+                &self.operator_key.public_key().to_commitment()
+            ))
+        );
+        (&self.operator_key, commitment)
     }
 
     pub fn signer_public_key_hex(&self) -> String {

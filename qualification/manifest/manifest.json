@@ -97,6 +97,23 @@
     },
     {
       "actions": [
+        "account-register",
+        "account-paused-refuses"
+      ],
+      "core": false,
+      "id": "det-account-paused",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "n/a",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "A paused account refuses a proposal, and pausing goes through the operator surface"
+    },
+    {
+      "actions": [
         "error-envelope"
       ],
       "core": false,

@@ -166,6 +166,7 @@ pub enum Action {
     OperatorLogout,
     OperatorAudit,
     SchemeGate,
+    AccountPausedRefuses,
     Unknown(String),
 }
 
@@ -211,6 +212,7 @@ impl From<String> for Action {
             "operator-logout" => Self::OperatorLogout,
             "operator-audit" => Self::OperatorAudit,
             "scheme-gate" => Self::SchemeGate,
+            "account-paused-refuses" => Self::AccountPausedRefuses,
             other => Self::Unknown(other.to_string()),
         }
     }
