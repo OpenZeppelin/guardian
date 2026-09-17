@@ -449,6 +449,19 @@ sending the wrong object. Whether that clears the bar is a judgement for
 whoever owns the gate, since both were found by adding the scenario rather than
 by catching a regression in existing coverage.
 
+**Whether accounts created under an earlier contract pin are still drivable is
+not tested.** A deployed Miden account is immutable and its procedure roots fix
+at creation, so a contract pin bump strands every account created before it, and
+nothing else in this suite would notice. A scenario for it (`live-heritage-account`)
+was written and then removed, because it cannot work against an ephemeral stack:
+Guardian holds the only full copy of a private account, and the stack tears its
+database down with the run. An account the suite transacts with is therefore
+unrecoverable once the run ends, so no long-lived account can survive between
+runs without a store outside the run. Every option for that store (a committed
+snapshot, a cached snapshot, a persisted database) was judged to cost more than
+it returns while the property is better checked at the moment of a pin bump.
+Put it on the checklist for changing the Miden pin, not in the nightly.
+
 **Consuming the published TypeScript SDK from Node needs two workarounds.**
 Both are carried by this suite and both apply to any Node consumer, so they are
 recorded as findings against the published artifact rather than as harness

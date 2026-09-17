@@ -516,27 +516,6 @@ step_budget = "720s"
 required = true
 core = false
 
-# The only scenario that does not create its account. Every other one proves
-# this build can drive accounts it just made; this one asks whether an account an
-# earlier build created still works, which a contract pin bump breaks and nothing
-# else here would notice. ECDSA on purpose: the scheme is baked into the
-# account's on-chain code at creation, so the one account meant to outlive
-# releases should speak the scheme that will still matter. Environment-blocked
-# without the key, so a run without the secret is not a failure.
-[[scenario]]
-id = "live-heritage-account-1of1-ecdsa"
-title = "A long-lived ECDSA account created by an earlier build still transacts"
-profile = "live"
-sdk = "both"
-runtime = "server-side"
-scheme = "ecdsa"
-shape = "1-of-1"
-mode = "online"
-actions = ["account-heritage", "account-register", "asset-transfer", "note-consume", "commitment-verify"]
-step_budget = "480s"
-required = false
-core = false
-
 [[scenario]]
 id = "live-procedure-threshold-2of3-falcon"
 title = "One procedure requires every signer while the account threshold stays put"

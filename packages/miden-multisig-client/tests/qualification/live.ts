@@ -45,33 +45,6 @@ function makeSigner(scheme: Scheme): { signer: Signer; secretKey: AuthSecretKey 
   return { signer, secretKey };
 }
 
-/// Rebuilds a cosigner from a persisted key rather than generating one.
-///
-/// The deliberate exception to generating per run: the heritage account exists
-/// to answer whether an account an earlier build created still works under this
-/// one, which no fresh key can ask.
-export async function buildPersistedCosigner(
-  config: LiveConfig,
-  scheme: Scheme,
-  hexKey: string,
-  runTag: string,
-): Promise<Cosigner> {
-  const midenClient = await MidenClient.create({
-    rpcUrl: config.midenRpcEndpoint,
-    proverUrl: process.env.QUAL_TS_PROVER ?? config.network,
-    storeName: `qual-${runTag}-heritage`,
-    autoSync: false,
-  });
-  const multisigClient = new MultisigClient(midenClient, {
-    guardianEndpoint: config.guardianEndpoint,
-    midenRpcEndpoint: config.midenRpcEndpoint,
-  });
-  const raw = Uint8Array.from(Buffer.from(hexKey.trim().replace(/^0x/, ''), 'hex'));
-  const secretKey = AuthSecretKey.deserialize(raw);
-  const signer = scheme === 'falcon' ? new FalconSigner(secretKey) : new EcdsaSigner(secretKey);
-  return { signer, secretKey, midenClient, multisigClient };
-}
-
 export async function buildCosigners(
   config: LiveConfig,
   count: number,

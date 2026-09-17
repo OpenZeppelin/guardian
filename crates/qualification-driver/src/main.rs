@@ -47,13 +47,6 @@ enum Command {
         #[arg(long, default_value = "/tmp/qualification-treasury")]
         data_dir: PathBuf,
     },
-    /// Create the long-lived account's key, printing the secret once.
-    HeritageNew {
-        /// Fixed at creation: the scheme is baked into the account's on-chain
-        /// code, so a heritage account can never change it.
-        #[arg(long, value_enum, default_value = "ecdsa")]
-        scheme: SchemeArg,
-    },
     /// Create a treasury key, printing the secret once and the address to fund.
     TreasuryNew {
         #[arg(long, value_enum)]
@@ -369,23 +362,6 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
                 &data_dir,
                 network.into(),
             );
-            Ok(std::process::ExitCode::SUCCESS)
-        }
-        Command::HeritageNew { scheme } => {
-            // Printed, not written: the caller decides where it lives, the same
-            // way the treasury secret is handled. The account id is not known
-            // until the account first transacts, so it is stored alongside once
-            // the account exists.
-            let scheme: guardian_qualification_driver::manifest::Scheme = scheme.into();
-            let signer =
-                guardian_qualification_driver::funding::accounts::RunSigner::generate(scheme)
-                    .ok_or_else(|| anyhow::anyhow!("cannot generate a {scheme:?} signer"))?;
-            eprintln!(
-                "Long-lived account key created. Store it in qualification/.treasury-secrets.env \
-                 as QUAL_HERITAGE_KEY_<network>, create the account once, then store its id as \
-                 QUAL_HERITAGE_ACCOUNT_<network>. It is not recoverable."
-            );
-            println!("{}", signer.to_hex());
             Ok(std::process::ExitCode::SUCCESS)
         }
         Command::TreasuryNew { network } => {

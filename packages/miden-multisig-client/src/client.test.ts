@@ -502,9 +502,9 @@ describe('MultisigClient', () => {
       });
 
       // An empty store is the ordinary shape for loading an account this client
-      // has never held, which is exactly what the heritage scenario does with a
-      // fresh store name. Without a check here that path would take GUARDIAN's
-      // word with no reference to chain at all.
+      // has never held: a cosigner opening an account someone else created, or
+      // any client on a fresh store. Without a check here that path would take
+      // GUARDIAN's word with no reference to chain at all.
       it('checks against chain even when the store is empty', async () => {
         const { readOnChainCommitment } = await import('./state/adopt.js');
         vi.mocked(readOnChainCommitment).mockResolvedValueOnce(null);
