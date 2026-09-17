@@ -293,8 +293,10 @@ jobs:
           body="Harness exit ${EXIT_CODE:-unknown}. Run: ${RUN_URL}
 
           Read \`classification\` on the failing scenario before treating this as a
-          product defect: exit 2 is the harness or the environment, exit 1 is the
-          product. An environment-blocked run exits 0 and never reaches here."
+          product defect: exit 2 is the harness, exit 1 is the product. A
+          scenario the network broke under is classified \`environment\`, does not
+          block the conclusion, and never reaches here; neither does an
+          environment-blocked run."
           existing="$(gh issue list --state all --search "\"${title}\" in:title" \
             --json number,state --jq '.[0].number' || true)"
           state="$(gh issue list --state all --search "\"${title}\" in:title" \
@@ -323,4 +325,16 @@ jobs:
             echo "This result informs the release decision; it does not block publication."
             echo "Read \`qualification_claim\` for what it proved, and \`classification\`"
             echo "on any failure to tell a product defect from a network outage."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The same lines a local run prints. A green night that lost scenarios
+          # to the network reads as a clean one unless the losses are in front
+          # of the reader.
+          # shellcheck source=qualification/stack/lib/summary.sh
+          source qualification/stack/lib/summary.sh
+          {
+            echo
+            echo '```'
+            qual_print_summary qualification-results/merged/report.json
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

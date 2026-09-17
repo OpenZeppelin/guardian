@@ -143,7 +143,7 @@ cargo run -p guardian-qualification-driver -- treasury-check --network testnet
 | 0 | Concluded successfully |
 | 1 | Product failure |
 | 2 | Setup failure (treasury, image identity, scheme policy, pairing) |
-| 3 | Environment blocked and nothing else ran |
+| 3 | The environment took every scenario and nothing else ran |
 | 4 | Usage error |
 
 **A zero exit does not mean full coverage.** Read `qualification_claim` in the
@@ -154,9 +154,11 @@ result:
   scenarios blocked by the network.
 - `none` means the run was filtered.
 
-A run whose only non-passing scenarios are environment-blocked concludes
+A run whose only non-passing scenarios are down to the environment, whether
+blocked before they ran or broken under by the network while they ran, concludes
 successfully and claims `partial`. This is on purpose: leaving the schedule red
-through a Miden upgrade window is how a signal stops being read.
+through a Miden upgrade window is how a signal stops being read. Every run
+prints what it lost that way, so a green night is still readable.
 
 Every failure carries a `classification`:
 
@@ -164,7 +166,36 @@ Every failure carries a `classification`:
 - `environment` is the network, the prover, or a protocol-version mismatch.
 - `setup` is the harness or its configuration.
 
-The classification is never softened to present a cleaner result.
+An `environment` failure does not block the conclusion, so a run that lost
+scenarios to the network still concludes successfully and claims `partial`.
+
+### How `environment` is assigned
+
+A live run drives a public Miden network and a remote prover. Neither is under
+this repository's control, and both fail in ways that read exactly like a
+scenario failing: a connection dropped mid-execution, a prover deadline, a node
+that stops answering. Calling those product defects is how a nightly stops being
+read.
+
+So on the **live profile only**, a failure whose evidence points at the link is
+reclassified `environment`. The rule is the SDK clients' own transient-error
+classifier, unchanged: permanent status evidence anywhere (an invalid argument,
+a failed precondition) vetoes transient evidence anywhere, and the
+transient-wording fallback applies only when nothing carried a status. Both
+drivers apply it and both are pinned to
+`fixtures/qualification/environment-classification.json`, which holds the
+verbatim reasons from real runs on both sides of the line. Add a vector there
+when a new wording shows up; both drivers pick it up.
+
+The deterministic profile is deliberately exempt. It gates pull requests against
+a stack this repository brings up itself, so a failure there is the product's
+whatever its wording, and softening it would cost the one gate that has to stay
+hard.
+
+The reclassification reads evidence, not profile: a live scenario that failed on
+its own terms, such as a quorum refusing an under-signed proposal, still fails as
+`product`. Beyond that, the classification is never softened to present a
+cleaner result.
 
 ## Scenario manifest
 

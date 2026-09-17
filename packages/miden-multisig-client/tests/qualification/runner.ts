@@ -9,6 +9,7 @@ import {
   assertSession,
 } from './actions/operator.js';
 import { assertHttpEnvelope } from './actions/errorEnvelope.js';
+import { isEnvironmental } from './environment.js';
 import { buildResult } from './report.js';
 import type { Classification, Runtime, Scenario, ScenarioResult } from './types.js';
 
@@ -119,6 +120,32 @@ async function runLiveAction(
   }
 }
 
+/**
+ * Folds an action outcome into what the report carries.
+ *
+ * A live run drives a public network and a remote prover, neither of them
+ * under this repository's control, and both fail in ways that read exactly like
+ * a scenario failing. Reporting those as product defects is how a nightly
+ * schedule stops being read, so a failure whose evidence points at the link is
+ * reclassified `environment`, which the conclusion already exempts.
+ *
+ * It stays a failure rather than becoming `environment_blocked`: that outcome
+ * says the scenario never got a verdict, and reading one as the other loses the
+ * difference between a night the suite could not start and a night the network
+ * broke under it.
+ *
+ * The deterministic profile is deliberately exempt: it gates pull requests
+ * against a stack the suite brings up itself, so a failure there is the
+ * product's whatever its wording, and softening it would cost the one gate that
+ * has to stay hard. Mirrors `report_as` in the Rust driver.
+ */
+export function reportAs(outcome: ActionOutcome, isLive: boolean): ActionOutcome {
+  if (outcome.kind === 'failed' && isLive && isEnvironmental(outcome.reason)) {
+    return { ...outcome, classification: 'environment' };
+  }
+  return outcome;
+}
+
 export async function runScenario(
   scenario: Scenario,
   context: ActionContext,
@@ -158,6 +185,7 @@ export async function runScenario(
   }
 
   const durationMs = Date.now() - startedAt;
+  outcome = reportAs(outcome, isLive);
   switch (outcome.kind) {
     case 'passed':
       return buildResult({ scenarioId: scenario.id, runtime, outcome: 'passed', durationMs });

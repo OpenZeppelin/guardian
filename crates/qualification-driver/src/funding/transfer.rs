@@ -4,6 +4,8 @@ use miden_protocol::account::AccountId;
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::note::NoteType;
 
+use crate::environment::error_chain;
+
 use super::network::MidenClient;
 
 /// Sends `amount` of the given faucet's asset from the treasury to `recipient`.
@@ -30,12 +32,14 @@ pub async fn send(
     client
         .submit_new_transaction(treasury, request)
         .await
-        .map_err(|error| anyhow!("the funding transfer failed: {error}"))?;
+        .map_err(|error| anyhow!("the funding transfer failed: {}", error_chain(&error)))?;
 
-    client
-        .sync_state()
-        .await
-        .map_err(|error| anyhow!("syncing after the funding transfer failed: {error}"))?;
+    client.sync_state().await.map_err(|error| {
+        anyhow!(
+            "syncing after the funding transfer failed: {}",
+            error_chain(&error)
+        )
+    })?;
 
     Ok(())
 }

@@ -3,6 +3,8 @@ use miden_client::transaction::TransactionRequestBuilder;
 use miden_protocol::account::AccountId;
 use miden_protocol::note::Note;
 
+use crate::environment::error_chain;
+
 use super::network::MidenClient;
 
 /// Consumes the notes addressed to an account, which is what actually deploys
@@ -45,12 +47,14 @@ pub async fn consume_pending_notes(
     client
         .submit_new_transaction(account_id, request)
         .await
-        .map_err(|error| anyhow!("the bootstrap transaction failed: {error}"))?;
+        .map_err(|error| anyhow!("the bootstrap transaction failed: {}", error_chain(&error)))?;
 
-    client
-        .sync_state()
-        .await
-        .map_err(|error| anyhow!("syncing after the bootstrap failed: {error}"))?;
+    client.sync_state().await.map_err(|error| {
+        anyhow!(
+            "syncing after the bootstrap failed: {}",
+            error_chain(&error)
+        )
+    })?;
 
     Ok(count)
 }

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::duration::Budget;
 use crate::fixtures::Fixtures;
-use crate::manifest::{Action, Runtime, Scenario, Sdk};
+use crate::manifest::{Action, Profile, Runtime, Scenario, Sdk};
 use crate::report::{Classification, Outcome, ScenarioResult};
 
 pub struct Endpoints {
@@ -46,6 +46,50 @@ impl ActionOutcome {
         Self::Failed {
             reason: reason.into(),
             classification: Classification::Setup,
+        }
+    }
+}
+
+/// Folds an action outcome into what the report carries.
+///
+/// A live run drives a public network and a remote prover, neither of them
+/// under this repository's control, and both fail in ways that read exactly
+/// like a scenario failing. Reporting those as product defects is how a
+/// nightly schedule stops being read, so a failure whose evidence points at
+/// the link is reclassified as [`Classification::Environment`], which
+/// [`ScenarioResult::blocks_conclusion`] already exempts.
+///
+/// It stays a failure rather than becoming
+/// [`Outcome::EnvironmentBlocked`]: that outcome says the scenario never got a
+/// verdict, and reading one as the other loses the difference between a night
+/// the suite could not start and a night the network broke under it.
+///
+/// The deterministic profile is deliberately exempt: it gates pull requests
+/// against a stack the suite brings up itself, so a failure there is the
+/// product's whatever its wording, and softening it would cost the one gate
+/// that has to stay hard. The scenario's own profile decides, not the runner's
+/// configuration, so no combination of options can lend a deterministic
+/// scenario the exemption.
+fn report_as(
+    outcome: ActionOutcome,
+    live: bool,
+) -> (Outcome, Option<String>, Option<Classification>) {
+    match outcome {
+        ActionOutcome::Passed => (Outcome::Passed, None, None),
+        ActionOutcome::Failed {
+            reason,
+            classification,
+        } => {
+            let classification = if live && crate::environment::is_environmental(&reason) {
+                Classification::Environment
+            } else {
+                classification
+            };
+            (Outcome::Failed, Some(reason), Some(classification))
+        }
+        ActionOutcome::Skipped { reason } => (Outcome::Skipped, Some(reason), None),
+        ActionOutcome::EnvironmentBlocked { reason } => {
+            (Outcome::EnvironmentBlocked, Some(reason), None)
         }
     }
 }
@@ -115,17 +159,8 @@ impl Runner {
             Sdk::Typescript => Runtime::ServerSide,
         });
 
-        let (outcome, reason, classification) = match outcome {
-            ActionOutcome::Passed => (Outcome::Passed, None, None),
-            ActionOutcome::Failed {
-                reason,
-                classification,
-            } => (Outcome::Failed, Some(reason), Some(classification)),
-            ActionOutcome::Skipped { reason } => (Outcome::Skipped, Some(reason), None),
-            ActionOutcome::EnvironmentBlocked { reason } => {
-                (Outcome::EnvironmentBlocked, Some(reason), None)
-            }
-        };
+        let (outcome, reason, classification) =
+            report_as(outcome, scenario.profile == Profile::Live);
 
         ScenarioResult {
             scenario_id: scenario.id.clone(),
@@ -359,5 +394,82 @@ mod tests {
             .run_action(&Action::OperatorAudit, Sdk::Rust, &scenario(false), "probe")
             .await;
         assert!(matches!(outcome, ActionOutcome::Skipped { .. }));
+    }
+
+    /// The prover deadline that failed a live scenario three nights running.
+    const PROVER_DEADLINE: &str = "executing the proposal failed: transaction proving failed: \
+                                   transport error: Timeout expired";
+
+    #[test]
+    fn a_live_transport_failure_is_classified_environment() {
+        let (outcome, reason, classification) = report_as(
+            ActionOutcome::failed_product(PROVER_DEADLINE.to_string()),
+            true,
+        );
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(reason.as_deref(), Some(PROVER_DEADLINE));
+        assert_eq!(classification, Some(Classification::Environment));
+    }
+
+    /// The whole point of the reclassification: the run still concludes.
+    #[test]
+    fn an_environment_classified_failure_does_not_block_the_conclusion() {
+        let (outcome, reason, classification) = report_as(
+            ActionOutcome::failed_product(PROVER_DEADLINE.to_string()),
+            true,
+        );
+        let result = crate::report::ScenarioResult {
+            scenario_id: "probe".to_string(),
+            sdk: Sdk::Rust,
+            runtime: Runtime::Native,
+            outcome,
+            reason,
+            classification,
+            embedded_retry: false,
+            duration: Budget::from_seconds(0),
+        };
+        assert!(!result.blocks_conclusion());
+        assert!(!result.counts_as_pass());
+    }
+
+    /// The deterministic profile owns the pull-request gate. Wording that reads
+    /// as a network fault there is a stack this repository brought up itself
+    /// misbehaving, so it stays a failure.
+    #[test]
+    fn a_deterministic_transport_failure_stays_a_failure() {
+        let (outcome, _, classification) = report_as(
+            ActionOutcome::failed_product(PROVER_DEADLINE.to_string()),
+            false,
+        );
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(classification, Some(Classification::Product));
+    }
+
+    /// Funding runs over the same network as the scenarios it funds, so a setup
+    /// failure carrying link evidence is the network too.
+    #[test]
+    fn a_live_setup_failure_with_link_evidence_is_classified_environment() {
+        let (_, _, classification) = report_as(
+            ActionOutcome::failed_setup(
+                "cannot fund 0x01: the funding transfer failed: connection error".to_string(),
+            ),
+            true,
+        );
+        assert_eq!(classification, Some(Classification::Environment));
+    }
+
+    /// The demotion reads evidence, not profile. A live scenario that failed on
+    /// its own terms still fails.
+    #[test]
+    fn a_live_product_failure_without_link_evidence_still_fails() {
+        let (outcome, _, classification) = report_as(
+            ActionOutcome::failed_product(
+                "executing the proposal failed: proposal not ready: need 2 signatures, have 1"
+                    .to_string(),
+            ),
+            true,
+        );
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(classification, Some(Classification::Product));
     }
 }

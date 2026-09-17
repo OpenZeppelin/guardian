@@ -168,10 +168,14 @@ fn funding_summary(options: &RunOptions) -> FundingSummary {
 
 fn exit_code(result: &RunResult) -> i32 {
     if result.conclusion == Conclusion::Failure {
+        // Only the failures that produced this conclusion decide which kind it
+        // was. Reading every failure instead lets an environment-classified one,
+        // which did not block the conclusion at all, turn a setup failure into a
+        // reported product defect.
         let setup_only = result
             .scenario_results
             .iter()
-            .filter(|entry| entry.outcome == Outcome::Failed)
+            .filter(|entry| entry.blocks_conclusion())
             .all(|entry| entry.classification == Some(Classification::Setup));
         return if setup_only {
             EXIT_SETUP_FAILURE
@@ -180,11 +184,14 @@ fn exit_code(result: &RunResult) -> i32 {
         };
     }
     let ran = !result.scenario_results.is_empty();
+    // Blocked covers both shapes the environment takes: a scenario that never
+    // got a verdict, and one the network broke under. A run made entirely of
+    // those produced no evidence either way, which is what exit 3 reports.
     let all_blocked = ran
-        && result
-            .scenario_results
-            .iter()
-            .all(|entry| entry.outcome == Outcome::EnvironmentBlocked);
+        && result.scenario_results.iter().all(|entry| {
+            entry.outcome == Outcome::EnvironmentBlocked
+                || entry.classification == Some(Classification::Environment)
+        });
     if all_blocked {
         EXIT_ENVIRONMENT_BLOCKED
     } else {
@@ -218,4 +225,94 @@ fn select<'a>(manifest: &'a Manifest, options: &RunOptions) -> Vec<(&'a Scenario
 
 fn required_entries(manifest: &Manifest, options: &RunOptions) -> Vec<derive::RequiredEntry> {
     manifest.required_entries(options.profile, options.network, options.sdk)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::duration::Budget;
+    use crate::manifest::Runtime;
+    use crate::report::{ArtifactSet, FundingSummary, NetworkSummary, Pairing, QualificationClaim};
+
+    fn result(outcome: Outcome, classification: Option<Classification>) -> ScenarioResult {
+        ScenarioResult {
+            scenario_id: "probe".to_string(),
+            sdk: Sdk::Rust,
+            runtime: Runtime::Native,
+            outcome,
+            reason: (outcome != Outcome::Passed).then(|| "probe".to_string()),
+            classification,
+            embedded_retry: false,
+            duration: Budget::from_seconds(0),
+        }
+    }
+
+    fn run(scenario_results: Vec<ScenarioResult>) -> RunResult {
+        RunResult {
+            run_id: "probe".to_string(),
+            started_at: chrono::Utc::now(),
+            trigger: Trigger::Dispatch,
+            requested_by: None,
+            network: NetworkSummary {
+                name: NetworkName::Testnet,
+                observed_protocol_version: None,
+                historical_window: Budget::from_seconds(0),
+                fee_asset: None,
+            },
+            artifact_set: ArtifactSet {
+                image_digest: String::new(),
+                image_revision: String::new(),
+                pairing: Pairing::Branch,
+                sdk_versions: Default::default(),
+                sdk_integrity: Default::default(),
+                miden_versions: Default::default(),
+            },
+            conclusion: crate::report::derive::conclusion(&scenario_results),
+            qualification_claim: QualificationClaim::Partial,
+            scenario_results,
+            funding_summary: FundingSummary::not_required(),
+            not_covered: Vec::new(),
+            consumer_findings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_run_that_only_lost_scenarios_to_the_network_succeeds() {
+        let code = exit_code(&run(vec![
+            result(Outcome::Passed, None),
+            result(Outcome::Failed, Some(Classification::Environment)),
+        ]));
+        assert_eq!(code, EXIT_SUCCESS);
+    }
+
+    /// Exit 3 says the run produced no evidence either way, which is as true of
+    /// scenarios the network broke under as of scenarios it blocked outright.
+    #[test]
+    fn a_run_the_network_took_entirely_reports_environment_blocked() {
+        let code = exit_code(&run(vec![
+            result(Outcome::EnvironmentBlocked, None),
+            result(Outcome::Failed, Some(Classification::Environment)),
+        ]));
+        assert_eq!(code, EXIT_ENVIRONMENT_BLOCKED);
+    }
+
+    /// The environment failure did not cause this conclusion, so it must not
+    /// decide how the conclusion is reported either.
+    #[test]
+    fn an_environment_failure_does_not_promote_a_setup_failure_to_a_product_one() {
+        let code = exit_code(&run(vec![
+            result(Outcome::Failed, Some(Classification::Setup)),
+            result(Outcome::Failed, Some(Classification::Environment)),
+        ]));
+        assert_eq!(code, EXIT_SETUP_FAILURE);
+    }
+
+    #[test]
+    fn a_product_failure_still_reports_a_product_failure() {
+        let code = exit_code(&run(vec![
+            result(Outcome::Failed, Some(Classification::Product)),
+            result(Outcome::Failed, Some(Classification::Environment)),
+        ]));
+        assert_eq!(code, EXIT_PRODUCT_FAILURE);
+    }
 }

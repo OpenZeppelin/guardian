@@ -27,6 +27,8 @@ source "${STACK_DIR}/lib/redact.sh"
 source "${STACK_DIR}/lib/diagnostics.sh"
 # shellcheck source=lib/restart.sh
 source "${STACK_DIR}/lib/restart.sh"
+# shellcheck source=lib/summary.sh
+source "${STACK_DIR}/lib/summary.sh"
 # shellcheck source=lib/operator.sh
 source "${STACK_DIR}/lib/operator.sh"
 
@@ -560,6 +562,11 @@ if ! qual_scan_for_secrets "${OUT_DIR}" "${QUAL_POSTGRES_PASSWORD}" "${QUAL_TREA
   exit "${EXIT_SETUP_FAILURE}"
 fi
 touch "${OUT_DIR}/.scan-passed"
+
+# After the scan, deliberately. A reason is scenario text rather than anything
+# configured, but printing artifacts before the thing that gates them is how a
+# leak reaches a log that outlives the artifact.
+qual_print_summary "${OUT_DIR}/merged/report.json"
 
 case "${DRIVER_EXIT}" in
   0) exit "${EXIT_SUCCESS}" ;;
