@@ -1,6 +1,6 @@
 ---
 name: run-guardian-qualification
-description: Set up and run the end-to-end qualification suite in this repository — the deterministic profile against a provisioned stack, and the live profile driving real Miden transactions from a CI-held treasury. Use when Codex needs to run or debug `qualification/stack/run.sh`, add or change a scenario, drive one SDK's live scenarios against testnet, reproduce a qualification failure locally, or interpret a run result's outcome classes and qualification claim.
+description: Set up and run the end-to-end qualification suite in this repository: the deterministic profile against a provisioned stack, and the live profile driving real Miden transactions from a CI-held treasury. Use when Codex needs to run or debug `qualification/stack/run.sh`, add or change a scenario, drive one SDK's live scenarios against testnet, reproduce a qualification failure locally, or interpret a run result's outcome classes and qualification claim.
 ---
 
 # Run Guardian Qualification
@@ -133,7 +133,7 @@ Scenario sources are data, not code: `qualification/manifest/scenarios.toml` and
 
 A committed `manifest.json` that does not match the sources fails a test. The
 validator also refuses a scenario whose step budget exceeds a network's
-historical window while required there — exclude it for that network rather than
+historical window while required there, so exclude it for that network rather than
 shrinking a budget the flow cannot meet.
 
 A new action needs four edits, and missing any one fails closed rather than
@@ -157,7 +157,7 @@ forfeits the claim without failing the run.
 | `environment_blocked` | the network or a dependency stopped it |
 
 Exit codes: 0 concluded, 1 product failure, 2 setup failure, 3 environment
-blocked and nothing else ran. **A zero exit is not full coverage** — read the
+blocked and nothing else ran. **A zero exit is not full coverage**, so read the
 claim.
 
 The TypeScript leg writes `<run-id>-typescript.json` carrying only `run_id` and

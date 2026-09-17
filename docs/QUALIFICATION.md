@@ -19,16 +19,61 @@ Guardian feature works. Every result states what it does not cover.
 Neither workflow is wired to its intended triggers yet. See
 [Current limits](#current-limits).
 
+## Setting up a local environment
+
+| Tool | Why | Notes |
+|---|---|---|
+| Rust `1.98.1` | builds the Rust driver | pinned in `rust-toolchain.toml`, so `rustup` selects it for you |
+| `protoc` | the driver's build tree includes `tonic-build` | a build failure mentioning protoc means this is missing |
+| Docker, daemon running | the stack: server, Postgres, RPC stub, migration target | Docker Desktop on macOS is supported; its bind-mount behaviour is what F12 covers, now fixed on the server side |
+| Node 18 or newer, `npm` | the TypeScript leg | |
+| `python3` | the shell harness parses JSON with it | any 3.x |
+| `curl` | health waits | |
+
+`libpq` is not needed. The driver's dependency tree contains no `pq-sys`; CI
+installs `libpq-dev` for the server jobs, not for this suite.
+
+On macOS:
+
+```bash
+brew install protobuf node
+# plus Docker Desktop, and let `rustup` honour rust-toolchain.toml
+```
+
+Then, once per checkout:
+
+```bash
+npm ci --prefix packages                              # links the workspace SDKs
+cargo build -p guardian-qualification-driver          # ~first build is slow
+```
+
+Verify the setup without starting anything, which is also what CI's
+`Qualification Harness` job runs:
+
+```bash
+cargo run -p guardian-qualification-driver -- validate   # manifest parses
+qualification/stack/tests/harness-test.sh                # shell libraries
+npm run typecheck:tests --prefix packages/miden-multisig-client
+```
+
+Then the smallest real run, one scenario through the full stack:
+
+```bash
+qualification/stack/run.sh --profile deterministic --scenario det-status-identity
+```
+
+If that passes, the environment is good and anything that fails afterwards is
+about the product or the network rather than your machine.
+
 ## Running locally
 
 ```bash
 qualification/stack/run.sh --profile deterministic
 ```
 
-Needs a container runtime and nothing else. The command builds the server image
-from your checkout, starts it with Postgres and a local stand-in for the chain
-RPC endpoint, waits for both ports, runs the scenarios, and tears everything
-down.
+Needs no chain and no treasury. The command builds the server image from your
+checkout, starts it with Postgres and a local stand-in for the chain RPC
+endpoint, waits for both ports, runs the scenarios, and tears everything down.
 
 Narrow to one scenario while iterating:
 
@@ -44,6 +89,22 @@ The live profile additionally needs a treasury for the network you target:
 ```bash
 export QUAL_TREASURY_KEY=<hex secret key>
 qualification/stack/run.sh --profile live --network testnet --sdk rust
+```
+
+The maintained treasuries live in `qualification/.treasury-secrets.env`
+(gitignored, mode 0600), one key per network, so a local run loads the right
+one rather than pasting a secret into a shell:
+
+```bash
+set -a && . qualification/.treasury-secrets.env && set +a
+export QUAL_TREASURY_KEY="${QUAL_TREASURY_KEY_testnet}"
+```
+
+Check the balance before a full matrix, which `run.sh` also does as a preflight
+and refuses to start on a shortfall:
+
+```bash
+cargo run -p guardian-qualification-driver -- treasury-check --network testnet
 ```
 
 ## Reading the outcome

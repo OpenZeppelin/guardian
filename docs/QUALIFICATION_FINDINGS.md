@@ -24,8 +24,8 @@ Evidence is from runs against testnet on 2026-09-16 with a locally built server,
 | F9 | A change stays pending briefly after its proposal clears | GUARDIAN |
 | F10 | Absence from pending is not evidence of completion | GUARDIAN, both drivers |
 | F11 | Devnet does not serve gRPC-web | Environment |
-| F12 | A grown allowlist reads truncated through a macOS bind mount | Environment, GUARDIAN — **fixed** |
-| F13 | An ECDSA account cannot migrate GUARDIAN through the Rust SDK | Rust SDK — **fixed** |
+| F12 | A grown allowlist reads truncated through a macOS bind mount | Environment, GUARDIAN (**fixed**) |
+| F13 | An ECDSA account cannot migrate GUARDIAN through the Rust SDK | Rust SDK (**fixed**) |
 
 ## Cross-SDK divergences
 
@@ -104,8 +104,8 @@ just keeps describing the account as though it were not.
 
 **Cost**: after a removal on the TypeScript path, GUARDIAN serves a signer set
 that includes the removed signer, with no error anywhere to indicate it. Anything
-reading membership from GUARDIAN — an operator dashboard, a consumer checking who
-can sign, an audit — sees a signer who has in fact been removed. On a private
+reading membership from GUARDIAN (an operator dashboard, a consumer checking who
+can sign, an audit) sees a signer who has in fact been removed. On a private
 account GUARDIAN's copy is the only full state a third party can read, so there
 is no second source to correct it.
 
@@ -278,7 +278,7 @@ Devnet's separate constraint is structural and persists: it serves historical
 account state for roughly fifty blocks (~150s), so flows whose step budget
 exceeds that window are excluded from its required set.
 
-### F12. A grown allowlist file reads truncated through a Docker Desktop bind mount — fixed
+### F12. A grown allowlist file reads truncated through a Docker Desktop bind mount (fixed)
 
 `det-operator-allowlist-reload` fails on macOS with a 500 and this server-side
 error, at the same position every time:
@@ -341,7 +341,7 @@ endpoint pubkey commitment 0x1629b4b5db2327ef… does not match expected 0x509f6
 
 The cause is one argument. `verify_endpoint_commitment` in
 `crates/miden-multisig-client/src/guardian_endpoint.rs` fetches the target's
-identity with `client.get_pubkey(None).await` — **no scheme**, so it always gets
+identity with `client.get_pubkey(None).await`, **no scheme**, so it always gets
 GUARDIAN's default, which is Falcon.
 
 GUARDIAN holds one acknowledgement identity per signature scheme (F8), and an

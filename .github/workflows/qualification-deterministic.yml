@@ -2,12 +2,11 @@
 name: Qualification (deterministic)
 
 # Dispatch-only for now. The required deterministic scenarios are implemented and
-# pass; an action without a driver implementation fails closed on a required
-# scenario, so a gap can never read as a pass. What keeps the pull-request
-# trigger off is F12 in docs/QUALIFICATION_FINDINGS.md, a Docker Desktop macOS
-# bind-mount defect the suite works around locally but which has not been
-# exercised on a Linux runner. The trigger block below is the one to restore,
-# unchanged, once a dispatched run has been seen green here:
+# pass, including on macOS since F12 was fixed, and an action without a driver
+# implementation fails closed on a required scenario so a gap can never read as
+# a pass. What is left before this becomes a required check is that it has not
+# run on a Linux runner, and the rule below. The trigger block is the one to
+# restore, unchanged, once a dispatched run has been seen green here:
 #
 #   push:
 #     branches: [main]
