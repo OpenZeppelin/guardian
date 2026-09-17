@@ -513,6 +513,15 @@ impl ServerBuilder {
                     "single-process",
                 ))
             });
+        let stats_leader: Arc<dyn crate::coordination::LeaderElector> = coordination
+            .as_ref()
+            .map(|handles| handles.stats_leader.clone())
+            .unwrap_or_else(|| {
+                Arc::new(crate::coordination::AlwaysLeader::new(
+                    crate::coordination::DASHBOARD_STATS_LEASE,
+                    "single-process",
+                ))
+            });
         let dashboard = match self.dashboard {
             Some(dashboard) => dashboard,
             None => match coordination.as_ref() {
@@ -521,6 +530,7 @@ impl ServerBuilder {
                         network_type,
                         handles.operator_sessions.clone(),
                         handles.operator_challenges.clone(),
+                        handles.stats_store.clone(),
                     )
                     .await?,
                 ),
@@ -616,6 +626,7 @@ impl ServerBuilder {
         Ok(ServerHandle {
             app_state,
             leader,
+            stats_leader,
             startup_info,
             cors_layer: self.cors_layer,
             rate_limit_config: Some(rate_limit_config),

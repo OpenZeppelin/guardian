@@ -1,10 +1,12 @@
 pub mod challenge_store;
 pub mod lease;
 pub mod session_store;
+pub mod stats_store;
 
 pub use challenge_store::PgChallengeStore;
 pub use lease::PgLeaseElector;
 pub use session_store::PgSessionStore;
+pub use stats_store::PgStatsStore;
 
 use diesel_async::AsyncPgConnection;
 use diesel_async::pooled_connection::deadpool::{Object, Pool};

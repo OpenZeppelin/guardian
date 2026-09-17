@@ -1542,6 +1542,20 @@ describe('GuardianOperatorHttpClient — error matrix (FR-028 / SC-012)', () => 
       code: 'data_unavailable',
       invoke: (c) => c.getDashboardInfo(),
     },
+    // Issue #371: the stats aggregate is unavailable until the server's
+    // first background refresh, and rejects malformed cutoffs.
+    {
+      name: '503 DataUnavailable on getDashboardStats',
+      status: 503,
+      code: 'data_unavailable',
+      invoke: (c) => c.getDashboardStats(),
+    },
+    {
+      name: '400 InvalidTimestamp on getDashboardStats',
+      status: 400,
+      code: 'invalid_timestamp',
+      invoke: (c) => c.getDashboardStats({ updatedSince: 'yesterday' }),
+    },
   ];
 
   for (const { name, status, code, invoke } of matrix) {
@@ -1562,11 +1576,301 @@ describe('GuardianOperatorHttpClient — error matrix (FR-028 / SC-012)', () => 
   }
 });
 
+// -----------------------------------------------------------------
+// Issue #371: GET /dashboard/stats — one-call account and Miden vault
+// aggregates.
+// -----------------------------------------------------------------
+
+describe('getDashboardStats (issue #371)', () => {
+  const mockFetch = vi.fn();
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockFetch);
+    mockFetch.mockReset();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function statsPayload(overrides: Record<string, unknown> = {}) {
+    return {
+      as_of: '2026-09-11T12:00:00+00:00',
+      updated_since: '2026-09-04T12:00:00+00:00',
+      refresh_interval_seconds: 300,
+      version: 42,
+      accounts: {
+        total: 2379,
+        by_lifecycle: { active: 2300, paused: 70, released: 9 },
+        by_auth_method: { miden_falcon: 2000, miden_ecdsa: 300, evm: 79 },
+        by_auth_method_and_signer_count: [
+          { auth_method: 'evm', authorized_signer_count: 3, count: 79 },
+          { auth_method: 'miden_ecdsa', authorized_signer_count: 1, count: 300 },
+          { auth_method: 'miden_falcon', authorized_signer_count: 1, count: 1500 },
+          { auth_method: 'miden_falcon', authorized_signer_count: 2, count: 500 },
+        ],
+        updated_within_7d: 1086,
+        updated_within_30d: 1500,
+      },
+      assets: {
+        eligible: 1086,
+        covered: 1080,
+        skipped: { state_unavailable: 4, state_undecodable: 2 },
+        complete: false,
+        fungible: [
+          // Exceeds both u64 and Number.MAX_SAFE_INTEGER by design.
+          { faucet_id: '0xfa1', total_amount: '36893488147419103230' },
+          { faucet_id: '0xfa2', total_amount: '0' },
+        ],
+        non_fungible: [{ faucet_id: '0xnf1', count: 12 }],
+      },
+      ...overrides,
+    };
+  }
+
+  it('decodes the full aggregate and forwards a Date cutoff as RFC3339', async () => {
+    mockFetch.mockResolvedValueOnce(okJson(statsPayload()));
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const stats = await client.getDashboardStats({
+      updatedSince: new Date('2026-09-04T12:00:00Z'),
+    });
+
+    expect(stats).toEqual({
+      asOf: '2026-09-11T12:00:00+00:00',
+      updatedSince: '2026-09-04T12:00:00+00:00',
+      refreshIntervalSeconds: 300,
+      version: 42,
+      accounts: {
+        total: 2379,
+        byLifecycle: { active: 2300, paused: 70, released: 9 },
+        byAuthMethod: { miden_falcon: 2000, miden_ecdsa: 300, evm: 79 },
+        byAuthMethodAndSignerCount: [
+          { authMethod: 'evm', authorizedSignerCount: 3, count: 79 },
+          { authMethod: 'miden_ecdsa', authorizedSignerCount: 1, count: 300 },
+          { authMethod: 'miden_falcon', authorizedSignerCount: 1, count: 1500 },
+          { authMethod: 'miden_falcon', authorizedSignerCount: 2, count: 500 },
+        ],
+        updatedWithin7d: 1086,
+        updatedWithin30d: 1500,
+      },
+      assets: {
+        eligible: 1086,
+        covered: 1080,
+        skipped: { state_unavailable: 4, state_undecodable: 2 },
+        complete: false,
+        fungible: [
+          { faucetId: '0xfa1', totalAmount: '36893488147419103230' },
+          { faucetId: '0xfa2', totalAmount: '0' },
+        ],
+        nonFungible: [{ faucetId: '0xnf1', count: 12 }],
+      },
+    });
+    // Precision survives the wire: consumers can widen with BigInt.
+    expect(BigInt(stats.assets.fungible[0].totalAmount)).toBe(36893488147419103230n);
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/stats?updated_since=2026-09-04T12%3A00%3A00.000Z',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('omits updated_since when no cutoff is given and accepts a null echo', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson(
+        statsPayload({
+          updated_since: null,
+          assets: {
+            eligible: 0,
+            covered: 0,
+            skipped: {},
+            complete: true,
+            fungible: [],
+            non_fungible: [],
+          },
+        }),
+      ),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const stats = await client.getDashboardStats();
+    expect(stats.updatedSince).toBeNull();
+    expect(stats.assets.complete).toBe(true);
+    expect(stats.assets.skipped).toEqual({});
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/stats',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('rejects an invalid Date cutoff before sending anything', async () => {
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(
+      client.getDashboardStats({ updatedSince: new Date('not a date') }),
+    ).rejects.toThrow(/updatedSince is an invalid Date/);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('passes a string cutoff through verbatim', async () => {
+    mockFetch.mockResolvedValueOnce(okJson(statsPayload()));
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await client.getDashboardStats({ updatedSince: '2026-09-04T12:00:00Z' });
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/stats?updated_since=2026-09-04T12%3A00%3A00Z',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  const contractViolations: Array<[string, Record<string, unknown>]> = [
+    [
+      'non-decimal fungible total',
+      {
+        assets: {
+          ...statsPayload().assets,
+          fungible: [{ faucet_id: '0xfa1', total_amount: '0x10' }],
+        },
+      },
+    ],
+    [
+      'numeric fungible total (precision loss)',
+      {
+        assets: {
+          ...statsPayload().assets,
+          fungible: [{ faucet_id: '0xfa1', total_amount: 100 }],
+        },
+      },
+    ],
+    [
+      'negative skipped count',
+      { assets: { ...statsPayload().assets, skipped: { state_unavailable: -1 } } },
+    ],
+    [
+      'missing complete flag',
+      { assets: { ...statsPayload().assets, complete: undefined } },
+    ],
+    [
+      'non-integer signer count',
+      {
+        accounts: {
+          ...statsPayload().accounts,
+          by_auth_method_and_signer_count: [
+            { auth_method: 'miden_falcon', authorized_signer_count: 1.5, count: 1 },
+          ],
+        },
+      },
+    ],
+    ['missing accounts block', { accounts: undefined }],
+    ['missing as_of', { as_of: undefined }],
+    ['missing version', { version: undefined }],
+  ];
+
+  for (const [name, overrides] of contractViolations) {
+    it(`rejects a stats payload with ${name} as a contract error`, async () => {
+      mockFetch.mockResolvedValueOnce(okJson(statsPayload(overrides)));
+      const client = new GuardianOperatorHttpClient('https://guardian.example');
+      await expect(client.getDashboardStats()).rejects.toBeInstanceOf(
+        GuardianOperatorContractError,
+      );
+    });
+  }
+});
+
+describe('requestDashboardStatsRefresh (issue #371)', () => {
+  const mockFetch = vi.fn();
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockFetch);
+    mockFetch.mockReset();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('posts and decodes a queued response', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: async () => ({
+        status: 'queued',
+        requested_at: '2026-09-15T10:00:00+00:00',
+        started_at: null,
+        current_as_of: '2026-09-15T09:55:00+00:00',
+        cooldown_seconds: 60,
+      }),
+    });
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const result = await client.requestDashboardStatsRefresh();
+    expect(result).toEqual({
+      status: 'queued',
+      requestedAt: '2026-09-15T10:00:00+00:00',
+      startedAt: null,
+      currentAsOf: '2026-09-15T09:55:00+00:00',
+      cooldownSeconds: 60,
+    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/stats/refresh',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('decodes an in-progress response', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        status: 'in_progress',
+        requested_at: null,
+        started_at: '2026-09-15T10:00:00+00:00',
+        current_as_of: null,
+        cooldown_seconds: 60,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const result = await client.requestDashboardStatsRefresh();
+    expect(result.status).toBe('in_progress');
+    expect(result.startedAt).toBe('2026-09-15T10:00:00+00:00');
+    expect(result.currentAsOf).toBeNull();
+  });
+
+  it('rejects an unknown status as a contract error', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        status: 'done',
+        requested_at: null,
+        started_at: null,
+        current_as_of: null,
+        cooldown_seconds: 60,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(client.requestDashboardStatsRefresh()).rejects.toBeInstanceOf(
+      GuardianOperatorContractError,
+    );
+  });
+
+  it('surfaces the cooldown as rate_limit_exceeded with retryAfterSecs', async () => {
+    mockFetch.mockResolvedValueOnce(
+      errorResponse({
+        status: 429,
+        statusText: 'Too Many Requests',
+        body: {
+          code: 'rate_limit_exceeded',
+          message: 'Too many requests — please try again shortly.',
+          meta: { retryable: true, retry_after_secs: 37 },
+        },
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const err = (await client
+      .requestDashboardStatsRefresh()
+      .catch((v) => v)) as GuardianOperatorHttpError;
+    expect(err).toBeInstanceOf(GuardianOperatorHttpError);
+    expect(err.status).toBe(429);
+    expect(err.data?.code).toBe('rate_limit_exceeded');
+    expect(err.retryAfterSecs).toBe(37);
+  });
+});
+
 describe('isDashboardErrorCode', () => {
   it('narrows the five-code dashboard taxonomy', () => {
     expect(isDashboardErrorCode('invalid_cursor')).toBe(true);
     expect(isDashboardErrorCode('invalid_limit')).toBe(true);
     expect(isDashboardErrorCode('invalid_status_filter')).toBe(true);
+    expect(isDashboardErrorCode('invalid_timestamp')).toBe(true);
     expect(isDashboardErrorCode('data_unavailable')).toBe(true);
     expect(isDashboardErrorCode('account_not_found')).toBe(true);
     expect(isDashboardErrorCode('authentication_failed')).toBe(true);

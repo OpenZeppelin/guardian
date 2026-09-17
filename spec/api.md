@@ -328,6 +328,8 @@ component schemas.
 | dashboard | `POST /dashboard/accounts/{account_id}/pause` | session + `accounts:pause` | Pause an account |
 | dashboard | `POST /dashboard/accounts/{account_id}/unpause` | session + `accounts:pause` | Unpause an account |
 | dashboard | `GET /dashboard/info` | session + `dashboard:read` | Inventory & lifecycle summary |
+| dashboard | `GET /dashboard/stats` | session + `dashboard:read` | Account counts, Miden asset totals, and coverage in one request |
+| dashboard | `POST /dashboard/stats/refresh` | session + `stats:refresh` | Request an out-of-cycle refresh of the stats aggregate (202) |
 | dashboard | `GET /dashboard/session` | session | Session introspection |
 | dashboard | `GET /dashboard/deltas` | session + `dashboard:read` | Cross-account delta feed |
 | dashboard | `GET /dashboard/proposals` | session + `dashboard:read` | Cross-account proposal feed |
@@ -383,10 +385,41 @@ Semantics not captured by the OpenAPI shapes:
   (FR-017); the account snapshot returns `unsupported_for_network` for EVM
   accounts (no Miden vault to decode).
 - **Aggregate degradation.** On the filesystem backend, cross-account
-  aggregates (`/dashboard/info`, `/dashboard/deltas`, `/dashboard/proposals`)
-  short-circuit to `data_unavailable` (503) above the configured
-  `filesystem_aggregate_threshold` (default 1,000 accounts) rather than
-  full-scan the inventory; `total_account_count` is always returned (FR-029).
+  fan-out aggregates (`/dashboard/info` delta / proposal / activity
+  fields, `/dashboard/deltas`, `/dashboard/proposals`) short-circuit to
+  `data_unavailable` (503) or a `degraded_aggregates` marker above the
+  configured `filesystem_aggregate_threshold` (default 1,000 accounts)
+  rather than full-scan the inventory (FR-029). On `/dashboard/info` the
+  threshold is applied by the `/dashboard/stats` walk that computes those
+  fields, and the affected names surface in `degraded_aggregates`;
+  `total_account_count` and `accounts_by_auth_method` are always
+  returned once a snapshot exists.
+- **Aggregate stats (`GET /dashboard/stats`, issue #371).** Served from
+  one snapshot per fleet: the holder of the `dashboard_stats` lease walks
+  the inventory every `GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`
+  (default 300 s) and publishes to the shared store with lease-fenced,
+  atomic publication (sealed with the storage cipher when at-rest
+  encryption is configured); every replica polls and serves the same
+  `version`. A request never reads storage or decodes a vault, and
+  reports the snapshot time as `as_of` (the interval is not a bound on
+  its age). `POST /dashboard/stats/refresh` (`stats:refresh`) queues an
+  out-of-cycle walk (`202`, `queued` / `in_progress`); requests inside
+  the 60-second cooldown are `429 rate_limit_exceeded` with
+  `Retry-After`. `?updated_since=<RFC3339>` restricts the
+  **asset** aggregate to accounts whose metadata `updated_at >=
+  updated_since` (account counts are always unfiltered; blank is
+  treated as absent; any other non-RFC3339 value is `400
+  invalid_timestamp`; percent-encode a `+` offset or use `Z`). Eligibility is Miden-only. Fungible totals are
+  base-10 decimal strings summed in 128-bit; coverage satisfies
+  `covered + Σskipped == eligible`, and any skipped account (reasons
+  `state_unavailable`, `state_undecodable`) makes `complete: false` —
+  a missing or undecodable state is never reported as a zero balance.
+  Until the first refresh after startup the endpoint returns `503
+  data_unavailable` (retryable). A walk that fails at any systemic
+  storage read keeps the previous snapshot published; a single corrupt
+  row is explicit `state_undecodable` coverage. Every cross-account
+  aggregate on `/dashboard/info` reads the same snapshot (reported as
+  `aggregates_as_of`), so the two endpoints never disagree.
 - **Account detail / snapshot.** Both are decode-only views of Guardian's
   stored state at the last-canonicalized commitment — no live Miden RPC and
   no cross-account joins. `has_pending_candidate: true` means the decoded
@@ -436,6 +469,7 @@ Stable error codes include:
 - `invalid_cursor` (dashboard pagination, see feature `005-operator-dashboard-metrics`)
 - `invalid_limit`
 - `invalid_status_filter`
+- `invalid_timestamp` (`/dashboard/stats?updated_since=` is not RFC3339, issue #371)
 - `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`
 - `GUARDIAN_ACCOUNT_PAUSED`
 - `data_unavailable`
@@ -552,12 +586,16 @@ behavior.
 | `guardian_accounts_created_total` | counter | `kind` (`miden`/`evm`) |
 | `guardian_metrics_refresh_timestamp_seconds` | gauge | — |
 | `guardian_metrics_refresh_failures_total` | counter | — |
+| `guardian_dashboard_stats_refresh_timestamp_seconds` | gauge | — |
+| `guardian_dashboard_stats_refresh_failures_total` | counter | — |
+| `guardian_dashboard_stats_refresh_duration_seconds` | histogram | — |
 | `process_*` (CPU, RSS, fds, start time) | standard | — |
 
 Durations use seconds with explicit buckets from 1ms to 10s, except
 `guardian_canonicalization_run_duration_seconds`,
-`guardian_canonicalization_fast_run_duration_seconds` and
-`guardian_canonicalization_reconcile_run_duration_seconds`, which use extended
+`guardian_canonicalization_fast_run_duration_seconds`,
+`guardian_canonicalization_reconcile_run_duration_seconds` and
+`guardian_dashboard_stats_refresh_duration_seconds`, which use extended
 buckets up to 5 minutes, and
 `guardian_canonicalization_candidate_age_seconds` which spans 1 second
 to 24 hours so stuck candidates stay visible. The
