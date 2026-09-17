@@ -211,8 +211,11 @@ requests routed to different replicas never disagree on totals or
   counterpart) the published payload — a copy of every account's vault
   totals — is sealed with the same cipher as `states.state_json`, bound
   to its publication version, so the snapshot never widens the at-rest
-  boundary; a plaintext row published before encryption was enabled is
-  ignored and superseded by the next publication.
+  boundary. The snapshot is derived data: a stored row the cipher cannot
+  open (plaintext from before encryption was enabled, a retired key id,
+  a restore under different key material, a corrupt payload) is ignored
+  and replaced by the next walk rather than pinning every replica to
+  it.
 - Every replica polls the store's head version every 5 seconds and
   loads a new publication into memory. Requests read only that copy:
   no storage reads, no vault decoding, and an `updated_since` cutoff

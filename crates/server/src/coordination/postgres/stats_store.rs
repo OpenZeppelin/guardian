@@ -8,9 +8,12 @@
 //! When storage encryption is configured the payload is sealed with the
 //! same cipher as `states.state_json` (AAD bound to the publication
 //! version), so the snapshot — a copy of every account's vault totals —
-//! never widens the at-rest boundary. A plaintext row found while
-//! encryption is on (published before the key was configured) is
-//! treated as absent and superseded by the next publication.
+//! never widens the at-rest boundary. The snapshot is derived data,
+//! fully reconstructible from storage, so a stored row the cipher
+//! cannot open — plaintext published before the key was configured, an
+//! envelope under a retired key id, a payload restored under different
+//! key material, or a corrupt one — is treated as absent and superseded
+//! by the next publication instead of pinning the fleet to it.
 
 use std::time::Duration;
 
@@ -54,9 +57,13 @@ impl PgStatsStore {
         }
     }
 
-    /// `Ok(None)` when encryption is on but the stored payload is not an
-    /// envelope: a pre-encryption plaintext row is never trusted or
-    /// served; it is simply superseded by the next publication.
+    /// `Ok(None)` when encryption is on and the stored payload cannot be
+    /// opened, whatever the reason. The snapshot is derived data: a row
+    /// the cipher refuses is never trusted or served, and treating it as
+    /// absent lets the next walk (from an empty baseline) replace it.
+    /// Returning an error here would instead block the baseline sync
+    /// that precedes every walk, so no replica could ever publish over
+    /// the bad row.
     fn open(&self, version: i64, stored: serde_json::Value) -> Result<Option<serde_json::Value>> {
         match &self.cipher {
             None => Ok(Some(stored)),
@@ -69,7 +76,14 @@ impl PgStatsStore {
                     );
                     Ok(None)
                 }
-                Err(e) => Err(storage_err("decrypt snapshot payload", e)),
+                Err(error) => {
+                    tracing::warn!(
+                        version,
+                        %error,
+                        "dashboard stats: stored snapshot does not decrypt; ignoring it until the next publication"
+                    );
+                    Ok(None)
+                }
             },
         }
     }
@@ -584,14 +598,57 @@ mod postgres_tests {
         assert_eq!(store.load_current().await.unwrap(), None);
 
         // An envelope under a different version fails authentication
-        // (AAD mismatch) and is reported as a storage error, not served.
+        // (AAD mismatch): ignored, never served, so the next walk can
+        // replace it instead of every replica failing on it.
         let sealed_v2 = store.seal(2, &secret).unwrap();
         diesel::sql_query("UPDATE dashboard_stats_snapshots SET payload = $1 WHERE version = 1")
             .bind::<Jsonb, _>(&sealed_v2)
             .execute(&mut conn)
             .await
             .unwrap();
-        assert!(store.load_current().await.is_err());
+        assert_eq!(store.load_current().await.unwrap(), None);
+
+        // A valid envelope under a key id this deployment no longer
+        // holds (retired kid, or a restore under different key material)
+        // is likewise ignored ...
+        let sealed_v1 = store.seal(1, &secret).unwrap();
+        diesel::sql_query("UPDATE dashboard_stats_snapshots SET payload = $1 WHERE version = 1")
+            .bind::<Jsonb, _>(&sealed_v1)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let other_key: Arc<dyn StorageKeyProvider> = Arc::new(
+            InMemoryKeyProvider::from_dev_key(
+                &base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
+                "k2",
+            )
+            .unwrap(),
+        );
+        let other_store = PgStatsStore::new(
+            pool.clone(),
+            Some(Arc::new(Aes256GcmCipher::new(other_key))),
+        );
+        assert_eq!(other_store.current_version().await.unwrap(), Some(1));
+        assert_eq!(other_store.load_current().await.unwrap(), None);
+        // ... and a publish through the store that owns the current key
+        // replaces it, so the fleet recovers without manual cleanup.
+        let published = other_store
+            .publish(
+                &fence_of(&lease),
+                now,
+                now,
+                serde_json::json!({ "fresh": true }),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            published,
+            PublishOutcome::Published { version: 2, .. }
+        ));
+        assert_eq!(
+            other_store.load_current().await.unwrap().unwrap().payload,
+            serde_json::json!({ "fresh": true })
+        );
 
         a.release(lease).await.unwrap();
     }
