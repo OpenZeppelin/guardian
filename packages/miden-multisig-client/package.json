@@ -48,6 +48,7 @@
     "@openzeppelin/guardian-client": "^0.17.0"
   },
   "devDependencies": {
+    "@openzeppelin/guardian-operator-client": "^0.17.0",
     "@playwright/test": "^1.60.0",
     "@types/node": "^24.13.5",
     "fake-indexeddb": "^6.2.5",

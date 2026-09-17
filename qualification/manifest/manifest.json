@@ -712,6 +712,26 @@
     },
     {
       "actions": [
+        "account-heritage",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "live-heritage-account-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": false,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "A long-lived ECDSA account created by an earlier build still transacts"
+    },
+    {
+      "actions": [
         "account-create",
         "account-register",
         "asset-transfer",

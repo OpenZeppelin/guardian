@@ -32,7 +32,17 @@ fn account_id(fixtures: &Fixtures) -> Result<AccountId, ActionOutcome> {
 
 /// Registers the committed fixture account. The server must carry the matching
 /// acknowledgement identity, because the account's stored state binds it.
+///
+/// Does nothing on the second pass. `det-restart-durability` lists this action
+/// before its assertion, and the whole scenario runs again after the restart, so
+/// registering there would recreate exactly the state the assertion is looking
+/// for: the account would be present because this call had just put it back, not
+/// because it survived. The same trap applies to an upgrade, where a wiped
+/// database would read as a successful migration.
 pub async fn register(runner: &Runner) -> ActionOutcome {
+    if runner.post_restart {
+        return ActionOutcome::Passed;
+    }
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
     };

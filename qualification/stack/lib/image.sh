@@ -47,10 +47,17 @@ qual_build_image() {
   echo "${sha}"
 }
 
+# Read out of the manifest JSON rather than through a field template.
+# `--format '{{.Manifest.Digest}}'` looks right and is not: the manifest is a
+# map with a lowercase `digest`, Go templates are case-sensitive, and buildx
+# answers an unresolvable field by silently printing its human output instead of
+# failing. The malformed-digest check below is what caught it, and only because
+# the human output happens not to look like a digest.
 qual_resolve_digest() {
   local reference="$1"
   local digest
-  digest="$(docker buildx imagetools inspect "${reference}" --format '{{.Manifest.Digest}}' 2>/dev/null)" || {
+  digest="$(docker buildx imagetools inspect "${reference}" --format '{{json .Manifest}}' 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("digest",""))' 2>/dev/null)" || {
     echo "error: cannot resolve ${reference} to a digest" >&2
     return 1
   }

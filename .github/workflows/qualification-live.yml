@@ -20,12 +20,20 @@ name: Qualification (live)
 # restriction closes that, so the guard job is defence in depth, never the
 # control.
 #
-# The schedule is deliberately absent. It stays off until the per-network
-# environments exist, an environment-blocked run stops failing the job, and a
-# failure notification is wired. A cron that goes red on merge and notifies
-# nobody trains people to ignore it.
+# The nightly schedule covers both networks. Two of its three preconditions are
+# met: an environment-blocked run exits 0 rather than leaving the job red through
+# a Miden upgrade window, and a failure opens or updates a tracking issue so a
+# red night reaches someone. The third is not ours to set: until the
+# `qualification-devnet` and `qualification-testnet` environments exist and hold
+# QUAL_TREASURY_KEY, every scheduled run stops at the missing-secret check. That
+# is loud and correct rather than silently green, but it does mean the schedule
+# says nothing about the product until the environments are created.
 
 on:
+  schedule:
+    # Nightly, after the working day in both hemispheres and away from the hour
+    # boundary where GitHub's scheduler is most contended.
+    - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
       network:
@@ -70,11 +78,13 @@ on:
         default: false
 
 concurrency:
-  group: qualification-live-${{ inputs.network }}
+  group: qualification-live-${{ inputs.network || matrix.network }}
   cancel-in-progress: false
 
 permissions:
   contents: read
+  # Only so a failed scheduled run can open or comment on its tracking issue.
+  issues: write
 
 jobs:
   guard:
@@ -107,12 +117,19 @@ jobs:
           exit 1
 
   live:
-    name: Live Profile (${{ inputs.network }})
+    name: Live Profile (${{ matrix.network }})
     needs: guard
     runs-on: ubuntu-latest
     timeout-minutes: 240
     if: github.repository_owner == 'OpenZeppelin'
-    environment: qualification-${{ inputs.network }}
+    strategy:
+      # Both networks nightly, one on dispatch. `fail-fast: false` so a devnet
+      # outage does not cancel the testnet run, which is the one that gates a
+      # release.
+      fail-fast: false
+      matrix:
+        network: ${{ github.event_name == 'schedule' && fromJSON('["testnet","devnet"]') || fromJSON(format('["{0}"]', inputs.network)) }}
+    environment: qualification-${{ matrix.network }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -162,7 +179,7 @@ jobs:
           TREASURY_KEY: ${{ secrets.QUAL_TREASURY_KEY }}
         run: |
           if [[ -z "${TREASURY_KEY}" ]]; then
-            echo "::error::GitHub environment 'qualification-${{ inputs.network }}' is missing QUAL_TREASURY_KEY"
+            echo "::error::GitHub environment 'qualification-${{ matrix.network }}' is missing QUAL_TREASURY_KEY"
             exit 1
           fi
 
@@ -170,7 +187,7 @@ jobs:
         id: run
         env:
           QUAL_TREASURY_KEY: ${{ secrets.QUAL_TREASURY_KEY }}
-          NETWORK: ${{ inputs.network }}
+          NETWORK: ${{ matrix.network }}
           IMAGE_TAG: ${{ inputs.image-tag }}
           PAIRING: ${{ inputs.pairing }}
           SDK: ${{ inputs.sdk }}
@@ -222,16 +239,41 @@ jobs:
         if: always() && steps.scan.outputs.clean == 'true'
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: qualification-live-${{ inputs.network }}-${{ github.run_id }}
+          name: qualification-live-${{ matrix.network }}-${{ github.run_id }}
           path: qualification-results/
           retention-days: 30
           if-no-files-found: warn
+
+      # A nightly that goes red and notifies nobody trains people to ignore it.
+      # One issue per network, reopened and commented rather than a new one each
+      # night, so a week of failures is one thread instead of seven.
+      - name: Report a failed scheduled run
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NETWORK: ${{ matrix.network }}
+          EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly qualification failing on ${NETWORK}"
+          body="Harness exit ${EXIT_CODE:-unknown}. Run: ${RUN_URL}
+
+          Read \`classification\` on the failing scenario before treating this as a
+          product defect: exit 2 is the harness or the environment, exit 1 is the
+          product. An environment-blocked run exits 0 and never reaches here."
+          existing="$(gh issue list --state open --search "\"${title}\" in:title" \
+            --json number --jq '.[0].number' || true)"
+          if [[ -n "${existing}" ]]; then
+            gh issue comment "${existing}" --body "${body}"
+          else
+            gh issue create --title "${title}" --body "${body}" --label enhancement
+          fi
 
       - name: Summary
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
-          NETWORK: ${{ inputs.network }}
+          NETWORK: ${{ matrix.network }}
           EXIT_CODE: ${{ steps.run.outputs.exit-code }}
         run: |
           {

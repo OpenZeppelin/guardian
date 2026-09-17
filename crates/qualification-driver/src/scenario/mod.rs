@@ -176,6 +176,9 @@ impl Runner {
         // path never produced, twice.
         let handled = if live_profile {
             match action {
+                Action::AccountHeritage => {
+                    Some(live::open_heritage(self, scenario.scheme, run_tag).await)
+                }
                 Action::AccountCreate => {
                     Some(live::create(self, scenario.shape, scenario.scheme, run_tag).await)
                 }

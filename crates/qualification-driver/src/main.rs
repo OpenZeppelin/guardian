@@ -39,6 +39,13 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Create the long-lived account's key, printing the secret once.
+    HeritageNew {
+        /// Fixed at creation: the scheme is baked into the account's on-chain
+        /// code, so a heritage account can never change it.
+        #[arg(long, value_enum, default_value = "ecdsa")]
+        scheme: SchemeArg,
+    },
     /// Create a treasury key, printing the secret once and the address to fund.
     TreasuryNew {
         #[arg(long, value_enum)]
@@ -181,6 +188,21 @@ enum Command {
 enum ProfileArg {
     Deterministic,
     Live,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum SchemeArg {
+    Falcon,
+    Ecdsa,
+}
+
+impl From<SchemeArg> for guardian_qualification_driver::manifest::Scheme {
+    fn from(value: SchemeArg) -> Self {
+        match value {
+            SchemeArg::Falcon => Self::Falcon,
+            SchemeArg::Ecdsa => Self::Ecdsa,
+        }
+    }
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -332,6 +354,23 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
             })?;
             let merged = merge::merge_directory(&results, Some(&manifest), run_id.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&merged)?);
+            Ok(std::process::ExitCode::SUCCESS)
+        }
+        Command::HeritageNew { scheme } => {
+            // Printed, not written: the caller decides where it lives, the same
+            // way the treasury secret is handled. The account id is not known
+            // until the account first transacts, so it is stored alongside once
+            // the account exists.
+            let scheme: guardian_qualification_driver::manifest::Scheme = scheme.into();
+            let signer =
+                guardian_qualification_driver::funding::accounts::RunSigner::generate(scheme)
+                    .ok_or_else(|| anyhow::anyhow!("cannot generate a {scheme:?} signer"))?;
+            eprintln!(
+                "Long-lived account key created. Store it in qualification/.treasury-secrets.env \
+                 as QUAL_HERITAGE_KEY_<network>, create the account once, then store its id as \
+                 QUAL_HERITAGE_ACCOUNT_<network>. It is not recoverable."
+            );
+            println!("{}", signer.to_hex());
             Ok(std::process::ExitCode::SUCCESS)
         }
         Command::TreasuryNew { network } => {

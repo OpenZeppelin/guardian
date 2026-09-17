@@ -169,6 +169,25 @@ qual_check_pairing nonsense built 2>/dev/null && fail "an unknown pairing is rej
   || pass "an unknown pairing is rejected"
 
 echo
+echo "digest resolution"
+# `--format '{{.Manifest.Digest}}'` looked right and silently returned buildx's
+# human output, because the manifest key is lowercase and Go templates are
+# case-sensitive. The release pairing pulls by digest, so this decided whether a
+# published image could be qualified at all.
+if command -v docker >/dev/null 2>&1; then
+  # shellcheck source=../lib/image.sh
+  source "${STACK_DIR}/lib/image.sh"
+  resolved="$(qual_resolve_digest ghcr.io/openzeppelin/guardian:v0.17.0 2>/dev/null)"
+  if [[ "${resolved}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    pass "resolves a published tag to a bare digest"
+  else
+    fail "resolves a published tag to a bare digest" "got '${resolved}'"
+  fi
+else
+  skip "digest resolution" "docker CLI not installed"
+fi
+
+echo
 echo "exit severity"
 # 3 means nothing ran that could judge the product, and the live workflow maps
 # it to success, so a product or setup failure has to beat it.

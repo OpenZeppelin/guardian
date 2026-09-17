@@ -46,6 +46,7 @@ that ships with the driver is a switch that can be left on.
 |---|---|---|
 | Execution submits nothing | drop the `executeProposal` call in `tests/qualification/actions/live.ts` | `failed` / `product`, naming the unmoved account nonce |
 | Signatures are claimed but never collected | in `collectSignatures`, increment the counter without calling `signProposal` | `failed` / `product`, naming the unmet threshold |
+| Stored data does not survive an upgrade | drop the database between the seed and the swap in `run.sh --upgrade-from` | `failed` / `product`, naming the unreadable account |
 
 ```bash
 cd packages/miden-multisig-client
@@ -57,9 +58,29 @@ QUAL_OUT_DIR=/tmp/nc QUAL_RUN_ID=nc-1 \
   npx vitest run --config vitest.qualification.config.ts
 ```
 
-Both controls were run on 2026-09-16 and both produced the expected verdict.
-Reverting restores a passing run, which is the other half of the check: a
-control that fails in both directions proves nothing.
+The first two controls were run on 2026-09-16 and the third on 2026-09-17; all
+produced the expected verdict. Reverting restores a passing run, which is the
+other half of the check: a control that fails in both directions proves nothing.
+
+### What the third control found
+
+The upgrade control passed when it should have failed. With the database
+destroyed between the seed and the swap, `det-restart-durability` still reported
+a pass.
+
+The cause was in the scenario, not the upgrade plumbing. Its actions are
+`account-register` then `restart-durability`, and the whole scenario runs again
+on the second pass, so the register put the account back before the assertion
+looked for it. The account was present because the scenario had just recreated
+it, not because it had survived.
+
+That also means the restart assertion had never proven what it claimed. A
+restart does not lose data, so the re-registration never changed the verdict and
+nothing drew attention to it; only destroying the data exposed the mask.
+
+`register` is now a no-op on the second pass, so both the restart and the
+upgrade read rather than rewrite. With the fix, the wiped-database control fails
+and the ordinary run passes.
 
 ### What the first control found
 

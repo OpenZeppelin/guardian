@@ -39,6 +39,39 @@ impl RunSigner {
             Self::Ecdsa(_) => Scheme::Ecdsa,
         }
     }
+
+    /// Restores a signer from its stored hex, for the one account that is meant
+    /// to outlive a run.
+    ///
+    /// This is the deliberate exception to the rule above. A heritage account
+    /// exists to answer a question no fresh account can: whether an account
+    /// created by an older build still works under this one. Its assertions are
+    /// written to survive the leftover state that makes key reuse dangerous
+    /// elsewhere, and it is the only place this constructor is used.
+    pub fn from_hex(scheme: Scheme, hex_key: &str) -> anyhow::Result<Self> {
+        use miden_protocol::utils::serde::Deserializable;
+        let bytes = hex::decode(hex_key.trim().trim_start_matches("0x"))?;
+        match scheme {
+            Scheme::Falcon => Ok(Self::Falcon(
+                FalconSecretKey::read_from_bytes(&bytes)
+                    .map_err(|error| anyhow::anyhow!("not a Falcon key: {error}"))?,
+            )),
+            Scheme::Ecdsa => Ok(Self::Ecdsa(
+                EcdsaSecretKey::read_from_bytes(&bytes)
+                    .map_err(|error| anyhow::anyhow!("not an ECDSA key: {error}"))?,
+            )),
+            other => anyhow::bail!("{other:?} has no single signer key"),
+        }
+    }
+
+    /// The stored form `from_hex` reads back.
+    pub fn to_hex(&self) -> String {
+        use miden_protocol::utils::serde::Serializable;
+        match self {
+            Self::Falcon(key) => hex::encode(key.to_bytes()),
+            Self::Ecdsa(key) => hex::encode(key.to_bytes()),
+        }
+    }
 }
 
 /// The signer set a multisig shape needs, all freshly generated.

@@ -41,6 +41,7 @@ NETWORK=""
 IMAGE_SOURCE="built"
 IMAGE_REF="HEAD"
 IMAGE_TAG=""
+UPGRADE_FROM=""
 PAIRING=""
 SDK="both"
 TRIGGER="dispatch"
@@ -59,6 +60,11 @@ Usage: qualification/stack/run.sh [OPTIONS]
   --image-source   built | pulled              (default: built)
   --image-ref      git ref to build            (default: HEAD)
   --image-tag      tag or digest to pull       (with --image-source pulled)
+  --upgrade-from   published tag to seed from, then upgrade to the image
+                   under test on the same database. Pair it with a scenario
+                   whose assertion fails on an empty database, such as
+                   det-restart-durability; a scenario that only re-registers
+                   the fixture account passes either way.
   --pairing        branch | release | published
   --scenario       scenario id (repeatable)
   --select         dimension=value (repeatable)
@@ -83,6 +89,7 @@ while [[ $# -gt 0 ]]; do
     --image-source) IMAGE_SOURCE="${2:-}"; shift 2 ;;
     --image-ref) IMAGE_REF="${2:-}"; shift 2 ;;
     --image-tag) IMAGE_TAG="${2:-}"; shift 2 ;;
+    --upgrade-from) UPGRADE_FROM="${2:-}"; shift 2 ;;
     --pairing) PAIRING="${2:-}"; shift 2 ;;
     --scenario) SCENARIOS+=("${2:-}"); shift 2 ;;
     --select) SELECTORS+=("${2:-}"); shift 2 ;;
@@ -220,8 +227,18 @@ else
   fi
 fi
 
+# When upgrading, the stack comes up on the older image and the image under test
+# replaces it later, so its migrations run against rows the older release wrote.
+BOOT_IMAGE="${SERVER_IMAGE}"
+if [[ -n "${UPGRADE_FROM}" ]]; then
+  echo "==> resolving ${UPGRADE_FROM} to seed from"
+  SEED_DIGEST="$(qual_resolve_digest "${UPGRADE_FROM}")" || exit "${EXIT_SETUP_FAILURE}"
+  BOOT_IMAGE="${UPGRADE_FROM%%@*}@${SEED_DIGEST}"
+  docker pull --quiet "${BOOT_IMAGE}" >/dev/null || exit "${EXIT_SETUP_FAILURE}"
+fi
+
 ENV_FILE="${STACK_DIR}/.env.generated"
-qual_generate_env "${PROFILE}" "${NETWORK_TYPE}" "${RPC_ENDPOINT}" "${SERVER_IMAGE}" "${ENV_FILE}"
+qual_generate_env "${PROFILE}" "${NETWORK_TYPE}" "${RPC_ENDPOINT}" "${BOOT_IMAGE}" "${ENV_FILE}"
 COMPOSE_FILE="${STACK_DIR}/compose.yml"
 
 echo "==> provisioning the acknowledgement identity"
@@ -403,6 +420,47 @@ qual_exit_rank() {
 }
 if (( $(qual_exit_rank "${TS_EXIT}") > $(qual_exit_rank "${DRIVER_EXIT}") )); then
   DRIVER_EXIT=${TS_EXIT}
+fi
+
+# The upgrade question, asked after the seeding scenarios have written real rows
+# through the product's own API: does the image under test boot on a database an
+# older release wrote, and is that data still there once its migrations have run?
+# A hand-written SQL fixture would test the same path but has to be kept in step
+# with a schema it does not own, so the seed is whatever the scenarios above
+# actually stored.
+if [[ -n "${UPGRADE_FROM}" && "${SDK}" != "typescript" ]]; then
+  echo "==> upgrading from ${UPGRADE_FROM} to the image under test"
+  if ! qual_swap_server_image "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${SERVER_IMAGE}" \
+     || ! qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180; then
+    # Refusing to boot on an older release's data is the defect this looks for,
+    # so it is a product failure rather than a setup problem.
+    echo "error: the image under test did not become ready on the upgraded database" >&2
+    qual_capture_diagnostics "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${OUT_DIR}/diagnostics"
+    DRIVER_EXIT=${EXIT_PRODUCT_FAILURE}
+  else
+    UPGRADE_ARGS=()
+    for arg in "${DRIVER_ARGS[@]}"; do
+      UPGRADE_ARGS+=("${arg}")
+    done
+    for index in "${!UPGRADE_ARGS[@]}"; do
+      if [[ "${UPGRADE_ARGS[${index}]}" == "${QUAL_RUN_ID}" ]]; then
+        UPGRADE_ARGS[${index}]="${QUAL_RUN_ID}-post-upgrade"
+        break
+      fi
+    done
+    # `--post-restart` so the durability assertion actually asserts. Without it
+    # `restart-durability` skips, and the scenarios that remain re-register the
+    # fixture account, which is idempotent and would pass just as happily
+    # against an empty database. An upgrade check that cannot tell a migrated
+    # database from a fresh one proves nothing.
+    set +e
+    "${DRIVER[@]}" "${UPGRADE_ARGS[@]}" --post-restart
+    UPGRADE_EXIT=$?
+    set -e
+    if (( $(qual_exit_rank "${UPGRADE_EXIT}") > $(qual_exit_rank "${DRIVER_EXIT}") )); then
+      DRIVER_EXIT=${UPGRADE_EXIT}
+    fi
+  fi
 fi
 
 # Durability can only be asserted after the process that wrote the data is gone,

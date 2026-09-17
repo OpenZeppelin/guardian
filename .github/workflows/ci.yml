@@ -334,11 +334,15 @@ jobs:
           EOF
 
       # Workspaces link the package sources, but the multisig SDK imports the
-      # guardian-client's generated dist output.
+      # generated dist output of both. The operator client is a test-only
+      # dependency: the qualification suite's dashboard scenarios drive the
+      # operator surface through it.
       - name: Build workspace dependencies
         if: matrix.package == 'miden-multisig-client'
         working-directory: packages
-        run: npm run build -w @openzeppelin/guardian-client
+        run: |
+          npm run build -w @openzeppelin/guardian-client
+          npm run build -w @openzeppelin/guardian-operator-client
 
       - name: Build
         working-directory: packages
