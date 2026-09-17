@@ -182,6 +182,104 @@ A test fails if the generated file drifts from its sources. The TypeScript
 driver consumes the JSON rather than parsing TOML itself, so the two drivers
 cannot disagree about what a scenario means.
 
+### Adding a scenario
+
+First decide which of two jobs you have. A scenario that composes **existing**
+actions is data only and needs no code in either driver. A scenario that needs
+the drivers to do something new needs an action, which is code in both.
+
+**Composing existing actions.** Add an entry to `scenarios.toml`:
+
+```toml
+[[scenario]]
+id = "live-remove-signer-2of3-falcon"
+title = "A signer is removed and the account reports the smaller set"
+profile = "live"                 # live | deterministic
+sdk = "both"                     # both | rust | typescript
+runtime = "server-side"
+scheme = "falcon"                # falcon | ecdsa | n/a
+shape = "2-of-3"
+mode = "online"                  # online | offline | n/a
+actions = ["account-create", "account-register", "asset-transfer",
+           "note-consume", "signer-remove", "proposal-sign",
+           "proposal-execute", "signer-removed-refused", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+```
+
+Actions run in order, and a scenario claims only the actions it names: passing a
+generic lifecycle never implies an action it did not list. Ordering carries
+weight beyond convenience. `signer-removed-refused` sits before
+`signer-set-assert` deliberately, so the authorization check still runs when the
+listing assertion fails.
+
+The valid action names are the `From<String>` arms in
+`crates/qualification-driver/src/manifest/mod.rs`. That is the authoritative
+list; anything else is rejected at load time rather than skipped:
+
+```
+error: scenario `det-status-identity` names action `totally-made-up`,
+       which is outside the vocabulary
+```
+
+Then regenerate and validate:
+
+```bash
+cargo run -p guardian-qualification-driver -- export-manifest \
+  --out qualification/manifest/manifest.json
+cargo run -p guardian-qualification-driver -- validate
+```
+
+**Adding an action.** Six edits across five files. Missing any one fails closed
+on a required scenario rather than silently skipping, which is the point, but it
+is still cheaper to make all six at once:
+
+| Where | What |
+|---|---|
+| `crates/qualification-driver/src/manifest/mod.rs` | the `Action` variant |
+| the same file | its `From<String>` arm, the wire name |
+| `crates/qualification-driver/src/scenario/mod.rs` | the Rust dispatch arm |
+| `crates/qualification-driver/src/scenario/{live,account,identity,error_envelope}.rs` | the Rust body, in the file for its family |
+| `packages/miden-multisig-client/tests/qualification/runner.ts` | the TypeScript dispatch case |
+| `packages/miden-multisig-client/tests/qualification/actions/{live,account,identity,errorEnvelope,operator}.ts` | the TypeScript body |
+
+An action implemented on one SDK only is legitimate when it records a real
+capability gap, but it must report a skip naming the gap rather than a pass. See
+F1 and F3 in [QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md) for what
+that looks like.
+
+**Then the matrix.** `required = true` in `scenarios.toml` means a pass is part
+of the qualification claim. `matrix.toml` decides where it must hold: list the
+scenario under a pair's `excluded_scenarios` when a network cannot support it.
+Use that for a structural limitation, such as a flow whose `step_budget`
+exceeds devnet's historical window, and not for a network that is merely down.
+A network that is down stays available and reports environment-blocked at run
+time, so recovery needs no edit here. The validator refuses a scenario whose
+budget exceeds a network's window while still required there.
+
+**Then run just that scenario**, which does not need the stack:
+
+```bash
+cargo run -p guardian-qualification-driver -- run \
+  --profile live --network testnet --sdk rust \
+  --scenario live-remove-signer-2of3-falcon \
+  --run-id local-$(date +%s) \
+  --http-endpoint http://127.0.0.1:3000 \
+  --grpc-endpoint http://127.0.0.1:50051 \
+  --out /tmp/qual-results/result.json
+```
+
+The two drivers reach Guardian over **different transports**, Rust over gRPC
+and TypeScript over HTTP, so passing one the other's endpoint fails in a way
+that looks like an outage. Once the scenario passes standalone, confirm it
+through the stack with `run.sh --scenario <id>`.
+
+**Then break it on purpose.** A new scenario that has only ever passed is not
+known to detect anything. Make the behaviour it checks wrong, confirm that
+scenario fails by name, and revert. `qualification/README.md` records the
+procedure and the controls run so far.
+
 ## Treasury
 
 Each network has one long-lived treasury account, held as a protected

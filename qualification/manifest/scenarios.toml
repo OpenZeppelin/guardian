@@ -1,5 +1,11 @@
 # Scenario definitions. Read by both drivers; defined by neither.
-# See speckit/features/001-system-e2e-qualification/contracts/scenario-manifest.md
+#
+# How to add one: docs/QUALIFICATION.md, "Adding a scenario".
+# The authoritative action vocabulary is the From<String> arms in
+# crates/qualification-driver/src/manifest/mod.rs. The field contract as
+# originally specified is in
+# speckit/features/001-system-e2e-qualification/contracts/scenario-manifest.md,
+# whose action list predates most of the actions and is not the one to read.
 
 [[scenario]]
 id = "det-status-identity"

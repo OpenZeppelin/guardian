@@ -136,10 +136,17 @@ validator also refuses a scenario whose step budget exceeds a network's
 historical window while required there, so exclude it for that network rather than
 shrinking a budget the flow cannot meet.
 
-A new action needs four edits, and missing any one fails closed rather than
-silently skipping: the `Action` enum and its `From<String>` arm, the Rust
-dispatch in `scenario/mod.rs`, the TypeScript dispatch in `runner.ts`, and the
-action bodies in `scenario/live.rs` and `actions/live.ts`.
+A new action needs **six edits across five files**, and missing any one fails
+closed on a required scenario rather than silently skipping: the `Action`
+variant and its `From<String>` arm in `manifest/mod.rs`, the Rust dispatch in
+`scenario/mod.rs`, the Rust body in `scenario/{live,account,identity,error_envelope}.rs`,
+the TypeScript dispatch in `runner.ts`, and the TypeScript body in
+`actions/{live,account,identity,errorEnvelope,operator}.ts`. The body goes in
+the file for the action's family, not always `live`.
+
+A scenario that only composes existing actions needs no driver code at all. The
+full procedure, including the matrix and the negative control, is in
+`docs/QUALIFICATION.md`, "Adding a scenario".
 
 ## Reading a result
 

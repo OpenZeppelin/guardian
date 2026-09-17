@@ -42,6 +42,11 @@ required      = true
 
 ## Action vocabulary (FR-019a)
 
+The list below is the vocabulary as specified, and the suite has since roughly
+doubled it. The implemented vocabulary is the `From<String>` arms in
+`crates/qualification-driver/src/manifest/mod.rs`; a name outside it is rejected
+at load time.
+
 `account-create`, `account-register`, `account-recover-by-cosigner`,
 `proposal-create`, `proposal-create-offline`, `proposal-export`,
 `proposal-sign`, `proposal-sign-external`, `proposal-import`,
