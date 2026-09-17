@@ -165,6 +165,7 @@ pub enum Action {
     OperatorAllowlistReload,
     OperatorLogout,
     OperatorAudit,
+    SchemeGate,
     Unknown(String),
 }
 
@@ -209,6 +210,7 @@ impl From<String> for Action {
             "operator-allowlist-reload" => Self::OperatorAllowlistReload,
             "operator-logout" => Self::OperatorLogout,
             "operator-audit" => Self::OperatorAudit,
+            "scheme-gate" => Self::SchemeGate,
             other => Self::Unknown(other.to_string()),
         }
     }

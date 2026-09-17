@@ -88,9 +88,18 @@ pub struct PartialRun {
     pub scenario_results: Vec<super::ScenarioResult>,
 }
 
+/// Merges the run results in `directory`.
+///
+/// `run_id` narrows it to one run. The directory is shared across runs, so a
+/// run whose Rust leg never wrote a result leaves its TypeScript results
+/// orphaned there, and an orphan is fatal by design: results without their run
+/// mean a leg died. Without the filter that verdict lands on whichever run
+/// merges next, failing a run that was fine. Left unset, every file is
+/// considered, which is what a standalone merge across runs wants.
 pub fn merge_directory(
     directory: &Path,
     manifest: Option<&Manifest>,
+    run_id: Option<&str>,
 ) -> anyhow::Result<MergedReport> {
     let mut runs: Vec<RunResult> = Vec::new();
     let mut partials: Vec<PartialRun> = Vec::new();
@@ -102,9 +111,17 @@ pub fn merge_directory(
         }
         let raw = std::fs::read_to_string(&path)?;
         match serde_json::from_str::<RunResult>(&raw) {
-            Ok(run) => runs.push(run),
+            Ok(run) => {
+                if run_id.is_none_or(|wanted| run.run_id == wanted) {
+                    runs.push(run);
+                }
+            }
             Err(run_error) => match serde_json::from_str::<PartialRun>(&raw) {
-                Ok(partial) => partials.push(partial),
+                Ok(partial) => {
+                    if run_id.is_none_or(|wanted| partial.run_id == wanted) {
+                        partials.push(partial);
+                    }
+                }
                 Err(_) => {
                     anyhow::bail!(
                         "{} is neither a run nor an SDK's results: {run_error}",
@@ -218,7 +235,7 @@ mod tests {
         )
         .expect("writes the results");
 
-        let merged = merge_directory(directory.path(), None).expect("merges");
+        let merged = merge_directory(directory.path(), None, None).expect("merges");
         let runs = &merged.networks.values().next().expect("one network").runs;
         assert_eq!(
             runs.len(),
@@ -273,7 +290,7 @@ mod tests {
         )
         .expect("writes the results");
 
-        let merged = merge_directory(directory.path(), Some(&manifest)).expect("merges");
+        let merged = merge_directory(directory.path(), Some(&manifest), None).expect("merges");
         let run = &merged.networks.values().next().expect("one network").runs[0];
         assert_eq!(run.conclusion, Conclusion::Failure);
         assert_ne!(
@@ -292,11 +309,40 @@ mod tests {
         )
         .expect("writes the results");
 
-        let error = merge_directory(directory.path(), None).expect_err("refuses");
+        let error = merge_directory(directory.path(), None, None).expect_err("refuses");
         assert!(
             error.to_string().contains("without the run itself"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn an_earlier_runs_orphan_does_not_fail_this_runs_merge() {
+        // The results directory is shared. A run whose Rust leg died leaves its
+        // TypeScript results behind, and without the filter that orphan fails
+        // every later merge, reporting a setup failure for a run that was fine.
+        let directory = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            directory.path().join("dead-run-typescript.json"),
+            serde_json::json!({"run_id": "dead-run", "scenario_results": []}).to_string(),
+        )
+        .expect("writes the orphan");
+
+        let mine = run(NetworkName::Testnet, Conclusion::Success, QualificationClaim::Full);
+        let my_id = mine.run_id.clone();
+        std::fs::write(
+            directory.path().join("mine.json"),
+            serde_json::to_string(&mine).expect("serializes"),
+        )
+        .expect("writes the run");
+
+        let merged =
+            merge_directory(directory.path(), None, Some(&my_id)).expect("merges this run alone");
+        assert_eq!(merged.networks.len(), 1);
+        assert!(merged.every_network_passed);
+
+        // Unfiltered it is still fatal: results without their run mean a leg died.
+        assert!(merge_directory(directory.path(), None, None).is_err());
     }
 
     fn run(network: NetworkName, conclusion: Conclusion, claim: QualificationClaim) -> RunResult {

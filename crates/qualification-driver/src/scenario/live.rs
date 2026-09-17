@@ -1631,7 +1631,10 @@ pub async fn assert_procedure_threshold(runner: &Runner) -> ActionOutcome {
     ) else {
         return ActionOutcome::failed_setup("no override was proposed in this scenario");
     };
-    let account_threshold = session.threshold;
+    // The account threshold this assertion expects, not the one the account
+    // started with: a scenario may change it after setting the override, and
+    // that the override outlives such a change is the point of doing both.
+    let account_threshold = session.expected_threshold.unwrap_or(session.threshold);
 
     if let Err(error) = session.clients[0].sync().await {
         return ActionOutcome::failed_product(format!(

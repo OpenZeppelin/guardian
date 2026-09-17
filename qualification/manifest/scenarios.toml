@@ -60,6 +60,21 @@ step_budget = "120s"
 required = true
 core = false
 
+# Rust only. The gate is server behaviour, so one black-box exercise proves it;
+# running the same refusal through a second SDK would test the same server twice.
+[[scenario]]
+id = "det-scheme-gate"
+title = "An ECDSA-only GUARDIAN refuses a Falcon registration and admits ECDSA"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["scheme-gate"]
+step_budget = "60s"
+required = true
+core = false
+
 [[scenario]]
 id = "det-error-envelope-grpc"
 title = "Structured error envelope survives a real gRPC socket"
@@ -430,6 +445,58 @@ shape = "1-of-1"
 mode = "online"
 actions = ["account-create", "account-register", "asset-transfer", "note-consume", "asset-send", "proposal-sign", "proposal-execute", "asset-send-assert"]
 step_budget = "480s"
+required = true
+core = false
+
+# The config-writing procedures encode the signature scheme into the advice
+# payload they build, and two scheme-binding defects have already been found
+# here (F8, F13). Running membership changes on one scheme only would leave an
+# ECDSA-specific defect in that encoding undetected, so these two mirror the
+# Falcon pair above rather than relying on it.
+[[scenario]]
+id = "live-add-signer-2of3-ecdsa"
+title = "A signer is admitted on an ECDSA account and the account reports the larger set"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "signer-add", "proposal-sign", "proposal-execute", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-remove-signer-2of3-ecdsa"
+title = "A signer is removed from an ECDSA account and the account reports the smaller set"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "signer-remove", "proposal-sign", "proposal-execute", "signer-removed-refused", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# The account-wide threshold and a per-procedure override live in different
+# storage slots, so changing one should leave the other alone. That was an
+# assumption until this ran: the two were only ever exercised apart, and a
+# wiped override silently lowers the quorum on a procedure someone deliberately
+# raised.
+[[scenario]]
+id = "live-procedure-threshold-survives-change-2of3-falcon"
+title = "A procedure override outlives a change to the account-wide threshold"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "procedure-threshold-set", "proposal-sign", "proposal-execute", "threshold-change", "proposal-sign", "proposal-execute", "procedure-threshold-assert"]
+step_budget = "720s"
 required = true
 core = false
 

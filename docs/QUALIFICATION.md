@@ -25,7 +25,7 @@ Neither workflow is wired to its intended triggers yet. See
 |---|---|---|
 | Rust `1.98.1` | builds the Rust driver | pinned in `rust-toolchain.toml`, so `rustup` selects it for you |
 | `protoc` | the driver's build tree includes `tonic-build` | a build failure mentioning protoc means this is missing |
-| Docker, daemon running | the stack: server, Postgres, RPC stub, migration target | Docker Desktop on macOS is supported; its bind-mount behaviour is what F12 covers, now fixed on the server side |
+| Docker, daemon running | the stack: server, Postgres, RPC stub, migration target, scheme-gated server | Docker Desktop on macOS is supported; its bind-mount behaviour is what F12 covers, now fixed on the server side |
 | Node 18 or newer, `npm` | the TypeScript leg | |
 | `python3` | the shell harness parses JSON with it | any 3.x |
 | `curl` | health waits | |
@@ -74,6 +74,7 @@ gitignored directories, and tears it down afterwards:
 |---|---|
 | Acknowledgement keys, per server | `ack-keygen` from the built image, into `qualification/stack/ack-keys/`, mode 0600 |
 | The migration target's own identity | a second, separate key directory, because migrating an account to the Guardian it already uses is not a state change |
+| A third Guardian restricted to ECDSA | `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`, so the registration gate is exercised as an operator would configure it rather than only as parsed |
 | Operator allowlist | generated from the server fixtures via `qualification-driver operator-keys`, so the identities the scenarios sign with cannot drift from the ones the server accepts |
 | Postgres password | random per run |
 | Ports | picked per run, so concurrent runs do not collide |
@@ -364,6 +365,14 @@ ephemeral accounts from the treasury through `fund`.
 
 ## Known coverage gaps
 
+- **Account pausing.** The server enforces the pause at every write path and
+  tests each one, but nothing in this suite drives a paused account through an
+  SDK, so the behaviour is unproven black box.
+- **Scheme coverage is spread, not doubled.** Each flow runs on one scheme, with
+  the set split roughly evenly. The exception is the config-writing procedures,
+  where the scheme is encoded into the advice payload and two scheme-binding
+  defects have already been found: add-signer and remove-signer run on both.
+  Threshold change and the procedure override still run on one scheme each.
 - **Mixed-scheme accounts.** Both account builders assign one configured scheme
   to every signer, so no mixed-scheme account can be constructed. The on-chain
   storage layout supports one; closing the gap is separate SDK work.

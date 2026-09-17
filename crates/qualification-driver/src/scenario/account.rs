@@ -212,3 +212,113 @@ pub async fn assert_durability(runner: &Runner) -> ActionOutcome {
         }
     }
 }
+
+/// Exercises `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` as configured, not as parsed.
+///
+/// Runs against the stack's third GUARDIAN, restricted to ECDSA. That is the
+/// direction worth proving: the production guides recommend ECDSA-only because
+/// it is what the hosted signer backends support, so an operator following them
+/// is running exactly this configuration.
+///
+/// Both halves matter. A server that refused every registration would satisfy
+/// the refusal on its own, so the allowed scheme has to get past the gate for
+/// the refusal to mean anything. The allowed half asserts only that the gate did
+/// not turn it away, not that registration succeeded: there is no committed
+/// ECDSA fixture, so the attempt fails later on its credentials, and failing
+/// later is precisely the evidence that the gate let it through.
+pub async fn assert_scheme_gate(runner: &Runner) -> ActionOutcome {
+    let Some(fixtures) = runner.fixtures.as_ref() else {
+        return ActionOutcome::failed_setup("the server fixtures were not loaded");
+    };
+    let Ok(endpoint) = std::env::var("QUAL_GUARDIAN_SCHEME_GATED_GRPC") else {
+        return ActionOutcome::EnvironmentBlocked {
+            reason: "QUAL_GUARDIAN_SCHEME_GATED_GRPC is unset, so no scheme-gated GUARDIAN is \
+                     running to exercise the gate against"
+                .to_string(),
+        };
+    };
+    let id = match account_id(fixtures) {
+        Ok(id) => id,
+        Err(outcome) => return outcome,
+    };
+
+    // The blocked scheme. This registration would succeed on the other servers
+    // in the stack, so the gate is the only thing that can turn it away.
+    let falcon_signer = match fixtures.signer() {
+        Ok(signer) => Arc::new(signer),
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!("cannot build the fixture signer: {error}"));
+        }
+    };
+    let mut falcon_client = match GuardianClient::connect(endpoint.clone()).await {
+        Ok(client) => client.with_signer(falcon_signer),
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "cannot reach the scheme-gated GUARDIAN at {endpoint}: {error}"
+            ));
+        }
+    };
+    let falcon_auth = AuthConfig {
+        auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
+            cosigner_commitments: fixtures.cosigner_commitments.clone(),
+        })),
+    };
+    match falcon_client
+        .configure(&id, falcon_auth, &fixtures.account)
+        .await
+    {
+        Ok(_) => {
+            return ActionOutcome::failed_product(
+                "the scheme-gated GUARDIAN accepted a Falcon registration while configured to \
+                 allow ECDSA only"
+                    .to_string(),
+            );
+        }
+        Err(error) => match error.guardian_code() {
+            Some(code) if code == "signature_scheme_not_allowed" => {}
+            Some(code) => {
+                return ActionOutcome::failed_product(format!(
+                    "the Falcon registration was refused with `{code}` rather than \
+                     `signature_scheme_not_allowed`, so the gate is not what turned it away: \
+                     {error}"
+                ));
+            }
+            None => {
+                return ActionOutcome::failed_product(format!(
+                    "the Falcon registration failed without a GUARDIAN error code: {error}"
+                ));
+            }
+        },
+    }
+
+    // The allowed scheme. It must not be refused by the gate; anything else is
+    // this account not being an ECDSA account, which is expected.
+    let ecdsa_signer = Arc::new(guardian_client::EcdsaKeyStore::generate());
+    let mut ecdsa_client = match GuardianClient::connect(endpoint.clone()).await {
+        Ok(client) => client.with_signer(ecdsa_signer),
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "cannot reach the scheme-gated GUARDIAN at {endpoint}: {error}"
+            ));
+        }
+    };
+    let ecdsa_auth = AuthConfig {
+        auth_type: Some(AuthType::MidenEcdsa(guardian_client::MidenEcdsaAuth {
+            cosigner_commitments: fixtures.cosigner_commitments.clone(),
+        })),
+    };
+    match ecdsa_client
+        .configure(&id, ecdsa_auth, &fixtures.account)
+        .await
+    {
+        Ok(_) => ActionOutcome::Passed,
+        Err(error) => match error.guardian_code() {
+            Some(code) if code == "signature_scheme_not_allowed" => ActionOutcome::failed_product(
+                "the scheme-gated GUARDIAN refused an ECDSA registration although ECDSA is the \
+                 scheme it allows, so the gate is turning away more than it should"
+                    .to_string(),
+            ),
+            _ => ActionOutcome::Passed,
+        },
+    }
+}

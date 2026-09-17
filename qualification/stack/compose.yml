@@ -68,6 +68,38 @@ services:
       - GUARDIAN_RATE_BURST_PER_SEC=${QUAL_RATE_BURST_PER_SEC:-500}
       - GUARDIAN_RATE_PER_MIN=${QUAL_RATE_PER_MIN:-20000}
 
+  # A third GUARDIAN restricted to ECDSA, so the GUARDIAN_ALLOWED_ACCOUNT_SCHEMES
+  # gate is exercised as configured rather than only as parsed. ECDSA-only is the
+  # shape the production guides recommend, because it is the scheme the hosted
+  # signer backends support, so it is the configuration worth proving. It carries
+  # the fixture acknowledgement identity so the refused registration is one that
+  # would otherwise succeed.
+  server-scheme-gated:
+    image: ${QUAL_SERVER_IMAGE:?set QUAL_SERVER_IMAGE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rpc-stub:
+        condition: service_started
+    ports:
+      - "${QUAL_HTTP_PORT_C:-3200}:3000"
+      - "${QUAL_GRPC_PORT_C:-50251}:50051"
+    volumes:
+      - ./ack-keys:/var/guardian/ack-keys:ro
+      - guardian-keystore-scheme-gated:/var/guardian/keystore
+    environment:
+      - RUST_LOG=${QUAL_RUST_LOG:-info}
+      - GUARDIAN_NETWORK_TYPE=${QUAL_NETWORK_TYPE:?set QUAL_NETWORK_TYPE}
+      - GUARDIAN_MIDEN_RPC_ENDPOINT=${QUAL_MIDEN_RPC_ENDPOINT:?set QUAL_MIDEN_RPC_ENDPOINT}
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - DATABASE_URL=postgres://guardian:${QUAL_POSTGRES_PASSWORD:?set QUAL_POSTGRES_PASSWORD}@postgres:5432/guardian_scheme_gated
+      - GUARDIAN_ACK_SECRET_PROVIDER=file
+      - GUARDIAN_ACK_FALCON_SECRET_PATH=/var/guardian/ack-keys/ack-falcon-secret-key
+      - GUARDIAN_ACK_ECDSA_SECRET_PATH=/var/guardian/ack-keys/ack-ecdsa-secret-key
+      - GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa
+      - GUARDIAN_RATE_BURST_PER_SEC=${QUAL_RATE_BURST_PER_SEC:-500}
+      - GUARDIAN_RATE_PER_MIN=${QUAL_RATE_PER_MIN:-20000}
+
   postgres:
     image: postgres:16-alpine
     volumes:
@@ -95,3 +127,4 @@ volumes:
   guardian-postgres:
   guardian-keystore:
   guardian-keystore-migration-target:
+  guardian-keystore-scheme-gated:

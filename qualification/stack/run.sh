@@ -273,6 +273,15 @@ QUAL_GUARDIAN_MIGRATION_GRPC="http://127.0.0.1:${QUAL_GRPC_PORT_B}"
 QUAL_GUARDIAN_MIGRATION_HTTP="http://127.0.0.1:${QUAL_HTTP_PORT_B}"
 export QUAL_GUARDIAN_MIGRATION_GRPC QUAL_GUARDIAN_MIGRATION_HTTP
 
+echo "==> waiting for the scheme-gated server on ports ${QUAL_HTTP_PORT_C} and ${QUAL_GRPC_PORT_C}"
+if ! qual_wait_ready "${QUAL_HTTP_PORT_C}" "${QUAL_GRPC_PORT_C}" 180; then
+  qual_capture_diagnostics "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${OUT_DIR}/diagnostics"
+  exit "${EXIT_SETUP_FAILURE}"
+fi
+QUAL_GUARDIAN_SCHEME_GATED_GRPC="http://127.0.0.1:${QUAL_GRPC_PORT_C}"
+QUAL_GUARDIAN_SCHEME_GATED_HTTP="http://127.0.0.1:${QUAL_HTTP_PORT_C}"
+export QUAL_GUARDIAN_SCHEME_GATED_GRPC QUAL_GUARDIAN_SCHEME_GATED_HTTP
+
 mkdir -p "${OUT_DIR}"
 
 # Refuse an underfunded live run before it spends anything. Without this the
@@ -447,6 +456,7 @@ elif [[ "${SDK}" == "both" ]]; then
   set +e
   "${DRIVER[@]}" report \
     --results "${OUT_DIR}" \
+    --run-id "${QUAL_RUN_ID}" \
     --scenarios "${REPO_ROOT}/qualification/manifest/scenarios.toml" \
     --matrix "${REPO_ROOT}/qualification/manifest/matrix.toml" \
     > "${OUT_DIR}/merged/report.json"

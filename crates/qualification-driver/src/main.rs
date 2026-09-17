@@ -126,6 +126,11 @@ enum Command {
     Report {
         #[arg(long)]
         results: PathBuf,
+        /// Merge only this run's files. The results directory is shared across
+        /// runs, and a run whose Rust leg died leaves its TypeScript results
+        /// behind, so without this an old orphan fails every later merge.
+        #[arg(long)]
+        run_id: Option<String>,
         #[arg(long, default_value = "qualification/manifest/scenarios.toml")]
         scenarios: PathBuf,
         #[arg(long, default_value = "qualification/manifest/matrix.toml")]
@@ -313,6 +318,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
         }
         Command::Report {
             results,
+            run_id,
             scenarios,
             matrix,
         } => {
@@ -324,7 +330,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
             let manifest = Manifest::load(&scenarios, &matrix).with_context(|| {
                 format!("loading {} and {}", scenarios.display(), matrix.display())
             })?;
-            let merged = merge::merge_directory(&results, Some(&manifest))?;
+            let merged = merge::merge_directory(&results, Some(&manifest), run_id.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&merged)?);
             Ok(std::process::ExitCode::SUCCESS)
         }

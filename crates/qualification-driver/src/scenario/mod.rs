@@ -219,6 +219,7 @@ impl Runner {
                 Action::CommitmentVerify => Some(account::verify_commitment(self).await),
                 Action::ProposalCreate => Some(account::create_proposal(self).await),
                 Action::RestartDurability => Some(account::assert_durability(self).await),
+                Action::SchemeGate => Some(account::assert_scheme_gate(self).await),
                 _ => None,
             }
         };

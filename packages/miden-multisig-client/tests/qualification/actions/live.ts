@@ -1410,11 +1410,15 @@ export async function assertProcedureThreshold(
         reason: `the override for ${session.expectedProcedure} is ${actual ?? 'absent'} but ${session.expectedProcedureThreshold} was expected`,
       };
     }
-    if (detected.threshold !== session.threshold) {
+    // The account threshold this assertion expects, not the one the account
+    // started with: a scenario may change it after setting the override, and
+    // that the override outlives such a change is the point of doing both.
+    const expectedAccountThreshold = session.expectedThreshold ?? session.threshold;
+    if (detected.threshold !== expectedAccountThreshold) {
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `the account threshold moved to ${detected.threshold}; an override must not change it`,
+        reason: `the account threshold is ${detected.threshold} but ${expectedAccountThreshold} was expected; an override must not change it`,
       };
     }
     return { kind: 'passed' };
