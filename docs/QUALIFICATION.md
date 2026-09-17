@@ -65,6 +65,34 @@ qualification/stack/run.sh --profile deterministic --scenario det-status-identit
 If that passes, the environment is good and anything that fails afterwards is
 about the product or the network rather than your machine.
 
+### What the stack provisions for you
+
+Nothing in this list is a setup step. `run.sh` does all of it per run, into
+gitignored directories, and tears it down afterwards:
+
+| Thing | How |
+|---|---|
+| Acknowledgement keys, per server | `ack-keygen` from the built image, into `qualification/stack/ack-keys/`, mode 0600 |
+| The migration target's own identity | a second, separate key directory, because migrating an account to the Guardian it already uses is not a state change |
+| Operator allowlist | generated from the server fixtures via `qualification-driver operator-keys`, so the identities the scenarios sign with cannot drift from the ones the server accepts |
+| Postgres password | random per run |
+| Ports | picked per run, so concurrent runs do not collide |
+
+The deterministic profile is the exception worth knowing about: it registers a
+**committed fixture account** whose stored state binds one specific guardian
+commitment, so a freshly generated identity is rejected with
+`403 ... not an authorized signer`. `run.sh` handles this by seeding the
+fixture's own key from `crates/server/src/testing/fixtures/keys.json`.
+
+You only touch acknowledgement keys when running a server **by hand**, outside
+the stack, to iterate on a scenario. Then point
+`GUARDIAN_ACK_FALCON_SECRET_PATH` at a file holding `guardian_secret_key` from
+that same fixtures file, or accept that only the live and error-envelope
+scenarios will pass. Under the development default the keypair is regenerated
+on every boot, which breaks fixture registration and would also make the
+restart assertion fail for a configuration reason rather than a durability
+defect.
+
 ## Running locally
 
 ```bash
@@ -164,7 +192,6 @@ faucet.
 and how many further runs the remainder supports. Top up when that projection
 gets short.
 
-A run does **not** yet carry that summary in its own result: `funding_summary`
 `run.sh` runs this projection before a live run starts and refuses the run when
 the treasury cannot cover it, so a shortfall costs nothing rather than being
 discovered mid-scenario. A live run's result reports what it spent; the opening
@@ -205,6 +232,37 @@ its own fee out of the note it consumes.
 Residue left in ephemeral accounts is accepted and charged to the run rather
 than swept, because a sweep transaction usually costs more than the dust it
 recovers.
+
+### Creating one from zero
+
+Needed for a new network, after a chain data reset, or after a contract pin
+bump. The maintained testnet treasury is already funded, so this is not part of
+setting up a machine.
+
+```bash
+cargo run -p guardian-qualification-driver -- treasury-new --network testnet
+```
+
+That prints the secret **once**, and the address to fund. Save the secret to
+`qualification/.treasury-secrets.env` as `QUAL_TREASURY_KEY_<network>` before
+doing anything else: it is not recoverable, and that file is gitignored at mode
+0600.
+
+Then send funds to the printed address from the network's public faucet
+(testnet: <https://faucet.testnet.miden.io/>) and deploy:
+
+```bash
+export QUAL_TREASURY_KEY="${QUAL_TREASURY_KEY_testnet}"
+cargo run -p guardian-qualification-driver -- treasury-status    --network testnet
+cargo run -p guardian-qualification-driver -- treasury-bootstrap --network testnet
+cargo run -p guardian-qualification-driver -- treasury-check     --network testnet
+```
+
+`treasury-status` should show the faucet note waiting before you bootstrap, and
+`treasury-check` afterwards reports the balance and how many runs it supports.
+
+Individual test accounts need no setup at all. Each scenario funds its own
+ephemeral accounts from the treasury through `fund`.
 
 ## Known coverage gaps
 
