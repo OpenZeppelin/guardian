@@ -921,9 +921,20 @@ const proposal = await multisig.createRemoveSignerProposal(
 
 ```typescript
 const proposal = await multisig.createChangeThresholdProposal(
-  newThreshold           // New threshold value
+  newThreshold           // New account-wide threshold, 1..=signer count
 );
 ```
+
+This moves the **account-wide default** threshold, the "N" in N-of-M. It is not
+the per-procedure override that `createUpdateProcedureThresholdProposal` sets.
+Where an override exists it takes precedence for the procedure it names, so
+lowering the default does not lower an overridden procedure, and this call is
+itself gated by whatever threshold governs `update_signers`. The signer set is
+not a parameter: membership changes go through `createAddSignerProposal` and
+`createRemoveSignerProposal`.
+
+The Rust equivalent is `TransactionType::update_signers(threshold, commitments)`,
+passing the account's current signer set unchanged.
 
 #### Switch GUARDIAN Provider
 
@@ -1059,7 +1070,7 @@ one implicitly.
 | `preservePreSwitchProposalNotes()` | Pre-switch slice of the flow (issue #417): import notes embedded in the old GUARDIAN's pending proposals before repointing; run automatically by `executeProposal` on the switch path; returns the report or `undefined` |
 | `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
-| `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
+| `createChangeThresholdProposal(threshold, { nonce }?)` | Change the account-wide threshold (not a per-procedure override) |
 | `createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)` | Create per-procedure threshold override proposal (`threshold: 0` clears the override) |
 | `createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal |
 | `createSwitchGuardianProposalOffline(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal without contacting the current GUARDIAN; returns a signed `ExportedProposal` for side-channel cosigning (issue #433) |

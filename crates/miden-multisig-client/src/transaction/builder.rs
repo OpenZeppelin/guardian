@@ -41,6 +41,48 @@ pub struct ProposalBuilder {
     transaction_type: TransactionType,
 }
 
+/// The rules a threshold change has to satisfy before anything is executed.
+///
+/// Separate from the builder so they can be tested without a client: every one
+/// of them rejects before the first network call, and a caller that trips one
+/// should learn why rather than watch a transaction fail.
+fn validate_threshold_change(
+    current_threshold: u32,
+    current_signers: &[Word],
+    requested_signers: &[Word],
+    new_threshold: u32,
+) -> Result<()> {
+    // Compared as a set, then built from the account's own ordering, so a
+    // caller that lists the same signers in another order cannot silently
+    // repack the storage indices.
+    let mut requested_sorted: Vec<Word> = requested_signers.to_vec();
+    let mut current_sorted: Vec<Word> = current_signers.to_vec();
+    requested_sorted.sort_by_key(word_to_hex);
+    current_sorted.sort_by_key(word_to_hex);
+    if requested_sorted != current_sorted {
+        return Err(MultisigError::InvalidConfig(
+            "UpdateSigners changes the threshold only; use AddCosigner or RemoveCosigner to change the signer set".to_string(),
+        ));
+    }
+
+    if new_threshold < 1 || new_threshold as usize > current_signers.len() {
+        return Err(MultisigError::InvalidConfig(format!(
+            "invalid threshold {}: must be between 1 and {}",
+            new_threshold,
+            current_signers.len()
+        )));
+    }
+
+    if new_threshold == current_threshold {
+        return Err(MultisigError::InvalidConfig(format!(
+            "threshold is already {}",
+            new_threshold
+        )));
+    }
+
+    Ok(())
+}
+
 impl ProposalBuilder {
     /// Creates a new proposal builder for the given transaction type.
     pub fn new(transaction_type: TransactionType) -> Self {
@@ -136,9 +178,20 @@ impl ProposalBuilder {
                 )
                 .await
             }
-            TransactionType::UpdateSigners { .. } => Err(MultisigError::InvalidConfig(
-                "Use AddCosigner or RemoveCosigner for signer updates".to_string(),
-            )),
+            TransactionType::UpdateSigners {
+                new_threshold,
+                ref signer_commitments,
+            } => {
+                self.build_update_signers(
+                    miden_client,
+                    guardian_client,
+                    account,
+                    new_threshold,
+                    signer_commitments,
+                    key_manager,
+                )
+                .await
+            }
             TransactionType::Custom => Err(MultisigError::UnsupportedTransactionType(
                 "cannot create a proposal for a custom transaction type".to_string(),
             )),
@@ -247,6 +300,112 @@ impl ProposalBuilder {
             tx_summary,
             nonce,
             TransactionType::AddCosigner { new_commitment },
+            metadata,
+        );
+        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+
+        Ok(proposal)
+    }
+
+    /// Changes the signing threshold, leaving the signer set as it is.
+    ///
+    /// The on-chain procedure takes a set and a threshold together, so this is
+    /// the same call `build_add_cosigner` makes with the set left alone. A
+    /// membership change is refused here rather than served: deriving the new
+    /// set from the current one is what makes add and remove safe, and a
+    /// caller-supplied set would give that up for no gain, since this variant
+    /// exists to move the threshold.
+    async fn build_update_signers(
+        &self,
+        miden_client: &mut MidenSdkClient,
+        guardian_client: &mut GuardianClient,
+        account: &MultisigAccount,
+        new_threshold: u32,
+        requested_signers: &[Word],
+        key_manager: &dyn KeyManager,
+    ) -> Result<Proposal> {
+        let account_id = account.id();
+        let current_threshold = account.threshold()?;
+        let current_signers = account.cosigner_commitments();
+        let required_signatures =
+            account.effective_threshold_for_procedure(ProcedureName::UpdateSigners)? as usize;
+
+        validate_threshold_change(
+            current_threshold,
+            &current_signers,
+            requested_signers,
+            new_threshold,
+        )?;
+
+        let new_threshold = new_threshold as u64;
+        let salt = generate_salt();
+
+        let (tx_request, _config_hash) = build_update_signers_transaction_request(
+            new_threshold,
+            &current_signers,
+            salt,
+            std::iter::empty(),
+            key_manager.scheme(),
+        )?;
+
+        let (tx_summary, chain_anchor) =
+            execute_for_summary(miden_client, account_id, tx_request).await?;
+        let tx_commitment = tx_summary.to_commitment();
+
+        let signer_commitments_hex: Vec<String> = current_signers.iter().map(word_to_hex).collect();
+
+        let metadata = ProposalMetadata {
+            tx_summary_json: Some(tx_summary.to_json()),
+            // Carried explicitly, unlike add and remove. All three wire types
+            // parse back into `UpdateSigners`, so the variant cannot name itself
+            // and export refuses to guess; without this the proposal would be
+            // signable but not exportable.
+            proposal_type: Some("change_threshold".to_string()),
+            new_threshold: Some(new_threshold),
+            signer_commitments_hex: signer_commitments_hex.clone(),
+            salt_hex: Some(word_to_hex(&salt)),
+            recipient_hex: None,
+            faucet_id_hex: None,
+            amount: None,
+            note_type: None,
+            reclaim_height: None,
+            timelock_height: None,
+            note_ids_hex: Vec::new(),
+            consume_notes_metadata_version: None,
+            consume_notes_notes: Vec::new(),
+            new_guardian_pubkey_hex: None,
+            new_guardian_endpoint: None,
+            target_procedure: None,
+            required_signatures: Some(required_signatures),
+            signers: vec![key_manager.commitment_hex()],
+            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
+        };
+
+        let payload = ProposalPayload::new(&tx_summary)
+            .with_signature(key_manager, tx_commitment)
+            .with_threshold_metadata(
+                new_threshold,
+                signer_commitments_hex.clone(),
+                word_to_hex(&salt),
+            )
+            .with_required_signatures(required_signatures)
+            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+
+        let nonce = account.nonce() + 1;
+        let response = guardian_client
+            .push_delta_proposal(&account_id, nonce, &payload.to_json())
+            .await
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
+            })?;
+
+        let proposal = Proposal::new(
+            tx_summary,
+            nonce,
+            TransactionType::UpdateSigners {
+                new_threshold: new_threshold as u32,
+                signer_commitments: current_signers,
+            },
             metadata,
         );
         Self::ensure_response_commitment(&proposal, &response.commitment)?;
@@ -773,6 +932,49 @@ mod tests {
         InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
     };
     use miden_protocol::{Felt, ZERO};
+
+    fn signer(byte: u8) -> Word {
+        crate::keystore::word_from_hex(&format!("0x{}", format!("{byte:02x}").repeat(32)))
+            .expect("valid word")
+    }
+
+    #[test]
+    fn threshold_change_accepts_the_same_set_in_any_order() {
+        let current = vec![signer(1), signer(2), signer(3)];
+        let reordered = vec![signer(3), signer(1), signer(2)];
+        assert!(validate_threshold_change(2, &current, &reordered, 3).is_ok());
+    }
+
+    #[test]
+    fn threshold_change_rejects_a_membership_change() {
+        let current = vec![signer(1), signer(2)];
+        let with_extra = vec![signer(1), signer(2), signer(3)];
+        let error = validate_threshold_change(2, &current, &with_extra, 2)
+            .expect_err("a different signer set is not a threshold change");
+        assert!(error.to_string().contains("AddCosigner or RemoveCosigner"));
+
+        let swapped = vec![signer(1), signer(9)];
+        assert!(validate_threshold_change(2, &current, &swapped, 1).is_err());
+    }
+
+    #[test]
+    fn threshold_change_rejects_a_threshold_outside_the_signer_count() {
+        let current = vec![signer(1), signer(2), signer(3)];
+        // Above the signer count no quorum could ever be reached.
+        assert!(validate_threshold_change(2, &current, &current, 4).is_err());
+        // Zero would leave the account unguarded.
+        assert!(validate_threshold_change(2, &current, &current, 0).is_err());
+        assert!(validate_threshold_change(2, &current, &current, 3).is_ok());
+        assert!(validate_threshold_change(2, &current, &current, 1).is_ok());
+    }
+
+    #[test]
+    fn threshold_change_rejects_a_no_op() {
+        let current = vec![signer(1), signer(2), signer(3)];
+        let error = validate_threshold_change(2, &current, &current, 2)
+            .expect_err("proposing the threshold it already has spends a quorum for nothing");
+        assert!(error.to_string().contains("already"));
+    }
 
     fn test_proposal() -> Proposal {
         let account_id =

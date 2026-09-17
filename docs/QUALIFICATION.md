@@ -246,8 +246,8 @@ is still cheaper to make all six at once:
 
 An action implemented on one SDK only is legitimate when it records a real
 capability gap, but it must report a skip naming the gap rather than a pass. See
-F1 and F3 in [QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md) for what
-that looks like.
+F3 in [QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md) for what that
+looks like, and F1 for a gap that was closed once the suite made it visible.
 
 **Then the matrix.** `required = true` in `scenarios.toml` means a pass is part
 of the qualification claim. `matrix.toml` decides where it must hold: list the
@@ -486,13 +486,13 @@ fixed: `load()` now reconciles with the store the way `syncState()` already did.
 Full evidence in
 [QUALIFICATION_FINDINGS.md](./QUALIFICATION_FINDINGS.md) (F2).
 
-**The Rust SDK cannot change a threshold.** `TransactionType::UpdateSigners` is
-a public constructor whose transaction builder rejects it unconditionally with
-"Use AddCosigner or RemoveCosigner for signer updates", so there is no Rust path
-to a threshold change at all. The on-chain contract supports it
-(`update_signers_and_threshold`, exercised by the contract tests) and the
-TypeScript SDK drives it through `createChangeThresholdProposal`. The Rust leg
-of `live-change-threshold-2of3-ecdsa` reports a skip naming the gap.
+**The Rust SDK could not change a threshold, and now can.** The transaction
+builder rejected `TransactionType::UpdateSigners` outright, redirecting callers
+to `AddCosigner` or `RemoveCosigner`, which both pin the threshold and so could
+not serve the request. Every other layer already handled the variant, so only
+creation was blocked. It now has a builder arm that moves the threshold and
+refuses a membership change, and the Rust leg of
+`live-change-threshold-2of3-ecdsa` passes.
 
 **Offline signing is a documented SDK divergence.** The Rust SDK ties offline
 signing to offline execution (`supports_offline_execution` is true only for

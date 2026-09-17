@@ -13,7 +13,7 @@ Evidence is from runs against testnet on 2026-09-16 with a locally built server,
 
 | | Finding | Affects |
 |---|---|---|
-| F1 | Rust cannot change a threshold | Rust SDK |
+| F1 | Rust cannot change a threshold | Rust SDK (**fixed**) |
 | F2 | `load()` returns an account whose reads come from a stale local store | TypeScript SDK (**fixed**) |
 | F3 | Offline signing tied to offline execution | Rust SDK |
 | F4 | Proposal creation signs in Rust, not in TypeScript | Both SDKs |
@@ -29,10 +29,10 @@ Evidence is from runs against testnet on 2026-09-16 with a locally built server,
 
 ## Cross-SDK divergences
 
-### F1. The Rust SDK cannot change a threshold
+### F1. The Rust SDK cannot change a threshold (fixed)
 
-`TransactionType::update_signers(threshold, commitments)` is a public
-constructor, but the transaction builder rejects the whole variant:
+`TransactionType::update_signers(threshold, commitments)` was a public
+constructor whose transaction builder rejected the whole variant:
 
 ```rust
 TransactionType::UpdateSigners { .. } => Err(MultisigError::InvalidConfig(
@@ -40,17 +40,47 @@ TransactionType::UpdateSigners { .. } => Err(MultisigError::InvalidConfig(
 )),
 ```
 
-`crates/miden-multisig-client/src/transaction/builder.rs`
-
-So a Rust consumer has no way to change a multisig's threshold. The on-chain
+So a Rust consumer had no way to change a multisig's threshold. The on-chain
 contract supports it (`update_signers_and_threshold`, exercised by
 `crates/contracts/tests/auth/multisig.rs`) and the TypeScript SDK drives it
-through `createChangeThresholdProposal`, which the suite runs green. The
-constructor is reachable and documented, so the failure appears only at
-proposal time.
+through `createChangeThresholdProposal`. The constructor was reachable and
+documented, so the failure appeared only at proposal time.
 
-**Cost**: a threshold change requires the TypeScript SDK. **In the suite**: the
-Rust leg of `live-change-threshold-2of3-ecdsa` reports a skip naming the gap.
+The redirect in that message was a dead end. `build_add_cosigner` and
+`build_remove_cosigner` both pin the threshold (`// Keep same threshold`), so
+neither could serve a threshold change. The guard was sound for a membership
+change and closed the only route to a capability with no alternative.
+
+**Nothing else was missing.** Rust already parsed `change_threshold` metadata,
+executed the variant, exported and imported it, and applied its delta; the
+server and Rust's own proposal-type allowlist both accept the wire type. Only
+creation was blocked, which is why a Rust client could always co-sign a
+threshold change proposed by a TypeScript one.
+
+**Fixed.** The builder now has a `build_update_signers` arm, modelled on
+`build_add_cosigner` with the signer set left alone. Two details it does not
+share with its neighbours:
+
+- A membership change is refused rather than served. Deriving the new set from
+  the current one is what makes add and remove safe, and a caller-supplied set
+  would give that up for nothing, since this variant exists to move the
+  threshold. The requested set is compared to the current one as a set, then the
+  request is built from the account's own ordering, so listing the same signers
+  in another order cannot silently repack the storage indices.
+- `metadata.proposal_type` is set explicitly, unlike add and remove which let
+  `TransactionType::proposal_type()` supply it. All three wire types parse back
+  into `UpdateSigners`, so the variant cannot name itself; `proposal_type()`
+  returns `None` for it on purpose and export refuses to guess
+  (`from_proposal_rejects_ambiguous_update_signers_without_proposal_type`).
+  Without the explicit value the proposal would be signable but not exportable.
+
+Validation is a free function, `validate_threshold_change`, so its rules are
+tested without a client or a network: same set in any order accepted,
+membership change refused, threshold outside `1..=signers` refused, no-op
+refused.
+
+**In the suite**: `live-change-threshold-2of3-ecdsa` no longer skips the Rust
+leg. Verified against testnet through the stack, Rust leg `Passed`.
 
 ### F2. `load()` returns an account whose reads come from a stale local store (fixed)
 

@@ -202,6 +202,44 @@ client.sign_proposal(&to_sign.id).await?;
 client.execute_proposal(&proposal.id).await?;
 ```
 
+### Changing the signer set or the threshold
+
+All three go through the same on-chain procedure, which takes a signer set and
+a threshold together, so each is that call with different arguments.
+
+```rust
+use miden_multisig_client::TransactionType;
+
+// Membership. The new set is derived from the current one, so a caller cannot
+// supply a set that drops a signer by accident. The threshold is left alone.
+let tx = TransactionType::add_cosigner(new_commitment);
+let tx = TransactionType::remove_cosigner(commitment);
+
+// Threshold only. Pass the account's current signer set unchanged.
+let account = client.account().expect("account loaded");
+let tx = TransactionType::update_signers(3, account.cosigner_commitments());
+
+let proposal = client.propose_transaction(tx).await?;
+```
+
+`update_signers` moves the threshold and nothing else. A set that differs from
+the account's current one is refused, pointing at `AddCosigner` and
+`RemoveCosigner`, because deriving membership from current state is what makes
+those two safe. Order does not matter: the set is compared as a set, then the
+request is built from the account's own ordering so storage indices stay put.
+The threshold must be between 1 and the number of signers, and must differ from
+the current one.
+
+This is the account-wide default threshold, the "N" in N-of-M. It is not the
+same as a per-procedure override, which `TransactionType::UpdateProcedureThreshold`
+sets and which takes precedence for the procedure it names. So a proposal's
+required signatures come from the override when one exists, and this default
+otherwise. Changing the default does not clear an override, and this call is
+itself gated by whatever threshold governs `update_signers`.
+
+The TypeScript SDK exposes the same three as `createAddSignerProposal`,
+`createRemoveSignerProposal` and `createChangeThresholdProposal`.
+
 ### Proposal verification status
 
 `list_proposals` checks every proposal's metadata against its signed

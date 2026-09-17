@@ -43,8 +43,9 @@ So the expected full-matrix result is Rust 15 passed / 2 skipped and TypeScript
 17 passed, but **that has not been run end to end** and should not be quoted as
 though it had.
 
-The Rust skips are documented capability gaps (F1 threshold change, F3 offline
-signing of acknowledgement-bearing proposals). The SDK defect behind F2 is now
+The remaining Rust skip is a documented capability gap (F3, offline signing of
+acknowledgement-bearing proposals). F1, the threshold change, is now
+implemented and its Rust leg passes. The SDK defect behind F2 is now
 fixed as well, and the suite no longer depends on it either way.
 
 GUARDIAN migration reaching a pass took one product fix (F13, a scheme-blind

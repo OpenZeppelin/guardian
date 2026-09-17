@@ -1328,8 +1328,9 @@ pub async fn remove_signer(runner: &Runner) -> ActionOutcome {
 
 /// Proposes raising the threshold to require every current signer.
 ///
-/// Expressed as an update to the whole signer set, since that is the only shape
-/// the Rust SDK offers for a threshold change.
+/// Expressed as an update to the whole signer set, because the on-chain
+/// procedure takes the set and the threshold together. Both SDKs pass the
+/// current set unchanged; changing membership here is refused.
 pub async fn change_threshold(runner: &Runner) -> ActionOutcome {
     let mut guard = runner.session.lock().await;
     let Some(session) = guard.as_mut() else {
@@ -1361,19 +1362,6 @@ pub async fn change_threshold(runner: &Runner) -> ActionOutcome {
             ActionOutcome::Passed
         }
         Err(error) => {
-            // The on-chain contract has update_signers_and_threshold and the
-            // TypeScript SDK drives it, but the Rust builder refuses the whole
-            // UpdateSigners variant, so a Rust consumer cannot change a
-            // threshold at all. Reported rather than failed: a standing
-            // capability difference, not a regression.
-            if error
-                .to_string()
-                .contains("Use AddCosigner or RemoveCosigner")
-            {
-                return ActionOutcome::Skipped {
-                    reason: format!("the Rust SDK cannot change a threshold: {error}"),
-                };
-            }
             ActionOutcome::failed_product(format!("proposing the threshold change failed: {error}"))
         }
     }
