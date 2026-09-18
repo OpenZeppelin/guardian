@@ -29,6 +29,8 @@ source "${STACK_DIR}/lib/diagnostics.sh"
 source "${STACK_DIR}/lib/restart.sh"
 # shellcheck source=lib/summary.sh
 source "${STACK_DIR}/lib/summary.sh"
+# shellcheck source=lib/phase.sh
+source "${STACK_DIR}/lib/phase.sh"
 # shellcheck source=lib/operator.sh
 source "${STACK_DIR}/lib/operator.sh"
 
@@ -121,6 +123,14 @@ if [[ "${PROFILE}" == "live" && ! "${NETWORK}" =~ ^(devnet|testnet)$ ]]; then
   exit "${EXIT_USAGE}"
 fi
 
+# An upgrade run seeds a database and then asks the image under test to boot on
+# it, which is a deterministic question. Asking it on the live profile would run
+# every funded scenario twice, once against each image, and pay for both.
+if [[ "${PROFILE}" == "live" && -n "${UPGRADE_FROM}" ]]; then
+  echo "error: --upgrade-from is for the deterministic profile; on live it would fund every scenario twice" >&2
+  exit "${EXIT_USAGE}"
+fi
+
 if [[ "${IMAGE_SOURCE}" == "pulled" && -z "${IMAGE_TAG}" ]]; then
   echo "error: --image-tag is required with --image-source pulled" >&2
   exit "${EXIT_USAGE}"
@@ -210,6 +220,10 @@ else
 fi
 
 IMAGE_REVISION=""
+# What the report records as the image this run used. A tag is not that: it can
+# be rebuilt under the same name, so a locally built image is identified by its
+# own content id instead, which is the same shape as a registry digest.
+SERVER_DIGEST=""
 if [[ "${IMAGE_SOURCE}" == "built" ]]; then
   SERVER_IMAGE="guardian-qualification:${IMAGE_REF//\//-}"
   echo "==> building ${SERVER_IMAGE} from ${IMAGE_REF}"
@@ -217,11 +231,13 @@ if [[ "${IMAGE_SOURCE}" == "built" ]]; then
     echo "error: image build failed" >&2
     exit "${EXIT_SETUP_FAILURE}"
   fi
+  SERVER_DIGEST="$(qual_image_id "${SERVER_IMAGE}")" || SERVER_DIGEST=""
 else
   echo "==> resolving ${IMAGE_TAG} to a digest"
   DIGEST="$(qual_resolve_digest "${IMAGE_TAG}")" || exit "${EXIT_SETUP_FAILURE}"
   SERVER_IMAGE="${IMAGE_TAG%%@*}@${DIGEST}"
   docker pull --quiet "${SERVER_IMAGE}" >/dev/null || exit "${EXIT_SETUP_FAILURE}"
+  SERVER_DIGEST="${DIGEST}"
   IMAGE_REVISION="$(qual_image_revision "${SERVER_IMAGE}")"
   if [[ -z "${IMAGE_REVISION}" ]]; then
     echo "error: image carries no source revision label; identity cannot be asserted" >&2
@@ -232,41 +248,62 @@ fi
 # When upgrading, the stack comes up on the older image and the image under test
 # replaces it later, so its migrations run against rows the older release wrote.
 BOOT_IMAGE="${SERVER_IMAGE}"
+BOOT_DIGEST="${SERVER_DIGEST}"
+SEED_REVISION="${IMAGE_REVISION}"
 if [[ -n "${UPGRADE_FROM}" ]]; then
   echo "==> resolving ${UPGRADE_FROM} to seed from"
   SEED_DIGEST="$(qual_resolve_digest "${UPGRADE_FROM}")" || exit "${EXIT_SETUP_FAILURE}"
   BOOT_IMAGE="${UPGRADE_FROM%%@*}@${SEED_DIGEST}"
   docker pull --quiet "${BOOT_IMAGE}" >/dev/null || exit "${EXIT_SETUP_FAILURE}"
+  BOOT_DIGEST="${SEED_DIGEST}"
+  # The seed phase runs against this image, and the identity scenario compares
+  # what the server reports with what the phase was told to expect. Told the
+  # target's revision, it would fail on every upgrade between two commits, which
+  # is every upgrade worth running.
+  SEED_REVISION="$(qual_image_revision "${BOOT_IMAGE}")"
+  if [[ -z "${SEED_REVISION}" ]]; then
+    echo "error: ${UPGRADE_FROM} carries no source revision label; the seed phase could not be attributed to it" >&2
+    exit "${EXIT_SETUP_FAILURE}"
+  fi
 fi
 
-ENV_FILE="${STACK_DIR}/.env.generated"
-qual_generate_env "${PROFILE}" "${NETWORK_TYPE}" "${RPC_ENDPOINT}" "${BOOT_IMAGE}" "${ENV_FILE}"
+# Named after the run, and everything the run writes goes inside it. The ports
+# and the Compose project were already per run; these were not, so two runs
+# shared one set of acknowledgement keys and one operator allowlist.
+QUAL_RUN_ID="${QUAL_RUN_ID:-qual-$(date -u +%Y%m%d-%H%M%S)-$(qual_random_suffix)}"
+QUAL_PROJECT="$(qual_project_name "${QUAL_PROJECT:-${QUAL_RUN_ID}}")"
+export QUAL_RUN_ID QUAL_PROJECT
+RUN_DIR="${STACK_DIR}/runs/${QUAL_PROJECT}"
+mkdir -p "${RUN_DIR}"
+
+ENV_FILE="${RUN_DIR}/.env.generated"
+qual_generate_env "${PROFILE}" "${NETWORK_TYPE}" "${RPC_ENDPOINT}" "${BOOT_IMAGE}" "${ENV_FILE}" "${RUN_DIR}"
 COMPOSE_FILE="${STACK_DIR}/compose.yml"
 
 echo "==> provisioning the acknowledgement identity"
 if [[ "${PROFILE}" == "deterministic" ]]; then
-  if ! qual_provision_fixture_ack_keys "${STACK_DIR}/ack-keys" "${REPO_ROOT}"; then
+  if ! qual_provision_fixture_ack_keys "${QUAL_ACK_KEYS_DIR}" "${REPO_ROOT}"; then
     exit "${EXIT_SETUP_FAILURE}"
   fi
-elif ! qual_provision_ack_keys "${STACK_DIR}/ack-keys" "${SERVER_IMAGE}"; then
+elif ! qual_provision_ack_keys "${QUAL_ACK_KEYS_DIR}" "${SERVER_IMAGE}"; then
   exit "${EXIT_SETUP_FAILURE}"
 fi
 
 # The migration target needs an identity of its own: migrating to a GUARDIAN
 # with the same acknowledgement key changes nothing on the account, and the
 # transaction has no state change to commit.
-if ! qual_provision_ack_keys "${STACK_DIR}/ack-keys-migration-target" "${SERVER_IMAGE}"; then
+if ! qual_provision_ack_keys "${QUAL_ACK_KEYS_MIGRATION_DIR}" "${SERVER_IMAGE}"; then
   exit "${EXIT_SETUP_FAILURE}"
 fi
 
 echo "==> seeding the operator allowlist"
-QUAL_OPERATOR_ALLOWLIST="${STACK_DIR}/operator/operators.json"
+QUAL_OPERATOR_ALLOWLIST="${QUAL_OPERATOR_DIR}/operators.json"
 if ! qual_write_operator_allowlist "${REPO_ROOT}" "${QUAL_OPERATOR_ALLOWLIST}" ""; then
   exit "${EXIT_SETUP_FAILURE}"
 fi
 export QUAL_OPERATOR_ALLOWLIST
 
-qual_install_teardown_trap "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}"
+qual_install_teardown_trap "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${RUN_DIR}"
 
 echo "==> starting the stack (project ${QUAL_PROJECT})"
 if ! docker compose -p "${QUAL_PROJECT}" -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --wait --wait-timeout 180; then
@@ -356,17 +393,17 @@ print(sum(1 for s in scenarios if s['profile'] == 'live'))
   "${DRIVER[@]}" spend-reset --network "${NETWORK}" >/dev/null 2>&1 || true
 fi
 
+# What every phase passes, which is everything except the identity of the image
+# it is talking to and where its results go. Those are per phase on purpose: an
+# upgrade run talks to two different images, and a phase that recorded the other
+# one would describe a server it never reached.
 DRIVER_ARGS=(
   run
   --profile "${PROFILE}"
   --http-endpoint "http://127.0.0.1:${QUAL_HTTP_PORT}"
   --grpc-endpoint "http://127.0.0.1:${QUAL_GRPC_PORT}"
-  --image-digest "${SERVER_IMAGE##*@}"
-  --image-revision "${IMAGE_REVISION}"
   --pairing "${PAIRING}"
-  --run-id "${QUAL_RUN_ID}"
   --trigger "${TRIGGER}"
-  --out "${OUT_DIR}"
 )
 [[ "${PROFILE}" == "live" ]] && DRIVER_ARGS+=(--network "${NETWORK}")
 # Always Rust. Without this the default `both` leaves the Rust binary selecting
@@ -376,108 +413,88 @@ DRIVER_ARGS+=(--sdk rust)
 [[ -n "${REQUESTED_BY}" ]] && DRIVER_ARGS+=(--requested-by "${REQUESTED_BY}")
 (( CORE_ONLY == 1 )) && DRIVER_ARGS+=(--core-only)
 (( FILTERED == 1 )) && DRIVER_ARGS+=(--filtered)
+
+# Kept out of DRIVER_ARGS so a phase can ask for a different set. Only the seed
+# phase does, and it is the reason this is separable at all.
+SELECTED_SCENARIOS=()
 for scenario in "${SCENARIOS[@]+"${SCENARIOS[@]}"}"; do
-  DRIVER_ARGS+=(--scenario "${scenario}")
+  SELECTED_SCENARIOS+=(--scenario "${scenario}")
 done
 
+# What the seed phase runs: the scenarios that write rows an upgrade has to
+# find again, and nothing else.
+#
+# Running the whole set against the older release looked thorough and was worse
+# than useless. `det-scheme-gate` asserts a *refusal*, and registering its
+# account on the release that had no gate yet left it already configured, so the
+# target phase's registration came back idempotently successful and the scenario
+# read that as the gate failing. A seed phase that quietly decides a later
+# assertion is not seeding, it is interfering.
+SEED_SCENARIOS=(
+  --scenario det-fixture-grpc
+  --scenario det-proposal-lifecycle
+  --scenario det-restart-durability
+  --filtered
+)
+
 DRIVER_EXIT=0
-if [[ "${SDK}" == "both" || "${SDK}" == "rust" ]]; then
-  echo "==> running Rust scenarios"
-  set +e
-  "${DRIVER[@]}" "${DRIVER_ARGS[@]}"
-  DRIVER_EXIT=$?
-  set -e
-fi
 
-TS_EXIT=0
-if [[ "${SDK}" == "both" || "${SDK}" == "typescript" ]]; then
-  echo "==> running TypeScript scenarios"
-  set +e
-  (
-    cd "${REPO_ROOT}/packages/miden-multisig-client" || exit 2
-    # The deterministic profile funds nothing, so the key has no business in
-    # this process. The live profile still needs it: the funding bridge spawns
-    # the Rust binary, which inherits this environment to read it. Narrowing it
-    # to the profile that spends is as far as this goes until funding is split
-    # out into a trusted step that hands the driver ephemeral keys only.
-    [[ "${PROFILE}" == "live" ]] || unset QUAL_TREASURY_KEY
-    QUAL_PROFILE="${PROFILE}" \
-    QUAL_OUT_DIR="${OUT_DIR}" \
-    QUAL_RUN_ID="${QUAL_RUN_ID}" \
-    QUAL_HTTP_ENDPOINT="http://127.0.0.1:${QUAL_HTTP_PORT}" \
-    QUAL_GRPC_ENDPOINT="http://127.0.0.1:${QUAL_GRPC_PORT}" \
-    QUAL_IMAGE_REVISION="${IMAGE_REVISION}" \
-    QUAL_NETWORK="${NETWORK}" \
-    QUAL_MIDEN_RPC_ENDPOINT="${RPC_ENDPOINT}" \
-    QUAL_GUARDIAN_MIGRATION_ENDPOINT="${QUAL_GUARDIAN_MIGRATION_HTTP:-}" \
-    QUAL_REPO_ROOT="${REPO_ROOT}" \
-    QUAL_CORE_ONLY="${CORE_ONLY}" \
-    QUAL_OPERATOR_ALLOWLIST="${QUAL_OPERATOR_ALLOWLIST}" \
-    QUAL_SCENARIOS="${SCENARIOS[*]+"${SCENARIOS[*]}"}" \
-      npm run --silent test:qualification
-  )
-  TS_EXIT=$?
-  set -e
-fi
+if [[ -n "${UPGRADE_FROM}" ]]; then
+  # The upgrade question, asked after seeding scenarios have written real rows
+  # through the product's own API: does the image under test boot on a database
+  # an older release wrote, and is that data still there once its migrations
+  # have run? A hand-written SQL fixture would test the same path but has to be
+  # kept in step with a schema it does not own, so the seed is whatever the
+  # scenarios actually stored.
+  #
+  # The seed phase talks to the older release, so what it reports is that
+  # release's behaviour. It is recorded under the seed image's own identity, in
+  # a directory the merge does not read: the run is a claim about the image
+  # under test, and a seed-phase failure is not that image's failure.
+  # Rust alone: everything durable the seed needs goes in through the same API
+  # either leg would use, and the TypeScript leg's scenarios write nothing the
+  # Rust ones do not.
+  echo "==> seeding on ${UPGRADE_FROM}"
+  qual_run_phase "${QUAL_RUN_ID}-seed" "${OUT_DIR}/seed" \
+    "${BOOT_DIGEST}" "${SEED_REVISION}" rust "${SEED_SCENARIOS[@]}"
+  # Announced, never folded into the run's verdict. A release old enough to be
+  # worth upgrading from is old enough to fail scenarios written after it, which
+  # is a fact about that release rather than a defect in the image under test:
+  # seeding from v0.17.0 fails `det-scheme-gate` because the scheme gate did not
+  # exist yet. What proves the seeding actually happened is the target phase's
+  # own durability assertion, which looks for the rows this phase wrote.
+  if (( PHASE_EXIT != 0 )); then
+    echo "note: ${UPGRADE_FROM} did not pass every scenario while seeding (exit ${PHASE_EXIT}); its results are in seed/ and the upgrade continues" >&2
+  fi
 
-# The worse of the two decides. "Worse" is not numeric order: 3 means nothing
-# ran that could judge the product and the live workflow maps it to success, so
-# a product failure (1) or a setup failure (2) has to beat it. Comparing
-# `DRIVER_EXIT == 0` instead would let a Rust leg that was entirely
-# environment-blocked swallow a TypeScript product failure and report green.
-qual_exit_rank() {
-  case "${1}" in
-    0) echo 0 ;;
-    3) echo 1 ;;
-    2) echo 2 ;;
-    *) echo 3 ;;
-  esac
-}
-if (( $(qual_exit_rank "${TS_EXIT}") > $(qual_exit_rank "${DRIVER_EXIT}") )); then
-  DRIVER_EXIT=${TS_EXIT}
-fi
-
-# The upgrade question, asked after the seeding scenarios have written real rows
-# through the product's own API: does the image under test boot on a database an
-# older release wrote, and is that data still there once its migrations have run?
-# A hand-written SQL fixture would test the same path but has to be kept in step
-# with a schema it does not own, so the seed is whatever the scenarios above
-# actually stored.
-if [[ -n "${UPGRADE_FROM}" && "${SDK}" != "typescript" ]]; then
   echo "==> upgrading from ${UPGRADE_FROM} to the image under test"
   if ! qual_swap_server_image "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${SERVER_IMAGE}" \
      || ! qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180; then
-    # Refusing to boot on an older release's data is the defect this looks for,
-    # so it is a product failure rather than a setup problem.
+    # Refusing to boot on an older release's data is the defect this looks
+    # for, so it is a product failure rather than a setup problem.
     echo "error: the image under test did not become ready on the upgraded database" >&2
     qual_capture_diagnostics "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${OUT_DIR}/diagnostics"
     DRIVER_EXIT=${EXIT_PRODUCT_FAILURE}
   else
-    UPGRADE_ARGS=()
-    for arg in "${DRIVER_ARGS[@]}"; do
-      UPGRADE_ARGS+=("${arg}")
-    done
-    for index in "${!UPGRADE_ARGS[@]}"; do
-      if [[ "${UPGRADE_ARGS[${index}]}" == "${QUAL_RUN_ID}" ]]; then
-        UPGRADE_ARGS[${index}]="${QUAL_RUN_ID}-post-upgrade"
-        break
-      fi
-    done
+    # Both SDKs, against the upgraded target: this phase is the run's claim, and
+    # a leg that only ever saw the older release cannot speak for it.
+    #
     # `--post-restart` so the durability assertion actually asserts. Without it
     # `restart-durability` skips, and the scenarios that remain re-register the
     # fixture account, which is idempotent and would pass just as happily
     # against an empty database. An upgrade check that cannot tell a migrated
-    # database from a fresh one proves nothing.
-    set +e
-    "${DRIVER[@]}" "${UPGRADE_ARGS[@]}" --post-restart
-    UPGRADE_EXIT=$?
-    set -e
-    if (( $(qual_exit_rank "${UPGRADE_EXIT}") > $(qual_exit_rank "${DRIVER_EXIT}") )); then
-      DRIVER_EXIT=${UPGRADE_EXIT}
-    fi
+    # database from a fresh one proves nothing, and it is also what makes a
+    # silently empty seed phase visible here.
+    qual_run_phase "${QUAL_RUN_ID}" "${OUT_DIR}" \
+      "${SERVER_DIGEST}" "${IMAGE_REVISION}" selected \
+      "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}" --post-restart
+    DRIVER_EXIT=${PHASE_EXIT}
   fi
+else
+  qual_run_phase "${QUAL_RUN_ID}" "${OUT_DIR}" "${SERVER_DIGEST}" "${IMAGE_REVISION}" selected \
+    "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}"
+  DRIVER_EXIT=${PHASE_EXIT}
 fi
-
 # Durability can only be asserted after the process that wrote the data is gone,
 # so the restart happens here and the assertion runs in its own pass.
 # Gated on the Rust leg having run: these are Rust arguments, and a
@@ -486,28 +503,18 @@ if [[ "${PROFILE}" == "deterministic" && ( "${SDK}" == "both" || "${SDK}" == "ru
   echo "==> restarting Guardian and re-checking durability"
   if qual_restart_server "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" \
      && qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180; then
-    RESTART_ARGS=()
-    for arg in "${DRIVER_ARGS[@]}"; do
-      RESTART_ARGS+=("${arg}")
-    done
-    # One --run-id only: clap rejects a repeated flag and would exit before
-    # asserting anything.
-    for index in "${!RESTART_ARGS[@]}"; do
-      if [[ "${RESTART_ARGS[${index}]}" == "${QUAL_RUN_ID}" ]]; then
-        RESTART_ARGS[${index}]="${QUAL_RUN_ID}-post-restart"
-        break
-      fi
-    done
-    set +e
-    "${DRIVER[@]}" "${RESTART_ARGS[@]}" --post-restart
-    RESTART_EXIT=$?
-    set -e
+    # Rust alone: `--post-restart` is a Rust argument, and the durability
+    # assertion is a Rust action, so re-running the TypeScript leg here would
+    # cost a second pass to assert nothing new.
+    qual_run_phase "${QUAL_RUN_ID}-post-restart" "${OUT_DIR}" \
+      "${SERVER_DIGEST}" "${IMAGE_REVISION}" rust \
+      "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}" --post-restart
     # Ranked, like every other combination here. The old rule only promoted the
     # restart result when the first pass was clean, so a first-pass setup or
     # environment-blocked result would hide a durability product failure behind
     # a less serious code.
-    if (( $(qual_exit_rank "${RESTART_EXIT}") > $(qual_exit_rank "${DRIVER_EXIT}") )); then
-      DRIVER_EXIT=${RESTART_EXIT}
+    if (( $(qual_exit_rank "${PHASE_EXIT}") > $(qual_exit_rank "${DRIVER_EXIT}") )); then
+      DRIVER_EXIT=${PHASE_EXIT}
     fi
   else
     echo "error: Guardian did not come back after the restart" >&2

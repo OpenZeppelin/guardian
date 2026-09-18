@@ -106,6 +106,18 @@ export interface LiveSession {
   expectedProcedure?: string;
   expectedProcedureThreshold?: number;
   transferred?: bigint;
+  /**
+   * The nonce the producer's candidate occupies. Held from creation because
+   * abandoning names the nonce, not the proposal, and the proposal is gone by
+   * the time the abandon is asserted.
+   */
+  customNonce?: number;
+  /**
+   * The producer's own serialized request. Preparing execution re-executes it
+   * against the signed commitment, so the same bytes have to survive the
+   * scenario rather than being rebuilt.
+   */
+  customRequest?: Uint8Array;
   balanceSeen: boolean;
 }
 

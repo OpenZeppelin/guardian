@@ -93,6 +93,18 @@ async function runLiveAction(
       return live.createProposalOffline(context, scenario.id);
     case 'paused-refuses-execution':
       return live.assertPausedRefusesExecution(context, scenario.id);
+    case 'custom-proposal-create':
+      return live.createCustomProposal(context, scenario.id);
+    case 'custom-proposal-assert':
+      return live.assertCustomProposalType(context, scenario.id);
+    case 'custom-proposal-prepare':
+      return live.prepareCustomExecution(context, scenario.id);
+    case 'abandon-and-assert-hidden':
+      return live.abandonAndAssertHidden(context, scenario.id);
+    case 'p2ide-send':
+      return live.sendP2ide(context, scenario.id);
+    case 'p2ide-timelock-assert':
+      return live.assertP2ideTimelocked(context, scenario.id);
     case 'guardian-switch-online':
       return live.switchGuardianOnline(context, scenario.id);
     case 'guardian-switch-assert':

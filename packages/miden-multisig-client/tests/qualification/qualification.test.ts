@@ -36,6 +36,31 @@ describe('exported manifest', () => {
   });
 });
 
+describe('fixture commitment comparison', () => {
+  const fixture = '0x552759e44efe4db81e0e699f5aea5b04b099e3bce84f4e369e4de0bb5ebb9cd9';
+
+  it('does not let spelling decide the answer', async () => {
+    const { sameCommitment } = await import('./actions/account.js');
+    expect(sameCommitment(fixture, fixture.toUpperCase())).toBe(true);
+    expect(sameCommitment(fixture, fixture.replace(/^0x/, ''))).toBe(true);
+    expect(sameCommitment(`  ${fixture}  `, fixture)).toBe(true);
+  });
+
+  // The case the presence check could not see: a well-formed commitment that is
+  // not the one the account was registered with.
+  it('refuses a different well-formed commitment', async () => {
+    const { sameCommitment } = await import('./actions/account.js');
+    const other = '0xd49fcc29db562df747ff38ec96aeb4e20f2965d4cad72952dfef7b922ca7cff0';
+    expect(sameCommitment(other, fixture)).toBe(false);
+  });
+
+  it('treats nothing as no match', async () => {
+    const { sameCommitment } = await import('./actions/account.js');
+    expect(sameCommitment('', '')).toBe(false);
+    expect(sameCommitment('0x', fixture)).toBe(false);
+  });
+});
+
 describe('handler registry', () => {
   it('names only actions the manifest actually uses', () => {
     const declared = new Set(manifest.scenarios.flatMap((scenario) => scenario.actions));

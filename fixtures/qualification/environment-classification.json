@@ -13,7 +13,8 @@
     "epipe",
     "eai_again",
     "socket hang up",
-    "fetch failed"
+    "fetch failed",
+    "err_http2_stream_error"
   ],
   "reasons": [
     {
@@ -24,6 +25,11 @@
     {
       "name": "typescript node read timeout while fetching the genesis block header",
       "reason": "creating the multisig account failed: Error: Failed to ensure genesis in place: RPC error: grpc request failed for get_block_header_by_number: unknown error: JS API error: Error: read ETIMEDOUT: code: 'Unknown error', message: \"JS API error: Error: read ETIMEDOUT\", source: JsError(\"Error: read ETIMEDOUT\"): JS API error: Error: read ETIMEDOUT",
+      "environmental": true
+    },
+    {
+      "name": "typescript http/2 stream refused while fetching the genesis block header",
+      "reason": "creating the multisig account failed: Error: Failed to ensure genesis in place: RPC error: grpc request failed for get_block_header_by_number: unknown error: JS API error: Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM: code: 'Unknown error', message: \"JS API error: Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM\", source: JsError(\"Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM\"): JS API error: Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM",
       "environmental": true
     },
     {

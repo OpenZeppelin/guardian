@@ -78,12 +78,13 @@ gitignored directories, and tears it down afterwards:
 
 | Thing | How |
 |---|---|
-| Acknowledgement keys, per server | `ack-keygen` from the built image, into `qualification/stack/ack-keys/`, mode 0600 |
+| Acknowledgement keys, per server | `ack-keygen` from the built image, into the run's own directory under `qualification/stack/runs/`, mode 0600 |
 | The migration target's own identity | a second, separate key directory, because migrating an account to the Guardian it already uses is not a state change |
 | A third Guardian restricted to ECDSA | `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`, so the registration gate is exercised as an operator would configure it rather than only as parsed |
 | Operator allowlist | generated from the server fixtures via `qualification-driver operator-keys`, so the identities the scenarios sign with cannot drift from the ones the server accepts |
 | Postgres password | random per run |
 | Ports | picked per run, so concurrent runs do not collide |
+| Everything written per run | one directory per run under `qualification/stack/runs/`, removed with the stack: the generated environment file, both acknowledgement key directories and the operator allowlist, so a second run cannot overwrite what the first one's server is still mounting |
 
 The deterministic profile is the exception worth knowing about: it registers a
 **committed fixture account** whose stored state binds one specific guardian
@@ -169,13 +170,35 @@ qualification/stack/run.sh --profile deterministic \
 
 The seed is whatever the scenarios themselves stored through the product's own
 API, rather than a hand-written SQL fixture that would have to be kept in step
-with a schema it does not own. The second pass runs with `--post-restart`, so
-the durability assertion asserts rather than skipping: without it the remaining
-scenarios re-register the fixture account, which is idempotent and would pass
-just as happily against an empty database, and an upgrade check that cannot
-tell a migrated database from a fresh one proves nothing.
+with a schema it does not own.
 
-Needs no treasury, so it belongs to the deterministic profile. The
+The run has two phases, and only the second one is the claim. The seed phase
+talks to the older release, so it is recorded under that image's own revision
+and digest and written to a `seed/` subdirectory the merge does not read: a
+scenario that fails there has found something about the release being seeded
+from, not about the image under test, and it should not survive into the report
+as though it had. Its outcome is announced and then set aside rather than folded
+into the run's verdict, because a release old enough to be worth upgrading from
+is old enough to fail scenarios written after it. What proves the seeding
+actually happened is the target phase's own durability assertion, which looks
+for the rows the seed phase wrote.
+
+It seeds with the scenarios that write those rows and nothing else. Running the
+whole set against the older release is not more thorough, it is wrong:
+`det-scheme-gate` asserts that an ECDSA-only GUARDIAN *refuses* a Falcon
+registration, and registering that account on a release predating the gate left
+it already configured, so the target phase's registration returned idempotent
+success and the scenario read the gate as broken on an image where it works.
+
+The target phase then runs **both** SDKs against the upgraded server, with
+`--post-restart`, so the durability assertion asserts rather than skipping:
+without it the remaining scenarios re-register the fixture account, which is
+idempotent and would pass just as happily against an empty database, and an
+upgrade check that cannot tell a migrated database from a fresh one proves
+nothing.
+
+Needs no treasury, so it belongs to the deterministic profile, and is refused
+on the live profile, where it would fund every scenario twice. The
 `Qualification (deterministic)` workflow takes the same value as its
 `upgrade-from` input, and once its `pull_request` trigger is restored it will
 also run this by itself whenever a change touches `crates/server/migrations/`.
@@ -559,6 +582,30 @@ Browsers negotiate HTTP/2 through ALPN and are unaffected.
 `tests/qualification/h2Fetch.ts` routes gRPC-web calls over `node:http2`.
 Without it the remote prover is unreachable and the SDK falls back to in-WASM
 proving at roughly twenty-five times the CPU.
+
+**The TypeScript client does not surface a note its own account sent itself.**
+`live-p2ide-timelock-1of1-ecdsa` sends a timelocked note to the account that
+sent it, because a timelock is only observable from the recipient's side. The
+Rust client lists that note among the account's own, not yet consumable, which
+is exactly the pair the scenario asserts. The TypeScript client never does:
+neither a status listing nor an availability listing returned it three minutes
+after the transaction canonicalized, in a run whose Rust leg passed against the
+same GUARDIAN and the same network minutes earlier. Its own output-note record
+is committed throughout, so the note is on chain and the client knows it, just
+not as something the account holds. The TypeScript leg therefore reads the
+landing from the sending side and asks the account only what it can consume,
+which keeps the pair intact. Whether a TypeScript consumer can ever consume a
+note it sent itself is not answered here, and is worth answering.
+
+**A proposal's own metadata cannot be read back from GUARDIAN through the
+TypeScript client that created it.** `syncProposals` does fetch from GUARDIAN,
+but it rebuilds each proposal with the local metadata when it has a copy, so a
+label GUARDIAN mangled would still read back correctly on the client that
+proposed it, and wrongly only on every other client. The Rust client decodes
+GUARDIAN's answer either way. `live-custom-proposal-1of1-ecdsa` therefore reads
+the wire directly on the TypeScript leg, decoding it through the SDK's own
+metadata codec so what it asserts is still what a consumer would see. The
+divergence is in the SDKs, not in the suite, and closing it is SDK work.
 
 **A GUARDIAN refusal's code is not reachable from the multisig client.**
 `guardian_client::ClientError` exposes it through `guardian_code()`, but by the

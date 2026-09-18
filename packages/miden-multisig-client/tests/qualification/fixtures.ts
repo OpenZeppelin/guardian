@@ -34,6 +34,11 @@ export interface FixtureAccount {
 
 export interface ServerFixtures {
   readonly accountId: string;
+  /**
+   * The commitment the fixture account carries before any delta is applied,
+   * which is the state the deterministic profile registers and reads back.
+   */
+  readonly initialCommitment: string;
   readonly account: FixtureAccount;
   readonly cosignerCommitments: readonly string[];
   readonly signerKey: AuthSecretKey;
@@ -78,8 +83,13 @@ export function loadServerFixtures(): ServerFixtures {
     return commitment;
   });
 
+  if (!commitments.initial_commitment) {
+    throw new Error('commitments.json has no initial_commitment');
+  }
+
   return {
     accountId: commitments.account_id,
+    initialCommitment: commitments.initial_commitment,
     account,
     cosignerCommitments,
     signerKey,

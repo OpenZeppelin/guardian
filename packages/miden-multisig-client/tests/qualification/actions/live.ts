@@ -5,9 +5,16 @@ import { tmpdir } from 'node:os';
 import { GuardianHttpClient } from '@openzeppelin/guardian-client';
 
 import { AccountInspector } from '../../../src/inspector.js';
-import { AccountId } from '@miden-sdk/miden-sdk';
+import { AccountId, FeltArray, Poseidon2, TransactionSummary, Word } from '@miden-sdk/miden-sdk';
 
-import { bytesToHex } from '../../../src/utils/encoding.js';
+import { computeCommitmentFromTxSummary } from '../../../src/multisig/helpers.js';
+import { ProposalMetadataCodec } from '../../../src/proposal/metadata.js';
+import { buildP2idTransactionRequest } from '../../../src/transaction.js';
+import {
+  base64ToUint8Array,
+  bytesToHex,
+  normalizeHexWord as normalizeWord,
+} from '../../../src/utils/encoding.js';
 import { cosignWithRust } from '../handoff.js';
 import { fundAccount } from '../funding.js';
 import {
@@ -1726,6 +1733,552 @@ export async function assertRemovedSignerRefused(
       kind: 'failed',
       classification: 'product',
       reason: `the removed signer was refused, but not as unauthorized: ${message}`,
+    };
+  }
+}
+
+/** The label a producer chooses for a proposal type the SDK does not model. */
+const CUSTOM_PROPOSAL_TYPE = 'qualification_probe';
+
+/** The label as this SDK reports it, whatever bucket it was filed under. */
+function labelOf(metadata: { proposalType: string; rawProposalType?: string }): string {
+  return metadata.proposalType === 'custom'
+    ? (metadata.rawProposalType ?? 'custom')
+    : metadata.proposalType;
+}
+
+/**
+ * Proposes a transaction the SDK has no type for, the way a producer does.
+ *
+ * Every other scenario proposes through the typed API, so all of them exercise
+ * the built-in proposal types and none of them exercise the producer path
+ * (issue #266): serialized Miden transaction bytes plus a label the SDK has
+ * never heard of. That path is the unbounded one, and an integration built on
+ * it would break without this suite noticing.
+ *
+ * The transaction itself is an ordinary P2ID send, chosen because its
+ * correctness is already covered elsewhere. What is under test is the label
+ * surviving the round trip, not the payment. Mirrors `create_custom_proposal`
+ * in the Rust driver.
+ */
+export async function createCustomProposal(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.faucetId || !session.treasuryId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
+  }
+
+  try {
+    await session.cosigners[0].midenClient.sync();
+
+    // Built and serialized here rather than through the typed API, because
+    // producer-supplied bytes are the thing being qualified.
+    const { request } = buildP2idTransactionRequest(
+      session.accountId,
+      session.treasuryId,
+      session.faucetId,
+      P2ID_AMOUNT,
+    );
+    const bytes = request.serialize();
+
+    const proposal = await proposeWhenSettled(() =>
+      session.multisig!.createCustomProposal(bytes, CUSTOM_PROPOSAL_TYPE),
+    );
+    const label = labelOf(proposal.metadata);
+    if (label !== CUSTOM_PROPOSAL_TYPE) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the proposal came back labelled ${label}, not ${CUSTOM_PROPOSAL_TYPE}`,
+      };
+    }
+
+    session.proposalId = proposal.id;
+    session.customNonce = Number(proposal.nonce);
+    session.customRequest = bytes;
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `proposing a ${CUSTOM_PROPOSAL_TYPE} transaction failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Confirms GUARDIAN stored and serves the producer's own label.
+ *
+ * The label is the whole contract of the producer API: a GUARDIAN that accepted
+ * the proposal but returned it as `custom`, or as one of its own built-ins,
+ * would leave every producer unable to tell its proposals apart while every
+ * other signal looked healthy.
+ *
+ * Read from GUARDIAN's answer rather than from the client that made it, because
+ * the client's own copy would agree with itself. That forces a different call
+ * than the Rust leg makes: `listProposals` is a local cache, and `syncProposals`
+ * does fetch from GUARDIAN but keeps the local metadata for a proposal this
+ * client created, so neither one can answer the question here. The wire answer
+ * is decoded through the SDK's own codec, so what is asserted is still what a
+ * consumer would read, not a raw field this harness picked out.
+ */
+export async function assertCustomProposalType(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  const proposalId = normalizeWord(session.proposalId);
+
+  try {
+    const deltas =
+      await session.cosigners[0].multisigClient.guardianClient.getDeltaProposals(session.accountId);
+    const mine = deltas.find(
+      (delta) =>
+        normalizeWord(computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)) ===
+        proposalId,
+    );
+    if (!mine) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `GUARDIAN does not list the custom proposal ${session.proposalId}`,
+      };
+    }
+
+    const label = labelOf(ProposalMetadataCodec.fromGuardian(mine.deltaPayload.metadata));
+    if (label !== CUSTOM_PROPOSAL_TYPE) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `GUARDIAN serves the proposal as ${label}, not as the producer's ${CUSTOM_PROPOSAL_TYPE}`,
+      };
+    }
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `reading the custom proposal back from GUARDIAN failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * The advice-map key a signature is filed under, which is how an integration
+ * finds the entry it has to inject.
+ *
+ * Both Words are built for this call and never reused: hashing consumes the
+ * element array it is handed, and the SDK's own signature helper builds a fresh
+ * Word per entry for the same reason.
+ */
+function adviceKeyFor(commitmentHex: string, messageHex: string): Word {
+  return Poseidon2.hashElements(
+    new FeltArray([
+      ...Word.fromHex(normalizeWord(commitmentHex)).toFelts(),
+      ...Word.fromHex(normalizeWord(messageHex)).toFelts(),
+    ]),
+  );
+}
+
+/**
+ * Assembles the execution advice a producer integration needs, which is where
+ * the SDK's responsibility for a custom proposal ends.
+ *
+ * A custom proposal is deliberately not executed by `executeProposal`: the SDK
+ * cannot rebuild an arbitrary producer transaction, so it hands back the
+ * cosigner signatures and GUARDIAN's acknowledgement, and the integration
+ * injects them into its own request and submits with its own Miden client. This
+ * scenario stops at that boundary rather than reimplementing an integration.
+ *
+ * What the boundary is worth asserting for: preparing re-executes the producer's
+ * own bytes at the proposal's anchored block and refuses unless they reproduce
+ * the signed commitment. So a pass here means the label survived, the threshold
+ * was met, and the bytes still match what was signed.
+ *
+ * The Rust leg checks the returned advice is not empty. This SDK returns an
+ * `AdviceMap`, which exposes no size, so the check is made by looking up the one
+ * entry an integration cannot proceed without: GUARDIAN's acknowledgement, under
+ * the key the producer's own transaction will read it from.
+ */
+export async function prepareCustomExecution(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  if (!session.customRequest) {
+    return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was created in this scenario' };
+  }
+
+  try {
+    const delta = await session.cosigners[0].multisigClient.guardianClient.getDeltaProposal(
+      session.accountId,
+      normalizeWord(session.proposalId),
+    );
+    const signedCommitment = normalizeWord(
+      TransactionSummary.deserialize(base64ToUint8Array(delta.deltaPayload.txSummary.data))
+        .toCommitment()
+        .toHex(),
+    );
+
+    const advice = await session.multisig.prepareCustomExecution(
+      session.proposalId,
+      session.customRequest,
+    );
+
+    const acknowledgement = advice.get(
+      adviceKeyFor(session.multisig.guardianCommitment, signedCommitment),
+    );
+    if (!acknowledgement) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason:
+          'the prepared advice carries no GUARDIAN acknowledgement, so an integration would have nothing to inject',
+      };
+    }
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `preparing the custom execution failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * How long an abandoned candidate may take to resolve. The quarantine is a
+ * short wall-clock minimum plus a couple of at-base observations, so this is
+ * generous rather than tight.
+ */
+const ABANDON_DEADLINE_MS = 120_000;
+
+/**
+ * How long the discarded proposal may stay in this client's listing.
+ *
+ * Longer than one call on purpose: unlike the Rust client, this one keeps a
+ * proposal GUARDIAN has acknowledged until two consecutive listings omit it, so
+ * a single sync after the discard proves nothing either way.
+ */
+const LISTING_PRUNE_DEADLINE_MS = 60_000;
+
+/**
+ * The negative control for how every other scenario asserts completion.
+ *
+ * Completion is chain confirmation plus a canonical delta, and not "the proposal
+ * left the pending set", because canonicalization removes a discarded delta
+ * exactly as it removes a successful one. Every other scenario exercises the
+ * positive side of that rule. This is the negative: it produces a real discard
+ * and checks nothing serves it as live, so the rule is falsified by experiment
+ * rather than only correct by construction.
+ *
+ * The candidate comes from the producer API, which is the one path that
+ * separates acknowledgement from submission: preparing pushes the delta to
+ * obtain GUARDIAN's acknowledgement, and submitting is a separate call the
+ * integration makes. Stopping in between leaves a candidate that can never land,
+ * which is precisely the state the abandon API exists for, and it reaches that
+ * state through supported calls rather than by forcing GUARDIAN into it.
+ *
+ * Nothing here reaches Miden, so the account stays at the candidate's base and
+ * the abandon resolves through its designed at-base path rather than through
+ * retry exhaustion.
+ */
+export async function abandonAndAssertHidden(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (session.customNonce === undefined) {
+    return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was prepared in this scenario' };
+  }
+  if (!session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  const nonce = session.customNonce;
+  const proposalId = session.proposalId;
+
+  // Established before abandoning, or the check afterwards means nothing: a
+  // proposal already gone from the pending set would satisfy it without the
+  // discard having hidden anything.
+  try {
+    const pending = await session.multisig.syncProposals();
+    if (!pending.some((proposal) => proposal.id === proposalId)) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the proposal ${proposalId} is not pending before the abandon, so its absence afterwards would prove nothing`,
+      };
+    }
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `listing proposals before the abandon failed: ${String(error)}`,
+    };
+  }
+
+  try {
+    await session.multisig.abandonCandidate(nonce);
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `abandoning the candidate at nonce ${nonce} failed: ${String(error)}`,
+    };
+  }
+
+  const abandonDeadline = Date.now() + ABANDON_DEADLINE_MS;
+  let wait = POLL_START_MS;
+  let state = 'never answered';
+  for (;;) {
+    try {
+      const status = await session.multisig.abandonStatus(nonce);
+      if (status === 'abandoned') break;
+      if (status === 'landed') {
+        return {
+          kind: 'failed',
+          classification: 'product',
+          reason:
+            'the candidate canonicalized, so nothing was discarded to look for; this scenario never submits, so GUARDIAN saw a transaction it should not have',
+        };
+      }
+      state = status;
+    } catch (error) {
+      state = String(error);
+    }
+    if (Date.now() >= abandonDeadline) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the abandoned candidate at nonce ${nonce} was still ${state} after ${ABANDON_DEADLINE_MS / 1000}s`,
+      };
+    }
+    wait = await backoff(wait);
+  }
+
+  // The discard is only safe while it is invisible to what a client reads by
+  // default. A discarded delta still listed as a pending proposal is the shape
+  // that makes "it left the pending set" look like completion.
+  const pruneDeadline = Date.now() + LISTING_PRUNE_DEADLINE_MS;
+  let stillListed = true;
+  let listingError = '';
+  wait = POLL_START_MS;
+  for (;;) {
+    try {
+      const listed = await session.multisig.syncProposals();
+      stillListed = listed.some((proposal) => proposal.id === proposalId);
+      listingError = '';
+      if (!stillListed) break;
+    } catch (error) {
+      listingError = String(error);
+    }
+    if (Date.now() >= pruneDeadline) break;
+    wait = await backoff(wait);
+  }
+  if (listingError) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `listing proposals after the discard failed: ${listingError}`,
+    };
+  }
+  if (stillListed) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the delta at nonce ${nonce} was discarded but its proposal ${proposalId} is still listed as pending`,
+    };
+  }
+
+  // It must not have moved the account. Reading state back is what a client does
+  // next, and it is the other way a discard could pass for a completion.
+  try {
+    await session.multisig.verifyStateCommitment();
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the account does not agree with chain after a discarded delta: ${String(error)}`,
+    };
+  }
+
+  // The rule itself, not only its symptom. Everything above shows the discard is
+  // invisible to what a client reads by default, which is worth having, but the
+  // code that has to tell a discard from a success is `waitForExecution`: every
+  // other live scenario trusts its verdict. Ask it about a delta that really was
+  // discarded, and it must say so rather than read the empty pending set as
+  // completion.
+  const completion = await waitForExecution(session, proposalId, nonce);
+  switch (completion.kind) {
+    case 'discarded':
+      return { kind: 'passed' };
+    case 'confirmed':
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason:
+          'the completion check calls a discarded delta confirmed, so every scenario that trusts it would read an abandoned candidate as a successful execution',
+      };
+    case 'pending':
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the completion check still calls the discarded delta pending after its deadline: ${completion.reason}`,
+      };
+  }
+}
+
+/**
+ * Far enough ahead that the note stays locked for the life of the run, without
+ * needing the chain tip to compute it. The assets stay in the note; these
+ * accounts are ephemeral and their residue is accepted rather than swept.
+ */
+const P2IDE_TIMELOCK_HEIGHT = 4_000_000_000;
+
+/**
+ * Sends a timelocked note to the account itself.
+ *
+ * P2ID is covered; P2IDE is the same flow with a height attached, and nothing
+ * exercised it. Self-addressed on purpose: the timelock is only observable from
+ * the recipient's side, and sending to a counterparty this scenario does not
+ * drive would leave nothing to assert against.
+ */
+export async function sendP2ide(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.faucetId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing' };
+  }
+
+  try {
+    await session.cosigners[0].midenClient.sync();
+    const before = await heldBalance(session);
+    if (before <= P2ID_AMOUNT) {
+      return {
+        kind: 'failed',
+        classification: 'setup',
+        reason: `the account holds ${before}, which is not enough to send ${P2ID_AMOUNT} and pay the fee`,
+      };
+    }
+
+    const proposal = await proposeWhenSettled(() =>
+      session.multisig!.createP2idProposal(session.accountId!, session.faucetId!, P2ID_AMOUNT, {
+        timelockHeight: P2IDE_TIMELOCK_HEIGHT,
+      }),
+    );
+    session.proposalId = proposal.id;
+    session.balanceBeforeSend = before;
+    session.sentAmount = P2ID_AMOUNT;
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `proposing the timelocked send failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Confirms the height on the note is doing something.
+ *
+ * A P2IDE note whose timelock were dropped, or encoded as the on-chain "no
+ * constraint" zero, would be indistinguishable from a plain P2ID at every other
+ * point in this flow: the transaction executes, the balance moves, the note
+ * lands. The difference shows only here, and only as the pair of answers below.
+ * Committed alone would pass for a P2ID; not-consumable alone would pass for a
+ * note that never arrived.
+ */
+export async function assertP2ideTimelocked(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+
+  try {
+    // Read from the sending side, which is where this client records the note.
+    // The Rust leg reads the recipient side, and the account is its own
+    // recipient, so the two should agree. They do not: this client's input-note
+    // store never takes in a note the account sent itself, while the Rust
+    // client's does, and neither a status listing nor an availability listing
+    // showed it after three minutes. What that costs is one half of the pair,
+    // not the pair itself: a committed output note is on chain, which is the
+    // same "it landed" the Rust leg asserts, and the other half still asks this
+    // account what it can consume. The divergence is recorded in
+    // docs/QUALIFICATION.md rather than worked around silently.
+    //
+    // Polled because the note lands in the block the execution landed in and
+    // the client only sees it once a sync covers that block, which is tolerance
+    // for chain lag rather than a weaker assertion.
+    const deadline = Date.now() + NOTE_ARRIVAL_DEADLINE_MS;
+    let wait = POLL_START_MS;
+    let landed: string[] = [];
+    for (;;) {
+      try {
+        await session.cosigners[0].midenClient.sync();
+        await session.multisig.syncState();
+        const sent = await session.cosigners[0].midenClient.notes.listSent({
+          status: 'committed',
+        });
+        landed = sent.map((record) => record.id().toString());
+      } catch {
+        // A sync that loses a race with block production is retried, not fatal.
+      }
+      if (landed.length > 0) break;
+      if (Date.now() >= deadline) {
+        return {
+          kind: 'failed',
+          classification: 'product',
+          reason: `the timelocked note never committed on chain within ${NOTE_ARRIVAL_DEADLINE_MS / 1000}s, so the timelock cannot be read`,
+        };
+      }
+      wait = await backoff(wait);
+    }
+    const committedIds = new Set(landed);
+
+    const consumable = await session.multisig.getConsumableNotes();
+    const unlocked = consumable.filter((note) => committedIds.has(note.id)).map((note) => note.id);
+    if (unlocked.length > 0) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `a note timelocked to block ${P2IDE_TIMELOCK_HEIGHT} is already consumable: ${unlocked.join(', ')}`,
+      };
+    }
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `reading the timelocked note back failed: ${String(error)}`,
     };
   }
 }

@@ -25,6 +25,12 @@ qual_project_name() {
 
 qual_generate_env() {
   local profile="$1" network_type="$2" rpc_endpoint="$3" image="$4" out="$5"
+  # Everything a run writes lives under one directory named after the run.
+  # Shared paths looked harmless because ports and project names were already
+  # per run, but a second invocation overwrote the acknowledgement keys and the
+  # operator allowlist the first one's server was still mounting, so its restart
+  # and operator scenarios read another run's configuration.
+  local run_dir="${6:-$(dirname "${out}")}"
 
   QUAL_RUN_ID="${QUAL_RUN_ID:-qual-$(date -u +%Y%m%d-%H%M%S)-$(qual_random_suffix)}"
   QUAL_PROJECT="$(qual_project_name "${QUAL_PROJECT:-${QUAL_RUN_ID}}")"
@@ -35,6 +41,11 @@ qual_generate_env() {
   QUAL_HTTP_PORT_C="${QUAL_HTTP_PORT_C:-$(qual_free_port)}"
   QUAL_GRPC_PORT_C="${QUAL_GRPC_PORT_C:-$(qual_free_port)}"
   QUAL_POSTGRES_PASSWORD="${QUAL_POSTGRES_PASSWORD:-$(qual_random_suffix)}"
+
+  QUAL_ACK_KEYS_DIR="${run_dir}/ack-keys"
+  QUAL_ACK_KEYS_MIGRATION_DIR="${run_dir}/ack-keys-migration-target"
+  QUAL_OPERATOR_DIR="${run_dir}/operator"
+  mkdir -p "${QUAL_ACK_KEYS_DIR}" "${QUAL_ACK_KEYS_MIGRATION_DIR}" "${QUAL_OPERATOR_DIR}"
 
   cat > "${out}" <<ENV
 QUAL_RUN_ID=${QUAL_RUN_ID}
@@ -53,9 +64,13 @@ QUAL_POSTGRES_PASSWORD=${QUAL_POSTGRES_PASSWORD}
 QUAL_RATE_BURST_PER_SEC=${QUAL_RATE_BURST_PER_SEC:-500}
 QUAL_RATE_PER_MIN=${QUAL_RATE_PER_MIN:-20000}
 QUAL_RUST_LOG=${QUAL_RUST_LOG:-info}
+QUAL_ACK_KEYS_DIR=${QUAL_ACK_KEYS_DIR}
+QUAL_ACK_KEYS_MIGRATION_DIR=${QUAL_ACK_KEYS_MIGRATION_DIR}
+QUAL_OPERATOR_DIR=${QUAL_OPERATOR_DIR}
 ENV
 
   export QUAL_RUN_ID QUAL_PROJECT QUAL_HTTP_PORT QUAL_GRPC_PORT QUAL_POSTGRES_PASSWORD
   export QUAL_HTTP_PORT_B QUAL_GRPC_PORT_B
   export QUAL_HTTP_PORT_C QUAL_GRPC_PORT_C
+  export QUAL_ACK_KEYS_DIR QUAL_ACK_KEYS_MIGRATION_DIR QUAL_OPERATOR_DIR
 }

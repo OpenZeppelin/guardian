@@ -39,6 +39,7 @@ export const ENVIRONMENT_SIGNALS: readonly string[] = [
   'eai_again',
   'socket hang up',
   'fetch failed',
+  'err_http2_stream_error',
 ];
 
 /** Whether a failure reason is the environment failing under the suite. */

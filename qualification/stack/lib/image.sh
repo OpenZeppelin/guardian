@@ -74,3 +74,15 @@ qual_image_revision() {
     --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null \
     || echo ""
 }
+
+# The content identity of an image that was never pushed, so a locally built run
+# records what it actually ran rather than a tag that can be rebuilt under the
+# same name. `.Id` is the sha256 of the image config, which is the same shape as
+# a registry digest without claiming to be one.
+qual_image_id() {
+  local reference="$1"
+  local id
+  id="$(docker image inspect "${reference}" --format '{{.Id}}' 2>/dev/null)" || return 1
+  [[ "${id}" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  echo "${id}"
+}

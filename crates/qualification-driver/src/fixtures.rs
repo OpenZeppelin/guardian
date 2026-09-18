@@ -18,6 +18,9 @@ const FIXTURE_DIR: &str = "crates/server/src/testing/fixtures";
 pub struct Fixtures {
     pub account: Value,
     pub account_id: String,
+    /// The commitment the fixture account carries before any delta is applied,
+    /// which is the state the deterministic profile registers and reads back.
+    pub initial_commitment: String,
     pub cosigner_commitments: Vec<String>,
     pub delta: Value,
     signer_key: SecretKey,
@@ -46,6 +49,11 @@ impl Fixtures {
             .ok_or_else(|| anyhow!("commitments.json has no account_id"))?
             .to_string();
 
+        let initial_commitment = commitments["initial_commitment"]
+            .as_str()
+            .ok_or_else(|| anyhow!("commitments.json has no initial_commitment"))?
+            .to_string();
+
         let secret_hex = keys["signer_1_secret_key"]
             .as_str()
             .ok_or_else(|| anyhow!("keys.json has no signer_1_secret_key"))?;
@@ -70,6 +78,7 @@ impl Fixtures {
         Ok(Self {
             account,
             account_id,
+            initial_commitment,
             cosigner_commitments,
             delta,
             signer_key,

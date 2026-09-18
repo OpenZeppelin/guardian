@@ -407,8 +407,15 @@ runtime = "server-side"
 scheme = "ecdsa"
 shape = "1-of-1"
 mode = "offline"
-actions = ["account-create", "account-register", "asset-transfer", "note-consume", "proposal-create-offline", "guardian-migrate", "proposal-sign-external", "proposal-import", "proposal-execute"]
-step_budget = "240s"
+# `guardian-switch-assert` last, and it is not decoration: completion for a
+# migration cannot ask for a canonical delta, because the canonical delta stays
+# with the GUARDIAN being left behind, so the completion check falls back to
+# chain agreement. An execution that regressed to a no-op satisfies that, since
+# an account that never moved still agrees with chain. Only reading the
+# account's binding back and comparing it with the target's own commitment
+# separates a rotation from a no-op.
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "proposal-create-offline", "guardian-migrate", "proposal-sign-external", "proposal-import", "proposal-execute", "guardian-switch-assert"]
+step_budget = "300s"
 required = true
 core = false
 
@@ -541,11 +548,16 @@ core = false
 id = "live-custom-proposal-1of1-ecdsa"
 title = "A producer's own proposal type round-trips, and its abandoned delta stays hidden"
 profile = "live"
-sdk = "rust"
+sdk = "both"
+runtime = "server-side"
 scheme = "ecdsa"
 shape = "1-of-1"
 mode = "online"
-actions = ["account-create", "account-register", "asset-transfer", "note-consume", "custom-proposal-create", "custom-proposal-assert", "custom-proposal-prepare", "abandon-and-assert-hidden"]
+# `proposal-sign` is not redundant at 1-of-1: the Rust client attaches the
+# proposer's signature when the proposal is created and the TypeScript one does
+# not, so without it the TypeScript leg reaches `custom-proposal-prepare` one
+# signature short of a threshold of one. The Rust leg signs nothing here.
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "custom-proposal-create", "custom-proposal-assert", "proposal-sign", "custom-proposal-prepare", "abandon-and-assert-hidden"]
 step_budget = "480s"
 required = true
 core = false
@@ -563,11 +575,12 @@ core = false
 id = "live-p2ide-timelock-1of1-ecdsa"
 title = "A timelocked note lands but cannot be consumed before its height"
 profile = "live"
-sdk = "rust"
+sdk = "both"
+runtime = "server-side"
 scheme = "ecdsa"
 shape = "1-of-1"
 mode = "online"
-actions = ["account-create", "account-register", "asset-transfer", "note-consume", "p2ide-send", "proposal-execute", "p2ide-timelock-assert"]
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "p2ide-send", "proposal-sign", "proposal-execute", "p2ide-timelock-assert"]
 step_budget = "480s"
 required = true
 core = false

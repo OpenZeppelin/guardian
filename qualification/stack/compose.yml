@@ -17,8 +17,8 @@ services:
       - "${QUAL_HTTP_PORT:-3000}:3000"
       - "${QUAL_GRPC_PORT:-50051}:50051"
     volumes:
-      - ./ack-keys:/var/guardian/ack-keys:ro
-      - ./operator:/var/guardian/operator:ro
+      - ${QUAL_ACK_KEYS_DIR:?set QUAL_ACK_KEYS_DIR}:/var/guardian/ack-keys:ro
+      - ${QUAL_OPERATOR_DIR:?set QUAL_OPERATOR_DIR}:/var/guardian/operator:ro
       - guardian-keystore:/var/guardian/keystore
     environment:
       - RUST_LOG=${QUAL_RUST_LOG:-info}
@@ -54,7 +54,7 @@ services:
       - "${QUAL_HTTP_PORT_B:-3100}:3000"
       - "${QUAL_GRPC_PORT_B:-50151}:50051"
     volumes:
-      - ./ack-keys-migration-target:/var/guardian/ack-keys:ro
+      - ${QUAL_ACK_KEYS_MIGRATION_DIR:?set QUAL_ACK_KEYS_MIGRATION_DIR}:/var/guardian/ack-keys:ro
       - guardian-keystore-migration-target:/var/guardian/keystore
     environment:
       - RUST_LOG=${QUAL_RUST_LOG:-info}
@@ -85,7 +85,7 @@ services:
       - "${QUAL_HTTP_PORT_C:-3200}:3000"
       - "${QUAL_GRPC_PORT_C:-50251}:50051"
     volumes:
-      - ./ack-keys:/var/guardian/ack-keys:ro
+      - ${QUAL_ACK_KEYS_DIR:?set QUAL_ACK_KEYS_DIR}:/var/guardian/ack-keys:ro
       - guardian-keystore-scheme-gated:/var/guardian/keystore
     environment:
       - RUST_LOG=${QUAL_RUST_LOG:-info}

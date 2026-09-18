@@ -25,12 +25,19 @@ qual_restart_server() {
 qual_swap_server_image() {
   local project="$1" compose_file="$2" env_file="$3" image="$4"
 
-  # Rewritten in place so compose brings the service back up on the new image
-  # while every other service, and the volume, stays exactly where it was.
+  # Rewritten in place so compose brings the services back up on the new image
+  # while the database, and its volume, stay exactly where they were.
   local tmp="${env_file}.swap"
   sed "s|^QUAL_SERVER_IMAGE=.*|QUAL_SERVER_IMAGE=${image}|" "${env_file}" > "${tmp}" \
     && mv "${tmp}" "${env_file}" || return 1
 
+  # Every GUARDIAN in the stack, not only the one most scenarios talk to. The
+  # migration target and the scheme-gated server run the same image, and leaving
+  # them on the seeded release meant the phase that is supposed to judge the
+  # image under test was still asking an older one: `det-scheme-gate` failed
+  # after a successful upgrade because the gate it asserts did not exist in the
+  # release the third server was still running.
   docker compose -p "${project}" -f "${compose_file}" --env-file "${env_file}" \
-    up -d --no-deps --force-recreate server >/dev/null 2>&1
+    up -d --no-deps --force-recreate \
+    server server-migration-target server-scheme-gated >/dev/null 2>&1
 }

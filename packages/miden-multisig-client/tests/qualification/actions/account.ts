@@ -51,6 +51,30 @@ export async function register(context: ActionContext): Promise<ActionOutcome> {
   }
 }
 
+/**
+ * Whether two commitments name the same state, whatever their spelling.
+ *
+ * GUARDIAN's rendering and the fixture's are both hex words, but nothing
+ * guarantees the same case or the same `0x`, and a comparison that tripped on
+ * either would fail for a reason that is not a defect. Mirrors
+ * `same_commitment` in the Rust driver.
+ */
+export function sameCommitment(left: string, right: string): boolean {
+  const canonical = (value: string): string =>
+    value.trim().replace(/^0x/i, '').toLowerCase();
+  const [a, b] = [canonical(left), canonical(right)];
+  return a.length > 0 && a === b;
+}
+
+/**
+ * Reads the account back through GUARDIAN and checks the commitment it reports
+ * is the one the registered state carries.
+ *
+ * Compared against the fixture's own commitment rather than merely required to
+ * be present. A GUARDIAN that stored a corrupted or stale state, or served
+ * another account's, would answer with a perfectly well-formed commitment, and
+ * a presence check would call that a pass on a required scenario.
+ */
 export async function verifyCommitment(context: ActionContext): Promise<ActionOutcome> {
   let session: Session;
   try {
@@ -66,6 +90,15 @@ export async function verifyCommitment(context: ActionContext): Promise<ActionOu
         kind: 'failed',
         classification: 'product',
         reason: 'GUARDIAN returned an account with no commitment',
+      };
+    }
+    if (!sameCommitment(state.commitment, session.fixtures.initialCommitment)) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason:
+          `GUARDIAN reports commitment ${state.commitment} for the fixture account, but the ` +
+          `state it was registered with carries ${session.fixtures.initialCommitment}`,
       };
     }
     if (state.accountId && state.accountId !== session.fixtures.accountId) {

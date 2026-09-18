@@ -85,8 +85,30 @@ pub async fn register(runner: &Runner) -> ActionOutcome {
     }
 }
 
+/// Whether two commitments name the same state, whatever their spelling.
+///
+/// GUARDIAN's rendering and the fixture's are both hex words, but nothing
+/// guarantees the same case or the same `0x`, and a comparison that tripped on
+/// either would fail for a reason that is not a defect.
+fn same_commitment(left: &str, right: &str) -> bool {
+    fn canonical(value: &str) -> String {
+        value
+            .trim()
+            .trim_start_matches("0x")
+            .trim_start_matches("0X")
+            .to_ascii_lowercase()
+    }
+    let (left, right) = (canonical(left), canonical(right));
+    !left.is_empty() && left == right
+}
+
 /// Reads the account back through GUARDIAN and checks the commitment it
 /// reports is the one the registered state carries.
+///
+/// Compared against the fixture's own commitment rather than merely required
+/// to be present. A GUARDIAN that stored a corrupted or stale state, or served
+/// another account's, would answer with a perfectly well-formed commitment, and
+/// a presence check would call that a pass on a required scenario.
 pub async fn verify_commitment(runner: &Runner) -> ActionOutcome {
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
@@ -118,6 +140,13 @@ pub async fn verify_commitment(runner: &Runner) -> ActionOutcome {
         return ActionOutcome::failed_product(
             "GUARDIAN returned an account with no commitment".to_string(),
         );
+    }
+    if !same_commitment(&account.commitment, &fixtures.initial_commitment) {
+        return ActionOutcome::failed_product(format!(
+            "GUARDIAN reports commitment `{}` for the fixture account, but the state it was \
+             registered with carries `{}`",
+            account.commitment, fixtures.initial_commitment
+        ));
     }
     if account.account_id != fixtures.account_id {
         return ActionOutcome::failed_product(format!(
@@ -607,5 +636,34 @@ async fn attempt_proposal_while_paused(
                 "the proposal failed without a GUARDIAN error code: {error}"
             )),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_commitment;
+
+    /// The fixture's own commitment, and the same value spelled differently.
+    const FIXTURE: &str = "0x552759e44efe4db81e0e699f5aea5b04b099e3bce84f4e369e4de0bb5ebb9cd9";
+
+    #[test]
+    fn spelling_does_not_decide_the_answer() {
+        assert!(same_commitment(FIXTURE, &FIXTURE.to_ascii_uppercase()));
+        assert!(same_commitment(FIXTURE, FIXTURE.trim_start_matches("0x")));
+        assert!(same_commitment(&format!("  {FIXTURE}  "), FIXTURE));
+    }
+
+    /// The case the presence check could not see: a well-formed commitment that
+    /// is not the one the account was registered with.
+    #[test]
+    fn a_different_well_formed_commitment_is_refused() {
+        let other = "0xd49fcc29db562df747ff38ec96aeb4e20f2965d4cad72952dfef7b922ca7cff0";
+        assert!(!same_commitment(other, FIXTURE));
+    }
+
+    #[test]
+    fn nothing_is_not_a_match() {
+        assert!(!same_commitment("", ""));
+        assert!(!same_commitment("0x", FIXTURE));
     }
 }

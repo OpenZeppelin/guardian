@@ -6,6 +6,7 @@ qualification/stack/.env.generated
 qualification/stack/ack-keys/
 qualification/stack/ack-keys-migration-target/
 qualification/stack/operator/
+qualification/stack/runs/
 
 target/
 store.sqlite3
