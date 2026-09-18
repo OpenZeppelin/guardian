@@ -137,6 +137,43 @@ and refuses to start on a shortfall:
 cargo run -p guardian-qualification-driver -- treasury-check --network testnet
 ```
 
+### Qualifying an upgrade
+
+Asks whether the image under test boots on a database an older release wrote,
+and whether that data is still there once its migrations have run:
+
+```bash
+qualification/stack/run.sh --profile deterministic \
+  --upgrade-from ghcr.io/openzeppelin/guardian:v0.17.0
+```
+
+Note what is being upgraded *to*. `--upgrade-from` sets only the image the
+stack boots on; the image under test is still the one built from your checkout
+unless `--image-tag` pulls a published one. So the command above seeds a
+database with the last release and then runs **this branch's** migrations
+against those rows, which is the question worth asking before merging a
+migration, not after shipping it.
+
+Pass `--image-tag` as well to ask the other question, whether an already
+published release upgrades cleanly:
+
+```bash
+qualification/stack/run.sh --profile deterministic \
+  --image-tag v0.18.0 --upgrade-from v0.17.0
+```
+
+The seed is whatever the scenarios themselves stored through the product's own
+API, rather than a hand-written SQL fixture that would have to be kept in step
+with a schema it does not own. The second pass runs with `--post-restart`, so
+the durability assertion asserts rather than skipping: without it the remaining
+scenarios re-register the fixture account, which is idempotent and would pass
+just as happily against an empty database, and an upgrade check that cannot
+tell a migrated database from a fresh one proves nothing.
+
+Needs no treasury, so it belongs to the deterministic profile. The
+`Qualification (deterministic)` workflow takes the same value as its
+`upgrade-from` input.
+
 ## Reading the outcome
 
 | Exit code | Meaning |
@@ -642,6 +679,16 @@ signed these offline and contacted GUARDIAN only to execute. The gate is gone
 from `sign_imported_proposal`, and execution fetches the acknowledgement when
 the transaction type requires one, so the Rust leg of
 `live-offline-export-import-2of3-falcon` now runs rather than skipping.
+
+**Nothing runs the upgrade pass automatically.** `--upgrade-from` is wired into
+the deterministic workflow, so qualifying an upgrade no longer needs a local
+checkout, but it only runs when someone passes the input. The rule that would
+make it automatic is not hard (seed from the latest published release, upgrade
+to the branch build, which is the default target), and a migration that cannot
+boot on the current release's data is exactly the defect worth catching before
+merge rather than after. It is not automatic yet because the deterministic
+workflow gates nothing today; wiring it on is worth doing at the same time as
+making that profile a required check.
 
 **The treasury cannot yet follow a pull request.** The live workflow refuses any
 ref other than the default branch, because the scenario driver would otherwise

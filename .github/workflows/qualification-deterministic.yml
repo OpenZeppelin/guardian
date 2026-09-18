@@ -25,6 +25,10 @@ on:
         description: "Published image to qualify instead of building, e.g. v1.2.3 (leave blank to build the checked-out ref)"
         type: string
         required: false
+      upgrade-from:
+        description: "Published tag to seed the database from before upgrading to the image under test, e.g. v1.2.3 (leave blank to skip the upgrade pass)"
+        type: string
+        required: false
 
 concurrency:
   group: qualification-deterministic-${{ github.workflow }}-${{ github.ref }}
@@ -99,11 +103,20 @@ jobs:
       - name: Run the deterministic profile
         env:
           IMAGE_TAG: ${{ inputs.image-tag }}
+          UPGRADE_FROM: ${{ inputs.upgrade-from }}
         run: |
           args=(--profile deterministic --trigger dispatch)
           args+=(--out "${GITHUB_WORKSPACE}/qualification-results")
           if [[ -n "${IMAGE_TAG}" ]]; then
             args+=(--image-source pulled --image-tag "ghcr.io/openzeppelin/guardian:${IMAGE_TAG}")
+          fi
+          # The upgrade question, asked without a treasury: the deterministic
+          # scenarios seed the database through the product's own API, then the
+          # image under test boots on those rows and re-runs against them. Which
+          # tag to seed from is a release decision rather than a test one, so it
+          # is an input rather than a default.
+          if [[ -n "${UPGRADE_FROM}" ]]; then
+            args+=(--upgrade-from "ghcr.io/openzeppelin/guardian:${UPGRADE_FROM}")
           fi
           qualification/stack/run.sh "${args[@]}"
 

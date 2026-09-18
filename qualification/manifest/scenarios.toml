@@ -609,6 +609,38 @@ step_budget = "720s"
 required = true
 core = false
 
+# The scheme mirrors for the two config-writing flows that still ran on one
+# each. Both encode the scheme into the advice payload, which is exactly where
+# the two scheme-binding defects this suite has already found were hiding, so
+# running each on one scheme leaves the other half of that surface untested.
+# Add-signer and remove-signer were doubled for the same reason; GUARDIAN
+# rotation is covered by the offline (ECDSA) and online (Falcon) pair.
+[[scenario]]
+id = "live-change-threshold-2of3-falcon"
+title = "A Falcon account changes its threshold and serves the new signer set"
+profile = "live"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "threshold-change", "proposal-sign", "proposal-execute", "signer-set-assert"]
+step_budget = "600s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-procedure-threshold-2of3-ecdsa"
+title = "An ECDSA account raises one procedure's threshold and serves the override"
+profile = "live"
+sdk = "rust"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "procedure-threshold-set", "proposal-sign", "proposal-execute", "procedure-threshold-assert"]
+step_budget = "600s"
+required = true
+core = false
+
 [[scenario]]
 id = "live-procedure-threshold-2of3-falcon"
 title = "One procedure requires every signer while the account threshold stays put"
