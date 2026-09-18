@@ -614,15 +614,17 @@ jobs:
         working-directory: packages
         run: npm ci
 
-      # Both clients, and for the same reason the qualification workflows build
-      # both: their `dist/` is gitignored and the driver imports the operator
-      # client at module scope, so a missing build fails resolution rather than
-      # typechecking.
-      - name: Build the GUARDIAN clients
+      # Every `dist/` the typecheck resolves through, and all three are
+      # gitignored. The two GUARDIAN clients because the driver imports the
+      # operator client at module scope, and the multisig client itself because
+      # `tests/browser/harness.ts` imports the package's own build output: a
+      # test tree that typechecks against `dist/` needs `dist/` to exist.
+      - name: Build the workspace packages
         working-directory: packages
         run: |
           npm run build -w @openzeppelin/guardian-client
           npm run build -w @openzeppelin/guardian-operator-client
+          npm run build -w @openzeppelin/miden-multisig-client
 
       - name: Typecheck the qualification driver
         working-directory: packages/miden-multisig-client
