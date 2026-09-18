@@ -31,7 +31,7 @@ fn cleanup_manifest_roundtrip() {
     let path = dir.path().join("cleanup-manifest.json");
     let mut manifest = CleanupManifest::new(
         "run-123".to_string(),
-        "https://guardian.openzeppelin.com".to_string(),
+        "https://guardian-testnet.openzeppelin.com".to_string(),
         CleanupTarget {
             aws: CleanupAwsTarget {
                 profile: Some("dev".to_string()),
@@ -73,7 +73,7 @@ fn run_report_roundtrip() {
         started_at: chrono::Utc::now(),
         completed_at: chrono::Utc::now(),
         measurement_seconds: 12.5,
-        guardian_endpoint: "https://guardian.openzeppelin.com".to_string(),
+        guardian_endpoint: "https://guardian-testnet.openzeppelin.com".to_string(),
         deployment_shape: Some("prod-single-task-arm64-rds-proxy".to_string()),
         scheme_distribution: SchemeDistributionReport {
             falcon_percent: 100,
