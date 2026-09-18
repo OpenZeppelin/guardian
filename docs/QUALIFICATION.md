@@ -454,6 +454,16 @@ plus a canonical delta in `delta_history` / `deltaHistory` carrying that
 commitment. A proposal that vanished without a canonical delta is a product
 failure, not a pass.
 
+**That delta must be at the proposal's own nonce.** Matching on the commitment
+alone asks whether the account is in a state some canonical delta explains, and
+an account whose delta was discarded satisfies that just as well: it never
+moved, so it still agrees with chain and the *previous* delta still carries that
+commitment. Both drivers read the nonce before executing, while the proposal is
+still listed, and neither confirms without it: a lookup that fails is exactly
+when the unbound comparison would wrongly confirm, so it fails closed. This is
+not hypothetical. The check matched on commitment alone until the discard
+control was written, and the first thing that control caught was this.
+
 Two things found while writing that assertion, both easy to trip over again:
 
 - the pending listing is the TypeScript client's own cache, and an executed

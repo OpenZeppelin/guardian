@@ -650,6 +650,7 @@
         "balance-assert",
         "asset-transfer",
         "proposal-create",
+        "proposal-sign",
         "paused-refuses-execution",
         "proposal-execute",
         "balance-assert"

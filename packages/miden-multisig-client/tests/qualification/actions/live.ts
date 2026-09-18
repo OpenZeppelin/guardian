@@ -227,7 +227,28 @@ type Completion =
  * whether GUARDIAN's canonical history carries that state, instead of
  * re-deriving an answer from the pending list.
  */
-async function waitForExecution(session: LiveSession, proposalId: string): Promise<Completion> {
+/**
+ * The nonce a proposal will land at, read while it is still listed.
+ *
+ * Completion has to be bound to the proposal it was asked about, and once the
+ * proposal leaves the pending set there is nothing left to read the nonce from,
+ * so callers capture it before executing.
+ */
+async function proposalNonce(session: LiveSession, proposalId: string): Promise<number | null> {
+  try {
+    const proposals = await session.multisig!.syncProposals();
+    const mine = proposals.find((proposal) => proposal.id === proposalId);
+    return mine ? Number(mine.nonce) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForExecution(
+  session: LiveSession,
+  proposalId: string,
+  nonce: number | null,
+): Promise<Completion> {
   const deadline = Date.now() + CANONICALIZATION_DEADLINE_MS;
   let wait = POLL_START_MS;
   let last = 'never answered';
@@ -270,12 +291,30 @@ async function waitForExecution(session: LiveSession, proposalId: string): Promi
           if (state) return { kind: 'confirmed' };
           last = 'the new GUARDIAN does not serve the migrated account';
         } else {
-          const history = await session.multisig!.deltaHistory({ limit: 20 });
-          const canonical = history.entries.some(
-            (entry) => entry.newCommitment && normalizeHex(entry.newCommitment) === commitment,
-          );
-          if (canonical) return { kind: 'confirmed' };
-          last = `no canonical delta carries commitment ${commitment}`;
+          // Bound to the proposal, not merely to the account being
+          // self-consistent. Matching on the commitment alone asks "is this
+          // account in a state some canonical delta explains", which an account
+          // whose delta was discarded satisfies just as well: it never moved, so
+          // it still agrees with chain and the *previous* delta still carries
+          // that commitment. The nonce ties the answer to the delta under test.
+          //
+          // No nonce means no confirmation. The listing that reads it runs
+          // before execute, and a failure there is exactly when the unbound
+          // comparison would wrongly confirm, so it fails closed rather than
+          // falling back to it.
+          if (nonce === null) {
+            last = 'the proposal nonce could not be read before executing, so completion cannot be bound to it';
+          } else {
+            const history = await session.multisig!.deltaHistory({ limit: 20 });
+            const canonical = history.entries.some(
+              (entry) =>
+                entry.newCommitment &&
+                normalizeHex(entry.newCommitment) === commitment &&
+                Number(entry.nonce) === nonce,
+            );
+            if (canonical) return { kind: 'confirmed' };
+            last = `no canonical delta at nonce ${nonce} carries commitment ${commitment}`;
+          }
         }
       } catch (error) {
         last = String(error);
@@ -383,6 +422,9 @@ export async function executeProposal(_context: ActionContext, scenarioId: strin
   }
 
   const nonceBefore = await chainNonce(session);
+  // Read before executing: once the proposal leaves the pending set there is
+  // nothing left to read it from, and completion has to be bound to it.
+  const proposalLandsAt = await proposalNonce(session, session.proposalId);
 
   try {
     // Signatures were added through the other cosigners' clients, so the
@@ -400,7 +442,7 @@ export async function executeProposal(_context: ActionContext, scenarioId: strin
     };
   }
 
-  const completion = await waitForExecution(session, session.proposalId);
+  const completion = await waitForExecution(session, session.proposalId, proposalLandsAt);
   if (completion.kind === 'confirmed') return { kind: 'passed' };
   if (completion.kind === 'discarded') {
     return {
@@ -747,6 +789,8 @@ export async function consumeNote(
     };
   }
 
+  const consumeLandsAt = await proposalNonce(session, session.proposalId);
+
   try {
     await session.cosigners[0].midenClient.sync();
     await session.multisig.syncProposals();
@@ -760,7 +804,7 @@ export async function consumeNote(
     };
   }
 
-  const completion = await waitForExecution(session, session.proposalId);
+  const completion = await waitForExecution(session, session.proposalId, consumeLandsAt);
   if (completion.kind === 'discarded') {
     return {
       kind: 'failed',

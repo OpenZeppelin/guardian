@@ -746,25 +746,34 @@ async fn wait_for_execution(
                             // *previous* delta still carries that commitment.
                             // The nonce is what ties the answer to the delta
                             // under test.
-                            let canonical = page.entries.iter().any(|entry| {
-                                let carries = entry
-                                    .new_commitment
-                                    .as_deref()
-                                    .is_some_and(|recorded| normalize_hex(recorded) == commitment);
-                                carries && nonce.is_none_or(|wanted| entry.nonce == wanted)
-                            });
-                            if canonical {
-                                return Completion::Confirmed;
-                            }
-                            last = match nonce {
-                                Some(wanted) => format!(
-                                    "no canonical delta at nonce {wanted} carries commitment \
-                                     {commitment}"
-                                ),
-                                None => {
-                                    format!("no canonical delta carries commitment {commitment}")
+                            // No nonce means no confirmation. Falling back to
+                            // the commitment-only comparison would restore the
+                            // unbound match exactly when the pre-execute
+                            // listing failed, which is the one case where the
+                            // fallback is most likely to confirm a delta that
+                            // never landed.
+                            match nonce {
+                                Some(wanted) => {
+                                    let canonical = page.entries.iter().any(|entry| {
+                                        entry.nonce == wanted
+                                            && entry.new_commitment.as_deref().is_some_and(
+                                                |recorded| normalize_hex(recorded) == commitment,
+                                            )
+                                    });
+                                    if canonical {
+                                        return Completion::Confirmed;
+                                    }
+                                    last = format!(
+                                        "no canonical delta at nonce {wanted} carries commitment \
+                                         {commitment}"
+                                    );
                                 }
-                            };
+                                None => {
+                                    last = "the proposal nonce could not be read before \
+                                            executing, so completion cannot be bound to it"
+                                        .to_string();
+                                }
+                            }
                         }
                         Err(error) => last = format!("delta history unavailable: {error}"),
                     }

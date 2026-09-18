@@ -489,6 +489,12 @@ core = false
 # unpaused. The proposal is created before the pause so the refusal lands on
 # execution rather than on creation: that is the gate standing between a client
 # and the chain, which is the custody property.
+#
+# `proposal-sign` is not redundant at 1-of-1. Rust attaches the proposer's
+# signature when the proposal is created and TypeScript does not, so without it
+# the TypeScript leg reaches the pause with an unsigned proposal and is refused
+# for want of signatures rather than for the pause. It is a no-op on Rust, whose
+# sign action collects from cosigners after the proposer.
 [[scenario]]
 id = "live-account-paused-1of1-ecdsa"
 title = "A paused account cannot execute on chain, and transacts again once unpaused"
@@ -498,7 +504,7 @@ runtime = "server-side"
 scheme = "ecdsa"
 shape = "1-of-1"
 mode = "online"
-actions = ["account-create", "account-register", "balance-assert", "asset-transfer", "proposal-create", "paused-refuses-execution", "proposal-execute", "balance-assert"]
+actions = ["account-create", "account-register", "balance-assert", "asset-transfer", "proposal-create", "proposal-sign", "paused-refuses-execution", "proposal-execute", "balance-assert"]
 step_budget = "480s"
 required = true
 core = false
