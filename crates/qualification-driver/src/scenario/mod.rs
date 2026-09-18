@@ -239,6 +239,12 @@ impl Runner {
                 Action::PausedRefusesExecution => {
                     Some(live::assert_paused_refuses_execution(self).await)
                 }
+                Action::CustomProposalCreate => Some(live::create_custom_proposal(self).await),
+                Action::CustomProposalAssert => Some(live::assert_custom_proposal_type(self).await),
+                Action::CustomProposalPrepare => Some(live::prepare_custom_execution(self).await),
+                Action::AbandonAndAssertHidden => Some(live::abandon_and_assert_hidden(self).await),
+                Action::P2ideSend => Some(live::send_p2ide(self).await),
+                Action::P2ideTimelockAssert => Some(live::assert_p2ide_timelocked(self).await),
                 Action::HandoffRustToTs => Some(live::handoff_to_typescript(self).await),
                 Action::SignerAdd => Some(live::add_signer(self, run_tag).await),
                 Action::SignerRemove => Some(live::remove_signer(self).await),

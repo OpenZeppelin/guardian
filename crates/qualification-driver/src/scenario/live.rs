@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use miden_client::rpc::Endpoint;
-use miden_multisig_client::{MultisigClient, ProposalStatus};
+use miden_multisig_client::{AbandonStatus, MultisigClient, ProposalStatus};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
@@ -55,6 +55,13 @@ pub struct LiveSession {
     pub expected_procedure_threshold: Option<u32>,
     pub transferred: u64,
     pub balance_seen: bool,
+    /// The producer's serialized transaction request, kept verbatim. Preparing
+    /// a custom execution re-executes these exact bytes to reproduce the signed
+    /// commitment, so rebuilding them with a fresh salt would not match.
+    pub custom_request: Option<Vec<u8>>,
+    /// The nonce the custom proposal was pushed with, which is the candidate
+    /// the abandon has to pin.
+    pub custom_nonce: Option<u64>,
 }
 
 fn endpoint(network: NetworkName) -> Endpoint {
@@ -164,6 +171,8 @@ pub async fn create(runner: &Runner, shape: Shape, scheme: Scheme, run_tag: &str
         expected_procedure_threshold: None,
         transferred: 0,
         balance_seen: false,
+        custom_request: None,
+        custom_nonce: None,
     });
     ActionOutcome::Passed
 }
@@ -1323,6 +1332,410 @@ pub async fn assert_paused_refuses_execution(runner: &Runner) -> ActionOutcome {
             ActionOutcome::Passed => unpause_failure,
             other => other,
         },
+    }
+}
+
+/// The label a producer chooses for a proposal type the SDK does not model.
+const CUSTOM_PROPOSAL_TYPE: &str = "qualification_probe";
+
+/// Proposes a transaction the SDK has no type for, the way a producer does.
+///
+/// Every other scenario proposes through the typed API, so all of them exercise
+/// the seven built-in proposal types and none of them exercise the producer
+/// path (issue #266): serialized Miden transaction bytes plus a label the SDK
+/// has never heard of. That path is the unbounded one, and an integration built
+/// on it would break without this suite noticing.
+///
+/// The transaction itself is an ordinary P2ID send, chosen because its
+/// correctness is already covered elsewhere. What is under test is the label
+/// surviving the round trip, not the payment.
+pub async fn create_custom_proposal(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let (Some(faucet), Some(treasury)) = (session.faucet, session.treasury) else {
+        return ActionOutcome::failed_setup(
+            "the account was never funded, so it holds nothing to send",
+        );
+    };
+
+    if let Err(error) = session.clients[0].sync().await {
+        return ActionOutcome::failed_product(format!(
+            "syncing before the proposal failed: {error}"
+        ));
+    }
+
+    let Some(account) = session.clients[0].account() else {
+        return ActionOutcome::failed_setup("the client holds no account to read".to_string());
+    };
+    let asset = match miden_protocol::asset::FungibleAsset::new(faucet, P2ID_AMOUNT) {
+        Ok(asset) => Asset::Fungible(asset),
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "{P2ID_AMOUNT} of {faucet} is not a valid asset: {error}"
+            ));
+        }
+    };
+
+    // Built and serialized here rather than through the typed API, because
+    // producer-supplied bytes are the thing being qualified.
+    let request = match miden_multisig_client::build_p2id_transaction_request(
+        account.inner(),
+        treasury,
+        vec![asset],
+        miden_protocol::note::NoteType::Public,
+        miden_multisig_client::P2ideHeights::default(),
+        miden_multisig_client::generate_salt(),
+        [],
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "building a transaction request for a custom proposal failed: {error}"
+            ));
+        }
+    };
+    let bytes = miden_protocol::utils::serde::Serializable::to_bytes(&request);
+
+    match session.clients[0]
+        .propose_custom_transaction(&bytes, CUSTOM_PROPOSAL_TYPE)
+        .await
+    {
+        Ok(proposal) => {
+            if proposal.metadata.proposal_type.as_deref() != Some(CUSTOM_PROPOSAL_TYPE) {
+                return ActionOutcome::failed_product(format!(
+                    "the proposal came back labelled {:?}, not `{CUSTOM_PROPOSAL_TYPE}`",
+                    proposal.metadata.proposal_type
+                ));
+            }
+            session.custom_nonce = Some(proposal.nonce);
+            session.proposal_id = Some(proposal.id);
+            session.custom_request = Some(bytes);
+            ActionOutcome::Passed
+        }
+        Err(error) => ActionOutcome::failed_product(format!(
+            "proposing a `{CUSTOM_PROPOSAL_TYPE}` transaction failed: {error}"
+        )),
+    }
+}
+
+/// Confirms GUARDIAN stored and serves the producer's own label.
+///
+/// The label is the whole contract of the producer API: a GUARDIAN that
+/// accepted the proposal but returned it as `custom`, or as one of its own
+/// built-ins, would leave every producer unable to tell its proposals apart
+/// while every other signal looked healthy. Read back from GUARDIAN rather
+/// than from the client that made it, because the client's own copy would
+/// agree with itself.
+pub async fn assert_custom_proposal_type(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+
+    match session.clients[0].list_proposals().await {
+        Ok(proposals) => match proposals.iter().find(|proposal| proposal.id == proposal_id) {
+            Some(proposal) => match proposal.metadata.proposal_type.as_deref() {
+                Some(CUSTOM_PROPOSAL_TYPE) => ActionOutcome::Passed,
+                other => ActionOutcome::failed_product(format!(
+                    "GUARDIAN serves the proposal as {other:?}, not as the producer's \
+                         `{CUSTOM_PROPOSAL_TYPE}`"
+                )),
+            },
+            None => ActionOutcome::failed_product(format!(
+                "GUARDIAN does not list the custom proposal {proposal_id}"
+            )),
+        },
+        Err(error) => ActionOutcome::failed_product(format!("listing proposals failed: {error}")),
+    }
+}
+
+/// Far enough ahead that the note stays locked for the life of the run, without
+/// needing the chain tip to compute it. The assets stay in the note; these
+/// accounts are ephemeral and their residue is accepted rather than swept.
+const P2IDE_TIMELOCK_HEIGHT: u32 = 4_000_000_000;
+
+/// Sends a timelocked note to the account itself.
+///
+/// P2ID is covered; P2IDE is the same flow with a height attached, and nothing
+/// exercised it. Self-addressed on purpose: the timelock is only observable
+/// from the recipient's side, and sending to a counterparty this scenario does
+/// not drive would leave nothing to assert against.
+pub async fn send_p2ide(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(faucet) = session.faucet else {
+        return ActionOutcome::failed_setup("the account was never funded, so it holds nothing");
+    };
+    let account_id = session.account_id;
+
+    if let Err(error) = session.clients[0].sync().await {
+        return ActionOutcome::failed_product(format!(
+            "syncing before the transfer failed: {error}"
+        ));
+    }
+    let Some(before) = held_balance(&session.clients[0], faucet) else {
+        return ActionOutcome::failed_setup("the client holds no account to read");
+    };
+    if before <= P2ID_AMOUNT {
+        return ActionOutcome::failed_setup(format!(
+            "the account holds {before}, which is not enough to send {P2ID_AMOUNT} and pay the fee"
+        ));
+    }
+
+    let Some(timelock) = std::num::NonZeroU32::new(P2IDE_TIMELOCK_HEIGHT) else {
+        return ActionOutcome::failed_setup("the timelock height must be non-zero");
+    };
+
+    match propose_when_settled(
+        &mut session.clients[0],
+        miden_multisig_client::TransactionType::transfer_p2ide(
+            account_id,
+            faucet,
+            P2ID_AMOUNT,
+            miden_protocol::note::NoteType::Public,
+            miden_multisig_client::P2ideHeights {
+                reclaim: None,
+                timelock: Some(timelock),
+            },
+        ),
+    )
+    .await
+    {
+        Ok(proposal) => {
+            session.proposal_id = Some(proposal.id.clone());
+            session.balance_before_send = Some(before);
+            session.sent_amount = P2ID_AMOUNT;
+            ActionOutcome::Passed
+        }
+        Err(error) => {
+            ActionOutcome::failed_product(format!("proposing the timelocked send failed: {error}"))
+        }
+    }
+}
+
+/// Confirms the height on the note is doing something.
+///
+/// A P2IDE note whose timelock were dropped, or encoded as the on-chain "no
+/// constraint" zero, would be indistinguishable from a plain P2ID at every
+/// other point in this flow: the transaction executes, the balance moves, the
+/// note lands. The difference shows only here, and only as the pair of answers
+/// below. Committed alone would pass for a P2ID; not-consumable alone would
+/// pass for a note that never arrived.
+pub async fn assert_p2ide_timelocked(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+
+    if let Err(error) = session.clients[0].sync().await {
+        return ActionOutcome::failed_product(format!(
+            "syncing after the transfer failed: {error}"
+        ));
+    }
+
+    let committed = match session.clients[0].list_committed_notes().await {
+        Ok(notes) => notes,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "listing committed notes failed: {error}"
+            ));
+        }
+    };
+    if committed.is_empty() {
+        return ActionOutcome::failed_product(
+            "the timelocked note never reached the account, so the timelock cannot be read"
+                .to_string(),
+        );
+    }
+
+    let consumable = match session.clients[0].list_consumable_notes().await {
+        Ok(notes) => notes,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "listing consumable notes failed: {error}"
+            ));
+        }
+    };
+
+    let unlocked: Vec<String> = consumable
+        .iter()
+        .filter(|note| committed.iter().any(|held| held.id == note.id))
+        .map(|note| note.id.to_hex())
+        .collect();
+    if unlocked.is_empty() {
+        ActionOutcome::Passed
+    } else {
+        ActionOutcome::failed_product(format!(
+            "a note timelocked to block {P2IDE_TIMELOCK_HEIGHT} is already consumable: {}",
+            unlocked.join(", ")
+        ))
+    }
+}
+
+/// Assembles the execution advice a producer integration needs, which is where
+/// the SDK's responsibility for a custom proposal ends.
+///
+/// A custom proposal is deliberately not executed by `execute_proposal`: the
+/// SDK cannot rebuild an arbitrary producer transaction, so it hands back the
+/// cosigner signatures and GUARDIAN's acknowledgement, and the integration
+/// injects them into its own request and submits with its own Miden client.
+/// This scenario stops at that boundary rather than reimplementing an
+/// integration, and says so.
+///
+/// What the boundary is worth asserting for: preparing re-executes the
+/// producer's own bytes at the proposal's anchored block and refuses unless
+/// they reproduce the signed commitment. So a pass here means the label
+/// survived, the threshold was met, and the bytes still match what was signed.
+/// That last part is the anti-tamper property of the producer API.
+pub async fn prepare_custom_execution(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    let Some(request) = session.custom_request.clone() else {
+        return ActionOutcome::failed_setup("no custom proposal was created in this scenario");
+    };
+
+    match session.clients[0]
+        .prepare_custom_execution(&proposal_id, &request)
+        .await
+    {
+        Ok(advice) if advice.is_empty() => ActionOutcome::failed_product(
+            "the custom proposal prepared no execution advice, so an integration would have \
+             nothing to inject"
+                .to_string(),
+        ),
+        Ok(_) => ActionOutcome::Passed,
+        Err(error) => {
+            ActionOutcome::failed_product(format!("preparing the custom execution failed: {error}"))
+        }
+    }
+}
+
+/// How long an abandoned candidate may take to resolve. The quarantine is a
+/// short wall-clock minimum plus a couple of at-base observations, so this is
+/// generous rather than tight.
+const ABANDON_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The negative control for how every other scenario asserts completion.
+///
+/// Completion is chain confirmation plus a canonical delta, and not "the
+/// proposal left the pending set", because canonicalization removes a discarded
+/// delta exactly as it removes a successful one. Every other scenario exercises
+/// the positive side of that rule. This is the negative: it produces a real
+/// discard and checks nothing serves it as live, so the rule is falsified by
+/// experiment rather than only correct by construction.
+///
+/// The candidate comes from the producer API, which is the one path that
+/// separates acknowledgement from submission. `prepare_custom_execution` pushes
+/// the delta to obtain GUARDIAN's acknowledgement, and `submit_transaction` is
+/// a separate call the integration makes. Stopping in between leaves a
+/// candidate that can never land, which is precisely the state the abandon API
+/// exists for, and it reaches that state through supported calls rather than by
+/// forcing GUARDIAN into it.
+///
+/// Nothing here reaches Miden, so the account stays at the candidate's base and
+/// the abandon resolves through its designed at-base path rather than through
+/// retry exhaustion.
+pub async fn abandon_and_assert_hidden(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(nonce) = session.custom_nonce else {
+        return ActionOutcome::failed_setup("no custom proposal was prepared in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+
+    let client = &mut session.clients[0];
+
+    // Established before abandoning, or the check afterwards means nothing: a
+    // proposal already gone from the pending set would satisfy it without the
+    // discard having hidden anything.
+    match client.list_proposals().await {
+        Ok(proposals) => {
+            if !proposals.iter().any(|pending| pending.id == proposal_id) {
+                return ActionOutcome::failed_product(format!(
+                    "the proposal {proposal_id} is not pending before the abandon, so its \
+                     absence afterwards would prove nothing"
+                ));
+            }
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "listing proposals before the abandon failed: {error}"
+            ));
+        }
+    }
+
+    if let Err(error) = client.abandon_candidate(nonce).await {
+        return ActionOutcome::failed_product(format!(
+            "abandoning the candidate at nonce {nonce} failed: {error}"
+        ));
+    }
+
+    let deadline = std::time::Instant::now() + ABANDON_DEADLINE;
+    loop {
+        let state = match client.abandon_status(nonce).await {
+            Ok(AbandonStatus::Abandoned) => break,
+            Ok(AbandonStatus::Landed) => {
+                return ActionOutcome::failed_product(
+                    "the candidate canonicalized, so nothing was discarded to look for; this \
+                     scenario never submits, so GUARDIAN saw a transaction it should not have"
+                        .to_string(),
+                );
+            }
+            Ok(other) => format!("{other:?}"),
+            Err(error) => error.to_string(),
+        };
+        if std::time::Instant::now() >= deadline {
+            return ActionOutcome::failed_product(format!(
+                "the abandoned candidate at nonce {nonce} was still {state} after {}s",
+                ABANDON_DEADLINE.as_secs()
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+
+    // The discard is only safe while it is invisible to what a client reads by
+    // default. A discarded delta still listed as a pending proposal is the
+    // shape that makes "it left the pending set" look like completion.
+    match client.list_proposals().await {
+        Ok(proposals) => {
+            if proposals.iter().any(|pending| pending.id == proposal_id) {
+                return ActionOutcome::failed_product(format!(
+                    "the delta at nonce {nonce} was discarded but its proposal {proposal_id} is \
+                     still listed as pending"
+                ));
+            }
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "listing proposals after the discard failed: {error}"
+            ));
+        }
+    }
+
+    // And it must not have moved the account. Reading state back is what a
+    // client does next, and it is the other way a discard could pass for a
+    // completion.
+    match client.verify_state_commitment().await {
+        Ok(_) => ActionOutcome::Passed,
+        Err(error) => ActionOutcome::failed_product(format!(
+            "the account does not agree with chain after a discarded delta: {error}"
+        )),
     }
 }
 

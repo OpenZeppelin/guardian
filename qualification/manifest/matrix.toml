@@ -44,6 +44,8 @@ excluded_scenarios = [
   "live-procedure-threshold-survives-change-2of3-falcon",
   "live-guardian-switch-online-2of3-falcon",
   "live-account-paused-1of1-ecdsa",
+  "live-custom-proposal-1of1-ecdsa",
+  "live-p2ide-timelock-1of1-ecdsa",
 ]
 
 [[pair]]
@@ -65,4 +67,6 @@ excluded_scenarios = [
   "live-procedure-threshold-survives-change-2of3-falcon",
   "live-guardian-switch-online-2of3-falcon",
   "live-account-paused-1of1-ecdsa",
+  "live-custom-proposal-1of1-ecdsa",
+  "live-p2ide-timelock-1of1-ecdsa",
 ]

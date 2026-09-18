@@ -129,19 +129,6 @@ required = true
 core = false
 
 [[scenario]]
-id = "det-discarded-delta-hidden"
-title = "Discarded deltas stay out of default retrieval flows"
-profile = "deterministic"
-sdk = "rust"
-scheme = "falcon"
-shape = "2-of-3"
-mode = "online"
-actions = ["account-register", "discarded-delta-hidden"]
-step_budget = "120s"
-required = false
-core = false
-
-[[scenario]]
 id = "det-operator-session"
 title = "Operator authenticates and inspects a session"
 profile = "deterministic"
@@ -489,6 +476,69 @@ scheme = "ecdsa"
 shape = "1-of-1"
 mode = "online"
 actions = ["account-create", "account-register", "balance-assert", "asset-transfer", "proposal-create", "paused-refuses-execution", "proposal-execute", "balance-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# The producer path (issue #266). Every other scenario proposes through the
+# typed API, so between them they cover the seven built-in proposal types and
+# none of them covers this: serialized Miden transaction bytes plus a label the
+# SDK has never heard of. That is the unbounded surface, and an integration
+# built on it would break without this suite noticing. The payment itself is an
+# ordinary P2ID send whose correctness is covered elsewhere; what is under test
+# is the producer's own label surviving the round trip through GUARDIAN.
+#
+# It stops at `custom-proposal-prepare` rather than executing, because that is
+# where the SDK's responsibility ends: a custom proposal is deliberately not
+# executed by `execute_proposal` (the SDK cannot rebuild an arbitrary producer
+# transaction), so it hands back the cosigner signatures and GUARDIAN's
+# acknowledgement and the integration submits with its own Miden client.
+# Preparing re-executes the producer's own bytes at the proposal's anchored
+# block and refuses unless they reproduce the signed commitment, so reaching it
+# proves the label survived, the threshold was met, and the bytes still match
+# what was signed.
+#
+# It then carries the negative control for how every other scenario asserts
+# completion. Completion is chain confirmation plus a canonical delta, and not
+# "the proposal left the pending set", because canonicalization removes a
+# discarded delta exactly as it removes a successful one. Nothing else falsifies
+# that rule, so a regression reading a discard as success would pass the whole
+# suite. The producer API is the one path that separates acknowledgement from
+# submission: preparing pushes the delta to obtain the acknowledgement, and
+# submitting is a separate call. Stopping in between leaves a candidate that can
+# never land, which is exactly the state the abandon API exists for, reached
+# through supported calls rather than by forcing GUARDIAN into it.
+[[scenario]]
+id = "live-custom-proposal-1of1-ecdsa"
+title = "A producer's own proposal type round-trips, and its abandoned delta stays hidden"
+profile = "live"
+sdk = "rust"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "custom-proposal-create", "custom-proposal-assert", "custom-proposal-prepare", "abandon-and-assert-hidden"]
+step_budget = "480s"
+required = true
+core = false
+
+# P2ID is covered; P2IDE is the same flow with a block height attached, and
+# nothing exercised it. The note is self-addressed because a timelock is only
+# observable from the recipient's side, and sending to a counterparty this
+# scenario does not drive would leave nothing to assert against.
+#
+# The assertion is a pair, because either half alone is satisfied by the wrong
+# thing: committed-but-not-consumable is the timelock holding, while committed
+# alone would pass for a plain P2ID and not-consumable alone would pass for a
+# note that never arrived.
+[[scenario]]
+id = "live-p2ide-timelock-1of1-ecdsa"
+title = "A timelocked note lands but cannot be consumed before its height"
+profile = "live"
+sdk = "rust"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "p2ide-send", "proposal-execute", "p2ide-timelock-assert"]
 step_budget = "480s"
 required = true
 core = false

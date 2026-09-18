@@ -163,23 +163,6 @@
     },
     {
       "actions": [
-        "account-register",
-        "discarded-delta-hidden"
-      ],
-      "core": false,
-      "id": "det-discarded-delta-hidden",
-      "mode": "online",
-      "profile": "deterministic",
-      "required": false,
-      "runtime": null,
-      "scheme": "falcon",
-      "sdk": "rust",
-      "shape": "2-of-3",
-      "step_budget": "PT2M",
-      "title": "Discarded deltas stay out of default retrieval flows"
-    },
-    {
-      "actions": [
         "operator-session"
       ],
       "core": false,
@@ -659,6 +642,51 @@
       "shape": "1-of-1",
       "step_budget": "PT8M",
       "title": "A paused account cannot execute on chain, and transacts again once unpaused"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "custom-proposal-create",
+        "custom-proposal-assert",
+        "custom-proposal-prepare",
+        "abandon-and-assert-hidden"
+      ],
+      "core": false,
+      "id": "live-custom-proposal-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": null,
+      "scheme": "ecdsa",
+      "sdk": "rust",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "A producer's own proposal type round-trips, and its abandoned delta stays hidden"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "p2ide-send",
+        "proposal-execute",
+        "p2ide-timelock-assert"
+      ],
+      "core": false,
+      "id": "live-p2ide-timelock-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": null,
+      "scheme": "ecdsa",
+      "sdk": "rust",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "A timelocked note lands but cannot be consumed before its height"
     },
     {
       "actions": [

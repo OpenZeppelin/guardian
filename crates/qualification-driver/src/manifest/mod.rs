@@ -161,6 +161,9 @@ pub enum Action {
     ErrorEnvelope,
     RestartDurability,
     DiscardedDeltaHidden,
+    AbandonAndAssertHidden,
+    P2ideSend,
+    P2ideTimelockAssert,
     OperatorSession,
     OperatorAccounts,
     OperatorDenial,
@@ -170,6 +173,9 @@ pub enum Action {
     SchemeGate,
     AccountPausedRefuses,
     PausedRefusesExecution,
+    CustomProposalCreate,
+    CustomProposalAssert,
+    CustomProposalPrepare,
     Unknown(String),
 }
 
@@ -210,6 +216,9 @@ impl From<String> for Action {
             "error-envelope" => Self::ErrorEnvelope,
             "restart-durability" => Self::RestartDurability,
             "discarded-delta-hidden" => Self::DiscardedDeltaHidden,
+            "abandon-and-assert-hidden" => Self::AbandonAndAssertHidden,
+            "p2ide-send" => Self::P2ideSend,
+            "p2ide-timelock-assert" => Self::P2ideTimelockAssert,
             "operator-session" => Self::OperatorSession,
             "operator-accounts" => Self::OperatorAccounts,
             "operator-denial" => Self::OperatorDenial,
@@ -219,6 +228,9 @@ impl From<String> for Action {
             "scheme-gate" => Self::SchemeGate,
             "account-paused-refuses" => Self::AccountPausedRefuses,
             "paused-refuses-execution" => Self::PausedRefusesExecution,
+            "custom-proposal-create" => Self::CustomProposalCreate,
+            "custom-proposal-assert" => Self::CustomProposalAssert,
+            "custom-proposal-prepare" => Self::CustomProposalPrepare,
             other => Self::Unknown(other.to_string()),
         }
     }
