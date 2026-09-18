@@ -455,6 +455,27 @@ ephemeral accounts from the treasury through `fund`.
   rather than as the evidence. A `guardian_code()` on `MultisigError` would let
   that scenario, and any consumer branching on a refusal, be exact.
 
+- **Proposal-embedded note recovery (#415) is not covered, and is hard to
+  exercise at all.** A v2 `consume_notes` proposal carries the serialized notes
+  it consumes, so a pending proposal doubles as recovery material for a client
+  whose store lost them. Four attempts at a scenario all ended the same way:
+  `import_notes_from_proposals` reads the local store first and answers
+  `AlreadyPresent`, which cannot tell recovery from never having lost the note.
+
+  What was ruled out, so the next attempt need not repeat it. A private note
+  behaves no differently from a public one here, so ordinary sync discovery is
+  not the explanation. `reset_miden_client` does not empty a store: it reopens
+  the same `account_dir`, so it reconnects rather than wipes, whatever its name
+  suggests. And building the recovering client at its own fresh directory does
+  not help either, which leaves `pull_account` as the step that puts the record
+  in place, by a route that was not chased further.
+
+  Accepting `AlreadyPresent` would make the scenario pass and prove nothing, so
+  it is left uncovered rather than covered falsely. This is not only a testing
+  problem: a consumer trying to confirm their own recovery path works faces the
+  same difficulty, and a strategy that cannot be demonstrated is hard to rely
+  on.
+
 - **Scheme coverage is spread, not doubled.** Each flow runs on one scheme, with
   the set split roughly evenly. The exceptions are the flows where the scheme is
   encoded into the advice payload and a scheme-binding defect has already been
