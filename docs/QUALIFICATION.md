@@ -18,7 +18,12 @@ Guardian feature works. Every result states what it does not cover.
 
 The live profile runs nightly. The deterministic profile is not yet a required
 check, and neither profile can follow a pull request. See
-[Current limits](#current-limits).
+[What a run does not prove](#what-a-run-does-not-prove).
+
+This page covers, in order: setting up and
+[running](#running-locally) the suite, [reading a result](#reading-the-outcome),
+[adding a scenario](#adding-a-scenario), the [treasury](#treasury) a live run
+spends from, and the limits above.
 
 ## Setting up a local environment
 
@@ -434,102 +439,6 @@ cargo run -p guardian-qualification-driver -- treasury-check     --network testn
 Individual test accounts need no setup at all. Each scenario funds its own
 ephemeral accounts from the treasury through `fund`.
 
-## Known coverage gaps
-
-- **Account pausing on chain.** `det-account-paused` is required and does drive
-  a paused account through an SDK: it pauses through the operator API, confirms
-  the proposal is refused with `GUARDIAN_ACCOUNT_PAUSED`, and unpauses. That is
-  GUARDIAN's enforcement. What is still unproven is a paused account on a live
-  network, where the refusal would have to hold against the chain rather than
-  against the server's own gate.
-- **A GUARDIAN refusal's code is not reachable from the multisig client.**
-  GUARDIAN answers `GUARDIAN_ACCOUNT_PAUSED`, and `guardian_client::ClientError`
-  exposes it through `guardian_code()`, but by the time the same refusal
-  surfaces as a `MultisigError` only the gRPC status and the human-readable
-  message survive. A scenario driving the multisig SDK therefore cannot assert
-  *which* refusal it received without matching user-facing copy, which is
-  exactly the fragility that let `live-below-threshold` once accept any error
-  containing "signature". `live-account-paused-1of1-ecdsa` works around it by
-  proving causation structurally instead, refusing while paused and executing
-  the same proposal once unpaused, and treats the wording as a sanity check
-  rather than as the evidence. A `guardian_code()` on `MultisigError` would let
-  that scenario, and any consumer branching on a refusal, be exact.
-
-- **Proposal-embedded note recovery (#415) is not covered, and is hard to
-  exercise at all.** A v2 `consume_notes` proposal carries the serialized notes
-  it consumes, so a pending proposal doubles as recovery material for a client
-  whose store lost them. Four attempts at a scenario all ended the same way:
-  `import_notes_from_proposals` reads the local store first and answers
-  `AlreadyPresent`, which cannot tell recovery from never having lost the note.
-
-  What was ruled out, so the next attempt need not repeat it. A private note
-  behaves no differently from a public one here, so ordinary sync discovery is
-  not the explanation. `reset_miden_client` does not empty a store: it reopens
-  the same `account_dir`, so it reconnects rather than wipes, whatever its name
-  suggests. And building the recovering client at its own fresh directory does
-  not help either, which leaves `pull_account` as the step that puts the record
-  in place, by a route that was not chased further.
-
-  Accepting `AlreadyPresent` would make the scenario pass and prove nothing, so
-  it is left uncovered rather than covered falsely. This is not only a testing
-  problem: a consumer trying to confirm their own recovery path works faces the
-  same difficulty, and a strategy that cannot be demonstrated is hard to rely
-  on.
-
-- **Scheme coverage is spread, not doubled.** Each flow runs on one scheme, with
-  the set split roughly evenly. The exceptions are the flows where the scheme is
-  encoded into the advice payload and a scheme-binding defect has already been
-  found: add-signer and remove-signer run on both, and GUARDIAN rotation now
-  runs on both (ECDSA offline, Falcon online). Threshold change and the
-  procedure override still run on one scheme each.
-- **Mixed-scheme accounts.** Both account builders assign one configured scheme
-  to every signer, so no mixed-scheme account can be constructed. The on-chain
-  storage layout supports one; closing the gap is separate SDK work.
-- **TypeScript submission behaviour.** The bundled client retries submissions
-  below the level this project controls, so a TypeScript scenario cannot
-  evidence that a submission was sent exactly once. Results record
-  `embedded_retry` accordingly.
-- **Devnet retention window.** Devnet serves historical account state for a
-  short window, so multi-step flows cannot be required there. They run
-  opportunistically and report environment-blocked when the anchor is pruned.
-- **The completion rule is falsified on live only.** Completion is asserted as
-  chain confirmation plus a canonical delta, precisely because a discarded delta
-  also leaves the pending set. `live-custom-proposal-1of1-ecdsa` carries the
-  negative control: it abandons a candidate that can never land and checks that
-  the discard is invisible to what a client reads by default, so the rule is
-  falsified by experiment rather than only correct by construction. It is
-  required, so a regression that read a discard as success fails the run.
-
-  The candidate comes from the producer API, which is the one path that
-  separates acknowledgement from submission. `prepare_custom_execution` pushes
-  the delta to obtain GUARDIAN's acknowledgement, and `submit_transaction` is a
-  separate call the integration makes; stopping in between leaves a candidate
-  that can never land, which is exactly the state the abandon API exists for.
-  Every step is a supported public call.
-
-  It was specified as a deterministic scenario and could not stay there, and
-  that part still holds. Every route to a discarded delta runs through the
-  canonicalization worker: the at-base route needs a chain read the
-  deterministic profile's RPC stub cannot serve, and the retry-exhaustion route
-  is gated first by `submission_grace_period_seconds` (600s) and then by 18
-  retries at 10s, none of which `GUARDIAN_CANONICALIZATION_*` exposes. Nor can
-  competing executions manufacture the divergence that would shortcut the
-  quarantine: `push_delta` refuses a stale base with `CommitmentMismatch` and
-  allows only one candidate per account. So the deterministic profile, which is
-  the one meant to gate pull requests, still does not carry this control.
-
-- **Deterministic multisig coverage stops at submission.** GUARDIAN's request
-  path never calls the chain, so the proposal API is testable without one and
-  `det-proposal-lifecycle` exercises it from a committed fixture summary.
-  Creating a proposal means executing a transaction locally against synced
-  chain state, and executing one means proving and submitting, so both stay in
-  the live profile.
-
-**A single-SDK run produces no merged report.** `--sdk rust` or
-`--sdk typescript` is a debugging convenience: the run is filtered, so it claims
-no qualification, and the only artifact is that leg's own results file. Reach for
-it to reproduce one failure, not to qualify anything.
-
 ## Why completion is asserted the way it is
 
 A proposal leaves GUARDIAN's pending set for two opposite reasons: because
@@ -561,44 +470,56 @@ account`, and a signer admitted by an executed add-signer is refused until
 driver hit them where the TypeScript driver, about four times slower, did not.
 Both drivers poll against bounded deadlines rather than racing.
 
-## Current limits
+## What a run does not prove
 
-**A green run is not a release qualification.** It is evidence from one profile
-against one artifact. What it is entitled to claim is `qualification_claim`, and
-the limits below are what no run currently proves regardless of that claim.
+A green run is evidence from one profile against one artifact. What it is
+entitled to claim is `qualification_claim`; what follows is what no run proves
+regardless of that claim.
+
+### On the path to `main`
 
 **Neither profile gates a pull request.** The deterministic workflow is
-dispatch-only. The live workflow runs on a nightly schedule against the
-`qualification-devnet` and `qualification-testnet` environments and can also be
+dispatch-only. The live workflow runs nightly against the
+`qualification-devnet` and `qualification-testnet` environments and can be
 dispatched, but it cannot follow a pull request until the treasury handoff
-exists. So this suite is a manual and nightly instrument today, not automatic
-regression protection on the path to `main`.
+exists. So this suite is a manual and nightly instrument, not automatic
+regression protection.
 
 **The deterministic profile is not a required check.** Its required scenarios
-are implemented and pass; two optional ones are not (`discarded-delta-hidden`
-and `operator-audit`), and actions without a driver implementation fail closed on
-a required scenario so a gap can never read as a pass. The allowlist-reload
-failure that previously blocked this is fixed. What is left is the rule that a
-gate should be seen to go red on a real defect before anything depends on it. It
-has now done that twice: the allowlist reload, and `det-proposal-lifecycle`,
-which failed on its first run because the proposal fixture predated the metadata
-requirement and the driver was sending the wrong object. Whether that clears the
-bar is a judgement for whoever owns the gate, since both were found by adding the
-scenario rather than by catching a regression in existing coverage.
+pass, and an action without a driver implementation fails closed on a required
+scenario so a gap can never read as a pass. What is left is that it has not run
+green on a Linux runner, and the rule that a gate should be seen to go red on a
+real defect before anything depends on it. It has gone red more than once, but
+each time because a scenario was added or tightened rather than because it
+caught a regression in existing coverage, so whether that clears the bar is a
+judgement for whoever owns the gate.
 
-**Whether accounts created under an earlier contract pin are still drivable is
-not tested.** A deployed Miden account is immutable and its procedure roots fix
-at creation, so a contract pin bump strands every account created before it, and
-nothing else in this suite would notice. A scenario for it (`live-heritage-account`)
-was written and then removed, because it cannot work against an ephemeral stack:
-Guardian holds the only full copy of a private account, and the stack tears its
-database down with the run. An account the suite transacts with is therefore
-unrecoverable once the run ends, so no long-lived account can survive between
-runs without a store outside the run. Every option for that store (a committed
-snapshot, a cached snapshot, a persisted database) was judged to cost more than
-it returns while the property is better checked at the moment of a pin bump.
-The checklist that replaces it is in
-[MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#before-bumping-the-miden-pin).
+**The upgrade pass decides for itself, but nothing triggers it.** The
+deterministic workflow runs it when a change touches
+`crates/server/migrations/`, seeding from the latest published release and
+upgrading to the branch build, and skips it otherwise. A dispatch has no base
+commit to diff against, so that decision is inert until the `pull_request`
+trigger in the workflow header is restored, which is the same condition as
+making the profile a required check.
+
+**The treasury cannot follow a pull request.** The live workflow refuses any ref
+other than the default branch, because the scenario driver would otherwise run
+from an unreviewed ref with the treasury key in its environment. Editing the
+workflow file is not needed to reach the key; editing the harness that ref
+carries would be enough, which is why the harness is always checked out from the
+default branch. Lifting it means separating funding from execution: a trusted
+step funds ephemeral accounts and hands the driver only those ephemeral keys.
+The reviewer opt-in described in the specification depends on that separation
+and is **not implemented**; the `core-only` checkbox on a dispatch is not the
+same thing.
+
+The environments' own deployment-branch restriction is what actually confines
+the treasury. The workflow's guard job inspects the requested `ref` but cannot
+constrain which branch the workflow file itself runs from, so anyone with write
+access could dispatch from a branch whose edited copy drops the guard. Treat the
+guard as defence in depth, never as the control.
+
+### Consumer surfaces
 
 **No run proves browser behaviour, and none installs from the registry.** Every
 TypeScript scenario declares `runtime = server-side`: Node, with a WASM alias, a
@@ -606,140 +527,112 @@ fake IndexedDB and an HTTP/2 shim. The published SDK's consumers are browsers,
 and the manifest schema allows `runtime = browser`, but no scenario uses it. Nor
 does any run consume the package as a consumer would, from a tarball outside
 this workspace, which is why the `published` pairing is refused rather than
-faked. A green TypeScript leg therefore says the driver works against the
-workspace source under Node, not that `examples/web` or a wallet still works.
-The workarounds below are recorded in every run's `consumer_findings` so a pass
-cannot quietly speak for a consumer who has neither.
+faked. A green TypeScript leg says the driver works against the workspace source
+under Node, not that `examples/web` or a wallet still works.
 
-**Consuming the published TypeScript SDK from Node needs two workarounds.**
-Both are carried by this suite and both apply to any Node consumer, so they are
-recorded as findings against the published artifact rather than as harness
-quirks.
+**Consuming the published TypeScript SDK from Node needs two workarounds**, both
+recorded in every run's `consumer_findings` so a pass cannot quietly speak for a
+consumer who has neither.
 
 The first is module resolution. `@miden-sdk/miden-sdk` exports a native Node
 binding under the `node` condition, but that entry omits `FeltArray`,
 `NoteAndArgsArray` and `NoteArray`, which `@openzeppelin/miden-multisig-client`
-imports at 27 call sites. A plain `import` from Node therefore fails on
-`FeltArray is not a constructor`. The suite aliases the package to its
-browser WASM build (`dist/st/index.js`) instead.
+imports at 27 call sites, so a plain `import` fails on `FeltArray is not a
+constructor`. The suite aliases the package to its browser WASM build
+(`dist/st/index.js`).
 
 The second is transport. The Miden RPC and prover endpoints sit behind a load
 balancer whose gRPC target group accepts HTTP/2 only, while Node's built-in
 fetch is HTTP/1.1. The balancer answers HTTP 464 with no headers, which the
-SDK's gRPC-web client reports as `missing content-type header in gRPC
-response`. Browsers are unaffected because they negotiate HTTP/2 through ALPN.
-`tests/qualification/h2Fetch.ts` routes gRPC-web calls over `node:http2` to
-work around it. Without that shim the remote prover is unreachable and the SDK
-falls back to in-WASM proving, which costs roughly twenty-five times the CPU: a
-2-of-3 lifecycle takes about two minutes instead of under thirty seconds.
+gRPC-web client reports as `missing content-type header in gRPC response`.
+Browsers negotiate HTTP/2 through ALPN and are unaffected.
+`tests/qualification/h2Fetch.ts` routes gRPC-web calls over `node:http2`.
+Without it the remote prover is unreachable and the SDK falls back to in-WASM
+proving at roughly twenty-five times the CPU.
+
+**A GUARDIAN refusal's code is not reachable from the multisig client.**
+`guardian_client::ClientError` exposes it through `guardian_code()`, but by the
+time the same refusal surfaces as a `MultisigError` only the gRPC status and the
+human-readable message survive. A scenario driving the multisig SDK cannot
+assert *which* refusal it received without matching user-facing copy, which is
+the fragility that once let `live-below-threshold` accept any error containing
+"signature". `live-account-paused-1of1-ecdsa` proves causation structurally
+instead. A `guardian_code()` on `MultisigError` would let that scenario, and any
+consumer branching on a refusal, be exact.
+
+### Flows and combinations
+
+**Proposal-embedded note recovery (#415) is not covered, and is hard to exercise
+at all.** A v2 `consume_notes` proposal carries the serialized notes it consumes,
+so a pending proposal doubles as recovery material for a client whose store lost
+them. Four attempts all ended the same way: `import_notes_from_proposals` reads
+the local store first and answers `AlreadyPresent`, which cannot tell recovery
+from never having lost the note.
+
+What was ruled out, so the next attempt need not repeat it: a private note
+behaves no differently from a public one, so ordinary sync discovery is not the
+explanation; `reset_miden_client` reopens the same `account_dir` rather than
+emptying it, whatever its name suggests; and building the recovering client at
+its own fresh directory does not help either, which leaves `pull_account` as the
+step that puts the record in place, by a route not chased further. Accepting
+`AlreadyPresent` would make the scenario pass and prove nothing. This is not
+only a testing problem: a consumer confirming their own recovery path hits the
+same wall.
+
+**Mixed-scheme accounts.** Both account builders assign one configured scheme to
+every signer, so no mixed-scheme account can be constructed. The on-chain
+storage layout supports one; closing the gap is separate SDK work.
+
+**Whether accounts created under an earlier contract pin are still drivable.** A
+deployed Miden account is immutable and its procedure roots fix at creation, so a
+pin bump strands every account created before it and nothing here would notice. A
+scenario for it was written and removed: GUARDIAN holds the only full copy of a
+private account and the stack tears its database down with the run, so an account
+the suite transacts with is unrecoverable once the run ends. Every store that
+would fix that (committed snapshot, cached snapshot, persisted database) costs
+more than it returns for a property better checked at the moment of a bump. The
+checklist that replaces it is in
+[MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#before-bumping-the-miden-pin).
+
+**Scheme coverage is spread, not doubled.** Most flows run on one scheme, split
+roughly evenly. The exceptions are the flows where the scheme is encoded into the
+advice payload and a scheme-binding defect has already been found: add-signer,
+remove-signer, threshold change, the procedure override, off-channel signing, and
+GUARDIAN rotation (offline ECDSA, online Falcon) all run on both. Execute runs on
+both schemes at 2-of-3; only the 3-of-3 shape is Falcon-only, which adds a
+combination rather than a code path.
+
+**Deterministic multisig coverage stops at submission.** GUARDIAN's request path
+never calls the chain, so the proposal API is testable without one and
+`det-proposal-lifecycle` exercises it from a committed fixture summary. Creating
+a proposal means executing a transaction locally against synced chain state, and
+executing one means proving and submitting, so both stay in the live profile.
+`operator-audit` is specified and unimplemented; it is optional, so it skips.
+
+**TypeScript submission behaviour.** The bundled client retries submissions below
+the level this project controls, so a TypeScript scenario cannot evidence that a
+submission was sent exactly once. Results record `embedded_retry` accordingly.
+
+**Devnet's retention window.** Devnet serves historical account state for roughly
+fifty blocks, so multi-step flows cannot be required there. They run
+opportunistically and report environment-blocked when the anchor is pruned.
+
+### Operating the suite
 
 **GUARDIAN migration needs a second deployment.** The stack starts one
-(`server-migration-target`, its own acknowledgement identity and its own
-database) and passes its address as `QUAL_GUARDIAN_MIGRATION_ENDPOINT`. Runs
-driven without the stack, against a hand-started server, leave it unset and the
-migration scenario reports environment-blocked rather than migrating an account
-to the GUARDIAN it already uses, which changes nothing on chain and gives the
-transaction no state change to commit.
-
-**The deterministic profile has run against a real Docker daemon, and is still
-not a required check.** The stack provisions: the image builds, Postgres and
-both GUARDIANs come up, readiness passes on all four ports, the Rust
-deterministic scenarios pass including the post-restart durability assertion,
-artifacts are redacted and scanned, and teardown is clean. It stays
-dispatch-only until it has been seen to go red on a real regression; a gate that
-has never failed is not known to be a gate.
-
-One defect surfaced on that first real run and is now fixed: the operator
-allowlist scenario rewrote a file the server re-reads on every request without
-an atomic rename, so the server parsed a half-written file. The same run also
-saw the image build stall fetching crates, which looked like cargo multiplexing
-every download onto one HTTP/2 connection through the VM NAT. That did not
-reproduce: two cold `cargo fetch --locked` runs of the whole workspace succeed
-with multiplexing on, and disabling it is measurably slower, so it is recorded
-here as a transient network failure rather than carried as a build setting.
-
-`det-operator-allowlist-reload` failed there at first, and the host turned out
-to be only half the cause: Docker Desktop's bind mount serves a torn view of a
-replaced file, but GUARDIAN answered that transient read with a 500 and no
-retry. The allowlist load now retries within a bounded budget, so the scenario
-passes and an operator editing the file in place no longer takes the dashboard
-down.
-
-**The live profile has run through the stack** against testnet on both SDKs,
-including the treasury preflight, funding, the full proposal lifecycle, both
-cross-SDK handoffs and GUARDIAN migration. The outcomes, and which scenarios
-still fail, are recorded in the feature's `tasks.md`.
+(`server-migration-target`, its own acknowledgement identity and database) and
+passes its address as `QUAL_GUARDIAN_MIGRATION_GRPC` for the Rust driver and
+`QUAL_GUARDIAN_MIGRATION_ENDPOINT` for the TypeScript one. A run driven against
+a hand-started server leaves them unset, and the rotation scenarios report
+environment-blocked rather than rotating an account to the GUARDIAN it already
+uses, which changes nothing on chain.
 
 **Any change under `crates/` rebuilds the server image.** The build context
-copies the workspace, so a one-line driver edit costs a full release build
-before the stack starts. Iterate against a hand-started server and use the stack
-to confirm.
+copies the workspace, so a one-line driver edit costs a full release build before
+the stack starts. Iterate against a hand-started server and use the stack to
+confirm.
 
-**The TypeScript `load()` returns stale membership.** For five reproductions
-`live-remove-signer-2of3-falcon` failed on TypeScript and passed on Rust, and
-the suite reported it as GUARDIAN serving a pre-removal signer set. Measuring
-both sources on every poll showed GUARDIAN correct from the first poll: the
-stale value came from the reader's local store, because `load()` keeps an
-existing store record rather than overwriting it with what GUARDIAN returned,
-while reads go through the store. The assertion now reads what GUARDIAN
-returned and the scenario passes on both SDKs. The SDK defect behind it is also
-fixed: `load()` now reconciles with the store the way `syncState()` already did.
-
-**The Rust SDK could not change a threshold, and now can.** The transaction
-builder rejected `TransactionType::UpdateSigners` outright, redirecting callers
-to `AddCosigner` or `RemoveCosigner`, which both pin the threshold and so could
-not serve the request. Every other layer already handled the variant, so only
-creation was blocked. It now has a builder arm that moves the threshold and
-refuses a membership change, and the Rust leg of
-`live-change-threshold-2of3-ecdsa` passes.
-
-**Offline signing was an SDK divergence, and is fixed.** The Rust SDK tied
-offline signing to offline execution (`supports_offline_execution` is true only
-for `SwitchGuardian`), so it refused to collect signatures off-channel for any
-proposal needing a GUARDIAN acknowledgement at execution, while TypeScript
-signed these offline and contacted GUARDIAN only to execute. The gate is gone
-from `sign_imported_proposal`, and execution fetches the acknowledgement when
-the transaction type requires one, so the Rust leg of
-`live-offline-export-import-2of3-falcon` now runs rather than skipping.
-
-**The upgrade pass decides for itself, but nothing triggers it yet.** The
-deterministic workflow runs it when a change touches
-`crates/server/migrations/`, seeding from the latest published release and
-upgrading to the branch build, and skips it otherwise: the second pass costs a
-full re-run, so it is spent where it can pay. An explicit `upgrade-from` input
-still overrides that.
-
-What is missing is the trigger. The workflow is dispatch-only, and a dispatch
-has no base commit to diff against, so the decision is inert until the
-`pull_request` trigger in the workflow header is restored. That is the same
-condition as making the deterministic profile a required check, and both should
-happen together.
-
-**The treasury cannot yet follow a pull request.** The live workflow refuses any
-ref other than the default branch, because the scenario driver would otherwise
-run from an unreviewed ref with the treasury key in its environment. Editing the
-workflow file is not needed to reach the key; editing the harness that ref
-carries would be enough, which is why the harness is always checked out from the
-default branch.
-
-To lift that restriction, funding has to be separated from scenario execution: a
-trusted step funds ephemeral accounts from the treasury and hands the scenario
-driver only those ephemeral keys. The reviewer opt-in path described in the
-specification depends on that separation.
-
-**Before arming the treasury secret**, lock the deployment branches of the
-`qualification-devnet` and `qualification-testnet` environments to the default
-branch. The workflow's guard job inspects the requested `ref` but cannot
-constrain which branch the workflow file itself is run from: anyone with write
-access can dispatch from a branch whose edited copy of the workflow drops the
-guard, and the job would still enter the environment. Only the environment's own
-branch restriction closes that. Treat the guard job as defence in depth, never
-as the control.
-
-The schedule is also deliberately absent until the per-network environments
-exist, an environment-blocked run stops failing the job, and a failure
-notification is wired.
-
-The reviewer opt-in on a pull request is specified but **not implemented**. The
-`core-only` checkbox on a dispatch against the default branch is not the same
-thing, and should not be recorded as satisfying it.
+**A single-SDK run produces no merged report.** `--sdk rust` or
+`--sdk typescript` is a debugging convenience: the run is filtered, so it claims
+no qualification, and the only artifact is that leg's own results file. Reach for
+it to reproduce one failure, not to qualify anything.
