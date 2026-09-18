@@ -659,9 +659,9 @@
       "mode": "online",
       "profile": "live",
       "required": true,
-      "runtime": null,
+      "runtime": "server-side",
       "scheme": "ecdsa",
-      "sdk": "rust",
+      "sdk": "both",
       "shape": "1-of-1",
       "step_budget": "PT8M",
       "title": "A paused account cannot execute on chain, and transacts again once unpaused"

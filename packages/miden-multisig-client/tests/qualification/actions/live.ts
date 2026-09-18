@@ -17,6 +17,7 @@ import {
   type LiveSession,
   type Scheme,
 } from '../live.js';
+import { setAccountPaused } from './operator.js';
 import type { ActionContext, ActionOutcome } from '../runner.js';
 
 /** Matches the Rust driver, so the two legs fund identically. */
@@ -1020,6 +1021,65 @@ export async function assertGuardianSwitched(
       reason: `the account's GUARDIAN binding could not be read after the rotation: ${String(error)}`,
     };
   }
+}
+
+/**
+ * A paused account is refused on a live network, and works again once unpaused.
+ *
+ * `det-account-paused` proves GUARDIAN's gate without a chain. This is the half
+ * that matters to custody: execution needs GUARDIAN's acknowledgement, so a
+ * paused account cannot execute and nothing lands. The proposal is created
+ * before the pause deliberately, so the refusal falls on execution rather than
+ * on creation, which is the gate standing between a client and the chain.
+ *
+ * Causation is proved structurally rather than by reading the message: the next
+ * action executes the same proposal with the same client and must succeed once
+ * unpaused. GUARDIAN answers `GUARDIAN_ACCOUNT_PAUSED`, but by the time a
+ * refusal reaches this driver only the status and the human-readable message
+ * survive, so the wording check only rules out a refusal that obviously has
+ * nothing to do with pausing.
+ *
+ * Unpauses whatever the attempt concluded; an account left paused fails the
+ * rest of the scenario for an unrelated reason.
+ */
+export async function assertPausedRefusesExecution(
+  context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+
+  const paused = await setAccountPaused(context, session.accountId, true);
+  if (paused) return paused;
+
+  let attempt: ActionOutcome;
+  try {
+    await session.multisig.executeProposal(session.proposalId);
+    attempt = {
+      kind: 'failed',
+      classification: 'product',
+      reason:
+        'a paused account executed a proposal; the pause did not stand between the client and the chain',
+    };
+  } catch (error) {
+    const rendered = String(error);
+    attempt = rendered.includes('account is paused')
+      ? { kind: 'passed' }
+      : {
+          kind: 'failed',
+          classification: 'product',
+          reason: `the paused account was refused, but not as paused: ${rendered}`,
+        };
+  }
+
+  const unpaused = await setAccountPaused(context, session.accountId, false);
+  if (unpaused) return attempt.kind === 'passed' ? unpaused : attempt;
+  return attempt;
 }
 
 export async function createProposalOffline(

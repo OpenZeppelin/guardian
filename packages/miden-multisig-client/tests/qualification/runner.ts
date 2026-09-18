@@ -91,6 +91,8 @@ async function runLiveAction(
       return live.importProposal(context, scenario.id);
     case 'proposal-create-offline':
       return live.createProposalOffline(context, scenario.id);
+    case 'paused-refuses-execution':
+      return live.assertPausedRefusesExecution(context, scenario.id);
     case 'guardian-switch-online':
       return live.switchGuardianOnline(context, scenario.id);
     case 'guardian-switch-assert':

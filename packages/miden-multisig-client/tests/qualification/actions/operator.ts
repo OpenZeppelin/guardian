@@ -54,6 +54,37 @@ async function login(
   }
 }
 
+/**
+ * Pauses or unpauses an account as the operator that holds `accounts:pause`.
+ *
+ * Exported so the live pause scenario drives the same operator path the
+ * deterministic one does, rather than reimplementing it and drifting on what
+ * pausing an account means.
+ */
+export async function setAccountPaused(
+  context: ActionContext,
+  accountId: string,
+  paused: boolean,
+): Promise<ActionOutcome | null> {
+  const result = await login(context, 'reader');
+  if ('failure' in result) return result.failure;
+
+  try {
+    if (paused) {
+      await result.client.pauseAccount(accountId, 'qualification: paused-account scenario');
+    } else {
+      await result.client.unpauseAccount(accountId);
+    }
+    return null;
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `${paused ? 'pause' : 'unpause'} was refused: ${String(error)}`,
+    };
+  }
+}
+
 export async function assertSession(context: ActionContext): Promise<ActionOutcome> {
   const result = await login(context, 'reader');
   if ('failure' in result) return result.failure;

@@ -379,6 +379,9 @@ pub async fn execute_proposal(runner: &Runner) -> ActionOutcome {
     let exported = session.exported_proposal.clone();
     let client = &mut session.clients[0];
     let nonce_before = chain_nonce(client).await;
+    // Read before executing: once the proposal leaves the pending set there is
+    // nothing left to read it from, and completion has to be bound to it.
+    let nonce = proposal_nonce(client, &proposal_id).await;
 
     // Signatures collected off-channel live in the document and were never
     // pushed, so GUARDIAN's copy is short of the threshold and the online path
@@ -410,7 +413,7 @@ pub async fn execute_proposal(runner: &Runner) -> ActionOutcome {
         return ActionOutcome::failed_product(format!("syncing after execution failed: {error}"));
     }
 
-    match wait_for_execution(client, &proposal_id, migrating).await {
+    match wait_for_execution(client, &proposal_id, nonce, migrating).await {
         Completion::Confirmed => ActionOutcome::Passed,
         Completion::Discarded(reason) => ActionOutcome::failed_product(format!(
             "the proposal left the pending set without becoming canonical: {reason}"
@@ -670,6 +673,21 @@ enum Completion {
     Pending(String),
 }
 
+/// The nonce a proposal will land at, read while it is still listed.
+///
+/// Completion has to be bound to the proposal it was asked about, and once the
+/// proposal leaves the pending set there is nothing left to read the nonce
+/// from, so callers capture it before executing.
+async fn proposal_nonce(client: &mut MultisigClient, proposal_id: &str) -> Option<u64> {
+    client
+        .list_proposals()
+        .await
+        .ok()?
+        .into_iter()
+        .find(|entry| entry.id == proposal_id)
+        .map(|entry| entry.nonce)
+}
+
 /// Waits for an executed proposal to be provably complete.
 ///
 /// Completion is not "the proposal disappeared": canonicalization removes the
@@ -680,6 +698,7 @@ enum Completion {
 async fn wait_for_execution(
     client: &mut MultisigClient,
     proposal_id: &str,
+    nonce: Option<u64>,
     migrating: bool,
 ) -> Completion {
     let started = std::time::Instant::now();
@@ -718,16 +737,34 @@ async fn wait_for_execution(
                     }
                     match client.delta_history(Some(20), None).await {
                         Ok(page) => {
+                            // Bound to the proposal, not merely to the account
+                            // being self-consistent. Matching on the commitment
+                            // alone answers "is this account in a state some
+                            // canonical delta explains", which an account whose
+                            // delta was discarded satisfies just as well: it
+                            // never moved, so it still agrees with chain and the
+                            // *previous* delta still carries that commitment.
+                            // The nonce is what ties the answer to the delta
+                            // under test.
                             let canonical = page.entries.iter().any(|entry| {
-                                entry
+                                let carries = entry
                                     .new_commitment
                                     .as_deref()
-                                    .is_some_and(|recorded| normalize_hex(recorded) == commitment)
+                                    .is_some_and(|recorded| normalize_hex(recorded) == commitment);
+                                carries && nonce.is_none_or(|wanted| entry.nonce == wanted)
                             });
                             if canonical {
                                 return Completion::Confirmed;
                             }
-                            last = format!("no canonical delta carries commitment {commitment}");
+                            last = match nonce {
+                                Some(wanted) => format!(
+                                    "no canonical delta at nonce {wanted} carries commitment \
+                                     {commitment}"
+                                ),
+                                None => {
+                                    format!("no canonical delta carries commitment {commitment}")
+                                }
+                            };
                         }
                         Err(error) => last = format!("delta history unavailable: {error}"),
                     }
@@ -882,6 +919,9 @@ pub async fn consume_note(runner: &Runner) -> ActionOutcome {
 
     let proposal_id = session.proposal_id.clone().unwrap_or_default();
     let client = &mut session.clients[0];
+    // Read before executing, for the same reason: completion is bound to this
+    // proposal, and the proposal is gone by the time it is judged.
+    let nonce = proposal_nonce(client, &proposal_id).await;
     if let Err(error) = client.execute_proposal(&proposal_id).await {
         return ActionOutcome::failed_product(format!("consuming the note failed: {error}"));
     }
@@ -889,7 +929,7 @@ pub async fn consume_note(runner: &Runner) -> ActionOutcome {
         return ActionOutcome::failed_product(format!("syncing after the consume failed: {error}"));
     }
 
-    match wait_for_execution(client, &proposal_id, false).await {
+    match wait_for_execution(client, &proposal_id, nonce, false).await {
         Completion::Confirmed => ActionOutcome::Passed,
         Completion::Discarded(reason) => ActionOutcome::failed_product(format!(
             "the consuming proposal left the pending set without becoming canonical: {reason}"
@@ -1728,13 +1768,30 @@ pub async fn abandon_and_assert_hidden(runner: &Runner) -> ActionOutcome {
         }
     }
 
-    // And it must not have moved the account. Reading state back is what a
-    // client does next, and it is the other way a discard could pass for a
-    // completion.
-    match client.verify_state_commitment().await {
-        Ok(_) => ActionOutcome::Passed,
-        Err(error) => ActionOutcome::failed_product(format!(
+    // It must not have moved the account. Reading state back is what a client
+    // does next, and it is the other way a discard could pass for a completion.
+    if let Err(error) = client.verify_state_commitment().await {
+        return ActionOutcome::failed_product(format!(
             "the account does not agree with chain after a discarded delta: {error}"
+        ));
+    }
+
+    // The rule itself, not only its symptom. Everything above shows the discard
+    // is invisible to what a client reads by default, which is worth having,
+    // but the code that has to tell a discard from a success is
+    // `wait_for_execution`: every other live scenario trusts its verdict. Ask
+    // it about a delta that really was discarded, and it must say so rather
+    // than read the empty pending set as completion.
+    match wait_for_execution(client, &proposal_id, Some(nonce), false).await {
+        Completion::Discarded(_) => ActionOutcome::Passed,
+        Completion::Confirmed => ActionOutcome::failed_product(
+            "the completion check calls a discarded delta confirmed, so every scenario that \
+             trusts it would read an abandoned candidate as a successful execution"
+                .to_string(),
+        ),
+        Completion::Pending(reason) => ActionOutcome::failed_product(format!(
+            "the completion check still calls the discarded delta pending after its deadline: \
+             {reason}"
         )),
     }
 }

@@ -579,6 +579,26 @@ step that puts the record in place, by a route not chased further. Accepting
 only a testing problem: a consumer confirming their own recovery path hits the
 same wall.
 
+**Pausing does not hold against a GUARDIAN rotation.** `det-account-paused`
+proves GUARDIAN's own gate refuses a proposal, and
+`live-account-paused-1of1-ecdsa` proves a paused account cannot execute on
+chain and transacts again once unpaused. Both rely on the same mechanism: the
+pause is enforced in `ensure_account_active_metadata`, which guards
+`push_delta`, `push_delta_proposal`, `sign_delta_proposal` and
+`abandon_candidate`, so an account that needs GUARDIAN's acknowledgement to
+execute is stopped by being refused one.
+
+`SwitchGuardian` is the one transaction type that executes without an
+acknowledgement, and an offline-created one deliberately contacts the old
+GUARDIAN for nothing at all. It therefore touches none of those four calls, so
+a paused account can still rotate to a different GUARDIAN. That is arguably
+what the offline switch is for, since its purpose is leaving a GUARDIAN that
+will not cooperate, but it means a pause is an operational gate rather than a
+freeze: an operator who pauses an account should not read it as one that cannot
+move. No scenario covers this, deliberately, because asserting the current
+behaviour would enshrine an answer that is a product decision rather than a
+test one.
+
 **Mixed-scheme accounts.** Both account builders assign one configured scheme to
 every signer, so no mixed-scheme account can be constructed. The on-chain
 storage layout supports one; closing the gap is separate SDK work.
