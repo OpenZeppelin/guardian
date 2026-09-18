@@ -425,7 +425,29 @@ ephemeral accounts from the treasury through `fund`.
   control for that rule: it is specified, optional and **unimplemented**, so the
   assertion is correct by construction and unproven by experiment. A regression
   that read a discard as a success would not fail any required scenario. This is
-  the highest-value missing test in the suite.
+  the highest-value missing test in the suite, and it is harder to write than it
+  looks, so the dead ends are recorded here rather than rediscovered:
+
+  - Every route to a `Discarded` delta runs through the canonicalization worker.
+    The at-base route needs a chain read the deterministic profile's RPC stub
+    cannot serve. The retry-exhaustion route needs no chain evidence but is
+    gated first by `submission_grace_period_seconds` (600s) and then by 18
+    retries at 10s, so about thirteen minutes, and none of those three knobs is
+    exposed through `GUARDIAN_CANONICALIZATION_*`.
+  - Competing executions cannot produce the divergence that would shortcut the
+    quarantine: `push_delta` refuses a stale base with `CommitmentMismatch` and
+    allows only one candidate per account, so GUARDIAN never holds a candidate
+    the chain has moved past unless something advanced the account without
+    telling it.
+  - Re-pushing a proposal's `tx_summary` as a delta does not work either, even
+    though `push_delta_proposal` verifies the same summary against the same
+    stored state moments earlier: GUARDIAN answers `invalid_delta`. So a
+    candidate that never lands cannot currently be built from a proposal, and
+    the only supported way to create one is to execute, which lands it.
+
+  Closing this therefore needs a deliberate change rather than another scenario:
+  either those canonicalization timings exposed to the environment, or a
+  supported way to obtain an acknowledged delta without submitting it.
 - **Deterministic multisig coverage stops at submission.** GUARDIAN's request
   path never calls the chain, so the proposal API is testable without one and
   `det-proposal-lifecycle` exercises it from a committed fixture summary.
@@ -505,7 +527,8 @@ unrecoverable once the run ends, so no long-lived account can survive between
 runs without a store outside the run. Every option for that store (a committed
 snapshot, a cached snapshot, a persisted database) was judged to cost more than
 it returns while the property is better checked at the moment of a pin bump.
-Put it on the checklist for changing the Miden pin, not in the nightly.
+The checklist that replaces it is in
+[MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#before-bumping-the-miden-pin).
 
 **No run proves browser behaviour, and none installs from the registry.** Every
 TypeScript scenario declares `runtime = server-side`: Node, with a WASM alias, a

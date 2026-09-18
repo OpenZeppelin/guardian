@@ -340,6 +340,6 @@ jobs:
           {
             echo
             echo '```'
-            qual_print_summary qualification-results/merged/report.json
+            qual_print_summary qualification-results/merged/report.json "${QUAL_RUN_ID:-}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

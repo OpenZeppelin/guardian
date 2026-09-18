@@ -44,7 +44,7 @@ enum Command {
     SpendReset {
         #[arg(long, value_enum)]
         network: NetworkArg,
-        #[arg(long, default_value = "/tmp/qualification-treasury")]
+        #[arg(long, default_value = guardian_qualification_driver::funding::DEFAULT_TREASURY_DIR)]
         data_dir: PathBuf,
     },
     /// Create a treasury key, printing the secret once and the address to fund.
@@ -61,14 +61,14 @@ enum Command {
     TreasuryStatus {
         #[arg(long, value_enum)]
         network: NetworkArg,
-        #[arg(long, default_value = "/tmp/qualification-treasury")]
+        #[arg(long, default_value = guardian_qualification_driver::funding::DEFAULT_TREASURY_DIR)]
         data_dir: PathBuf,
     },
     /// Consume the notes sent to the treasury, deploying it and funding its vault.
     TreasuryBootstrap {
         #[arg(long, value_enum)]
         network: NetworkArg,
-        #[arg(long, default_value = "/tmp/qualification-treasury")]
+        #[arg(long, default_value = guardian_qualification_driver::funding::DEFAULT_TREASURY_DIR)]
         data_dir: PathBuf,
     },
     /// Fund one account from the treasury.
@@ -83,14 +83,14 @@ enum Command {
         recipient: String,
         #[arg(long)]
         amount: u64,
-        #[arg(long, default_value = "/tmp/qualification-treasury")]
+        #[arg(long, default_value = guardian_qualification_driver::funding::DEFAULT_TREASURY_DIR)]
         data_dir: PathBuf,
     },
     /// Run the funding preflight: lock, fee model, usability, and projection.
     TreasuryCheck {
         #[arg(long, value_enum)]
         network: NetworkArg,
-        #[arg(long, default_value = "/tmp/qualification-treasury")]
+        #[arg(long, default_value = guardian_qualification_driver::funding::DEFAULT_TREASURY_DIR)]
         data_dir: PathBuf,
         /// What this run expects to need, in the chain's fee asset.
         #[arg(long, default_value = "100000")]
@@ -103,7 +103,7 @@ enum Command {
     TreasurySweep {
         #[arg(long, value_enum)]
         network: NetworkArg,
-        #[arg(long, default_value = "/tmp/qualification-treasury")]
+        #[arg(long, default_value = guardian_qualification_driver::funding::DEFAULT_TREASURY_DIR)]
         data_dir: PathBuf,
     },
     /// Print the operator public keys the allowlist must carry.
@@ -182,6 +182,10 @@ enum Command {
         manifest_dir: PathBuf,
         #[arg(long, default_value = "/tmp/qualification-accounts")]
         account_dir: PathBuf,
+        /// The treasury's own directory, shared by every spender in the run.
+        /// Separate from `account_dir`, which is per run.
+        #[arg(long, default_value = guardian_qualification_driver::funding::DEFAULT_TREASURY_DIR)]
+        treasury_dir: PathBuf,
     },
 }
 
@@ -669,6 +673,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
             out,
             manifest_dir,
             account_dir,
+            treasury_dir,
         } => {
             let options = RunOptions {
                 profile: profile.into(),
@@ -695,6 +700,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
                 },
                 out,
                 account_dir,
+                treasury_dir,
             };
             let (result, code) = run::execute(&manifest_dir, options).await?;
             println!(

@@ -14,6 +14,11 @@ pub struct LiveContext {
     pub network: NetworkName,
     pub guardian_endpoint: String,
     pub account_dir: std::path::PathBuf,
+    /// Where the treasury lock and spend ledger live. Deliberately not
+    /// `account_dir`: that one is per run, and the lock and the cap only work
+    /// while every spender in the run shares one directory, including the
+    /// `fund` subprocess the TypeScript leg spawns.
+    pub treasury_dir: std::path::PathBuf,
     /// A second GUARDIAN deployment, required only by the migration scenario.
     pub migration_endpoint: Option<String>,
 }
@@ -261,7 +266,7 @@ pub async fn create_proposal(runner: &Runner) -> ActionOutcome {
 
     let funded = match crate::funding::service::fund_once(
         context.network,
-        &context.account_dir,
+        &context.treasury_dir,
         session.account_id,
         ACCOUNT_FUNDING,
     )
@@ -812,7 +817,7 @@ pub async fn transfer_asset(runner: &Runner) -> ActionOutcome {
 
     match crate::funding::service::fund_once(
         context.network,
-        &context.account_dir,
+        &context.treasury_dir,
         session.account_id,
         ACCOUNT_FUNDING,
     )

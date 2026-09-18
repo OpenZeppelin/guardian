@@ -19,6 +19,7 @@ pub struct RunOptions {
     pub filtered: bool,
     pub post_restart: bool,
     pub account_dir: PathBuf,
+    pub treasury_dir: PathBuf,
     pub run_id: String,
     pub trigger: Trigger,
     pub requested_by: Option<String>,
@@ -77,6 +78,7 @@ pub async fn execute(manifest_dir: &Path, options: RunOptions) -> anyhow::Result
             // The multisig SDK speaks gRPC to GUARDIAN, not HTTP.
             guardian_endpoint: options.endpoints.grpc.clone(),
             account_dir: options.account_dir.clone(),
+            treasury_dir: options.treasury_dir.clone(),
             // gRPC, not HTTP: this driver reaches GUARDIAN over gRPC, and the
             // HTTP listener cannot answer it.
             migration_endpoint: std::env::var("QUAL_GUARDIAN_MIGRATION_GRPC")

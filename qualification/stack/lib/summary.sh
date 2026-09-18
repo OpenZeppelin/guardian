@@ -7,8 +7,9 @@
 
 qual_print_summary() {
   local report="$1"
+  local run_id="${2:-}"
   [[ -f "${report}" ]] || return 0
-  python3 - "${report}" <<'PY'
+  python3 - "${report}" "${run_id}" <<'PY'
 import collections
 import json
 import sys
@@ -17,6 +18,12 @@ try:
     report = json.load(open(sys.argv[1]))
 except (OSError, ValueError):
     sys.exit(0)
+
+# The results directory is shared across runs, so a run that writes no merged
+# report (a single-SDK one, or one whose merge failed) leaves the previous
+# run's file in place. Printing it announced another run's success directly
+# under this run's failure, which is worse than printing nothing.
+wanted = sys.argv[2] if len(sys.argv) > 2 else ""
 
 
 def runs(report):
@@ -37,10 +44,14 @@ def runs(report):
         yield report.get("network", {}).get("name", "-"), report
 
 
+printed = False
 for network, run in runs(report):
     results = run.get("scenario_results", [])
     if not results:
         continue
+    if wanted and not run.get("run_id", "").startswith(wanted):
+        continue
+    printed = True
     counts = collections.Counter(
         entry.get("classification") or entry.get("outcome", "unknown") for entry in results
     )
@@ -62,5 +73,9 @@ for network, run in runs(report):
         print(f"  {len(lost)} scenario(s) lost to the network, not counted against the product:")
         for entry in lost:
             print(f"    {entry['scenario_id']} ({entry.get('sdk', '?')}): {entry.get('reason', '')}")
+
+if wanted and not printed:
+    print()
+    print(f"no merged report for {wanted}; read the per-leg results files instead")
 PY
 }

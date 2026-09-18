@@ -130,3 +130,34 @@ pub async fn fund_once(
         treasury: treasury.id(),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lock and the ledger only serialize and cap a run while every spender
+    /// in it names the same directory. They once did not: the Rust scenarios
+    /// passed their per-run account directory and the TypeScript leg's `fund`
+    /// subprocess used the treasury default, so each leg took its own lock and
+    /// kept its own tally, and the per-run reset cleared a file the Rust leg
+    /// never wrote. The tally only grew, and a live run eventually failed its
+    /// own cap with nothing wrong.
+    #[test]
+    fn the_lock_and_the_ledger_share_one_directory() {
+        let dir = std::path::Path::new(crate::funding::DEFAULT_TREASURY_DIR);
+        assert_eq!(
+            ledger_path(dir, NetworkName::Testnet).parent(),
+            Some(dir),
+            "the ledger must sit in the treasury directory, not beside a run's accounts"
+        );
+    }
+
+    #[test]
+    fn the_ledger_is_scoped_per_network() {
+        let dir = std::path::Path::new("/tmp/probe");
+        assert_ne!(
+            ledger_path(dir, NetworkName::Testnet),
+            ledger_path(dir, NetworkName::Devnet)
+        );
+    }
+}

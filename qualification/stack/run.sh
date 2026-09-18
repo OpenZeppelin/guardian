@@ -566,7 +566,7 @@ touch "${OUT_DIR}/.scan-passed"
 # After the scan, deliberately. A reason is scenario text rather than anything
 # configured, but printing artifacts before the thing that gates them is how a
 # leak reaches a log that outlives the artifact.
-qual_print_summary "${OUT_DIR}/merged/report.json"
+qual_print_summary "${OUT_DIR}/merged/report.json" "${QUAL_RUN_ID}"
 
 case "${DRIVER_EXIT}" in
   0) exit "${EXIT_SUCCESS}" ;;
