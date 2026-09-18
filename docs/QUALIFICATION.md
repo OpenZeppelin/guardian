@@ -447,7 +447,10 @@ ephemeral accounts from the treasury through `fund`.
 
   Closing this therefore needs a deliberate change rather than another scenario:
   either those canonicalization timings exposed to the environment, or a
-  supported way to obtain an acknowledged delta without submitting it.
+  supported way to obtain an acknowledged delta without submitting it. The
+  attempt itself is kept on the `spike/discarded-delta-control` branch, which
+  runs and fails, so the next attempt can start from the code rather than from
+  this list.
 - **Deterministic multisig coverage stops at submission.** GUARDIAN's request
   path never calls the chain, so the proposal API is testable without one and
   `det-proposal-lifecycle` exercises it from a committed fixture summary.
