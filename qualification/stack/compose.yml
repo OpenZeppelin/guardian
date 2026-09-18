@@ -1,0 +1,130 @@
+# Host ports are parameterized and no service declares a container name, so a
+# per-run compose project name is enough to isolate concurrent runs.
+#
+# QUAL_SERVER_IMAGE carries either a locally built tag or a registry digest, so
+# built-from-ref and pulled-from-registry need no separate compose file; the
+# caller resolves the reference before the stack starts.
+
+services:
+  server:
+    image: ${QUAL_SERVER_IMAGE:?set QUAL_SERVER_IMAGE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rpc-stub:
+        condition: service_started
+    ports:
+      - "${QUAL_HTTP_PORT:-3000}:3000"
+      - "${QUAL_GRPC_PORT:-50051}:50051"
+    volumes:
+      - ${QUAL_ACK_KEYS_DIR:?set QUAL_ACK_KEYS_DIR}:/var/guardian/ack-keys:ro
+      - ${QUAL_OPERATOR_DIR:?set QUAL_OPERATOR_DIR}:/var/guardian/operator:ro
+      - guardian-keystore:/var/guardian/keystore
+    environment:
+      - RUST_LOG=${QUAL_RUST_LOG:-info}
+      - GUARDIAN_NETWORK_TYPE=${QUAL_NETWORK_TYPE:?set QUAL_NETWORK_TYPE}
+      - GUARDIAN_MIDEN_RPC_ENDPOINT=${QUAL_MIDEN_RPC_ENDPOINT:?set QUAL_MIDEN_RPC_ENDPOINT}
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - DATABASE_URL=postgres://guardian:${QUAL_POSTGRES_PASSWORD:?set QUAL_POSTGRES_PASSWORD}@postgres:5432/guardian
+      - GUARDIAN_ACK_SECRET_PROVIDER=file
+      - GUARDIAN_ACK_FALCON_SECRET_PATH=/var/guardian/ack-keys/ack-falcon-secret-key
+      - GUARDIAN_ACK_ECDSA_SECRET_PATH=/var/guardian/ack-keys/ack-ecdsa-secret-key
+      # The limiter keys by client address and the whole suite presents as one
+      # caller, so the development allowance throttles the driver itself.
+      - GUARDIAN_RATE_BURST_PER_SEC=${QUAL_RATE_BURST_PER_SEC:-500}
+      - GUARDIAN_RATE_PER_MIN=${QUAL_RATE_PER_MIN:-20000}
+      # Challenge and verify are additionally limited per operator commitment,
+      # and the dashboard scenarios sign in more often than one person would.
+      - GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC=${QUAL_DASHBOARD_RATE_BURST_PER_SEC:-100}
+      - GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN=${QUAL_DASHBOARD_RATE_PER_MIN:-2000}
+      - GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/var/guardian/operator/operators.json
+
+  # A second GUARDIAN with its own acknowledgement identity and its own
+  # database, so the migration scenario has somewhere real to migrate to. It
+  # carries no fixtures and no operator allowlist: nothing but migration targets
+  # it.
+  server-migration-target:
+    image: ${QUAL_SERVER_IMAGE:?set QUAL_SERVER_IMAGE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rpc-stub:
+        condition: service_started
+    ports:
+      - "${QUAL_HTTP_PORT_B:-3100}:3000"
+      - "${QUAL_GRPC_PORT_B:-50151}:50051"
+    volumes:
+      - ${QUAL_ACK_KEYS_MIGRATION_DIR:?set QUAL_ACK_KEYS_MIGRATION_DIR}:/var/guardian/ack-keys:ro
+      - guardian-keystore-migration-target:/var/guardian/keystore
+    environment:
+      - RUST_LOG=${QUAL_RUST_LOG:-info}
+      - GUARDIAN_NETWORK_TYPE=${QUAL_NETWORK_TYPE:?set QUAL_NETWORK_TYPE}
+      - GUARDIAN_MIDEN_RPC_ENDPOINT=${QUAL_MIDEN_RPC_ENDPOINT:?set QUAL_MIDEN_RPC_ENDPOINT}
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - DATABASE_URL=postgres://guardian:${QUAL_POSTGRES_PASSWORD:?set QUAL_POSTGRES_PASSWORD}@postgres:5432/guardian_migration_target
+      - GUARDIAN_ACK_SECRET_PROVIDER=file
+      - GUARDIAN_ACK_FALCON_SECRET_PATH=/var/guardian/ack-keys/ack-falcon-secret-key
+      - GUARDIAN_ACK_ECDSA_SECRET_PATH=/var/guardian/ack-keys/ack-ecdsa-secret-key
+      - GUARDIAN_RATE_BURST_PER_SEC=${QUAL_RATE_BURST_PER_SEC:-500}
+      - GUARDIAN_RATE_PER_MIN=${QUAL_RATE_PER_MIN:-20000}
+
+  # A third GUARDIAN restricted to ECDSA, so the GUARDIAN_ALLOWED_ACCOUNT_SCHEMES
+  # gate is exercised as configured rather than only as parsed. ECDSA-only is the
+  # shape the production guides recommend, because it is the scheme the hosted
+  # signer backends support, so it is the configuration worth proving. It carries
+  # the fixture acknowledgement identity so the refused registration is one that
+  # would otherwise succeed.
+  server-scheme-gated:
+    image: ${QUAL_SERVER_IMAGE:?set QUAL_SERVER_IMAGE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rpc-stub:
+        condition: service_started
+    ports:
+      - "${QUAL_HTTP_PORT_C:-3200}:3000"
+      - "${QUAL_GRPC_PORT_C:-50251}:50051"
+    volumes:
+      - ${QUAL_ACK_KEYS_DIR:?set QUAL_ACK_KEYS_DIR}:/var/guardian/ack-keys:ro
+      - guardian-keystore-scheme-gated:/var/guardian/keystore
+    environment:
+      - RUST_LOG=${QUAL_RUST_LOG:-info}
+      - GUARDIAN_NETWORK_TYPE=${QUAL_NETWORK_TYPE:?set QUAL_NETWORK_TYPE}
+      - GUARDIAN_MIDEN_RPC_ENDPOINT=${QUAL_MIDEN_RPC_ENDPOINT:?set QUAL_MIDEN_RPC_ENDPOINT}
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - DATABASE_URL=postgres://guardian:${QUAL_POSTGRES_PASSWORD:?set QUAL_POSTGRES_PASSWORD}@postgres:5432/guardian_scheme_gated
+      - GUARDIAN_ACK_SECRET_PROVIDER=file
+      - GUARDIAN_ACK_FALCON_SECRET_PATH=/var/guardian/ack-keys/ack-falcon-secret-key
+      - GUARDIAN_ACK_ECDSA_SECRET_PATH=/var/guardian/ack-keys/ack-ecdsa-secret-key
+      - GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa
+      - GUARDIAN_RATE_BURST_PER_SEC=${QUAL_RATE_BURST_PER_SEC:-500}
+      - GUARDIAN_RATE_PER_MIN=${QUAL_RATE_PER_MIN:-20000}
+
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    environment:
+      - POSTGRES_USER=guardian
+      - POSTGRES_PASSWORD=${QUAL_POSTGRES_PASSWORD:?set QUAL_POSTGRES_PASSWORD}
+      - POSTGRES_DB=guardian
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # The server dials its chain RPC endpoint eagerly at startup and will not
+  # finish booting without a responder. The deterministic profile exercises no
+  # chain call, so completing the transport handshake is all this needs to do.
+  rpc-stub:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./rpc-stub/nginx.conf:/etc/nginx/nginx.conf:ro
+
+volumes:
+  guardian-postgres:
+  guardian-keystore:
+  guardian-keystore-migration-target:
+  guardian-keystore-scheme-gated:

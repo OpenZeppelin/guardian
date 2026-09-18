@@ -34,10 +34,12 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:browser": "playwright test --config playwright.config.ts"
+    "test:browser": "playwright test --config playwright.config.ts",
+    "test:qualification": "vitest run --config vitest.qualification.config.ts"
   },
   "dependencies": {
     "@miden-sdk/miden-sdk": "0.16.0",
@@ -46,7 +48,9 @@
     "@openzeppelin/guardian-client": "^0.17.0"
   },
   "devDependencies": {
+    "@openzeppelin/guardian-operator-client": "^0.17.0",
     "@playwright/test": "^1.60.0",
+    "@types/node": "^24.13.5",
     "fake-indexeddb": "^6.2.5",
     "typescript": "^5.7.2",
     "vite": "^6.4.3",

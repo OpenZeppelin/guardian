@@ -74,6 +74,28 @@ empty storage and metadata directories, preserving the keystore directory.
 A deployment upgrading across more than one line runs both migrations in the same
 startup; the newer reset subsumes the older one.
 
+### Before bumping the Miden pin
+
+A deployed Miden account is immutable and its procedure roots fix at creation, so
+moving the contract pin strands every account created under the previous one,
+including each network's qualification treasury. Nothing catches this
+automatically: the qualification suite deliberately carries no long-lived
+account, because GUARDIAN holds the only full copy of a private account and the
+suite's stack is torn down with every run (see "Current limits" in
+[QUALIFICATION.md](./QUALIFICATION.md)).
+
+So a pin bump owes these by hand, in this order:
+
+1. Qualify an account created **before** the bump against a server built
+   **after** it, and confirm it fails loudly rather than silently misbehaving.
+   A run whose accounts are all created after the bump proves nothing about it.
+2. Recreate each network's treasury with `treasury-new`, fund it, and record the
+   new key. The old treasury is stranded like any other account.
+3. Note the bump in the support matrix above, with whether existing accounts
+   survive.
+
+Step 1 is the one most easily skipped, because every other signal stays green.
+
 ## Guardian 0.17.x on Miden 0.16
 
 Nothing stored under Miden 0.15 survives, because the account's on-chain surface

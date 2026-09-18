@@ -1,0 +1,39 @@
+[package]
+name = "guardian-qualification-driver"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "qualification-driver"
+path = "src/main.rs"
+
+[lib]
+name = "guardian_qualification_driver"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+guardian-client = { path = "../client" }
+guardian-shared = { path = "../shared" }
+hex = { workspace = true }
+miden-client = { workspace = true, features = ["tonic"] }
+miden-client-sqlite-store = { workspace = true }
+libc = "0.2"
+rand = { workspace = true }
+miden-multisig-client = { path = "../miden-multisig-client" }
+miden-protocol = { workspace = true }
+miden-standards = { workspace = true }
+# `cookies`: the operator dashboard authenticates with a session cookie, so a
+# client without a store logs in and then gets 401 on the next request.
+reqwest = { version = "0.12", default-features = false, features = ["cookies", "json", "rustls-tls"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "time"] }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = { workspace = true }

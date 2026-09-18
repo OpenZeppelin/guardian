@@ -1,5 +1,13 @@
 node_modules/
 
+qualification-results/
+qualification/.treasury-secrets.env
+qualification/stack/.env.generated
+qualification/stack/ack-keys/
+qualification/stack/ack-keys-migration-target/
+qualification/stack/operator/
+qualification/stack/runs/
+
 target/
 store.sqlite3
 /keystore/

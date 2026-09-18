@@ -9,6 +9,7 @@ members = [
     "crates/miden-keystore",
     "crates/contracts",
     "crates/miden-multisig-client",
+    "crates/qualification-driver",
     "examples/rust",
     "examples/demo",
 ]

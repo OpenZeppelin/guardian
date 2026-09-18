@@ -447,6 +447,12 @@ script or Terraform variables rather than disabling rate limiting.
   cookie. Re-authenticate.
 - **`GUARDIAN_OPERATOR_PUBLIC_KEYS_*` env not set.** No source means no
   allowlist means the dashboard refuses every login. Check task env.
+- **Allowlist edited in place.** The file is re-read on every
+  authenticated request. A load failure is retried three times over
+  100ms, which covers a writer replacing the file, but an editor that
+  leaves it truncated or invalid for longer fails every dashboard
+  request with `configuration_error` until it is valid again. Write a
+  sibling and rename it into place.
 
 ### Browser dashboard returns CORS errors
 
@@ -540,7 +546,7 @@ come from
 |---|---|---|
 | `storage_error` | 500 | Persistence backend rejected the write. Check disk (filesystem) or DB (Postgres) health. |
 | `signing_error` | 500 | ACK signer failed. Check the keystore mount and Secrets Manager IAM. |
-| `configuration_error` | 500 | Server misconfiguration. Almost always means a startup-time env var was wrong. |
+| `configuration_error` | 500 | Server misconfiguration. Usually a startup-time env var. On the dashboard routes it can also mean the operator allowlist source was unreadable: it is re-read per request and retried three times over 100ms, so this code means it stayed unreadable, not that a writer caught it mid-update. |
 
 ## Logging and observability
 

@@ -34,6 +34,8 @@ If a behavior changes in a lower layer, verify and propagate impact upward acros
 - `crates/miden-multisig-client`: Rust multisig SDK on top of Miden + GUARDIAN
 - `packages/miden-multisig-client`: TS multisig SDK on top of Miden + GUARDIAN
 - `crates/shared`: shared Rust primitives/utilities
+- `crates/qualification-driver`: Rust driver for the black-box qualification suite (not published; also the scenario-manifest validator both drivers read)
+- `qualification/`: scenario manifest, Compose stack and shell harness for the qualification suite (see `docs/QUALIFICATION.md`)
 - `spec/`: system and protocol-level behavior docs
 - `docs/`: contributor- and operator-facing documentation hub (start at `docs/CONCEPTS.md`)
 - `infra/`: Terraform for the AWS reference deployment
@@ -224,6 +226,7 @@ Common mappings:
 - EVM proposal behavior -> `speckit/features/001-evm-proposal-support/`, `packages/guardian-evm-client`, `examples/evm-smoke-web`
 - Deployment, config, infrastructure, or secrets -> `docs/PRODUCTION.md`, `docs/architecture/infra.md`, `docs/runbooks/secrets.md`, `docs/SERVER_AWS_DEPLOY.md`, `infra/README.md`
 - Local dev or test startup -> `README.md`, `CONTRIBUTING.md`, relevant example README or quickstart
+- Qualification scenarios, the coverage matrix, or the treasury runbook -> `docs/QUALIFICATION.md`; scenario sources live in `qualification/manifest/` and `manifest.json` must be regenerated
 
 When docs are not updated after a visible behavior change, note why in the final report or PR notes.
 

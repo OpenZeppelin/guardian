@@ -485,14 +485,22 @@ integration extends rather than replaces its advice map.
 > Cosigners must verify the raw `tx_summary` they are signing — not trust the
 > label or description.
 
-### Offline Workflow
+### Side-channel (offline) workflow
 
-For air-gapped or offline signing scenarios:
+For moving a proposal between cosigners as a document instead of through
+GUARDIAN's pending set.
+
+> **This is off-channel signature collection, not air-gapped operation.**
+> Only a `switch_guardian` proposal can be signed and executed with no network
+> at all. For every other type the signing step reproduces the transaction to
+> verify the summary, so the signer needs a synced store (and, for
+> `consume_notes`, the node), and execution needs an acknowledgement from
+> GUARDIAN. A transfer executed this way still reaches GUARDIAN.
 
 ```
 ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
 │  Proposer   │         │  Cosigner   │         │  Executor   │
-│  (Online)   │         │ (Air-gapped)│         │  (Online)   │
+│  (Online)   │         │ (Off-channel)│        │  (Online)   │
 └──────┬──────┘         └──────┬──────┘         └──────┬──────┘
        │                       │                       │
        │  Export proposal.json │                       │
@@ -921,9 +929,20 @@ const proposal = await multisig.createRemoveSignerProposal(
 
 ```typescript
 const proposal = await multisig.createChangeThresholdProposal(
-  newThreshold           // New threshold value
+  newThreshold           // New account-wide threshold, 1..=signer count
 );
 ```
+
+This moves the **account-wide default** threshold, the "N" in N-of-M. It is not
+the per-procedure override that `createUpdateProcedureThresholdProposal` sets.
+Where an override exists it takes precedence for the procedure it names, so
+lowering the default does not lower an overridden procedure, and this call is
+itself gated by whatever threshold governs `update_signers`. The signer set is
+not a parameter: membership changes go through `createAddSignerProposal` and
+`createRemoveSignerProposal`.
+
+The Rust equivalent is `TransactionType::update_signers(threshold, commitments)`,
+passing the account's current signer set unchanged.
 
 #### Switch GUARDIAN Provider
 
@@ -948,6 +967,14 @@ const exported = await multisig.createSwitchGuardianProposalOffline(
 ```
 
 ### Signing & Executing Proposals
+
+> **The two SDKs differ on who has signed a new proposal.** The Rust SDK
+> attaches the proposer's signature when the proposal is created; the TypeScript
+> SDK does not. The same 2-of-3 flow therefore needs one more signature
+> collected on the TypeScript path than on the Rust path. Neither is wrong, but
+> threshold arithmetic written against one SDK is wrong against the other. Offer
+> the proposal to every cosigner and let `signaturesCollected` decide, rather
+> than assuming who has already signed.
 
 ```typescript
 // List all pending proposals
@@ -984,7 +1011,8 @@ if (signed.status.type === 'ready') {
 const json = multisig.exportProposalToJson(proposalId);
 // Share via file, QR code, etc.
 
-// On air-gapped machine: import and sign
+// On the cosigner's machine: import and sign. Needs a synced store
+// unless this is a switch_guardian proposal.
 const imported = multisig.importProposal(json);
 const signedJson = multisig.signProposalOffline(proposalId);
 
@@ -1059,7 +1087,7 @@ one implicitly.
 | `preservePreSwitchProposalNotes()` | Pre-switch slice of the flow (issue #417): import notes embedded in the old GUARDIAN's pending proposals before repointing; run automatically by `executeProposal` on the switch path; returns the report or `undefined` |
 | `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
-| `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
+| `createChangeThresholdProposal(threshold, { nonce }?)` | Change the account-wide threshold (not a per-procedure override) |
 | `createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)` | Create per-procedure threshold override proposal (`threshold: 0` clears the override) |
 | `createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal |
 | `createSwitchGuardianProposalOffline(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal without contacting the current GUARDIAN; returns a signed `ExportedProposal` for side-channel cosigning (issue #433) |
@@ -1486,7 +1514,8 @@ client.execute_proposal(&proposal_id).await?;
 let exported = client.create_proposal_offline(tx).await?;
 std::fs::write("proposal.json", exported.to_json()?)?;
 
-// On air-gapped machine: load and sign
+// On the cosigner's machine: load and sign. Needs a synced store
+// unless this is a switch_guardian proposal.
 let json = std::fs::read_to_string("proposal.json")?;
 let mut exported: ExportedProposal = serde_json::from_str(&json)?;
 client.sign_imported_proposal(&mut exported)?;
@@ -1747,7 +1776,7 @@ console.log('Notes consumed, funds now in vault');
 │                         OFFLINE SIGNING FLOW                         │
 └─────────────────────────────────────────────────────────────────────┘
 
-  PROPOSER (Online)           COSIGNER (Air-gapped)        EXECUTOR (Online)
+  PROPOSER (Online)           COSIGNER (Off-channel)       EXECUTOR (Online)
   ─────────────────           ────────────────────         ────────────────
         │                            │                            │
         │ create_proposal_offline()  │                            │

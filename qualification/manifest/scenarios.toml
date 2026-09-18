@@ -1,0 +1,698 @@
+# Scenario definitions. Read by both drivers; defined by neither.
+#
+# How to add one: docs/QUALIFICATION.md, "Adding a scenario".
+# The authoritative action vocabulary is the From<String> arms in
+# crates/qualification-driver/src/manifest/mod.rs.
+
+[[scenario]]
+id = "det-status-identity"
+title = "Server reports the identity of the artifact under test"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["status-identity"]
+step_budget = "30s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-fixture-grpc"
+title = "Fixture account registers and reads back over gRPC"
+profile = "deterministic"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-register", "commitment-verify"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-fixture-http"
+title = "Fixture account registers and reads back over HTTP"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-register", "commitment-verify"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-proposal-lifecycle"
+title = "Proposal is accepted and comes back in the account's pending list"
+profile = "deterministic"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-register", "proposal-create"]
+step_budget = "120s"
+required = true
+core = false
+
+# Rust only. The gate is server behaviour, so one black-box exercise proves it;
+# running the same refusal through a second SDK would test the same server twice.
+[[scenario]]
+id = "det-scheme-gate"
+title = "An ECDSA-only GUARDIAN refuses a Falcon registration and admits ECDSA"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["scheme-gate"]
+step_budget = "60s"
+required = true
+core = false
+
+# Rust only, and one action rather than three: the fixture account is shared by
+# every scenario in the run, so pause, attempt and unpause have to stay together
+# or a failure between them leaves the account paused for whatever runs next.
+[[scenario]]
+id = "det-account-paused"
+title = "A paused account refuses a proposal, and pausing goes through the operator surface"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "account-paused-refuses"]
+step_budget = "60s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-error-envelope-grpc"
+title = "Structured error envelope survives a real gRPC socket"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["error-envelope"]
+step_budget = "30s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-error-envelope-http"
+title = "Structured error envelope survives a real HTTP socket"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["error-envelope"]
+step_budget = "30s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-restart-durability"
+title = "Account, state and proposal data survive restarting only the server"
+profile = "deterministic"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-register", "restart-durability"]
+step_budget = "180s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-session"
+title = "Operator authenticates and inspects a session"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session"]
+step_budget = "60s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-accounts"
+title = "Operator lists accounts and reads account detail"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session", "operator-accounts"]
+step_budget = "60s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-denial"
+title = "Operator lacking a permission is denied with a structured error"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session", "operator-denial"]
+step_budget = "60s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-allowlist-reload"
+title = "Allowlist change takes effect without restarting the server"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session", "operator-allowlist-reload"]
+step_budget = "90s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-logout"
+title = "Logout invalidates the session"
+profile = "deterministic"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-session", "operator-logout"]
+step_budget = "60s"
+required = true
+core = false
+
+[[scenario]]
+id = "det-operator-audit"
+title = "Operator activity leaves the expected audit records"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["operator-audit"]
+step_budget = "60s"
+required = false
+core = false
+
+[[scenario]]
+id = "live-register-falcon-1of1"
+title = "1-of-1 Falcon account is created and registered"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "commitment-verify"]
+step_budget = "60s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-register-ecdsa-1of1"
+title = "1-of-1 ECDSA account is created and registered"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "commitment-verify"]
+step_budget = "60s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-execute-2of3-falcon"
+title = "2-of-3 Falcon proposal reaches threshold and executes"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "proposal-execute", "commitment-verify"]
+step_budget = "90s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-execute-2of3-ecdsa"
+title = "2-of-3 ECDSA proposal reaches threshold and executes"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "proposal-execute", "commitment-verify"]
+step_budget = "90s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-execute-3of3-falcon"
+title = "3-of-3 Falcon proposal reaches threshold and executes"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "3-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "proposal-execute", "commitment-verify"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-below-threshold-2of3-falcon"
+title = "A proposal below threshold is not executable and stays pending"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-reject-below-threshold"]
+step_budget = "60s"
+required = true
+core = true
+
+[[scenario]]
+id = "live-duplicate-signature-2of3-ecdsa"
+title = "A duplicate signature is rejected and does not count toward threshold"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "proposal-reject-duplicate-signature"]
+step_budget = "90s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-recover-by-cosigner-2of3-falcon"
+title = "An account is recovered by another cosigner's key"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "account-recover-by-cosigner"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-transfer-consume-1of1-ecdsa"
+title = "Assets transfer and the note is consumed, asserted against balances"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "balance-assert", "asset-transfer", "note-consume", "balance-assert"]
+step_budget = "180s"
+required = true
+core = false
+
+# The ECDSA half of off-channel signing. The exported document carries the
+# collected signatures, and both parsing them back
+# (`SignatureScheme::parse_signature_hex`) and building the advice entry from
+# them (`build_signature_advice_entry`) dispatch on the scheme, so Falcon and
+# ECDSA take different code through the part of the flow this scenario exists
+# to cover. That path also changed recently, when Rust stopped tying offline
+# signing to offline execution, so it is newly exercised rather than settled.
+[[scenario]]
+id = "live-offline-export-import-2of3-ecdsa"
+title = "An ECDSA proposal is exported, signed off-channel, imported and executed"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "offline"
+actions = ["account-create", "account-register", "proposal-create", "proposal-export", "proposal-sign-external", "proposal-import", "proposal-execute", "commitment-verify"]
+step_budget = "240s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-offline-export-import-2of3-falcon"
+title = "A proposal is exported, signed externally, imported and executed"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "offline"
+actions = ["account-create", "account-register", "proposal-create", "proposal-export", "proposal-sign-external", "proposal-import", "proposal-execute", "commitment-verify"]
+step_budget = "240s"
+required = true
+core = false
+
+# The other half of rotation. The offline scenario below is the air-gapped
+# path, where nothing reaches GUARDIAN until a signed document is imported.
+# This is the path a reachable deployment actually uses: GUARDIAN coordinates
+# the proposal, cosigners sign it there, and only then does it execute.
+# Rotation is a first-class custody operation, so qualifying one path and not
+# the other left the common one untested.
+#
+# 2-of-3 on purpose: coordinating cosigner signatures through the pending set
+# is the thing that distinguishes this from the offline path, and a 1-of-1
+# never exercises it. Falcon on purpose too: the offline rotation runs on
+# ECDSA, so the pair covers both schemes for a flow whose scheme is encoded in
+# the advice payload.
+[[scenario]]
+id = "live-guardian-switch-online-2of3-falcon"
+title = "GUARDIAN rotation proposed, cosigned and executed through the pending set"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "guardian-switch-online", "proposal-sign", "proposal-execute", "guardian-switch-assert"]
+step_budget = "600s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-guardian-migrate-offline-1of1-ecdsa"
+title = "Guardian migration created offline, signed, imported and executed"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "offline"
+# `guardian-switch-assert` last, and it is not decoration: completion for a
+# migration cannot ask for a canonical delta, because the canonical delta stays
+# with the GUARDIAN being left behind, so the completion check falls back to
+# chain agreement. An execution that regressed to a no-op satisfies that, since
+# an account that never moved still agrees with chain. Only reading the
+# account's binding back and comparing it with the target's own commitment
+# separates a rotation from a no-op.
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "proposal-create-offline", "guardian-migrate", "proposal-sign-external", "proposal-import", "proposal-execute", "guardian-switch-assert"]
+step_budget = "300s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-handoff-rust-to-ts-2of3-falcon"
+title = "Rust creates a proposal, TypeScript signs it, Rust executes it"
+profile = "live"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "handoff-rust-to-ts", "proposal-execute", "commitment-verify"]
+step_budget = "210s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-handoff-ts-to-rust-2of3-ecdsa"
+title = "TypeScript creates a proposal, Rust signs it, TypeScript executes it"
+profile = "live"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "handoff-ts-to-rust", "proposal-execute", "commitment-verify"]
+step_budget = "210s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-add-signer-2of3-falcon"
+title = "A signer is admitted and the account reports the larger set"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "signer-add", "proposal-sign", "proposal-execute", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-remove-signer-2of3-falcon"
+title = "A signer is removed and the account reports the smaller set"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "signer-remove", "proposal-sign", "proposal-execute", "signer-removed-refused", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-change-threshold-2of3-ecdsa"
+title = "The threshold is raised and the account reports the new one"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "threshold-change", "proposal-sign", "proposal-execute", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# The half of pausing the deterministic profile cannot reach. `det-account-paused`
+# proves GUARDIAN's own gate refuses a proposal; it runs without a chain, so it
+# cannot show that the pause stops a transaction that would otherwise land.
+# Execution needs GUARDIAN's acknowledgement, so a paused account cannot
+# execute and nothing reaches the chain, and the account transacts again once
+# unpaused. The proposal is created before the pause so the refusal lands on
+# execution rather than on creation: that is the gate standing between a client
+# and the chain, which is the custody property.
+#
+# `proposal-sign` is not redundant at 1-of-1. Rust attaches the proposer's
+# signature when the proposal is created and TypeScript does not, so without it
+# the TypeScript leg reaches the pause with an unsigned proposal and is refused
+# for want of signatures rather than for the pause. It is a no-op on Rust, whose
+# sign action collects from cosigners after the proposer.
+[[scenario]]
+id = "live-account-paused-1of1-ecdsa"
+title = "A paused account cannot execute on chain, and transacts again once unpaused"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "balance-assert", "asset-transfer", "proposal-create", "proposal-sign", "paused-refuses-execution", "proposal-execute", "balance-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# The producer path (issue #266). Every other scenario proposes through the
+# typed API, so between them they cover the seven built-in proposal types and
+# none of them covers this: serialized Miden transaction bytes plus a label the
+# SDK has never heard of. That is the unbounded surface, and an integration
+# built on it would break without this suite noticing. The payment itself is an
+# ordinary P2ID send whose correctness is covered elsewhere; what is under test
+# is the producer's own label surviving the round trip through GUARDIAN.
+#
+# It stops at `custom-proposal-prepare` rather than executing, because that is
+# where the SDK's responsibility ends: a custom proposal is deliberately not
+# executed by `execute_proposal` (the SDK cannot rebuild an arbitrary producer
+# transaction), so it hands back the cosigner signatures and GUARDIAN's
+# acknowledgement and the integration submits with its own Miden client.
+# Preparing re-executes the producer's own bytes at the proposal's anchored
+# block and refuses unless they reproduce the signed commitment, so reaching it
+# proves the label survived, the threshold was met, and the bytes still match
+# what was signed.
+#
+# It then carries the negative control for how every other scenario asserts
+# completion. Completion is chain confirmation plus a canonical delta, and not
+# "the proposal left the pending set", because canonicalization removes a
+# discarded delta exactly as it removes a successful one. Nothing else falsifies
+# that rule, so a regression reading a discard as success would pass the whole
+# suite. The producer API is the one path that separates acknowledgement from
+# submission: preparing pushes the delta to obtain the acknowledgement, and
+# submitting is a separate call. Stopping in between leaves a candidate that can
+# never land, which is exactly the state the abandon API exists for, reached
+# through supported calls rather than by forcing GUARDIAN into it.
+[[scenario]]
+id = "live-custom-proposal-1of1-ecdsa"
+title = "A producer's own proposal type round-trips, and its abandoned delta stays hidden"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+# `proposal-sign` is not redundant at 1-of-1: the Rust client attaches the
+# proposer's signature when the proposal is created and the TypeScript one does
+# not, so without it the TypeScript leg reaches `custom-proposal-prepare` one
+# signature short of a threshold of one. The Rust leg signs nothing here.
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "custom-proposal-create", "custom-proposal-assert", "proposal-sign", "custom-proposal-prepare", "abandon-and-assert-hidden"]
+step_budget = "480s"
+required = true
+core = false
+
+# P2ID is covered; P2IDE is the same flow with a block height attached, and
+# nothing exercised it. The note is self-addressed because a timelock is only
+# observable from the recipient's side, and sending to a counterparty this
+# scenario does not drive would leave nothing to assert against.
+#
+# The assertion is a pair, because either half alone is satisfied by the wrong
+# thing: committed-but-not-consumable is the timelock holding, while committed
+# alone would pass for a plain P2ID and not-consumable alone would pass for a
+# note that never arrived.
+[[scenario]]
+id = "live-p2ide-timelock-1of1-ecdsa"
+title = "A timelocked note lands but cannot be consumed before its height"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "p2ide-send", "proposal-sign", "proposal-execute", "p2ide-timelock-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-p2id-send-1of1-ecdsa"
+title = "The multisig sends assets out and the vault reflects it"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "asset-send", "proposal-sign", "proposal-execute", "asset-send-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# The config-writing procedures encode the signature scheme into the advice
+# payload they build, and two scheme-binding defects have already been found
+# here (F8, F13). Running membership changes on one scheme only would leave an
+# ECDSA-specific defect in that encoding undetected, so these two mirror the
+# Falcon pair above rather than relying on it.
+[[scenario]]
+id = "live-add-signer-2of3-ecdsa"
+title = "A signer is admitted on an ECDSA account and the account reports the larger set"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "signer-add", "proposal-sign", "proposal-execute", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-remove-signer-2of3-ecdsa"
+title = "A signer is removed from an ECDSA account and the account reports the smaller set"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "signer-remove", "proposal-sign", "proposal-execute", "signer-removed-refused", "signer-set-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# The account-wide threshold and a per-procedure override live in different
+# storage slots, so changing one should leave the other alone. That was an
+# assumption until this ran: the two were only ever exercised apart, and a
+# wiped override silently lowers the quorum on a procedure someone deliberately
+# raised.
+[[scenario]]
+id = "live-procedure-threshold-survives-change-2of3-falcon"
+title = "A procedure override outlives a change to the account-wide threshold"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "procedure-threshold-set", "proposal-sign", "proposal-execute", "threshold-change", "proposal-sign", "proposal-execute", "procedure-threshold-assert"]
+step_budget = "720s"
+required = true
+core = false
+
+# The scheme mirrors for the two config-writing flows that still ran on one
+# each. Both encode the scheme into the advice payload, which is exactly where
+# the two scheme-binding defects this suite has already found were hiding, so
+# running each on one scheme leaves the other half of that surface untested.
+# Add-signer and remove-signer were doubled for the same reason; GUARDIAN
+# rotation is covered by the offline (ECDSA) and online (Falcon) pair.
+[[scenario]]
+id = "live-change-threshold-2of3-falcon"
+title = "A Falcon account changes its threshold and serves the new signer set"
+profile = "live"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "threshold-change", "proposal-sign", "proposal-execute", "signer-set-assert"]
+step_budget = "600s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-procedure-threshold-2of3-ecdsa"
+title = "An ECDSA account raises one procedure's threshold and serves the override"
+profile = "live"
+sdk = "rust"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "procedure-threshold-set", "proposal-sign", "proposal-execute", "procedure-threshold-assert"]
+step_budget = "600s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-procedure-threshold-2of3-falcon"
+title = "One procedure requires every signer while the account threshold stays put"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "procedure-threshold-set", "proposal-sign", "proposal-execute", "procedure-threshold-assert"]
+step_budget = "480s"
+required = true
+core = false

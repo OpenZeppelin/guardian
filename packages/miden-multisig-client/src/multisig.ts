@@ -120,6 +120,7 @@ import {
 } from './rpc/config.js';
 import { isTransientRpcError } from './rpc/errors.js';
 import { retryRpcRead } from './rpc/retry.js';
+import { isSafeToAdoptGuardianState, readOnChainCommitment } from './state/adopt.js';
 
 /**
  * Result of fetching account state from GUARDIAN.
@@ -613,66 +614,16 @@ export class Multisig {
     incomingAccount: Account,
     localAccount?: Account,
   ): Promise<boolean> {
-    if (localAccount) {
-      const localNonce = localAccount.nonce().asInt();
-      const incomingNonce = incomingAccount.nonce().asInt();
-
-      if (incomingNonce < localNonce) {
-        return false;
-      }
-
-      if (incomingNonce === localNonce) {
-        throw new Error(
-          `Refusing to overwrite local state: incoming nonce ${incomingNonce.toString()} equals local nonce ${localNonce.toString()} but commitments differ for account ${this._accountId}`
-        );
-      }
-    }
-
-    const accountId = AccountId.fromHex(this._accountId);
-    const onChainCommitment = await this.getOnChainCommitment(accountId);
-    if (!onChainCommitment) {
-      return true;
-    }
-
-    const incomingCommitment = normalizeHexWord(incomingAccount.to_commitment().toHex());
-    if (incomingCommitment !== onChainCommitment) {
-      throw new Error(
-        `Refusing to overwrite local state: incoming commitment does not match on-chain commitment for account ${this._accountId}`
-      );
-    }
-
-    return true;
+    return isSafeToAdoptGuardianState({
+      accountId: this._accountId,
+      incomingAccount,
+      localAccount,
+      readCommitment: () => this.getOnChainCommitment(AccountId.fromHex(this._accountId)),
+    });
   }
 
   private async getOnChainCommitment(accountId: AccountId): Promise<string | null> {
-    const rpcClient = new RpcClient(new Endpoint(this.getMidenRpcEndpoint()));
-
-    try {
-      const accountDetails = await retryRpcRead(
-        () => rpcClient.getAccountDetails(accountId),
-        this.rpcConfig,
-      );
-      // If the account is not found or its commitment is zero, means that the account is not deployed yet
-      if (!accountDetails) {
-        return null;
-      }
-      const commitment = normalizeHexWord(accountDetails.commitment().toHex());
-      const zeroCommitment = `0x${'0'.repeat(64)}`;
-      if (commitment === zeroCommitment) {
-        return null;
-      }
-      return commitment;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        message.includes('null pointer passed to rust') ||
-        message.includes('No account header record found for given ID') ||
-        message.toLowerCase().includes('not found')
-      ) {
-        return null;
-      }
-      throw error;
-    }
+    return readOnChainCommitment(this.getMidenRpcEndpoint(), accountId, this.rpcConfig);
   }
 
   /**
