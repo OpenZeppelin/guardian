@@ -472,6 +472,27 @@ step_budget = "480s"
 required = true
 core = false
 
+# The half of pausing the deterministic profile cannot reach. `det-account-paused`
+# proves GUARDIAN's own gate refuses a proposal; it runs without a chain, so it
+# cannot show that the pause stops a transaction that would otherwise land.
+# Execution needs GUARDIAN's acknowledgement, so a paused account cannot
+# execute and nothing reaches the chain, and the account transacts again once
+# unpaused. The proposal is created before the pause so the refusal lands on
+# execution rather than on creation: that is the gate standing between a client
+# and the chain, which is the custody property.
+[[scenario]]
+id = "live-account-paused-1of1-ecdsa"
+title = "A paused account cannot execute on chain, and transacts again once unpaused"
+profile = "live"
+sdk = "rust"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "balance-assert", "asset-transfer", "proposal-create", "paused-refuses-execution", "proposal-execute", "balance-assert"]
+step_budget = "480s"
+required = true
+core = false
+
 [[scenario]]
 id = "live-p2id-send-1of1-ecdsa"
 title = "The multisig sends assets out and the vault reflects it"

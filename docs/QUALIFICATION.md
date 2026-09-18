@@ -404,6 +404,19 @@ ephemeral accounts from the treasury through `fund`.
   GUARDIAN's enforcement. What is still unproven is a paused account on a live
   network, where the refusal would have to hold against the chain rather than
   against the server's own gate.
+- **A GUARDIAN refusal's code is not reachable from the multisig client.**
+  GUARDIAN answers `GUARDIAN_ACCOUNT_PAUSED`, and `guardian_client::ClientError`
+  exposes it through `guardian_code()`, but by the time the same refusal
+  surfaces as a `MultisigError` only the gRPC status and the human-readable
+  message survive. A scenario driving the multisig SDK therefore cannot assert
+  *which* refusal it received without matching user-facing copy, which is
+  exactly the fragility that let `live-below-threshold` once accept any error
+  containing "signature". `live-account-paused-1of1-ecdsa` works around it by
+  proving causation structurally instead, refusing while paused and executing
+  the same proposal once unpaused, and treats the wording as a sanity check
+  rather than as the evidence. A `guardian_code()` on `MultisigError` would let
+  that scenario, and any consumer branching on a refusal, be exact.
+
 - **Scheme coverage is spread, not doubled.** Each flow runs on one scheme, with
   the set split roughly evenly. The exceptions are the flows where the scheme is
   encoded into the advice payload and a scheme-binding defect has already been

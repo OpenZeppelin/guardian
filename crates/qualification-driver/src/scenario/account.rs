@@ -477,7 +477,7 @@ pub async fn assert_paused_account_refuses(runner: &Runner) -> ActionOutcome {
     outcome
 }
 
-async fn operator_login(
+pub(super) async fn operator_login(
     runner: &Runner,
     base: &str,
     fixtures: &Fixtures,
@@ -548,7 +548,7 @@ async fn operator_login(
     }
 }
 
-async fn set_paused(
+pub(super) async fn set_paused(
     runner: &Runner,
     base: &str,
     account_id: &str,

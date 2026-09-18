@@ -1245,6 +1245,87 @@ pub async fn assert_guardian_switched(runner: &Runner) -> ActionOutcome {
     }
 }
 
+/// A paused account is refused on a live network, and works again once
+/// unpaused.
+///
+/// The deterministic scenario proves GUARDIAN's own gate: a paused account is
+/// refused a proposal. It cannot prove the part that matters to custody, which
+/// is that the pause actually stops a transaction that would otherwise reach
+/// the chain. Execution needs GUARDIAN's acknowledgement, so a paused account
+/// cannot execute, and nothing lands.
+///
+/// The proposal is created before the pause deliberately: refusing to create
+/// one shows the gate on the way in, while refusing to execute one that is
+/// already signed and ready shows the gate standing between a client and the
+/// chain. That second refusal is the custody property.
+///
+/// Unpauses whatever the attempt concluded, then leaves the proposal intact so
+/// the scenario's next action can execute it. A pause that cannot be lifted, or
+/// that leaves the account unable to transact afterwards, is as much a defect
+/// as one that fails to stop anything.
+pub async fn assert_paused_refuses_execution(runner: &Runner) -> ActionOutcome {
+    let Some(fixtures) = runner.fixtures.as_ref() else {
+        return ActionOutcome::failed_setup("the server fixtures were not loaded");
+    };
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    let account_id = session.account_id.to_string();
+
+    let base = runner.endpoints.http.trim_end_matches('/').to_string();
+    if let Err(outcome) = super::account::operator_login(runner, &base, fixtures).await {
+        return outcome;
+    }
+    if let Err(outcome) = super::account::set_paused(runner, &base, &account_id, true).await {
+        return outcome;
+    }
+
+    let attempt = match session.clients[0].execute_proposal(&proposal_id).await {
+        Ok(_) => ActionOutcome::failed_product(
+            "a paused account executed a proposal; the pause did not stand between the client \
+             and the chain"
+                .to_string(),
+        ),
+        Err(error) => {
+            let rendered = error.to_string();
+            // Wording, because the code is not reachable here. GUARDIAN answers
+            // `GUARDIAN_ACCOUNT_PAUSED`, but by the time the refusal surfaces
+            // as a `MultisigError` only the gRPC status and the human message
+            // survive: `guardian_client::ClientError` exposes `guardian_code`
+            // and `MultisigError` has no equivalent. Recorded as a finding in
+            // docs/QUALIFICATION.md rather than worked around silently.
+            //
+            // A loose match is tolerable here only because the scenario proves
+            // causation structurally rather than by reading the message: the
+            // next action executes the same proposal with the same client and
+            // must succeed once unpaused. Refused while paused and accepted
+            // when not is the evidence; this check only rules out a refusal
+            // that obviously has nothing to do with pausing.
+            if rendered.contains("account is paused") {
+                ActionOutcome::Passed
+            } else {
+                ActionOutcome::failed_product(format!(
+                    "the paused account was refused, but not as paused: {rendered}"
+                ))
+            }
+        }
+    };
+
+    // Always, whatever the attempt concluded. An account left paused fails the
+    // rest of the scenario for a reason that has nothing to do with it.
+    match super::account::set_paused(runner, &base, &account_id, false).await {
+        Ok(()) => attempt,
+        Err(unpause_failure) => match attempt {
+            ActionOutcome::Passed => unpause_failure,
+            other => other,
+        },
+    }
+}
+
 /// Checks the offline proposal really is a GUARDIAN migration.
 pub async fn assert_guardian_migration(runner: &Runner) -> ActionOutcome {
     let guard = runner.session.lock().await;

@@ -641,6 +641,29 @@
       "actions": [
         "account-create",
         "account-register",
+        "balance-assert",
+        "asset-transfer",
+        "proposal-create",
+        "paused-refuses-execution",
+        "proposal-execute",
+        "balance-assert"
+      ],
+      "core": false,
+      "id": "live-account-paused-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": null,
+      "scheme": "ecdsa",
+      "sdk": "rust",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "A paused account cannot execute on chain, and transacts again once unpaused"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
         "asset-transfer",
         "note-consume",
         "asset-send",

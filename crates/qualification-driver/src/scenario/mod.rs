@@ -236,6 +236,9 @@ impl Runner {
                 Action::GuardianMigrate => Some(live::assert_guardian_migration(self).await),
                 Action::GuardianSwitchOnline => Some(live::switch_guardian_online(self).await),
                 Action::GuardianSwitchAssert => Some(live::assert_guardian_switched(self).await),
+                Action::PausedRefusesExecution => {
+                    Some(live::assert_paused_refuses_execution(self).await)
+                }
                 Action::HandoffRustToTs => Some(live::handoff_to_typescript(self).await),
                 Action::SignerAdd => Some(live::add_signer(self, run_tag).await),
                 Action::SignerRemove => Some(live::remove_signer(self).await),
