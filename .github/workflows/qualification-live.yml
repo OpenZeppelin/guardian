@@ -169,15 +169,20 @@ jobs:
           cache-dependency-path: packages/package-lock.json
 
       # The stack script drives the TypeScript leg through `test:qualification`,
-      # which needs the workspace installed and guardian-client built. Without
-      # this the TypeScript scenarios cannot start on a clean runner.
+      # which needs the workspace installed and both clients built. Their
+      # `dist/` is gitignored, and the qualification runner imports the operator
+      # client at module scope through `actions/operator.ts`, so a missing build
+      # is a package-resolution failure before any scenario runs, on either
+      # profile rather than only the operator ones.
       - name: Install workspace dependencies
         working-directory: packages
         run: npm ci
 
-      - name: Build the GUARDIAN client
+      - name: Build the GUARDIAN clients
         working-directory: packages
-        run: npm run build -w @openzeppelin/guardian-client
+        run: |
+          npm run build -w @openzeppelin/guardian-client
+          npm run build -w @openzeppelin/guardian-operator-client
 
       # A dispatched run was asked for, so a missing treasury is an error. A
       # scheduled one is the standing nightly, and until the environments are

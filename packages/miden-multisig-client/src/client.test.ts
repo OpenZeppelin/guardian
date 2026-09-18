@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MultisigClient } from './client.js';
+import { readOnChainCommitment } from './state/adopt.js';
 import type { Signer } from './types.js';
 
 // Mock the Miden SDK
@@ -86,6 +87,11 @@ describe('MultisigClient', () => {
 
   beforeEach(() => {
     mockFetch.mockReset();
+    // Reset per test, not just declared once. These are `mockResolvedValueOnce`
+    // queues, so a test whose code path does not read the node leaves its value
+    // behind for the next one, which then asserts against another test's setup.
+    // That coupling made an unrelated change here fail a test three cases away.
+    vi.mocked(readOnChainCommitment).mockReset().mockResolvedValue(null);
 
     webClient = {
       accounts: {
@@ -515,6 +521,23 @@ describe('MultisigClient', () => {
         await expect(
           new MultisigClient(webClient, CLIENT_CONFIG).load(ACCOUNT_ID, mockSigner),
         ).rejects.toThrow(/has transacted/);
+        expect(webClient.accounts.insert).not.toHaveBeenCalled();
+      });
+
+      // Checking that *some* commitment exists on chain is not checking against
+      // chain. Without the comparison, a fresh cosigner adopts whatever GUARDIAN
+      // serves as long as the account is deployed at all, which is the case this
+      // guard exists for.
+      it('refuses incoming state that disagrees with the on-chain commitment on an empty store', async () => {
+        const { readOnChainCommitment } = await import('./state/adopt.js');
+        vi.mocked(readOnChainCommitment).mockResolvedValueOnce(LOCAL_COMMITMENT);
+
+        webClient.accounts.get.mockResolvedValueOnce(null);
+        await stubGuardianAccount(accountAt(BigInt(7), GUARDIAN_COMMITMENT));
+
+        await expect(
+          new MultisigClient(webClient, CLIENT_CONFIG).load(ACCOUNT_ID, mockSigner),
+        ).rejects.toThrow(/does not match on-chain commitment/);
         expect(webClient.accounts.insert).not.toHaveBeenCalled();
       });
 

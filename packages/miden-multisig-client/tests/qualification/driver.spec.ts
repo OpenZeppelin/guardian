@@ -1,7 +1,7 @@
 import { afterAll, describe, it } from 'vitest';
 
 import { loadManifest, selectScenarios } from './manifest.js';
-import { writeResults } from './report.js';
+import { blocksConclusion, writeResults } from './report.js';
 import { runScenario, type ActionContext } from './runner.js';
 import type { Profile, ScenarioResult } from './types.js';
 
@@ -76,7 +76,16 @@ describe('qualification driver', () => {
       // `blocks_conclusion` treats both the same, and gating on `required` here
       // let a TypeScript failure on an optional scenario leave this leg's exit
       // code at 0, so the run reported success while carrying a failure.
-      if (result.outcome === 'failed') {
+      //
+      // An `environment` failure is deliberately not one of them. It keeps
+      // `outcome: 'failed'` so the report says the scenario did not complete,
+      // but the network is not the product: throwing here would exit this leg
+      // non-zero and fail the nightly for a prover timeout, which is both the
+      // opposite of `blocks_conclusion` and the opposite of what
+      // `docs/QUALIFICATION.md` promises. It still costs the run its claim,
+      // because the claim is derived from the required set rather than from an
+      // exit code.
+      if (blocksConclusion(result)) {
         throw new Error(`${result.scenario_id}: ${result.reason}`);
       }
     },

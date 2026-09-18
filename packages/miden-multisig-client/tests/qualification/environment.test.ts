@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { ENVIRONMENT_SIGNALS, isEnvironmental } from './environment.js';
+import { blocksConclusion } from './report.js';
 import { reportAs } from './runner.js';
 
 interface Fixtures {
@@ -73,5 +74,35 @@ describe('reportAs', () => {
       reason: 'executing the proposal failed: proposal not ready: need 2 signatures, have 1',
     } as const;
     expect(reportAs(outcome, true)).toEqual(outcome);
+  });
+});
+
+/**
+ * The reclassification is only worth anything if the exit gate honours it. It
+ * keeps `outcome: 'failed'`, so a gate reading the outcome alone would still
+ * fail the nightly for a prover timeout.
+ */
+describe('blocksConclusion', () => {
+  it('does not block on an environment failure', () => {
+    // The classification `reportAs` assigns, in the shape the report carries
+    // it. The two vocabularies differ (`kind` on the way through, `outcome` in
+    // the report), so this asserts the pair that actually meets the gate.
+    const reclassified = reportAs(
+      { kind: 'failed', classification: 'product', reason: PROVER_DEADLINE },
+      true,
+    );
+    expect(reclassified.kind === 'failed' && reclassified.classification).toBe('environment');
+    expect(blocksConclusion({ outcome: 'failed', classification: 'environment' })).toBe(false);
+  });
+
+  it('blocks on product and setup failures', () => {
+    expect(blocksConclusion({ outcome: 'failed', classification: 'product' })).toBe(true);
+    expect(blocksConclusion({ outcome: 'failed', classification: 'setup' })).toBe(true);
+  });
+
+  it('does not block on anything that is not a failure', () => {
+    expect(blocksConclusion({ outcome: 'passed' })).toBe(false);
+    expect(blocksConclusion({ outcome: 'skipped' })).toBe(false);
+    expect(blocksConclusion({ outcome: 'environment_blocked' })).toBe(false);
   });
 });

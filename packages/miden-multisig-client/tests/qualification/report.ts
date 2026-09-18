@@ -15,6 +15,29 @@ export function isoDuration(milliseconds: number): string {
   return rendered;
 }
 
+/**
+ * Whether a result is the kind of failure that must fail this leg.
+ *
+ * Mirrors `ScenarioResult::blocks_conclusion` in the Rust driver, and exists as
+ * one named rule because the two legs disagreeing about what counts as a
+ * failure is how a run reports success while carrying one, or fails a nightly
+ * over a prover timeout.
+ *
+ * An `environment` failure is not one: it keeps `outcome: 'failed'` so the
+ * report says the scenario did not complete, but the network is not the
+ * product. It still costs the run its qualification claim, which is derived
+ * from the required set rather than from an exit code.
+ */
+export function blocksConclusion(result: {
+  readonly outcome: Outcome;
+  readonly classification?: Classification;
+}): boolean {
+  return (
+    result.outcome === 'failed' &&
+    (result.classification === 'product' || result.classification === 'setup')
+  );
+}
+
 export interface ResultInput {
   readonly scenarioId: string;
   readonly runtime: Runtime;

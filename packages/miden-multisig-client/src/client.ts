@@ -267,28 +267,45 @@ export class MultisigClient {
   ): Promise<Account> {
     const localAccount = await this.midenClient.accounts.get(AccountId.fromHex(accountId));
     if (!localAccount) {
-      // Still checked against chain. An empty store is the ordinary shape for
-      // loading an account this client has never held, and inserting without
-      // the check would make that the one path where GUARDIAN's word is taken
-      // on its own.
-      // An account GUARDIAN reports as having transacted is deployed, so the
-      // node must be able to confirm it. Nothing on chain there is an RPC or
-      // gateway failure, and `readOnChainCommitment` reports a missing account
-      // by matching `not found` in the error text, which a 404 also says.
-      // Adopting on that would make loading into a fresh store the one path
-      // that takes GUARDIAN's word with no reference to chain.
-      if (incomingAccount.nonce().asInt() > BigInt(0)) {
-        const onChain = await readOnChainCommitment(
-          this.midenRpcEndpoint,
-          AccountId.fromHex(accountId),
-          this.rpcConfig,
+      // Still checked against chain, and through the same rule the other path
+      // uses. An empty store is the ordinary shape for loading an account this
+      // client has never held, so inserting without the check would make it the
+      // one path where GUARDIAN's word is taken on its own. Checking only that
+      // *some* commitment exists is not the check: it admits state that
+      // disagrees with chain, which is the thing being guarded against.
+      // Only for an account that has transacted. One that has not is not
+      // deployed, so there is no on-chain commitment to agree or disagree with,
+      // and reading the node for one would make loading a fresh account depend
+      // on the node as well as on GUARDIAN.
+      const transacted = incomingAccount.nonce().asInt() > BigInt(0);
+      const onChain = transacted
+        ? await readOnChainCommitment(
+            this.midenRpcEndpoint,
+            AccountId.fromHex(accountId),
+            this.rpcConfig,
+          )
+        : null;
+      // The one rule the shared predicate cannot apply here. It keys its
+      // null-commitment guard on the *local* nonce, because `syncState`
+      // legitimately meets a higher incoming nonce with no local history. With
+      // no local record at all, the incoming nonce is the only evidence there
+      // is: an account GUARDIAN reports as having transacted is deployed, so a
+      // node reporting nothing for it is an RPC or gateway failure rather than
+      // an undeployed account. `readOnChainCommitment` reports a missing
+      // account by matching `not found`, which a 404 also says.
+      if (transacted && !onChain) {
+        throw new Error(
+          `Refusing to adopt GUARDIAN state for ${accountId}: it has transacted (nonce ${incomingAccount.nonce().asInt().toString()}) but the node reported no on-chain commitment, so it could not be checked against chain`
         );
-        if (!onChain) {
-          throw new Error(
-            `Refusing to adopt GUARDIAN state for ${accountId}: it has transacted (nonce ${incomingAccount.nonce().asInt().toString()}) but the node reported no on-chain commitment, so it could not be checked against chain`
-          );
-        }
       }
+      // Handed the commitment already read, rather than letting the predicate
+      // read it again: two reads can disagree, and the guard above would then
+      // have passed on a different answer than the comparison rejects.
+      await isSafeToAdoptGuardianState({
+        accountId,
+        incomingAccount,
+        readCommitment: () => Promise.resolve(onChain),
+      });
       await this.midenClient.accounts.insert({ account: incomingAccount, overwrite: true });
       return incomingAccount;
     }

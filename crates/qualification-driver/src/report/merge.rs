@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Conclusion, QualificationClaim, RunResult, ScenarioResult, derive};
+use super::{Conclusion, Outcome, QualificationClaim, RunResult, ScenarioResult, derive};
 use crate::manifest::{Manifest, NetworkName};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +88,21 @@ pub struct PartialRun {
     pub scenario_results: Vec<super::ScenarioResult>,
 }
 
+/// How much a result weighs when two passes disagree about the same scenario.
+///
+/// `Skipped` sits below everything because it is the absence of a verdict, so
+/// any later pass overrides it. Above that the order is the one the report
+/// already uses: a failure outranks not being able to test, which outranks a
+/// pass.
+fn severity(result: &ScenarioResult) -> u8 {
+    match result.outcome {
+        Outcome::Skipped => 0,
+        Outcome::Passed => 1,
+        Outcome::EnvironmentBlocked => 2,
+        Outcome::Failed => 3,
+    }
+}
+
 /// Merges the run results in `directory`.
 ///
 /// `run_id` narrows it to one run. The directory is shared across runs, so a
@@ -101,7 +116,8 @@ pub struct PartialRun {
 /// asserted once the process that wrote the data is gone, so that scenario
 /// skips on the first pass and passes on the second. Merging only the first
 /// leaves a required skip standing, which makes a full claim unreachable for
-/// any run that includes it.
+/// any run that includes it. Where two passes both reach a verdict, the worse
+/// one stands: see [`severity`].
 pub fn merge_directory(
     directory: &Path,
     manifest: Option<&Manifest>,
@@ -155,16 +171,30 @@ pub fn merge_directory(
         let (mut base, extra): (Vec<RunResult>, Vec<RunResult>) =
             runs.into_iter().partition(|run| run.run_id == wanted);
         if let Some(run) = base.first_mut() {
-            // Later pass replaces earlier for the same scenario and SDK, rather
-            // than being appended. Appending makes the set an OR: a scenario
-            // that passed before a restart and failed after it would still read
-            // as passing, so a run could report `Failure` while claiming `Full`.
+            // Every pass is its own assertion of the same scenario under a
+            // different condition, so the merged result is the worst of them.
+            //
+            // Appending makes the set an OR: a scenario that passed before a
+            // restart and failed after it would still read as passing, so a run
+            // could report `Failure` while claiming `Full`. Replacing
+            // unconditionally is the same mistake mirrored: a scenario that
+            // failed before the restart and passed after it would read as
+            // passing, while the shell keeps the failing exit code from the
+            // first pass, so the report and the job disagree.
+            //
+            // `Skipped` is the exception, because it is not a verdict. The
+            // durability assertion skips before the restart by design, and only
+            // the later pass says anything about it.
             for pass in extra {
                 for result in pass.scenario_results {
                     match run.scenario_results.iter_mut().find(|existing| {
                         existing.scenario_id == result.scenario_id && existing.sdk == result.sdk
                     }) {
-                        Some(existing) => *existing = result,
+                        Some(existing) => {
+                            if severity(&result) >= severity(existing) {
+                                *existing = result;
+                            }
+                        }
                         None => run.scenario_results.push(result),
                     }
                 }
@@ -249,7 +279,9 @@ mod tests {
     use crate::duration::Budget;
     use crate::manifest::{Runtime, Sdk};
     use crate::report::emit;
-    use crate::report::{ArtifactSet, FundingSummary, NetworkSummary, Outcome, Pairing, Trigger};
+    use crate::report::{
+        ArtifactSet, Classification, FundingSummary, NetworkSummary, Outcome, Pairing, Trigger,
+    };
     use chrono::Utc;
 
     /// The shape the TypeScript emitter actually writes, pinned here so the two
@@ -465,9 +497,9 @@ mod tests {
         );
     }
 
-    // The fold is latest-wins, not a union: a scenario that passed before a
-    // restart and failed after it must read as failed, or a run could report a
-    // failure while claiming full coverage.
+    // The fold keeps the worst verdict, not a union: a scenario that passed
+    // before a restart and failed after it must read as failed, or a run could
+    // report a failure while claiming full coverage.
     #[test]
     fn a_later_pass_overturns_an_earlier_outcome() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -497,6 +529,81 @@ mod tests {
         let outcome = merged.networks.values().next().expect("one network");
         assert_eq!(outcome.runs[0].scenario_results.len(), 1);
         assert_eq!(outcome.runs[0].scenario_results[0].outcome, Outcome::Failed);
+    }
+
+    /// The mirror of the case above, and the one the severity order exists for.
+    /// A restart pass that passes must not erase a product failure the first
+    /// pass recorded: the shell keeps the failing exit code across passes, so
+    /// erasing it makes the report and the job disagree about the same run.
+    #[test]
+    fn a_later_pass_does_not_erase_an_earlier_failure() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut first = run(
+            NetworkName::Testnet,
+            Conclusion::Failure,
+            QualificationClaim::Partial,
+        );
+        first.run_id = "run-5".to_string();
+        first.scenario_results = vec![ScenarioResult {
+            classification: Some(Classification::Product),
+            reason: Some("the proposal was rejected".to_string()),
+            ..result_for("det-proposal-lifecycle", Sdk::Rust, Outcome::Failed)
+        }];
+        emit::write(&first, directory.path()).expect("writes");
+
+        let mut second = first.clone();
+        second.run_id = "run-5-post-restart".to_string();
+        second.scenario_results = vec![result_for(
+            "det-proposal-lifecycle",
+            Sdk::Rust,
+            Outcome::Passed,
+        )];
+        emit::write(&second, directory.path()).expect("writes");
+
+        let merged = merge_directory(directory.path(), None, Some("run-5")).expect("merges");
+        let outcome = merged.networks.values().next().expect("one network");
+        assert_eq!(outcome.runs[0].scenario_results.len(), 1);
+        assert_eq!(
+            outcome.runs[0].scenario_results[0].outcome,
+            Outcome::Failed,
+            "the first pass failed, and a later pass passing does not unfail it"
+        );
+        assert_eq!(
+            outcome.runs[0].conclusion,
+            Conclusion::Failure,
+            "the run carries a product failure, so it concludes as one"
+        );
+    }
+
+    /// Skipped is the absence of a verdict rather than a good one, which is what
+    /// lets the durability assertion skip before the restart and still count
+    /// once the later pass runs it.
+    #[test]
+    fn a_later_pass_replaces_a_skip_in_either_direction() {
+        for later in [Outcome::Passed, Outcome::Failed] {
+            let directory = tempfile::tempdir().expect("tempdir");
+            let mut first = run(
+                NetworkName::Testnet,
+                Conclusion::Success,
+                QualificationClaim::Partial,
+            );
+            first.run_id = "run-6".to_string();
+            first.scenario_results = vec![result_for(
+                "det-restart-durability",
+                Sdk::Rust,
+                Outcome::Skipped,
+            )];
+            emit::write(&first, directory.path()).expect("writes");
+
+            let mut second = first.clone();
+            second.run_id = "run-6-post-restart".to_string();
+            second.scenario_results = vec![result_for("det-restart-durability", Sdk::Rust, later)];
+            emit::write(&second, directory.path()).expect("writes");
+
+            let merged = merge_directory(directory.path(), None, Some("run-6")).expect("merges");
+            let outcome = merged.networks.values().next().expect("one network");
+            assert_eq!(outcome.runs[0].scenario_results[0].outcome, later);
+        }
     }
 
     fn result_for(scenario_id: &str, sdk: Sdk, outcome: Outcome) -> ScenarioResult {

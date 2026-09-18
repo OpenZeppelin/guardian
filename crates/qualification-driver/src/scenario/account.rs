@@ -131,6 +131,15 @@ pub async fn verify_commitment(runner: &Runner) -> ActionOutcome {
 /// Pushes the fixture proposal and confirms it comes back in the account's
 /// pending list.
 pub async fn create_proposal(runner: &Runner) -> ActionOutcome {
+    // Same reason `register` no-ops after a restart: a pass that rewrites the
+    // data it is checking proves nothing. Pushing the fixture proposal again
+    // here would recreate whatever the restart lost, and `assert_durability`
+    // would then find a proposal and pass. The proposal this scenario pushed
+    // before the restart is still listed if it survived, which is what the
+    // assertion reads.
+    if runner.post_restart {
+        return ActionOutcome::Passed;
+    }
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
     };
@@ -173,17 +182,59 @@ pub async fn create_proposal(runner: &Runner) -> ActionOutcome {
     }
 }
 
-/// Confirms the registered account is still readable after the server was
-/// restarted. Only the post-restart phase can assert anything: before the
-/// restart the account is trivially present, so passing there would prove
-/// nothing about durability.
-pub async fn assert_durability(runner: &Runner) -> ActionOutcome {
-    if !runner.post_restart {
-        return ActionOutcome::Skipped {
-            reason: "the server has not been restarted yet in this run".to_string(),
-        };
+/// Ensures a fixture proposal is pending, so the post-restart pass has a
+/// specific one to look for. Idempotent: a proposal already at the fixture
+/// nonce is left alone.
+async fn seed_proposal(
+    client: &mut guardian_client::GuardianClient,
+    id: &miden_protocol::account::AccountId,
+    fixtures: &Fixtures,
+) -> Result<(), ActionOutcome> {
+    let nonce = fixtures.proposal_nonce();
+    match client.get_delta_proposals(id).await {
+        Ok(response)
+            if response
+                .proposals
+                .iter()
+                .any(|proposal| proposal.nonce == nonce) =>
+        {
+            return Ok(());
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return Err(ActionOutcome::failed_product(format!(
+                "listing proposals before the restart failed: {error}"
+            )));
+        }
     }
 
+    let payload = match fixtures.proposal_payload() {
+        Ok(payload) => payload,
+        Err(error) => {
+            return Err(ActionOutcome::failed_setup(format!(
+                "building the fixture proposal payload: {error}"
+            )));
+        }
+    };
+    client
+        .push_delta_proposal(id, nonce, &payload)
+        .await
+        .map_err(|error| {
+            ActionOutcome::failed_product(format!(
+                "seeding a proposal before the restart failed: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
+/// Confirms the registered account is still readable after the server was
+/// restarted, along with the proposal it was carrying.
+///
+/// Two phases, one scenario. Before the restart the account and its proposal
+/// are trivially present, so passing there would prove nothing; that phase
+/// seeds what the second one checks and skips. Only the post-restart phase
+/// asserts.
+pub async fn assert_durability(runner: &Runner) -> ActionOutcome {
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
     };
@@ -196,6 +247,24 @@ pub async fn assert_durability(runner: &Runner) -> ActionOutcome {
         Err(outcome) => return outcome,
     };
 
+    if !runner.post_restart {
+        // Seeded here rather than by adding `proposal-create` to this
+        // scenario's actions. Another scenario pushes the same fixture proposal
+        // earlier in the pass, so this asks for one only when there is none:
+        // pushing unconditionally would be a second push of the same account
+        // and nonce, and depending on that other scenario having run would make
+        // this assertion fail under `--scenario det-restart-durability` for a
+        // reason that has nothing to do with durability.
+        return match seed_proposal(&mut client, &id, fixtures).await {
+            Ok(()) => ActionOutcome::Skipped {
+                reason: "the server has not been restarted yet in this run; a proposal is \
+                         seeded for the post-restart pass to look for"
+                    .to_string(),
+            },
+            Err(outcome) => outcome,
+        };
+    }
+
     let state = match client.get_state(&id).await {
         Ok(state) => state,
         Err(error) => {
@@ -207,12 +276,40 @@ pub async fn assert_durability(runner: &Runner) -> ActionOutcome {
 
     match state.state {
         Some(account) if account.account_id == fixtures.account_id => {
-            if client.get_delta_proposals(&id).await.is_err() {
-                return ActionOutcome::failed_product(
-                    "the account survived the restart but its proposal list did not".to_string(),
-                );
+            // An empty list is a successful response, so asking only whether
+            // the call errored cannot tell a surviving proposal from a lost
+            // one: it checks that GUARDIAN still answers, which the account
+            // read above already established. The fixture proposal is
+            // deterministic, so the pass that did not create it can still say
+            // exactly which one it expects to find.
+            let expected_nonce = fixtures.proposal_nonce();
+            match client.get_delta_proposals(&id).await {
+                Ok(response) => {
+                    if response
+                        .proposals
+                        .iter()
+                        .any(|proposal| proposal.nonce == expected_nonce)
+                    {
+                        ActionOutcome::Passed
+                    } else {
+                        ActionOutcome::failed_product(format!(
+                            "the account survived the restart but its proposal at nonce \
+                             {expected_nonce} did not: GUARDIAN lists {} proposal(s) [{}]",
+                            response.proposals.len(),
+                            response
+                                .proposals
+                                .iter()
+                                .map(|proposal| proposal.nonce.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                    }
+                }
+                Err(error) => ActionOutcome::failed_product(format!(
+                    "the account survived the restart but its proposal list could not be \
+                     read: {error}"
+                )),
             }
-            ActionOutcome::Passed
         }
         Some(account) => ActionOutcome::failed_product(format!(
             "after the restart GUARDIAN returned account `{}` instead of `{}`",
