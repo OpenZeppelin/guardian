@@ -364,6 +364,31 @@ step_budget = "240s"
 required = true
 core = false
 
+# The other half of rotation. The offline scenario below is the air-gapped
+# path, where nothing reaches GUARDIAN until a signed document is imported.
+# This is the path a reachable deployment actually uses: GUARDIAN coordinates
+# the proposal, cosigners sign it there, and only then does it execute.
+# Rotation is a first-class custody operation, so qualifying one path and not
+# the other left the common one untested.
+#
+# 2-of-3 on purpose: coordinating cosigner signatures through the pending set
+# is the thing that distinguishes this from the offline path, and a 1-of-1
+# never exercises it. Falcon on purpose too: the offline rotation runs on
+# ECDSA, so the pair covers both schemes for a flow whose scheme is encoded in
+# the advice payload.
+[[scenario]]
+id = "live-guardian-switch-online-2of3-falcon"
+title = "GUARDIAN rotation proposed, cosigned and executed through the pending set"
+profile = "live"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "guardian-switch-online", "proposal-sign", "proposal-execute", "guardian-switch-assert"]
+step_budget = "600s"
+required = true
+core = false
+
 [[scenario]]
 id = "live-guardian-migrate-offline-1of1-ecdsa"
 title = "Guardian migration created offline, signed, imported and executed"

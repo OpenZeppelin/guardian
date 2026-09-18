@@ -405,10 +405,11 @@ ephemeral accounts from the treasury through `fund`.
   network, where the refusal would have to hold against the chain rather than
   against the server's own gate.
 - **Scheme coverage is spread, not doubled.** Each flow runs on one scheme, with
-  the set split roughly evenly. The exception is the config-writing procedures,
-  where the scheme is encoded into the advice payload and two scheme-binding
-  defects have already been found: add-signer and remove-signer run on both.
-  Threshold change and the procedure override still run on one scheme each.
+  the set split roughly evenly. The exceptions are the flows where the scheme is
+  encoded into the advice payload and a scheme-binding defect has already been
+  found: add-signer and remove-signer run on both, and GUARDIAN rotation now
+  runs on both (ECDSA offline, Falcon online). Threshold change and the
+  procedure override still run on one scheme each.
 - **Mixed-scheme accounts.** Both account builders assign one configured scheme
   to every signer, so no mixed-scheme account can be constructed. The on-chain
   storage layout supports one; closing the gap is separate SDK work.

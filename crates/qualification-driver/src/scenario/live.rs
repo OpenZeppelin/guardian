@@ -1102,6 +1102,149 @@ pub async fn create_proposal_offline(runner: &Runner) -> ActionOutcome {
     }
 }
 
+/// Rotates GUARDIAN through the pending set instead of around it.
+///
+/// The offline path is the air-gapped one: nothing reaches GUARDIAN until the
+/// signed document is imported. This is the other half of the flow, and the
+/// half a deployment actually uses when GUARDIAN is reachable: the proposal is
+/// coordinated by GUARDIAN, cosigners sign it there, and only then does it
+/// execute. Rotation is a first-class custody operation, so qualifying only the
+/// air-gapped path leaves the common one untested.
+///
+/// The distinction is asserted rather than assumed: a proposal that never
+/// reached GUARDIAN's pending set was created offline whatever the call was
+/// named.
+pub async fn switch_guardian_online(runner: &Runner) -> ActionOutcome {
+    let Some(context) = runner.live.as_ref() else {
+        return ActionOutcome::failed_setup("the live context is not configured");
+    };
+    let Some(target) = context.migration_endpoint.clone() else {
+        return ActionOutcome::EnvironmentBlocked {
+            reason: "rotation needs a second GUARDIAN to rotate to; set \
+                     QUAL_GUARDIAN_MIGRATION_GRPC to one"
+                .to_string(),
+        };
+    };
+
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+
+    let commitment = match migration_target_commitment(&target, session.scheme).await {
+        Ok(commitment) => commitment,
+        Err(error) => {
+            return ActionOutcome::EnvironmentBlocked {
+                reason: format!("the rotation target at {target} is unreachable: {error}"),
+            };
+        }
+    };
+
+    let client = &mut session.clients[0];
+    let current = client
+        .account()
+        .and_then(|account| account.guardian_commitment().ok());
+    if current == Some(commitment) {
+        return ActionOutcome::EnvironmentBlocked {
+            reason: format!(
+                "the rotation target at {target} has the same identity as the current GUARDIAN"
+            ),
+        };
+    }
+
+    let proposal = match client
+        .propose_transaction(miden_multisig_client::TransactionType::SwitchGuardian {
+            new_endpoint: target.clone(),
+            new_commitment: commitment,
+        })
+        .await
+    {
+        Ok(proposal) => proposal,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "proposing a rotation to {target} through GUARDIAN failed: {error}"
+            ));
+        }
+    };
+
+    // What makes this the online path. `list_proposals` reads GUARDIAN's
+    // pending set, so a proposal missing from it was coordinated somewhere
+    // else, which is the offline flow wearing this scenario's name.
+    match client.list_proposals().await {
+        Ok(proposals) => {
+            if !proposals.iter().any(|pending| pending.id == proposal.id) {
+                return ActionOutcome::failed_product(format!(
+                    "the rotation proposal {} is not in GUARDIAN's pending set, so it was not \
+                     coordinated online",
+                    proposal.id
+                ));
+            }
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "listing proposals after proposing the rotation failed: {error}"
+            ));
+        }
+    }
+
+    session.proposal_id = Some(proposal.id);
+    // Completion is judged differently for a rotation: the GUARDIAN the client
+    // moves to has no history for an account it was just handed.
+    session.migrating = true;
+    ActionOutcome::Passed
+}
+
+/// Confirms the rotation actually moved the account, rather than only executing.
+///
+/// The offline scenario asserts the shape of the document it produced, which
+/// says nothing about the account. This reads the account's own binding after
+/// execution: a rotation that executed without changing the bound identity is
+/// the failure worth catching, because every other signal looks like success.
+pub async fn assert_guardian_switched(runner: &Runner) -> ActionOutcome {
+    let Some(context) = runner.live.as_ref() else {
+        return ActionOutcome::failed_setup("the live context is not configured");
+    };
+    let Some(target) = context.migration_endpoint.clone() else {
+        return ActionOutcome::failed_setup("no rotation target is configured");
+    };
+
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+
+    let expected = match migration_target_commitment(&target, session.scheme).await {
+        Ok(commitment) => commitment,
+        Err(error) => {
+            return ActionOutcome::EnvironmentBlocked {
+                reason: format!("the rotation target at {target} is unreachable: {error}"),
+            };
+        }
+    };
+
+    let client = &mut session.clients[0];
+    if let Err(error) = client.sync().await {
+        return ActionOutcome::failed_product(format!(
+            "syncing after the rotation failed: {error}"
+        ));
+    }
+
+    let Some(account) = client.account() else {
+        return ActionOutcome::failed_setup("the client holds no account to read".to_string());
+    };
+    match account.guardian_commitment() {
+        Ok(bound) if bound == expected => ActionOutcome::Passed,
+        Ok(bound) => ActionOutcome::failed_product(format!(
+            "the rotation executed but the account still binds {}, not {} at {target}",
+            bound.to_hex(),
+            expected.to_hex()
+        )),
+        Err(error) => ActionOutcome::failed_product(format!(
+            "the account's GUARDIAN binding could not be read after the rotation: {error}"
+        )),
+    }
+}
+
 /// Checks the offline proposal really is a GUARDIAN migration.
 pub async fn assert_guardian_migration(runner: &Runner) -> ActionOutcome {
     let guard = runner.session.lock().await;

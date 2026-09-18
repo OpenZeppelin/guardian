@@ -234,6 +234,8 @@ impl Runner {
                 Action::ProposalImport => Some(live::import_proposal(self).await),
                 Action::ProposalCreateOffline => Some(live::create_proposal_offline(self).await),
                 Action::GuardianMigrate => Some(live::assert_guardian_migration(self).await),
+                Action::GuardianSwitchOnline => Some(live::switch_guardian_online(self).await),
+                Action::GuardianSwitchAssert => Some(live::assert_guardian_switched(self).await),
                 Action::HandoffRustToTs => Some(live::handoff_to_typescript(self).await),
                 Action::SignerAdd => Some(live::add_signer(self, run_tag).await),
                 Action::SignerRemove => Some(live::remove_signer(self).await),
