@@ -172,7 +172,8 @@ tell a migrated database from a fresh one proves nothing.
 
 Needs no treasury, so it belongs to the deterministic profile. The
 `Qualification (deterministic)` workflow takes the same value as its
-`upgrade-from` input.
+`upgrade-from` input, and once its `pull_request` trigger is restored it will
+also run this by itself whenever a change touches `crates/server/migrations/`.
 
 ## Reading the outcome
 
@@ -680,15 +681,18 @@ from `sign_imported_proposal`, and execution fetches the acknowledgement when
 the transaction type requires one, so the Rust leg of
 `live-offline-export-import-2of3-falcon` now runs rather than skipping.
 
-**Nothing runs the upgrade pass automatically.** `--upgrade-from` is wired into
-the deterministic workflow, so qualifying an upgrade no longer needs a local
-checkout, but it only runs when someone passes the input. The rule that would
-make it automatic is not hard (seed from the latest published release, upgrade
-to the branch build, which is the default target), and a migration that cannot
-boot on the current release's data is exactly the defect worth catching before
-merge rather than after. It is not automatic yet because the deterministic
-workflow gates nothing today; wiring it on is worth doing at the same time as
-making that profile a required check.
+**The upgrade pass decides for itself, but nothing triggers it yet.** The
+deterministic workflow runs it when a change touches
+`crates/server/migrations/`, seeding from the latest published release and
+upgrading to the branch build, and skips it otherwise: the second pass costs a
+full re-run, so it is spent where it can pay. An explicit `upgrade-from` input
+still overrides that.
+
+What is missing is the trigger. The workflow is dispatch-only, and a dispatch
+has no base commit to diff against, so the decision is inert until the
+`pull_request` trigger in the workflow header is restored. That is the same
+condition as making the deterministic profile a required check, and both should
+happen together.
 
 **The treasury cannot yet follow a pull request.** The live workflow refuses any
 ref other than the default branch, because the scenario driver would otherwise

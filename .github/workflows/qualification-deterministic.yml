@@ -57,6 +57,9 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+          # Deep enough to diff a pull request against its base, which is how
+          # the upgrade pass decides whether this change touches migrations.
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
@@ -95,6 +98,42 @@ jobs:
           npm run build -w @openzeppelin/guardian-client
           npm run build -w @openzeppelin/guardian-operator-client
 
+      # Seeding a database with an older release and re-running against it costs
+      # a second pass, so it is spent where it can pay: on a change that touches
+      # migrations. A migration that cannot boot on the current release's data
+      # is the defect this catches, and the two irreversible resets recorded in
+      # docs/MIDEN_COMPATIBILITY.md are the precedent for taking it seriously.
+      #
+      # Inert on a dispatch without the input, because there is no base to diff
+      # against. It starts deciding for itself when the pull_request trigger in
+      # the header is restored.
+      - name: Decide whether to qualify an upgrade
+        id: upgrade
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.upgrade-from }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "${REQUESTED}" ]]; then
+            echo "tag=${REQUESTED}" >> "$GITHUB_OUTPUT"
+            echo "::notice::Qualifying an upgrade from ${REQUESTED} (requested)."
+            exit 0
+          fi
+          if [[ -z "${BASE_SHA}" ]]; then
+            exit 0
+          fi
+          if git diff --quiet "${BASE_SHA}...HEAD" -- crates/server/migrations/; then
+            echo "No migration changes; skipping the upgrade pass."
+            exit 0
+          fi
+          latest="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+          if [[ -z "${latest}" ]]; then
+            echo "::warning::This change touches migrations but no published release was found to seed from."
+            exit 0
+          fi
+          echo "tag=${latest}" >> "$GITHUB_OUTPUT"
+          echo "::notice::This change touches migrations; qualifying an upgrade from ${latest}."
+
       - name: Validate the scenario manifest
         run: >-
           cargo run --quiet -p guardian-qualification-driver --
@@ -103,7 +142,7 @@ jobs:
       - name: Run the deterministic profile
         env:
           IMAGE_TAG: ${{ inputs.image-tag }}
-          UPGRADE_FROM: ${{ inputs.upgrade-from }}
+          UPGRADE_FROM: ${{ steps.upgrade.outputs.tag }}
         run: |
           args=(--profile deterministic --trigger dispatch)
           args+=(--out "${GITHUB_WORKSPACE}/qualification-results")
