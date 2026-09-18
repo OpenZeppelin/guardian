@@ -223,6 +223,19 @@ pub fn merge_directory(
         run.scenario_results.extend(partial.scenario_results);
     }
 
+    // Applied over the combined set, because the leg that carries these
+    // workarounds is merged in above: the Rust run that wrote the base file
+    // never has TypeScript results of its own.
+    for run in &mut runs {
+        if run
+            .scenario_results
+            .iter()
+            .any(|result| result.sdk == crate::manifest::Sdk::Typescript)
+        {
+            run.consumer_findings = super::typescript_consumer_findings();
+        }
+    }
+
     // Each leg derived its verdict over its own SDK's required set, so a run
     // that has just absorbed the other SDK's results is carrying a claim that
     // never saw them. Recomputed over everything, or a Rust-only "full" would
@@ -604,6 +617,70 @@ mod tests {
             let outcome = merged.networks.values().next().expect("one network");
             assert_eq!(outcome.runs[0].scenario_results[0].outcome, later);
         }
+    }
+
+    /// The workarounds are properties of the published artifact, so a merged
+    /// report that carries a TypeScript leg must carry them too. Emitting an
+    /// empty list reads as "a consumer needs nothing special", which is false.
+    #[test]
+    fn a_merged_report_with_a_typescript_leg_records_the_consumer_findings() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut base = run(
+            NetworkName::Testnet,
+            Conclusion::Success,
+            QualificationClaim::Partial,
+        );
+        base.run_id = "run-7".to_string();
+        base.scenario_results = vec![result_for(
+            "det-status-identity",
+            Sdk::Rust,
+            Outcome::Passed,
+        )];
+        emit::write(&base, directory.path()).expect("writes");
+
+        let partial = PartialRun {
+            run_id: "run-7".to_string(),
+            scenario_results: vec![result_for(
+                "det-error-envelope",
+                Sdk::Typescript,
+                Outcome::Passed,
+            )],
+        };
+        std::fs::write(
+            directory.path().join("run-7-typescript.json"),
+            serde_json::to_string(&partial).expect("serializes"),
+        )
+        .expect("writes the TypeScript leg");
+
+        let merged = merge_directory(directory.path(), None, Some("run-7")).expect("merges");
+        let outcome = merged.networks.values().next().expect("one network");
+        assert!(
+            !outcome.runs[0].consumer_findings.is_empty(),
+            "a TypeScript leg ran, so the workarounds it needed belong in the report"
+        );
+    }
+
+    /// A Rust-only run needs none of them, so recording them would overstate
+    /// what the run touched.
+    #[test]
+    fn a_rust_only_report_records_no_consumer_findings() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut base = run(
+            NetworkName::Testnet,
+            Conclusion::Success,
+            QualificationClaim::Partial,
+        );
+        base.run_id = "run-8".to_string();
+        base.scenario_results = vec![result_for(
+            "det-status-identity",
+            Sdk::Rust,
+            Outcome::Passed,
+        )];
+        emit::write(&base, directory.path()).expect("writes");
+
+        let merged = merge_directory(directory.path(), None, Some("run-8")).expect("merges");
+        let outcome = merged.networks.values().next().expect("one network");
+        assert!(outcome.runs[0].consumer_findings.is_empty());
     }
 
     fn result_for(scenario_id: &str, sdk: Sdk, outcome: Outcome) -> ScenarioResult {

@@ -598,3 +598,32 @@ jobs:
       # These need the Docker CLI for the Compose cases but never a daemon.
       - name: Test the stack shell libraries
         run: ./qualification/stack/tests/harness-test.sh
+
+      # `tsconfig.json` covers only `src/`, so the qualification driver
+      # typechecks under its own config and nothing else was running it. A
+      # missing import in a scenario therefore reached a run rather than a
+      # build, which has already happened once.
+      - name: Install Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: packages/package-lock.json
+
+      - name: Install workspace dependencies
+        working-directory: packages
+        run: npm ci
+
+      # Both clients, and for the same reason the qualification workflows build
+      # both: their `dist/` is gitignored and the driver imports the operator
+      # client at module scope, so a missing build fails resolution rather than
+      # typechecking.
+      - name: Build the GUARDIAN clients
+        working-directory: packages
+        run: |
+          npm run build -w @openzeppelin/guardian-client
+          npm run build -w @openzeppelin/guardian-operator-client
+
+      - name: Typecheck the qualification driver
+        working-directory: packages/miden-multisig-client
+        run: npm run typecheck:tests

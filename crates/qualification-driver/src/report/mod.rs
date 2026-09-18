@@ -12,7 +12,7 @@ use crate::manifest::{NetworkName, Runtime, Sdk};
 
 pub use artifacts::{ArtifactSet, Pairing};
 pub use derive::{Conclusion, QualificationClaim};
-pub use findings::ConsumerFinding;
+pub use findings::{ConsumerFinding, typescript_consumer_findings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

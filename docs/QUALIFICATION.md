@@ -14,9 +14,10 @@ Guardian feature works. Every result states what it does not cover.
 | Profile | External dependency | Where it runs today | Intended |
 |---|---|---|---|
 | `deterministic` | none | Manual dispatch | Required check on every non-documentation pull request |
-| `live` | a public Miden network and a funded treasury | Manual dispatch, default branch only | Nightly, pre-release, post-publication, and reviewer opt-in |
+| `live` | a public Miden network and a funded treasury | Nightly schedule, plus manual dispatch, default branch only | Nightly, pre-release, post-publication, and reviewer opt-in |
 
-Neither workflow is wired to its intended triggers yet. See
+The live profile runs nightly. The deterministic profile is not yet a required
+check, and neither profile can follow a pull request. See
 [Current limits](#current-limits).
 
 ## Setting up a local environment
@@ -397,9 +398,12 @@ ephemeral accounts from the treasury through `fund`.
 
 ## Known coverage gaps
 
-- **Account pausing.** The server enforces the pause at every write path and
-  tests each one, but nothing in this suite drives a paused account through an
-  SDK, so the behaviour is unproven black box.
+- **Account pausing on chain.** `det-account-paused` is required and does drive
+  a paused account through an SDK: it pauses through the operator API, confirms
+  the proposal is refused with `GUARDIAN_ACCOUNT_PAUSED`, and unpauses. That is
+  GUARDIAN's enforcement. What is still unproven is a paused account on a live
+  network, where the refusal would have to hold against the chain rather than
+  against the server's own gate.
 - **Scheme coverage is spread, not doubled.** Each flow runs on one scheme, with
   the set split roughly evenly. The exception is the config-writing procedures,
   where the scheme is encoded into the advice payload and two scheme-binding
@@ -415,6 +419,13 @@ ephemeral accounts from the treasury through `fund`.
 - **Devnet retention window.** Devnet serves historical account state for a
   short window, so multi-step flows cannot be required there. They run
   opportunistically and report environment-blocked when the anchor is pruned.
+- **The completion rule has never been falsified.** Completion is asserted as
+  chain confirmation plus a canonical delta, precisely because a discarded delta
+  also leaves the pending set. `det-discarded-delta-hidden` is the negative
+  control for that rule: it is specified, optional and **unimplemented**, so the
+  assertion is correct by construction and unproven by experiment. A regression
+  that read a discard as a success would not fail any required scenario. This is
+  the highest-value missing test in the suite.
 - **Deterministic multisig coverage stops at submission.** GUARDIAN's request
   path never calls the chain, so the proposal API is testable without one and
   `det-proposal-lifecycle` exercises it from a committed fixture summary.
@@ -460,8 +471,16 @@ Both drivers poll against bounded deadlines rather than racing.
 
 ## Current limits
 
-Both workflows are dispatch-only, and the deterministic profile is not a
-required check. Three things have to land first.
+**A green run is not a release qualification.** It is evidence from one profile
+against one artifact. What it is entitled to claim is `qualification_claim`, and
+the limits below are what no run currently proves regardless of that claim.
+
+**Neither profile gates a pull request.** The deterministic workflow is
+dispatch-only. The live workflow runs on a nightly schedule against the
+`qualification-devnet` and `qualification-testnet` environments and can also be
+dispatched, but it cannot follow a pull request until the treasury handoff
+exists. So this suite is a manual and nightly instrument today, not automatic
+regression protection on the path to `main`.
 
 **The deterministic profile is not a required check.** Its required scenarios
 are implemented and pass; two optional ones are not (`discarded-delta-hidden`
@@ -487,6 +506,17 @@ runs without a store outside the run. Every option for that store (a committed
 snapshot, a cached snapshot, a persisted database) was judged to cost more than
 it returns while the property is better checked at the moment of a pin bump.
 Put it on the checklist for changing the Miden pin, not in the nightly.
+
+**No run proves browser behaviour, and none installs from the registry.** Every
+TypeScript scenario declares `runtime = server-side`: Node, with a WASM alias, a
+fake IndexedDB and an HTTP/2 shim. The published SDK's consumers are browsers,
+and the manifest schema allows `runtime = browser`, but no scenario uses it. Nor
+does any run consume the package as a consumer would, from a tarball outside
+this workspace, which is why the `published` pairing is refused rather than
+faked. A green TypeScript leg therefore says the driver works against the
+workspace source under Node, not that `examples/web` or a wallet still works.
+The workarounds below are recorded in every run's `consumer_findings` so a pass
+cannot quietly speak for a consumer who has neither.
 
 **Consuming the published TypeScript SDK from Node needs two workarounds.**
 Both are carried by this suite and both apply to any Node consumer, so they are
@@ -570,13 +600,14 @@ creation was blocked. It now has a builder arm that moves the threshold and
 refuses a membership change, and the Rust leg of
 `live-change-threshold-2of3-ecdsa` passes.
 
-**Offline signing is a documented SDK divergence.** The Rust SDK ties offline
-signing to offline execution (`supports_offline_execution` is true only for
-`SwitchGuardian`), so it refuses to collect signatures off-channel for any
-proposal that needs a GUARDIAN acknowledgement at execution. TypeScript signs
-these offline and contacts GUARDIAN only to execute. The Rust leg of
-`live-offline-export-import-2of3-falcon` reports a skip naming the gap rather
-than passing.
+**Offline signing was an SDK divergence, and is fixed.** The Rust SDK tied
+offline signing to offline execution (`supports_offline_execution` is true only
+for `SwitchGuardian`), so it refused to collect signatures off-channel for any
+proposal needing a GUARDIAN acknowledgement at execution, while TypeScript
+signed these offline and contacted GUARDIAN only to execute. The gate is gone
+from `sign_imported_proposal`, and execution fetches the acknowledgement when
+the transaction type requires one, so the Rust leg of
+`live-offline-export-import-2of3-falcon` now runs rather than skipping.
 
 **The treasury cannot yet follow a pull request.** The live workflow refuses any
 ref other than the default branch, because the scenario driver would otherwise

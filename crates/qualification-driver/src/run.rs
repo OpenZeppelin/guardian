@@ -100,6 +100,12 @@ pub async fn execute(manifest_dir: &Path, options: RunOptions) -> anyhow::Result
         results.push(result);
     }
 
+    // Keyed on what actually ran, not on what was requested: the stack invokes
+    // this driver with `--sdk rust` and merges the TypeScript leg in afterwards,
+    // so a run's own results carry TypeScript only when one was asked for
+    // directly. The merge applies the same rule over the combined set.
+    let ran_typescript = results.iter().any(|result| result.sdk == Sdk::Typescript);
+
     let required = required_entries(&manifest, &options);
     let conclusion = derive::conclusion(&results);
     let claim = derive::qualification_claim(&results, &required, options.filtered);
@@ -139,7 +145,15 @@ pub async fn execute(manifest_dir: &Path, options: RunOptions) -> anyhow::Result
         conclusion,
         qualification_claim: claim,
         not_covered: derive::not_covered(operator_covered),
-        consumer_findings: Vec::new(),
+        // Properties of the published artifact, not of this run, so they are
+        // recorded whenever a TypeScript leg ran rather than only when
+        // something went wrong. A run that carries the workarounds and reports
+        // none is a pass speaking for something a consumer cannot do.
+        consumer_findings: if ran_typescript {
+            crate::report::typescript_consumer_findings()
+        } else {
+            Vec::new()
+        },
     };
 
     if let Err(errors) = result.validate() {

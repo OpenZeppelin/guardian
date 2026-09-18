@@ -380,7 +380,7 @@ core = false
 
 [[scenario]]
 id = "live-handoff-rust-to-ts-2of3-falcon"
-title = "Rust creates and TypeScript signs and executes on a shared account"
+title = "Rust creates a proposal, TypeScript signs it, Rust executes it"
 profile = "live"
 sdk = "rust"
 scheme = "falcon"
@@ -393,7 +393,7 @@ core = false
 
 [[scenario]]
 id = "live-handoff-ts-to-rust-2of3-ecdsa"
-title = "TypeScript creates and Rust signs and executes on a shared account"
+title = "TypeScript creates a proposal, Rust signs it, TypeScript executes it"
 profile = "live"
 sdk = "typescript"
 runtime = "server-side"

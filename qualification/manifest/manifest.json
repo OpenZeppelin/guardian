@@ -521,7 +521,7 @@
       "sdk": "rust",
       "shape": "2-of-3",
       "step_budget": "PT3M30S",
-      "title": "Rust creates and TypeScript signs and executes on a shared account"
+      "title": "Rust creates a proposal, TypeScript signs it, Rust executes it"
     },
     {
       "actions": [
@@ -542,7 +542,7 @@
       "sdk": "typescript",
       "shape": "2-of-3",
       "step_budget": "PT3M30S",
-      "title": "TypeScript creates and Rust signs and executes on a shared account"
+      "title": "TypeScript creates a proposal, Rust signs it, TypeScript executes it"
     },
     {
       "actions": [

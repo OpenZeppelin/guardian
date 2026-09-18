@@ -577,9 +577,17 @@ pub async fn reject_duplicate_signature(runner: &Runner) -> ActionOutcome {
     };
 
     let outcome = client.sign_proposal(&proposal_id).await;
-    let after = signature_count(client, &proposal_id)
-        .await
-        .unwrap_or(before);
+    // Not `unwrap_or(before)`. Falling back to the count from before the
+    // attempt turns an unreadable listing into evidence that the count did not
+    // change, which is the one thing this scenario exists to establish. Not
+    // being able to look is not an answer.
+    let Some(after) = signature_count(client, &proposal_id).await else {
+        return ActionOutcome::failed_product(
+            "the signature count could not be read after the duplicate was attempted, so \
+             whether the duplicate was counted is unknown"
+                .to_string(),
+        );
+    };
 
     match outcome {
         Ok(_) if after > before => ActionOutcome::failed_product(format!(

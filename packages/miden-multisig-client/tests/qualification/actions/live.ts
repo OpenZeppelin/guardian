@@ -557,6 +557,23 @@ export async function recoverByCosigner(
 
   const cosigner = session.cosigners[session.cosigners.length - 1];
   try {
+    // Discovery first, by key alone. Loading a known account id is a weaker
+    // operation: it proves GUARDIAN serves state for an account you can already
+    // name, not that a cosigner holding only its key can find the account at
+    // all. The Rust driver calls `recover_by_key` here, so calling `load` was
+    // the two drivers proving different things under one scenario name, which
+    // is the drift this suite exists to catch.
+    const discovered = await cosigner.multisigClient.recoverByKey(cosigner.signer);
+    if (!discovered.some((entry) => entry.accountId === session.accountId)) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason:
+          `GUARDIAN did not offer ${session.accountId} to a cosigner holding one of its keys; ` +
+          `it offered [${discovered.map((entry) => entry.accountId).join(', ')}]`,
+      };
+    }
+
     const recovered = await cosigner.multisigClient.load(session.accountId, cosigner.signer);
 
     const [expectedSigners, actualSigners] = await Promise.all([
