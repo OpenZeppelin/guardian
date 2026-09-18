@@ -901,6 +901,127 @@ export async function importProposal(
  * supplied by the stack rather than assumed, so a run without one reports that
  * it could not test migration instead of testing something else.
  */
+/**
+ * Rotates GUARDIAN through the pending set instead of around it.
+ *
+ * The offline path is the air-gapped one: nothing reaches GUARDIAN until the
+ * signed document is imported. This is the half a deployment actually uses when
+ * GUARDIAN is reachable, and rotation is a first-class custody operation, so
+ * qualifying only the air-gapped path left the common one untested.
+ *
+ * The distinction is asserted rather than assumed, and the assertion has to go
+ * through `syncProposals`: `listProposals` returns this client's own cache,
+ * where a proposal created offline would sit just as happily. Only
+ * `syncProposals` asks GUARDIAN. That is a genuine difference from the Rust
+ * SDK, whose `list_proposals` fetches.
+ */
+export async function switchGuardianOnline(
+  context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  const missing = requireLive(context);
+  if (missing) return missing;
+
+  const target = context.live!.migrationEndpoint;
+  if (!target) {
+    return {
+      kind: 'environment_blocked',
+      reason:
+        'rotation needs a second GUARDIAN to rotate to; set QUAL_GUARDIAN_MIGRATION_ENDPOINT to one',
+    };
+  }
+
+  try {
+    const destination = new GuardianHttpClient(target);
+    const pubkey = await destination.getPubkey(session.scheme);
+    const commitment = typeof pubkey === 'string' ? pubkey : pubkey.commitment;
+
+    const current = await session.multisig.getGuardianPublicKeyCommitment();
+    if (commitment === current) {
+      return {
+        kind: 'environment_blocked',
+        reason: `the rotation target at ${target} has the same identity as the current GUARDIAN`,
+      };
+    }
+
+    const proposal = await session.multisig.createSwitchGuardianProposal(target, commitment);
+
+    const pending = await session.multisig.syncProposals();
+    if (!pending.some((entry) => entry.id === proposal.id)) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason:
+          `the rotation proposal ${proposal.id} is not in GUARDIAN's pending set, so it was ` +
+          'not coordinated online',
+      };
+    }
+
+    session.proposalId = proposal.id;
+    // Completion is judged differently for a rotation: the GUARDIAN the client
+    // moves to has no history for an account it was just handed.
+    session.migrating = true;
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `proposing a rotation to ${target} through GUARDIAN failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Confirms the rotation moved the account, rather than only executing.
+ *
+ * The offline scenario asserts the shape of the document it produced, which
+ * says nothing about the account. A rotation that executes without changing the
+ * bound identity is the failure worth catching, because every other signal
+ * looks like success.
+ */
+export async function assertGuardianSwitched(
+  context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  const missing = requireLive(context);
+  if (missing) return missing;
+
+  const target = context.live!.migrationEndpoint;
+  if (!target) {
+    return { kind: 'failed', classification: 'setup', reason: 'no rotation target is configured' };
+  }
+
+  try {
+    const destination = new GuardianHttpClient(target);
+    const pubkey = await destination.getPubkey(session.scheme);
+    const expected = typeof pubkey === 'string' ? pubkey : pubkey.commitment;
+
+    const bound = await session.multisig.getGuardianPublicKeyCommitment();
+    if (bound !== expected) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the rotation executed but the account still binds ${bound}, not ${expected} at ${target}`,
+      };
+    }
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the account's GUARDIAN binding could not be read after the rotation: ${String(error)}`,
+    };
+  }
+}
+
 export async function createProposalOffline(
   context: ActionContext,
   scenarioId: string,

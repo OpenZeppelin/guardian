@@ -91,6 +91,10 @@ async function runLiveAction(
       return live.importProposal(context, scenario.id);
     case 'proposal-create-offline':
       return live.createProposalOffline(context, scenario.id);
+    case 'guardian-switch-online':
+      return live.switchGuardianOnline(context, scenario.id);
+    case 'guardian-switch-assert':
+      return live.assertGuardianSwitched(context, scenario.id);
     case 'guardian-migrate':
       return live.assertGuardianMigration(context, scenario.id);
     case 'handoff-ts-to-rust':

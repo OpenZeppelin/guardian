@@ -500,9 +500,9 @@
       "mode": "online",
       "profile": "live",
       "required": true,
-      "runtime": null,
+      "runtime": "server-side",
       "scheme": "falcon",
-      "sdk": "rust",
+      "sdk": "both",
       "shape": "2-of-3",
       "step_budget": "PT10M",
       "title": "GUARDIAN rotation proposed, cosigned and executed through the pending set"
