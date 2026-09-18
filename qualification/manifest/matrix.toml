@@ -32,6 +32,7 @@ availability = "available"
 excluded_scenarios = [
   "live-transfer-consume-1of1-ecdsa",
   "live-offline-export-import-2of3-falcon",
+  "live-offline-export-import-2of3-ecdsa",
   "live-guardian-migrate-offline-1of1-ecdsa",
   "live-handoff-rust-to-ts-2of3-falcon",
   "live-add-signer-2of3-falcon",
@@ -57,6 +58,7 @@ availability = "available"
 excluded_scenarios = [
   "live-transfer-consume-1of1-ecdsa",
   "live-offline-export-import-2of3-falcon",
+  "live-offline-export-import-2of3-ecdsa",
   "live-guardian-migrate-offline-1of1-ecdsa",
   "live-handoff-ts-to-rust-2of3-ecdsa",
   "live-add-signer-2of3-falcon",

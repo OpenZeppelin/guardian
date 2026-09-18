@@ -337,6 +337,27 @@ step_budget = "180s"
 required = true
 core = false
 
+# The ECDSA half of off-channel signing. The exported document carries the
+# collected signatures, and both parsing them back
+# (`SignatureScheme::parse_signature_hex`) and building the advice entry from
+# them (`build_signature_advice_entry`) dispatch on the scheme, so Falcon and
+# ECDSA take different code through the part of the flow this scenario exists
+# to cover. That path also changed recently, when Rust stopped tying offline
+# signing to offline execution, so it is newly exercised rather than settled.
+[[scenario]]
+id = "live-offline-export-import-2of3-ecdsa"
+title = "An ECDSA proposal is exported, signed off-channel, imported and executed"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "offline"
+actions = ["account-create", "account-register", "proposal-create", "proposal-export", "proposal-sign-external", "proposal-import", "proposal-execute", "commitment-verify"]
+step_budget = "240s"
+required = true
+core = false
+
 [[scenario]]
 id = "live-offline-export-import-2of3-falcon"
 title = "A proposal is exported, signed externally, imported and executed"
