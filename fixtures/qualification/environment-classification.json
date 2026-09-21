@@ -14,7 +14,8 @@
     "eai_again",
     "socket hang up",
     "fetch failed",
-    "err_http2_stream_error"
+    "err_http2_stream_error",
+    "invalid content type: application/grpc"
   ],
   "reasons": [
     {
@@ -30,6 +31,11 @@
     {
       "name": "typescript http/2 stream refused while fetching the genesis block header",
       "reason": "creating the multisig account failed: Error: Failed to ensure genesis in place: RPC error: grpc request failed for get_block_header_by_number: unknown error: JS API error: Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM: code: 'Unknown error', message: \"JS API error: Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM\", source: JsError(\"Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM\"): JS API error: Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM",
+      "environmental": true
+    },
+    {
+      "name": "the node's front end answered a grpc-web submission with native grpc framing",
+      "reason": "consuming the note failed: Error: failed to submit proven transaction: submission of transaction 0x115f07a026bbb74e6bbf1d267664432af94e6a705d74c1c9130095f79590df48 came back without a definite outcome, so the node may or may not have accepted it; nothing was recorded locally: grpc request failed for submit_proven_transaction: unknown error: invalid content type: application/grpc: code: 'Unknown error', message: \"invalid content type: application/grpc\", source: InvalidContentType(\"application/grpc\"): invalid content type: application/grpc",
       "environmental": true
     },
     {

@@ -27,7 +27,7 @@ use guardian_shared::retry::{StructuredEvidence, is_transient_error_with};
 /// Every entry must be unambiguous evidence of a link failure. Guardian's own
 /// error codes travel in these same strings, so wording a scenario could assert
 /// on (`network_error`, for one) stays out deliberately.
-pub const ENVIRONMENT_SIGNALS: [&str; 14] = [
+pub const ENVIRONMENT_SIGNALS: [&str; 15] = [
     "connection error",
     "transport error",
     "timed out",
@@ -42,6 +42,7 @@ pub const ENVIRONMENT_SIGNALS: [&str; 14] = [
     "socket hang up",
     "fetch failed",
     "err_http2_stream_error",
+    "invalid content type: application/grpc",
 ];
 
 /// A failure reason, flattened to text, so the shared classifier can walk it.
