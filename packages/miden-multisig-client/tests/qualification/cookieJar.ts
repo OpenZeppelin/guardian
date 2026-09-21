@@ -15,7 +15,11 @@ export function fetchWithCookieJar(): typeof fetch {
       );
     }
 
-    const response = await fetch(input, { ...init, headers });
+    // A redirect would carry the `cookie` header to wherever it points, and a
+    // session cookie is exactly what should not follow one. Every endpoint this
+    // jar talks to is a local GUARDIAN that has no reason to redirect, so an
+    // unexpected one is worth failing on rather than following.
+    const response = await fetch(input, { ...init, headers, redirect: 'error' });
 
     // Named rather than optional: without it every `set-cookie` is dropped and
     // the operator scenarios fail as unauthorized, which reads as a product

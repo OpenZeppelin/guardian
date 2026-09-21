@@ -140,12 +140,75 @@ pub async fn cosign_with_typescript(request: TypescriptCosign) -> anyhow::Result
         // Both streams, labelled. Vitest reports a failing assertion on stderr,
         // so stdout alone left the most useful half of a cross-SDK failure out
         // of the error the scenario reports.
+        //
+        // Capped and swept first. This is the one place the driver puts another
+        // process's output into a message: the rest of its errors are text it
+        // composed itself, so neither a size bound nor a sweep was needed
+        // before. A vitest run can print megabytes, and this string becomes a
+        // scenario `reason` in a retained artifact and a line in a CI log,
+        // which the shell-side redaction covers only for the artifact.
         anyhow::bail!(
             "the TypeScript cosigner exited with {}\nstdout: {}\nstderr: {}",
             output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            captured(&output.stdout),
+            captured(&output.stderr)
         );
     }
     Ok(())
+}
+
+/// A subprocess stream, made safe to put in an error message.
+///
+/// Bounded, because the producer is a test runner that can print megabytes, and
+/// swept for the one secret the driver knows it handed down: the child inherits
+/// this process's environment, so `QUAL_TREASURY_KEY` is in scope for it, and a
+/// crash dump that echoed the environment would otherwise reach a CI log
+/// unredacted.
+fn captured(stream: &[u8]) -> String {
+    const LIMIT: usize = 4096;
+
+    let text = String::from_utf8_lossy(stream);
+    let mut kept = match text.char_indices().nth(LIMIT) {
+        Some((cut, _)) => format!("{}… [truncated at {LIMIT} characters]", &text[..cut]),
+        None => text.into_owned(),
+    };
+    if let Ok(secret) = std::env::var("QUAL_TREASURY_KEY")
+        && !secret.is_empty()
+    {
+        kept = kept.replace(&secret, "[redacted]");
+    }
+    kept
+}
+
+#[cfg(test)]
+mod tests {
+    use super::captured;
+
+    #[test]
+    fn short_output_is_passed_through() {
+        assert_eq!(captured(b"boom"), "boom");
+    }
+
+    #[test]
+    fn long_output_is_bounded_and_says_so() {
+        let kept = captured(&vec![b'x'; 10_000]);
+        assert!(kept.len() < 5_000, "kept {} characters", kept.len());
+        assert!(kept.ends_with("[truncated at 4096 characters]"));
+    }
+
+    /// The child inherits this process's environment, so the one secret the
+    /// driver knows about must not survive into an error message.
+    #[test]
+    fn the_treasury_key_does_not_survive() {
+        // SAFETY: single-threaded test, and the variable is restored below.
+        let previous = std::env::var("QUAL_TREASURY_KEY").ok();
+        unsafe { std::env::set_var("QUAL_TREASURY_KEY", "deadbeefsecret") };
+        let kept = captured(b"failed with key deadbeefsecret in scope");
+        assert!(!kept.contains("deadbeefsecret"));
+        assert!(kept.contains("[redacted]"));
+        match previous {
+            Some(value) => unsafe { std::env::set_var("QUAL_TREASURY_KEY", value) },
+            None => unsafe { std::env::remove_var("QUAL_TREASURY_KEY") },
+        }
+    }
 }
