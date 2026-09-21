@@ -73,8 +73,15 @@ impl FromStr for Budget {
             let value: u64 = digits
                 .parse()
                 .map_err(|_| BudgetParseError::Overflow(raw.to_string()))?;
-            total = total
-                .checked_add(value * multiplier)
+            // Checked on both steps. The multiplication was not, so a value
+            // that parses as a `u64` but overflows when scaled, `1h` short of
+            // `u64::MAX` for one, panicked in a debug build and wrapped to a
+            // wrong budget in a release one. `Budget` is deserialized from run
+            // result files as well as from the committed manifest, so the input
+            // is not only text this repository wrote.
+            total = value
+                .checked_mul(multiplier)
+                .and_then(|scaled| total.checked_add(scaled))
                 .ok_or_else(|| BudgetParseError::Overflow(raw.to_string()))?;
             digits.clear();
             saw_unit = true;
@@ -121,6 +128,18 @@ impl<'de> Deserialize<'de> for Budget {
 
 #[cfg(test)]
 mod tests {
+
+    /// Parses as a `u64` and overflows only when scaled to seconds, which is
+    /// the case the checked addition alone could not catch.
+    #[test]
+    fn a_value_that_overflows_when_scaled_is_refused() {
+        for raw in ["9223372036854775807h", "18446744073709551615m"] {
+            assert!(
+                matches!(Budget::from_str(raw), Err(BudgetParseError::Overflow(_))),
+                "{raw} should be refused as an overflow"
+            );
+        }
+    }
     use super::*;
 
     /// What this type serializes must be what it parses, or the reader cannot

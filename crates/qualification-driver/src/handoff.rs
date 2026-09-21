@@ -137,10 +137,14 @@ pub async fn cosign_with_typescript(request: TypescriptCosign) -> anyhow::Result
         .context("cannot start the TypeScript cosigner")?;
 
     if !output.status.success() {
+        // Both streams, labelled. Vitest reports a failing assertion on stderr,
+        // so stdout alone left the most useful half of a cross-SDK failure out
+        // of the error the scenario reports.
         anyhow::bail!(
-            "the TypeScript cosigner exited with {}: {}",
+            "the TypeScript cosigner exited with {}\nstdout: {}\nstderr: {}",
             output.status,
-            String::from_utf8_lossy(&output.stdout)
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     Ok(())

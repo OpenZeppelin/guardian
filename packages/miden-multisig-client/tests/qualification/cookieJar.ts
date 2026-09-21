@@ -17,7 +17,16 @@ export function fetchWithCookieJar(): typeof fetch {
 
     const response = await fetch(input, { ...init, headers });
 
-    const setCookie = response.headers.getSetCookie?.() ?? [];
+    // Named rather than optional: without it every `set-cookie` is dropped and
+    // the operator scenarios fail as unauthorized, which reads as a product
+    // defect. Node has had it since 19.7; a runtime that does not is a harness
+    // problem and says so.
+    if (typeof response.headers.getSetCookie !== 'function') {
+      throw new Error(
+        'this runtime cannot read set-cookie headers, so the operator session cannot be kept',
+      );
+    }
+    const setCookie = response.headers.getSetCookie();
     for (const cookie of setCookie) {
       const [pair] = cookie.split(';');
       const separator = pair.indexOf('=');

@@ -77,10 +77,13 @@ on:
         required: false
         default: false
 
+# The treasury-backed job runs a whole scenario harness, which executes this
+# repository's code and its dependencies with `QUAL_TREASURY_KEY` in scope. It
+# gets read and nothing else. Opening the tracking issue for a failed night
+# needs a write, so that work moved to a job of its own below, which touches no
+# treasury and runs no scenario code.
 permissions:
   contents: read
-  # Only so a failed scheduled run can open or comment on its tracking issue.
-  issues: write
 
 jobs:
   guard:
@@ -283,37 +286,30 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-      # A nightly that goes red and notifies nobody trains people to ignore it.
-      # One issue per network, reopened and commented rather than a new one each
-      # night, so a week of failures is one thread instead of seven.
-      - name: Report a failed scheduled run
+      # A nightly that goes red and notifies nobody trains people to ignore it,
+      # but opening the issue from here would mean holding `issues: write` in
+      # the job that also holds the treasury key. This leaves a marker instead,
+      # and the `report` job below turns markers into issues.
+      #
+      # The marker carries the network and the harness exit code, both of which
+      # are already in the run's public log, and nothing else.
+      - name: Mark the failure for the reporting job
         if: failure() && github.event_name == 'schedule'
         env:
-          GH_TOKEN: ${{ github.token }}
           NETWORK: ${{ matrix.network }}
           EXIT_CODE: ${{ steps.run.outputs.exit-code }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Nightly qualification failing on ${NETWORK}"
-          body="Harness exit ${EXIT_CODE:-unknown}. Run: ${RUN_URL}
+          mkdir -p failure-marker
+          printf '%s %s\n' "${NETWORK}" "${EXIT_CODE:-unknown}" > "failure-marker/${NETWORK}.txt"
 
-          Read \`classification\` on the failing scenario before treating this as a
-          product defect: exit 2 is the harness, exit 1 is the product. A
-          scenario the network broke under is classified \`environment\`, does not
-          block the conclusion, and never reaches here; neither does an
-          environment-blocked run."
-          existing="$(gh issue list --state all --search "\"${title}\" in:title" \
-            --json number,state --jq '.[0].number' || true)"
-          state="$(gh issue list --state all --search "\"${title}\" in:title" \
-            --json number,state --jq '.[0].state' || true)"
-          if [[ -n "${existing}" ]]; then
-            if [[ "${state}" == "CLOSED" ]]; then
-              gh issue reopen "${existing}"
-            fi
-            gh issue comment "${existing}" --body "${body}"
-          else
-            gh issue create --title "${title}" --body "${body}" --label bug
-          fi
+      - name: Upload the failure marker
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: qualification-failure-${{ matrix.network }}
+          path: failure-marker/
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Summary
         if: always()
@@ -343,3 +339,64 @@ jobs:
             qual_print_summary qualification-results/merged/report.json "${QUAL_RUN_ID:-}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Separated from the run so the permission it needs is not held anywhere near
+  # the treasury. It downloads markers, runs no scenario code, and touches no
+  # secret beyond the token that opens the issue.
+  report:
+    name: Report a failed night
+    needs: live
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'schedule' && needs.live.result == 'failure'
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Collect the failure markers
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: qualification-failure-*
+          path: markers
+          merge-multiple: true
+
+      # One issue per network, reopened and commented rather than a new one each
+      # night, so a week of failures is one thread instead of seven.
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          shopt -s nullglob
+          markers=(markers/*.txt)
+          if (( ${#markers[@]} == 0 )); then
+            echo "::warning::The live job failed but left no marker, so there is nothing to report."
+            exit 0
+          fi
+          for marker in "${markers[@]}"; do
+            read -r network exit_code < "${marker}"
+            title="Nightly qualification failing on ${network}"
+            body="Harness exit ${exit_code}. Run: ${RUN_URL}
+
+            Read \`classification\` on the failing scenario before treating this as a
+            product defect: exit 2 is the harness, exit 1 is the product. A
+            scenario the network broke under is classified \`environment\`, does not
+            block the conclusion, and never reaches here; neither does an
+            environment-blocked run."
+            existing="$(gh issue list --state all --search "\"${title}\" in:title" \
+              --json number,state --jq '.[0].number' || true)"
+            state="$(gh issue list --state all --search "\"${title}\" in:title" \
+              --json number,state --jq '.[0].state' || true)"
+            if [[ -n "${existing}" ]]; then
+              if [[ "${state}" == "CLOSED" ]]; then
+                gh issue reopen "${existing}"
+              fi
+              gh issue comment "${existing}" --body "${body}"
+            else
+              gh issue create --title "${title}" --body "${body}" --label bug
+            fi
+          done

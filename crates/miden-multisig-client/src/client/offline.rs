@@ -191,10 +191,14 @@ impl MultisigClient {
     /// executes without an acknowledgement. Do not treat this as an air-gapped
     /// path: a transfer executed here will reach GUARDIAN over the network.
     ///
-    /// Any type may be executed, provided its summary verifies. Verification
-    /// reproduces the transaction for every type but `SwitchGuardian` and
-    /// `Custom`, so the caller needs a synced store and, for consume-notes, the
-    /// node.
+    /// Every modeled type may be executed except `Custom`, which is refused:
+    /// this path builds the transaction from the proposal's type, and an
+    /// arbitrary producer transaction is precisely what the SDK cannot rebuild.
+    /// A custom proposal is executed with
+    /// [`MultisigClient::prepare_custom_execution`] and the integration's own
+    /// request. Verification reproduces the transaction for every type but
+    /// `SwitchGuardian` and `Custom`, so the caller needs a synced store and,
+    /// for consume-notes, the node.
     ///
     /// For `SwitchGuardian` only, deliberately skips the pre-switch
     /// proposal-note import (issue #417): it would contact the very GUARDIAN
@@ -225,6 +229,26 @@ impl MultisigClient {
 
         // Parse the proposal
         let mut proposal = exported.to_proposal()?;
+
+        // Refused here, before anything reaches GUARDIAN. `Custom` requires an
+        // acknowledgement like any other non-switch type, and obtaining one
+        // pushes the delta, so running on would leave the account holding a
+        // candidate at this nonce and *then* fail locally on a transaction the
+        // SDK was never able to build. The caller would be left to discover the
+        // candidate and abandon it, having been told only that the type is
+        // unsupported.
+        if !proposal
+            .transaction_type
+            .executable_from_exported_document()
+        {
+            return Err(MultisigError::UnsupportedTransactionType(
+                "a custom proposal cannot be executed from an exported document; collect the \
+                 signatures, then call prepare_custom_execution and submit the producer's own \
+                 transaction"
+                    .to_string(),
+            ));
+        }
+
         self.verify_proposal_summary_binding(&mut proposal).await?;
         let tx_summary = proposal.tx_summary.clone();
         let tx_summary_commitment = tx_summary.to_commitment();

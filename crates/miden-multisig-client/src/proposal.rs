@@ -309,6 +309,18 @@ impl TransactionType {
     pub fn requires_guardian_ack(&self) -> bool {
         !self.supports_offline_execution()
     }
+
+    /// Returns true when an exported document is enough to execute this type.
+    ///
+    /// Every modeled type is, and `Custom` is not: executing from a document
+    /// rebuilds the transaction from its type, which for a producer's own
+    /// transaction the SDK cannot do. The distinction matters before the
+    /// acknowledgement rather than after it, because obtaining one pushes the
+    /// delta: a `Custom` proposal that got that far would leave a candidate on
+    /// the account and only then fail to build.
+    pub fn executable_from_exported_document(&self) -> bool {
+        !matches!(self, Self::Custom)
+    }
 }
 
 /// Proposal type labels the SDK models natively. The producer (`propose_custom_transaction`)
@@ -978,6 +990,32 @@ fn word_to_bytes(word: &Word) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The pairing that made the bug possible: `Custom` needs an
+    /// acknowledgement like any other non-switch type, and getting one pushes
+    /// the delta, so the document guard has to come first.
+    #[test]
+    fn custom_needs_an_acknowledgement_and_cannot_execute_from_a_document() {
+        assert!(TransactionType::Custom.requires_guardian_ack());
+        assert!(!TransactionType::Custom.executable_from_exported_document());
+    }
+
+    #[test]
+    fn every_modeled_type_executes_from_a_document() {
+        for transaction_type in [
+            TransactionType::consume_notes(vec![]),
+            TransactionType::UpdateProcedureThreshold {
+                procedure: crate::procedures::ProcedureName::SendAsset,
+                new_threshold: 2,
+            },
+        ] {
+            assert!(
+                transaction_type.executable_from_exported_document(),
+                "{} should execute from a document",
+                transaction_type.type_name()
+            );
+        }
+    }
     use miden_protocol::Felt;
 
     use super::*;

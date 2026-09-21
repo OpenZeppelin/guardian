@@ -491,10 +491,14 @@ For moving a proposal between cosigners as a document instead of through
 GUARDIAN's pending set.
 
 > **This is off-channel signature collection, not air-gapped operation.**
-> Only a `switch_guardian` proposal can be signed and executed with no network
-> at all. For every other type the signing step reproduces the transaction to
-> verify the summary, so the signer needs a synced store (and, for
-> `consume_notes`, the node), and execution needs an acknowledgement from
+> Nothing here avoids the chain: executing any proposal, `switch_guardian`
+> included, submits a transaction to the Miden network. What `switch_guardian`
+> alone avoids is the *current* GUARDIAN, which is the point of it, since the
+> flow exists for leaving a GUARDIAN that will not cooperate. Even that path
+> reaches the network to verify the new endpoint and to sync before it builds
+> the proposal. For every other type the signing step reproduces the
+> transaction to verify the summary, so the signer needs a synced store (and,
+> for `consume_notes`, the node), and execution needs an acknowledgement from
 > GUARDIAN. A transfer executed this way still reaches GUARDIAN.
 
 ```
@@ -968,13 +972,16 @@ const exported = await multisig.createSwitchGuardianProposalOffline(
 
 ### Signing & Executing Proposals
 
-> **The two SDKs differ on who has signed a new proposal.** The Rust SDK
-> attaches the proposer's signature when the proposal is created; the TypeScript
-> SDK does not. The same 2-of-3 flow therefore needs one more signature
-> collected on the TypeScript path than on the Rust path. Neither is wrong, but
-> threshold arithmetic written against one SDK is wrong against the other. Offer
-> the proposal to every cosigner and let `signaturesCollected` decide, rather
-> than assuming who has already signed.
+> **The two SDKs differ on who has signed a new proposal.** On ordinary
+> creation the Rust SDK attaches the proposer's signature and the TypeScript SDK
+> does not, so the same 2-of-3 flow needs one more signature collected on the
+> TypeScript path. The exception is
+> `createSwitchGuardianProposalOffline`, which signs as it exports and so
+> carries the proposer's signature on both SDKs. Neither convention is wrong,
+> but threshold arithmetic written against one SDK is wrong against the other,
+> and arithmetic written against ordinary creation is wrong for the offline
+> switch. Offer the proposal to every cosigner and let `signaturesCollected`
+> decide, rather than assuming who has already signed.
 
 ```typescript
 // List all pending proposals
