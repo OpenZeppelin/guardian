@@ -150,7 +150,12 @@ async function fundOnce(context: ActionContext, session: LiveSession): Promise<F
   });
   session.faucetId = funded.faucet;
   session.treasuryId = funded.treasury;
-  session.transferred = BigInt(funded.amount);
+  // Accumulated, not assigned, and for the reason the Rust driver records at
+  // its own funding sites: a scenario that runs both `asset-transfer` and
+  // `proposal-create` sends two notes, the consume proposal takes whichever
+  // have committed, and recording only the last one made the balance assertion
+  // fail whenever both landed.
+  session.transferred = (session.transferred ?? 0n) + BigInt(funded.amount);
   return { amount: funded.amount, faucet: funded.faucet };
 }
 

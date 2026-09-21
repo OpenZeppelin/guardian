@@ -298,7 +298,16 @@ pub async fn create_proposal(runner: &Runner) -> ActionOutcome {
     };
     session.faucet = Some(funded.faucet);
     session.treasury = Some(funded.treasury);
-    session.transferred = funded.amount;
+    // Accumulated, not assigned. A scenario can fund more than once: this
+    // action funds because the first proposal an account makes is always the
+    // consume of its funding note, and `asset-transfer` funds for its own
+    // reasons, so a scenario that runs both sends two notes. The consume
+    // proposal then takes every note it can see, which is one or two depending
+    // on whether the first had committed yet, and an assignment here recorded
+    // only the second. The balance assertion is an upper bound, so under-
+    // recording the total made it fail whenever both notes landed in time: a
+    // race in the harness, reported against the product.
+    session.transferred += funded.amount;
 
     // A submitted transfer is not yet a visible note: it has to be committed in
     // a block first. Polled against a deadline rather than slept on, so a
@@ -881,7 +890,7 @@ pub async fn transfer_asset(runner: &Runner) -> ActionOutcome {
         Ok(Some(funded)) => {
             session.faucet = Some(funded.faucet);
             session.treasury = Some(funded.treasury);
-            session.transferred = funded.amount;
+            session.transferred += funded.amount;
             ActionOutcome::Passed
         }
         Ok(None) => ActionOutcome::Skipped {
