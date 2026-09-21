@@ -55,46 +55,13 @@ QUAL_OUT_DIR=/tmp/nc QUAL_RUN_ID=nc-1 \
   npx vitest run --config vitest.qualification.config.ts
 ```
 
-The first two controls were run on 2026-09-16 and the third on 2026-09-17; all
-produced the expected verdict. Reverting restores a passing run, which is the
-other half of the check: a control that fails in both directions proves nothing.
+Run a control, confirm the named verdict, then revert and confirm the run
+passes again. A control that fails in both directions proves nothing.
 
-### What the third control found
-
-The upgrade control passed when it should have failed. With the database
-destroyed between the seed and the swap, `det-restart-durability` still reported
-a pass.
-
-The cause was in the scenario, not the upgrade plumbing. Its actions are
-`account-register` then `restart-durability`, and the whole scenario runs again
-on the second pass, so the register put the account back before the assertion
-looked for it. The account was present because the scenario had just recreated
-it, not because it had survived.
-
-That also means the restart assertion had never proven what it claimed. A
-restart does not lose data, so the re-registration never changed the verdict and
-nothing drew attention to it; only destroying the data exposed the mask.
-
-`register` is now a no-op on the second pass, so both the restart and the
-upgrade read rather than rewrite. With the fix, the wiped-database control fails
-and the ordinary run passes.
-
-### What the first control found
-
-It originally reported `environment_blocked`, not a failure. Nothing compared
-the account's on-chain state before and after execution, so an execution that
-silently submitted nothing was indistinguishable from a slow network, and an
-environment-blocked run does not conclude as failed. A real regression in the
-execution path would have been reported as someone else's problem.
-
-Both drivers now read the account nonce before executing and again if the
-proposal is still pending at the deadline. An unmoved nonce means nothing
-reached the chain, which is a product failure; a moved one means GUARDIAN has
-not caught up, which is not.
-
-The same control also exposed the two drivers disagreeing about conclusions.
-The TypeScript driver failed its process for *any* non-passing required
-scenario, including environment-blocked, which contradicts the rule the Rust
-driver follows. It now fails only on `failed`, and the qualification claim,
-which a blocked scenario still forfeits, is derived from the merged report
-rather than from an exit code.
+Two of these controls found real defects when they were first run, and both
+fixes carry their reasoning at the code: `account-register` is a no-op on a
+post-restart pass, in `scenario/account.rs`, because a scenario that rewrites
+the data its assertion reads proves nothing; and both drivers compare the
+account nonce across an execution, because without it an execution that
+submitted nothing was indistinguishable from a slow network and reported
+`environment_blocked`.
