@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use miden_client::Client;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::Endpoint;
 use miden_client_sqlite_store::SqliteStore;
-use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId};
 use miden_protocol::asset::Asset;
 use miden_protocol::crypto::rand::RandomCoin;
@@ -153,19 +152,4 @@ pub async fn observe(client: &mut MidenClient, account_id: AccountId) -> anyhow:
         consumable_note_count: consumable,
         transactions,
     })
-}
-
-pub fn word_hex(word: &Word) -> String {
-    word.to_hex()
-}
-
-pub fn ensure_reachable(network: NetworkName) -> anyhow::Result<()> {
-    let endpoint = endpoint_for(network);
-    endpoint
-        .host()
-        .is_empty()
-        .then(|| Err::<(), _>(anyhow!("no endpoint for {}", network.as_str())))
-        .transpose()
-        .context("resolving the network endpoint")?;
-    Ok(())
 }

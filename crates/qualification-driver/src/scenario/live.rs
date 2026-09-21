@@ -5,8 +5,8 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
 
-use crate::funding::accounts::{RunSigner, RunSigners};
 use crate::manifest::{NetworkName, Scheme, Shape};
+use crate::scenario::signers::{RunSigner, RunSigners};
 
 use super::{ActionOutcome, Runner};
 

@@ -2,6 +2,7 @@ pub mod account;
 pub mod error_envelope;
 pub mod identity;
 pub mod live;
+pub mod signers;
 
 use std::time::Instant;
 
