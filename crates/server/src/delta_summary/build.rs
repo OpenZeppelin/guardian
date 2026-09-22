@@ -284,9 +284,10 @@ mod tests {
             delta,
             InputNotes::new(vec![InputNote::unauthenticated(note)]).expect("inputs"),
             RawOutputNotes::new(Vec::new()).expect("outputs"),
+            miden_protocol::block::BlockNumber::from(0),
             Word::from([ZERO; 4]),
             0,
-            TransactionSummaryUserParams::new([ZERO; 7]),
+            TransactionSummaryUserParams::new([ZERO; 6]),
         );
         let delta_payload = summary.to_json();
         let proposal_payload = synthetic_proposal_payload(json!({

@@ -10,7 +10,8 @@
 export type AuthArgErrorCode =
   | 'proposal_auth_arg_unresolvable'
   | 'proposal_salt_malformed'
-  | 'fee_faucet_anchor_mismatch';
+  | 'fee_faucet_anchor_mismatch'
+  | 'multisig_auth_args_missing';
 
 /** How much of an untrusted value an error message will quote. */
 const MAX_QUOTED_CHARS = 80;
@@ -136,3 +137,26 @@ export class ProposalAuthArgUnresolvableError extends Error {
   }
 }
 
+
+/**
+ * A request built for `accountId` came back without the multisig auth args.
+ * `feeAwareTransactionRequestBuilder` only attaches them to an account it can
+ * classify as a multisig, so this means the account is not in the client's
+ * store or its code is not the guarded-multisig component this client knows.
+ * Raised at build time: the alternative is an abort inside the auth procedure
+ * while it pipes a preimage the advice map does not hold.
+ */
+export class MultisigAuthArgsMissingError extends Error {
+  readonly code: AuthArgErrorCode = 'multisig_auth_args_missing';
+  readonly accountId: string;
+
+  constructor(accountId: string) {
+    super(
+      `Account ${quoteUntrusted(accountId)} received no multisig auth args: the client does ` +
+        'not hold it as a guarded-multisig account, so a request built for it cannot be ' +
+        'authenticated. Import or create the account in this client first',
+    );
+    this.name = 'MultisigAuthArgsMissingError';
+    this.accountId = accountId;
+  }
+}

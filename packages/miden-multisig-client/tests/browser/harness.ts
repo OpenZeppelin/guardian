@@ -27,11 +27,9 @@ function report(message: string): void {
 }
 
 async function run(): Promise<void> {
-  const client = await MidenClient.create({
-    rpcUrl: 'https://rpc.testnet.miden.io',
-    storeName: `determinism-${Math.random().toString(36).slice(2)}`,
-    autoSync: false,
-  });
+  // A mock chain: account construction and script compilation need no node, and a
+  // node on another protocol line would reject the client before serving anything.
+  const client = await MidenClient.createMock();
 
   const seed = new Uint8Array(32);
   seed.fill(9);
@@ -44,8 +42,9 @@ async function run(): Promise<void> {
       guardianCommitment: GUARDIAN_COMMITMENT,
       seed,
     },
-    'https://rpc.testnet.miden.io',
+    'mock',
   );
+  const accountId = account.id().toString();
 
   const code = account.code();
   const hasProcedure: Record<string, boolean> = {};
@@ -53,15 +52,20 @@ async function run(): Promise<void> {
     hasProcedure[name] = code.hasProcedure(Word.fromHex(root));
   }
 
-  // Compile every config script against the real WASM assembler.
-  const rpcOptions = { midenRpcEndpoint: 'https://rpc.testnet.miden.io' };
+  // Compile every config script against the real WASM assembler, and have the
+  // client attach the account's multisig auth args to each request.
+  const requestOptions = { accountId, midenRpcEndpoint: 'mock' };
   const configScriptsCompiled: Record<string, boolean> = {};
-  await buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT], rpcOptions);
+  const authArgsAttached: Record<string, boolean> = {};
+  const signers = await buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT], requestOptions);
   configScriptsCompiled.updateSigners = true;
-  await buildUpdateProcedureThresholdTransactionRequest(client, 'send_asset', 2, rpcOptions);
+  authArgsAttached.updateSigners = Boolean(signers.request.authArg());
+  const threshold = await buildUpdateProcedureThresholdTransactionRequest(client, 'send_asset', 2, requestOptions);
   configScriptsCompiled.updateProcedureThreshold = true;
-  await buildUpdateGuardianTransactionRequest(client, GUARDIAN_COMMITMENT, rpcOptions);
+  authArgsAttached.updateProcedureThreshold = Boolean(threshold.request.authArg());
+  const guardian = await buildUpdateGuardianTransactionRequest(client, GUARDIAN_COMMITMENT, requestOptions);
   configScriptsCompiled.updateGuardian = true;
+  authArgsAttached.updateGuardian = Boolean(guardian.request.authArg());
 
   window.__result = {
     id: account.id().toString(),
@@ -71,6 +75,7 @@ async function run(): Promise<void> {
     slotNames: account.storage().getSlotNames(),
     hasProcedure,
     configScriptsCompiled,
+    authArgsAttached,
   };
   report(JSON.stringify(window.__result, null, 2));
 }

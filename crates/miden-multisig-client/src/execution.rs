@@ -8,6 +8,7 @@ use miden_client::transaction::TransactionRequest;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::MultisigAuthArgs;
 
 use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
@@ -104,7 +105,7 @@ pub async fn build_final_transaction_request(
     client: &MidenSdkClient,
     transaction_type: &TransactionType,
     account: &Account,
-    salt: Word,
+    auth_args: &MultisigAuthArgs,
     signature_advice: Vec<SignatureAdvice>,
     metadata_threshold: Option<u64>,
     metadata_signer_commitments: Option<&[Word]>,
@@ -126,7 +127,7 @@ pub async fn build_final_transaction_request(
                 vec![asset.into()],
                 *note_type,
                 *heights,
-                salt,
+                auth_args,
                 signature_advice,
             )
         }
@@ -162,7 +163,7 @@ pub async fn build_final_transaction_request(
                     }
                     crate::transaction::build_consume_notes_transaction_request_from_notes(
                         decoded,
-                        salt,
+                        auth_args,
                         signature_advice,
                     )
                 }
@@ -172,14 +173,14 @@ pub async fn build_final_transaction_request(
                         crate::transaction::build_consume_notes_transaction_request(
                             client,
                             note_ids.clone(),
-                            salt,
+                            auth_args,
                             signature_advice,
                         )
                         .await
                     }
                     #[cfg(not(feature = "legacy-consume-notes"))]
                     {
-                        let _ = (client, salt, signature_advice);
+                        let _ = (client, auth_args, signature_advice);
                         // Preserve `Some(1)` vs `None` so the error tells the
                         // operator which legacy shape was rejected.
                         Err(MultisigError::UnsupportedMetadataVersion {
@@ -196,7 +197,7 @@ pub async fn build_final_transaction_request(
             crate::transaction::build_update_guardian_transaction_request(
                 *new_commitment,
                 scheme,
-                salt,
+                auth_args,
                 signature_advice,
             )
         }
@@ -208,7 +209,7 @@ pub async fn build_final_transaction_request(
                 crate::transaction::build_update_procedure_threshold_transaction_request(
                     *procedure,
                     *new_threshold,
-                    salt,
+                    auth_args,
                     signature_advice,
                 )?;
 
@@ -227,7 +228,7 @@ pub async fn build_final_transaction_request(
             let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
                 new_threshold,
                 signer_commitments,
-                salt,
+                auth_args,
                 signature_advice,
                 scheme,
             )?;

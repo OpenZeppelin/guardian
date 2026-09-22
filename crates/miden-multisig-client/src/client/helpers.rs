@@ -22,6 +22,7 @@ use crate::execution::build_final_transaction_request;
 use crate::keystore::word_from_hex;
 use crate::proposal::{Proposal, ProposalVerification, TransactionType};
 use crate::transaction::word_to_hex;
+use crate::transaction::{proposal_auth_args, summary_approval_expiration_block_num, summary_salt};
 
 /// True for note-less storage-config transactions, whose post-submit state miden-client persists
 /// incorrectly for private accounts, so local state must be rebuilt from the proven delta instead.
@@ -271,7 +272,15 @@ impl MultisigClient {
 
         let account = self.require_account()?.clone();
         let salt = proposal.metadata.salt()?;
+        if summary_salt(&proposal.tx_summary) != salt {
+            return Err(MultisigError::InvalidConfig(format!(
+                "proposal {} metadata salt does not match the salt bound into its tx_summary",
+                proposal.id
+            )));
+        }
         let signer_commitments = proposal.metadata.signer_commitments()?;
+        let auth_args =
+            proposal_auth_args(self.fee_faucet_id, &proposal.tx_summary, &chain_anchor)?;
 
         // A consume-notes summary commits to *authenticated* consumption
         // (see `ensure_notes_authenticated`), which miden-client decides
@@ -301,7 +310,7 @@ impl MultisigClient {
             &self.miden_client,
             &proposal.transaction_type,
             account.inner(),
-            salt,
+            &auth_args,
             Vec::new(),
             proposal.metadata.new_threshold,
             Some(signer_commitments.as_slice()),
@@ -324,6 +333,29 @@ impl MultisigClient {
             )));
         }
 
+        Ok(())
+    }
+
+    /// An expired approval aborts in the auth procedure only at execution, after
+    /// the advice is assembled and the GUARDIAN ack requested. The summary carries
+    /// the deadline, so it is checked against the sync height first.
+    pub(crate) async fn assert_approval_not_expired(
+        &self,
+        proposal_id: &str,
+        summary: &TransactionSummary,
+    ) -> Result<()> {
+        let Some(expiration) = summary_approval_expiration_block_num(summary) else {
+            return Ok(());
+        };
+        let sync_height = self.miden_client.get_sync_height().await.map_err(|e| {
+            MultisigError::miden_client_with_context("failed to read the sync height", e)
+        })?;
+        if sync_height >= expiration {
+            return Err(MultisigError::InvalidConfig(format!(
+                "proposal {proposal_id} approval expired at block {expiration}; the chain is at \
+                 block {sync_height}, so the collected signatures no longer authorize it"
+            )));
+        }
         Ok(())
     }
 
@@ -555,6 +587,7 @@ impl MultisigClient {
             &self.account_dir,
             &self.miden_endpoint,
             self.note_transport_endpoint.as_deref(),
+            self.fee_faucet_id,
             &self.prover_config,
             &self.rpc_config,
         )
@@ -639,9 +672,10 @@ mod tests {
             delta,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             Word::default(),
             0,
-            TransactionSummaryUserParams::new([Felt::ZERO; 7]),
+            TransactionSummaryUserParams::new([Felt::ZERO; 6]),
         )
         .to_json()
     }

@@ -3,6 +3,7 @@ use guardian_client::ToJson;
 use miden_protocol::account::AccountStoragePatch;
 use miden_protocol::account::delta::AccountVaultDelta;
 use miden_protocol::account::{AccountDelta, AccountId};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::transaction::{
     InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
 };
@@ -39,9 +40,10 @@ pub fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value>
             .map_err(|error| anyhow!("failed to build input notes: {error}"))?,
         RawOutputNotes::new(Vec::new())
             .map_err(|error| anyhow!("failed to build output notes: {error}"))?,
+        BlockNumber::from(0),
         Word::from([ZERO; 4]),
         0,
-        TransactionSummaryUserParams::new([ZERO; 7]),
+        TransactionSummaryUserParams::new([ZERO; 6]),
     );
     Ok(tx_summary.to_json())
 }

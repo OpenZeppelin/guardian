@@ -14,9 +14,10 @@ import {
   NoteTag,
   NoteType,
   Poseidon2,
-  TransactionRequestBuilder,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
+import type { RawClientSource } from '../raw-client.js';
+import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
 import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
@@ -74,6 +75,36 @@ export function deriveP2idSerialNumber(salt: Word): Word {
   ]));
 }
 
+/**
+ * P2ID storage since protocol 0.17 rc.5: target account, then a two-felt salt.
+ * Zero salt is the upstream default. A secret salt hides the target from
+ * guesses against the storage commitment; this builder keeps the note
+ * deterministic in the proposal salt, which already derives the serial number.
+ */
+function p2idStorage(recipient: AccountId): Felt[] {
+  return [recipient.suffix(), recipient.prefix(), new Felt(0n), new Felt(0n)];
+}
+
+/**
+ * P2IDE storage: reclaimer (the sender), target, then reclaim and timelock
+ * heights. Zero encodes an unset height. The script requires all six items.
+ */
+function p2ideStorage(
+  sender: AccountId,
+  recipient: AccountId,
+  reclaimHeight: number,
+  timelockHeight: number,
+): Felt[] {
+  return [
+    sender.suffix(),
+    sender.prefix(),
+    recipient.suffix(),
+    recipient.prefix(),
+    new Felt(BigInt(reclaimHeight)),
+    new Felt(BigInt(timelockHeight)),
+  ];
+}
+
 function buildP2idNote(
   sender: AccountId,
   recipient: AccountId,
@@ -89,19 +120,10 @@ function buildP2idNote(
   const timelockHeight = parseP2ideHeight('timelockHeight', heights.timelockHeight);
   const isP2ide = reclaimHeight !== undefined || timelockHeight !== undefined;
 
-  // P2IDE storage layout (miden-standards `P2ideNoteStorage`): the P2ID
-  // storage plus reclaim/timelock heights as felts, 0 encoding "unset".
   const noteScript = isP2ide ? NoteScript.p2ide() : NoteScript.p2id();
-  const storageFelts = [
-    recipient.suffix(),
-    recipient.prefix(),
-  ];
-  if (isP2ide) {
-    storageFelts.push(
-      new Felt(BigInt(reclaimHeight ?? 0)),
-      new Felt(BigInt(timelockHeight ?? 0)),
-    );
-  }
+  const storageFelts = isP2ide
+    ? p2ideStorage(sender, recipient, reclaimHeight ?? 0, timelockHeight ?? 0)
+    : p2idStorage(recipient);
   const noteStorage = new NoteStorage(new FeltArray(storageFelts));
 
   const noteRecipient = new NoteRecipient(serialNum, noteScript, noteStorage);
@@ -141,13 +163,14 @@ export function buildP2idNoteFromMetadata(
   return buildP2idNote(sender, recipient, noteAssets, noteType, saltHex, heights);
 }
 
-export function buildP2idTransactionRequest(
+export async function buildP2idTransactionRequest(
+  client: RawClientSource,
   senderId: string,
   recipientId: string,
   faucetId: string,
   amount: bigint,
   options: P2idTransactionOptions = {},
-): { request: TransactionRequest; salt: Word } {
+): Promise<{ request: TransactionRequest; salt: Word }> {
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
 
   const note = buildP2idNoteFromMetadata(
@@ -162,23 +185,18 @@ export function buildP2idTransactionRequest(
 
   const outputNotes = new MidenArrays.NoteArray([note]);
 
-  const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
-
-  let txBuilder = new TransactionRequestBuilder();
+  let txBuilder = await multisigRequestBuilder(client, authSaltHex, {
+    ...options,
+    accountId: senderId,
+  });
   txBuilder = txBuilder.withOwnOutputNotes(outputNotes);
-  txBuilder = txBuilder.withFeeConversionSalt(authSaltForBuilder);
-  // Borrows rather than consumes: the glue passes `__wbg_ptr` without taking it,
-  // so the handle stays ours to release once the builder has read it.
-  authSaltForBuilder.free?.();
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
-
   return {
-    request: txBuilder.build(),
-    salt: authSaltForReturn,
+    request: buildMultisigRequest(txBuilder, senderId),
+    salt: WordType.fromHex(normalizeHexWord(authSaltHex)),
   };
 }

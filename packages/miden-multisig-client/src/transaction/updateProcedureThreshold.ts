@@ -4,7 +4,6 @@ import {
   type MidenClient,
   Poseidon2,
   TransactionRequest,
-  TransactionRequestBuilder,
   TransactionScript,
   type WasmWebClient,
   Word,
@@ -14,7 +13,8 @@ import { getProcedureRoot, type ProcedureName } from '../procedures.js';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
-import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
+import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
+import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
 
 function buildProcedureThresholdFelts(procedure: ProcedureName, threshold: number): Felt[] {
   const procedureRoot = WordType.fromHex(normalizeHexWord(getProcedureRoot(procedure)));
@@ -66,19 +66,19 @@ export function buildUpdateProcedureThresholdTransactionRequest(
   client: MidenClient,
   procedure: ProcedureName,
   threshold: number,
-  options: MidenClientSignatureOptions,
+  options: MidenClientMultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
 export function buildUpdateProcedureThresholdTransactionRequest(
   client: WasmWebClient,
   procedure: ProcedureName,
   threshold: number,
-  options?: SignatureOptions,
+  options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
 export async function buildUpdateProcedureThresholdTransactionRequest(
   client: MidenClient | WasmWebClient,
   procedure: ProcedureName,
   threshold: number,
-  options: SignatureOptions = {},
+  options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }> {
   const configHash = buildProcedureThresholdConfigHash(procedure, threshold);
 
@@ -89,21 +89,16 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
     options.midenRpcEndpoint,
   );
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
-  const authSalt = WordType.fromHex(normalizeHexWord(authSaltHex));
 
-  let txBuilder = new TransactionRequestBuilder();
+  let txBuilder = await multisigRequestBuilder(client, authSaltHex, options);
   txBuilder = txBuilder.withCustomScript(script);
-  txBuilder = txBuilder.withFeeConversionSalt(authSalt);
-  // Borrows rather than consumes: the glue passes `__wbg_ptr` without taking it,
-  // so the handle stays ours to release once the builder has read it.
-  authSalt.free?.();
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
   return {
-    request: txBuilder.build(),
+    request: buildMultisigRequest(txBuilder, options.accountId),
     salt: WordType.fromHex(normalizeHexWord(authSaltHex)),
     configHash,
   };

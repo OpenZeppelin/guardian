@@ -33,6 +33,15 @@ npm run typecheck
 npm run dev
 ```
 
+Required env var:
+
+```bash
+# The chain's fee faucet, bech32 or hex. Since Miden 0.17 the client builds its
+# protocol configuration from it and cannot execute without one; the node does
+# not serve it over RPC yet. The session form can override it per session.
+VITE_MIDEN_FEE_FAUCET_ID=...
+```
+
 Optional env vars:
 
 ```bash
@@ -108,9 +117,10 @@ request, proposes it via `createCustomProposal`, and after threshold calls
 `prepareCustomExecution` to get the validated advice, which the harness injects
 into a rebuilt request before submitting on-chain. The `recipe` returned by
 `createCustomProposal` is what the producer keeps to reproduce the exact
-transaction at execute time (request inputs and the original salt). Both builds
-pass that salt to `withFeeConversionSalt`; the Miden client derives the native
-fee conversion info from the same execution reference header.
+transaction at execute time (request inputs, the original salt, and the anchor
+block). Both builds pass that salt and block into
+`feeAwareTransactionRequestBuilder`; the Miden client derives the native fee
+conversion info and leaves the three-word multisig auth args in place.
 
 ```js
 // Producer tab: create

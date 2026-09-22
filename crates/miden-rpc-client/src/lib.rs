@@ -6,7 +6,7 @@ use guardian_shared::retry::{
     ProductionRetryRuntime, RPC_TRANSPORT_SIGNALS, RetryPolicy, RetryRuntime, StructuredEvidence,
     connect_failure_is_permanent, grpc_code_evidence, is_transient_error_with, run_retries,
 };
-use miden_protocol::{account::AccountId, utils::serde::Serializable};
+use miden_protocol::account::AccountId;
 use tonic::{
     Request,
     transport::{Channel, ClientTlsConfig},
@@ -16,7 +16,7 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/rpc_generated.rs"));
 }
 
-pub use generated::{account, blockchain, note, primitives, rpc, transaction};
+pub use generated::{account, blockchain, note, primitives, rpc, submission, transaction};
 pub use rpc::api_client::ApiClient;
 
 #[cfg(any(test, feature = "scripted-node"))]
@@ -280,6 +280,7 @@ impl MidenRpcClient {
                 let request = rpc::BlockHeaderByNumberRequest {
                     block_num,
                     include_mmr_proof: Some(include_mmr_proof),
+                    include_protocol_config: None,
                 };
                 client
                     .get_block_header_by_number(Request::new(request))
@@ -294,17 +295,15 @@ impl MidenRpcClient {
     ///
     /// Never retried, regardless of the configured read-retry policy: a
     /// submission whose outcome is unknown could execute twice if re-sent.
+    ///
+    /// Since Miden 0.17 the node takes the canonical structured message rather
+    /// than opaque transaction bytes, so the caller assembles the submission.
     pub async fn submit_transaction(
         &mut self,
-        proven_tx_bytes: Vec<u8>,
+        submission: submission::ProvenTransactionSubmission,
     ) -> Result<(), RpcClientError> {
-        let request = transaction::ProvenTransaction {
-            transaction: proven_tx_bytes,
-            sealed_transaction_inputs: None,
-        };
-
         self.client
-            .submit_proven_tx(Request::new(request))
+            .submit_proven_tx(Request::new(submission))
             .await
             .map_err(|status| RpcClientError::Call {
                 operation: "submit_transaction",
@@ -351,8 +350,8 @@ impl MidenRpcClient {
     /// Get notes by their IDs
     pub async fn get_notes_by_id(
         &mut self,
-        note_ids: Vec<primitives::Digest>,
-    ) -> Result<note::CommittedNoteList, RpcClientError> {
+        note_ids: Vec<primitives::Word>,
+    ) -> Result<rpc::NotesByIdResponse, RpcClientError> {
         let note_ids: Vec<note::NoteId> = note_ids
             .into_iter()
             .map(|id| note::NoteId { id: Some(id) })
@@ -363,8 +362,8 @@ impl MidenRpcClient {
             "get_notes_by_id",
             RpcReadMode::Configured,
             |mut client| async move {
-                let request = note::NoteIdList {
-                    ids: note_ids.clone(),
+                let request = rpc::NotesByIdRequest {
+                    note_ids: note_ids.clone(),
                 };
                 client
                     .get_notes_by_id(Request::new(request))
@@ -385,15 +384,13 @@ impl MidenRpcClient {
         read_mode: RpcReadMode,
     ) -> Result<String, RpcClientError> {
         const OPERATION: &str = "get_account_commitment";
-        let account_id_bytes = account_id.to_bytes();
+        let proto_account_id = proto_account_id(account_id);
 
-        let account_id_bytes = &account_id_bytes;
+        let proto_account_id = &proto_account_id;
         let account_response = self
             .retry_read(OPERATION, read_mode, |mut client| async move {
                 let request = Request::new(rpc::AccountRequest {
-                    account_id: Some(account::AccountId {
-                        id: account_id_bytes.to_vec(),
-                    }),
+                    account_id: Some(*proto_account_id),
                     block_num: None,
                     details: None,
                 });
@@ -419,15 +416,7 @@ impl MidenRpcClient {
                 reason: "no commitment in witness".to_string(),
             })?;
 
-        let bytes = [
-            commitment.d0.to_le_bytes(),
-            commitment.d1.to_le_bytes(),
-            commitment.d2.to_le_bytes(),
-            commitment.d3.to_le_bytes(),
-        ]
-        .concat();
-
-        Ok(format!("0x{}", hex::encode(bytes)))
+        Ok(format!("0x{}", hex::encode(commitment.encoded)))
     }
 
     /// Fetch full account details including serialized account data
@@ -435,17 +424,15 @@ impl MidenRpcClient {
         &mut self,
         account_id: &AccountId,
     ) -> Result<rpc::AccountResponse, RpcClientError> {
-        let account_id_bytes = account_id.to_bytes();
+        let proto_account_id = proto_account_id(account_id);
 
-        let account_id_bytes = &account_id_bytes;
+        let proto_account_id = &proto_account_id;
         self.retry_read(
             "get_account_details",
             RpcReadMode::Configured,
             |mut client| async move {
                 let request = Request::new(rpc::AccountRequest {
-                    account_id: Some(account::AccountId {
-                        id: account_id_bytes.to_vec(),
-                    }),
+                    account_id: Some(*proto_account_id),
                     block_num: None,
                     details: None,
                 });
@@ -456,6 +443,21 @@ impl MidenRpcClient {
             },
         )
         .await
+    }
+}
+
+/// The canonical wire form of an account ID: a versioned pair of felts rather
+/// than the serialized bytes the pre-0.17 schema carried.
+fn proto_account_id(account_id: &AccountId) -> account::AccountId {
+    account::AccountId {
+        version: Some(account::account_id::Version::V1(account::AccountIdV1 {
+            suffix: Some(primitives::Felt {
+                value: account_id.suffix().as_canonical_u64(),
+            }),
+            prefix: Some(primitives::Felt {
+                value: account_id.prefix().as_felt().as_canonical_u64(),
+            }),
+        })),
     }
 }
 
@@ -693,7 +695,10 @@ mod tests {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
 
-        let error = client.submit_transaction(vec![0u8; 4]).await.unwrap_err();
+        let error = client
+            .submit_transaction(submission::ProvenTransactionSubmission::default())
+            .await
+            .unwrap_err();
 
         assert!(matches!(
             error,

@@ -9,6 +9,8 @@ import {
   chainAnchorFromBase64,
   executeForSummary,
   executeForSummaryAt,
+  summaryApprovalExpirationBlockNum,
+  summarySalt,
 } from './transaction.js';
 
 const {
@@ -53,20 +55,22 @@ vi.mock('./recovery/publicNoteBackfill.js', () => ({
   backfillPublicNotesByTag: mockBackfillPublicNotesByTag,
 }));
 
-const { MOCK_CHAIN_ANCHOR_B64, MOCK_SALT_HEX, createMockChainAnchor } = vi.hoisted(() => {
+const { MOCK_CHAIN_ANCHOR_B64, MOCK_SALT_HEX, MOCK_ANCHOR_BLOCK_NUM, createMockChainAnchor } = vi.hoisted(() => {
   const MOCK_CHAIN_ANCHOR_B64 = 'bW9jay1jaGFpbi1hbmNob3I=';
   // A rebuildable proposal carries its salt as well as its anchor: the request declares
   // the salt and miden-client commits it into the auth arg, so the summary holds a
-  // commitment that cannot be inverted back to it. Same value the `summaryAuthArg` mock
+  // commitment that cannot be inverted back to it. Same value the `summarySalt` mock
   // returns, so pinning it here changes no expectation downstream.
   const MOCK_SALT_HEX = '0x' + 'd'.repeat(64);
+  const MOCK_ANCHOR_BLOCK_NUM = 4242;
   const createMockChainAnchor = () =>
     ({
       commitment: () => ({ toHex: () => '0x' + 'b'.repeat(64) }),
+      blockNum: () => MOCK_ANCHOR_BLOCK_NUM,
       free: () => {},
       serialize: () => new Uint8Array([9, 9, 9]),
     }) as never;
-  return { MOCK_CHAIN_ANCHOR_B64, MOCK_SALT_HEX, createMockChainAnchor };
+  return { MOCK_CHAIN_ANCHOR_B64, MOCK_SALT_HEX, MOCK_ANCHOR_BLOCK_NUM, createMockChainAnchor };
 });
 
 // Mock the Miden SDK
@@ -147,7 +151,7 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
 // The consume-notes v2 binding path rebuilds the request from embedded
 // notes; stub the builder so re-execution can run under the mocked SDK.
 vi.mock('./transaction/consumeNotes.js', () => ({
-  buildConsumeNotesTransactionRequestFromNotes: vi.fn(() => ({
+  buildConsumeNotesTransactionRequestFromNotes: vi.fn(async () => ({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
   })),
@@ -159,9 +163,10 @@ vi.mock('./transaction.js', () => ({
   executeForSummaryAt: vi.fn(),
   chainAnchorToBase64: vi.fn(() => MOCK_CHAIN_ANCHOR_B64),
   chainAnchorFromBase64: vi.fn(() => createMockChainAnchor()),
-  summaryAuthArg: vi.fn(() => ({
-    toHex: () => '0x' + 'd'.repeat(64),
+  summarySalt: vi.fn(() => ({
+    toHex: () => MOCK_SALT_HEX,
   })),
+  summaryApprovalExpirationBlockNum: vi.fn(() => undefined),
   buildUpdateSignersTransactionRequest: vi.fn().mockResolvedValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
@@ -176,11 +181,11 @@ vi.mock('./transaction.js', () => ({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
   }),
-  buildConsumeNotesTransactionRequest: vi.fn().mockReturnValue({
+  buildConsumeNotesTransactionRequest: vi.fn().mockResolvedValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
   }),
-  buildP2idTransactionRequest: vi.fn().mockReturnValue({
+  buildP2idTransactionRequest: vi.fn().mockResolvedValue({
     request: {},
     salt: { toHex: () => '0x' + 'd'.repeat(64) },
   }),
@@ -325,6 +330,7 @@ describe('Multisig', () => {
     };
 
     guardian.setSigner(mockSigner);
+    vi.mocked(summarySalt).mockReturnValue({ toHex: () => MOCK_SALT_HEX } as never);
 
     mockAccount = {
       id: () => ({
@@ -336,6 +342,7 @@ describe('Multisig', () => {
     };
 
     mockWebClient = {
+      getSyncHeight: vi.fn().mockResolvedValue(0),
       executeTransaction: vi.fn(),
       proveTransaction: vi.fn(),
       submitProvenTransaction: vi.fn(),
@@ -2400,6 +2407,7 @@ describe('Multisig', () => {
       const freed = vi.fn();
       const proposalAnchor = {
         commitment: () => ({ toHex: () => '0x' + 'b'.repeat(64) }),
+        blockNum: () => MOCK_ANCHOR_BLOCK_NUM,
         free: freed,
         serialize: () => new Uint8Array([9, 9, 9]),
       };
@@ -2923,6 +2931,7 @@ describe('Multisig', () => {
 
       // Propose path builds the private note...
       expect(vi.mocked(buildP2idTransactionRequest)).toHaveBeenCalledWith(
+        mockWebClient,
         expect.any(String),
         '0xrecipient',
         '0xfaucet',
@@ -2931,7 +2940,7 @@ describe('Multisig', () => {
       );
       // ...and the rebuild-from-metadata path parses note_type back to Private.
       const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
-      expect(lastCall[4]).toMatchObject({ noteType: NoteType.Private });
+      expect(lastCall[5]).toMatchObject({ noteType: NoteType.Private });
 
       // The pushed wire metadata carries note_type so cosigners rebuild the
       // same private note at verification/execution.
@@ -3003,7 +3012,7 @@ describe('Multisig', () => {
 
       // Propose path builds the P2IDE note from the heights...
       const lastCall = vi.mocked(buildP2idTransactionRequest).mock.calls.at(-1)!;
-      expect(lastCall[4]).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
+      expect(lastCall[5]).toMatchObject({ reclaimHeight: 12345, timelockHeight: 700 });
 
       // ...and the pushed wire metadata carries the heights so cosigners
       // rebuild the same P2IDE note at verification/execution.
@@ -3286,7 +3295,7 @@ describe('Multisig', () => {
         mockWebClient,
         2,
         config.signerCommitments,
-        { signatureScheme: 'ecdsa' },
+        { accountId: expect.any(String), signatureScheme: 'ecdsa' },
       );
     });
   });
@@ -3344,8 +3353,33 @@ describe('Multisig', () => {
         mockWebClient,
         3,
         [...config.signerCommitments, newCommitment],
-        { signatureScheme: mockSigner.scheme },
+        { accountId: expect.any(String), signatureScheme: mockSigner.scheme },
       );
+    });
+
+    it('add: rejects the GUARDIAN commitment as a signer before collecting signatures', async () => {
+      const multisig = createTestMultisig(config);
+
+      await expect(
+        multisig.createAddSignerProposal(config.guardianCommitment, { nonce: 1 }),
+      ).rejects.toThrow(/different from all signer commitments/);
+      expect(buildUpdateSignersTransactionRequest).not.toHaveBeenCalled();
+    });
+
+    it('add: rejects growing the signer set past the on-chain cap of 64', async () => {
+      const full = {
+        threshold: 1,
+        signerCommitments: Array.from({ length: 64 }, (_, i) =>
+          '0x' + i.toString(16).padStart(64, '0'),
+        ),
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(full);
+
+      await expect(
+        multisig.createAddSignerProposal('0x' + 'e'.repeat(64), { nonce: 1 }),
+      ).rejects.toThrow(/at most 64/);
+      expect(buildUpdateSignersTransactionRequest).not.toHaveBeenCalled();
     });
 
     it('add: defaults to the current threshold when newThreshold is omitted', async () => {
@@ -3358,7 +3392,7 @@ describe('Multisig', () => {
         mockWebClient,
         config.threshold,
         expect.any(Array),
-        { signatureScheme: mockSigner.scheme },
+        { accountId: expect.any(String), signatureScheme: mockSigner.scheme },
       );
     });
 
@@ -3372,7 +3406,7 @@ describe('Multisig', () => {
         mockWebClient,
         1,
         [config.signerCommitments[0], config.signerCommitments[1]],
-        { signatureScheme: mockSigner.scheme },
+        { accountId: expect.any(String), signatureScheme: mockSigner.scheme },
       );
     });
 
@@ -3386,7 +3420,7 @@ describe('Multisig', () => {
         mockWebClient,
         2,
         expect.any(Array),
-        { signatureScheme: mockSigner.scheme },
+        { accountId: expect.any(String), signatureScheme: mockSigner.scheme },
       );
     });
   });
@@ -3484,6 +3518,20 @@ describe('Multisig', () => {
       );
     });
 
+    it('rejects a new GUARDIAN that is one of the approvers before contacting its endpoint', async () => {
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+
+      await expect(
+        multisig.createSwitchGuardianProposal('http://new-guardian.com', '0x' + 'a'.repeat(64)),
+      ).rejects.toThrow(/different from all signer commitments/);
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(buildUpdateGuardianTransactionRequest).not.toHaveBeenCalled();
+    });
+
     it('should reject switch proposal when endpoint commitment does not match', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
         summary: {
@@ -3566,7 +3614,7 @@ describe('Multisig', () => {
       expect(buildUpdateGuardianTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
         newGuardianCommitment,
-        { signatureScheme: 'ecdsa' },
+        { accountId: expect.any(String), signatureScheme: 'ecdsa' },
       );
     });
   });
@@ -3858,7 +3906,7 @@ describe('Multisig', () => {
         mockWebClient,
         'send_asset',
         1,
-        { signatureScheme: 'falcon' },
+        { accountId: expect.any(String), signatureScheme: 'falcon' },
       );
       expect(proposal.metadata.proposalType).toBe('update_procedure_threshold');
       if (proposal.metadata.proposalType === 'update_procedure_threshold') {
@@ -3931,7 +3979,7 @@ describe('Multisig', () => {
         mockWebClient,
         'send_asset',
         1,
-        { signatureScheme: 'ecdsa' },
+        { accountId: expect.any(String), signatureScheme: 'ecdsa' },
       );
     });
   });
@@ -4542,6 +4590,7 @@ describe('Multisig', () => {
       const cosignerSignature = '0x' + '5'.repeat(130);
       const ackSignature = '0x' + '6'.repeat(130);
       const saltHex = '0x' + '7'.repeat(64);
+      vi.mocked(summarySalt).mockReturnValue({ toHex: () => saltHex } as never);
       const finalRequest = { kind: 'final-change-threshold-request' };
 
       vi.mocked(buildUpdateSignersTransactionRequest)
@@ -4657,6 +4706,119 @@ describe('Multisig', () => {
       expect(mockWebClient.proveTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.submitProvenTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.applyTransaction).not.toHaveBeenCalled();
+    });
+
+    it('refuses to assemble a request whose approval has expired (protocol 0.17)', async () => {
+      const { buildSignatureAdviceEntry, signatureHexToBytes } = await import('./utils/signature.js');
+      vi.mocked(signatureHexToBytes).mockClear();
+      vi.mocked(buildSignatureAdviceEntry).mockClear();
+
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        guardianPublicKey: '0x' + '1'.repeat(66),
+      };
+
+      const ecdsaSigner: Signer = {
+        ...mockSigner,
+        scheme: 'ecdsa',
+        publicKey: '0x' + '2'.repeat(66),
+      };
+
+      const multisig = createTestMultisig(config, ecdsaSigner);
+      const cachedProposalId = '0x' + 'c'.repeat(64);
+      const requestedProposalId = '0x' + 'C'.repeat(64);
+      const cosignerPubkey = '0x' + '3'.repeat(66);
+      const ackPubkey = '0x' + '4'.repeat(66);
+      const cosignerSignature = '0x' + '5'.repeat(130);
+      const ackSignature = '0x' + '6'.repeat(130);
+      const saltHex = '0x' + '7'.repeat(64);
+      vi.mocked(summarySalt).mockReturnValue({ toHex: () => saltHex } as never);
+      const finalRequest = { kind: 'final-change-threshold-request' };
+      // The summary binds an approval that expired at the current sync height.
+      vi.mocked(summaryApprovalExpirationBlockNum).mockReturnValue(MOCK_ANCHOR_BLOCK_NUM + 10);
+      mockWebClient.getSyncHeight.mockResolvedValue(MOCK_ANCHOR_BLOCK_NUM + 10);
+
+      vi.mocked(buildUpdateSignersTransactionRequest)
+        .mockResolvedValueOnce({
+          request: { kind: 'verify-change-threshold-request' },
+          salt: { toHex: () => '0x' + 'd'.repeat(64) },
+          configHash: { toHex: () => '0x' + 'e'.repeat(64) },
+        } as any)
+        .mockResolvedValueOnce({
+          request: finalRequest,
+          salt: { toHex: () => '0x' + 'd'.repeat(64) },
+          configHash: { toHex: () => '0x' + 'e'.repeat(64) },
+        } as any);
+
+      (multisig as any).proposals.set(cachedProposalId, {
+        id: cachedProposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: {
+              scheme: 'ecdsa',
+              signature: cosignerSignature,
+              publicKey: cosignerPubkey,
+            },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'change_threshold',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          targetThreshold: 1,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+          saltHex,
+          description: '',
+        },
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'change_threshold',
+              chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+              salt: MOCK_SALT_HEX,
+              target_threshold: 1,
+              signer_commitments: ['0x' + 'a'.repeat(64)],
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          ack_sig: ackSignature,
+          ack_pubkey: ackPubkey,
+          ack_scheme: 'ecdsa',
+        }),
+      });
+
+      await expect(
+        multisig.createTransactionProposalRequest(requestedProposalId),
+      ).rejects.toThrow(/approval expired at block/);
+      expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
     });
 
     it('should return a ready switch_guardian request without executing it', async () => {

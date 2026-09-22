@@ -353,9 +353,10 @@ pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {
         delta,
         InputNotes::new(Vec::new()).unwrap(),
         RawOutputNotes::new(Vec::new()).unwrap(),
+        miden_protocol::block::BlockNumber::from(0),
         Word::from([ZERO; 4]),
         0,
-        TransactionSummaryUserParams::new([ZERO; 7]),
+        TransactionSummaryUserParams::new([ZERO; 6]),
     );
 
     tx_summary.to_json()

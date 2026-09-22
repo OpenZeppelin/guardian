@@ -14,7 +14,9 @@ use miden_confidential_contracts::multisig_guardian::{
 use miden_protocol::account::auth::Signature;
 use miden_protocol::account::AccountId;
 use miden_protocol::assembly::Package;
+use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::{Felt, Hasher};
+use miden_standards::account::auth::MultisigAuthArgs;
 use miden_standards::StandardsLib;
 
 #[allow(dead_code)]
@@ -159,7 +161,7 @@ pub fn build_update_signers_script() -> Result<TransactionScript, String> {
 pub fn build_update_signers_transaction_request<I>(
     threshold: u64,
     signer_commitments: &[Word],
-    salt: Word,
+    auth_args: &MultisigAuthArgs,
     extra_advice: I,
 ) -> Result<(TransactionRequest, Word), MultisigError>
 where
@@ -168,12 +170,18 @@ where
     let (config_hash, config_values) = build_multisig_config_advice(threshold, signer_commitments);
     let script = build_update_signers_script().map_err(MultisigError::Assembly)?;
 
+    // Since Miden 0.17 the multisig reads its auth arg as the commitment to a three-word
+    // preimage (bound block + expiration, salt, fee conversion info) carried in the advice
+    // map. A declared `fee_conversion_salt` would have miden-client commit the two-word
+    // shape instead, which the auth procedure cannot pipe.
+    let auth_args_commitment = auth_args.to_commitment();
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
         .script_arg(config_hash)
         .extend_advice_map([(config_hash, config_values)])
+        .extend_advice_map([(auth_args_commitment, auth_args.to_elements())])
         .extend_advice_map(extra_advice)
-        .fee_conversion_salt(salt)
+        .auth_arg(auth_args_commitment)
         .build()?;
 
     Ok((request, config_hash))

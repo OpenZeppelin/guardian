@@ -11,8 +11,9 @@ use guardian_shared::SignatureScheme;
 use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
 use miden_protocol::{Felt, Word};
-use miden_standards::account::auth::AuthGuardedMultisig;
+use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
 
+use super::TransactionRequestBuilderExt;
 use crate::error::{MultisigError, Result};
 
 /// Builds the update_guardian_public_key transaction script.
@@ -45,13 +46,13 @@ pub fn build_update_guardian_script(
 ///
 /// * `new_guardian_pubkey` - The new GUARDIAN public key commitment
 /// * `scheme` - The signature scheme of the new guardian key
-/// * `salt` - Salt for replay protection
+/// * `auth_args` - The multisig auth args the summary binds (salt, bound block, expiration)
 /// * `signature_advice` - Iterator of (key, values) pairs for the multisig
 ///   threshold signature advice (no guardian signature is required)
 pub fn build_update_guardian_transaction_request<I>(
     new_guardian_pubkey: Word,
     scheme: SignatureScheme,
-    salt: Word,
+    auth_args: &MultisigAuthArgs,
     signature_advice: I,
 ) -> Result<TransactionRequest>
 where
@@ -62,7 +63,7 @@ where
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
         .extend_advice_map(signature_advice)
-        .fee_conversion_salt(salt)
+        .multisig_auth_args(auth_args)
         .build()?;
 
     Ok(request)

@@ -726,7 +726,13 @@ mod tests {
             &self,
             block_num: BlockNumber,
             include_proof: bool,
-        ) -> std::result::Result<miden_protocol::block::ProvenBlock, RpcError> {
+        ) -> std::result::Result<
+            (
+                miden_protocol::block::SignedBlock,
+                Option<miden_protocol::vm::ExecutionProof>,
+            ),
+            RpcError,
+        > {
             self.inner
                 .get_block_by_number(block_num, include_proof)
                 .await
@@ -952,6 +958,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut client = crate::MultisigClient::builder()
             .miden_endpoint(miden_client::rpc::Endpoint::try_from("http://127.0.0.1:1").unwrap())
+            .fee_faucet_id(crate::client::test_support::mock_fee_faucet_id())
             .guardian_endpoint("http://127.0.0.1:1")
             .account_dir(dir.path())
             .generate_key()

@@ -17,8 +17,13 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.17.0-rc.1
 ```
+
+Miden 0.17 requires a new client database: a store created under 0.16 does
+not open. Pass a fresh `storeName` when creating the `MidenClient`, or delete
+the existing IndexedDB database first. Accounts and pending proposals from the
+0.16 line do not carry over; see the compatibility document below.
 
 > **Why the peer version is exact**: the transaction-summary layout and the
 > guarded-multisig procedure roots are only byte-compatible between one
@@ -32,6 +37,7 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
+| 0.18.x (this branch) | 0.17.x (`0.17.0-rc.5`, pre-release) |
 | 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
@@ -47,7 +53,9 @@ breaking changes per line, and what each upgrade does to stored data:
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
 import { AuthSecretKey, MidenClient } from '@miden-sdk/miden-sdk';
 
-const midenClient = await MidenClient.createDevnet();
+// Since Miden 0.17 the client needs the chain's fee faucet (bech32 or hex) to
+// build its protocol configuration; the network presets do not carry it.
+const midenClient = await MidenClient.createDevnet({ feeFaucetId });
 
 // Create a signer from your secret key
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
@@ -231,6 +239,13 @@ All methods accept `nonce` (identifies the proposal; defaults to
 the min of the current threshold and the remaining signer count on remove.
 The option shapes are exported as `CreateProposalOptions`,
 `CreateSignerProposalOptions`, and `CreateP2idProposalOptions`.
+
+All methods also accept `approvalExpirationDelta`: the number of blocks after
+the proposal's anchor block by which the transaction must be included. Past
+that block the approvers' signatures no longer authorize it, the SDK refuses to
+execute it, and the node rejects it as expired. The summary binds the value, so
+the executing party cannot change it. Omitted, the approval never expires,
+which is the Miden default.
 
 > **Breaking change (issue #387):** these methods previously took `nonce` (and
 > `newThreshold`) as positional parameters. Passing the old positional form
@@ -451,7 +466,12 @@ import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client
 // The typed path is `createP2idProposal(recipient, faucet, amount,
 // { nonce, noteType, reclaimHeight, timelockHeight })`, which persists the
 // choices in signed metadata.
-const { request, salt } = buildP2idTransactionRequest(senderId, recipientId, faucetId, amount);
+//
+// The builder takes the Miden client because the executing account decides
+// the auth args the request has to carry (see below).
+const { request, salt } = await buildP2idTransactionRequest(
+  midenClient, senderId, recipientId, faucetId, amount, { midenRpcEndpoint },
+);
 const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg');
 
 // Cosigners review and sign through the usual signProposal flow.
@@ -462,51 +482,54 @@ const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg
 const advice = await multisig.prepareCustomExecution(proposal.id, request.serialize());
 
 // The browser TransactionRequest is immutable, so rebuild from the same recipe
-// (inputs + salt) with the advice, then submit. `submitTransaction` takes the
-// proposal id to execute at the proposal's anchored reference block, since the
-// collected signatures only authorize the summary produced there.
-const { request: finalRequest } = buildP2idTransactionRequest(
-  senderId, recipientId, faucetId, amount, { salt, signatureAdviceMap: advice },
+// (inputs + salt + bound block) with the advice, then submit. `submitTransaction`
+// takes the proposal id to execute at the proposal's anchored reference block,
+// since the collected signatures only authorize the summary produced there.
+const anchor = chainAnchorFromBase64(proposal.metadata.chainAnchor);
+const { request: finalRequest } = await buildP2idTransactionRequest(
+  midenClient, senderId, recipientId, faucetId, amount,
+  { salt, boundBlockNum: anchor.blockNum(), signatureAdviceMap: advice, midenRpcEndpoint },
 );
 await multisig.submitTransaction(proposal.id, finalRequest);
 ```
 
-The exported transaction builders declare the proposal salt through
-`TransactionRequestBuilder.withFeeConversionSalt`. Miden-client derives the
-native 1:1 conversion info from the execution reference header. Integrations
-that build a request directly must retain the original salt and call
-`withFeeConversionSalt(salt)` on their builder when they create and rebuild the
-request.
+Since Miden 0.17 a multisig auth procedure reads three words out of the
+transaction's auth arg: the block the summary binds together with the approval
+expiration, the salt, and the fee conversion info. The exported builders get
+them from `client.feeAwareTransactionRequestBuilder(account, { feeConversionSalt,
+boundBlockNum })`, which sets the commitment as the request's auth arg and puts
+the preimage in its advice map. An integration that assembles a request itself
+must start from that builder for a multisig account, and must not call
+`withFeeConversionSalt` or `withAuthArg` on it: the two setters clear each other
+and either one discards the auth args. The approval never expires unless the
+integration asks for one through `approvalExpirationDelta`, which the
+`create*Proposal` methods forward from their options.
 
-The integration keeps only its own recipe (build inputs + salt) so it can
-reproduce the exact transaction at execute time — the SDK does not store the
-serialized request. The binding check guarantees the rebuilt transaction matches the
-commitment the cosigners signed.
+The integration keeps its own recipe (build inputs + salt) and reads the bound
+block from the proposal's chain anchor, so it can reproduce the exact
+transaction at execute time — the SDK does not store the serialized request.
+The binding check guarantees the rebuilt transaction matches the commitment the
+cosigners signed. A request built at one sync height and anchored at another is
+refused by `executeForSummary` with `SummaryAnchorMismatchError`; rebuild and
+retry.
 
-The salt cannot be recovered from the summary. Once the auth arg became the
-commitment `hash(CONVERSION_INFO || SALT)` it stopped being invertible, so a
-recipe that was not retained cannot be reconstructed from the signed summary —
-keep the salt, or read it from the proposal's `saltHex` metadata, which is what
-the SDK's own execution path does.
-
-The summary exposes the committed auth argument for inspection:
+The summary binds the salt itself, so the value the cosigners signed over is
+readable back out of it:
 
 ```typescript
-import { summaryAuthArg } from '@openzeppelin/miden-multisig-client';
+import { summarySalt, summaryApprovalExpirationBlockNum } from '@openzeppelin/miden-multisig-client';
 import { TransactionSummary } from '@miden-sdk/miden-sdk';
 
-const signedAuthArg = summaryAuthArg(TransactionSummary.deserialize(bytes));
+const summary = TransactionSummary.deserialize(bytes);
+const salt = summarySalt(summary);
+const expiresAt = summaryApprovalExpirationBlockNum(summary); // undefined: never
 ```
 
-Do not use `signedAuthArg` as the salt when rebuilding the request.
-`withFeeConversionSalt` would derive and commit a second value from it, and the
-rebuilt summary would not match the summary that the cosigners signed.
-
-On the Miden 0.16 line a summary binds seven user-defined elements,
-and the guarded-multisig auth component zeroes the leading three and passes the
-auth arg as the trailing four. `summaryAuthArg` reads that convention, so prefer
-it over indexing `userParams()` by hand. It replaced `summarySalt`, whose name
-claimed an inversion that no longer exists.
+The SDK's own verification path compares `summarySalt(summary)` with the
+proposal's `saltHex` metadata before rebuilding, so a proposal GUARDIAN serves
+with a summary and metadata that disagree fails by name rather than as a
+generic summary mismatch. A request carries the same two values in its auth
+args; `requestSaltHex(request)` and `requestBoundBlockNum(request)` read them.
 
 > **Rust ↔ TS parity:** both SDKs expose the same producer surface —
 > `createCustomProposal` / `propose_custom_transaction`, `prepareCustomExecution` /

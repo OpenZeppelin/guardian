@@ -24,6 +24,13 @@ selection and attempt prompt at their defaults preserves the network's prover
 selection and uses two total remote proof attempts. Local proving always runs
 once.
 
+## Environment
+
+- `MIDEN_FEE_FAUCET_ID` (hex account ID): the chain's fee faucet, offered as the
+  default at the fee-faucet prompt. Since Miden 0.17 the client builds its
+  protocol configuration from it; the node does not serve that configuration over
+  RPC yet, so the demo cannot execute without one.
+
 ## Typical Flow
 
 1. Generate a keypair (shows your signer commitment). The prompt defaults to Falcon; pick ECDSA when the target Guardian restricts new accounts with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` (the production templates do), otherwise registration fails with `signature_scheme_not_allowed`.

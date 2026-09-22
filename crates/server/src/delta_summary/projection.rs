@@ -3,7 +3,7 @@
 //! at read time by [`decode_full`] for the detail endpoint.
 
 use miden_protocol::account::AccountId;
-use miden_protocol::asset::{Asset, NonFungibleAsset};
+use miden_protocol::asset::Asset;
 use miden_protocol::note::Note;
 use miden_protocol::note::NoteMetadata;
 use miden_protocol::note::NoteType as MidenNoteType;
@@ -193,8 +193,8 @@ fn recipient_account_from_note(note: &Note) -> Option<String> {
 }
 
 fn asset_summary_from_note_asset(asset: &Asset, consumed: bool) -> AssetSummary {
-    match asset {
-        Asset::Fungible(a) => {
+    match asset.as_fungible() {
+        Some(a) => {
             let magnitude = a.amount();
             let signed = if consumed {
                 format!("+{magnitude}")
@@ -207,8 +207,8 @@ fn asset_summary_from_note_asset(asset: &Asset, consumed: bool) -> AssetSummary 
                 amount: Some(signed),
             }
         }
-        Asset::NonFungible(a) => AssetSummary {
-            asset_id: a.faucet_id().to_hex(),
+        None => AssetSummary {
+            asset_id: asset.faucet_id().to_hex(),
             kind: AssetKind::NonFungible,
             amount: None,
         },
@@ -220,15 +220,14 @@ fn account_id_hex(account_id: AccountId) -> String {
 }
 
 fn decoded_asset_from(asset: &Asset) -> super::DecodedAsset {
-    use miden_protocol::asset::Asset;
-    match asset {
-        Asset::Fungible(a) => super::DecodedAsset {
+    match asset.as_fungible() {
+        Some(a) => super::DecodedAsset {
             asset_id: a.faucet_id().to_hex(),
             kind: AssetKind::Fungible,
             amount: Some(a.amount().to_string()),
         },
-        Asset::NonFungible(a) => super::DecodedAsset {
-            asset_id: a.faucet_id().to_hex(),
+        None => super::DecodedAsset {
+            asset_id: asset.faucet_id().to_hex(),
             kind: AssetKind::NonFungible,
             amount: None,
         },
@@ -236,7 +235,6 @@ fn decoded_asset_from(asset: &Asset) -> super::DecodedAsset {
 }
 
 fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -> Vec<VaultChange> {
-    use miden_protocol::asset::Asset;
     use std::collections::BTreeMap;
 
     let vault = delta.vault();
@@ -244,12 +242,12 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
 
     let mut fungible_net: BTreeMap<String, i128> = BTreeMap::new();
     for asset in vault.added_assets() {
-        if let Asset::Fungible(a) = asset {
+        if let Some(a) = asset.as_fungible() {
             *fungible_net.entry(a.faucet_id().to_hex()).or_insert(0) += a.amount().as_u64() as i128;
         }
     }
     for asset in vault.removed_assets() {
-        if let Asset::Fungible(a) = asset {
+        if let Some(a) = asset.as_fungible() {
             *fungible_net.entry(a.faucet_id().to_hex()).or_insert(0) -= a.amount().as_u64() as i128;
         }
     }
@@ -268,16 +266,16 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
     let mut nf_added: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut nf_removed: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for asset in vault.added_assets() {
-        if let Asset::NonFungible(a) = asset {
-            let faucet = a.faucet_id().to_hex();
-            let id = canonical_non_fungible_asset_id_hex(a);
+        if asset.is_non_fungible() {
+            let faucet = asset.faucet_id().to_hex();
+            let id = canonical_non_fungible_asset_id_hex(&asset);
             nf_added.entry(faucet).or_default().push(id);
         }
     }
     for asset in vault.removed_assets() {
-        if let Asset::NonFungible(a) = asset {
-            let faucet = a.faucet_id().to_hex();
-            let id = canonical_non_fungible_asset_id_hex(a);
+        if asset.is_non_fungible() {
+            let faucet = asset.faucet_id().to_hex();
+            let id = canonical_non_fungible_asset_id_hex(&asset);
             nf_removed.entry(faucet).or_default().push(id);
         }
     }
@@ -295,8 +293,8 @@ fn project_vault_changes(delta: &miden_protocol::account::delta::AccountDelta) -
     out
 }
 
-fn canonical_non_fungible_asset_id_hex(asset: NonFungibleAsset) -> String {
-    format!("0x{}", hex::encode(asset.id().to_word().as_bytes()))
+fn canonical_non_fungible_asset_id_hex(asset: &Asset) -> String {
+    format!("0x{}", hex::encode(asset.to_id_word().as_bytes()))
 }
 
 fn project_storage_changes(
@@ -340,8 +338,10 @@ fn project_storage_changes(
 mod tests {
     use super::*;
     use miden_protocol::account::AccountId;
-    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
-    use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::account::delta::{
+        AccountDelta, AccountVaultDelta, AssetDelta, AssetDeltaOperation,
+    };
+    use miden_protocol::asset::{FungibleAsset, NonFungibleAsset};
     use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::NoteType;
     use miden_protocol::transaction::InputNote;
@@ -386,9 +386,10 @@ mod tests {
             delta,
             InputNotes::new(vec![input]).expect("input notes"),
             RawOutputNotes::new(Vec::new()).expect("output notes"),
+            miden_protocol::block::BlockNumber::from(0),
             Word::from([ZERO; 4]),
             0,
-            TransactionSummaryUserParams::new([ZERO; 7]),
+            TransactionSummaryUserParams::new([ZERO; 6]),
         )
     }
 
@@ -517,12 +518,13 @@ mod tests {
     fn project_vault_changes_uses_canonical_non_fungible_asset_id() {
         let account_id = AccountId::from_hex(CONSUMER).expect("acct");
         let asset = NonFungibleAsset::mock(b"guardian-dashboard-canonical-id");
-        let faucet_id = match asset {
-            Asset::NonFungible(asset) => asset.faucet_id().to_hex(),
-            Asset::Fungible(_) => unreachable!("mock should create a non-fungible asset"),
-        };
-        let mut vault = AccountVaultDelta::default();
-        vault.add_asset(asset).expect("asset delta");
+        assert!(
+            asset.is_non_fungible(),
+            "mock should create a non-fungible asset"
+        );
+        let faucet_id = asset.faucet_id().to_hex();
+        let vault = AccountVaultDelta::new([AssetDelta::new(AssetDeltaOperation::Add, asset)])
+            .expect("asset delta");
         let delta = AccountDelta::new(
             account_id,
             miden_protocol::account::AccountStoragePatch::default(),
@@ -539,7 +541,7 @@ mod tests {
             vec![VaultChange::NonFungible {
                 asset_id: faucet_id,
                 added: vec![
-                    "0xf1433e1e588f04cbcbee98fc5f0c2ab600ef000000dd000011ca0000000000bc"
+                    "0xf1433e1e588f04cbcbee98fc5f0c2ab601ef000000dd000011ca0000000000bc"
                         .to_string(),
                 ],
                 removed: Vec::new(),

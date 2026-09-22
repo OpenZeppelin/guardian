@@ -72,11 +72,12 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_anch
     let salt = Word::from([5u32, 6, 7, 8]);
     let tx_type =
         TransactionType::consume_notes_v2(vec![note.id()], vec![SerializedNote::from_note(&note)]);
+    let auth_args = proposer.multisig_auth_args(salt, None, None).await.unwrap();
     let tx_request = build_final_transaction_request(
         &proposer.miden_client,
         &tx_type,
         &account,
-        salt,
+        &auth_args,
         Vec::new(),
         None,
         Some(&[]),
@@ -163,11 +164,12 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_anch
     // Control: the same request re-executed at the cosigner's own tip yields
     // a different commitment, so this test would fail were verification to
     // fall back to the sync height.
+    let auth_args = cosigner.multisig_auth_args(salt, None, None).await.unwrap();
     let tip_request = build_final_transaction_request(
         &cosigner.miden_client,
         &tx_type,
         &account,
-        salt,
+        &auth_args,
         Vec::new(),
         None,
         Some(&[]),
@@ -248,11 +250,12 @@ async fn fresh_cosigner_verifies_a_consume_proposal_whose_proposer_held_the_note
         notes.iter().map(miden_protocol::note::Note::id).collect(),
         notes.iter().map(SerializedNote::from_note).collect(),
     );
+    let auth_args = proposer.multisig_auth_args(salt, None, None).await.unwrap();
     let tx_request = build_final_transaction_request(
         &proposer.miden_client,
         &tx_type,
         &account,
-        salt,
+        &auth_args,
         Vec::new(),
         None,
         Some(&[]),
@@ -450,10 +453,11 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
     let signers = vec![signer_commitment, new_cosigner];
     let signers_hex: Vec<String> = signers.iter().map(word_to_hex).collect();
     let salt = Word::from([5u32, 6, 7, 8]);
+    let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
         &signers,
-        salt,
+        &auth_args,
         std::iter::empty(),
         client.key_manager.scheme(),
     )
@@ -472,10 +476,11 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
             .to_json()
             .to_string()
     };
-    // The healthy proposal and a copy whose served salt is wrong: its
-    // rebuild yields a different summary, so its binding fails. Same
-    // summary bytes, so the same id — GUARDIAN never serves that, so give it
-    // a distinct nonce to keep the two apart in the listing.
+    // The healthy proposal and a copy whose served salt is wrong. Since 0.17
+    // the summary binds the salt itself, so the mismatch is caught by name
+    // before any rebuild. Same summary bytes, so the same id — GUARDIAN never
+    // serves that, so give it a distinct nonce to keep the two apart in the
+    // listing.
     let good = pending_proto_delta(
         &account,
         1,
@@ -521,7 +526,7 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
                 "a tampered proposal is not worth retrying: {message}"
             );
             assert!(
-                message.contains("metadata does not match tx_summary"),
+                message.contains("metadata salt does not match the salt bound into its tx_summary"),
                 "message: {message}"
             );
         }
@@ -558,10 +563,11 @@ async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_si
     let signers = vec![signer_commitment, new_cosigner];
     let signers_hex: Vec<String> = signers.iter().map(word_to_hex).collect();
     let salt = Word::from([5u32, 6, 7, 8]);
+    let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
         &signers,
-        salt,
+        &auth_args,
         std::iter::empty(),
         client.key_manager.scheme(),
     )

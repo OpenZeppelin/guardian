@@ -53,7 +53,8 @@ use crate::execution::{
 use crate::keystore::proposal_public_key_hex;
 use crate::proposal::{Proposal, TransactionType, is_builtin_proposal_type};
 use crate::transaction::{
-    ProposalBuilder, deserialize_transaction_request, execute_for_summary, word_to_hex,
+    ProposalBuilder, ProposalOptions, deserialize_transaction_request, execute_for_summary,
+    proposal_auth_args, word_to_hex,
 };
 
 impl MultisigClient {
@@ -376,9 +377,6 @@ impl MultisigClient {
             }
         }
 
-        // Build the final transaction request with all signatures
-        let salt = proposal.metadata.salt()?;
-
         // For signer-update transactions, we must propagate parse errors for signer commitments
         // rather than silently converting to None. This ensures malformed hex is diagnosed properly.
         let signer_commitments = if matches!(
@@ -395,15 +393,18 @@ impl MultisigClient {
         // Execute and finalize at the proposal's anchored reference block, so
         // the summary the cosigners signed reproduces exactly. The anchor was
         // already checked against the summary's block commitment when
-        // `get_proposal` verified the summary binding. It also carries the fee
-        // faucet used to derive native fee conversion info during execution.
+        // `get_proposal` verified the summary binding.
         let chain_anchor = proposal.metadata.chain_anchor()?;
+        self.assert_approval_not_expired(&proposal.id, &proposal.tx_summary)
+            .await?;
+        let auth_args =
+            proposal_auth_args(self.fee_faucet_id, &proposal.tx_summary, &chain_anchor)?;
 
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
             account.inner(),
-            salt,
+            &auth_args,
             signature_advice,
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
@@ -651,6 +652,17 @@ impl MultisigClient {
         &mut self,
         transaction_type: TransactionType,
     ) -> Result<Proposal> {
+        self.propose_transaction_with_options(transaction_type, ProposalOptions::default())
+            .await
+    }
+
+    /// Proposes a transaction with per-proposal settings, such as an approval
+    /// expiration. See [`ProposalOptions`].
+    pub async fn propose_transaction_with_options(
+        &mut self,
+        transaction_type: TransactionType,
+        options: ProposalOptions,
+    ) -> Result<Proposal> {
         // Sync with the network before executing transaction
         self.sync().await?;
 
@@ -659,7 +671,8 @@ impl MultisigClient {
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         let node_rpc = self.node_rpc_client();
-        ProposalBuilder::new(transaction_type)
+        ProposalBuilder::new(transaction_type, self.fee_faucet_id)
+            .with_options(options)
             .build(
                 &mut self.miden_client,
                 &node_rpc,
@@ -874,10 +887,10 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
+            miden_protocol::block::BlockNumber::from(0),
             Word::default(),
             0,
             TransactionSummaryUserParams::new([
-                ZERO,
                 ZERO,
                 ZERO,
                 Felt::new_unchecked(seed),

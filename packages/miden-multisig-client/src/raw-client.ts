@@ -29,7 +29,7 @@ export function requireMidenRpcEndpoint(endpoint?: string): string {
   return requireConfigValue('midenRpcEndpoint', endpoint);
 }
 
-function isPublicMidenClient(client: RawClientSource): client is MidenClient {
+export function isPublicMidenClient(client: RawClientSource): client is MidenClient {
   return 'accounts' in client && 'sync' in client;
 }
 
@@ -47,14 +47,35 @@ export async function getRawMidenClient(
   }
 
   const endpoint = requireMidenRpcEndpoint(rpcUrl);
-  const rawClient = WasmWebClient.createClient(
+  const rawClient = createRawClient(client, endpoint);
+  rawClientCache.set(client, rawClient);
+  return rawClient;
+}
+
+/**
+ * Opens the WASM client behind `client` on the same store.
+ *
+ * Since 0.17 a client needs the chain's fee faucet to build its protocol
+ * configuration, and creation fails without one for any network the SDK has no
+ * preset for. The parent client already resolved it, so it is read back from
+ * there rather than asked of the caller a second time. It is the eighth
+ * argument of `createClient`; the ones between are left at their defaults.
+ */
+async function createRawClient(client: MidenClient, endpoint: string): Promise<WasmWebClient> {
+  const [storeName, feeFaucetId] = await Promise.all([
+    client.storeIdentifier(),
+    client.feeFaucetId(),
+  ]);
+  return WasmWebClient.createClient(
     endpoint,
     undefined,
     undefined,
-    await client.storeIdentifier(),
+    storeName,
+    undefined,
+    undefined,
+    undefined,
+    feeFaucetId?.toString(),
   );
-  rawClientCache.set(client, rawClient);
-  return rawClient;
 }
 
 export function getTransactionProver(client: RawClientSource): TransactionProver | null {

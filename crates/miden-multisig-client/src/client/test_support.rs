@@ -16,7 +16,7 @@ use miden_client::Serializable;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note_transport::NoteTransportClient;
-use miden_client::rpc::{Endpoint, NodeRpcClient};
+use miden_client::rpc::Endpoint;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
 use miden_client_sqlite_store::SqliteStore;
@@ -24,8 +24,8 @@ use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::Word;
-use miden_protocol::account::Account;
 use miden_protocol::account::auth::AuthSecretKey;
+use miden_protocol::account::{Account, AccountId};
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::crypto::rand::RandomCoin;
@@ -49,9 +49,17 @@ const BASE64: base64::engine::general_purpose::GeneralPurpose =
 /// The multisig client's direct node channel is left endpoint-built (and
 /// unreachable) — use [`offline_client_with_node`] to inject `node` there
 /// too.
+/// The fee faucet of the mock chain every [`MockRpcApi`] serves.
+pub(crate) fn mock_fee_faucet_id() -> AccountId {
+    MockRpcApi::default()
+        .protocol_config()
+        .fee_asset_id()
+        .faucet_id()
+}
+
 pub(crate) async fn offline_client_parts(
     dir: &Path,
-    node: Arc<dyn NodeRpcClient>,
+    node: Arc<MockRpcApi>,
     transport: Option<Arc<dyn NoteTransportClient>>,
 ) -> (MultisigClient, Arc<SqliteStore>) {
     offline_client_parts_with_keystore(dir, node, transport, Arc::new(GuardianKeyStore::generate()))
@@ -64,7 +72,7 @@ pub(crate) async fn offline_client_parts(
 /// signer of a specific scheme.
 pub(crate) async fn offline_client_parts_with_keystore(
     dir: &Path,
-    node: Arc<dyn NodeRpcClient>,
+    node: Arc<MockRpcApi>,
     transport: Option<Arc<dyn NoteTransportClient>>,
     keystore: Arc<dyn KeyManager>,
 ) -> (MultisigClient, Arc<SqliteStore>) {
@@ -76,8 +84,13 @@ pub(crate) async fn offline_client_parts_with_keystore(
     let keystore_dir = dir.join("keys");
     std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
 
+    // The mock chain commits to its own protocol configuration; register it so
+    // execution and the auth-args builder resolve the same fee asset the chain does.
+    let protocol_config = node.protocol_config();
+    let fee_faucet_id = protocol_config.fee_asset_id().faucet_id();
     let mut builder = ClientBuilder::<FilesystemKeyStore>::new()
         .rpc(node)
+        .protocol_config(protocol_config)
         .store(store.clone())
         .filesystem_keystore(keystore_dir)
         .expect("keystore opens");
@@ -93,6 +106,7 @@ pub(crate) async fn offline_client_parts_with_keystore(
         dir.to_path_buf(),
         Endpoint::localhost(),
         None,
+        fee_faucet_id,
         ProverConfig::new(),
         RpcConfig::new(),
     );
@@ -114,10 +128,7 @@ pub(crate) async fn offline_client(
 /// Fully offline MultisigClient with `node` injected into both the inner
 /// Miden client and the direct node channel, so node-backed primitives and
 /// store syncs see the same mock chain.
-pub(crate) async fn offline_client_with_node(
-    dir: &Path,
-    node: Arc<dyn NodeRpcClient>,
-) -> MultisigClient {
+pub(crate) async fn offline_client_with_node(dir: &Path, node: Arc<MockRpcApi>) -> MultisigClient {
     offline_client_with_node_parts(dir, node).await.0
 }
 
@@ -125,7 +136,7 @@ pub(crate) async fn offline_client_with_node(
 /// for tests that seed records directly.
 pub(crate) async fn offline_client_with_node_parts(
     dir: &Path,
-    node: Arc<dyn NodeRpcClient>,
+    node: Arc<MockRpcApi>,
 ) -> (MultisigClient, Arc<SqliteStore>) {
     let (mut client, store) = offline_client_parts(dir, node.clone(), None).await;
     client.set_node_rpc_client(node);

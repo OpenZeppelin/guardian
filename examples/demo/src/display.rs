@@ -111,8 +111,8 @@ pub fn print_vault(account: &MultisigAccount) {
     }
 
     for (i, asset) in assets.iter().enumerate() {
-        match asset {
-            Asset::Fungible(fungible) => {
+        match asset.as_fungible() {
+            Some(fungible) => {
                 println!(
                     "  [{}] {} tokens (faucet: {})",
                     i + 1,
@@ -120,11 +120,11 @@ pub fn print_vault(account: &MultisigAccount) {
                     shorten_hex(&fungible.faucet_id().to_hex())
                 );
             }
-            Asset::NonFungible(nft) => {
+            None => {
                 println!(
                     "  [{}] NFT (faucet: {})",
                     i + 1,
-                    shorten_hex(&nft.faucet_id().to_hex())
+                    shorten_hex(&asset.faucet_id().to_hex())
                 );
             }
         }

@@ -749,10 +749,10 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
+            miden_protocol::block::BlockNumber::from(0),
             Word::default(),
             0,
             TransactionSummaryUserParams::new([
-                ZERO,
                 ZERO,
                 ZERO,
                 Felt::new_unchecked(7),

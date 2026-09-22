@@ -114,6 +114,7 @@ export interface BrowserSessionSnapshot {
   bootError: string | null;
   guardianEndpoint: string | null;
   midenRpcEndpoint: string | null;
+  midenFeeFaucetId: string | null;
   signerSource: WalletSource | null;
   signatureScheme: SignatureScheme | null;
   guardianPubkey: string | null;

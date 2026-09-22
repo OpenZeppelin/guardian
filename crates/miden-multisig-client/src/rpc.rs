@@ -24,11 +24,12 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
-use miden_protocol::block::{BlockHeader, BlockNumber, ProvenBlock};
+use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::NoteHeader;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::vm::ExecutionProof;
 
 use crate::error::{MultisigError, Result, rpc_kind};
 
@@ -297,7 +298,7 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         &self,
         block_num: BlockNumber,
         include_proof: bool,
-    ) -> std::result::Result<ProvenBlock, RpcError> {
+    ) -> std::result::Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
         self.execute(|| self.inner.get_block_by_number(block_num, include_proof))
             .await
     }
@@ -752,7 +753,7 @@ mod tests {
             &self,
             _: BlockNumber,
             _: bool,
-        ) -> std::result::Result<ProvenBlock, RpcError> {
+        ) -> std::result::Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
             unimplemented!()
         }
         async fn get_notes_by_id(

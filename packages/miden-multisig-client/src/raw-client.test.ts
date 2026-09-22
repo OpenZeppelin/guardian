@@ -54,6 +54,29 @@ describe('raw-client', () => {
     expect(mockCreateClient).not.toHaveBeenCalled();
   });
 
+  it('opens the shadow client on the parent store with the parent fee faucet', async () => {
+    const rawClient = { kind: 'raw' };
+    mockCreateClient.mockResolvedValue(rawClient);
+    const client = {
+      accounts: {},
+      sync: vi.fn(),
+      defaultProver: null,
+      storeIdentifier: vi.fn(async () => 'browser-db'),
+      feeFaucetId: vi.fn(async () => ({ toString: (): string => '0xfee' })),
+    };
+
+    await expect(getRawMidenClient(client as any, 'http://localhost:57291')).resolves.toBe(
+      rawClient,
+    );
+    // Positions matter: the fee faucet is the eighth `createClient` argument, and a
+    // client opened without it fails before any transaction runs.
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
+    const args = mockCreateClient.mock.calls[0];
+    expect(args[0]).toBe('http://localhost:57291');
+    expect(args[3]).toBe('browser-db');
+    expect(args[7]).toBe('0xfee');
+  });
+
   it('returns an injected raw web client without needing an endpoint', async () => {
     const rawClient = {
       executeTransaction: vi.fn(),
@@ -92,6 +115,7 @@ describe('raw-client', () => {
       sync: vi.fn(),
       defaultProver: null,
       storeIdentifier: vi.fn(() => 'browser-db'),
+      feeFaucetId: vi.fn(async () => ({ toString: (): string => '0xfee' })),
     };
 
     mockCreateClient.mockResolvedValue(rawClient);
@@ -109,6 +133,10 @@ describe('raw-client', () => {
       undefined,
       undefined,
       'browser-db',
+      undefined,
+      undefined,
+      undefined,
+      '0xfee',
     );
   });
 

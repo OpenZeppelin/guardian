@@ -29,20 +29,18 @@ impl ConsumableNote {
     pub fn amount_for_faucet(&self, faucet_id: AccountId) -> u64 {
         self.assets
             .iter()
-            .filter_map(|asset| match asset {
-                Asset::Fungible(fungible) if fungible.faucet_id() == faucet_id => {
-                    Some(fungible.amount().as_u64())
-                }
-                _ => None,
-            })
+            .filter_map(|asset| asset.as_fungible())
+            .filter(|fungible| fungible.faucet_id() == faucet_id)
+            .map(|fungible| fungible.amount().as_u64())
             .sum()
     }
 
     /// Returns true if this note contains fungible assets from the specified faucet.
     pub fn has_faucet(&self, faucet_id: AccountId) -> bool {
-        self.assets.iter().any(|asset| match asset {
-            Asset::Fungible(fungible) => fungible.faucet_id() == faucet_id,
-            Asset::NonFungible(_) => false,
+        self.assets.iter().any(|asset| {
+            asset
+                .as_fungible()
+                .is_some_and(|fungible| fungible.faucet_id() == faucet_id)
         })
     }
 }

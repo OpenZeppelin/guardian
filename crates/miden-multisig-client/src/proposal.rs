@@ -403,16 +403,14 @@ impl ProposalMetadata {
 
     /// Converts salt hex to Word.
     ///
-    /// Errors when absent, for the same reason [`Self::chain_anchor`] does. The request
-    /// declares this salt and miden-client commits `hash(CONVERSION_INFO || SALT)` into
-    /// the auth arg from it, so a substituted zero would be committed just as happily as
-    /// the real one and reproduce a summary no cosigner signed.
+    /// Errors when absent, for the same reason [`Self::chain_anchor`] does: the salt
+    /// is bound into the auth args and the signed summary, so a substituted zero
+    /// would rebuild a request whose summary no cosigner signed.
     pub fn salt(&self) -> Result<Word> {
         let value = self.salt_hex.as_deref().ok_or_else(|| {
             MultisigError::InvalidConfig(
-                "proposal metadata has no salt; its request cannot be rebuilt because \
-                 the auth arg commits hash(CONVERSION_INFO || SALT) and is not \
-                 invertible to the salt"
+                "proposal metadata has no salt; its request cannot be rebuilt without the \
+                 salt the auth args and summary bind"
                     .to_string(),
             )
         })?;
@@ -1001,9 +999,10 @@ mod tests {
             delta,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             Word::default(),
             0,
-            TransactionSummaryUserParams::new([Felt::ZERO; 7]),
+            TransactionSummaryUserParams::new([Felt::ZERO; 6]),
         )
     }
 

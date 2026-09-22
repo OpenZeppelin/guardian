@@ -44,6 +44,8 @@ import {
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
+  summaryApprovalExpirationBlockNum,
+  summarySalt,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -55,6 +57,7 @@ import {
   type P2ideHeightOptions,
 } from './transaction.js';
 import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
+import { MAX_SIGNERS } from './account/layout.js';
 import { ensureNotesAuthenticated } from './transaction/noteAuthentication.js';
 import {
   CONSUME_NOTES_METADATA_VERSION_V2,
@@ -149,6 +152,13 @@ export interface AccountStateVerificationResult {
 export interface CreateProposalOptions {
   /** Proposal nonce; defaults to `Date.now()`. */
   nonce?: number;
+  /**
+   * Blocks after the proposal's anchor block by which the transaction must be
+   * included; past that the approvers' signatures no longer authorize it. The
+   * summary binds it, so the executing party can neither shorten nor extend it.
+   * Omitted, the approval never expires (the upstream default).
+   */
+  approvalExpirationDelta?: number;
 }
 
 export interface CreateSignerProposalOptions extends CreateProposalOptions {
@@ -212,6 +222,29 @@ function resolveProposalNonce(
     );
   }
   return options.nonce ?? Date.now();
+}
+
+/**
+ * The approval expiration delta a rebuild has to pass, read back from what the
+ * summary binds: the absolute expiration block, relative to the bound block.
+ * `undefined` for an approval that never expires.
+ */
+function approvalExpirationDeltaOf(
+  summary: TransactionSummary,
+  boundBlockNum: number,
+): number | undefined {
+  const expirationBlockNum = summaryApprovalExpirationBlockNum(summary);
+  if (expirationBlockNum === undefined) {
+    return undefined;
+  }
+  const delta = expirationBlockNum - boundBlockNum;
+  if (delta < 1) {
+    throw new Error(
+      `Invalid proposal: approval expires at block ${expirationBlockNum}, at or before the ` +
+        `block ${boundBlockNum} its summary binds`,
+    );
+  }
+  return delta;
 }
 
 /**
@@ -461,6 +494,35 @@ export class Multisig {
       procedure,
       threshold,
     }));
+  }
+
+  /**
+   * What `update_signers_and_threshold` rejects on-chain, checked before any
+   * signature is collected: more approvers than `MAX_NUM_APPROVERS`, and the
+   * guardian key among the approvers, which the auth procedure asserts against
+   * on every transaction after the update.
+   */
+  private assertAdmissibleSignerSet(signerCommitments: readonly string[]): void {
+    if (signerCommitments.length > MAX_SIGNERS) {
+      throw new Error(
+        `too many signers (${signerCommitments.length}): a multisig account holds at most ${MAX_SIGNERS}`,
+      );
+    }
+    const guardian = normalizeHexWord(this.guardianCommitment);
+    if (signerCommitments.some((commitment) => normalizeHexWord(commitment) === guardian)) {
+      throw new Error('GUARDIAN commitment must be different from all signer commitments');
+    }
+  }
+
+  /**
+   * What `auth_tx_guarded_multisig` asserts after a guardian rotation, checked
+   * before any signature is collected.
+   */
+  private assertGuardianNotApprover(guardianCommitment: string): void {
+    const guardian = normalizeHexWord(guardianCommitment);
+    if (this.signerCommitments.some((commitment) => normalizeHexWord(commitment) === guardian)) {
+      throw new Error('GUARDIAN commitment must be different from all signer commitments');
+    }
   }
 
   private warnOnOverrideDilution(newNumSigners: number): void {
@@ -1002,13 +1064,18 @@ export class Multisig {
     const webClient = await this.getRawClient();
     const targetThreshold = options.newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
+    this.assertAdmissibleSignerSet(targetSignerCommitments);
     this.warnOnOverrideDilution(targetSignerCommitments.length);
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
       targetThreshold,
       targetSignerCommitments,
-      { signatureScheme: this.signer.scheme },
+      {
+        accountId: this._accountId,
+        approvalExpirationDelta: options.approvalExpirationDelta,
+        signatureScheme: this.signer.scheme,
+      },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1067,7 +1134,11 @@ export class Multisig {
       webClient,
       targetThreshold,
       targetSignerCommitments,
-      { signatureScheme: this.signer.scheme },
+      {
+        accountId: this._accountId,
+        approvalExpirationDelta: options.approvalExpirationDelta,
+        signatureScheme: this.signer.scheme,
+      },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1114,7 +1185,11 @@ export class Multisig {
       webClient,
       newThreshold,
       this.signerCommitments,
-      { signatureScheme: this.signer.scheme },
+      {
+        accountId: this._accountId,
+        approvalExpirationDelta: options.approvalExpirationDelta,
+        signatureScheme: this.signer.scheme,
+      },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1163,7 +1238,11 @@ export class Multisig {
       webClient,
       targetProcedure,
       targetThreshold,
-      { signatureScheme: this.signer.scheme },
+      {
+        accountId: this._accountId,
+        approvalExpirationDelta: options.approvalExpirationDelta,
+        signatureScheme: this.signer.scheme,
+      },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1203,6 +1282,7 @@ export class Multisig {
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
       newGuardianPubkey,
+      options.approvalExpirationDelta,
     );
 
     // SwitchGuardian is a regular delta proposal; push it to GUARDIAN so
@@ -1220,14 +1300,20 @@ export class Multisig {
   private async buildSwitchGuardianSummary(
     newGuardianEndpoint: string,
     newGuardianPubkey: string,
+    approvalExpirationDelta: number | undefined,
   ): Promise<{ summaryBase64: string; metadata: ProposalMetadata }> {
     const webClient = await this.getRawClient();
+    this.assertGuardianNotApprover(newGuardianPubkey);
     await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
 
     const { request, salt } = await buildUpdateGuardianTransactionRequest(
       webClient,
       newGuardianPubkey,
-      { signatureScheme: this.signer.scheme },
+      {
+        accountId: this._accountId,
+        approvalExpirationDelta,
+        signatureScheme: this.signer.scheme,
+      },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1290,6 +1376,7 @@ export class Multisig {
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
       newGuardianPubkey,
+      options.approvalExpirationDelta,
     );
 
     const exported: ExportedProposal = {
@@ -1341,7 +1428,10 @@ export class Multisig {
     await this.ensureNotesAuthenticated(fetchedNotes);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
-    const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes);
+    const { request, salt } = await buildConsumeNotesTransactionRequestFromNotes(webClient, fetchedNotes, {
+      accountId: this._accountId,
+      approvalExpirationDelta: options.approvalExpirationDelta,
+    });
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
@@ -1398,7 +1488,8 @@ export class Multisig {
     // Forward everything but the nonce, so a note option added to
     // CreateP2idProposalOptions can't be silently dropped before the builder.
     const { nonce: _nonce, ...noteOptions } = options;
-    const { request, salt } = buildP2idTransactionRequest(
+    const { request, salt } = await buildP2idTransactionRequest(
+      webClient,
       this._accountId,
       recipientId,
       faucetId,
@@ -2488,9 +2579,18 @@ export class Multisig {
     // The builders read `.toHex()` and allocate their own Word, so this handle stays
     // ours; without the release it leaks once per execute.
     const executionSalt = Word.fromHex(normalizeHexWord(saltHex));
+    const boundBlockNum = this.proposalBoundBlockNum(proposalId, metadata);
+    const approvalExpirationDelta = approvalExpirationDeltaOf(txSummary, boundBlockNum);
+    await this.assertApprovalNotExpired(proposalId, txSummary);
     let finalRequest;
     try {
-      finalRequest = await this.buildTransactionRequestFromMetadata(metadata, executionSalt, adviceMap);
+      finalRequest = await this.buildTransactionRequestFromMetadata(
+        metadata,
+        executionSalt,
+        boundBlockNum,
+        approvalExpirationDelta,
+        adviceMap,
+      );
     } finally {
       executionSalt.free?.();
     }
@@ -2718,9 +2818,13 @@ export class Multisig {
         return txSummaryCommitment;
       }
 
-      const salt = Word.fromHex(
-        normalizeHexWord(this.requireProposalSaltHex(proposal.id, proposal.metadata)),
-      );
+      const saltHex = normalizeHexWord(this.requireProposalSaltHex(proposal.id, proposal.metadata));
+      if (normalizeHexWord(summarySalt(summary).toHex()) !== saltHex) {
+        throw new Error(
+          `Invalid proposal: metadata salt does not match the salt bound into the tx_summary for ${proposal.id}`,
+        );
+      }
+      const salt = Word.fromHex(saltHex);
 
       // A consume-notes summary commits to *authenticated* consumption (see
       // ensureNotesAuthenticated), which miden-client decides from this store
@@ -2733,7 +2837,12 @@ export class Multisig {
         await this.ensureNotesAuthenticated(decodeEmbeddedConsumeNotes(proposal.metadata));
       }
 
-      const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
+      const request = await this.buildTransactionRequestFromMetadata(
+        proposal.metadata,
+        salt,
+        anchor.blockNum(),
+        approvalExpirationDeltaOf(summary, anchor.blockNum()),
+      );
       const webClient = await this.getRawClient();
       const reconstructed = await executeForSummaryAt(webClient, this._accountId, request, anchor);
       const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
@@ -2758,15 +2867,11 @@ export class Multisig {
    * Reads a proposal's salt. Throws when absent, because there is nothing to fall
    * back to.
    *
-   * The request declares this salt through `withFeeConversionSalt`, and miden-client
-   * commits `hash(CONVERSION_INFO || SALT)` into the auth arg from it. The summary
-   * therefore carries the COMMITMENT, and a commitment is not invertible to the salt
-   * it was built from -- so `summaryAuthArg(summary)` cannot stand in here. It used
-   * to: before the request declared a salt the auth arg WAS the bare salt, which is
-   * why the fallback this replaces was correct when it was written.
-   *
-   * A declared salt also bypasses miden-client's zero-fee early return, so this holds
-   * on a chain that charges nothing exactly as on one that charges.
+   * The salt goes into the request's multisig auth args and the summary binds it in
+   * its user params, so `summarySalt(summary)` reads the value the cosigners signed
+   * over. It is not a substitute for this field: a request has to be rebuilt before
+   * any summary exists, and a proposal GUARDIAN serves may pair a summary with
+   * metadata that names another salt, which the binding check reports by name.
    */
   private requireProposalSaltHex(proposalId: string, metadata: ProposalMetadata): string {
     const saltHex: unknown = metadata.saltHex;
@@ -2818,12 +2923,52 @@ export class Multisig {
     return chainAnchorFromBase64(metadata.chainAnchor);
   }
 
+  /**
+   * The block a proposal's summary binds, which is the block its anchor was
+   * captured at: this package builds every request at the sync height the
+   * anchor then records, and `executeForSummary` refuses the pair otherwise.
+   */
+  /**
+   * An expired approval aborts in the auth procedure only at execution, after
+   * the advice is assembled and the GUARDIAN ack requested. The summary carries
+   * the deadline, so it is checked against the sync height first.
+   */
+  private async assertApprovalNotExpired(
+    proposalId: string,
+    summary: TransactionSummary,
+  ): Promise<void> {
+    const expirationBlockNum = summaryApprovalExpirationBlockNum(summary);
+    if (expirationBlockNum === undefined) {
+      return;
+    }
+    const webClient = await this.getRawClient();
+    const syncHeight = await webClient.getSyncHeight();
+    if (syncHeight >= expirationBlockNum) {
+      throw new Error(
+        `Proposal ${proposalId} approval expired at block ${expirationBlockNum}; the chain is at ` +
+          `block ${syncHeight}, so the collected signatures no longer authorize it`,
+      );
+    }
+  }
+
+  private proposalBoundBlockNum(proposalId: string, metadata: ProposalMetadata): number {
+    const anchor = this.requireProposalAnchor(proposalId, metadata);
+    try {
+      return anchor.blockNum();
+    } finally {
+      anchor.free();
+    }
+  }
+
   private async buildTransactionRequestFromMetadata(
     metadata: ProposalMetadata,
     salt: Word,
+    boundBlockNum: number,
+    approvalExpirationDelta: number | undefined,
     signatureAdviceMap?: AdviceMap,
   ): Promise<TransactionRequest> {
     const webClient = await this.getRawClient();
+    const accountId = this._accountId;
 
     switch (metadata.proposalType) {
       case 'add_signer':
@@ -2833,7 +2978,7 @@ export class Multisig {
           webClient,
           metadata.targetThreshold,
           metadata.targetSignerCommitments,
-          { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
+          { accountId, boundBlockNum, approvalExpirationDelta, salt, signatureAdviceMap, signatureScheme: this.signer.scheme },
         );
         return request;
       }
@@ -2841,7 +2986,7 @@ export class Multisig {
         const { request } = await buildUpdateGuardianTransactionRequest(
           webClient,
           metadata.newGuardianPubkey,
-          { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
+          { accountId, boundBlockNum, approvalExpirationDelta, salt, signatureAdviceMap, signatureScheme: this.signer.scheme },
         );
         return request;
       }
@@ -2850,7 +2995,7 @@ export class Multisig {
           webClient,
           metadata.targetProcedure,
           metadata.targetThreshold,
-          { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
+          { accountId, boundBlockNum, approvalExpirationDelta, salt, signatureAdviceMap, signatureScheme: this.signer.scheme },
         );
         return request;
       }
@@ -2859,7 +3004,10 @@ export class Multisig {
         const version = metadata.metadataVersion;
         if (version === CONSUME_NOTES_METADATA_VERSION_V2) {
           const decoded = decodeEmbeddedConsumeNotes(metadata);
-          const { request } = buildConsumeNotesTransactionRequestFromNotes(decoded, {
+          const { request } = await buildConsumeNotesTransactionRequestFromNotes(webClient, decoded, {
+            accountId,
+            boundBlockNum,
+            approvalExpirationDelta,
             salt,
             signatureAdviceMap,
           });
@@ -2874,19 +3022,22 @@ export class Multisig {
           const { request } = await buildConsumeNotesTransactionRequest(
             webClient,
             metadata.noteIds,
-            { salt, signatureAdviceMap },
+            { accountId, boundBlockNum, approvalExpirationDelta, salt, signatureAdviceMap },
           );
           return request;
         }
         throw new UnsupportedMetadataVersionError(version);
       }
       case 'p2id': {
-        const { request } = buildP2idTransactionRequest(
-          this._accountId,
+        const { request } = await buildP2idTransactionRequest(
+          webClient,
+          accountId,
           metadata.recipientId,
           metadata.faucetId,
           BigInt(metadata.amount),
           {
+            boundBlockNum,
+            approvalExpirationDelta,
             salt,
             signatureAdviceMap,
             noteType: parseP2idNoteType(metadata.noteType),

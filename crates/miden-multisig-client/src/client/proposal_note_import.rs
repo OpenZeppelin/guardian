@@ -705,10 +705,11 @@ mod tests {
             delta,
             miden_protocol::transaction::InputNotes::new(Vec::new()).unwrap(),
             miden_protocol::transaction::RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             Word::default(),
             0,
             miden_protocol::transaction::TransactionSummaryUserParams::new(
-                [miden_protocol::Felt::ZERO; 7],
+                [miden_protocol::Felt::ZERO; 6],
             ),
         );
         Proposal {
@@ -738,6 +739,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut client = crate::MultisigClient::builder()
             .miden_endpoint(miden_client::rpc::Endpoint::try_from("http://127.0.0.1:1").unwrap())
+            .fee_faucet_id(crate::client::test_support::mock_fee_faucet_id())
             .guardian_endpoint("http://127.0.0.1:1")
             .account_dir(dir.path())
             .generate_key()

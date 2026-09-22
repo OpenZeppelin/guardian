@@ -78,11 +78,12 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
     let salt = Word::from([5u32, 6, 7, 8]);
     let tx_type =
         TransactionType::consume_notes_v2(vec![note.id()], vec![SerializedNote::from_note(&note)]);
+    let auth_args = author.multisig_auth_args(salt, None, None).await.unwrap();
     let tx_request = build_final_transaction_request(
         &author.miden_client,
         &tx_type,
         &account,
-        salt,
+        &auth_args,
         Vec::new(),
         None,
         Some(&[]),

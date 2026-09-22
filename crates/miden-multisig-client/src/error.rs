@@ -31,6 +31,16 @@ pub enum MultisigError {
     #[error("miden client error: {0}")]
     MidenClient(String),
 
+    #[error(
+        "the transaction summary binds block commitment {summary_block_commitment} but the \
+         captured chain anchor is {anchor_commitment}; a sync landed between building the \
+         request and capturing its anchor, so rebuild the request and retry"
+    )]
+    SummaryAnchorMismatch {
+        anchor_commitment: String,
+        summary_block_commitment: String,
+    },
+
     /// Miden client error retaining the concrete source and its RPC status.
     #[error("miden client error: {message}")]
     MidenClientSource {

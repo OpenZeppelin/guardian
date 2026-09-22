@@ -14,7 +14,11 @@ use miden_client::{Client, ClientError, Deserializable, Felt, Serializable, Word
 use miden_client_sqlite_store::SqliteStore;
 
 use miden_protocol::account::auth::Signature as AccountSignature;
+use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetId;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as RawFalconSignature;
+use miden_protocol::protocol_config::ProtocolConfig;
+use miden_standards::account::auth::{FeeConversionInfo, MultisigAuthArgs};
 
 use guardian_client::auth_config::AuthType;
 use guardian_client::{
@@ -63,9 +67,26 @@ fn commitment_from_hex(hex_commitment: &str) -> Result<Word, String> {
         .map_err(|err| format!("Failed to deserialize commitment word '{hex_commitment}': {err}"))
 }
 
+/// The chain's fee faucet, from `MIDEN_FEE_FAUCET_ID` (hex account ID). Since Miden
+/// 0.17 the client builds its protocol configuration from it; the node does not serve
+/// that configuration over RPC yet.
+fn fee_faucet_id_from_env() -> Result<AccountId, String> {
+    let raw = std::env::var("MIDEN_FEE_FAUCET_ID").map_err(|_| {
+        "MIDEN_FEE_FAUCET_ID is not set: name the chain's fee faucet (hex account ID)".to_string()
+    })?;
+    AccountId::from_hex(raw.trim())
+        .map_err(|err| format!("Invalid MIDEN_FEE_FAUCET_ID '{raw}': {err}"))
+}
+
+fn protocol_config(fee_faucet_id: AccountId) -> Result<ProtocolConfig, String> {
+    ProtocolConfig::current(AssetId::new_fungible(fee_faucet_id))
+        .map_err(|err| format!("Failed to build the protocol configuration: {err}"))
+}
+
 async fn create_miden_client(
     data_dir: &Path,
     endpoint: &Endpoint,
+    protocol_config: ProtocolConfig,
 ) -> Result<Client<FilesystemKeyStore>, String> {
     let store_path = data_dir.join("miden-client.sqlite");
     let store = SqliteStore::new(store_path)
@@ -76,6 +97,7 @@ async fn create_miden_client(
     let rng = Box::new(RandomCoin::new(Word::default()));
 
     configured_client_builder(endpoint)
+        .protocol_config(protocol_config)
         .store(store)
         .rng(rng)
         .tx_discard_delta(Some(20))
@@ -160,43 +182,53 @@ async fn main() -> ClientResult<()> {
         }
     };
 
-    let mut miden_client = match create_miden_client(temp_dir.path(), &miden_endpoint).await {
-        Ok(client) => {
-            println!("  ✓ Connected to Miden node");
-            client
-        }
-        Err(e) => {
-            println!("  ✗ Failed to create Miden client: {}", e);
-            if matches!(args.network, Network::Local) {
-                println!("  Hint: Start Miden node on port 57291");
+    let (fee_faucet_id, protocol_config) =
+        match fee_faucet_id_from_env().and_then(|id| Ok((id, protocol_config(id)?))) {
+            Ok(config) => config,
+            Err(err) => {
+                println!("  ✗ {err}");
+                return Ok(());
             }
-            return Ok(());
-        }
-    };
+        };
+    let client_config: Word = protocol_config.to_commitment();
+    let mut miden_client =
+        match create_miden_client(temp_dir.path(), &miden_endpoint, protocol_config).await {
+            Ok(client) => {
+                println!("  ✓ Connected to Miden node");
+                client
+            }
+            Err(e) => {
+                println!("  ✗ Failed to create Miden client: {}", e);
+                if matches!(args.network, Network::Local) {
+                    println!("  Hint: Start Miden node on port 57291");
+                }
+                return Ok(());
+            }
+        };
 
-    // Check for kernel version mismatch between client library and node
-    use miden_client::transaction::TransactionKernel;
+    // Check for a protocol configuration mismatch between client library and node: since
+    // Miden 0.17 the block header commits to the protocol configuration (kernels + fee asset)
+    // rather than to the transaction kernel alone.
     let grpc_client_check = GrpcClient::new(&miden_endpoint, 10_000);
     if let Ok((block_header, _)) = grpc_client_check
         .get_block_header_by_number(None, false)
         .await
     {
-        let node_kernel = block_header.tx_kernel_commitment();
-        let client_kernel: Word = TransactionKernel.to_commitment();
-        if node_kernel != client_kernel {
-            println!("  ✗ Kernel version mismatch!");
+        let node_config = block_header.protocol_config_commitment();
+        if node_config != client_config {
+            println!("  ✗ Protocol configuration mismatch!");
             println!(
-                "    Node kernel:   0x{}",
-                hex::encode(node_kernel.as_bytes())
+                "    Node config:   0x{}",
+                hex::encode(node_config.as_bytes())
             );
             println!(
-                "    Client kernel: 0x{}",
-                hex::encode(client_kernel.as_bytes())
+                "    Client config: 0x{}",
+                hex::encode(client_config.as_bytes())
             );
             println!(
-                "    The Miden node is running a different kernel version than the client library."
+                "    The Miden node runs a different protocol configuration (kernels or fee asset) than the client library."
             );
-            println!("    Please ensure both use the same miden-lib version (currently: 0.14.x).");
+            println!("    Check MIDEN_FEE_FAUCET_ID and that both sides use the same miden-protocol line.");
             return Ok(());
         }
     }
@@ -335,11 +367,20 @@ async fn main() -> ClientResult<()> {
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),
         ]);
+        let bound_block_num = match miden_client.get_sync_height().await {
+            Ok(height) => height,
+            Err(err) => {
+                println!("  ✗ Failed to read the sync height: {}", err);
+                return Ok(());
+            }
+        };
+        let auth_args = MultisigAuthArgs::new(bound_block_num, salt)
+            .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
 
         let (tx_request, _config_hash) = match multisig::build_update_signers_transaction_request(
             3,
             &signer_commitments,
-            salt,
+            &auth_args,
             vec![],
         ) {
             Ok(req) => req,
@@ -467,7 +508,7 @@ async fn main() -> ClientResult<()> {
                     match multisig::build_update_signers_transaction_request(
                         3,
                         &signer_commitments,
-                        salt,
+                        &auth_args,
                         signature_advice,
                     ) {
                         Ok(req) => req,

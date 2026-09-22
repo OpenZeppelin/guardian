@@ -9,11 +9,15 @@ use crate::network::{
 };
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
+use std::collections::BTreeMap;
+
 use miden_protocol::Word;
+use miden_protocol::account::delta::{AssetDelta, AssetDeltaOperation};
 use miden_protocol::account::{
-    Account, AccountId, AccountStoragePatch, StorageMapKey, StorageMapPatch,
-    StorageMapPatchEntries, StorageSlotPatch,
+    Account, AccountDelta, AccountId, AccountStoragePatch, AccountVaultDelta, StorageMapKey,
+    StorageMapPatch, StorageMapPatchEntries, StorageSlotPatch,
 };
+use miden_protocol::asset::{Asset, AssetId, FungibleAsset};
 use miden_protocol::transaction::{
     InputNote, InputNotes, RawOutputNote, RawOutputNotes, TransactionSummary,
 };
@@ -306,26 +310,23 @@ impl NetworkClient for MidenNetworkClient {
             return Err("No valid deltas to merge".to_string());
         }
 
-        // Start with the first TransactionSummary and extract its components
-        let first = &tx_summaries[0];
-        let mut merged_account_delta = first.account_delta().clone();
-        let mut all_input_notes: Vec<InputNote> = first.input_notes().iter().cloned().collect();
-        let mut all_output_notes: Vec<RawOutputNote> =
-            first.output_notes().iter().cloned().collect();
-
-        for tx_summary in tx_summaries.iter().skip(1) {
-            all_input_notes.extend(tx_summary.input_notes().iter().cloned());
-            all_output_notes.extend(tx_summary.output_notes().iter().cloned());
-            merged_account_delta =
-                merge_account_deltas(merged_account_delta, tx_summary.account_delta().clone())
-                    .map_err(|e| {
-                        tracing::error!(
-                            error = %e,
-                            "Failed to merge account deltas"
-                        );
-                        format!("Failed to merge account deltas: {e}")
-                    })?;
-        }
+        let merged_account_delta =
+            merge_account_deltas(tx_summaries.iter().map(TransactionSummary::account_delta))
+                .map_err(|e| {
+                    tracing::error!(
+                        error = %e,
+                        "Failed to merge account deltas"
+                    );
+                    format!("Failed to merge account deltas: {e}")
+                })?;
+        let all_input_notes: Vec<InputNote> = tx_summaries
+            .iter()
+            .flat_map(|tx_summary| tx_summary.input_notes().iter().cloned())
+            .collect();
+        let all_output_notes: Vec<RawOutputNote> = tx_summaries
+            .iter()
+            .flat_map(|tx_summary| tx_summary.output_notes().iter().cloned())
+            .collect();
 
         // Create aggregated InputNotes and OutputNotes
         let aggregated_input_notes = InputNotes::new(all_input_notes).map_err(|e| {
@@ -343,11 +344,12 @@ impl NetworkClient for MidenNetworkClient {
             format!("Failed to create aggregated output notes: {e}")
         })?;
 
-        // Carry the reference block, expiration delta and user params from the last
-        // TransactionSummary. The user params hold the auth arg, which since
-        // protocol#3765 is the fee-conversion commitment rather than the bare salt;
-        // it is carried through opaquely either way.
+        // Carry the bound block, expiration delta and user params from the last
+        // TransactionSummary. Since Miden 0.17 the user params hold the approval
+        // expiration and the salt the multisig binds; they are carried through
+        // opaquely.
         let last = tx_summaries.last().unwrap();
+        let block_number = last.block_number();
         let block_commitment = last.block_commitment();
         let expiration_delta = last.expiration_delta();
         let user_params = last.user_params();
@@ -357,6 +359,7 @@ impl NetworkClient for MidenNetworkClient {
             merged_account_delta,
             aggregated_input_notes,
             aggregated_output_notes,
+            block_number,
             block_commitment,
             expiration_delta,
             user_params,
@@ -470,44 +473,90 @@ impl NetworkClient for MidenNetworkClient {
     }
 }
 
-/// Merges two relative account deltas into one, replacing the upstream
+/// Merges relative account deltas into one, replacing the upstream
 /// `AccountDelta::merge` removed in Miden 0.16: storage patches merge
-/// natively, vault deltas accumulate asset-by-asset, and nonce deltas add.
-/// Only the first delta in a merge sequence may carry account code.
-fn merge_account_deltas(
-    base: miden_protocol::account::AccountDelta,
-    next: miden_protocol::account::AccountDelta,
-) -> Result<miden_protocol::account::AccountDelta, String> {
-    let account_id = base.id();
-    let (mut storage, mut vault, code, nonce_delta) = base.into_parts();
-    let (next_storage, next_vault, next_code, next_nonce_delta) = next.into_parts();
-
-    if next_code.is_some() {
-        return Err("unexpected full-state delta after the first delta in a merge".to_string());
+/// natively, vault deltas net once across all of them, and nonce deltas add.
+/// Only the first delta may carry account code.
+fn merge_account_deltas<'a>(
+    deltas: impl IntoIterator<Item = &'a AccountDelta>,
+) -> Result<AccountDelta, String> {
+    let mut deltas = deltas.into_iter();
+    let first = deltas
+        .next()
+        .ok_or_else(|| "no account deltas to merge".to_string())?;
+    let mut storage = first.storage().clone();
+    let mut nonce_delta = first.nonce_delta();
+    let mut vaults = vec![first.vault()];
+    for delta in deltas {
+        if delta.code().is_some() {
+            return Err("unexpected full-state delta after the first delta in a merge".to_string());
+        }
+        storage
+            .merge(delta.storage().clone())
+            .map_err(|e| format!("failed to merge storage patches: {e}"))?;
+        vaults.push(delta.vault());
+        nonce_delta += delta.nonce_delta();
     }
 
-    storage
-        .merge(next_storage)
-        .map_err(|e| format!("failed to merge storage patches: {e}"))?;
-    for asset in next_vault.added_assets() {
-        vault
-            .add_asset(asset)
-            .map_err(|e| format!("failed to merge added asset: {e}"))?;
-    }
-    for asset in next_vault.removed_assets() {
-        vault
-            .remove_asset(asset)
-            .map_err(|e| format!("failed to merge removed asset: {e}"))?;
-    }
-
-    miden_protocol::account::AccountDelta::new(
-        account_id,
+    AccountDelta::new(
+        first.id(),
         storage,
-        vault,
-        code,
-        nonce_delta + next_nonce_delta,
+        merge_vault_deltas(vaults)?,
+        first.code().cloned(),
+        nonce_delta,
     )
     .map_err(|e| format!("failed to build merged delta: {e}"))
+}
+
+/// Nets vault deltas into one. Since Miden 0.17 a vault delta is a set of whole
+/// assets added or removed, one entry per asset, so fungible amounts net per
+/// faucet and a non-fungible asset one delta adds and another removes cancels.
+fn merge_vault_deltas<'a>(
+    deltas: impl IntoIterator<Item = &'a AccountVaultDelta>,
+) -> Result<AccountVaultDelta, String> {
+    let mut fungible: BTreeMap<AccountId, i128> = BTreeMap::new();
+    let mut non_fungible: BTreeMap<AssetId, AssetDelta> = BTreeMap::new();
+    for asset_delta in deltas.into_iter().flat_map(AccountVaultDelta::iter) {
+        let asset = asset_delta.asset();
+        let sign: i128 = match asset_delta.delta_op() {
+            AssetDeltaOperation::Add => 1,
+            AssetDeltaOperation::Remove => -1,
+        };
+        match asset.as_fungible() {
+            Some(fungible_asset) => {
+                *fungible.entry(fungible_asset.faucet_id()).or_insert(0) +=
+                    sign * i128::from(fungible_asset.amount().as_u64());
+            }
+            None => match non_fungible.remove(&asset.id()) {
+                None => {
+                    non_fungible.insert(asset.id(), *asset_delta);
+                }
+                Some(previous) if previous.delta_op() != asset_delta.delta_op() => {}
+                Some(_) => {
+                    return Err(format!(
+                        "non-fungible asset {} is {:?}ed twice across merged deltas",
+                        asset.faucet_id(),
+                        asset_delta.delta_op()
+                    ));
+                }
+            },
+        }
+    }
+
+    let mut asset_deltas: Vec<AssetDelta> = non_fungible.into_values().collect();
+    for (faucet_id, net) in fungible {
+        let (operation, magnitude) = match net {
+            0 => continue,
+            net if net > 0 => (AssetDeltaOperation::Add, net),
+            net => (AssetDeltaOperation::Remove, -net),
+        };
+        let amount = u64::try_from(magnitude)
+            .map_err(|_| format!("merged fungible amount for {faucet_id} overflows u64"))?;
+        let fungible_asset = FungibleAsset::new(faucet_id, amount)
+            .map_err(|e| format!("failed to build merged fungible asset: {e}"))?;
+        asset_deltas.push(AssetDelta::new(operation, Asset::from(fungible_asset)));
+    }
+    AccountVaultDelta::new(asset_deltas).map_err(|e| format!("failed to merge vault deltas: {e}"))
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
@@ -727,9 +776,10 @@ mod tests {
             full_state_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
+            miden_protocol::block::BlockNumber::from(0),
             Word::default(),
             0,
-            TransactionSummaryUserParams::new([Felt::ZERO; 7]),
+            TransactionSummaryUserParams::new([Felt::ZERO; 6]),
         );
 
         let delta_payload = tx_summary.to_json();

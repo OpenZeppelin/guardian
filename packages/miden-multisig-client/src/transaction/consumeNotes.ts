@@ -5,26 +5,33 @@ import type {
   WasmWebClient,
   Word,
 } from '@miden-sdk/miden-sdk';
-import {
-  NoteAndArgs,
-  NoteAndArgsArray,
-  TransactionRequestBuilder,
-  Word as WordType,
-} from '@miden-sdk/miden-sdk';
+import { NoteAndArgs, NoteAndArgsArray, Word as WordType } from '@miden-sdk/miden-sdk';
 import { LegacyConsumeNotesNoteMissingError } from '../multisig/consumeNotesErrors.js';
 import { getRawMidenClient } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
-import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
+import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
+import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
 
 /**
  * Build a consume-notes request from loaded `Note` objects (no local-store
  * read). v2 verification path for issue #229.
  */
 export function buildConsumeNotesTransactionRequestFromNotes(
+  client: MidenClient,
   notes: Note[],
-  options: SignatureOptions = {},
-): { request: TransactionRequest; salt: Word } {
+  options: MidenClientMultisigRequestOptions,
+): Promise<{ request: TransactionRequest; salt: Word }>;
+export function buildConsumeNotesTransactionRequestFromNotes(
+  client: WasmWebClient,
+  notes: Note[],
+  options: MultisigRequestOptions,
+): Promise<{ request: TransactionRequest; salt: Word }>;
+export async function buildConsumeNotesTransactionRequestFromNotes(
+  client: MidenClient | WasmWebClient,
+  notes: Note[],
+  options: MultisigRequestOptions,
+): Promise<{ request: TransactionRequest; salt: Word }> {
   if (notes.length === 0) {
     throw new Error('At least one note is required');
   }
@@ -35,24 +42,17 @@ export function buildConsumeNotesTransactionRequestFromNotes(
   }
 
   const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
-  const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
 
-  let txBuilder = new TransactionRequestBuilder();
+  let txBuilder = await multisigRequestBuilder(client, authSaltHex, options);
   txBuilder = txBuilder.withInputNotes(noteAndArgsArray);
-  txBuilder = txBuilder.withFeeConversionSalt(authSaltForBuilder);
-  // Borrows rather than consumes: the glue passes `__wbg_ptr` without taking it,
-  // so the handle stays ours to release once the builder has read it.
-  authSaltForBuilder.free?.();
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
-
   return {
-    request: txBuilder.build(),
-    salt: authSaltForReturn,
+    request: buildMultisigRequest(txBuilder, options.accountId),
+    salt: WordType.fromHex(normalizeHexWord(authSaltHex)),
   };
 }
 
@@ -63,17 +63,17 @@ export function buildConsumeNotesTransactionRequestFromNotes(
 export function buildConsumeNotesTransactionRequest(
   client: MidenClient,
   noteIds: string[],
-  options: MidenClientSignatureOptions,
+  options: MidenClientMultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }>;
 export function buildConsumeNotesTransactionRequest(
   client: WasmWebClient,
   noteIds: string[],
-  options?: SignatureOptions,
+  options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }>;
 export async function buildConsumeNotesTransactionRequest(
   client: MidenClient | WasmWebClient,
   noteIds: string[],
-  options: SignatureOptions = {},
+  options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }> {
   if (noteIds.length === 0) {
     throw new Error('At least one note ID is required');
@@ -89,5 +89,5 @@ export async function buildConsumeNotesTransactionRequest(
     notes.push(inputNoteRecord.toNote());
   }
 
-  return buildConsumeNotesTransactionRequestFromNotes(notes, options);
+  return buildConsumeNotesTransactionRequestFromNotes(rawClient, notes, options);
 }

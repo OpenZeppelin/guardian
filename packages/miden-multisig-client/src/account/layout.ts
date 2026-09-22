@@ -25,9 +25,9 @@ export const GUARDIAN_SLOT_NAMES = {
 } as const;
 
 /**
- * Sanity ceiling for the signer count read from `threshold_config`. The
- * contract has no on-chain maximum (the felt is only asserted to be a u32),
- * so a corrupt or adversarial account could report an arbitrarily large
- * count; readers bound their loops with this instead of trusting it.
+ * The most approvers a multisig account can hold: `ApproverSet::MAX_APPROVERS`
+ * in miden-standards, enforced at account creation and again on-chain by
+ * `update_signers_and_threshold`. Readers bound their loops with it, so a
+ * corrupt `threshold_config` cannot drive an unbounded storage walk.
  */
-export const MAX_SIGNERS = 1000;
+export const MAX_SIGNERS = 64;

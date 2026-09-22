@@ -1,12 +1,17 @@
 //! Transaction building and execution for multisig operations.
 
+mod auth_args;
 mod builder;
 mod configuration;
 mod consume;
 mod guardian;
 mod payment;
 
-pub use builder::ProposalBuilder;
+pub use auth_args::{
+    TransactionRequestBuilderExt, multisig_auth_args, proposal_auth_args, proposer_auth_args,
+    summary_approval_expiration_block_num, summary_salt,
+};
+pub use builder::{ProposalBuilder, ProposalOptions};
 pub use configuration::{
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
 };
@@ -61,9 +66,15 @@ pub fn chain_anchor_from_base64(anchor_b64: &str) -> Result<ChainAnchor> {
 /// executes the transaction against it to get its summary (expects the
 /// Unauthorized error). The anchor is returned alongside the summary so the
 /// proposer can ship it with the signed data; cosigners and the executor then
-/// reproduce the summary — which binds the reference block commitment since
-/// protocol 0.16 — with [`execute_for_summary_at`] regardless of their own
-/// sync height.
+/// reproduce the summary with [`execute_for_summary_at`] regardless of their
+/// own sync height.
+///
+/// The request's auth args bind the block its summary commits to, and this
+/// crate pins that block to the anchor: a proposer builds at the sync height
+/// the anchor is captured at, and a rebuild passes the anchor's block number.
+/// A sync landing between the build and the capture leaves the two one block
+/// apart, which every cosigner's anchor check would then fail on; it is caught
+/// here, before the proposal is pushed, so the proposer rebuilds instead.
 pub async fn execute_for_summary(
     client: &mut MidenSdkClient,
     account_id: AccountId,
@@ -74,6 +85,12 @@ pub async fn execute_for_summary(
         .await
         .map_err(|e| MultisigError::MidenClient(format!("failed to capture chain anchor: {e}")))?;
     let summary = execute_for_summary_at(client, account_id, request, anchor.clone()).await?;
+    if anchor.block_commitment() != summary.block_commitment() {
+        return Err(MultisigError::SummaryAnchorMismatch {
+            anchor_commitment: word_to_hex(&anchor.block_commitment()),
+            summary_block_commitment: word_to_hex(&summary.block_commitment()),
+        });
+    }
     Ok((summary, anchor))
 }
 
@@ -154,7 +171,7 @@ mod tests {
         use miden_protocol::transaction::TransactionKernel;
 
         const EXPECTED_KERNEL_COMMITMENT: &str =
-            "0xeb141480ed70ab3d2bf3bb1ec8e84358c41ca11045aecbbd95881c5a2f95ca43";
+            "0x56476fb4bdcd9b6335f1f4bf82b47d55dffc6c4b9e7e7feb97b46fd95f8a6d3c";
 
         let actual = word_to_hex(&TransactionKernel.to_commitment());
         assert_eq!(

@@ -6,22 +6,48 @@ import type {
 } from '@miden-sdk/miden-sdk';
 import { AccountId, ChainAnchor, Word } from '@miden-sdk/miden-sdk';
 import { getRawMidenClient } from '../raw-client.js';
-import { base64ToUint8Array, uint8ArrayToBase64 } from '../utils/encoding.js';
+import { base64ToUint8Array, normalizeHexWord, uint8ArrayToBase64 } from '../utils/encoding.js';
 
 /**
- * Index of the first user param carrying the auth args. The guarded-multisig
- * auth component zeroes user params 0-2 and fills 3-6 with the auth args, matching
- * `push.0.0.0` ahead of `multisig::auth_tx` in `guarded_multisig.masm`.
+ * Layout of the six user params a multisig auth component binds into the
+ * transaction summary since protocol 0.17: the approval expiration block (or
+ * zero for an approval that never expires), a zero, then the four salt felts.
  */
-const AUTH_ARG_USER_PARAM_OFFSET = 3;
+const APPROVAL_EXPIRATION_USER_PARAM_INDEX = 0;
+const SALT_USER_PARAM_OFFSET = 2;
+
+/**
+ * The summary binds the block the request's auth args name, and the anchor
+ * the store's sync height at capture. A sync landing between the build and the
+ * capture leaves them one block apart, and every cosigner's anchor check would
+ * then fail on a proposal nothing else is wrong with. Caught here, before the
+ * proposal is pushed, so the proposer rebuilds instead.
+ */
+export class SummaryAnchorMismatchError extends Error {
+  readonly retryable = true;
+
+  constructor(details: { anchorCommitmentHex: string; summaryBlockCommitmentHex: string }) {
+    super(
+      `the transaction summary binds block commitment ${details.summaryBlockCommitmentHex} but ` +
+        `the captured chain anchor is ${details.anchorCommitmentHex}; a sync landed between ` +
+        'building the request and capturing its anchor, so rebuild the request and retry',
+    );
+    this.name = 'SummaryAnchorMismatchError';
+  }
+}
 
 /**
  * Captures a `ChainAnchor` for the request at the current sync height and
  * executes the transaction against it to obtain the summary awaiting
  * authorization. The anchor is returned alongside the summary so the proposer
  * can ship it with the signed data; cosigners and the executor then reproduce
- * the summary — which binds the reference block commitment since protocol
- * 0.16 — with {@link executeForSummaryAt} regardless of their own sync height.
+ * the summary with {@link executeForSummaryAt} regardless of their own sync
+ * height.
+ *
+ * The request's auth args bind the block its summary commits to, and this
+ * package pins that block to the anchor: a proposer builds at the sync height
+ * the anchor is captured at, and a rebuild passes the anchor's block number.
+ * The check below is what makes the first half hold.
  */
 export function executeForSummary(
   client: MidenClient,
@@ -44,13 +70,26 @@ export async function executeForSummary(
   const acc = AccountId.fromHex(accountId);
   const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
   const anchor = await rawClient.chainAnchorForRequest(txRequest);
-  const summary = await rawClient.executeForSummaryAt(acc, txRequest, anchor);
+  let summary: TransactionSummary;
+  try {
+    summary = await rawClient.executeForSummaryAt(acc, txRequest, anchor);
+  } catch (error) {
+    anchor.free();
+    throw error;
+  }
+
+  const anchorCommitmentHex = normalizeHexWord(anchor.commitment().toHex());
+  const summaryBlockCommitmentHex = normalizeHexWord(summary.blockCommitment().toHex());
+  if (anchorCommitmentHex !== summaryBlockCommitmentHex) {
+    anchor.free();
+    throw new SummaryAnchorMismatchError({ anchorCommitmentHex, summaryBlockCommitmentHex });
+  }
   return { summary, anchor };
 }
 
 /**
  * Executes a transaction at the given `ChainAnchor`'s reference block to
- * obtain the summary awaiting authorization — the anchored counterpart of
+ * obtain the summary awaiting authorization: the anchored counterpart of
  * {@link executeForSummary} for cosigners and executors holding a proposal's
  * anchor.
  */
@@ -98,19 +137,26 @@ export function chainAnchorFromBase64(anchorBase64: string): ChainAnchor {
 }
 
 /**
- * Reads the auth args back out of a transaction summary.
+ * Reads the salt a multisig transaction summary binds.
  *
- * Since miden-protocol 0.16-rc the summary binds seven user-defined elements
- * instead of a dedicated salt word. The guarded-multisig auth component zeroes
- * the leading three and passes the auth args as the trailing four, so the auth
- * args are the tail of `userParams()`.
- *
- * This is the auth-arg word, *not* the proposal salt. When the request declares
- * a fee conversion salt, miden-client uses it to commit the native conversion
- * info under `hash(CONVERSION_INFO || SALT)`. That commitment is not invertible
- * to the salt. Keep the salt alongside the proposal — `ProposalMetadata.saltHex`
- * — rather than trying to recover it from the summary.
+ * Since protocol 0.17 the multisig auth components bind the salt itself into
+ * the summary's user params rather than a commitment derived from it, so the
+ * value cosigners signed over is readable again. A proposal still carries the
+ * salt in its metadata, because a request has to be rebuilt before any summary
+ * exists; this reader is the cross-check that the two agree.
  */
-export function summaryAuthArg(summary: TransactionSummary): Word {
-  return Word.newFromFelts(summary.userParams().slice(AUTH_ARG_USER_PARAM_OFFSET));
+export function summarySalt(summary: TransactionSummary): Word {
+  return Word.newFromFelts(
+    summary.userParams().slice(SALT_USER_PARAM_OFFSET, SALT_USER_PARAM_OFFSET + 4),
+  );
+}
+
+/**
+ * Reads the block at which the approvers' signatures stop authorizing the
+ * transaction, or `undefined` for an approval that never expires, which is
+ * what this package's builders produce.
+ */
+export function summaryApprovalExpirationBlockNum(summary: TransactionSummary): number | undefined {
+  const value = summary.userParams()[APPROVAL_EXPIRATION_USER_PARAM_INDEX].asInt();
+  return value === 0n ? undefined : Number(value);
 }

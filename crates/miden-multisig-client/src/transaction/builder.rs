@@ -1,5 +1,6 @@
 //! Proposal builder for multisig transactions.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use guardian_client::GuardianClient;
@@ -8,6 +9,7 @@ use miden_client::rpc::NodeRpcClient;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::note::{NoteId, NoteType};
+use miden_standards::account::auth::MultisigAuthArgs;
 
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
@@ -23,7 +25,7 @@ use crate::utils::hex_body_eq;
 use super::{
     build_p2id_transaction_request, build_update_guardian_transaction_request,
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
-    chain_anchor_to_base64, execute_for_summary, generate_salt, word_to_hex,
+    chain_anchor_to_base64, execute_for_summary, generate_salt, proposer_auth_args, word_to_hex,
 };
 
 /// Builder for creating multisig transaction proposals.
@@ -33,18 +35,41 @@ use super::{
 /// ```ignore
 /// use miden_multisig_client::TransactionType;
 ///
-/// let proposal = ProposalBuilder::new(TransactionType::AddCosigner { new_commitment })
-///     .build(&mut miden_client, &mut guardian_client, &account, key_manager)
+/// let proposal = ProposalBuilder::new(TransactionType::AddCosigner { new_commitment }, fee_faucet_id)
+///     .build(&mut miden_client, &node_rpc, &mut guardian_client, &account, key_manager)
 ///     .await?;
 /// ```
 pub struct ProposalBuilder {
     transaction_type: TransactionType,
+    fee_faucet_id: AccountId,
+    approval_expiration_delta: Option<NonZeroU32>,
+}
+
+/// Per-proposal settings a caller may set when proposing a transaction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProposalOptions {
+    /// Blocks after the proposal's anchor block by which the transaction must be
+    /// included; past that the approvers' signatures no longer authorize it. The
+    /// summary binds it, so the executing party can neither shorten nor extend it.
+    /// `None` means the approval never expires, the upstream default.
+    pub approval_expiration_delta: Option<NonZeroU32>,
 }
 
 impl ProposalBuilder {
-    /// Creates a new proposal builder for the given transaction type.
-    pub fn new(transaction_type: TransactionType) -> Self {
-        Self { transaction_type }
+    /// Creates a new proposal builder for the given transaction type on the
+    /// chain whose fee faucet is `fee_faucet_id`, which the auth args commit to.
+    pub fn new(transaction_type: TransactionType, fee_faucet_id: AccountId) -> Self {
+        Self {
+            transaction_type,
+            fee_faucet_id,
+            approval_expiration_delta: None,
+        }
+    }
+
+    /// Applies `options` to this builder.
+    pub fn with_options(mut self, options: ProposalOptions) -> Self {
+        self.approval_expiration_delta = options.approval_expiration_delta;
+        self
     }
 
     /// Builds and submits the proposal to GUARDIAN.
@@ -157,6 +182,16 @@ impl ProposalBuilder {
         )))
     }
 
+    async fn fresh_auth_args(&self, miden_client: &MidenSdkClient) -> Result<MultisigAuthArgs> {
+        proposer_auth_args(
+            miden_client,
+            self.fee_faucet_id,
+            generate_salt(),
+            self.approval_expiration_delta,
+        )
+        .await
+    }
+
     async fn build_add_cosigner(
         &self,
         miden_client: &mut MidenSdkClient,
@@ -177,14 +212,14 @@ impl ProposalBuilder {
         // Keep same threshold
         let new_threshold = current_threshold as u64;
 
-        // Generate salt for replay protection
-        let salt = generate_salt();
+        let auth_args = self.fresh_auth_args(miden_client).await?;
+        let salt = auth_args.salt();
 
         // Build the transaction request (without signatures - we just want the summary)
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
             &current_signers,
-            salt,
+            &auth_args,
             std::iter::empty(),
             key_manager.scheme(),
         )?;
@@ -290,14 +325,14 @@ impl ProposalBuilder {
             ));
         }
 
-        // Generate salt for replay protection
-        let salt = generate_salt();
+        let auth_args = self.fresh_auth_args(miden_client).await?;
+        let salt = auth_args.salt();
 
         // Build the transaction request
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
             &new_signers,
-            salt,
+            &auth_args,
             std::iter::empty(),
             key_manager.scheme(),
         )?;
@@ -388,8 +423,8 @@ impl ProposalBuilder {
 
         let asset = build_transfer_asset(faucet_id, amount)?;
 
-        // Generate salt for replay protection
-        let salt = generate_salt();
+        let auth_args = self.fresh_auth_args(miden_client).await?;
+        let salt = auth_args.salt();
 
         // Build the P2ID transaction request (no signature advice needed for proposal)
         let tx_request = build_p2id_transaction_request(
@@ -398,7 +433,7 @@ impl ProposalBuilder {
             vec![asset.into()],
             note_type,
             heights,
-            salt,
+            &auth_args,
             std::iter::empty(),
         )?;
 
@@ -487,8 +522,8 @@ impl ProposalBuilder {
         let required_signatures =
             account.effective_threshold_for_procedure(ProcedureName::ReceiveAsset)? as usize;
 
-        // Generate salt for replay protection
-        let salt = generate_salt();
+        let auth_args = self.fresh_auth_args(miden_client).await?;
+        let salt = auth_args.salt();
 
         // Fetch notes from the proposer's local store for v2 embedding (FR-012).
         let fetched_notes =
@@ -505,7 +540,7 @@ impl ProposalBuilder {
 
         let tx_request = crate::transaction::build_consume_notes_transaction_request_from_notes(
             fetched_notes,
-            salt,
+            &auth_args,
             std::iter::empty(),
         )?;
 
@@ -610,14 +645,14 @@ impl ProposalBuilder {
         )
         .await?;
 
-        // Generate salt for replay protection
-        let salt = generate_salt();
+        let auth_args = self.fresh_auth_args(miden_client).await?;
+        let salt = auth_args.salt();
 
         // Build the GUARDIAN update transaction request (no signatures for proposal)
         let tx_request = build_update_guardian_transaction_request(
             new_guardian_pubkey,
             key_manager.scheme(),
-            salt,
+            &auth_args,
             std::iter::empty(),
         )?;
 
@@ -701,11 +736,12 @@ impl ProposalBuilder {
             .effective_threshold_for_procedure(ProcedureName::UpdateProcedureThreshold)?
             as usize;
 
-        let salt = generate_salt();
+        let auth_args = self.fresh_auth_args(miden_client).await?;
+        let salt = auth_args.salt();
         let tx_request = build_update_procedure_threshold_transaction_request(
             procedure,
             new_threshold,
-            salt,
+            &auth_args,
             std::iter::empty(),
         )?;
         let (tx_summary, chain_anchor) =
@@ -789,10 +825,10 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
+            miden_protocol::block::BlockNumber::from(0),
             Word::default(),
             0,
             TransactionSummaryUserParams::new([
-                ZERO,
                 ZERO,
                 ZERO,
                 Felt::new_unchecked(9),
@@ -843,38 +879,49 @@ mod tests {
         );
     }
 
-    mod fee_conversion_salt {
+    mod multisig_auth_args {
         use super::*;
         use crate::client::test_support::{guarded_multisig_account, p2id_note_for, test_wallet};
         use guardian_shared::SignatureScheme;
         use miden_client::transaction::TransactionRequest;
         use miden_protocol::asset::FungibleAsset;
+        use miden_protocol::block::BlockNumber;
+        use miden_protocol::crypto::SequentialCommit;
+        use miden_standards::account::auth::MultisigAuthArgs;
 
-        fn salt() -> Word {
-            Word::from([1u32, 2, 3, 4])
+        fn auth_args() -> MultisigAuthArgs {
+            MultisigAuthArgs::new(BlockNumber::from(7), Word::from([1u32, 2, 3, 4]))
         }
 
-        fn assert_declares_salt(request: &TransactionRequest) {
-            assert_eq!(request.fee_conversion_salt(), Some(salt()));
-            assert_eq!(*request.auth_arg(), None);
+        /// The request must carry the three-word auth args itself: a declared fee
+        /// conversion salt would have miden-client commit the two-word pair over them.
+        fn assert_carries_auth_args(request: &TransactionRequest) {
+            let commitment = auth_args().to_commitment();
+            assert_eq!(request.fee_conversion_salt(), None);
+            assert_eq!(*request.auth_arg(), Some(commitment));
+            let preimage = request
+                .advice_map()
+                .get(&commitment)
+                .expect("the auth-args preimage is in the advice map");
+            assert_eq!(preimage.to_vec(), auth_args().to_elements());
         }
 
         #[test]
-        fn signer_update_request_declares_the_fee_conversion_salt() {
+        fn signer_update_request_carries_the_auth_args() {
             let (request, _) = build_update_signers_transaction_request(
                 1,
                 &[Word::from([5u32, 6, 7, 8])],
-                salt(),
+                &auth_args(),
                 std::iter::empty(),
                 SignatureScheme::Falcon,
             )
             .expect("the signer-update request builds");
 
-            assert_declares_salt(&request);
+            assert_carries_auth_args(&request);
         }
 
         #[test]
-        fn p2id_request_declares_the_fee_conversion_salt() {
+        fn p2id_request_carries_the_auth_args() {
             let recipient = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b")
                 .expect("valid recipient id");
 
@@ -884,52 +931,52 @@ mod tests {
                 vec![FungibleAsset::mock(100)],
                 NoteType::Public,
                 P2ideHeights::default(),
-                salt(),
+                &auth_args(),
                 std::iter::empty(),
             )
             .expect("the p2id request builds");
 
-            assert_declares_salt(&request);
+            assert_carries_auth_args(&request);
         }
 
         #[test]
-        fn consume_notes_request_declares_the_fee_conversion_salt() {
+        fn consume_notes_request_carries_the_auth_args() {
             let note = p2id_note_for(&test_wallet(1), 1, NoteType::Public);
 
             let request = crate::transaction::build_consume_notes_transaction_request_from_notes(
                 vec![note],
-                salt(),
+                &auth_args(),
                 std::iter::empty(),
             )
             .expect("the consume-notes request builds");
 
-            assert_declares_salt(&request);
+            assert_carries_auth_args(&request);
         }
 
         #[test]
-        fn switch_guardian_request_declares_the_fee_conversion_salt() {
+        fn switch_guardian_request_carries_the_auth_args() {
             let request = build_update_guardian_transaction_request(
                 Word::from([1u32, 1, 1, 1]),
                 SignatureScheme::Falcon,
-                salt(),
+                &auth_args(),
                 std::iter::empty(),
             )
             .expect("the switch-guardian request builds");
 
-            assert_declares_salt(&request);
+            assert_carries_auth_args(&request);
         }
 
         #[test]
-        fn update_procedure_threshold_request_declares_the_fee_conversion_salt() {
+        fn update_procedure_threshold_request_carries_the_auth_args() {
             let request = build_update_procedure_threshold_transaction_request(
                 ProcedureName::SendAsset,
                 2,
-                salt(),
+                &auth_args(),
                 std::iter::empty(),
             )
             .expect("the procedure-threshold request builds");
 
-            assert_declares_salt(&request);
+            assert_carries_auth_args(&request);
         }
     }
 }

@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 // Pinned by the corresponding Rust cross-SDK parity test.
-const EXPECTED_ID = '0xff5d71f7ac2107011b27a8df4ddbe0';
+const EXPECTED_ID = '0x58a250c0ead6af4111070db140927b';
 const EXPECTED_COMMITMENT =
-  '0x45ad4dcf0c19662fd1f8f1647159ab4b4a0e80b1d3068d16c6092211a492e6c8';
+  '0xcf603750aa98f70fb9ca3dcad896988e92b34a064553b9c53fd45ba5e20c019c';
 // Rust account storage commitment: seven slots without a schema-commitment slot.
 const EXPECTED_STORAGE_COMMITMENT =
   '0xa5b24ee9ed2f2d73b8590851401bc20ed8bd0d588965a881e16ffecff8012c4f';
@@ -55,6 +55,13 @@ test('TS account reproduces the Rust storage layout and override-target procedur
     | undefined;
   for (const name of ['updateSigners', 'updateProcedureThreshold', 'updateGuardian']) {
     expect(configScriptsCompiled?.[name], `config script failed to compile: ${name}`).toBe(true);
+  }
+
+  // The client must classify the TS-built account as a guarded multisig, or no request
+  // built for it carries the auth args its auth procedure reads.
+  const authArgsAttached = result?.authArgsAttached as Record<string, boolean> | undefined;
+  for (const name of ['updateSigners', 'updateProcedureThreshold', 'updateGuardian']) {
+    expect(authArgsAttached?.[name], `request built without multisig auth args: ${name}`).toBe(true);
   }
 });
 

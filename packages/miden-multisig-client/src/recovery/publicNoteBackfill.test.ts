@@ -108,7 +108,7 @@ function makeNote(
   const assets = noteAssets(idHex);
   const scriptRoot = options.scriptRoot ?? P2ID_ROOT;
   const targetHex = options.targetHex ?? ACCOUNT_ID;
-  // P2ID note storage layout: [target.suffix, target.prefix].
+  // The screen reads the target pair at the front of P2ID storage.
   const storageItems = [
     { asInt: () => BigInt('0x' + targetHex.slice(-8)) },
     { asInt: () => BigInt('0x' + targetHex.slice(2, 10)) },

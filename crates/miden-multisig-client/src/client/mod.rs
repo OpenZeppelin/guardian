@@ -44,6 +44,7 @@ pub use proposals::{AbandonRequestState, AbandonStatus};
 pub use public_note_backfill::{BlockRange, PublicBackfillOptions, PublicBackfillReport};
 pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
 
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -51,6 +52,8 @@ use guardian_client::GetStateResponse;
 use miden_client::rpc::Endpoint;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
+use miden_protocol::block::BlockNumber;
+use miden_standards::account::auth::MultisigAuthArgs;
 
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
@@ -124,6 +127,9 @@ pub struct MultisigClient {
     pub(crate) miden_endpoint: Endpoint,
     /// Note transport endpoint override (for recovery).
     pub(crate) note_transport_endpoint: Option<String>,
+    /// The chain's fee faucet, from which the client's protocol configuration is
+    /// built (for recovery).
+    pub(crate) fee_faucet_id: AccountId,
     /// Node client for direct commitment reads, built once so its channel is
     /// reused across reads.
     node_rpc_client: Arc<dyn miden_client::rpc::NodeRpcClient>,
@@ -148,6 +154,7 @@ impl MultisigClient {
         account_dir: PathBuf,
         miden_endpoint: Endpoint,
         note_transport_endpoint: Option<String>,
+        fee_faucet_id: AccountId,
         prover_config: ProverConfig,
         rpc_config: RpcConfig,
     ) -> Self {
@@ -161,9 +168,40 @@ impl MultisigClient {
             account_dir,
             miden_endpoint,
             note_transport_endpoint,
+            fee_faucet_id,
             node_rpc_client,
             prover_config,
             rpc_config,
+        }
+    }
+
+    /// The multisig auth args a request this client's account executes has to
+    /// carry. Producers of custom proposals (issue #266) build them here, then
+    /// attach them with [`crate::TransactionRequestBuilderExt`]. `bound_block_num`
+    /// left out binds the sync height, which a fresh proposal wants; a rebuild
+    /// passes the block its proposal's anchor names.
+    pub async fn multisig_auth_args(
+        &self,
+        salt: Word,
+        bound_block_num: Option<BlockNumber>,
+        approval_expiration_delta: Option<NonZeroU32>,
+    ) -> Result<MultisigAuthArgs> {
+        match bound_block_num {
+            Some(bound_block_num) => crate::transaction::multisig_auth_args(
+                self.fee_faucet_id,
+                bound_block_num,
+                salt,
+                approval_expiration_delta,
+            ),
+            None => {
+                crate::transaction::proposer_auth_args(
+                    &self.miden_client,
+                    self.fee_faucet_id,
+                    salt,
+                    approval_expiration_delta,
+                )
+                .await
+            }
         }
     }
 

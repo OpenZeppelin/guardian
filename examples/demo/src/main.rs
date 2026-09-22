@@ -5,8 +5,9 @@ mod state;
 
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
-    ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
+    MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
 };
+use miden_protocol::address::NetworkId;
 use rustyline::DefaultEditor;
 
 use actions::{
@@ -52,6 +53,23 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
             Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291))
         }
     };
+
+    // Since Miden 0.17 the fee asset lives in the protocol configuration, which the
+    // node does not serve over RPC yet; the client builds it from the chain's fee faucet.
+    let fee_faucet_default = std::env::var("MIDEN_FEE_FAUCET_ID").unwrap_or_default();
+    let fee_faucet_prompt = if fee_faucet_default.is_empty() {
+        "Fee faucet account ID (hex): ".to_string()
+    } else {
+        format!("Fee faucet account ID (hex) [{fee_faucet_default}]: ")
+    };
+    let fee_faucet_input = prompt_input(editor, &fee_faucet_prompt)?;
+    let fee_faucet_hex = if fee_faucet_input.trim().is_empty() {
+        fee_faucet_default
+    } else {
+        fee_faucet_input.trim().to_string()
+    };
+    let fee_faucet_id = miden_protocol::account::AccountId::from_hex(&fee_faucet_hex)
+        .map_err(|error| format!("Invalid fee faucet account ID '{fee_faucet_hex}': {error}"))?;
 
     // GUARDIAN endpoint selection
     println!("\n  Select GUARDIAN gRPC server:");
@@ -130,16 +148,25 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
         scheme_name
     ));
 
+    // A local node is treated as devnet.
+    let network_id = if miden_endpoint.host().contains("testnet") {
+        NetworkId::Testnet
+    } else {
+        NetworkId::Devnet
+    };
+    let mut builder = MultisigClient::builder()
+        .miden_endpoint(miden_endpoint)
+        .fee_faucet_id(fee_faucet_id)
+        .guardian_endpoint(&guardian_endpoint)
+        .prover_config(prover_config)
+        .rpc_config(rpc_config);
+    if let Some(url) = note_transport_url {
+        builder = builder.note_transport_endpoint(url);
+    }
+
     let mut state = SessionState::new()?;
     state
-        .initialize_client(
-            miden_endpoint,
-            note_transport_url,
-            &guardian_endpoint,
-            signature_scheme,
-            prover_config,
-            rpc_config,
-        )
+        .initialize_client(builder, signature_scheme, network_id)
         .await?;
 
     let commitment_hex = state.user_commitment_hex()?;

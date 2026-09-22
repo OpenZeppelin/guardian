@@ -17,6 +17,10 @@ npm ci
 npm run dev
 ```
 
+Set `VITE_MIDEN_FEE_FAUCET_ID` to the chain's fee faucet (bech32 or hex) before
+starting. Since Miden 0.17 the client builds its protocol configuration from it
+and cannot execute without one; the node does not serve it over RPC yet.
+
 ## How this demo works
 
 1) **Initialize**: create a `MidenClient` pointed at Miden devnet, sync state, and generate a Falcon signer stored in the web keystore. The app can also generate an ECDSA signer; pick ECDSA when the Guardian you register with restricts new accounts to it (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`, which the production templates set), otherwise registration fails with `signature_scheme_not_allowed`.

@@ -16,7 +16,6 @@
 
 use guardian_shared::FromJson;
 use guardian_shared::hex::IntoHex;
-use miden_protocol::asset::Asset;
 use serde::Serialize;
 
 use crate::error::{GuardianError, Result};
@@ -129,15 +128,15 @@ pub async fn get_account_snapshot(
     let mut fungible = Vec::new();
     let mut non_fungible = Vec::new();
     for asset in account.vault().assets() {
-        match asset {
-            Asset::Fungible(a) => fungible.push(DashboardVaultFungibleEntry {
+        match asset.as_fungible() {
+            Some(a) => fungible.push(DashboardVaultFungibleEntry {
                 faucet_id: a.faucet_id().to_hex(),
                 amount: a.amount().to_string(),
             }),
-            Asset::NonFungible(a) => {
-                let key_word = a.id().to_word();
+            None => {
+                let key_word = asset.to_id_word();
                 non_fungible.push(DashboardVaultNonFungibleEntry {
-                    faucet_id: a.faucet_id().to_hex(),
+                    faucet_id: asset.faucet_id().to_hex(),
                     vault_key: (&key_word).into_hex(),
                 });
             }

@@ -75,8 +75,9 @@ export interface RecoveredAccount {
  * import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
  * import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
  *
- * // Initialize
- * const midenClient = await MidenClient.createDevnet();
+ * // Initialize. Since Miden 0.17 the client needs the chain's fee faucet to
+ * // execute anything; the network presets do not carry it.
+ * const midenClient = await MidenClient.createDevnet({ feeFaucetId });
  * const secretKey = AuthSecretKey.rpoFalconWithRNG(seed);
  * const signer = new FalconSigner(secretKey);
  *

@@ -102,7 +102,7 @@ export function screenNoteForAccount(note: Note, account: AccountId): ScreenVerd
     items[index].asInt() === suffix &&
     items[index + 1].asInt() === prefix;
   if (root === normalizeHexWord(NoteScript.p2id().root().toHex())) {
-    // P2ID note storage: [target.suffix, target.prefix].
+    // P2ID note storage: [target.suffix, target.prefix, salt_0, salt_1].
     return accountAt(0) ? 'relevant' : 'irrelevant';
   }
   if (root === normalizeHexWord(NoteScript.p2ide().root().toHex())) {

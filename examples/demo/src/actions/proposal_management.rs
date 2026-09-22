@@ -1055,13 +1055,17 @@ async fn action_create_custom_proposal(
     let asset =
         build_transfer_asset(faucet_id, amount).map_err(|e| format!("invalid asset: {}", e))?;
     let salt = generate_salt();
+    let auth_args = client
+        .multisig_auth_args(salt, None, None)
+        .await
+        .map_err(|e| format!("failed to build the multisig auth args: {}", e))?;
     let transaction_request_bytes = build_p2id_transaction_request(
         account.inner(),
         recipient,
         vec![asset.into()],
         note_type,
         heights,
-        salt,
+        &auth_args,
         std::iter::empty(),
     )
     .map_err(|e| format!("failed to build transaction: {}", e))?
@@ -1073,9 +1077,14 @@ async fn action_create_custom_proposal(
         .await
         .map_err(|e| format!("propose_custom_transaction failed: {}", e))?;
     let proposal_id = proposal.id.clone();
+    let bound_block_num = proposal
+        .metadata
+        .chain_anchor()
+        .map_err(|e| format!("proposal carries no usable chain anchor: {}", e))?
+        .block_num();
 
-    // The integration owns its recipe (build inputs + salt), not the serialized
-    // transaction; [8] rebuilds the request deterministically from these.
+    // The integration owns its recipe (build inputs + salt + bound block), not the
+    // serialized transaction; [8] rebuilds the request deterministically from these.
     state.cache_custom_recipe(
         &proposal_id,
         CustomProposalRecipe {
@@ -1085,6 +1094,7 @@ async fn action_create_custom_proposal(
             note_type,
             heights,
             salt,
+            bound_block_num,
         },
     );
 
@@ -1122,13 +1132,18 @@ async fn action_execute_custom_proposal(
     let asset = build_transfer_asset(recipe.faucet_id, recipe.amount)
         .map_err(|e| format!("invalid asset: {}", e))?;
 
+    let auth_args = state
+        .get_client()?
+        .multisig_auth_args(recipe.salt, Some(recipe.bound_block_num), None)
+        .await
+        .map_err(|e| format!("failed to rebuild the multisig auth args: {}", e))?;
     let mut request = build_p2id_transaction_request(
         account.inner(),
         recipe.recipient,
         vec![asset.into()],
         recipe.note_type,
         recipe.heights,
-        recipe.salt,
+        &auth_args,
         std::iter::empty(),
     )
     .map_err(|e| format!("failed to rebuild transaction: {}", e))?;
@@ -1276,11 +1291,11 @@ fn prompt_p2id(
 
     // Show available assets
     println!("\nAvailable assets in vault:");
-    let mut fungible_assets: Vec<(usize, &miden_protocol::asset::FungibleAsset)> = Vec::new();
+    let mut fungible_assets: Vec<(usize, miden_protocol::asset::FungibleAsset)> = Vec::new();
 
     for (i, asset) in assets.iter().enumerate() {
-        match asset {
-            Asset::Fungible(fungible) => {
+        match asset.as_fungible() {
+            Some(fungible) => {
                 println!(
                     "  [{}] {} tokens (faucet: {})",
                     i + 1,
@@ -1289,11 +1304,11 @@ fn prompt_p2id(
                 );
                 fungible_assets.push((i + 1, fungible));
             }
-            Asset::NonFungible(nft) => {
+            None => {
                 println!(
                     "  [{}] NFT (faucet: {}) - NOT SUPPORTED for P2ID",
                     i + 1,
-                    shorten_hex(&nft.faucet_id().to_hex())
+                    shorten_hex(&asset.faucet_id().to_hex())
                 );
             }
         }
@@ -1450,18 +1465,18 @@ async fn prompt_consume_notes(
             println!("  [{}] {}", idx + 1, shorten_hex(&note.id.to_hex()));
 
             for asset in &note.assets {
-                match asset {
-                    Asset::Fungible(f) => {
+                match asset.as_fungible() {
+                    Some(f) => {
                         println!(
                             "      - {} tokens (faucet: {})",
                             f.amount(),
                             shorten_hex(&f.faucet_id().to_hex())
                         );
                     }
-                    Asset::NonFungible(nft) => {
+                    None => {
                         println!(
                             "      - NFT (faucet: {})",
-                            shorten_hex(&nft.faucet_id().to_hex())
+                            shorten_hex(&asset.faucet_id().to_hex())
                         );
                     }
                 }
