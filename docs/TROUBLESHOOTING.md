@@ -339,6 +339,11 @@ Operator checks:
   - `event=reconcile_promoted`
   - `event=reconcile_expired`
   - `event=reconcile_superseded`
+  The `chain_at_stored_base` / `chain_probe_unavailable` deferrals are
+  logged (debug/info) but deliberately not counted in
+  `guardian_canonicalization_candidates_total` — a healthy steady state
+  probes every due account and finds the chain unmoved, and counting
+  that would dwarf every other outcome.
 - The release sweep (issue #434) emits its own stable events, with
   `account_id` and, where applicable, `stored_commitment` / `on_chain` /
   `new_guardian_commitment`:
@@ -358,12 +363,9 @@ Operator checks:
   counts per-account findings for accounts found off their stored base
   (`released`, `confirming`, `still_bound`, `storage_opaque`,
   `no_binding`, `probe_failed`). Accounts at their stored base — the
-  healthy steady state — are not counted.
-  The `chain_at_stored_base` / `chain_probe_unavailable` deferrals are
-  logged (debug/info) but deliberately not counted in
-  `guardian_canonicalization_candidates_total` — a healthy steady state
-  probes every due account and finds the chain unmoved, and counting
-  that would dwarf every other outcome.
+  healthy steady state — are not counted (`chain_at_stored_base` is
+  logged at debug only); a failed probe or storage read is counted as
+  `probe_failed`.
 - `guardian_canonicalization_commitment_mismatches_total` counting up
   means a client omitted `new_commitment` or claimed one that differs
   from the recomputed value. The full pass can promote using the value it
@@ -523,7 +525,7 @@ come from
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 (gRPC `FailedPrecondition`) | Account is paused by an operator. Response body includes the operator-supplied `paused_reason`. Unpause via `POST /dashboard/accounts/{id}/unpause` (requires `accounts:pause`). See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
-| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or the release sweep read a foreign guardian key from the account's published on-chain storage (the `accounts.release` audit row's `detected_by` says which). Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
+| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or, for a public account, the release sweep read a foreign guardian key from the account's published on-chain storage (the `accounts.release` audit row's `detected_by` says which; private accounts publish no storage, so the sweep never releases them). Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
 
 ### Validation
 

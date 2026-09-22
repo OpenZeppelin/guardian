@@ -146,13 +146,22 @@ impl MidenNetworkClient {
                 }
                 Some(MapResult::AllEntries(entries)) => {
                     let zero = primitives::Digest::default();
-                    entries
+                    match entries
                         .entries
                         .iter()
                         .find(|entry| entry.key.as_ref() == Some(&zero))
-                        .and_then(|entry| entry.value.as_ref())
-                        .filter(|value| **value != zero)
-                        .map(Self::digest_hex)
+                    {
+                        // No entry at key zero: no binding.
+                        None => None,
+                        // An entry without a value is a malformed answer,
+                        // not evidence of anything.
+                        Some(entry) => {
+                            let value = entry.value.as_ref().ok_or_else(|| {
+                                format!("guardian map '{guardian_slot}' has no value for key zero")
+                            })?;
+                            (*value != zero).then(|| Self::digest_hex(value))
+                        }
+                    }
                 }
                 Some(MapResult::TooManyEntries(_)) => {
                     return Err(format!(
@@ -931,6 +940,21 @@ mod tests {
         no_result.storage_details.as_mut().unwrap().map_details[0].result = None;
         let no_result = account_response(&commitment, Some(no_result));
         assert!(MidenNetworkClient::guardian_binding_from_response(&no_result).is_err());
+
+        // A key-zero entry without a value is malformed, not "no binding".
+        let mut valueless = guardian_map_details(
+            guardian_public_key_slot_name(),
+            all_entries(&[(Word::default(), Word::from([Felt::new_unchecked(9); 4]))]),
+        );
+        if let Some(MapResult::AllEntries(entries)) =
+            valueless.storage_details.as_mut().unwrap().map_details[0]
+                .result
+                .as_mut()
+        {
+            entries.entries[0].value = None;
+        }
+        let valueless = account_response(&commitment, Some(valueless));
+        assert!(MidenNetworkClient::guardian_binding_from_response(&valueless).is_err());
     }
 
     #[test]
