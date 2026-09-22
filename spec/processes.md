@@ -238,15 +238,21 @@ sequenceDiagram
   divergence_confirmations = 2, max_concurrent_accounts = 10,
   retained_ttl_seconds = 86400 (24h; 0 disables retention and restores
   the historical delete-on-give-up behavior),
-  reconcile_interval_seconds = 60, reconcile_page_size = 100.
+  reconcile_interval_seconds = 60, reconcile_page_size = 100,
+  release_sweep_enabled = true, release_sweep_interval_seconds = 60,
+  release_sweep_page_size = 100, release_sweep_confirmations = 2.
 - These values are configured in code, not through server env vars. The
   exceptions are `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED=false`,
   which disables the promotion-only pass,
   `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS`, which overrides account
   concurrency at startup, `GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS`,
   which overrides the retained TTL (`0` is the runtime kill switch for
-  retention), and `GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS`,
-  which overrides the reconcile pass cadence.
+  retention), `GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS`,
+  which overrides the reconcile pass cadence,
+  `GUARDIAN_CANONICALIZATION_RELEASE_SWEEP_ENABLED=false`, which disables
+  the chain-driven release sweep, and
+  `GUARDIAN_CANONICALIZATION_RELEASE_SWEEP_INTERVAL_SECONDS`, which
+  overrides the sweep cadence.
 
 ### Worker Behavior
 - A full pass runs every `check_interval_seconds` and owns all retry,
@@ -366,6 +372,48 @@ sequenceDiagram
     replacement path; a retained row orphaned by an out-of-band base
     move (e.g. `configure`) can never promote — the base gate rules it
     out — and ages out through the TTL.
+
+- Release on guardian switch has two detectors. The push path (issue
+  #305): when a delta commits (optimistic mode) or canonicalizes
+  (candidate mode) and the resulting state's guardian public key
+  commitment differs from this server's ack key, the account is
+  released (`released_at` set, `accounts.release` audit row with
+  `detected_by: delta`). The release sweep (issue #434): a dedicated
+  pass, on its own cadence (`release_sweep_interval_seconds`, default
+  60), covers switches that never reach the push path — the offline
+  switch path, a failed best-effort push, a client predating the push,
+  a switch executed while this server was unreachable. It visits at
+  most `release_sweep_page_size` unreleased Miden accounts with no
+  candidate in flight per pass (the push path owns busy accounts; the
+  store filters both so every page slot is useful) under a rotation
+  cursor over `account_id` (a fleet larger than one page is covered
+  breadth-first across passes; an exact multiple of the page size wraps
+  without an idle pass), and stops admitting work at the next full-pass
+  tick (a pass already past its deadline leaves the cursor untouched). Per visited account, cheapest
+  first:
+  - Probe the chain once against the stored state commitment. A match
+    (or an absent on-chain account) means the stored state *is* the
+    on-chain state, so its guardian key — this server's, as
+    `/configure` validated — is the on-chain one too: nothing to do.
+  - Only when the chain moved past the stored base: read the guardian
+    public key map from the account's **published** on-chain storage
+    (`GetAccount` with storage-map details). Private accounts publish
+    no storage; for them the chain holds a bare commitment and the
+    sweep records that it cannot tell (`storage_opaque`) rather than
+    guessing. A key equal to this server's means the stored state
+    merely lags the chain (issue #345 territory), not a switch.
+  - A foreign guardian key must be observed on
+    `release_sweep_confirmations` consecutive visits (accounts with an
+    open streak are re-probed on the very next pass, not the next
+    rotation), and the stored base is re-read right before the write
+    (a `/configure` re-onboarding meanwhile voids the evidence). The
+    release then goes through the same path as the push hook:
+    `released_at` set, `accounts.release` audit row with
+    `detected_by: chain_sweep` and the `on_chain_commitment` /
+    `stored_commitment` pair. The stored state is left as is; reads keep
+    serving the last state this server verified.
+  - The sweep ignores `paused_at` like the other passes: pause gates
+    client mutations, the sweep records chain truth.
 
 EVM proposals are not processed by Miden canonicalization. They are stored in the EVM proposal store and deleted lazily when expired or when the configured EntryPoint nonce indicates finality.
 

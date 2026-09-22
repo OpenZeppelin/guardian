@@ -936,6 +936,36 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
         'dashboard info.backend.canonicalization',
       );
     }
+    // Optional (issue #434): absent on servers predating the release
+    // sweep.
+    if (c.release_sweep_enabled !== undefined) {
+      canonicalization.releaseSweepEnabled = requireBoolean(
+        c,
+        'release_sweep_enabled',
+        'dashboard info.backend.canonicalization',
+      );
+    }
+    if (c.release_sweep_interval_seconds !== undefined) {
+      canonicalization.releaseSweepIntervalSeconds = requireInteger(
+        c,
+        'release_sweep_interval_seconds',
+        'dashboard info.backend.canonicalization',
+      );
+    }
+    if (c.release_sweep_page_size !== undefined) {
+      canonicalization.releaseSweepPageSize = requireInteger(
+        c,
+        'release_sweep_page_size',
+        'dashboard info.backend.canonicalization',
+      );
+    }
+    if (c.release_sweep_confirmations !== undefined) {
+      canonicalization.releaseSweepConfirmations = requireInteger(
+        c,
+        'release_sweep_confirmations',
+        'dashboard info.backend.canonicalization',
+      );
+    }
   }
   const backend: DashboardInfoResponse['backend'] = {
     storage: storageRaw,

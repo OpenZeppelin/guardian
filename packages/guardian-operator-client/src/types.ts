@@ -724,6 +724,18 @@ export interface DashboardCanonicalizationConfig {
   reconcileIntervalSeconds?: number;
   /** Accounts one reconcile pass visits at most (rotation cursor). */
   reconcilePageSize?: number;
+  /** Whether the chain-driven release sweep (issue #434) runs: it
+   * releases accounts whose on-chain guardian key is no longer this
+   * server's even when the switch delta never reached the push path.
+   * Absent on servers predating the sweep. */
+  releaseSweepEnabled?: boolean;
+  /** Cadence of the release sweep pass. */
+  releaseSweepIntervalSeconds?: number;
+  /** Accounts one release sweep pass visits at most (rotation cursor). */
+  releaseSweepPageSize?: number;
+  /** Consecutive passes that must observe a foreign guardian key on
+   * chain before the sweep releases an account. */
+  releaseSweepConfirmations?: number;
 }
 
 /** Backend configuration snapshot. */

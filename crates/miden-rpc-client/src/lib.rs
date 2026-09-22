@@ -136,6 +136,16 @@ pub use guardian_shared::retry::RpcReadMode;
 /// depending on their telemetry stack.
 pub type RetryObserver = Arc<dyn Fn(&'static str) + Send + Sync>;
 
+/// Hex encoding of a node-reported word: its 32 canonical bytes,
+/// byte-identical to `Word::as_bytes()` / `Word::to_bytes()` on the
+/// protocol side, so node values compare directly against locally
+/// computed commitments and storage words. `None` unless the payload is
+/// exactly 32 bytes: proto3's default `Word` is *empty*, not the zero
+/// word, so a length check is the only way to tell them apart.
+pub fn word_to_hex(word: &primitives::Word) -> Option<String> {
+    (word.encoded.len() == 32).then(|| format!("0x{}", hex::encode(&word.encoded)))
+}
+
 /// Simple wrapper around the tonic-generated ApiClient
 pub struct MidenRpcClient {
     client: ApiClient<Channel>,
@@ -419,17 +429,49 @@ impl MidenRpcClient {
                 reason: "no commitment in witness".to_string(),
             })?;
 
-        if commitment.encoded.len() != 32 {
-            return Err(RpcClientError::MalformedResponse {
-                operation: OPERATION,
-                reason: format!(
-                    "commitment has {} bytes, expected the 32 bytes of a word",
-                    commitment.encoded.len()
-                ),
-            });
-        }
+        word_to_hex(&commitment).ok_or_else(|| RpcClientError::MalformedResponse {
+            operation: OPERATION,
+            reason: format!(
+                "commitment has {} bytes, expected the 32 bytes of a word",
+                commitment.encoded.len()
+            ),
+        })
+    }
 
-        Ok(format!("0x{}", hex::encode(commitment.encoded)))
+    /// Fetch the account witness together with the storage-map details
+    /// selected by `details`, at the chain tip. The witness carries the
+    /// on-chain state commitment observed at the same block as the
+    /// details, so callers can tie a storage read to the commitment it
+    /// belongs to. Details are only valid for public accounts; callers
+    /// decide whether to request them. Takes `&self` like
+    /// [`Self::get_account_commitment`] so concurrent callers never
+    /// serialize on this client.
+    pub async fn get_account_with_details(
+        &self,
+        account_id: &AccountId,
+        details: Option<rpc::account_request::AccountDetailRequest>,
+        read_mode: RpcReadMode,
+    ) -> Result<rpc::AccountResponse, RpcClientError> {
+        let proto_account_id = proto_account_id(account_id);
+
+        let proto_account_id = &proto_account_id;
+        let details = &details;
+        self.retry_read(
+            "get_account_with_details",
+            read_mode,
+            |mut client| async move {
+                let request = Request::new(rpc::AccountRequest {
+                    account_id: Some(*proto_account_id),
+                    block_num: None,
+                    details: details.clone(),
+                });
+                client
+                    .get_account(request)
+                    .await
+                    .map(tonic::Response::into_inner)
+            },
+        )
+        .await
     }
 
     /// Fetch full account details including serialized account data

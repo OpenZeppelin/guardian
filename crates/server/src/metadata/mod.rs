@@ -212,6 +212,22 @@ pub trait MetadataStore: Send + Sync {
     /// List all account IDs that have pending candidates
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String>;
 
+    /// One page of the accounts the release sweep (issue #434) can act
+    /// on — Miden accounts that are not released and have no candidate
+    /// in flight — ordered by `account_id` ascending and starting
+    /// strictly after `after` (`None` = from the beginning), at most
+    /// `limit` rows. The primary-key order makes the walk a stable
+    /// rotation: unlike `updated_at`, an account's ID never moves, so a
+    /// cursor never skips or repeats an account while the fleet is
+    /// written to. Filtering at the store keeps every page slot useful
+    /// (EVM rows and busy accounts never take one); the sweep still
+    /// re-checks the row it received.
+    async fn list_release_sweep_page(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<AccountMetadata>, String>;
+
     /// Atomically record the last authentication timestamp for replay protection.
     ///
     /// Compare-and-swap: records `new_timestamp` only when it is strictly greater

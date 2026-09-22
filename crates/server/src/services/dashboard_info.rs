@@ -90,6 +90,17 @@ pub struct DashboardCanonicalizationConfig {
     pub reconcile_interval_seconds: u64,
     /// Accounts one reconcile pass visits at most (rotation cursor).
     pub reconcile_page_size: u32,
+    /// Whether the chain-driven release sweep (issue #434) runs: it
+    /// releases accounts whose on-chain guardian key is no longer this
+    /// server's even when the switch delta never reached the push path.
+    pub release_sweep_enabled: bool,
+    /// Cadence of the release sweep pass.
+    pub release_sweep_interval_seconds: u64,
+    /// Accounts one release sweep pass visits at most (rotation cursor).
+    pub release_sweep_page_size: u32,
+    /// Consecutive passes that must observe a foreign guardian key on
+    /// chain before the sweep releases an account.
+    pub release_sweep_confirmations: u32,
 }
 
 /// Backend configuration snapshot. Stable for the lifetime of the
@@ -190,6 +201,10 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
                 retained_ttl_seconds: c.retained_ttl_seconds,
                 reconcile_interval_seconds: c.reconcile_interval_seconds,
                 reconcile_page_size: c.reconcile_page_size,
+                release_sweep_enabled: c.release_sweep_enabled,
+                release_sweep_interval_seconds: c.release_sweep_interval_seconds,
+                release_sweep_page_size: c.release_sweep_page_size,
+                release_sweep_confirmations: c.release_sweep_confirmations,
             }
         }),
     };
