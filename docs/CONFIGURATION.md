@@ -35,7 +35,7 @@ the runtime env vars in this document.
 | `GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS` | `86400` | any | How long a give-up candidate is kept as `retained` for background reconciliation; `0` disables retention (historical delete-on-give-up). |
 | `GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS` | `60` | any | Cadence of the reconcile pass over retained deltas. |
 | `GUARDIAN_CANONICALIZATION_RELEASE_SWEEP_ENABLED` | `true` | any | Runs the chain-driven release sweep: every unreleased Miden account is periodically checked against the chain and released when its **published** on-chain guardian key is no longer this server's, covering guardian switches whose delta never reached this server (offline switches, failed pushes, a network-dead old operator). Only public accounts publish storage; private accounts are never released by the sweep. Set to `false` to leave release detection to the push path alone. |
-| `GUARDIAN_CANONICALIZATION_RELEASE_SWEEP_INTERVAL_SECONDS` | `60` | any | Cadence of the release sweep. Each pass visits one page (100 unreleased Miden accounts with no candidate in flight) with one cheap commitment RPC each, so a fleet of N such accounts is fully covered every `N / 100` passes. |
+| `GUARDIAN_CANONICALIZATION_RELEASE_SWEEP_INTERVAL_SECONDS` | `60` | any | Cadence of the release sweep. Each pass visits one page (100 unreleased Miden accounts with no candidate in flight) with one cheap commitment RPC each, so a fleet of N such accounts is fully covered within `ceil(N / 100)` passes. |
 | `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in. Not read at runtime — controls how the image is built. |
 
 Canonicalization settings apply as follows:

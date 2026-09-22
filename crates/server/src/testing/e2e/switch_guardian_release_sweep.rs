@@ -114,20 +114,38 @@ impl UnannouncedSwitch {
         )
     }
 
-    /// Install the chain view: the executed commitment is what the node
-    /// reports, and `published` is the storage it serves for the account
-    /// (`None` = a private account, nothing published).
-    fn install_chain(&mut self, published: Option<&Account>) {
+    /// Install the chain view: `on_chain` is the account state the chain
+    /// holds, so the node reports its commitment and — when `publish` is
+    /// set — serves its storage. `publish = false` models a private
+    /// account: the commitment is visible, the storage is not. A real
+    /// node always returns storage together with the commitment it
+    /// belongs to, so the two are never mixed here.
+    fn install_chain(&mut self, on_chain: &Account, publish: bool) {
         let miden_client = MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal);
         let mut integration_client = IntegrationMockNetworkClient::new(miden_client);
-        integration_client.register_account(
-            self.account_id_hex.clone(),
-            self.executed_commitment.clone(),
-        );
-        if let Some(account) = published {
-            integration_client.publish_state(self.account_id_hex.clone(), account.to_json());
+        integration_client.register_account(self.account_id_hex.clone(), commitment_hex(on_chain));
+        if publish {
+            integration_client.publish_state(self.account_id_hex.clone(), on_chain.to_json());
         }
         self.state.network_client = Arc::new(integration_client);
+    }
+
+    /// The pre-switch account advanced by one transaction that kept this
+    /// server's guardian key: the "stored state lags the chain" case.
+    fn advanced_still_bound_account(&self) -> Account {
+        let mut advanced = self.pre_switch_account.clone();
+        advanced
+            .increment_nonce(Felt::ONE)
+            .expect("nonce increments");
+        assert_ne!(commitment_hex(&advanced), self.pre_switch_commitment);
+        assert_eq!(
+            MidenAccountInspector::new(&advanced)
+                .extract_guardian_public_key()
+                .as_deref(),
+            Some(self.ack_commitment_hex.as_str()),
+            "advanced state must still carry this server's guardian key"
+        );
+        advanced
     }
 
     async fn released_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -311,7 +329,7 @@ async fn test_release_sweep_releases_account_whose_switch_never_reached_the_push
     // The chain moved to the post-switch state and publishes it; this
     // server still holds the pre-switch state and never received a delta.
     let executed = fixture.executed_account.clone();
-    fixture.install_chain(Some(&executed));
+    fixture.install_chain(&executed, true);
 
     let stored_before = fixture
         .state
@@ -454,12 +472,13 @@ async fn test_release_sweep_releases_account_whose_switch_never_reached_the_push
 
 #[tokio::test]
 async fn test_release_sweep_leaves_a_still_bound_lagging_account_alone() {
-    // The chain moved past the stored base, but the storage it publishes
-    // still carries THIS server's guardian key: a stored-state lag, not a
-    // switch. The sweep must not release.
+    // The chain moved past the stored base (a transaction this server
+    // acknowledged but never promoted), and the storage it publishes for
+    // that advanced state still carries THIS server's guardian key: a
+    // stored-state lag, not a switch. The sweep must not release.
     let mut fixture = unannounced_switch().await;
-    let pre_switch = fixture.pre_switch_account.clone();
-    fixture.install_chain(Some(&pre_switch));
+    let advanced = fixture.advanced_still_bound_account();
+    fixture.install_chain(&advanced, true);
 
     let pass = process_canonicalizations_now(&fixture.state)
         .await
@@ -484,7 +503,8 @@ async fn test_release_sweep_cannot_verify_an_account_without_published_storage()
     // account (a private account): the binding is opaque and the sweep
     // records that it cannot tell rather than guessing.
     let mut fixture = unannounced_switch().await;
-    fixture.install_chain(None);
+    let executed = fixture.executed_account.clone();
+    fixture.install_chain(&executed, false);
 
     let pass = process_canonicalizations_now(&fixture.state)
         .await
