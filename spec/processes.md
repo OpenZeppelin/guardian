@@ -61,12 +61,15 @@ sequenceDiagram
     S-->>C: error unsupported_for_network
   else Miden account
     S->>ST: pull_state(account_id)
-    S->>ST: pull_deltas_after(account_id, 0)
-    alt pending candidate exists
+    S->>ST: pull_candidate_deltas(account_id)
+    alt prev_commitment competes with a queued candidate's base,\nor the candidate queue is full
       S-->>C: 409 ConflictPendingDelta
-    else no pending candidate
-      S->>N: verify_delta(prev_commitment, prev_state, payload)
-      S->>N: apply_delta(prev_state, payload)\n(new_state_json, new_commitment)
+    else prev_commitment is neither the canonical commitment\nnor a queued candidate's post-state
+      S-->>C: 400 CommitmentMismatch (expected = canonical)
+    else prev_commitment is the queue tail
+      S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
+      S->>N: verify_delta(tail_commitment, tail_state, payload)
+      S->>N: apply_delta(tail_state, payload)\n(new_state_json, new_commitment)
       S->>S: ack_delta(delta.new_commitment) -> ack_sig
       alt canonicalization enabled
         S->>ST: submit_delta(candidate)
@@ -258,20 +261,58 @@ sequenceDiagram
   visited fairly. The pass stops admitting new work when its next cadence tick
   or the next full-pass tick is due; already-started candidate work finishes.
   It first compares each stored `new_commitment` with the chain and reconstructs
-  state only after that cheap probe matches. Promotion still requires the
-  reconstructed commitment to equal the claimed commitment before the normal
-  auth refresh and fenced write. Missing, incorrect, or not-yet-landed claims
-  are left unchanged for the next full pass.
+  state only after that cheap probe matches (a probe that reports the
+  post-state of a candidate queued after this one qualifies too — the chain
+  landed through it). Promotion still requires the candidate to chain from
+  the stored state and the reconstructed commitment to equal the claimed
+  commitment before the normal auth refresh and fenced write. Missing,
+  incorrect, or not-yet-landed claims, and orphaned candidates, are left
+  unchanged for the next full pass.
 - The fast pass never increments `retry_count` or `divergence_count`, applies
   `submission_grace_period_seconds`, or discards a candidate. Those behaviors
   belong exclusively to full passes. Both pass types use
   `max_concurrent_accounts`; candidates within one account remain sequential.
+- Candidate queue (issue #17): an account holds up to
+  `max_pending_candidates_per_account` candidates (default 4, env
+  `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`; `1` is the historical
+  one-in-flight behavior) as a strictly ordered chain. `push_delta` admits
+  a delta only on the queue *tail* — the newest queued candidate's
+  post-state, or the canonical state when nothing is queued — with a nonce
+  above the tail's; the tail state is replayed from the canonical state on
+  demand and never persisted. A delta competing for a base another queued
+  candidate already claimed, or arriving while the queue is full, gets
+  `409 conflict_pending_delta`; one building on a state the server does not
+  know gets `400 commitment_mismatch` against the canonical commitment.
+  Both storage backends re-evaluate the same gate under the account lock,
+  so two racing submissions cannot both extend the tail. Proposals are
+  pinned to the tail as well (their `prev_commitment` is the tail
+  commitment) and are refused up front while the queue is full. Promotion
+  of the oldest candidate moves the canonical state *along* the chain, so
+  the tail commitment — and every proposal pinned to it — stays valid while
+  the queue drains. The pending-candidate flag is released only once no
+  candidate remains queued.
 - For each account with a pending candidate:
   - Pull candidate deltas (`pull_candidate_deltas`, a store-side status
     filter — canonical and discarded history rows never leave the store);
-    process in nonce order.
+    process in nonce order, as a chain from the stored state: a candidate
+    whose base is the stored state is verified; one whose base is the
+    post-state of the candidate queued just before it, while that
+    predecessor is still queued (deferred or retried), is waiting on it,
+    so the account's pass stops there; one whose base is neither — or
+    whose predecessor left the queue on this very pass (parked,
+    discarded, or abandoned) — is an *orphan* and is parked as
+    `retained` with reason `orphaned` (discarded when retention is off)
+    without any chain observation, together with every candidate queued
+    after it, until one chains from the stored state again. A client
+    abandon intent on an orphan resolves as `client_abandoned` instead.
   - Apply delta locally to compute expected state and commitment.
   - Fetch the on-chain commitment and classify:
+    - Matches the post-state of a candidate queued after this one: the
+      chain landed *through* this candidate (its successors were admitted
+      chained from its post-state), so canonicalize it with the recomputed
+      state exactly as below — provided the recomputed commitment is still
+      the post-state its successors chained from; the successors verify on
+      their own turn as the stored base advances along the chain.
     - Matches the expected new commitment: canonicalize —
       persist new state (atomic with delta status update when possible),
       optionally update auth from chain via `should_update_auth`, set delta
@@ -354,8 +395,13 @@ sequenceDiagram
     promotes — and require the recomputed commitment to equal the
     observed one before the same fenced promotion the candidate pass
     uses (auto-recovering an account whose stored state fell behind the
-    chain). Anything else waits for a later tick — the TTL is the only
-    bound.
+    chain). Recoverable rows may also form a chain (issue #17: a parked
+    predecessor followed by its orphaned successors); when the stored
+    hints link the stored base to the on-chain commitment through more
+    than one row, that path is reconstructed hop by hop — every hop must
+    reproduce its row's hint and the last the on-chain commitment — and
+    promoted in order, base-first. Anything else waits for a later tick
+    — the TTL is the only bound.
   - A new candidate submission at a retained or client-abandoned delta's
     nonce supersedes (deletes) that row inside the submission
     transaction — without the abandoned-row supersede, the resubmission

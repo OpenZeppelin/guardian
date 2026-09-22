@@ -4380,12 +4380,19 @@
           "submission_grace_period_seconds",
           "retained_ttl_seconds",
           "reconcile_interval_seconds",
-          "reconcile_page_size"
+          "reconcile_page_size",
+          "max_pending_candidates_per_account"
         ],
         "properties": {
           "check_interval_seconds": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "max_pending_candidates_per_account": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Candidate deltas one account may hold in flight at once, as a\nstrictly ordered chain (issue #17). `1` is the historical\none-in-flight-candidate behavior.",
             "minimum": 0
           },
           "max_retries": {
@@ -6794,7 +6801,8 @@
         "description": "Why a candidate was moved to `Retained` instead of deleted\n(issue #345). The label is diagnostic — every retained delta is\nreconciled and TTL-expired identically — but it records which\nworker verdict parked the row, and a `diverged` row that later\nreconciles is direct evidence the divergence verdict was spurious\n(e.g. a lagging RPC node, or the pre-#326 empty-digest misread\nthat hit new accounts' first transactions).",
         "enum": [
           "retry_exhausted",
-          "diverged"
+          "diverged",
+          "orphaned"
         ]
       },
       "SessionInfoResponse": {

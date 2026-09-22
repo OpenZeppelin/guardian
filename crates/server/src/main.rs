@@ -52,7 +52,9 @@ async fn main() {
                 .with_retained_ttl_seconds_from_env()
                 .expect("Invalid retained TTL configuration")
                 .with_reconcile_interval_seconds_from_env()
-                .expect("Invalid reconcile interval configuration"),
+                .expect("Invalid reconcile interval configuration")
+                .with_max_pending_candidates_per_account_from_env()
+                .expect("Invalid pending-candidate queue depth configuration"),
         ))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())

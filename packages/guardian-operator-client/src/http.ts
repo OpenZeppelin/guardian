@@ -936,6 +936,15 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
         'dashboard info.backend.canonicalization',
       );
     }
+    // Optional (issue #17): absent on servers predating the candidate
+    // queue, which behave as a depth of 1.
+    if (c.max_pending_candidates_per_account !== undefined) {
+      canonicalization.maxPendingCandidatesPerAccount = requireInteger(
+        c,
+        'max_pending_candidates_per_account',
+        'dashboard info.backend.canonicalization',
+      );
+    }
   }
   const backend: DashboardInfoResponse['backend'] = {
     storage: storageRaw,

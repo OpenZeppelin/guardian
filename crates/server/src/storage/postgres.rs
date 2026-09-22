@@ -1565,6 +1565,7 @@ impl StorageBackend for PostgresService {
         _metadata: &dyn MetadataStore,
         delta: &DeltaObject,
         now: &str,
+        max_pending_candidates: usize,
     ) -> Result<CandidateSubmission, String> {
         let mut conn = self
             .pool
@@ -1593,25 +1594,33 @@ impl StorageBackend for PostgresService {
                     .select(states::commitment)
                     .first::<String>(conn)
                     .await?;
-                if current_commitment != delta.prev_commitment {
-                    return Ok(CandidateSubmission::CommitmentMismatch {
-                        expected: current_commitment,
-                    });
-                }
 
                 // Race-proof twin of the service-layer admission gate:
                 // two submissions that both passed the pre-commit scan
                 // serialize on the account lock, and the loser sees the
-                // winner's candidate here.
-                let pending: bool = diesel::select(diesel::dsl::exists(
-                    deltas::table
-                        .filter(deltas::account_id.eq(&delta.account_id))
-                        .filter(deltas::status_kind.eq("candidate")),
-                ))
-                .get_result(conn)
-                .await?;
-                if pending {
-                    return Ok(CandidateSubmission::Conflict);
+                // winner's candidate in the queue read here. The
+                // chain-tail and depth rules (issue #17) are evaluated
+                // on the committed queue, in nonce order.
+                let queue: Vec<crate::storage::QueuedCandidate> = deltas::table
+                    .filter(deltas::account_id.eq(&delta.account_id))
+                    .filter(deltas::status_kind.eq("candidate"))
+                    .order(deltas::nonce.asc())
+                    .select((deltas::nonce, deltas::new_commitment))
+                    .load::<(i64, Option<String>)>(conn)
+                    .await?
+                    .into_iter()
+                    .map(|(nonce, new_commitment)| crate::storage::QueuedCandidate {
+                        nonce: nonce as u64,
+                        new_commitment,
+                    })
+                    .collect();
+                if let Some(refused) = crate::storage::gate_candidate_submission(
+                    &current_commitment,
+                    &queue,
+                    &delta,
+                    max_pending_candidates,
+                ) {
+                    return Ok(refused);
                 }
 
                 // A retained row (issue #345) or client-abandoned
@@ -3392,7 +3401,7 @@ mod tests {
         resubmission.prev_commitment = "0xreconciled".to_string();
         resubmission.status = DeltaStatus::candidate(now.clone());
         let superseded = service
-            .submit_candidate(&metadata_store, &resubmission, &now)
+            .submit_candidate(&metadata_store, &resubmission, &now, 4)
             .await
             .expect("resubmission resolves");
         assert_eq!(superseded, CandidateSubmission::Submitted);
@@ -3462,6 +3471,153 @@ mod tests {
             .await;
     }
 
+    /// Issue #17: the in-transaction admission gate queues chained
+    /// candidates up to the configured depth, in nonce order, refuses a
+    /// submission competing for a claimed base, reports an unknown base
+    /// against the canonical commitment, and serializes two racing
+    /// extensions of the same tail so exactly one commits.
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn submit_candidate_queues_chained_candidates_under_the_account_lock() {
+        use diesel::sql_types::Text;
+
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+            .await
+            .expect("metadata store");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xqueue{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        let initial_state = create_test_state(&account_id);
+        let base = initial_state.commitment.clone();
+        service
+            .submit_state(&initial_state)
+            .await
+            .expect("insert initial state");
+
+        let chained = |nonce: u64, prev: &str, new: &str| {
+            let mut delta = create_test_delta(&account_id, nonce);
+            delta.status = DeltaStatus::candidate(now.clone());
+            delta.prev_commitment = prev.to_string();
+            delta.new_commitment = Some(new.to_string());
+            delta
+        };
+
+        let submit = |delta: DeltaObject, depth: usize| {
+            let service = &service;
+            let metadata_store = &metadata_store;
+            let now = now.clone();
+            async move {
+                service
+                    .submit_candidate(metadata_store, &delta, &now, depth)
+                    .await
+                    .expect("submission resolves")
+            }
+        };
+
+        assert_eq!(
+            submit(chained(1, &base, "0xc1"), 2).await,
+            CandidateSubmission::Submitted
+        );
+        assert_eq!(
+            submit(chained(2, &base, "0xother"), 2).await,
+            CandidateSubmission::Conflict,
+            "the canonical base is claimed by nonce 1"
+        );
+        assert_eq!(
+            submit(chained(2, "0xc1", "0xc2"), 2).await,
+            CandidateSubmission::Submitted,
+            "a delta chained from the tail extends the queue"
+        );
+        assert_eq!(
+            submit(chained(3, "0xc2", "0xc3"), 2).await,
+            CandidateSubmission::Conflict,
+            "depth 2 is full"
+        );
+        assert_eq!(
+            submit(chained(2, "0xc2", "0xc3"), 4).await,
+            CandidateSubmission::Conflict,
+            "a chained delta must extend the queue in nonce order"
+        );
+        assert_eq!(
+            submit(chained(3, "0xzzz", "0xc3"), 4).await,
+            CandidateSubmission::CommitmentMismatch {
+                expected: base.clone()
+            },
+            "an unknown base is reported against the canonical commitment"
+        );
+        assert_eq!(
+            submit(chained(3, "0xc2", "0xc3"), 3).await,
+            CandidateSubmission::Submitted
+        );
+
+        // Two racing extensions of the same tail: exactly one commits,
+        // the other sees the winner in the locked queue read.
+        let (left, right) = tokio::join!(
+            submit(chained(4, "0xc3", "0xc4"), 8),
+            submit(chained(5, "0xc3", "0xc5"), 8),
+        );
+        let outcomes = [left, right];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == CandidateSubmission::Submitted)
+                .count(),
+            1,
+            "exactly one tail extension wins: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == CandidateSubmission::Conflict)
+                .count(),
+            1,
+            "the loser is refused: {outcomes:?}"
+        );
+
+        let queue = service
+            .pull_candidate_deltas(&account_id)
+            .await
+            .expect("queue readable");
+        assert_eq!(queue.len(), 4);
+        assert_eq!(
+            queue.iter().map(|d| d.nonce).take(3).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let flag = {
+            let mut conn = service.pool.get().await.expect("conn");
+            account_metadata::table
+                .filter(account_metadata::account_id.eq(&account_id))
+                .select(account_metadata::has_pending_candidate)
+                .first::<bool>(&mut conn)
+                .await
+                .expect("flag read")
+        };
+        assert!(flag, "queued candidates keep the pending flag set");
+
+        let mut conn = service.pool.get().await.expect("conn");
+        for table in ["deltas", "states", "account_metadata"] {
+            let _ = diesel::sql_query(format!("DELETE FROM {table} WHERE account_id = $1"))
+                .bind::<Text, _>(&account_id)
+                .execute(&mut conn)
+                .await;
+        }
+    }
+
     /// End-to-end proof of the transactional fence: a superseded lease
     /// holder's retry, discard, and promotion are all refused with no row
     /// mutated; the current holder promotes atomically; and once canonical,
@@ -3509,13 +3665,13 @@ mod tests {
         candidate.prev_commitment = initial_commitment.clone();
         candidate.status = DeltaStatus::candidate(now.clone());
         let submitted = service
-            .submit_candidate(&metadata_store, &candidate, &now)
+            .submit_candidate(&metadata_store, &candidate, &now, 4)
             .await
             .expect("candidate insert + flag set commit together");
         assert_eq!(submitted, CandidateSubmission::Submitted);
 
         let racing_duplicate = service
-            .submit_candidate(&metadata_store, &candidate, &now)
+            .submit_candidate(&metadata_store, &candidate, &now, 4)
             .await
             .expect("duplicate submission resolves");
         assert_eq!(
@@ -3528,7 +3684,7 @@ mod tests {
         second_nonce.status = DeltaStatus::candidate(now.clone());
         assert_eq!(
             service
-                .submit_candidate(&metadata_store, &second_nonce, &now)
+                .submit_candidate(&metadata_store, &second_nonce, &now, 4)
                 .await
                 .expect("second-nonce submission resolves"),
             CandidateSubmission::Conflict,
@@ -3708,7 +3864,7 @@ mod tests {
         stale_state_candidate.status = DeltaStatus::candidate(now.clone());
         assert_eq!(
             service
-                .submit_candidate(&metadata_store, &stale_state_candidate, &now)
+                .submit_candidate(&metadata_store, &stale_state_candidate, &now, 4)
                 .await
                 .expect("stale-state submission resolves"),
             CandidateSubmission::CommitmentMismatch {
@@ -3820,7 +3976,7 @@ mod tests {
         candidate.prev_commitment = initial_commitment.clone();
         candidate.status = DeltaStatus::candidate(now.clone());
         service
-            .submit_candidate(&metadata_store, &candidate, &now)
+            .submit_candidate(&metadata_store, &candidate, &now, 4)
             .await
             .expect("candidate insert");
 
