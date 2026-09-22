@@ -20,6 +20,12 @@ Install the shared TypeScript workspace dependencies once from the repository
 root. The example's `dev`, `build`, and `typecheck` commands rebuild their
 Guardian SDK dependencies automatically.
 
+Set `VITE_MIDEN_FEE_FAUCET_ID` before `npm run dev`. It is the chain's fee faucet,
+bech32 or hex. Since Miden 0.17 the client builds its protocol configuration
+from it and cannot execute without one; the node does not serve it over RPC
+yet. The app throws at startup when the variable is missing. The session form
+can override it per session.
+
 ```bash
 cd packages
 npm ci
@@ -30,16 +36,7 @@ npm ci
 cd ../../smoke-web
 npm ci
 npm run typecheck
-npm run dev
-```
-
-Required env var:
-
-```bash
-# The chain's fee faucet, bech32 or hex. Since Miden 0.17 the client builds its
-# protocol configuration from it and cannot execute without one; the node does
-# not serve it over RPC yet. The session form can override it per session.
-VITE_MIDEN_FEE_FAUCET_ID=...
+VITE_MIDEN_FEE_FAUCET_ID=mtst1... npm run dev
 ```
 
 Optional env vars:

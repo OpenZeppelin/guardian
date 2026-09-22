@@ -336,9 +336,9 @@ impl MultisigClient {
         Ok(())
     }
 
-    /// An expired approval aborts in the auth procedure only at execution, after
-    /// the advice is assembled and the GUARDIAN ack requested. The summary carries
-    /// the deadline, so it is checked against the sync height first.
+    /// An expired approval aborts in the auth procedure only at execution.
+    /// The summary carries the deadline, so callers check it against the sync
+    /// height before assembling advice or requesting the GUARDIAN ack.
     pub(crate) async fn assert_approval_not_expired(
         &self,
         proposal_id: &str,

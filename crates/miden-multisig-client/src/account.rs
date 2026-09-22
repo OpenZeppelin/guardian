@@ -6,7 +6,7 @@ use miden_protocol::account::{
     Account, AccountId, AccountStorage, StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
 };
 
-use miden_standards::account::auth::AuthGuardedMultisig;
+use miden_standards::account::auth::{ApproverSet, AuthGuardedMultisig};
 
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
@@ -221,7 +221,8 @@ impl MultisigAccount {
         };
 
         let mut index = 0u32;
-        loop {
+        let max_signers = u32::from(ApproverSet::MAX_APPROVERS);
+        while index < max_signers {
             let key = Word::from([index, 0, 0, 0]);
             match self
                 .account

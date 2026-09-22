@@ -4818,6 +4818,7 @@ describe('Multisig', () => {
       await expect(
         multisig.createTransactionProposalRequest(requestedProposalId),
       ).rejects.toThrow(/approval expired at block/);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
     });
 

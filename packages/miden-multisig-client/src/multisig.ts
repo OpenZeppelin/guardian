@@ -2292,6 +2292,8 @@ export class Multisig {
       );
     }
 
+    await this.assertApprovalNotExpired(proposalId, txSummary);
+
     return this.assembleCustomAdvice(
       proposalId,
       signaturesForExecution,
@@ -2472,6 +2474,8 @@ export class Multisig {
       );
     }
 
+    await this.assertApprovalNotExpired(proposalId, txSummary);
+
     const normalizedSignerCommitments = new Set(
       this.signerCommitments.map((commitment) => normalizeHexWord(commitment)),
     );
@@ -2581,7 +2585,6 @@ export class Multisig {
     const executionSalt = Word.fromHex(normalizeHexWord(saltHex));
     const boundBlockNum = this.proposalBoundBlockNum(proposalId, metadata);
     const approvalExpirationDelta = approvalExpirationDeltaOf(txSummary, boundBlockNum);
-    await this.assertApprovalNotExpired(proposalId, txSummary);
     let finalRequest;
     try {
       finalRequest = await this.buildTransactionRequestFromMetadata(
@@ -2929,9 +2932,9 @@ export class Multisig {
    * anchor then records, and `executeForSummary` refuses the pair otherwise.
    */
   /**
-   * An expired approval aborts in the auth procedure only at execution, after
-   * the advice is assembled and the GUARDIAN ack requested. The summary carries
-   * the deadline, so it is checked against the sync height first.
+   * An expired approval aborts in the auth procedure only at execution.
+   * The summary carries the deadline, so callers check it against the sync
+   * height before assembling advice or requesting the GUARDIAN ack.
    */
   private async assertApprovalNotExpired(
     proposalId: string,

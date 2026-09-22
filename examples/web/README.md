@@ -8,18 +8,19 @@ Install the shared TypeScript workspace dependencies once from the repository
 root. The example's `dev` and `build` commands rebuild the local Guardian and
 Miden multisig packages automatically.
 
+Set `VITE_MIDEN_FEE_FAUCET_ID` to the chain's fee faucet (bech32 or hex) before
+starting. Since Miden 0.17 the client builds its protocol configuration from it
+and cannot execute without one; the node does not serve it over RPC yet. The
+app throws at startup when the variable is missing.
+
 ```bash
 cd packages
 npm ci
 
 cd ../examples/web
 npm ci
-npm run dev
+VITE_MIDEN_FEE_FAUCET_ID=mtst1... npm run dev
 ```
-
-Set `VITE_MIDEN_FEE_FAUCET_ID` to the chain's fee faucet (bech32 or hex) before
-starting. Since Miden 0.17 the client builds its protocol configuration from it
-and cannot execute without one; the node does not serve it over RPC yet.
 
 ## How this demo works
 

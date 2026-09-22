@@ -150,8 +150,10 @@ fn configured_client_builder(
 /// use miden_multisig_client::MultisigClient;
 /// use miden_client::rpc::Endpoint;
 ///
+/// let fee_faucet_id = miden_protocol::account::AccountId::from_hex("0x...")?;
 /// let client = MultisigClient::builder()
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
+///     .fee_faucet_id(fee_faucet_id)
 ///     .guardian_endpoint("http://localhost:50051")
 ///     .account_dir("/tmp/multisig-client")
 ///     .prover_config(

@@ -303,6 +303,10 @@ impl MultisigClient {
             ));
         }
 
+        let chain_anchor = proposal.metadata.chain_anchor()?;
+        self.assert_approval_not_expired(&proposal.id, &proposal.tx_summary)
+            .await?;
+
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
         let mut signature_inputs: Vec<SignatureInput> = proposal
@@ -390,13 +394,6 @@ impl MultisigClient {
             proposal.metadata.signer_commitments().ok()
         };
 
-        // Execute and finalize at the proposal's anchored reference block, so
-        // the summary the cosigners signed reproduces exactly. The anchor was
-        // already checked against the summary's block commitment when
-        // `get_proposal` verified the summary binding.
-        let chain_anchor = proposal.metadata.chain_anchor()?;
-        self.assert_approval_not_expired(&proposal.id, &proposal.tx_summary)
-            .await?;
         let auth_args =
             proposal_auth_args(self.fee_faucet_id, &proposal.tx_summary, &chain_anchor)?;
 
@@ -567,6 +564,9 @@ impl MultisigClient {
                 word_to_hex(&derived_commitment)
             )));
         }
+
+        self.assert_approval_not_expired(&proposal.id, &proposal.tx_summary)
+            .await?;
 
         let mut signature_inputs: Vec<SignatureInput> = proposal
             .signatures
