@@ -1,8 +1,9 @@
-import type { Felt, TransactionRequest, TransactionRequestBuilder } from '@miden-sdk/miden-sdk';
+import type { Felt, TransactionRequest, TransactionRequestBuilder, Word } from '@miden-sdk/miden-sdk';
 import { AccountId, Word as WordType } from '@miden-sdk/miden-sdk';
 import { MultisigAuthArgsMissingError } from '../multisig/authArgErrors.js';
 import { getRawMidenClient, isPublicMidenClient, type RawClientSource } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
+import { randomWord } from '../utils/random.js';
 import type { MultisigRequestOptions } from './options.js';
 
 /**
@@ -14,41 +15,52 @@ const AUTH_ARGS_SALT_OFFSET = 4;
 const AUTH_ARGS_NUM_ELEMENTS = 12;
 
 /**
- * A `TransactionRequestBuilder` already carrying the multisig auth args for
- * `options.accountId`: the three-word preimage in the advice map and its
- * commitment as the auth arg, which miden-client then leaves alone.
+ * A request under construction that already carries the multisig auth args,
+ * and the salt they commit to as normalized hex.
+ */
+export interface MultisigRequestDraft {
+  builder: TransactionRequestBuilder;
+  saltHex: string;
+}
+
+/**
+ * Starts a request carrying the multisig auth args for `options.accountId`:
+ * the three-word preimage in the advice map and its commitment as the auth
+ * arg, which miden-client then leaves alone.
  *
- * `saltHex` is the salt the caller settled on, drawn or given, so it is the one
- * value not read from `options`. `approvalExpirationDelta` left out means the
- * approval never expires, the upstream default. `boundBlockNum` left out binds
- * the store's sync height, which is what a proposer wants; a rebuild pins the
- * proposal's anchor block and the expiration the summary already binds.
+ * The salt is `options.salt` or a fresh one. `approvalExpirationDelta` left
+ * out means the approval never expires, the upstream default. `boundBlockNum`
+ * left out binds the store's sync height, which is what a proposer wants; a
+ * rebuild pins the proposal's anchor block and the expiration the summary
+ * already binds.
  *
  * The salt is moved across the WASM boundary, so a handle is built here from
  * the hex rather than taken from the caller, and nothing frees it afterwards.
  */
 export async function multisigRequestBuilder(
   client: RawClientSource,
-  saltHex: string,
   options: MultisigRequestOptions,
-): Promise<TransactionRequestBuilder> {
+): Promise<MultisigRequestDraft> {
   const { accountId, boundBlockNum, approvalExpirationDelta, midenRpcEndpoint } = options;
   assertApprovalExpirationDelta(approvalExpirationDelta);
-  const salt = WordType.fromHex(normalizeHexWord(saltHex));
+  const saltHex = normalizeHexWord(options.salt ? options.salt.toHex() : randomWord().toHex());
+  const salt = WordType.fromHex(saltHex);
   if (isPublicMidenClient(client)) {
-    return client.feeAwareTransactionRequestBuilder(accountId, {
+    const builder = await client.feeAwareTransactionRequestBuilder(accountId, {
       feeConversionSalt: salt,
       boundBlockNum,
       approvalExpirationDelta,
     });
+    return { builder, saltHex };
   }
   const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
-  return rawClient.feeAwareTransactionRequestBuilder(
+  const builder = await rawClient.feeAwareTransactionRequestBuilder(
     AccountId.fromHex(accountId),
     approvalExpirationDelta ?? null,
     salt,
     boundBlockNum ?? null,
   );
+  return { builder, saltHex };
 }
 
 /**
@@ -68,22 +80,23 @@ function assertApprovalExpirationDelta(delta: number | undefined): void {
 }
 
 /**
- * Builds the request and refuses one that carries no auth arg.
- *
+ * Builds the request and hands back the salt it commits to as a fresh handle
+ * the caller owns. Refuses a request that carries no auth arg:
  * `feeAwareTransactionRequestBuilder` hands back an untouched builder for an
  * account it cannot classify as a multisig, typically one the client's store
- * does not hold. Such a request would only fail later, inside the VM, while
- * the auth procedure pipes a preimage that is not there.
+ * does not hold, and such a request would only fail later, inside the VM,
+ * while the auth procedure pipes a preimage that is not there.
  */
 export function buildMultisigRequest(
   builder: TransactionRequestBuilder,
+  saltHex: string,
   accountId: string,
-): TransactionRequest {
+): { request: TransactionRequest; salt: Word } {
   const request = builder.build();
   if (!request.authArg()) {
     throw new MultisigAuthArgsMissingError(accountId);
   }
-  return request;
+  return { request, salt: WordType.fromHex(saltHex) };
 }
 
 /**

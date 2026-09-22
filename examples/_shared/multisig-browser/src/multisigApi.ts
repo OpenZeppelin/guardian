@@ -8,7 +8,7 @@ import {
 import {
   AccountInspector,
   buildP2idTransactionRequest,
-  chainAnchorFromBase64,
+  chainAnchorBlockNum,
   EcdsaSigner,
   FalconSigner,
   MidenWalletSigner,
@@ -416,12 +416,7 @@ function proposalBoundBlockNum(proposal: Proposal): number {
   if (!proposal.metadata.chainAnchor) {
     throw new Error(`Proposal ${proposal.id} carries no chain anchor`);
   }
-  const anchor = chainAnchorFromBase64(proposal.metadata.chainAnchor);
-  try {
-    return anchor.blockNum();
-  } finally {
-    anchor.free();
-  }
+  return chainAnchorBlockNum(proposal.metadata.chainAnchor);
 }
 
 export async function createCustomP2idProposal(

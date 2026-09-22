@@ -12,7 +12,6 @@ import {
 import { getProcedureRoot, type ProcedureName } from '../procedures.js';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
-import { randomWord } from '../utils/random.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
 import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
 
@@ -88,18 +87,12 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
     threshold,
     options.midenRpcEndpoint,
   );
-  const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
-
-  let txBuilder = await multisigRequestBuilder(client, authSaltHex, options);
-  txBuilder = txBuilder.withCustomScript(script);
+  const { builder, saltHex } = await multisigRequestBuilder(client, options);
+  let txBuilder = builder.withCustomScript(script);
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  return {
-    request: buildMultisigRequest(txBuilder, options.accountId),
-    salt: WordType.fromHex(normalizeHexWord(authSaltHex)),
-    configHash,
-  };
+  return { ...buildMultisigRequest(txBuilder, saltHex, options.accountId), configHash };
 }

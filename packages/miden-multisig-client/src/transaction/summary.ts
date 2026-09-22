@@ -78,8 +78,12 @@ export async function executeForSummary(
     throw error;
   }
 
-  const anchorCommitmentHex = normalizeHexWord(anchor.commitment().toHex());
-  const summaryBlockCommitmentHex = normalizeHexWord(summary.blockCommitment().toHex());
+  const anchorCommitment = anchor.commitment();
+  const summaryBlockCommitment = summary.blockCommitment();
+  const anchorCommitmentHex = normalizeHexWord(anchorCommitment.toHex());
+  const summaryBlockCommitmentHex = normalizeHexWord(summaryBlockCommitment.toHex());
+  anchorCommitment.free?.();
+  summaryBlockCommitment.free?.();
   if (anchorCommitmentHex !== summaryBlockCommitmentHex) {
     anchor.free();
     throw new SummaryAnchorMismatchError({ anchorCommitmentHex, summaryBlockCommitmentHex });
@@ -134,6 +138,20 @@ export function chainAnchorToBase64(anchor: ChainAnchor): string {
  */
 export function chainAnchorFromBase64(anchorBase64: string): ChainAnchor {
   return ChainAnchor.deserialize(base64ToUint8Array(anchorBase64));
+}
+
+/**
+ * The block a proposal's `chainAnchor` names, which is the block its summary
+ * binds: a custom producer rebuilds its request at this block. Decodes the
+ * anchor for the one number and frees it.
+ */
+export function chainAnchorBlockNum(anchorBase64: string): number {
+  const anchor = chainAnchorFromBase64(anchorBase64);
+  try {
+    return anchor.blockNum();
+  } finally {
+    anchor.free();
+  }
 }
 
 /**

@@ -67,6 +67,7 @@ export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from
 export {
   chainAnchorFromBase64,
   chainAnchorToBase64,
+  chainAnchorBlockNum,
   executeForSummary,
   executeForSummaryAt,
   summaryApprovalExpirationBlockNum,

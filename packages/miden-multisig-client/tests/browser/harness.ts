@@ -52,20 +52,17 @@ async function run(): Promise<void> {
     hasProcedure[name] = code.hasProcedure(Word.fromHex(root));
   }
 
-  // Compile every config script against the real WASM assembler, and have the
-  // client attach the account's multisig auth args to each request.
+  // Compile every config script against the real WASM assembler; each builder
+  // also refuses a request the client did not attach the multisig auth args to,
+  // so a compiled script here means the account was classified as a multisig.
   const requestOptions = { accountId, midenRpcEndpoint: 'mock' };
   const configScriptsCompiled: Record<string, boolean> = {};
-  const authArgsAttached: Record<string, boolean> = {};
-  const signers = await buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT], requestOptions);
+  await buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT], requestOptions);
   configScriptsCompiled.updateSigners = true;
-  authArgsAttached.updateSigners = Boolean(signers.request.authArg());
-  const threshold = await buildUpdateProcedureThresholdTransactionRequest(client, 'send_asset', 2, requestOptions);
+  await buildUpdateProcedureThresholdTransactionRequest(client, 'send_asset', 2, requestOptions);
   configScriptsCompiled.updateProcedureThreshold = true;
-  authArgsAttached.updateProcedureThreshold = Boolean(threshold.request.authArg());
-  const guardian = await buildUpdateGuardianTransactionRequest(client, GUARDIAN_COMMITMENT, requestOptions);
+  await buildUpdateGuardianTransactionRequest(client, GUARDIAN_COMMITMENT, requestOptions);
   configScriptsCompiled.updateGuardian = true;
-  authArgsAttached.updateGuardian = Boolean(guardian.request.authArg());
 
   window.__result = {
     id: account.id().toString(),
@@ -75,7 +72,6 @@ async function run(): Promise<void> {
     slotNames: account.storage().getSlotNames(),
     hasProcedure,
     configScriptsCompiled,
-    authArgsAttached,
   };
   report(JSON.stringify(window.__result, null, 2));
 }

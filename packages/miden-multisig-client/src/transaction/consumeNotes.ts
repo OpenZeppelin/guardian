@@ -5,11 +5,9 @@ import type {
   WasmWebClient,
   Word,
 } from '@miden-sdk/miden-sdk';
-import { NoteAndArgs, NoteAndArgsArray, Word as WordType } from '@miden-sdk/miden-sdk';
+import { NoteAndArgs, NoteAndArgsArray } from '@miden-sdk/miden-sdk';
 import { LegacyConsumeNotesNoteMissingError } from '../multisig/consumeNotesErrors.js';
 import { getRawMidenClient } from '../raw-client.js';
-import { normalizeHexWord } from '../utils/encoding.js';
-import { randomWord } from '../utils/random.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
 import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
 
@@ -41,19 +39,14 @@ export async function buildConsumeNotesTransactionRequestFromNotes(
     noteAndArgsArray.push(new NoteAndArgs(note, null));
   }
 
-  const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
-
-  let txBuilder = await multisigRequestBuilder(client, authSaltHex, options);
-  txBuilder = txBuilder.withInputNotes(noteAndArgsArray);
+  const { builder, saltHex } = await multisigRequestBuilder(client, options);
+  let txBuilder = builder.withInputNotes(noteAndArgsArray);
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  return {
-    request: buildMultisigRequest(txBuilder, options.accountId),
-    salt: WordType.fromHex(normalizeHexWord(authSaltHex)),
-  };
+  return buildMultisigRequest(txBuilder, saltHex, options.accountId);
 }
 
 /**

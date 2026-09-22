@@ -455,7 +455,7 @@ exported/imported through the normal flow, but the SDK cannot build its on-chain
 transaction — the integration owns that recipe and submits it itself.
 
 ```typescript
-import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client';
+import { buildP2idTransactionRequest, chainAnchorBlockNum } from '@openzeppelin/miden-multisig-client';
 
 // Producer: build a transaction and propose it under a custom label.
 // The options object accepts `noteType` (`NoteType.Public` (default) or
@@ -485,10 +485,10 @@ const advice = await multisig.prepareCustomExecution(proposal.id, request.serial
 // (inputs + salt + bound block) with the advice, then submit. `submitTransaction`
 // takes the proposal id to execute at the proposal's anchored reference block,
 // since the collected signatures only authorize the summary produced there.
-const anchor = chainAnchorFromBase64(proposal.metadata.chainAnchor);
+const boundBlockNum = chainAnchorBlockNum(proposal.metadata.chainAnchor);
 const { request: finalRequest } = await buildP2idTransactionRequest(
   midenClient, senderId, recipientId, faucetId, amount,
-  { salt, boundBlockNum: anchor.blockNum(), signatureAdviceMap: advice, midenRpcEndpoint },
+  { salt, boundBlockNum, signatureAdviceMap: advice, midenRpcEndpoint },
 );
 await multisig.submitTransaction(proposal.id, finalRequest);
 ```

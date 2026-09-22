@@ -12,7 +12,6 @@ import {
 } from '@miden-sdk/miden-sdk';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
-import { randomWord } from '../utils/random.js';
 import { authSchemeId } from '../utils/signature.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
 import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
@@ -115,20 +114,18 @@ export async function buildUpdateSignersTransactionRequest(
 
   const script = await buildUpdateSignersScript(client, options.midenRpcEndpoint);
 
-  const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
-
-  let txBuilder = await multisigRequestBuilder(client, authSaltHex, options);
-  txBuilder = txBuilder.withCustomScript(script);
-  txBuilder = txBuilder.withScriptArg(configHashForScript);
-  txBuilder = txBuilder.extendAdviceMap(advice);
+  const { builder, saltHex } = await multisigRequestBuilder(client, options);
+  let txBuilder = builder
+    .withCustomScript(script)
+    .withScriptArg(configHashForScript)
+    .extendAdviceMap(advice);
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
   return {
-    request: buildMultisigRequest(txBuilder, options.accountId),
-    salt: WordType.fromHex(normalizeHexWord(authSaltHex)),
+    ...buildMultisigRequest(txBuilder, saltHex, options.accountId),
     configHash: configHashForReturn,
   };
 }

@@ -49,19 +49,14 @@ test('TS account reproduces the Rust storage layout and override-target procedur
     expect(hasProcedure?.[name], `missing override-target procedure: ${name}`).toBe(true);
   }
 
-  // Config scripts must compile against the SDK's real WASM assembler.
+  // Config scripts must compile against the SDK's real WASM assembler, and the
+  // client must classify the TS-built account as a guarded multisig: each builder
+  // throws when the request it built carries no multisig auth args.
   const configScriptsCompiled = result?.configScriptsCompiled as
     | Record<string, boolean>
     | undefined;
   for (const name of ['updateSigners', 'updateProcedureThreshold', 'updateGuardian']) {
     expect(configScriptsCompiled?.[name], `config script failed to compile: ${name}`).toBe(true);
-  }
-
-  // The client must classify the TS-built account as a guarded multisig, or no request
-  // built for it carries the auth args its auth procedure reads.
-  const authArgsAttached = result?.authArgsAttached as Record<string, boolean> | undefined;
-  for (const name of ['updateSigners', 'updateProcedureThreshold', 'updateGuardian']) {
-    expect(authArgsAttached?.[name], `request built without multisig auth args: ${name}`).toBe(true);
   }
 });
 

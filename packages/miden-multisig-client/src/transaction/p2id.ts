@@ -18,7 +18,6 @@ import {
 } from '@miden-sdk/miden-sdk';
 import type { RawClientSource } from '../raw-client.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
-import { randomWord } from '../utils/random.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
 import type { P2idNoteVisibility } from '../types/proposal.js';
@@ -171,7 +170,10 @@ export async function buildP2idTransactionRequest(
   amount: bigint,
   options: P2idTransactionOptions = {},
 ): Promise<{ request: TransactionRequest; salt: Word }> {
-  const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
+  const { builder, saltHex } = await multisigRequestBuilder(client, {
+    ...options,
+    accountId: senderId,
+  });
 
   const note = buildP2idNoteFromMetadata(
     senderId,
@@ -179,24 +181,15 @@ export async function buildP2idTransactionRequest(
     faucetId,
     amount,
     options.noteType ?? NoteType.Public,
-    authSaltHex,
+    saltHex,
     { reclaimHeight: options.reclaimHeight, timelockHeight: options.timelockHeight },
   );
 
-  const outputNotes = new MidenArrays.NoteArray([note]);
-
-  let txBuilder = await multisigRequestBuilder(client, authSaltHex, {
-    ...options,
-    accountId: senderId,
-  });
-  txBuilder = txBuilder.withOwnOutputNotes(outputNotes);
+  let txBuilder = builder.withOwnOutputNotes(new MidenArrays.NoteArray([note]));
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  return {
-    request: buildMultisigRequest(txBuilder, senderId),
-    salt: WordType.fromHex(normalizeHexWord(authSaltHex)),
-  };
+  return buildMultisigRequest(txBuilder, saltHex, senderId);
 }

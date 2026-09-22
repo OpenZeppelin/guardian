@@ -9,6 +9,7 @@ export {
   buildConsumeNotesTransactionRequestFromNotes,
 } from './transaction/consumeNotes.js';
 export {
+  chainAnchorBlockNum,
   chainAnchorFromBase64,
   chainAnchorToBase64,
   executeForSummary,
