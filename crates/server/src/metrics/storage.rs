@@ -270,10 +270,12 @@ impl StorageBackend for InstrumentedStorage {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
+        max_pending_candidates: usize,
     ) -> Result<CandidateSubmission, String> {
         timed(
             "submit_candidate",
-            self.inner.submit_candidate(metadata, delta, now),
+            self.inner
+                .submit_candidate(metadata, delta, now, max_pending_candidates),
         )
         .await
     }

@@ -51,6 +51,16 @@ impl IntegrationMockNetworkClient {
             .expect("commitments lock")
             .insert(account_id, commitment);
     }
+
+    /// Move the registered on-chain commitment after the client has been
+    /// shared with an `AppState` — the e2e twin of a transaction landing
+    /// (or the chain advancing) between two worker passes.
+    pub fn set_on_chain_commitment(&self, account_id: &str, commitment: &str) {
+        self.initial_commitments
+            .lock()
+            .expect("commitments lock")
+            .insert(account_id.to_string(), commitment.to_string());
+    }
 }
 
 #[async_trait]

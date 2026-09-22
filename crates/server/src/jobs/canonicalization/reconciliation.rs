@@ -62,6 +62,10 @@ fn decode_recoverable_reason(status: &DeltaStatus) -> &'static str {
             reason: Some(RetainReason::Diverged),
             ..
         } => "diverged",
+        DeltaStatus::Retained {
+            reason: Some(RetainReason::Orphaned),
+            ..
+        } => "orphaned",
         DeltaStatus::Retained { reason: None, .. } => "unrecorded",
         status if status.is_client_abandoned() => "client_abandoned",
         _ => "unrecorded",
@@ -81,7 +85,156 @@ pub(super) fn reconcile_due(age_seconds: u64, interval_seconds: u64) -> bool {
     age_seconds % backoff < interval_seconds.max(1)
 }
 
+/// Walk the recoverable rows by their stored commitments from the stored
+/// base to the observed on-chain commitment (issue #17). At each hop the
+/// row whose `prev_commitment` is the running commitment and whose hint
+/// is `on_chain` wins; otherwise the lowest-nonce chaining row is taken.
+/// Returns the rows on the path, base-first, or an empty path when the
+/// hints do not link the base to the chain head. Bounded by the number
+/// of rows, so a malformed cycle can never spin.
+fn select_recoverable_path(
+    stored_commitment: &str,
+    on_chain: &str,
+    live: &[(u64, DeltaObject)],
+) -> Vec<DeltaObject> {
+    let mut path: Vec<DeltaObject> = Vec::new();
+    let mut running = stored_commitment.to_string();
+    for _ in 0..live.len() {
+        let mut chaining = live
+            .iter()
+            .map(|(_, delta)| delta)
+            .filter(|delta| {
+                delta.prev_commitment == running
+                    && delta.new_commitment.is_some()
+                    && !path.iter().any(|taken| taken.nonce == delta.nonce)
+            })
+            .collect::<Vec<_>>();
+        chaining.sort_by_key(|delta| delta.nonce);
+        let Some(next) = chaining
+            .iter()
+            .find(|delta| delta.new_commitment.as_deref() == Some(on_chain))
+            .or_else(|| chaining.first())
+        else {
+            return Vec::new();
+        };
+        let next = (*next).clone();
+        running = next
+            .new_commitment
+            .clone()
+            .expect("filtered to rows with a stored hint");
+        path.push(next);
+        if running == on_chain {
+            return path;
+        }
+    }
+    Vec::new()
+}
+
 impl DeltasProcessorBase {
+    /// Promote a multi-row recoverable path (issue #17): reconstruct hop
+    /// by hop from the stored base, requiring every hop to reproduce its
+    /// row's stored hint and the last to reproduce the on-chain
+    /// commitment, then promote the rows in order through the same
+    /// fenced write the single-row path uses. A hop that fails to
+    /// reproduce defers the whole path — nothing is promoted on a
+    /// partially verified chain.
+    async fn reconcile_recoverable_path(
+        &self,
+        current_state: StateObject,
+        on_chain: &str,
+        path: Vec<DeltaObject>,
+    ) -> Result<()> {
+        let account_id = current_state.account_id.clone();
+        let mut reconstructed: Vec<(DeltaObject, serde_json::Value, String)> =
+            Vec::with_capacity(path.len());
+        let mut base_json = current_state.state_json;
+        for delta in path {
+            let applied = {
+                let client = self.state.network_client.clone();
+                let prev_state_json = base_json.clone();
+                let delta_payload = Arc::new(delta.delta_payload.clone());
+                crate::network::reconstructor()
+                    .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
+                    .await
+            };
+            let (new_state_json, recomputed_commitment) = match applied {
+                Ok(applied) => applied,
+                Err(e) => {
+                    tracing::info!(
+                        event = "reconcile_deferred",
+                        reason = "base_no_longer_applies",
+                        account_id = %account_id,
+                        nonce = delta.nonce,
+                        error = %GuardianError::from(e),
+                        "Recoverable chain hop no longer applies to its base; deferring the path"
+                    );
+                    record_candidate_outcome(
+                        crate::metrics::labels::CandidateOutcome::ReconcileDeferred,
+                    );
+                    return Ok(());
+                }
+            };
+            if delta.new_commitment.as_deref() != Some(recomputed_commitment.as_str()) {
+                tracing::info!(
+                    event = "reconcile_deferred",
+                    reason = "recomputed_commitment_mismatch",
+                    account_id = %account_id,
+                    nonce = delta.nonce,
+                    "Recoverable chain hop reconstructs to a commitment other than its \
+                     stored hint; deferring the path"
+                );
+                record_candidate_outcome(
+                    crate::metrics::labels::CandidateOutcome::ReconcileDeferred,
+                );
+                return Ok(());
+            }
+            base_json = new_state_json.clone();
+            reconstructed.push((delta, new_state_json, recomputed_commitment));
+        }
+        let Some((_, _, final_commitment)) = reconstructed.last() else {
+            return Ok(());
+        };
+        if final_commitment != on_chain {
+            tracing::info!(
+                event = "reconcile_deferred",
+                reason = "recomputed_commitment_mismatch",
+                account_id = %account_id,
+                on_chain = %on_chain,
+                recomputed = %final_commitment,
+                "Recoverable chain reconstructs to a commitment the chain does not show; deferring"
+            );
+            record_candidate_outcome(crate::metrics::labels::CandidateOutcome::ReconcileDeferred);
+            return Ok(());
+        }
+
+        let hops = reconstructed.len();
+        tracing::info!(
+            event = "reconcile_promoted",
+            account_id = %account_id,
+            hops,
+            on_chain = %on_chain,
+            "Recoverable chain now verifies against the on-chain commitment; \
+             promoting the recovered path in order"
+        );
+        for (delta, new_state_json, recomputed_commitment) in reconstructed {
+            tracing::info!(
+                event = "reconcile_promoted",
+                account_id = %account_id,
+                nonce = delta.nonce,
+                retention_reason = decode_recoverable_reason(&delta.status),
+                "Promoting recoverable chain hop"
+            );
+            self.canonicalize_verified_delta(
+                delta,
+                new_state_json,
+                recomputed_commitment,
+                crate::metrics::labels::CandidateOutcome::Reconciled,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     fn recoverable_age_seconds(&self, delta: &DeltaObject, now: DateTime<Utc>) -> Option<u64> {
         let timestamp = match &delta.status {
             DeltaStatus::Retained { timestamp, .. } => timestamp,
@@ -384,6 +537,13 @@ impl DeltasProcessorBase {
     /// hint alone never promotes: the reconstruction must reproduce the
     /// observed commitment from the stored base. Rows without a stored
     /// hint fall back to reconstruct-and-compare.
+    ///
+    /// Recoverable rows may also form a chain (issue #17): a parked
+    /// predecessor followed by its orphaned successors. When the stored
+    /// hints link the stored base to the on-chain commitment through
+    /// more than one row, the whole path is reconstructed step by step
+    /// and promoted in order — each hop must reproduce its row's hint,
+    /// and the last must reproduce the on-chain commitment.
     async fn reconcile_chain_advance(
         &self,
         account_id: &str,
@@ -391,6 +551,13 @@ impl DeltasProcessorBase {
         on_chain: &str,
         live: Vec<(u64, DeltaObject)>,
     ) -> Result<()> {
+        let path = select_recoverable_path(&current_state.commitment, on_chain, &live);
+        if path.len() > 1 {
+            return self
+                .reconcile_recoverable_path(current_state, on_chain, path)
+                .await;
+        }
+
         for (age_seconds, delta) in live {
             // A row that no longer chains from the stored base is
             // structurally obsolete (e.g. the base moved out-of-band via
@@ -534,6 +701,87 @@ mod tests {
         assert_eq!(reconcile_backoff_seconds(3600), 600);
         assert_eq!(reconcile_backoff_seconds(86_400), 600);
         assert_eq!(reconcile_backoff_seconds(u64::MAX), 600);
+    }
+
+    fn recoverable(nonce: u64, prev: &str, new: Option<&str>) -> (u64, DeltaObject) {
+        (
+            0,
+            DeltaObject {
+                account_id: "0xacc".to_string(),
+                nonce,
+                prev_commitment: prev.to_string(),
+                new_commitment: new.map(str::to_string),
+                delta_payload: serde_json::json!({}),
+                ack_sig: String::new(),
+                ack_pubkey: String::new(),
+                ack_scheme: String::new(),
+                status: DeltaStatus::retained(
+                    "2026-01-01T00:00:00Z".to_string(),
+                    crate::delta_object::RetainReason::Orphaned,
+                ),
+                metadata: None,
+            },
+        )
+    }
+
+    fn nonces(path: &[DeltaObject]) -> Vec<u64> {
+        path.iter().map(|delta| delta.nonce).collect()
+    }
+
+    #[test]
+    fn recoverable_path_links_base_to_chain_head_through_hints() {
+        let live = vec![
+            recoverable(2, "0xc1", Some("0xc2")),
+            recoverable(1, "0xbase", Some("0xc1")),
+            recoverable(3, "0xc2", Some("0xc3")),
+        ];
+        assert_eq!(
+            nonces(&select_recoverable_path("0xbase", "0xc2", &live)),
+            vec![1, 2]
+        );
+        assert_eq!(
+            nonces(&select_recoverable_path("0xbase", "0xc3", &live)),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            nonces(&select_recoverable_path("0xbase", "0xc1", &live)),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn recoverable_path_prefers_the_hop_that_reaches_the_chain_head() {
+        // Two rows chain from the base; the one whose hint is on-chain
+        // wins over the lower nonce.
+        let live = vec![
+            recoverable(1, "0xbase", Some("0xdead")),
+            recoverable(2, "0xbase", Some("0xc2")),
+        ];
+        assert_eq!(
+            nonces(&select_recoverable_path("0xbase", "0xc2", &live)),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn recoverable_path_is_empty_when_hints_do_not_reach_the_chain() {
+        let live = vec![
+            recoverable(1, "0xbase", Some("0xc1")),
+            recoverable(2, "0xc1", None),
+            recoverable(3, "0xelsewhere", Some("0xc3")),
+        ];
+        assert!(select_recoverable_path("0xbase", "0xc3", &live).is_empty());
+        assert!(select_recoverable_path("0xbase", "0xc9", &live).is_empty());
+        assert!(select_recoverable_path("0xbase", "0xc1", &[]).is_empty());
+    }
+
+    #[test]
+    fn recoverable_path_terminates_on_a_hint_cycle() {
+        let live = vec![
+            recoverable(1, "0xbase", Some("0xc1")),
+            recoverable(2, "0xc1", Some("0xbase")),
+        ];
+        assert!(select_recoverable_path("0xbase", "0xc9", &live).is_empty());
     }
 
     #[test]

@@ -2085,12 +2085,19 @@
           "submission_grace_period_seconds",
           "retained_ttl_seconds",
           "reconcile_interval_seconds",
-          "reconcile_page_size"
+          "reconcile_page_size",
+          "max_pending_candidates_per_account"
         ],
         "properties": {
           "check_interval_seconds": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "max_pending_candidates_per_account": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Candidate deltas one account may hold in flight at once, as a\nstrictly ordered chain (issue #17). `1` is the historical\none-in-flight-candidate behavior.",
             "minimum": 0
           },
           "max_retries": {

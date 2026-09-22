@@ -323,9 +323,15 @@ impl StorageBackend for EncryptedStorage {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
+        max_pending_candidates: usize,
     ) -> Result<CandidateSubmission, String> {
         self.inner
-            .submit_candidate(metadata, &self.encrypt_delta(delta)?, now)
+            .submit_candidate(
+                metadata,
+                &self.encrypt_delta(delta)?,
+                now,
+                max_pending_candidates,
+            )
             .await
     }
 

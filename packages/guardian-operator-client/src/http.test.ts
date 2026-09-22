@@ -691,6 +691,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             retained_ttl_seconds: 86400,
             reconcile_interval_seconds: 60,
             reconcile_page_size: 100,
+            max_pending_candidates_per_account: 4,
           },
         },
         total_account_count: 1,
@@ -712,6 +713,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       retainedTtlSeconds: 86400,
       reconcileIntervalSeconds: 60,
       reconcilePageSize: 100,
+      maxPendingCandidatesPerAccount: 4,
     });
   });
 

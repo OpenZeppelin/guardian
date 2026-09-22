@@ -42,13 +42,20 @@ impl DeltaCommitStrategy {
                 // pending-candidate flag: a failure between the two can
                 // otherwise leave a candidate the worker never selects
                 // while new submissions stay rejected. A Conflict is the
-                // race-proof form of the pre-commit pending-candidate
+                // race-proof form of the pre-commit queue-admission
                 // gate: the losing side of two concurrent submissions
                 // gets the same 409 it would have gotten arriving late.
+                let max_pending_candidates =
+                    crate::services::candidate_chain::max_pending_candidates(ctx.state);
                 let outcome = ctx
                     .resolved
                     .storage
-                    .submit_candidate(ctx.state.metadata.as_ref(), delta, &ctx.now)
+                    .submit_candidate(
+                        ctx.state.metadata.as_ref(),
+                        delta,
+                        &ctx.now,
+                        max_pending_candidates,
+                    )
                     .await
                     .map_err(|e| {
                         error!(

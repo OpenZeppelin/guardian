@@ -246,14 +246,124 @@ pub enum PromoteWrite {
 pub enum CandidateSubmission {
     /// The candidate row and the pending-candidate flag committed.
     Submitted,
-    /// The account already has a pending candidate, or a delta already
+    /// The submission competes with a queued candidate for the same
+    /// base state, would exceed the account's candidate queue depth,
+    /// does not extend the queue in nonce order, or a delta already
     /// occupies this nonce; nothing was written. The service layer maps
     /// this to the same conflict rejection as its pre-commit gate — the
     /// in-transaction recheck is what makes that gate race-proof.
     Conflict,
-    /// The account state advanced after the service-layer validation but
-    /// before the candidate transaction acquired the account lock.
+    /// The submission builds on a state that is neither the stored
+    /// canonical state nor any queued candidate's post-state (the
+    /// account state advanced after the service-layer validation, or
+    /// the client is behind the canonical chain). `expected` is the
+    /// stored canonical commitment the client can resync to.
     CommitmentMismatch { expected: String },
+}
+
+/// The chain position of one queued candidate, as the submission gate
+/// needs it: its nonce and the post-state commitment the server
+/// computed at push time (issue #17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedCandidate {
+    pub nonce: u64,
+    pub new_commitment: Option<String>,
+}
+
+impl QueuedCandidate {
+    pub fn of(delta: &DeltaObject) -> Self {
+        Self {
+            nonce: delta.nonce,
+            new_commitment: delta.new_commitment.clone(),
+        }
+    }
+}
+
+/// Where a submission's base commitment sits relative to an account's
+/// candidate chain (issue #17). Shared by the service-layer admission
+/// gate and the in-lock storage recheck so both classify identically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainPosition {
+    /// Builds on the chain tail: the newest queued candidate's
+    /// post-state, or the canonical state when nothing is queued.
+    Tail,
+    /// Builds on the canonical state or on a non-tail candidate's
+    /// post-state while a later candidate already occupies that slot —
+    /// a competing submission for a base another in-flight delta has
+    /// claimed.
+    Competing,
+    /// Builds on no state this server knows: the client is behind the
+    /// canonical chain, or the account advanced concurrently.
+    Unrelated,
+}
+
+/// Classify `prev_commitment` against the stored canonical commitment
+/// and the account's candidate queue (nonce-ascending). A queued
+/// candidate without a stored post-state commitment cannot be chained
+/// from: extending past it is `Unrelated`, never `Tail`.
+pub fn classify_chain_position(
+    stored_commitment: &str,
+    queue: &[QueuedCandidate],
+    prev_commitment: &str,
+) -> ChainPosition {
+    let Some(tail) = queue.last() else {
+        return if prev_commitment == stored_commitment {
+            ChainPosition::Tail
+        } else {
+            ChainPosition::Unrelated
+        };
+    };
+    if tail.new_commitment.as_deref() == Some(prev_commitment) {
+        return ChainPosition::Tail;
+    }
+    if prev_commitment == stored_commitment
+        || queue
+            .iter()
+            .any(|candidate| candidate.new_commitment.as_deref() == Some(prev_commitment))
+    {
+        return ChainPosition::Competing;
+    }
+    ChainPosition::Unrelated
+}
+
+/// The candidate-queue admission gate (issue #17), evaluated by every
+/// backend under its account lock so two racing submissions serialize
+/// on one decision. `None` means the submission may be written; `Some`
+/// is the outcome to return instead. The rules, in order:
+///
+/// 1. The delta must build on the chain tail ([`ChainPosition::Tail`]);
+///    a competing base is a `Conflict`, an unknown base a
+///    `CommitmentMismatch` against the stored canonical commitment.
+/// 2. The queue must have room: `queue.len() < max_pending_candidates`
+///    (a depth below 1 is treated as 1, so the gate can never refuse
+///    every submission).
+/// 3. When the queue is non-empty the delta's nonce must exceed the
+///    tail's — candidates are verified in nonce order, so a chained
+///    delta with a lower nonce would be processed before its base.
+pub fn gate_candidate_submission(
+    stored_commitment: &str,
+    queue: &[QueuedCandidate],
+    delta: &DeltaObject,
+    max_pending_candidates: usize,
+) -> Option<CandidateSubmission> {
+    match classify_chain_position(stored_commitment, queue, &delta.prev_commitment) {
+        ChainPosition::Tail => {}
+        ChainPosition::Competing => return Some(CandidateSubmission::Conflict),
+        ChainPosition::Unrelated => {
+            return Some(CandidateSubmission::CommitmentMismatch {
+                expected: stored_commitment.to_string(),
+            });
+        }
+    }
+    if queue.len() >= max_pending_candidates.max(1) {
+        return Some(CandidateSubmission::Conflict);
+    }
+    if let Some(tail) = queue.last()
+        && delta.nonce <= tail.nonce
+    {
+        return Some(CandidateSubmission::Conflict);
+    }
+    None
 }
 
 /// The exact lifecycle row a promotion is allowed to flip. The gate
@@ -315,19 +425,25 @@ pub struct CandidatePromotion {
 
 /// Single-process fallback for [`StorageBackend::submit_candidate`]:
 /// the delta write and the flag set are separate commits, and the
-/// pending-candidate recheck stays at the service-layer gate — both
-/// acceptable only where no concurrent task can observe the gap. Its
-/// sole consumer is the cfg-gated mock backend — the filesystem backend
-/// overrides the method with a locked sequence (issue #345 exposed
-/// worker/API task interleavings) — hence the dead-code allowance for
-/// non-test builds.
+/// queue-admission recheck is a plain read-then-write — both acceptable
+/// only where no concurrent task can observe the gap. Its sole consumer
+/// is the cfg-gated mock backend — the filesystem backend overrides the
+/// method with a locked sequence (issue #345 exposed worker/API task
+/// interleavings) — hence the dead-code allowance for non-test builds.
 #[allow(dead_code)]
 pub(crate) async fn submit_candidate_sequential(
     storage: &dyn StorageBackend,
     metadata: &dyn crate::metadata::MetadataStore,
     delta: &DeltaObject,
     now: &str,
+    _max_pending_candidates: usize,
 ) -> Result<CandidateSubmission, String> {
+    // The queue admission gate (`gate_candidate_submission`) is not
+    // re-evaluated here: the mock backend replays canned reads, and a
+    // second `pull_state` would drift the response queues of every
+    // service test that drives it. The service layer's gate is the one
+    // exercised through this path; the locked backends run the in-lock
+    // twin.
     // A retained row (issue #345) or a client-abandoned discard
     // (issue #319) is a best-effort recovery/history artifact, never
     // settled canonical history: a fresh candidate at its nonce
@@ -393,7 +509,11 @@ pub(crate) async fn promote_candidate_sequential(
 /// Single-process fallback for [`StorageBackend::discard_candidate`].
 /// A flag-clear failure is tolerated (warn) to match the historical
 /// discard path: the candidate row is already gone and the stuck flag
-/// only costs an empty worker pass, never a wedge.
+/// only costs an empty worker pass, never a wedge. Its sole consumer is
+/// the cfg-gated mock backend — the filesystem backend runs the same
+/// sequence under its write lock with a queue-aware flag release (issue
+/// #17) — hence the dead-code allowance for non-test builds.
+#[allow(dead_code)]
 pub(crate) async fn discard_candidate_sequential(
     storage: &dyn StorageBackend,
     metadata: &dyn crate::metadata::MetadataStore,
@@ -691,17 +811,19 @@ pub trait StorageBackend: Send + Sync {
     /// crash between the two writes leaves a candidate row the worker
     /// never selects (flag false) while new submissions stay rejected
     /// (row exists): a permanent wedge. Fencing backends additionally
-    /// recheck under the account lock that no candidate exists and that
-    /// the nonce is unoccupied, returning
-    /// [`CandidateSubmission::Conflict`] instead of overwriting — two
-    /// racing submissions that both passed the service-layer gate must
-    /// not both commit, and a delayed submission must never overwrite
-    /// canonical history at its nonce.
+    /// re-evaluate the queue admission gate
+    /// ([`gate_candidate_submission`], with `max_pending_candidates` as
+    /// the account's queue depth) under the account lock and check that
+    /// the nonce is unoccupied, returning [`CandidateSubmission::Conflict`]
+    /// instead of overwriting — two racing submissions that both passed
+    /// the service-layer gate must not both commit, and a delayed
+    /// submission must never overwrite canonical history at its nonce.
     async fn submit_candidate(
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
+        max_pending_candidates: usize,
     ) -> Result<CandidateSubmission, String>;
 
     /// Promote a verified candidate: advance the account state, sync
@@ -863,5 +985,150 @@ mod record_classification_tests {
         ));
         assert!(!is_record_corruption("unknown encryption key id 'k1'"));
         assert!(!is_record_corruption("key store unavailable: kms timeout"));
+    }
+}
+
+#[cfg(test)]
+mod queue_admission_tests {
+    use super::*;
+
+    fn delta(nonce: u64, prev: &str) -> DeltaObject {
+        DeltaObject {
+            account_id: "0xacc".to_string(),
+            nonce,
+            prev_commitment: prev.to_string(),
+            new_commitment: Some(format!("0xpost{nonce}")),
+            delta_payload: serde_json::json!({}),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::candidate("2026-01-01T00:00:00Z".to_string()),
+            metadata: None,
+        }
+    }
+
+    fn queued(nonce: u64, new_commitment: Option<&str>) -> QueuedCandidate {
+        QueuedCandidate {
+            nonce,
+            new_commitment: new_commitment.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn empty_queue_admits_only_the_stored_base() {
+        assert_eq!(
+            classify_chain_position("0xbase", &[], "0xbase"),
+            ChainPosition::Tail
+        );
+        assert_eq!(
+            classify_chain_position("0xbase", &[], "0xelse"),
+            ChainPosition::Unrelated
+        );
+        assert_eq!(
+            gate_candidate_submission("0xbase", &[], &delta(1, "0xbase"), 1),
+            None
+        );
+        assert_eq!(
+            gate_candidate_submission("0xbase", &[], &delta(1, "0xelse"), 4),
+            Some(CandidateSubmission::CommitmentMismatch {
+                expected: "0xbase".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn chained_submission_extends_the_tail() {
+        let queue = [queued(1, Some("0xc1")), queued(2, Some("0xc2"))];
+        assert_eq!(
+            classify_chain_position("0xbase", &queue, "0xc2"),
+            ChainPosition::Tail
+        );
+        assert_eq!(
+            gate_candidate_submission("0xbase", &queue, &delta(3, "0xc2"), 4),
+            None
+        );
+    }
+
+    #[test]
+    fn competing_bases_conflict() {
+        let queue = [queued(1, Some("0xc1")), queued(2, Some("0xc2"))];
+        // The canonical base is claimed by nonce 1, nonce 1's post-state
+        // by nonce 2: both are competing submissions, never mismatches.
+        for prev in ["0xbase", "0xc1"] {
+            assert_eq!(
+                classify_chain_position("0xbase", &queue, prev),
+                ChainPosition::Competing,
+                "{prev}"
+            );
+            assert_eq!(
+                gate_candidate_submission("0xbase", &queue, &delta(3, prev), 4),
+                Some(CandidateSubmission::Conflict),
+                "{prev}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_base_is_a_mismatch_against_the_stored_commitment() {
+        let queue = [queued(1, Some("0xc1"))];
+        assert_eq!(
+            classify_chain_position("0xbase", &queue, "0xzzz"),
+            ChainPosition::Unrelated
+        );
+        assert_eq!(
+            gate_candidate_submission("0xbase", &queue, &delta(2, "0xzzz"), 4),
+            Some(CandidateSubmission::CommitmentMismatch {
+                expected: "0xbase".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn depth_caps_the_queue_and_is_never_below_one() {
+        let queue = [queued(1, Some("0xc1"))];
+        // Depth 1 is the historical single-candidate gate: even a
+        // correctly chained delta waits for the queue to drain.
+        assert_eq!(
+            gate_candidate_submission("0xbase", &queue, &delta(2, "0xc1"), 1),
+            Some(CandidateSubmission::Conflict)
+        );
+        assert_eq!(
+            gate_candidate_submission("0xbase", &queue, &delta(2, "0xc1"), 2),
+            None
+        );
+        // A zero depth cannot refuse the very first candidate.
+        assert_eq!(
+            gate_candidate_submission("0xbase", &[], &delta(1, "0xbase"), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn nonce_must_exceed_the_tail() {
+        let queue = [queued(5, Some("0xc5"))];
+        for nonce in [4, 5] {
+            assert_eq!(
+                gate_candidate_submission("0xbase", &queue, &delta(nonce, "0xc5"), 4),
+                Some(CandidateSubmission::Conflict),
+                "nonce {nonce}"
+            );
+        }
+        assert_eq!(
+            gate_candidate_submission("0xbase", &queue, &delta(6, "0xc5"), 4),
+            None
+        );
+    }
+
+    #[test]
+    fn tail_without_a_stored_post_state_admits_nothing() {
+        let queue = [queued(1, None)];
+        assert_eq!(
+            classify_chain_position("0xbase", &queue, "0xbase"),
+            ChainPosition::Competing
+        );
+        assert_eq!(
+            classify_chain_position("0xbase", &queue, "0xanything"),
+            ChainPosition::Unrelated
+        );
     }
 }

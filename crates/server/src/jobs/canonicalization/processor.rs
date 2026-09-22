@@ -24,6 +24,15 @@ mod reconciliation;
 
 const FAST_PROMOTION_PAGE_SIZE: u32 = 100;
 
+/// What the per-candidate path found out about the queue (issue #17):
+/// an orphaned candidate breaks the chain, so the account loop sweeps
+/// every later candidate on the same pass instead of waiting on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateStep {
+    Processed,
+    Orphaned,
+}
+
 #[derive(Default)]
 pub(super) struct FastPromotionState {
     cursor: Mutex<Option<RecentCandidateCursor>>,
@@ -584,7 +593,17 @@ impl DeltasProcessorBase {
             }
         }
         let mut first_error = None;
-        for (index, delta) in candidates.into_iter().enumerate() {
+        // The queue is a chain (issue #17): a candidate's base is either
+        // the stored state (its predecessor was promoted) or the
+        // post-state of the candidate queued just before it, which must
+        // itself still be queued (its predecessor is still waiting).
+        // Anything else is an orphan — its predecessor left the queue
+        // without promoting — and once the chain is broken every later
+        // candidate is orphaned too, until one chains from the stored
+        // state again.
+        let mut chain_broken = false;
+        let mut predecessor: Option<(u64, Option<String>)> = None;
+        for (index, delta) in candidates.iter().enumerate() {
             if self.admission_closed() {
                 if self.pass.cancel.is_cancelled() {
                     tracing::warn!(
@@ -599,38 +618,102 @@ impl DeltasProcessorBase {
                 }
                 break;
             }
-            // A candidate can only verify from the stored base. When a
-            // predecessor fails to canonicalize (deferred, retried,
-            // retained), every later nonce still chains from a state the
-            // store has not reached — reconstructing it would fail or
-            // emit false commitment-mismatch signals and burn budget for
-            // nothing, so the account's pass stops at the break in the
-            // chain. The first candidate needs no check (admission
-            // guaranteed its base, and the fenced promotion still guards
-            // a concurrent move); a read failure does not stop the pass —
+            // A candidate can only verify from the stored base. The head
+            // of the queue needs no pre-read: the per-candidate path
+            // reads the state itself and parks an orphaned head there. A
+            // read failure does not stop the pass for the same reason —
             // the per-candidate path re-reads the state and surfaces the
             // error with proper accounting.
-            if index > 0
-                && let Ok(current_state) = self.state.storage.pull_state(account_id).await
-                && delta.prev_commitment != current_state.commitment
+            let stored_commitment = if index == 0 {
+                None
+            } else {
+                match self.state.storage.pull_state(account_id).await {
+                    Ok(current_state) => Some(current_state.commitment),
+                    Err(_) => None,
+                }
+            };
+            let chains_from_store = stored_commitment
+                .as_deref()
+                .is_none_or(|stored| stored == delta.prev_commitment);
+            let chains_from_queue = !chain_broken
+                && predecessor
+                    .as_ref()
+                    .and_then(|(_, post_state)| post_state.as_deref())
+                    == Some(delta.prev_commitment.as_str());
+            let predecessor_nonce = predecessor.as_ref().map(|(nonce, _)| *nonce);
+            predecessor = Some((delta.nonce, delta.new_commitment.clone()));
+
+            let nonce = delta.nonce;
+            if chains_from_store {
+                // A candidate that chains from the stored state can
+                // verify whatever happened earlier in the queue: the
+                // chain re-anchors here.
+                chain_broken = false;
+                // Post-states of the candidates queued after this one:
+                // the chain landing through any of them proves this
+                // candidate landed too.
+                let successors: Vec<String> = candidates[index + 1..]
+                    .iter()
+                    .filter_map(|successor| successor.new_commitment.clone())
+                    .collect();
+                match self.process_candidate(delta.clone(), &successors).await {
+                    Ok(CandidateStep::Processed) => {}
+                    Ok(CandidateStep::Orphaned) => chain_broken = true,
+                    Err(e) => {
+                        tracing::error!(
+                            account_id = %account_id,
+                            nonce = nonce,
+                            error = %e,
+                            "Failed to canonicalize delta"
+                        );
+                        first_error.get_or_insert(e);
+                    }
+                }
+                continue;
+            }
+            if chains_from_queue
+                && self
+                    .predecessor_still_queued(account_id, predecessor_nonce)
+                    .await
             {
+                // The predecessor did not canonicalize on this pass
+                // (deferred or retried) and is still queued: every later
+                // nonce still chains from a state the store has not
+                // reached — reconstructing it would fail or emit false
+                // commitment-mismatch signals and burn budget for
+                // nothing, so the account's pass stops here. A
+                // predecessor parked on this pass has left the queue, so
+                // its successors fall through to the orphan sweep below.
                 tracing::info!(
                     account_id = %account_id,
-                    nonce = delta.nonce,
+                    nonce,
                     "Candidate does not chain from the stored state; \
                      stopping this account's pass at the first unresolved nonce"
                 );
                 break;
             }
-            let nonce = delta.nonce;
-            if let Err(e) = self.process_candidate(delta).await {
-                tracing::error!(
-                    account_id = %account_id,
-                    nonce = nonce,
-                    error = %e,
-                    "Failed to canonicalize delta"
-                );
-                first_error.get_or_insert(e);
+            chain_broken = true;
+            match self.mode {
+                ProcessingMode::Full | ProcessingMode::ReconcileRecoverable => {
+                    if let Err(e) = self.handle_orphaned_candidate(delta.clone()).await {
+                        tracing::error!(
+                            account_id = %account_id,
+                            nonce,
+                            error = %e,
+                            "Failed to park orphaned candidate"
+                        );
+                        first_error.get_or_insert(e);
+                    }
+                }
+                // Lifecycle decisions belong to the full pass.
+                ProcessingMode::PromoteRecent { .. } => {
+                    tracing::debug!(
+                        account_id = %account_id,
+                        nonce,
+                        "Candidate is orphaned; leaving it to the full pass"
+                    );
+                    break;
+                }
             }
         }
 
@@ -641,19 +724,142 @@ impl DeltasProcessorBase {
         Ok(())
     }
 
-    async fn process_candidate(&self, delta: DeltaObject) -> Result<()> {
+    async fn process_candidate(
+        &self,
+        delta: DeltaObject,
+        successors: &[String],
+    ) -> Result<CandidateStep> {
         match self.mode {
             // The reconcile pass filters out every candidate before this
             // point; the full path is the safe behavior if one ever slips
             // through.
             ProcessingMode::Full | ProcessingMode::ReconcileRecoverable => {
-                self.process_full_candidate(delta).await
+                self.process_full_candidate(delta, successors).await
             }
-            ProcessingMode::PromoteRecent { .. } => self.process_recent_candidate(delta).await,
+            ProcessingMode::PromoteRecent { .. } => {
+                self.process_recent_candidate(delta, successors).await
+            }
         }
     }
 
-    async fn process_full_candidate(&self, delta: DeltaObject) -> Result<()> {
+    /// Whether the observed on-chain commitment is the post-state of a
+    /// candidate queued after this one. The queue was admitted as a
+    /// chain, so the chain reaching a successor's post-state means it
+    /// passed through this candidate's — provided this candidate's
+    /// recomputed commitment is still the one its successors were
+    /// chained from (a base that moved out-of-band breaks the argument).
+    fn landed_through_successor(
+        delta: &DeltaObject,
+        recomputed_commitment: &str,
+        on_chain: &str,
+        successors: &[String],
+    ) -> bool {
+        delta.new_commitment.as_deref() == Some(recomputed_commitment)
+            && successors.iter().any(|successor| successor == on_chain)
+    }
+
+    /// Whether the candidate queued just before the current one is still
+    /// a candidate (issue #17). A successor only *waits* on a queued
+    /// predecessor; one that was parked, discarded, or abandoned on this
+    /// pass has left the queue, and its successors are orphans to sweep
+    /// now rather than on the next pass. The fast pass never sweeps, so
+    /// it reads nothing and always waits. An unreadable row errs on the
+    /// side of waiting; a missing row (deleted with retention off) has
+    /// left the queue.
+    async fn predecessor_still_queued(&self, account_id: &str, nonce: Option<u64>) -> bool {
+        let Some(nonce) = nonce else {
+            return false;
+        };
+        if matches!(self.mode, ProcessingMode::PromoteRecent { .. }) {
+            return true;
+        }
+        match self.state.storage.pull_delta(account_id, nonce).await {
+            Ok(existing) => existing.status.is_candidate(),
+            Err(e) if crate::storage::is_storage_not_found(&e) => false,
+            Err(e) => {
+                tracing::warn!(
+                    account_id = %account_id,
+                    nonce,
+                    error = %e,
+                    "Failed to read the queued predecessor; leaving its successors for the next pass"
+                );
+                true
+            }
+        }
+    }
+
+    /// Park a candidate the worker has given up on: keep it as `retained`
+    /// (issue #345) while retention is enabled, else discard it — one
+    /// fenced write and outcome accounting shared by every give-up
+    /// verdict. Callers log the verdict-specific context first.
+    async fn park_candidate(
+        &self,
+        delta: &DeltaObject,
+        reason: RetainReason,
+        outcomes: (
+            crate::metrics::labels::CandidateOutcome,
+            crate::metrics::labels::CandidateOutcome,
+        ),
+        operations: (&str, &str),
+        now: &str,
+    ) -> Result<()> {
+        let retain = self.retained_ttl_seconds > 0;
+        let write = if retain {
+            self.retain_candidate(delta, reason, now).await?
+        } else {
+            self.remove_delta(delta, DeltaStatusKind::Candidate, now)
+                .await?
+        };
+        match write {
+            CanonicalWrite::Applied => {
+                record_candidate_outcome(if retain { outcomes.0 } else { outcomes.1 });
+            }
+            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(delta)),
+            CanonicalWrite::NotCandidate => {
+                Self::log_not_candidate(delta, if retain { operations.0 } else { operations.1 });
+            }
+        }
+        Ok(())
+    }
+
+    /// Park a candidate whose predecessor left the queue without being
+    /// promoted (issue #17). No chain observation is needed — the break
+    /// is a fact of the store — so the divergence confirmation streak
+    /// does not apply. Retained (reason `orphaned`) so a spurious
+    /// verdict on the predecessor can still heal through the chain-walk
+    /// in reconciliation; discarded outright when retention is off. A
+    /// client abandon intent on the row resolves as abandoned instead.
+    async fn handle_orphaned_candidate(&self, delta: DeltaObject) -> Result<()> {
+        if delta.status.abandon_requested_at().is_some() {
+            return self.finalize_abandoned_candidate(delta).await;
+        }
+        let now = self.state.clock.now().to_rfc3339();
+        tracing::warn!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            prev_commitment = %delta.prev_commitment,
+            retained = self.retained_ttl_seconds > 0,
+            "Candidate's predecessor left the queue without promoting; \
+             parking the orphaned candidate"
+        );
+        self.park_candidate(
+            &delta,
+            RetainReason::Orphaned,
+            (
+                crate::metrics::labels::CandidateOutcome::Orphaned,
+                crate::metrics::labels::CandidateOutcome::Orphaned,
+            ),
+            ("orphaned_retain", "orphaned_discard"),
+            &now,
+        )
+        .await
+    }
+
+    async fn process_full_candidate(
+        &self,
+        delta: DeltaObject,
+        successors: &[String],
+    ) -> Result<CandidateStep> {
         if let Some(age) = self.candidate_age_seconds(&delta, self.state.clock.now()) {
             metrics::histogram!(crate::metrics::names::CANONICALIZATION_CANDIDATE_AGE_SECONDS)
                 .record(age as f64);
@@ -667,6 +873,17 @@ impl DeltasProcessorBase {
             .map_err(|e| {
                 GuardianError::StorageError(format!("Failed to get current state: {e}"))
             })?;
+
+        // The head of the queue must chain from the stored state: admission
+        // guaranteed it, and only a promotion moves the stored state — along
+        // the chain. A head that no longer chains lost its predecessor
+        // without a promotion (parked, discarded, abandoned), or the base
+        // moved out-of-band; either way it can never verify from here
+        // (issue #17).
+        if current_state.commitment != delta.prev_commitment {
+            self.handle_orphaned_candidate(delta).await?;
+            return Ok(CandidateStep::Orphaned);
+        }
 
         let (new_state_json, recomputed_commitment) = {
             let client = self.state.network_client.clone();
@@ -687,7 +904,7 @@ impl DeltasProcessorBase {
             )
             .await;
 
-        match verify_result {
+        let outcome = match verify_result {
             // Verification proved the recomputed commitment is what the
             // chain holds, so it — not the client-claimed `new_commitment` —
             // is what promotion persists. A differing (or absent) claim is a
@@ -728,10 +945,42 @@ impl DeltasProcessorBase {
                 // evidence as an at-base read: a dead FIRST transaction
                 // must be abandonable too, not held for the grace window.
                 if delta.status.abandon_requested_at().is_some() {
-                    return self.handle_abandon_confirmation(delta).await;
+                    return self
+                        .handle_abandon_confirmation(delta)
+                        .await
+                        .map(|()| CandidateStep::Processed);
                 }
                 self.handle_unverified_candidate(delta, "account not yet on chain")
                     .await
+            }
+            // The chain moved past this candidate along its own queue
+            // (issue #17): a successor's post-state is on-chain, and the
+            // successor was admitted chained from this candidate's
+            // recomputed post-state, so this candidate landed too. Promote
+            // it with the recomputed state; the successor verifies on its
+            // own turn once the base has moved.
+            Ok(StateVerification::Mismatch { on_chain })
+                if Self::landed_through_successor(
+                    &delta,
+                    &recomputed_commitment,
+                    &on_chain,
+                    successors,
+                ) =>
+            {
+                tracing::info!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    on_chain = %on_chain,
+                    "On-chain commitment is a queued successor's post-state; \
+                     the chain landed through this candidate"
+                );
+                self.canonicalize_verified_delta(
+                    delta,
+                    new_state_json,
+                    recomputed_commitment,
+                    crate::metrics::labels::CandidateOutcome::Canonicalized,
+                )
+                .await
             }
             // The account advanced past the state this candidate was built
             // on: its transaction is anchored to `prev_commitment`, so it can
@@ -753,7 +1002,10 @@ impl DeltasProcessorBase {
             Ok(StateVerification::Mismatch { on_chain }) => {
                 let delta = self.reset_divergence_streak(delta).await?;
                 if delta.status.abandon_requested_at().is_some() {
-                    return self.handle_abandon_confirmation(delta).await;
+                    return self
+                        .handle_abandon_confirmation(delta)
+                        .await
+                        .map(|()| CandidateStep::Processed);
                 }
                 self.handle_unverified_candidate(
                     delta,
@@ -765,17 +1017,22 @@ impl DeltasProcessorBase {
             // no observation was made, so the divergence streak is left
             // untouched and the grace/retry behavior applies.
             Err(e) => self.handle_unverified_candidate(delta, &e).await,
-        }
+        };
+        outcome.map(|()| CandidateStep::Processed)
     }
 
-    async fn process_recent_candidate(&self, delta: DeltaObject) -> Result<()> {
+    async fn process_recent_candidate(
+        &self,
+        delta: DeltaObject,
+        successors: &[String],
+    ) -> Result<CandidateStep> {
         let Some(claimed_commitment) = delta.new_commitment.clone() else {
             tracing::debug!(
                 account_id = %delta.account_id,
                 nonce = delta.nonce,
                 "Recent candidate has no claimed commitment; leaving it to the full pass"
             );
-            return Ok(());
+            return Ok(CandidateStep::Processed);
         };
 
         match self
@@ -789,13 +1046,25 @@ impl DeltasProcessorBase {
             .await
         {
             Ok(StateVerification::Match) => {}
+            // The chain already sits at a queued successor's post-state
+            // (issue #17): this candidate landed as part of the chain and
+            // can be promoted on the fast path too, subject to the same
+            // reconstruction-equality check below.
+            Ok(StateVerification::Mismatch { on_chain }) if successors.contains(&on_chain) => {
+                tracing::debug!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    on_chain = %on_chain,
+                    "Recent candidate's chain landed through a queued successor"
+                );
+            }
             Ok(_) => {
                 tracing::debug!(
                     account_id = %delta.account_id,
                     nonce = delta.nonce,
                     "Recent candidate is not canonical yet; leaving lifecycle decisions to the full pass"
                 );
-                return Ok(());
+                return Ok(CandidateStep::Processed);
             }
             Err(error) => return Err(GuardianError::NetworkError(error)),
         }
@@ -808,6 +1077,19 @@ impl DeltasProcessorBase {
             .map_err(|error| {
                 GuardianError::StorageError(format!("Failed to get current state: {error}"))
             })?;
+        if current_state.commitment != delta.prev_commitment {
+            // The head of this account's page no longer chains from the
+            // stored state: its predecessor left the queue without
+            // promoting. Reconstructing from the stored base would only
+            // produce a spurious mismatch, and lifecycle decisions
+            // (parking the orphan) belong to the full pass.
+            tracing::debug!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                "Recent candidate does not chain from the stored state; leaving it to the full pass"
+            );
+            return Ok(CandidateStep::Orphaned);
+        }
         let (new_state_json, recomputed_commitment) = {
             let client = self.state.network_client.clone();
             let prev_state_json = current_state.state_json;
@@ -827,7 +1109,7 @@ impl DeltasProcessorBase {
             );
             metrics::counter!(crate::metrics::names::CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL)
                 .increment(1);
-            return Ok(());
+            return Ok(CandidateStep::Processed);
         }
 
         self.canonicalize_verified_delta(
@@ -837,6 +1119,7 @@ impl DeltasProcessorBase {
             crate::metrics::labels::CandidateOutcome::Canonicalized,
         )
         .await
+        .map(|()| CandidateStep::Processed)
     }
 
     /// Count one at-base observation toward resolving a client abandon
@@ -938,19 +1221,8 @@ impl DeltasProcessorBase {
             }
         }
 
-        if let Err(e) = self
-            .state
-            .metadata
-            .clear_pending_candidate_if_none(&delta.account_id, &now)
-            .await
-        {
-            tracing::warn!(
-                account_id = %delta.account_id,
-                error = %e,
-                "Failed to clear has_pending_candidate flag after abandon; \
-                 the stale-flag heal clears it on a later run"
-            );
-        }
+        self.release_account_if_queue_empty(&delta.account_id, &now, "abandon")
+            .await;
 
         record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Abandoned);
         tracing::info!(
@@ -1084,43 +1356,28 @@ impl DeltasProcessorBase {
                  retaining the candidate for background reconciliation \
                  and releasing the account"
             );
-
-            match self
-                .retain_candidate(&delta, RetainReason::Diverged, &now)
-                .await?
-            {
-                CanonicalWrite::Applied => {
-                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
-                }
-                CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
-                CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "diverged_retain"),
-            }
-
-            return Ok(());
+        } else {
+            tracing::warn!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                on_chain = %on_chain,
+                prev_commitment = %delta.prev_commitment,
+                observations,
+                "Account advanced past candidate's base state on-chain; discarding \
+                 unsatisfiable candidate and releasing the account"
+            );
         }
-
-        tracing::warn!(
-            account_id = %delta.account_id,
-            nonce = delta.nonce,
-            on_chain = %on_chain,
-            prev_commitment = %delta.prev_commitment,
-            observations,
-            "Account advanced past candidate's base state on-chain; discarding \
-             unsatisfiable candidate and releasing the account"
-        );
-
-        match self
-            .remove_delta(&delta, DeltaStatusKind::Candidate, &now)
-            .await?
-        {
-            CanonicalWrite::Applied => {
-                record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
-            }
-            CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
-            CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "diverged_discard"),
-        }
-
-        Ok(())
+        self.park_candidate(
+            &delta,
+            RetainReason::Diverged,
+            (
+                crate::metrics::labels::CandidateOutcome::Diverged,
+                crate::metrics::labels::CandidateOutcome::Diverged,
+            ),
+            ("diverged_retain", "diverged_discard"),
+            &now,
+        )
+        .await
     }
 
     /// Handle a candidate whose expected state was not (yet) observed
@@ -1176,45 +1433,27 @@ impl DeltasProcessorBase {
                     "Delta verification failed after max retries; retaining \
                      for background reconciliation and releasing the account"
                 );
-
-                match self
-                    .retain_candidate(&delta, RetainReason::RetryExhausted, &now)
-                    .await?
-                {
-                    CanonicalWrite::Applied => {
-                        record_candidate_outcome(
-                            crate::metrics::labels::CandidateOutcome::Retained,
-                        );
-                    }
-                    CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
-                    CanonicalWrite::NotCandidate => {
-                        Self::log_not_candidate(&delta, "retain");
-                    }
-                }
-                return Ok(());
+            } else {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    retries = new_retry,
+                    max_retries = self.max_retries,
+                    error = %reason,
+                    "Delta verification failed after max retries, discarding"
+                );
             }
-
-            tracing::warn!(
-                account_id = %delta.account_id,
-                nonce = delta.nonce,
-                retries = new_retry,
-                max_retries = self.max_retries,
-                error = %reason,
-                "Delta verification failed after max retries, discarding"
-            );
-
-            match self
-                .remove_delta(&delta, DeltaStatusKind::Candidate, &now)
-                .await?
-            {
-                CanonicalWrite::Applied => {
-                    record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
-                }
-                CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
-                CanonicalWrite::NotCandidate => {
-                    Self::log_not_candidate(&delta, "retry_discard");
-                }
-            }
+            self.park_candidate(
+                &delta,
+                RetainReason::RetryExhausted,
+                (
+                    crate::metrics::labels::CandidateOutcome::Retained,
+                    crate::metrics::labels::CandidateOutcome::Discarded,
+                ),
+                ("retain", "retry_discard"),
+                &now,
+            )
+            .await?;
         } else {
             tracing::info!(
                 account_id = %delta.account_id,
@@ -1376,6 +1615,53 @@ impl DeltasProcessorBase {
     /// superseded this row (the write refusal is what reveals that). A
     /// failed cleanup is therefore retried by the reconcile pass, which
     /// re-attempts proposal cleanup for every retained row it visits.
+    /// Release the account's pending-candidate flag once no candidate
+    /// remains queued (issue #17). Parking, discarding, or abandoning one
+    /// candidate of several must leave the account listed for the next
+    /// full pass, or its remaining candidates — orphans, by then — would
+    /// never be swept. Fencing backends make the clear itself conditional
+    /// on the candidate rows; the read here keeps single-process backends
+    /// correct too. A failed read skips the clear: a stale `true` flag
+    /// is healed by the empty-queue check on a later pass, whereas a
+    /// wrongly cleared flag would strand the queue.
+    async fn release_account_if_queue_empty(&self, account_id: &str, now: &str, after: &str) {
+        match self.state.storage.has_pending_candidate(account_id).await {
+            Ok(false) => {}
+            Ok(true) => {
+                tracing::debug!(
+                    account_id = %account_id,
+                    after,
+                    "Candidates remain queued; keeping the pending-candidate flag set"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    account_id = %account_id,
+                    after,
+                    error = %e,
+                    "Failed to read the candidate queue before releasing the account; \
+                     leaving the flag for the stale-flag heal"
+                );
+                return;
+            }
+        }
+        if let Err(e) = self
+            .state
+            .metadata
+            .clear_pending_candidate_if_none(account_id, now)
+            .await
+        {
+            tracing::warn!(
+                account_id = %account_id,
+                after,
+                error = %e,
+                "Failed to clear has_pending_candidate flag; \
+                 the stale-flag heal clears it on a later run"
+            );
+        }
+    }
+
     async fn retain_candidate(
         &self,
         delta: &DeltaObject,
@@ -1412,6 +1698,7 @@ impl DeltasProcessorBase {
             reason = match reason {
                 RetainReason::RetryExhausted => "retry_exhausted",
                 RetainReason::Diverged => "diverged",
+                RetainReason::Orphaned => "orphaned",
             },
             account_id = %delta.account_id,
             nonce = delta.nonce,
@@ -1420,19 +1707,8 @@ impl DeltasProcessorBase {
              reconciliation takes over"
         );
 
-        if let Err(e) = self
-            .state
-            .metadata
-            .clear_pending_candidate_if_none(&delta.account_id, now)
-            .await
-        {
-            tracing::warn!(
-                account_id = %delta.account_id,
-                error = %e,
-                "Failed to clear has_pending_candidate flag after retaining; \
-                 the stale-flag heal clears it on a later run"
-            );
-        }
+        self.release_account_if_queue_empty(&delta.account_id, now, "retain")
+            .await;
 
         let _ = self.delete_matching_proposal(delta).await;
 
@@ -3485,6 +3761,589 @@ mod tests {
             crate::delta_object::RetainReason::RetryExhausted,
         );
         delta
+    }
+
+    /// A queued candidate with explicit chain commitments (issue #17).
+    fn chained_candidate(account_id: &str, nonce: u64, prev: &str, new: &str) -> DeltaObject {
+        let mut delta = create_candidate_delta(account_id, nonce);
+        delta.prev_commitment = prev.to_string();
+        delta.new_commitment = Some(new.to_string());
+        delta
+    }
+
+    fn state_at(account_id: &str, commitment: &str) -> StateObject {
+        let mut state = create_test_state(account_id);
+        state.commitment = commitment.to_string();
+        state
+    }
+
+    #[tokio::test]
+    async fn queue_head_landed_through_its_successor_is_promoted_then_the_successor() {
+        // Issue #17: the chain is on-chain at nonce 2's post-state. Nonce
+        // 1's own commitment is no longer what the chain shows, but its
+        // successor was admitted chained from it, so nonce 1 landed too:
+        // it is promoted (not classified as diverged), which moves the
+        // stored base so nonce 2 verifies on its turn in the same pass.
+        let account_id = "0xtest_account";
+        let c1 = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        let c2 = chained_candidate(account_id, 2, "0xc1", "0xc2");
+
+        // Mock reads pop LIFO: nonce 2's reads (stored base at 0xc1)
+        // are queued first, nonce 1's (stored base at prev) last.
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![c1, c2]))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())))
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string())))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "0xc2".to_string(),
+                }))
+                .with_should_update_auth(Ok(None))
+                .with_should_update_auth(Ok(None)),
+        );
+        let metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_get(Ok(Some(create_test_metadata(account_id))))
+            .with_set(Ok(()));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            network.clone(),
+            Arc::new(metadata),
+            clock,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok(), "{result:?}");
+
+        let states = storage.get_submit_state_calls();
+        assert_eq!(
+            states
+                .iter()
+                .map(|s| s.commitment.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0xc1", "0xc2"],
+            "both hops promote, in nonce order"
+        );
+        let deltas = storage.get_submit_delta_calls();
+        assert_eq!(
+            deltas
+                .iter()
+                .filter(|d| d.status.is_canonical())
+                .map(|d| d.nonce)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(
+            storage.get_update_delta_status_calls().is_empty(),
+            "no divergence bookkeeping on a chain that landed"
+        );
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert_eq!(
+            network.get_verify_commitment_calls(),
+            vec![
+                (account_id.to_string(), "0xc1".to_string()),
+                (account_id.to_string(), "0xc2".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_head_that_no_longer_chains_is_retained_as_orphaned_without_rpc() {
+        // Its predecessor left the queue without promoting: the break
+        // is a fact of the store, so no chain observation and no
+        // divergence confirmation streak — parked at once, releasing
+        // the account.
+        let account_id = "0xtest_account";
+        let orphan = chained_candidate(account_id, 2, "0xgone", "0xc2");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![orphan]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({}), "unused".to_string()))),
+        );
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(())),
+        );
+        let state =
+            create_test_app_state_with_mocks(storage.clone(), network.clone(), metadata.clone());
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        let writes = storage.get_update_delta_status_calls();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].1, 2);
+        assert!(writes[0].2.is_retained());
+        assert_eq!(writes[0].2.retain_reason(), Some(RetainReason::Orphaned));
+        assert!(
+            network.get_verify_commitment_calls().is_empty(),
+            "an orphan needs no chain observation"
+        );
+        assert_eq!(
+            network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "an orphan is never reconstructed from the wrong base"
+        );
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert!(
+            metadata
+                .get_set_calls()
+                .iter()
+                .any(|m| !m.has_pending_candidate),
+            "the account is released"
+        );
+    }
+
+    #[tokio::test]
+    async fn orphaned_successors_are_swept_behind_a_broken_head() {
+        // Once the chain is broken every later candidate is an orphan,
+        // even though each still chains from the one before it.
+        let account_id = "0xtest_account";
+        let head = chained_candidate(account_id, 3, "0xgone", "0xc3");
+        let successor = chained_candidate(account_id, 4, "0xc3", "0xc4");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![head, successor]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let network = Arc::new(MockNetworkClient::new());
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(())),
+        );
+        let state = create_test_app_state_with_mocks(storage.clone(), network.clone(), metadata);
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        let writes = storage.get_update_delta_status_calls();
+        assert_eq!(
+            writes
+                .iter()
+                .map(|(_, nonce, status)| (*nonce, status.retain_reason()))
+                .collect::<Vec<_>>(),
+            vec![
+                (3, Some(RetainReason::Orphaned)),
+                (4, Some(RetainReason::Orphaned))
+            ]
+        );
+        assert!(network.get_verify_commitment_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn orphan_is_discarded_when_retention_is_disabled() {
+        let account_id = "0xtest_account";
+        let orphan = chained_candidate(account_id, 2, "0xgone", "0xc2");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![orphan]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(())),
+        );
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(MockNetworkClient::new()),
+            metadata,
+        );
+
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(600)
+            .with_retained_ttl_seconds(0);
+        let processor = DeltasProcessor::new(state, config);
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        assert_eq!(
+            storage.get_delete_delta_calls(),
+            vec![(account_id.to_string(), 2)]
+        );
+        assert!(storage.get_update_delta_status_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn successor_waits_while_its_queued_predecessor_is_deferred() {
+        // Nonce 1 has not landed (chain at its base, inside grace); nonce
+        // 2 still chains from nonce 1's post-state, so the pass stops
+        // there: no reconstruction from the wrong base, no orphan sweep.
+        let account_id = "0xtest_account";
+        let c1 = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        let c2 = chained_candidate(account_id, 2, "0xc1", "0xc2");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![c1.clone(), c2]))
+                // The successor's wait re-reads its predecessor: still a
+                // candidate after the deferral.
+                .with_pull_delta(Ok(c1))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())))
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string())))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "prev_commitment".to_string(),
+                })),
+        );
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id)))),
+        );
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state =
+            create_test_app_state_with_clock(storage.clone(), network.clone(), metadata, clock);
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        assert_eq!(network.get_verify_commitment_calls().len(), 1);
+        assert_eq!(
+            network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "the waiting successor is not reconstructed"
+        );
+        assert!(storage.get_update_delta_status_calls().is_empty());
+        assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn parked_head_orphans_its_successors_in_the_same_pass() {
+        // Nonce 1 exhausts its retry budget and is retained; nonce 2 still
+        // chains from nonce 1's post-state, but nonce 1 has left the
+        // queue, so nonce 2 is swept as orphaned on this pass rather
+        // than waiting for the next one.
+        let account_id = "0xtest_account";
+        let mut c1 = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        c1.status = DeltaStatus::candidate_with_retry("2024-01-01T00:00:00Z".to_string(), 17);
+        let c2 = chained_candidate(account_id, 2, "0xc1", "0xc2");
+        let mut retained_c1 = c1.clone();
+        retained_c1.status = DeltaStatus::retained(
+            "2024-01-01T00:00:05Z".to_string(),
+            RetainReason::RetryExhausted,
+        );
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![c1.clone(), c2]))
+                // Reads pop LIFO: the retain write reads nonce 1 first
+                // (still a candidate), the successor's wait check reads it
+                // afterwards (already retained).
+                .with_pull_delta(Ok(retained_c1))
+                .with_pull_delta(Ok(c1))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())))
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string())))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "prev_commitment".to_string(),
+                })),
+        );
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(())),
+        );
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state =
+            create_test_app_state_with_clock(storage.clone(), network.clone(), metadata, clock);
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(0);
+        let processor = DeltasProcessor::new(state, config);
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        let writes = storage.get_update_delta_status_calls();
+        assert_eq!(
+            writes
+                .iter()
+                .map(|(_, nonce, status)| (*nonce, status.retain_reason()))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, Some(RetainReason::RetryExhausted)),
+                (2, Some(RetainReason::Orphaned)),
+            ]
+        );
+        assert_eq!(
+            network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "the orphan is never reconstructed from the wrong base"
+        );
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_promotes_a_chain_landed_through_its_successor() {
+        // The fast pass reads the chain once per candidate: the head's
+        // probe reports nonce 2's post-state, a queued successor, so the
+        // head promotes on the fast path too; the successor then
+        // verifies directly.
+        let account_id = "0xtest_account";
+        let c1 = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        let c2 = chained_candidate(account_id, 2, "0xc1", "0xc2");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_recent_candidate_deltas(Ok(vec![c1, c2]))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_promote_candidate(Ok(PromoteWrite::Applied))
+                .with_promote_candidate(Ok(PromoteWrite::Applied)),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())))
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string())))
+                .with_verify_commitment(Ok(StateVerification::Match))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "0xc2".to_string(),
+                }))
+                .with_should_update_auth(Ok(None))
+                .with_should_update_auth(Ok(None)),
+        );
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_get(Ok(Some(create_test_metadata(account_id)))),
+        );
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state =
+            create_test_app_state_with_clock(storage.clone(), network.clone(), metadata, clock);
+        let processor = DeltasProcessor::new_with_mode(
+            state,
+            CanonicalizationConfig::default(),
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+        );
+
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            storage.get_promote_candidate_fences().len(),
+            2,
+            "both hops promote on the fast path"
+        );
+        assert!(storage.get_update_delta_status_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn promotion_only_pass_leaves_an_orphaned_head_to_the_full_pass() {
+        let account_id = "0xtest_account";
+        let orphan = chained_candidate(account_id, 2, "0xgone", "0xc2");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_recent_candidate_deltas(Ok(vec![orphan]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({}), "0xc2".to_string())))
+                .with_verify_commitment(Ok(StateVerification::Match)),
+        );
+        let metadata =
+            Arc::new(MockMetadataStore::new().with_get(Ok(Some(create_test_metadata(account_id)))));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state =
+            create_test_app_state_with_clock(storage.clone(), network.clone(), metadata, clock);
+        let processor = DeltasProcessor::new_with_mode(
+            state,
+            CanonicalizationConfig::default(),
+            ProcessingMode::PromoteRecent {
+                max_age_seconds: 30,
+            },
+        );
+
+        assert!(processor.process_all_accounts().await.is_ok());
+        assert!(storage.get_promote_candidate_fences().is_empty());
+        assert!(storage.get_update_delta_status_calls().is_empty());
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert_eq!(
+            network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "no reconstruction from a base the candidate does not chain from"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_promotes_a_recoverable_chain_in_order() {
+        // Issue #17: a parked head plus its orphaned successor. The chain
+        // sits at the successor's post-state, which no single row
+        // reaches from the stored base; the hints link base → r1 → r2 →
+        // on-chain, so both are reconstructed hop by hop and promoted in
+        // order.
+        let account_id = "0xtest_account";
+        let mut r1 = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        r1.status =
+            DeltaStatus::retained("2024-01-01T00:00:00Z".to_string(), RetainReason::Diverged);
+        let mut r2 = chained_candidate(account_id, 2, "0xc1", "0xc2");
+        r2.status =
+            DeltaStatus::retained("2024-01-01T00:00:00Z".to_string(), RetainReason::Orphaned);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_recoverable_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_recoverable_deltas(Ok(vec![r1, r2]))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())))
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string())))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "0xc2".to_string(),
+                }))
+                .with_should_update_auth(Ok(None))
+                .with_should_update_auth(Ok(None)),
+        );
+        let mut account_metadata = create_test_metadata(account_id);
+        account_metadata.has_pending_candidate = false;
+        let metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![]))
+            .with_get(Ok(Some(account_metadata.clone())))
+            .with_get(Ok(Some(account_metadata.clone())))
+            .with_get(Ok(Some(account_metadata)))
+            .with_set(Ok(()));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 10, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            network.clone(),
+            Arc::new(metadata),
+            clock,
+        );
+
+        let processor = reconcile_processor(state, CanonicalizationConfig::new(10, 18));
+        let result = processor.process_all_accounts().await;
+        assert!(result.is_ok(), "{result:?}");
+
+        let states = storage.get_submit_state_calls();
+        assert_eq!(
+            states
+                .iter()
+                .map(|s| s.commitment.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0xc1", "0xc2"],
+            "the recovered path is promoted base-first"
+        );
+        assert_eq!(
+            storage
+                .get_submit_delta_calls()
+                .iter()
+                .filter(|d| d.status.is_canonical())
+                .map(|d| d.nonce)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_defers_a_chain_whose_hop_does_not_reproduce_its_hint() {
+        // The path is selected by hints, but promotion requires every
+        // hop to reconstruct to its hint: a hop that does not is a
+        // deferral for the whole path — nothing is promoted partially.
+        let account_id = "0xtest_account";
+        let mut r1 = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        r1.status =
+            DeltaStatus::retained("2024-01-01T00:00:00Z".to_string(), RetainReason::Diverged);
+        let mut r2 = chained_candidate(account_id, 2, "0xc1", "0xc2");
+        r2.status =
+            DeltaStatus::retained("2024-01-01T00:00:00Z".to_string(), RetainReason::Orphaned);
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_recoverable_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_recoverable_deltas(Ok(vec![r1, r2]))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xnot_c1".to_string())))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "0xc2".to_string(),
+                })),
+        );
+        let mut account_metadata = create_test_metadata(account_id);
+        account_metadata.has_pending_candidate = false;
+        let metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![]))
+            .with_get(Ok(Some(account_metadata)));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 10, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            network.clone(),
+            Arc::new(metadata),
+            clock,
+        );
+
+        let processor = reconcile_processor(state, CanonicalizationConfig::new(10, 18));
+        assert!(processor.process_all_accounts().await.is_ok());
+        assert!(storage.get_submit_state_calls().is_empty());
+        assert!(storage.get_submit_delta_calls().is_empty());
     }
 
     /// Single-process processor running the dedicated reconcile pass

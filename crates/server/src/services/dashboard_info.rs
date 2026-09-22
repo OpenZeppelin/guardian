@@ -90,6 +90,10 @@ pub struct DashboardCanonicalizationConfig {
     pub reconcile_interval_seconds: u64,
     /// Accounts one reconcile pass visits at most (rotation cursor).
     pub reconcile_page_size: u32,
+    /// Candidate deltas one account may hold in flight at once, as a
+    /// strictly ordered chain (issue #17). `1` is the historical
+    /// one-in-flight-candidate behavior.
+    pub max_pending_candidates_per_account: u64,
 }
 
 /// Backend configuration snapshot. Stable for the lifetime of the
@@ -190,6 +194,7 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
                 retained_ttl_seconds: c.retained_ttl_seconds,
                 reconcile_interval_seconds: c.reconcile_interval_seconds,
                 reconcile_page_size: c.reconcile_page_size,
+                max_pending_candidates_per_account: c.max_pending_candidates_per_account as u64,
             }
         }),
     };

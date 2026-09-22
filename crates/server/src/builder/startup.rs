@@ -128,6 +128,7 @@ impl StartupInfo {
                 max_retries = config.max_retries,
                 submission_grace_period_seconds = config.submission_grace_period_seconds,
                 max_concurrent_accounts = config.max_concurrent_accounts,
+                max_pending_candidates_per_account = config.max_pending_candidates_per_account,
                 "canonicalization"
             ),
             None => {
@@ -202,6 +203,7 @@ mod tests {
                 retained_ttl_seconds: 86_400,
                 reconcile_interval_seconds: 60,
                 reconcile_page_size: 100,
+                max_pending_candidates_per_account: 4,
             }),
             3,
             true,

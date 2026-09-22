@@ -919,11 +919,19 @@ impl StorageBackend for MockStorageBackend {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
+        max_pending_candidates: usize,
     ) -> Result<crate::storage::CandidateSubmission, String> {
         if let Some(response) = self.submit_candidate_responses.lock().unwrap().pop() {
             return response;
         }
-        crate::storage::submit_candidate_sequential(self, metadata, delta, now).await
+        crate::storage::submit_candidate_sequential(
+            self,
+            metadata,
+            delta,
+            now,
+            max_pending_candidates,
+        )
+        .await
     }
 
     async fn promote_candidate(

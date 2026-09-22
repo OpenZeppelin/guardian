@@ -17,6 +17,15 @@ pub const ENV_RETAINED_TTL_SECONDS: &str = "GUARDIAN_CANONICALIZATION_RETAINED_T
 pub const ENV_RECONCILE_INTERVAL_SECONDS: &str =
     "GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS";
 
+/// Environment override for
+/// [`CanonicalizationConfig::max_pending_candidates_per_account`]. `1`
+/// restores the historical one-in-flight-candidate behavior (issue #17).
+pub const ENV_MAX_PENDING_CANDIDATES_PER_ACCOUNT: &str =
+    "GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT";
+
+/// Default for [`CanonicalizationConfig::max_pending_candidates_per_account`].
+pub const DEFAULT_MAX_PENDING_CANDIDATES_PER_ACCOUNT: usize = 4;
+
 /// Configuration for delta canonicalization behavior
 /// When Some: deltas are saved as candidates and later verified/canonicalized
 /// When None: deltas are immediately saved as canonical (optimistic mode)
@@ -95,6 +104,20 @@ pub struct CanonicalizationConfig {
     /// `GUARDIAN_DB_POOL_MAX_SIZE`; simultaneous write bursts queue
     /// briefly at the pool rather than failing.
     pub max_concurrent_accounts: usize,
+
+    /// How many candidate deltas one account may hold in flight at once
+    /// (issue #17). Candidates form a strictly ordered chain: each new
+    /// delta must build on the post-state of the newest queued
+    /// candidate (or on the canonical state when the queue is empty)
+    /// and carry a higher nonce, so the worker verifies and promotes
+    /// them in nonce order. A submission that would exceed this depth,
+    /// or that competes with a queued candidate for the same base, is
+    /// refused with `conflict_pending_delta`. `1` reproduces the
+    /// historical one-in-flight-candidate behavior. Each admitted
+    /// chained submission reconstructs the queue tail from the
+    /// canonical state (one delta application per queued candidate),
+    /// so this also bounds per-push reconstruction cost.
+    pub max_pending_candidates_per_account: usize,
 }
 
 impl Default for CanonicalizationConfig {
@@ -113,6 +136,7 @@ impl Default for CanonicalizationConfig {
             reconcile_interval_seconds: 60,       // Recovery sweep; slower than the full pass
             reconcile_page_size: 100,             // Accounts per reconcile pass; cursor rotates
             max_concurrent_accounts: Stage::Dev.default_canonicalization_max_concurrent_accounts(),
+            max_pending_candidates_per_account: DEFAULT_MAX_PENDING_CANDIDATES_PER_ACCOUNT,
         }
     }
 }
@@ -335,6 +359,42 @@ impl CanonicalizationConfig {
             }
         }
     }
+
+    /// Override how many candidate deltas one account may queue (issue
+    /// #17). `1` reproduces the historical one-in-flight behavior.
+    pub fn with_max_pending_candidates_per_account(mut self, depth: usize) -> Self {
+        assert!(
+            depth > 0,
+            "max_pending_candidates_per_account must be at least 1 (1 = one in-flight candidate)"
+        );
+        self.max_pending_candidates_per_account = depth;
+        self
+    }
+
+    /// Apply the [`ENV_MAX_PENDING_CANDIDATES_PER_ACCOUNT`] override when
+    /// set. A present-but-invalid value fails startup loudly, matching
+    /// the other canonicalization knobs.
+    pub fn with_max_pending_candidates_per_account_from_env(self) -> Result<Self, String> {
+        self.max_pending_candidates_per_account_from_var(ENV_MAX_PENDING_CANDIDATES_PER_ACCOUNT)
+    }
+
+    fn max_pending_candidates_per_account_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let depth = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("{var_name} must be a positive integer, got '{value}'"))?;
+                if depth == 0 {
+                    return Err(format!("{var_name} must be greater than zero"));
+                }
+                Ok(self.with_max_pending_candidates_per_account(depth))
+            }
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains invalid UTF-8"))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -500,6 +560,57 @@ mod tests {
             .reconcile_interval_seconds_from_var(var_name)
             .expect("missing variable is not an error");
         assert_eq!(config.reconcile_interval_seconds, 60);
+    }
+
+    #[test]
+    fn max_pending_candidates_defaults_to_a_bounded_queue() {
+        let config = CanonicalizationConfig::default();
+        assert_eq!(
+            config.max_pending_candidates_per_account,
+            DEFAULT_MAX_PENDING_CANDIDATES_PER_ACCOUNT
+        );
+    }
+
+    #[test]
+    fn max_pending_candidates_env_override_is_strict() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_MAX_PENDING_CANDIDATES_TEST";
+
+        unsafe { std::env::set_var(var_name, "1") };
+        let config = CanonicalizationConfig::default()
+            .max_pending_candidates_per_account_from_var(var_name)
+            .expect("one is the historical single-candidate behavior");
+        assert_eq!(config.max_pending_candidates_per_account, 1);
+
+        unsafe { std::env::set_var(var_name, "8") };
+        let config = CanonicalizationConfig::default()
+            .max_pending_candidates_per_account_from_var(var_name)
+            .expect("valid value applies");
+        assert_eq!(config.max_pending_candidates_per_account, 8);
+
+        unsafe { std::env::set_var(var_name, "0") };
+        assert!(
+            CanonicalizationConfig::default()
+                .max_pending_candidates_per_account_from_var(var_name)
+                .is_err(),
+            "a zero depth would refuse every submission"
+        );
+
+        unsafe { std::env::set_var(var_name, "many") };
+        assert!(
+            CanonicalizationConfig::default()
+                .max_pending_candidates_per_account_from_var(var_name)
+                .is_err()
+        );
+
+        unsafe { std::env::remove_var(var_name) };
+        let config = CanonicalizationConfig::default()
+            .max_pending_candidates_per_account_from_var(var_name)
+            .expect("missing variable is not an error");
+        assert_eq!(
+            config.max_pending_candidates_per_account,
+            DEFAULT_MAX_PENDING_CANDIDATES_PER_ACCOUNT
+        );
     }
 
     #[test]

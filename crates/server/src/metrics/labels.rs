@@ -111,6 +111,11 @@ pub enum CandidateOutcome {
     /// Discarded because the account advanced past the candidate's base
     /// state on-chain, making verification permanently unsatisfiable.
     Diverged,
+    /// Parked (retained, or discarded when retention is off) because its
+    /// predecessor in the candidate queue (issue #17) was parked,
+    /// discarded, or abandoned: the stored state can no longer reach the
+    /// base this candidate builds on.
+    Orphaned,
     /// Discarded because the client abandoned it via the abandon-candidate
     /// endpoint (issue #319): the client knows its transaction will never
     /// land and releases the account instead of waiting out grace+retries.
@@ -143,6 +148,7 @@ impl CandidateOutcome {
             Self::GraceDeferred => "grace_deferred",
             Self::DivergenceDeferred => "divergence_deferred",
             Self::Diverged => "diverged",
+            Self::Orphaned => "orphaned",
             Self::Abandoned => "abandoned",
             Self::StaleBase => "stale_base",
             Self::Retained => "retained",
@@ -214,6 +220,7 @@ mod tests {
             CandidateOutcome::GraceDeferred.as_str(),
             CandidateOutcome::DivergenceDeferred.as_str(),
             CandidateOutcome::Diverged.as_str(),
+            CandidateOutcome::Orphaned.as_str(),
             CandidateOutcome::Abandoned.as_str(),
             CandidateOutcome::StaleBase.as_str(),
             CandidateOutcome::Retained.as_str(),

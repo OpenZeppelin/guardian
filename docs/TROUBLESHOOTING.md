@@ -296,8 +296,12 @@ probing the chain (backing off as the row ages) and promotes it
 automatically if the transaction ever shows up, for up to
 `retained_ttl_seconds` (default 24 h). The `status_reason` on the
 dashboard feed says which verdict parked it (`retry_exhausted` /
-`diverged`); a `diverged` row that later reconciles means the
-divergence verdict was spurious (e.g. a lagging RPC node).
+`diverged` / `orphaned`); a `diverged` row that later reconciles means
+the divergence verdict was spurious (e.g. a lagging RPC node). An
+`orphaned` row (issue #17) was queued behind a candidate that was
+parked, discarded, or abandoned: it could never verify from the stored
+state on its own, and is recovered by the reconcile pass together with
+its predecessor if the chain turns out to have landed.
 
 Recovery for the client: check the delta's status first — if it flipped
 to `canonical`, the transaction landed and there is nothing to redo.
@@ -312,8 +316,10 @@ Operator checks:
 - No `network_error` storms.
 - `guardian_canonicalization_candidates_total{outcome=...}` breaks down
   what the worker decided per candidate (`retained` is the default
-  give-up path; `diverged` and `discarded` are the delete paths when
-  retention is disabled; `stale_base` means a promotion was rolled back
+  give-up path; `diverged`, `orphaned` and `discarded` are the delete
+  paths when retention is disabled — `orphaned` counts a queued
+  successor parked behind a parked predecessor; `stale_base` means a
+  promotion was rolled back
   because the stored state moved mid-pass and will retry next tick;
   `reconciled` / `reconcile_deferred` / `reconcile_expired` are the
   reconcile pass resolving retained rows).
@@ -333,7 +339,7 @@ Operator checks:
 - Retention and reconciliation emit stable `event` / `reason` fields for
   log-based triage (with `account_id`, `nonce`, and `age_seconds` /
   `retention_reason` / `expires_at` where applicable):
-  - `event=candidate_retained reason=retry_exhausted|diverged`
+  - `event=candidate_retained reason=retry_exhausted|diverged|orphaned`
   - `event=reconcile_deferred reason=chain_at_stored_base|chain_probe_unavailable|end_state_not_on_chain|base_no_longer_applies|recomputed_commitment_mismatch|no_matching_recoverable_delta`
   - `event=reconcile_skipped reason=obsolete_base`
   - `event=reconcile_promoted`
@@ -498,7 +504,7 @@ come from
 | Code | HTTP | First check |
 |---|---|---|
 | `account_already_exists` | 409 | `/configure` called twice for the same account. |
-| `conflict_pending_delta` | 409 | A non-canonical delta is in-flight; wait for it to finalise. |
+| `conflict_pending_delta` | 409 | The account's candidate queue is full (default depth 4, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), or the delta builds on a state another in-flight candidate already claimed. Wait for the queue to drain, or chain the delta on the newest candidate's post-state. |
 | `conflict_pending_proposal` | 409 | Pending proposals exist; resolve before pushing a direct delta. |
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |

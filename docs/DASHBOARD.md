@@ -127,9 +127,11 @@ reconciliation may promote the row to `canonical` until its retention
 TTL expires. The triage fields:
 
 - `status_reason` (feed + detail): why the row left the active candidate
-  path — `retry_exhausted` / `diverged` on `retained` rows (a `diverged`
-  row that later reconciles is direct evidence the divergence verdict
-  was spurious), `client_abandoned` on `discarded` rows.
+  path — `retry_exhausted` / `diverged` / `orphaned` on `retained` rows
+  (a `diverged` row that later reconciles is direct evidence the
+  divergence verdict was spurious; an `orphaned` row was queued behind
+  a candidate that was parked, discarded, or abandoned, issue #17),
+  `client_abandoned` on `discarded` rows.
 - `retained_expires_at` (detail): when the recovery net gives up for
   good. Retained age is `now − status_timestamp`.
 - `base_matches_stored_state` (detail): whether the row still chains
@@ -143,7 +145,11 @@ TTL expires. The triage fields:
 `reconcile_page_size`) so operators can tell why retained rows are or
 are not being reconsidered — note that individual accounts back off as
 their recoverable rows age, so a retained row being probed less often
-than the configured interval is expected.
+than the configured interval is expected. It also reports
+`max_pending_candidates_per_account`, the per-account candidate queue
+depth (issue #17): `has_pending_candidate` on an account means *at least
+one* candidate is queued, and `candidate` rows for one account may
+number up to this depth.
 
 ## Aggregate stats
 
