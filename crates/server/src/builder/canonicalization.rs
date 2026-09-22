@@ -17,6 +17,14 @@ pub const ENV_RETAINED_TTL_SECONDS: &str = "GUARDIAN_CANONICALIZATION_RETAINED_T
 pub const ENV_RECONCILE_INTERVAL_SECONDS: &str =
     "GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS";
 
+/// Environment override for [`CanonicalizationConfig::release_sweep_enabled`].
+/// `false` is the runtime kill switch for the release sweep (issue #434).
+pub const ENV_RELEASE_SWEEP_ENABLED: &str = "GUARDIAN_CANONICALIZATION_RELEASE_SWEEP_ENABLED";
+
+/// Environment override for [`CanonicalizationConfig::release_sweep_interval_seconds`].
+pub const ENV_RELEASE_SWEEP_INTERVAL_SECONDS: &str =
+    "GUARDIAN_CANONICALIZATION_RELEASE_SWEEP_INTERVAL_SECONDS";
+
 /// Configuration for delta canonicalization behavior
 /// When Some: deltas are saved as candidates and later verified/canonicalized
 /// When None: deltas are immediately saved as canonical (optimistic mode)
@@ -86,6 +94,37 @@ pub struct CanonicalizationConfig {
     /// the selection fair, so a large backlog (e.g. after a correlated
     /// node outage) drains across passes instead of monopolizing one.
     pub reconcile_page_size: u32,
+
+    /// Whether the periodic release sweep (issue #434) runs. The sweep
+    /// walks every unreleased Miden account and asks the chain whether
+    /// the account's guardian key still is this server's ack key,
+    /// releasing accounts whose guardian switch never reached the push
+    /// path (offline switches, failed best-effort pushes, switches that
+    /// predate the push-path hook, a network-dead old operator). `false`
+    /// leaves release detection to the push path alone.
+    pub release_sweep_enabled: bool,
+
+    /// How often the release sweep runs. Like the reconcile pass it is
+    /// deliberately slower than `check_interval_seconds` and never
+    /// crowds out candidate processing: each pass visits one page of
+    /// accounts, one cheap commitment probe each, and only accounts
+    /// whose chain state moved past the stored one get a second read.
+    pub release_sweep_interval_seconds: u64,
+
+    /// How many accounts one release sweep pass visits at most. A
+    /// rotation cursor over `account_id` carries across passes, so a
+    /// fleet larger than one page is covered breadth-first over
+    /// consecutive passes.
+    pub release_sweep_page_size: u32,
+
+    /// Consecutive sweep observations of a foreign guardian key on
+    /// chain required before an account is released. Values above 1
+    /// shield against acting on a single stale RPC read (a lagging
+    /// node serving a state from before a switch-back), mirroring
+    /// `divergence_confirmations`; accounts awaiting confirmation are
+    /// re-probed on the very next pass rather than the next rotation.
+    pub release_sweep_confirmations: u32,
+
     /// How many accounts one canonicalization pass processes concurrently.
     /// Candidates within an account are always sequential (nonce order);
     /// this only overlaps the per-account work — dominated by the Miden
@@ -112,6 +151,10 @@ impl Default for CanonicalizationConfig {
             retained_ttl_seconds: 86_400,         // Reconcile a stuck base for up to a day (#345)
             reconcile_interval_seconds: 60,       // Recovery sweep; slower than the full pass
             reconcile_page_size: 100,             // Accounts per reconcile pass; cursor rotates
+            release_sweep_enabled: true,          // Chain-driven release detection (#434)
+            release_sweep_interval_seconds: 60,   // Same cadence class as the reconcile pass
+            release_sweep_page_size: 100,         // Accounts per sweep pass; cursor rotates
+            release_sweep_confirmations: 2,       // Two observations to rule out a stale read
             max_concurrent_accounts: Stage::Dev.default_canonicalization_max_concurrent_accounts(),
         }
     }
@@ -286,6 +329,89 @@ impl CanonicalizationConfig {
             "reconcile page size must be at least one account"
         );
         self.reconcile_page_size = accounts;
+        self
+    }
+
+    /// Get the release sweep interval as a duration.
+    pub fn release_sweep_interval(&self) -> Duration {
+        Duration::from_secs(self.release_sweep_interval_seconds)
+    }
+
+    /// Enable or disable the periodic release sweep (issue #434).
+    pub fn with_release_sweep_enabled(mut self, enabled: bool) -> Self {
+        self.release_sweep_enabled = enabled;
+        self
+    }
+
+    /// Apply the [`ENV_RELEASE_SWEEP_ENABLED`] override when set.
+    pub fn with_release_sweep_enabled_from_env(self) -> Result<Self, String> {
+        self.release_sweep_enabled_from_var(ENV_RELEASE_SWEEP_ENABLED)
+    }
+
+    fn release_sweep_enabled_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => value
+                .parse::<bool>()
+                .map(|enabled| self.with_release_sweep_enabled(enabled))
+                .map_err(|_| format!("{var_name} must be 'true' or 'false', got '{value}'")),
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains invalid UTF-8"))
+            }
+        }
+    }
+
+    /// Override how often the release sweep runs.
+    pub fn with_release_sweep_interval_seconds(mut self, seconds: u64) -> Self {
+        assert!(
+            seconds > 0,
+            "release sweep interval must be at least one second"
+        );
+        self.release_sweep_interval_seconds = seconds;
+        self
+    }
+
+    /// Apply the [`ENV_RELEASE_SWEEP_INTERVAL_SECONDS`] override when set.
+    pub fn with_release_sweep_interval_seconds_from_env(self) -> Result<Self, String> {
+        self.release_sweep_interval_seconds_from_var(ENV_RELEASE_SWEEP_INTERVAL_SECONDS)
+    }
+
+    fn release_sweep_interval_seconds_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                let seconds = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("{var_name} must be a positive integer, got '{value}'"))?;
+                if seconds == 0 {
+                    return Err(format!("{var_name} must be greater than zero"));
+                }
+                Ok(self.with_release_sweep_interval_seconds(seconds))
+            }
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains invalid UTF-8"))
+            }
+        }
+    }
+
+    /// Override how many accounts one release sweep pass visits at most.
+    pub fn with_release_sweep_page_size(mut self, accounts: u32) -> Self {
+        assert!(
+            accounts > 0,
+            "release sweep page size must be at least one account"
+        );
+        self.release_sweep_page_size = accounts;
+        self
+    }
+
+    /// Override how many consecutive foreign-guardian observations the
+    /// release sweep requires before releasing an account.
+    pub fn with_release_sweep_confirmations(mut self, confirmations: u32) -> Self {
+        assert!(
+            confirmations > 0,
+            "release sweep confirmations must be at least one"
+        );
+        self.release_sweep_confirmations = confirmations;
         self
     }
 
@@ -500,6 +626,73 @@ mod tests {
             .reconcile_interval_seconds_from_var(var_name)
             .expect("missing variable is not an error");
         assert_eq!(config.reconcile_interval_seconds, 60);
+    }
+
+    #[test]
+    fn release_sweep_defaults_are_on_and_bounded() {
+        let config = CanonicalizationConfig::default();
+        assert!(config.release_sweep_enabled);
+        assert_eq!(config.release_sweep_interval_seconds, 60);
+        assert_eq!(config.release_sweep_page_size, 100);
+        assert_eq!(config.release_sweep_confirmations, 2);
+    }
+
+    #[test]
+    fn release_sweep_enabled_env_override_is_strict() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_RELEASE_SWEEP_ENABLED_TEST";
+
+        unsafe { std::env::set_var(var_name, "false") };
+        let config = CanonicalizationConfig::default()
+            .release_sweep_enabled_from_var(var_name)
+            .expect("valid boolean applies");
+        assert!(!config.release_sweep_enabled, "false is the kill switch");
+
+        unsafe { std::env::set_var(var_name, "0") };
+        assert!(
+            CanonicalizationConfig::default()
+                .release_sweep_enabled_from_var(var_name)
+                .is_err()
+        );
+
+        unsafe { std::env::remove_var(var_name) };
+        let config = CanonicalizationConfig::default()
+            .release_sweep_enabled_from_var(var_name)
+            .expect("missing variable is not an error");
+        assert!(config.release_sweep_enabled);
+    }
+
+    #[test]
+    fn release_sweep_interval_env_override_rejects_zero() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_RELEASE_SWEEP_INTERVAL_TEST";
+
+        unsafe { std::env::set_var(var_name, "300") };
+        let config = CanonicalizationConfig::default()
+            .release_sweep_interval_seconds_from_var(var_name)
+            .expect("valid value applies");
+        assert_eq!(config.release_sweep_interval_seconds, 300);
+
+        unsafe { std::env::set_var(var_name, "0") };
+        assert!(
+            CanonicalizationConfig::default()
+                .release_sweep_interval_seconds_from_var(var_name)
+                .is_err(),
+            "a zero interval would spin the sweep timer"
+        );
+
+        unsafe { std::env::set_var(var_name, "soon") };
+        assert!(
+            CanonicalizationConfig::default()
+                .release_sweep_interval_seconds_from_var(var_name)
+                .is_err()
+        );
+
+        unsafe { std::env::remove_var(var_name) };
+        let config = CanonicalizationConfig::default()
+            .release_sweep_interval_seconds_from_var(var_name)
+            .expect("missing variable is not an error");
+        assert_eq!(config.release_sweep_interval_seconds, 60);
     }
 
     #[test]

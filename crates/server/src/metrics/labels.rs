@@ -172,6 +172,41 @@ impl PoolKind {
     }
 }
 
+/// What the release sweep (issue #434) found for an account whose chain
+/// state moved past the stored one (`guardian_release_sweep_accounts_total`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseSweepOutcome {
+    /// A foreign guardian key was confirmed on chain; the account was
+    /// released.
+    Released,
+    /// A foreign guardian key was observed but not yet on enough
+    /// consecutive passes; re-probed next pass.
+    Confirming,
+    /// The chain moved but its guardian key is still this server's: the
+    /// stored state lags the chain (issue #345 territory), not a switch.
+    StillBound,
+    /// The account does not publish its storage, so the guardian binding
+    /// cannot be read from chain.
+    StorageOpaque,
+    /// Published storage carries no guardian binding at all.
+    NoBinding,
+    /// The commitment probe or the storage read failed; deferred.
+    ProbeFailed,
+}
+
+impl ReleaseSweepOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Released => "released",
+            Self::Confirming => "confirming",
+            Self::StillBound => "still_bound",
+            Self::StorageOpaque => "storage_opaque",
+            Self::NoBinding => "no_binding",
+            Self::ProbeFailed => "probe_failed",
+        }
+    }
+}
+
 /// Account network kind (`guardian_accounts_created_total`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountKind {
@@ -220,6 +255,12 @@ mod tests {
             CandidateOutcome::Reconciled.as_str(),
             CandidateOutcome::ReconcileDeferred.as_str(),
             CandidateOutcome::ReconcileExpired.as_str(),
+            ReleaseSweepOutcome::Released.as_str(),
+            ReleaseSweepOutcome::Confirming.as_str(),
+            ReleaseSweepOutcome::StillBound.as_str(),
+            ReleaseSweepOutcome::StorageOpaque.as_str(),
+            ReleaseSweepOutcome::NoBinding.as_str(),
+            ReleaseSweepOutcome::ProbeFailed.as_str(),
             AccountKind::Miden.as_str(),
             PoolKind::Storage.as_str(),
             PoolKind::Metadata.as_str(),

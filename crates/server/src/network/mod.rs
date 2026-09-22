@@ -186,6 +186,29 @@ pub enum StateVerification {
     Mismatch { on_chain: String },
 }
 
+/// What the chain itself says about an account's guardian binding, read
+/// directly from published on-chain storage rather than from a state the
+/// client supplied. Only accounts with public state expose their storage;
+/// for the rest the chain holds a bare commitment and the binding is
+/// `Opaque`. Used by the release sweep (issue #434) to recognize a
+/// guardian switch whose delta never reached this server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnChainGuardianBinding {
+    /// The account publishes its storage. `guardian_commitment` is the
+    /// guardian public key commitment it holds (`None` when the state
+    /// carries no guardian binding), and `on_chain_commitment` is the
+    /// account state commitment observed in the same read, so callers
+    /// can tie the binding to the commitment it belongs to.
+    Visible {
+        on_chain_commitment: String,
+        guardian_commitment: Option<String>,
+    },
+    /// The chain does not expose this account's storage (private
+    /// account, or a network without published account state): the
+    /// guardian binding cannot be read from chain.
+    Opaque,
+}
+
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
     /// Get state commitment in hex format from JSON
@@ -270,6 +293,25 @@ pub trait NetworkClient: Send + Sync {
     ) -> Result<Option<String>, String> {
         let _ = state_json;
         Ok(None)
+    }
+
+    /// Read the account's guardian binding from published on-chain
+    /// storage (see [`OnChainGuardianBinding`]). Returns `Err` only when
+    /// the read could not be made (RPC failure, malformed response);
+    /// an account whose storage is not published yields `Ok(Opaque)`.
+    /// The default is `Opaque` — "cannot tell" — so backends without
+    /// on-chain guardian storage never trigger a release.
+    ///
+    /// Sweep call sites must pass [`RpcReadMode::SingleAttempt`] for the
+    /// same reason as [`Self::verify_commitment`]: the pass retries
+    /// structurally on its own schedule.
+    async fn fetch_on_chain_guardian_binding(
+        &self,
+        account_id: &str,
+        read_mode: RpcReadMode,
+    ) -> Result<OnChainGuardianBinding, String> {
+        let _ = (account_id, read_mode);
+        Ok(OnChainGuardianBinding::Opaque)
     }
 
     /// Determine if account auth should be updated given the state

@@ -128,6 +128,11 @@ impl StartupInfo {
                 max_retries = config.max_retries,
                 submission_grace_period_seconds = config.submission_grace_period_seconds,
                 max_concurrent_accounts = config.max_concurrent_accounts,
+                retained_ttl_seconds = config.retained_ttl_seconds,
+                reconcile_interval_seconds = config.reconcile_interval_seconds,
+                release_sweep_enabled = config.release_sweep_enabled,
+                release_sweep_interval_seconds = config.release_sweep_interval_seconds,
+                release_sweep_confirmations = config.release_sweep_confirmations,
                 "canonicalization"
             ),
             None => {
@@ -202,6 +207,10 @@ mod tests {
                 retained_ttl_seconds: 86_400,
                 reconcile_interval_seconds: 60,
                 reconcile_page_size: 100,
+                release_sweep_enabled: true,
+                release_sweep_interval_seconds: 60,
+                release_sweep_page_size: 100,
+                release_sweep_confirmations: 2,
             }),
             3,
             true,

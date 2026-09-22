@@ -5,7 +5,8 @@ use crate::network::miden::account_inspector::{
     MidenAccountInspector, guardian_public_key_slot_name,
 };
 use crate::network::{
-    MidenRpcSettings, NetworkClient, NetworkType, RpcReadMode, StateVerification,
+    MidenRpcSettings, NetworkClient, NetworkType, OnChainGuardianBinding, RpcReadMode,
+    StateVerification,
 };
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
@@ -17,7 +18,7 @@ use miden_protocol::account::{
 use miden_protocol::transaction::{
     InputNote, InputNotes, RawOutputNote, RawOutputNotes, TransactionSummary,
 };
-use miden_rpc_client::MidenRpcClient;
+use miden_rpc_client::{MidenRpcClient, primitives, rpc};
 use miden_standards::account::auth::AuthGuardedMultisig;
 
 /// Miden network client for fetching on-chain account data
@@ -68,6 +69,108 @@ impl MidenNetworkClient {
     fn is_empty_word_digest(on_chain: &str) -> bool {
         let digest = on_chain.strip_prefix("0x").unwrap_or(on_chain);
         !digest.is_empty() && digest.bytes().all(|b| b == b'0')
+    }
+
+    /// Hex encoding of a node-reported digest — the one encoding the RPC
+    /// client uses for commitments, so storage words and commitments
+    /// compare byte-for-byte with `Word::to_bytes()` / `Word::as_bytes()`.
+    fn digest_hex(digest: &primitives::Digest) -> String {
+        miden_rpc_client::digest_to_hex(digest)
+    }
+
+    /// The storage-detail request that asks the node for the guardian
+    /// public key map only: one small map, all entries, no code, no vault.
+    fn guardian_map_detail_request() -> rpc::account_request::AccountDetailRequest {
+        use rpc::account_request::account_detail_request::storage_map_detail_request::SlotData;
+        use rpc::account_request::account_detail_request::{
+            StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest,
+        };
+        rpc::account_request::AccountDetailRequest {
+            code_commitment: None,
+            asset_vault_commitment: None,
+            storage_request: Some(StorageRequest::StorageMaps(StorageMapDetailRequests {
+                storage_maps: vec![StorageMapDetailRequest {
+                    slot_name: guardian_public_key_slot_name().to_string(),
+                    slot_data: Some(SlotData::AllEntries(true)),
+                }],
+            })),
+        }
+    }
+
+    /// Interpret a `GetAccount` response that requested the guardian map
+    /// (see [`Self::guardian_map_detail_request`]). Pure so the response
+    /// shapes can be unit-tested without a node.
+    ///
+    /// The guardian key lives at map key `ZERO` of the guardian pub_key
+    /// slot, exactly where [`MidenAccountInspector::extract_guardian_public_key`]
+    /// reads it in client-supplied state; a zero value means "no binding"
+    /// there too. A response without details is a private account.
+    /// Details that carry no storage answer are an error, not "no
+    /// binding": the node did not answer the storage request.
+    fn guardian_binding_from_response(
+        response: &rpc::AccountResponse,
+    ) -> Result<OnChainGuardianBinding, String> {
+        use rpc::account_storage_details::account_storage_map_details::Result as MapResult;
+
+        let on_chain_commitment = response
+            .witness
+            .as_ref()
+            .and_then(|witness| witness.commitment.as_ref())
+            .map(Self::digest_hex)
+            .ok_or_else(|| "no commitment in account witness".to_string())?;
+
+        let Some(details) = response.details.as_ref() else {
+            return Ok(OnChainGuardianBinding::Opaque);
+        };
+        // Details without a storage answer mean the node did not answer
+        // the storage request: nothing can be concluded about the slot,
+        // so this is a failed read, not "no binding".
+        let guardian_slot = guardian_public_key_slot_name();
+        let storage = details
+            .storage_details
+            .as_ref()
+            .ok_or_else(|| "account details carry no storage answer".to_string())?;
+        let map = storage
+            .map_details
+            .iter()
+            .find(|map| map.slot_name == guardian_slot);
+        let guardian_commitment = match map {
+            // The slot is absent from the published storage: the state
+            // carries no guardian binding.
+            None => None,
+            Some(map) => match map.result.as_ref() {
+                None => {
+                    return Err(format!(
+                        "node answered the guardian map '{guardian_slot}' without a result"
+                    ));
+                }
+                Some(MapResult::AllEntries(entries)) => {
+                    let zero = primitives::Digest::default();
+                    entries
+                        .entries
+                        .iter()
+                        .find(|entry| entry.key.as_ref() == Some(&zero))
+                        .and_then(|entry| entry.value.as_ref())
+                        .filter(|value| **value != zero)
+                        .map(Self::digest_hex)
+                }
+                Some(MapResult::TooManyEntries(_)) => {
+                    return Err(format!(
+                        "guardian map '{guardian_slot}' exceeds the node's entry limit"
+                    ));
+                }
+                Some(MapResult::PartialMap(_)) => {
+                    return Err(format!(
+                        "node answered the guardian map '{guardian_slot}' with a partial \
+                         map although all entries were requested"
+                    ));
+                }
+            },
+        };
+        Ok(OnChainGuardianBinding::Visible {
+            on_chain_commitment,
+            guardian_commitment,
+        })
     }
 
     /// Construct an Account object from JSON state representation
@@ -452,6 +555,64 @@ impl NetworkClient for MidenNetworkClient {
         Ok(inspector.extract_guardian_public_key())
     }
 
+    async fn fetch_on_chain_guardian_binding(
+        &self,
+        account_id: &str,
+        read_mode: RpcReadMode,
+    ) -> Result<OnChainGuardianBinding, String> {
+        let account_id = AccountId::from_hex(account_id).map_err(|e| {
+            tracing::error!(
+                account_id = %account_id,
+                error = %e,
+                "Invalid Miden account ID format in fetch_on_chain_guardian_binding"
+            );
+            format!("Invalid Miden account ID format: {e}")
+        })?;
+
+        // Storage details are only valid for public accounts; the node
+        // holds a bare commitment for everything else, so there is
+        // nothing to ask for.
+        if !account_id.is_public() {
+            return Ok(OnChainGuardianBinding::Opaque);
+        }
+
+        let rpc_started = std::time::Instant::now();
+        let rpc_result = self
+            .client
+            .get_account_with_details(
+                &account_id,
+                Some(Self::guardian_map_detail_request()),
+                read_mode,
+            )
+            .await;
+        metrics::counter!(
+            crate::metrics::names::MIDEN_RPC_REQUESTS_TOTAL,
+            crate::metrics::names::LABEL_OPERATION => "get_account_with_details",
+            crate::metrics::names::LABEL_OUTCOME =>
+                crate::metrics::labels::Outcome::from_ok(rpc_result.is_ok()).as_str()
+        )
+        .increment(1);
+        metrics::histogram!(
+            crate::metrics::names::MIDEN_RPC_DURATION_SECONDS,
+            crate::metrics::names::LABEL_OPERATION => "get_account_with_details"
+        )
+        .record(rpc_started.elapsed().as_secs_f64());
+
+        let response = rpc_result.map_err(|e| {
+            tracing::error!(
+                account_id = %account_id.to_hex(),
+                error = %e,
+                "Failed to fetch account storage details from Miden network"
+            );
+            format!(
+                "Failed to read guardian binding for '{}' on Miden network: {e}",
+                account_id.to_hex()
+            )
+        })?;
+
+        Self::guardian_binding_from_response(&response)
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,
@@ -512,7 +673,9 @@ fn merge_account_deltas(
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
+    use miden_protocol::Felt;
     use miden_protocol::transaction::TransactionSummaryUserParams;
+    use miden_protocol::utils::serde::Serializable;
 
     use super::*;
 
@@ -535,6 +698,281 @@ mod tests {
         ));
         assert!(!MidenNetworkClient::is_empty_word_digest(""));
         assert!(!MidenNetworkClient::is_empty_word_digest("0x"));
+    }
+
+    // --- Guardian binding read (issue #434) --------------------------------
+
+    fn digest_from_word(word: &Word) -> primitives::Digest {
+        primitives::Digest {
+            d0: word[0].as_canonical_u64(),
+            d1: word[1].as_canonical_u64(),
+            d2: word[2].as_canonical_u64(),
+            d3: word[3].as_canonical_u64(),
+        }
+    }
+
+    fn word_hex(word: &Word) -> String {
+        format!("0x{}", hex::encode(word.to_bytes()))
+    }
+
+    fn account_response(
+        commitment: &Word,
+        details: Option<rpc::account_response::AccountDetails>,
+    ) -> rpc::AccountResponse {
+        rpc::AccountResponse {
+            block_num: None,
+            witness: Some(miden_rpc_client::account::AccountWitness {
+                account_id: None,
+                witness_id: None,
+                commitment: Some(digest_from_word(commitment)),
+                path: None,
+            }),
+            details,
+        }
+    }
+
+    fn guardian_map_details(
+        slot_name: &str,
+        result: rpc::account_storage_details::account_storage_map_details::Result,
+    ) -> rpc::account_response::AccountDetails {
+        rpc::account_response::AccountDetails {
+            header: None,
+            storage_details: Some(rpc::AccountStorageDetails {
+                header: None,
+                map_details: vec![rpc::account_storage_details::AccountStorageMapDetails {
+                    slot_name: slot_name.to_string(),
+                    result: Some(result),
+                }],
+            }),
+            code: None,
+            vault_details: None,
+        }
+    }
+
+    fn all_entries(
+        entries: &[(Word, Word)],
+    ) -> rpc::account_storage_details::account_storage_map_details::Result {
+        use rpc::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry;
+        rpc::account_storage_details::account_storage_map_details::Result::AllEntries(
+            rpc::account_storage_details::account_storage_map_details::AllMapEntries {
+                entries: entries
+                    .iter()
+                    .map(|(key, value)| StorageMapEntry {
+                        key: Some(digest_from_word(key)),
+                        value: Some(digest_from_word(value)),
+                    })
+                    .collect(),
+            },
+        )
+    }
+
+    #[test]
+    fn digest_hex_matches_word_serialization() {
+        // The inspector encodes the guardian key with `Word::to_bytes()`
+        // and state commitments use `Word::as_bytes()`; the node digest
+        // must map onto the same bytes or the comparison is meaningless.
+        let word = Word::from([
+            Felt::new_unchecked(1),
+            Felt::new_unchecked(0xdead_beef),
+            Felt::new_unchecked(u64::MAX - 1_000_000),
+            Felt::new_unchecked(42),
+        ]);
+        let digest = digest_from_word(&word);
+        assert_eq!(MidenNetworkClient::digest_hex(&digest), word_hex(&word));
+        assert_eq!(
+            MidenNetworkClient::digest_hex(&digest),
+            format!("0x{}", hex::encode(word.as_bytes()))
+        );
+    }
+
+    #[test]
+    fn guardian_binding_reads_key_zero_of_the_guardian_map() {
+        let commitment = Word::from([Felt::new_unchecked(7); 4]);
+        let guardian = Word::from([Felt::new_unchecked(9); 4]);
+        let other = Word::from([Felt::new_unchecked(3); 4]);
+        let response = account_response(
+            &commitment,
+            Some(guardian_map_details(
+                guardian_public_key_slot_name(),
+                all_entries(&[
+                    (Word::from([Felt::new_unchecked(1); 4]), other),
+                    (Word::default(), guardian),
+                ]),
+            )),
+        );
+
+        assert_eq!(
+            MidenNetworkClient::guardian_binding_from_response(&response).unwrap(),
+            OnChainGuardianBinding::Visible {
+                on_chain_commitment: word_hex(&commitment),
+                guardian_commitment: Some(word_hex(&guardian)),
+            }
+        );
+    }
+
+    #[test]
+    fn guardian_binding_without_details_is_opaque() {
+        // A private account: the node answers with the witness only.
+        let commitment = Word::from([Felt::new_unchecked(7); 4]);
+        let response = account_response(&commitment, None);
+        assert_eq!(
+            MidenNetworkClient::guardian_binding_from_response(&response).unwrap(),
+            OnChainGuardianBinding::Opaque
+        );
+    }
+
+    #[test]
+    fn guardian_binding_absent_slot_or_zero_key_means_no_binding() {
+        let commitment = Word::from([Felt::new_unchecked(7); 4]);
+
+        // Published storage without the guardian slot at all.
+        let unrelated = account_response(
+            &commitment,
+            Some(guardian_map_details(
+                "miden::standards::some::other::slot",
+                all_entries(&[(Word::default(), Word::from([Felt::new_unchecked(9); 4]))]),
+            )),
+        );
+        assert_eq!(
+            MidenNetworkClient::guardian_binding_from_response(&unrelated).unwrap(),
+            OnChainGuardianBinding::Visible {
+                on_chain_commitment: word_hex(&commitment),
+                guardian_commitment: None,
+            }
+        );
+
+        // The slot exists but key zero holds the zero word (the same
+        // "no binding" the inspector reports for client-supplied state).
+        let zeroed = account_response(
+            &commitment,
+            Some(guardian_map_details(
+                guardian_public_key_slot_name(),
+                all_entries(&[(Word::default(), Word::default())]),
+            )),
+        );
+        assert_eq!(
+            MidenNetworkClient::guardian_binding_from_response(&zeroed).unwrap(),
+            OnChainGuardianBinding::Visible {
+                on_chain_commitment: word_hex(&commitment),
+                guardian_commitment: None,
+            }
+        );
+
+        // The slot exists but has no entries.
+        let empty = account_response(
+            &commitment,
+            Some(guardian_map_details(
+                guardian_public_key_slot_name(),
+                all_entries(&[]),
+            )),
+        );
+        assert_eq!(
+            MidenNetworkClient::guardian_binding_from_response(&empty).unwrap(),
+            OnChainGuardianBinding::Visible {
+                on_chain_commitment: word_hex(&commitment),
+                guardian_commitment: None,
+            }
+        );
+    }
+
+    #[test]
+    fn guardian_binding_rejects_unusable_map_answers_and_missing_witness() {
+        use rpc::account_storage_details::account_storage_map_details::Result as MapResult;
+        let commitment = Word::from([Felt::new_unchecked(7); 4]);
+
+        let too_many = account_response(
+            &commitment,
+            Some(guardian_map_details(
+                guardian_public_key_slot_name(),
+                MapResult::TooManyEntries(true),
+            )),
+        );
+        assert!(MidenNetworkClient::guardian_binding_from_response(&too_many).is_err());
+
+        let partial = account_response(
+            &commitment,
+            Some(guardian_map_details(
+                guardian_public_key_slot_name(),
+                MapResult::PartialMap(
+                    rpc::account_storage_details::account_storage_map_details::PartialStorageMap {
+                        map_keys: vec![],
+                        partial_smt: None,
+                    },
+                ),
+            )),
+        );
+        assert!(MidenNetworkClient::guardian_binding_from_response(&partial).is_err());
+
+        let no_witness = rpc::AccountResponse {
+            block_num: None,
+            witness: None,
+            details: None,
+        };
+        assert!(MidenNetworkClient::guardian_binding_from_response(&no_witness).is_err());
+
+        // Details without a storage answer: the node did not answer the
+        // storage request, which must not read as "no binding".
+        let no_storage = account_response(
+            &commitment,
+            Some(rpc::account_response::AccountDetails {
+                header: None,
+                storage_details: None,
+                code: None,
+                vault_details: None,
+            }),
+        );
+        assert!(MidenNetworkClient::guardian_binding_from_response(&no_storage).is_err());
+
+        // The guardian slot is listed but carries no result.
+        let mut no_result = guardian_map_details(
+            guardian_public_key_slot_name(),
+            MapResult::TooManyEntries(true),
+        );
+        no_result.storage_details.as_mut().unwrap().map_details[0].result = None;
+        let no_result = account_response(&commitment, Some(no_result));
+        assert!(MidenNetworkClient::guardian_binding_from_response(&no_result).is_err());
+    }
+
+    #[test]
+    fn guardian_map_request_asks_for_the_guardian_slot_only() {
+        use rpc::account_request::account_detail_request::StorageRequest;
+        use rpc::account_request::account_detail_request::storage_map_detail_request::SlotData;
+        let request = MidenNetworkClient::guardian_map_detail_request();
+        assert!(request.code_commitment.is_none());
+        assert!(request.asset_vault_commitment.is_none());
+        let Some(StorageRequest::StorageMaps(maps)) = request.storage_request else {
+            panic!("expected an explicit storage-map selection");
+        };
+        assert_eq!(maps.storage_maps.len(), 1);
+        assert_eq!(
+            maps.storage_maps[0].slot_name,
+            guardian_public_key_slot_name()
+        );
+        assert_eq!(
+            maps.storage_maps[0].slot_data,
+            Some(SlotData::AllEntries(true))
+        );
+    }
+
+    #[tokio::test]
+    async fn private_account_id_short_circuits_to_opaque_without_an_rpc() {
+        // `lazy_for_test` never connects, so any RPC attempt would fail:
+        // an `Ok(Opaque)` proves the private-account branch returned
+        // before touching the network.
+        use miden_protocol::account::{AccountIdVersion, AccountType, AssetCallbackFlag};
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal);
+        let private_id = AccountId::dummy(
+            [1u8; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            AssetCallbackFlag::Disabled,
+        );
+        assert!(private_id.is_private());
+        let binding = client
+            .fetch_on_chain_guardian_binding(&private_id.to_hex(), RpcReadMode::SingleAttempt)
+            .await
+            .expect("private accounts never issue the storage read");
+        assert_eq!(binding, OnChainGuardianBinding::Opaque);
     }
 
     #[tokio::test]

@@ -339,6 +339,26 @@ Operator checks:
   - `event=reconcile_promoted`
   - `event=reconcile_expired`
   - `event=reconcile_superseded`
+- The release sweep (issue #434) emits its own stable events, with
+  `account_id` and, where applicable, `stored_commitment` / `on_chain` /
+  `new_guardian_commitment`:
+  - `event=release_sweep_skipped reason=pending_candidate`
+  - `event=release_sweep_deferred reason=chain_at_stored_base|chain_probe_unavailable|binding_read_unavailable|storage_opaque|no_guardian_binding|guardian_still_bound|stored_base_moved`
+  - `event=release_sweep_confirming` (with `observations` / `confirmations`)
+  - `event=release_sweep_released`
+  `storage_opaque` at info level is the one to watch: the chain moved
+  past the stored state of a **private** account, whose guardian key the
+  sweep cannot read from chain. If that account is known to have
+  switched guardians, it will not release by itself. `guardian_still_bound`
+  means the chain moved but the account is still bound here — the stored
+  state lags the chain (see the `retained` section above).
+- `guardian_canonicalization_release_sweep_runs_total{outcome=...}` and
+  `guardian_canonicalization_release_sweep_run_duration_seconds` cover
+  the sweep pass itself; `guardian_release_sweep_accounts_total{outcome=...}`
+  counts per-account findings for accounts found off their stored base
+  (`released`, `confirming`, `still_bound`, `storage_opaque`,
+  `no_binding`, `probe_failed`). Accounts at their stored base — the
+  healthy steady state — are not counted.
   The `chain_at_stored_base` / `chain_probe_unavailable` deferrals are
   logged (debug/info) but deliberately not counted in
   `guardian_canonicalization_candidates_total` — a healthy steady state
@@ -503,7 +523,7 @@ come from
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 (gRPC `FailedPrecondition`) | Account is paused by an operator. Response body includes the operator-supplied `paused_reason`. Unpause via `POST /dashboard/accounts/{id}/unpause` (requires `accounts:pause`). See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
-| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian (a canonicalized `switch_guardian` delta moved the guardian key away from this server) and this server released it. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
+| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or the release sweep read a foreign guardian key from the account's published on-chain storage (the `accounts.release` audit row's `detected_by` says which). Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
 
 ### Validation
 
@@ -592,7 +612,7 @@ network network=MidenTestnet rpc_endpoint="https://rpc.testnet.miden.io"
 storage backend storage=Postgres
 ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecdsa_commitment=0x…
 dashboard operators=0 cursor_secret="ephemeral"
-canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10
+canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10 retained_ttl_seconds=86400 reconcile_interval_seconds=60 release_sweep_enabled=true release_sweep_interval_seconds=60 release_sweep_confirmations=2
 listeners http=3000 grpc=50051
 compiled features features=["postgres"]
 =========================================
@@ -640,6 +660,10 @@ ECS Exec requires the task role's `ssmmessages:*` actions
 - **`authentication_failed` rate** — sudden spike usually means a client
   clock drift event or an attacker probing.
 - **ACK pubkey on `GET /pubkey`** — should not change unless you rotated.
+- **`guardian_release_sweep_accounts_total{outcome="storage_opaque"}`
+  growing** — private accounts whose chain state moved past the stored
+  one; the sweep cannot verify their guardian binding, so switched ones
+  stay active here until the wallet re-onboards or the operator acts.
 
 There are no Terraform-managed dashboards or alarms yet — building these
 out remains an open production-hardening item.

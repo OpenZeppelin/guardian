@@ -13,6 +13,7 @@ type StdResult<T, E> = std::result::Result<T, E>;
 type ApplyDeltaResult = StdResult<(serde_json::Value, String), String>;
 type ShouldUpdateAuthResult = StdResult<Option<Auth>, String>;
 type ExtractGuardianCommitmentResult = StdResult<Option<String>, String>;
+type OnChainGuardianBindingResult = StdResult<crate::network::OnChainGuardianBinding, String>;
 type PullDeltasResult = StdResult<Vec<DeltaObject>, String>;
 type GetMetadataResult = StdResult<Option<crate::metadata::AccountMetadata>, String>;
 type ListResult = StdResult<Vec<String>, String>;
@@ -38,6 +39,8 @@ pub struct MockNetworkClient {
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
     pub extract_guardian_commitment_responses: Arc<StdMutex<Vec<ExtractGuardianCommitmentResult>>>,
+    pub fetch_on_chain_guardian_binding_responses: Arc<StdMutex<Vec<OnChainGuardianBindingResult>>>,
+    pub fetch_on_chain_guardian_binding_calls: Arc<StdMutex<Vec<String>>>,
 }
 
 impl MockNetworkClient {
@@ -91,6 +94,28 @@ impl MockNetworkClient {
             .unwrap()
             .push(response);
         self
+    }
+
+    /// Queue one `fetch_on_chain_guardian_binding` answer (LIFO like
+    /// every other queue here). The default with an empty queue is
+    /// `Ok(Opaque)`, the trait default, so the release sweep stays
+    /// inert in tests that don't opt in.
+    pub fn with_fetch_on_chain_guardian_binding(
+        self,
+        response: StdResult<crate::network::OnChainGuardianBinding, String>,
+    ) -> Self {
+        self.fetch_on_chain_guardian_binding_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_fetch_on_chain_guardian_binding_calls(&self) -> Vec<String> {
+        self.fetch_on_chain_guardian_binding_calls
+            .lock()
+            .unwrap()
+            .clone()
     }
 
     pub fn with_apply_delta(
@@ -235,6 +260,22 @@ impl NetworkClient for MockNetworkClient {
             .unwrap()
             .pop()
             .unwrap_or(Ok(None))
+    }
+
+    async fn fetch_on_chain_guardian_binding(
+        &self,
+        account_id: &str,
+        _read_mode: crate::network::RpcReadMode,
+    ) -> StdResult<crate::network::OnChainGuardianBinding, String> {
+        self.fetch_on_chain_guardian_binding_calls
+            .lock()
+            .unwrap()
+            .push(account_id.to_string());
+        self.fetch_on_chain_guardian_binding_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::network::OnChainGuardianBinding::Opaque))
     }
 
     async fn should_update_auth(
@@ -1079,11 +1120,15 @@ pub struct MockMetadataStore {
     pub list_paged_responses:
         Arc<StdMutex<Vec<StdResult<Vec<crate::metadata::AccountMetadata>, String>>>>,
     pub list_with_pending_candidates_responses: Arc<StdMutex<Vec<ListResult>>>,
+    pub list_release_sweep_page_responses:
+        Arc<StdMutex<Vec<StdResult<Vec<crate::metadata::AccountMetadata>, String>>>>,
+    pub list_release_sweep_page_calls: Arc<StdMutex<Vec<(Option<String>, u32)>>>,
     pub update_timestamp_cas_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub update_timestamp_cas_calls: Arc<StdMutex<Vec<(String, String, i64)>>>,
     pub find_by_cosigner_commitment_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub find_by_cosigner_commitment_calls: Arc<StdMutex<Vec<String>>>,
     pub set_released_calls: Arc<StdMutex<Vec<String>>>,
+    pub set_released_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub clear_released_calls: Arc<StdMutex<Vec<String>>>,
     pub clear_released_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     /// Reported by [`MetadataStore::pool_status`]. Defaults to `None`;
@@ -1135,6 +1180,30 @@ impl MockMetadataStore {
             .lock()
             .unwrap()
             .push(response);
+        self
+    }
+
+    /// Queue one `list_release_sweep_page` answer. Responses pop LIFO like
+    /// every other queue here; an empty queue answers an empty page.
+    pub fn with_list_release_sweep_page(
+        self,
+        response: StdResult<Vec<crate::metadata::AccountMetadata>, String>,
+    ) -> Self {
+        self.list_release_sweep_page_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_list_release_sweep_page_calls(&self) -> Vec<(Option<String>, u32)> {
+        self.list_release_sweep_page_calls.lock().unwrap().clone()
+    }
+
+    /// Queue one `set_released` answer; the default with an empty queue
+    /// is `Ok(true)` (newly released).
+    pub fn with_set_released(self, response: StdResult<bool, String>) -> Self {
+        self.set_released_responses.lock().unwrap().push(response);
         self
     }
 
@@ -1238,6 +1307,22 @@ impl MetadataStore for MockMetadataStore {
             .unwrap_or_else(|| Ok(vec![]))
     }
 
+    async fn list_release_sweep_page(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> StdResult<Vec<crate::metadata::AccountMetadata>, String> {
+        self.list_release_sweep_page_calls
+            .lock()
+            .unwrap()
+            .push((after.map(str::to_string), limit));
+        self.list_release_sweep_page_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,
@@ -1306,7 +1391,11 @@ impl MetadataStore for MockMetadataStore {
             .lock()
             .unwrap()
             .push(account_id.to_string());
-        Ok(true)
+        self.set_released_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(true))
     }
 
     async fn clear_released(&self, account_id: &str) -> StdResult<(), String> {

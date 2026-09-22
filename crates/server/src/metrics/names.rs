@@ -62,6 +62,11 @@ pub const CANONICALIZATION_RECONCILE_RUNS_TOTAL: &str =
     "guardian_canonicalization_reconcile_runs_total";
 pub const CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS: &str =
     "guardian_canonicalization_reconcile_run_duration_seconds";
+pub const CANONICALIZATION_RELEASE_SWEEP_RUNS_TOTAL: &str =
+    "guardian_canonicalization_release_sweep_runs_total";
+pub const CANONICALIZATION_RELEASE_SWEEP_RUN_DURATION_SECONDS: &str =
+    "guardian_canonicalization_release_sweep_run_duration_seconds";
+pub const RELEASE_SWEEP_ACCOUNTS_TOTAL: &str = "guardian_release_sweep_accounts_total";
 pub const CANONICALIZATION_CANDIDATES_TOTAL: &str = "guardian_canonicalization_candidates_total";
 pub const CANONICALIZATION_RETRIES_TOTAL: &str = "guardian_canonicalization_retries_total";
 pub const CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL: &str =
@@ -307,6 +312,26 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Histogram,
         labels: &[],
         help: "Duration of one recoverable-delta reconcile pass, in seconds.",
+    },
+    MetricDef {
+        name: CANONICALIZATION_RELEASE_SWEEP_RUNS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Chain-driven release sweep passes (issue #434), by outcome (completed, partial, cancelled, error).",
+    },
+    MetricDef {
+        name: CANONICALIZATION_RELEASE_SWEEP_RUN_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Duration of one release sweep pass, in seconds.",
+    },
+    MetricDef {
+        name: RELEASE_SWEEP_ACCOUNTS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Accounts the release sweep found off their stored base, by what the chain \
+               showed (released, confirming, still_bound, storage_opaque, no_binding, \
+               probe_failed). Accounts at their stored base are not counted.",
     },
     MetricDef {
         name: CANONICALIZATION_CANDIDATES_TOTAL,

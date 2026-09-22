@@ -133,6 +133,21 @@ pub use guardian_shared::retry::RpcReadMode;
 /// depending on their telemetry stack.
 pub type RetryObserver = Arc<dyn Fn(&'static str) + Send + Sync>;
 
+/// Hex encoding of a node-reported digest: four little-endian u64 limbs,
+/// byte-identical to `Word::as_bytes()` / `Word::to_bytes()` on the
+/// protocol side, so node values compare directly against locally
+/// computed commitments and storage words.
+pub fn digest_to_hex(digest: &primitives::Digest) -> String {
+    let bytes = [
+        digest.d0.to_le_bytes(),
+        digest.d1.to_le_bytes(),
+        digest.d2.to_le_bytes(),
+        digest.d3.to_le_bytes(),
+    ]
+    .concat();
+    format!("0x{}", hex::encode(bytes))
+}
+
 /// Simple wrapper around the tonic-generated ApiClient
 pub struct MidenRpcClient {
     client: ApiClient<Channel>,
@@ -419,15 +434,45 @@ impl MidenRpcClient {
                 reason: "no commitment in witness".to_string(),
             })?;
 
-        let bytes = [
-            commitment.d0.to_le_bytes(),
-            commitment.d1.to_le_bytes(),
-            commitment.d2.to_le_bytes(),
-            commitment.d3.to_le_bytes(),
-        ]
-        .concat();
+        Ok(digest_to_hex(&commitment))
+    }
 
-        Ok(format!("0x{}", hex::encode(bytes)))
+    /// Fetch the account witness together with the storage-map details
+    /// selected by `details`, at the chain tip. The witness carries the
+    /// on-chain state commitment observed at the same block as the
+    /// details, so callers can tie a storage read to the commitment it
+    /// belongs to. Details are only valid for public accounts; callers
+    /// decide whether to request them. Takes `&self` like
+    /// [`Self::get_account_commitment`] so concurrent callers never
+    /// serialize on this client.
+    pub async fn get_account_with_details(
+        &self,
+        account_id: &AccountId,
+        details: Option<rpc::account_request::AccountDetailRequest>,
+        read_mode: RpcReadMode,
+    ) -> Result<rpc::AccountResponse, RpcClientError> {
+        let account_id_bytes = account_id.to_bytes();
+
+        let account_id_bytes = &account_id_bytes;
+        let details = &details;
+        self.retry_read(
+            "get_account_with_details",
+            read_mode,
+            |mut client| async move {
+                let request = Request::new(rpc::AccountRequest {
+                    account_id: Some(account::AccountId {
+                        id: account_id_bytes.to_vec(),
+                    }),
+                    block_num: None,
+                    details: details.clone(),
+                });
+                client
+                    .get_account(request)
+                    .await
+                    .map(tonic::Response::into_inner)
+            },
+        )
+        .await
     }
 
     /// Fetch full account details including serialized account data

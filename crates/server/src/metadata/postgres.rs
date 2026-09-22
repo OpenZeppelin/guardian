@@ -261,6 +261,42 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(rows)
     }
 
+    async fn list_release_sweep_page(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<AccountMetadata>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        // Primary-key order: the walk is served by the `account_id` PK
+        // index, filtering the (rare) released / busy / EVM rows as it
+        // goes. The network predicate reads the JSONB tag serde writes
+        // for `NetworkConfig` (`{"kind": "miden", ...}`).
+        let mut query = account_metadata::table
+            .filter(account_metadata::released_at.is_null())
+            .filter(account_metadata::has_pending_candidate.eq(false))
+            .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+                "network_config->>'kind' = 'miden'",
+            ))
+            .into_boxed();
+        if let Some(after) = after {
+            query = query.filter(account_metadata::account_id.gt(after.to_string()));
+        }
+        let rows: Vec<MetadataRow> = query
+            .order(account_metadata::account_id.asc())
+            .limit(i64::from(limit))
+            .select(MetadataRow::as_select())
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to list unreleased account metadata: {e}"))?;
+
+        rows.into_iter().map(AccountMetadata::try_from).collect()
+    }
+
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,
@@ -942,6 +978,115 @@ mod tests {
             .first(&mut conn)
             .await
             .expect("updated_at read")
+    }
+
+    async fn insert_unreleased_miden_row(store: &PostgresMetadataStore, account_id: &str) {
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, \
+                     '{\"MidenFalconRpo\":{\"cosigner_commitments\":[\
+                        \"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]}}'::jsonb, \
+                     '{\"kind\":\"miden\",\"network_type\":\"testnet\"}'::jsonb, \
+                     now(), now(), false)",
+        )
+        .bind::<Text, _>(account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn list_release_sweep_page_walks_ids_in_order_and_skips_released() {
+        // Release sweep rotation (issue #434) on the SQL path: ordered by
+        // account_id, exclusive cursor, released rows filtered out.
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let prefix = format!("0xsweep{}", Utc::now().timestamp_micros());
+        let ids: Vec<String> = ["c", "a", "b", "d"]
+            .iter()
+            .map(|suffix| format!("{prefix}-{suffix}"))
+            .collect();
+        for id in &ids {
+            insert_unreleased_miden_row(&store, id).await;
+        }
+        let released_id = format!("{prefix}-b");
+        assert!(store.set_released(&released_id, Utc::now()).await.unwrap());
+        // Rows the sweep cannot act on never take a page slot.
+        let busy_id = format!("{prefix}-ab-busy");
+        insert_unreleased_miden_row(&store, &busy_id).await;
+        store
+            .set_has_pending_candidate(&busy_id, true, &Utc::now().to_rfc3339())
+            .await
+            .expect("flag the busy row");
+        let evm_id = format!("{prefix}-ac-evm");
+        {
+            let mut conn = store.pool.get().await.expect("conn");
+            diesel::sql_query(
+                "INSERT INTO account_metadata \
+                 (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+                 VALUES ($1, '{\"EvmEcdsa\":{\"signers\":[\"0xaa\"]}}'::jsonb, \
+                         '{\"kind\":\"evm\",\"chain_id\":1,\"account_address\":\"0xabc\",\"multisig_validator_address\":\"0xdef\"}'::jsonb, \
+                         now(), now(), false)",
+            )
+            .bind::<Text, _>(&evm_id)
+            .execute(&mut conn)
+            .await
+            .expect("insert evm metadata");
+        }
+
+        // Other tests' rows may sit before or after ours; scope every
+        // assertion to this run's prefix.
+        let ours = |rows: Vec<AccountMetadata>| -> Vec<String> {
+            rows.into_iter()
+                .map(|m| m.account_id)
+                .filter(|id| id.starts_with(&prefix))
+                .collect()
+        };
+
+        let after_prefix = format!("{prefix}-");
+        let first = store
+            .list_release_sweep_page(Some(&after_prefix), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            ours(first),
+            vec![format!("{prefix}-a"), format!("{prefix}-c")]
+        );
+
+        let second = store
+            .list_release_sweep_page(Some(&format!("{prefix}-c")), 2)
+            .await
+            .unwrap();
+        let second = ours(second);
+        // `second.first()` would resolve to diesel's `FirstDsl` here.
+        assert_eq!(second.as_slice().first(), Some(&format!("{prefix}-d")));
+        for excluded in [&released_id, &busy_id, &evm_id] {
+            assert!(
+                !second.contains(excluded),
+                "released, busy and EVM rows are filtered at the store"
+            );
+        }
+        let everything = ours(
+            store
+                .list_release_sweep_page(Some(&after_prefix), 100)
+                .await
+                .unwrap(),
+        );
+        assert!(
+            !everything.contains(&busy_id) && !everything.contains(&evm_id),
+            "busy and EVM rows never appear in any page"
+        );
+
+        // The cursor is strictly exclusive.
+        let exclusive = store
+            .list_release_sweep_page(Some(&format!("{prefix}-d")), 100)
+            .await
+            .unwrap();
+        assert!(ours(exclusive).is_empty());
     }
 
     #[tokio::test]

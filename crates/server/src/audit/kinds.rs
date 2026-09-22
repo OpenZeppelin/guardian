@@ -26,10 +26,14 @@ pub const ACCOUNTS_PAUSE: &str = "accounts.pause";
 /// `target_account_id` is set.
 pub const ACCOUNTS_UNPAUSE: &str = "accounts.unpause";
 
-/// The server detected a canonicalized guardian switch away from its
-/// own ack key and released the account (issue #305). System-initiated
-/// (`operator_identity` is `system`). `payload` carries
-/// `{ new_guardian_commitment, delta_nonce, new_commitment }`;
+/// The server detected a guardian switch away from its own ack key and
+/// released the account (issue #305). System-initiated
+/// (`operator_identity` is `system`). `payload` always carries
+/// `new_guardian_commitment` and `detected_by`, plus the observation:
+/// `detected_by: "delta"` (the switch delta committed here) adds
+/// `{ delta_nonce, new_commitment }`; `detected_by: "chain_sweep"` (the
+/// release sweep read the key from published on-chain storage, issue
+/// #434) adds `{ on_chain_commitment, stored_commitment }`.
 /// `target_account_id` is set.
 pub const ACCOUNTS_RELEASE: &str = "accounts.release";
 

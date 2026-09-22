@@ -66,6 +66,11 @@ pub fn build_recorder() -> PrometheusRecorder {
         )
         .expect("static reconcile canonicalization buckets are non-empty")
         .set_buckets_for_metric(
+            Matcher::Full(names::CANONICALIZATION_RELEASE_SWEEP_RUN_DURATION_SECONDS.to_string()),
+            CANONICALIZATION_RUN_BUCKETS,
+        )
+        .expect("static release sweep buckets are non-empty")
+        .set_buckets_for_metric(
             Matcher::Full(names::CANONICALIZATION_CANDIDATE_AGE_SECONDS.to_string()),
             CANDIDATE_AGE_BUCKETS,
         )

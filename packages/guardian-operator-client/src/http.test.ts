@@ -691,6 +691,10 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             retained_ttl_seconds: 86400,
             reconcile_interval_seconds: 60,
             reconcile_page_size: 100,
+            release_sweep_enabled: true,
+            release_sweep_interval_seconds: 60,
+            release_sweep_page_size: 100,
+            release_sweep_confirmations: 2,
           },
         },
         total_account_count: 1,
@@ -712,6 +716,10 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       retainedTtlSeconds: 86400,
       reconcileIntervalSeconds: 60,
       reconcilePageSize: 100,
+      releaseSweepEnabled: true,
+      releaseSweepIntervalSeconds: 60,
+      releaseSweepPageSize: 100,
+      releaseSweepConfirmations: 2,
     });
   });
 
