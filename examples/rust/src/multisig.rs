@@ -172,8 +172,8 @@ where
 
     // Since Miden 0.17 the multisig reads its auth arg as the commitment to a three-word
     // preimage (bound block + expiration, salt, fee conversion info) carried in the advice
-    // map. A declared `fee_conversion_salt` would have miden-client commit the two-word
-    // shape instead, which the auth procedure cannot pipe.
+    // map. A declared `fee_conversion_salt` would let miden-client commit its own auth arg
+    // over this one.
     let auth_args_commitment = auth_args.to_commitment();
     let request = TransactionRequestBuilder::new()
         .custom_script(script)

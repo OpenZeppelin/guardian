@@ -64,17 +64,27 @@ export async function multisigRequestBuilder(
 }
 
 /**
+ * The furthest a transaction may expire after its reference block
+ * (`MAX_EXPIRATION_BLOCK_DELTA` in the transaction kernel). The auth procedure
+ * clamps the approval expiration it applies to this, so a longer approval would
+ * outlive the transaction it authorizes: the summary would still say "valid"
+ * while the node already refuses the submission as expired.
+ */
+export const MAX_APPROVAL_EXPIRATION_DELTA = 65_535;
+
+/**
  * Zero is not "no expiration": the kernel reads it as expired at the bound
- * block and rejects the transaction. Refused here, where the caller can see why.
+ * block and rejects the transaction. Refused here, where the caller can see why,
+ * together with a delta the auth procedure would silently clamp.
  */
 function assertApprovalExpirationDelta(delta: number | undefined): void {
   if (delta === undefined) {
     return;
   }
-  if (!Number.isInteger(delta) || delta < 1 || delta > 0xffff_ffff) {
+  if (!Number.isInteger(delta) || delta < 1 || delta > MAX_APPROVAL_EXPIRATION_DELTA) {
     throw new Error(
-      `approvalExpirationDelta must be a whole number of blocks between 1 and 4294967295, got ${delta}; ` +
-        'omit it for an approval that does not expire',
+      `approvalExpirationDelta must be a whole number of blocks between 1 and ${MAX_APPROVAL_EXPIRATION_DELTA}, ` +
+        `got ${delta}; omit it for an approval that does not expire`,
     );
   }
 }

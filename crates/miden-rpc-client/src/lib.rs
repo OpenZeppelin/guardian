@@ -416,6 +416,16 @@ impl MidenRpcClient {
                 reason: "no commitment in witness".to_string(),
             })?;
 
+        if commitment.encoded.len() != 32 {
+            return Err(RpcClientError::MalformedResponse {
+                operation: OPERATION,
+                reason: format!(
+                    "commitment has {} bytes, expected the 32 bytes of a word",
+                    commitment.encoded.len()
+                ),
+            });
+        }
+
         Ok(format!("0x{}", hex::encode(commitment.encoded)))
     }
 

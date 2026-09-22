@@ -22,7 +22,7 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.18.x (this branch) | 0.17.x (`0.17.0-rc.5`, pre-release) |
+| 0.18.x | 0.17.x |
 | 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
@@ -74,8 +74,9 @@ println!("Account registered on GUARDIAN endpoint: {}", client.guardian_endpoint
 
 On a network with a non-zero `verification_base_fee`, a new account needs the
 native fee asset before it can create or execute regular proposals. Send the
-account a note funded by the faucet identified in the block header's
-`fee_parameters.fee_faucet_id`, then consume that note through a
+account a note funded by the chain's fee faucet (the account passed to
+`fee_faucet_id`; see [`docs/LOCAL_DEV.md`](../../docs/LOCAL_DEV.md#the-fee-faucet)
+for where to find it), then consume that note through a
 `consume_notes` proposal. The bootstrap transaction can pay its fee from the
 note it consumes.
 
@@ -102,6 +103,7 @@ let rpc_config = RpcConfig::new()
 
 let mut client = MultisigClient::builder()
     .miden_endpoint(Endpoint::devnet())
+    .fee_faucet_id(fee_faucet_id)
     .guardian_endpoint("http://localhost:50051")
     .account_dir("/tmp/multisig")
     .rpc_config(rpc_config)
@@ -133,6 +135,7 @@ service, so private-note relay stays disabled until this is set explicitly.
 ```rust
 let mut client = MultisigClient::builder()
     .miden_endpoint(Endpoint::try_from("https://my-node.internal:57291")?)
+    .fee_faucet_id(fee_faucet_id)
     .note_transport_endpoint("https://my-transport.internal")
     .guardian_endpoint("http://localhost:50051")
     .account_dir("/tmp/multisig")
@@ -384,9 +387,11 @@ request's auth argument
 and the preimage goes into the advice map, which `miden-client` then leaves alone.
 A producer assembling a different custom request directly with
 `TransactionRequestBuilder` must do the same, and must not call
-`fee_conversion_salt`: that path commits the two-word 0.16 shape, which the 0.17
-auth procedure aborts on while piping the preimage. An approval expiration is
-opt-in through `ProposalOptions::approval_expiration_delta` on
+`fee_conversion_salt`, which would let `miden-client` commit its own auth arg
+over them (the module docs of `transaction/auth_args.rs` explain what it
+commits today and why that does not fit). An approval expiration
+(1 to 65535 blocks, the furthest a transaction can expire after its reference
+block) is opt-in through `ProposalOptions::approval_expiration_delta` on
 `propose_transaction_with_options`, or the third argument of
 `multisig_auth_args` for a custom request; a rebuild reads the expiration the
 summary binds back with `summary_approval_expiration_block_num`.

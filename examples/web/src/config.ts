@@ -4,8 +4,9 @@ export const MIDEN_DB_NAME = 'MidenClientDB';
 
 /**
  * The chain's fee faucet, bech32 or hex. Required since Miden 0.17: the client
- * builds its protocol configuration from it and cannot execute without one. The
- * node does not serve it over RPC yet, so it comes from the environment.
+ * builds its protocol configuration from it rather than fetching it from the
+ * node, and cannot execute without one; docs/LOCAL_DEV.md#the-fee-faucet says
+ * where the value comes from.
  */
 export const MIDEN_FEE_FAUCET_ID = requireFeeFaucetId(import.meta.env.VITE_MIDEN_FEE_FAUCET_ID);
 

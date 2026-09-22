@@ -8,8 +8,8 @@ mod guardian;
 mod payment;
 
 pub use auth_args::{
-    TransactionRequestBuilderExt, multisig_auth_args, proposal_auth_args, proposer_auth_args,
-    summary_approval_expiration_block_num, summary_salt,
+    MAX_APPROVAL_EXPIRATION_DELTA, TransactionRequestBuilderExt, multisig_auth_args,
+    proposal_auth_args, proposer_auth_args, summary_approval_expiration_block_num, summary_salt,
 };
 pub use builder::{ProposalBuilder, ProposalOptions};
 pub use configuration::{

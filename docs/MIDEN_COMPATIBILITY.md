@@ -47,8 +47,9 @@ pin, so the CI parity gates are what catch drift. See
 Stored Miden account data is reset by the embedded migration listed below, accounts
 must be recreated, and both the Rust SQLite store and the browser IndexedDB store
 must be recreated: a store created under 0.16 does not open under 0.17. Every client
-also needs the chain's fee faucet at creation, because the node does not serve the
-protocol configuration over RPC yet.
+also needs the chain's fee faucet at creation, because the 0.17 client builds the
+protocol configuration from it rather than fetching it from the node (see
+[LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet) for where the value comes from).
 
 **Upgrading from 0.16.x (Miden 0.15) to 0.17.0 (Miden 0.16)** is a protocol-line change:
 the guarded-multisig auth component now pays the transaction fee and transaction summaries
@@ -113,19 +114,42 @@ Nothing stored under Miden 0.16 survives:
   A 0.16 request that only declared `fee_conversion_salt` is one word short and
   aborts in the auth procedure.
 - **The fee asset left the block header.** It lives in the protocol
-  configuration, which the node does not serve over RPC yet, so every client is
-  given the chain's fee faucet at creation and builds `ProtocolConfig::current`
-  from it.
+  configuration, which the 0.17 client does not fetch from the node, so every
+  client is given the chain's fee faucet at creation and builds
+  `ProtocolConfig::current` from it.
 - **P2ID note storage is four felts** (target account, then a two-felt salt that
   defaults to zero) and **P2IDE storage is six** (reclaimer, target, reclaim
   height, timelock height). The script roots moved with the layouts.
 - **Execution proofs use format 2** (VM 0.33). A 0.16 proof is rejected.
 
-On protocol rc.3 through rc.5, `guarded_multisig` drops the conversion-info word
-instead of paying the fee (upstream
-[protocol#3757](https://github.com/0xMiden/protocol/issues/3757)). The auth args
-above are the ones that fix will consume. When it lands, the `auth_tx` root
-moves and the pinned roots have to be regenerated.
+### Open upstream items
+
+The facts below change independently of this repository. This list is the one
+place that tracks them; other documents point here rather than restating them.
+Last checked 2026-09-22.
+
+- **Public networks.** Devnet and testnet run Miden 0.16. Until they move to
+  0.17 the examples need a local `miden-node` from the 0.17 line, and the
+  public faucets (see [LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet)) name a
+  0.16 fee faucet. When a network upgrades: use its faucet as the fee faucet.
+- **Fee payment** ([protocol#3757](https://github.com/0xMiden/protocol/issues/3757)).
+  On the 0.17 release candidates `guarded_multisig` drops the conversion-info
+  word instead of paying the fee. The auth args both SDKs build are the ones
+  the fix will consume. When it lands: the `auth_tx` root moves, so the pinned
+  roots and the server fixtures are regenerated and the two `#[ignore]`d tests
+  in `crates/contracts/tests/auth/fee_payment.rs` come back.
+- **miden-client fee path.** miden-client 0.17.0-rc.1 commits the two-word
+  0.16 auth arg when a request declares `fee_conversion_salt`, so both SDKs set
+  the three-word auth arg themselves (rationale in the multisig client's
+  `transaction/auth_args.rs`). When the client builds `MultisigAuthArgs`
+  itself: the helper can delegate to it; nothing stored or signed changes.
+- **Protocol configuration.** The 0.17 client builds it from a fee faucet it is
+  given rather than fetching it from the node, which is why `fee_faucet_id` and
+  `feeFaucetId` are required. When the client fetches it: the requirement can
+  be relaxed.
+- **Stable pins.** The workspace pins 0.17.0-rc.5 / 0.17.0-rc.1 (see the
+  matrix). Moving to stable re-pins, regenerates roots, fixtures and the
+  cross-SDK determinism vectors, and is the point at which 0.18.0 is released.
 
 Data effect: full reset, see above. Client stores are recreated, not migrated.
 Operator steps: [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017).

@@ -3,12 +3,13 @@
 //!
 //! The auth arg is the commitment to a three-word preimage the request carries
 //! in its advice map: the block the summary binds together with the approval
-//! expiration, the salt, and the fee conversion info. miden-client's own fee
-//! path still commits the two-word `CONVERSION_INFO || SALT` pair a fixed-salt
-//! component reads, which the multisig aborts on while piping the preimage
-//! (`advice stack read failed`), so the request has to carry the three-word
-//! shape before the client sees it. The client leaves a request that already
-//! has an auth arg alone.
+//! expiration, the salt, and the fee conversion info. This crate sets it on the
+//! request itself and never declares `fee_conversion_salt`: the client leaves a
+//! request that already has an auth arg alone, whereas its own fee path (as of
+//! miden-client 0.17.0-rc.1) commits the two-word `CONVERSION_INFO || SALT`
+//! pair a fixed-salt component reads, which the multisig aborts on while piping
+//! the preimage (`advice stack read failed`). This is the one place that
+//! rationale lives; other comments refer here.
 
 use std::num::NonZeroU32;
 
@@ -28,6 +29,13 @@ use crate::error::{MultisigError, Result};
 const APPROVAL_EXPIRATION_USER_PARAM_INDEX: usize = 0;
 const SALT_USER_PARAM_OFFSET: usize = 2;
 
+/// The furthest a transaction may expire after its reference block
+/// (`MAX_EXPIRATION_BLOCK_DELTA` in the transaction kernel). The auth procedure
+/// clamps the approval expiration it applies to this, so a longer approval
+/// would outlive the transaction it authorizes: the summary would still say
+/// "valid" while the node already refuses the submission as expired.
+pub const MAX_APPROVAL_EXPIRATION_DELTA: u32 = 65_535;
+
 /// Builds the auth args for a request executed at `bound_block_num` on the
 /// chain whose fee faucet is `fee_faucet_id`.
 ///
@@ -42,20 +50,26 @@ pub fn multisig_auth_args(
 ) -> Result<MultisigAuthArgs> {
     let auth_args = MultisigAuthArgs::new(bound_block_num, salt)
         .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
-    match approval_expiration_delta {
-        Some(delta) => auth_args
-            .with_approval_expiration_delta(delta)
-            .map_err(|e| {
-                MultisigError::InvalidConfig(format!("invalid approval expiration delta: {e}"))
-            }),
-        None => Ok(auth_args),
+    let Some(delta) = approval_expiration_delta else {
+        return Ok(auth_args);
+    };
+    if delta.get() > MAX_APPROVAL_EXPIRATION_DELTA {
+        return Err(MultisigError::InvalidConfig(format!(
+            "approval expiration delta {delta} exceeds the {MAX_APPROVAL_EXPIRATION_DELTA} blocks a \
+             transaction can stay valid for; the auth procedure would clamp it and the approval \
+             would outlive the transaction"
+        )));
     }
+    auth_args
+        .with_approval_expiration_delta(delta)
+        .map_err(|e| {
+            MultisigError::InvalidConfig(format!("invalid approval expiration delta: {e}"))
+        })
 }
 
 /// Auth args for a request a proposer builds now, bound to `client`'s sync
 /// height: the anchor captured right after names that block, and
-/// [`execute_for_summary`](crate::transaction::execute_for_summary) refuses the
-/// pair otherwise.
+/// `execute_for_summary` refuses the pair otherwise.
 pub async fn proposer_auth_args(
     client: &MidenSdkClient,
     fee_faucet_id: AccountId,
@@ -91,8 +105,8 @@ pub fn proposal_auth_args(
 /// Attaches multisig auth args to a request under construction.
 pub trait TransactionRequestBuilderExt {
     /// Sets `auth_args` as the request's auth arg and puts its preimage in the
-    /// advice map. A request declaring `fee_conversion_salt` instead would have
-    /// miden-client commit the two-word pair over this.
+    /// advice map. A request declaring `fee_conversion_salt` instead would let
+    /// miden-client commit its own auth arg over this.
     fn multisig_auth_args(self, auth_args: &MultisigAuthArgs) -> Self;
 }
 
@@ -148,4 +162,45 @@ fn approval_expiration_delta_of(
                  its summary binds"
             ))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fee_faucet_id() -> AccountId {
+        AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").expect("valid faucet id")
+    }
+
+    #[test]
+    fn accepts_an_approval_expiration_up_to_the_kernel_maximum() {
+        let delta = NonZeroU32::new(MAX_APPROVAL_EXPIRATION_DELTA).expect("non-zero");
+        let auth_args = multisig_auth_args(
+            fee_faucet_id(),
+            BlockNumber::from(10),
+            Word::default(),
+            Some(delta),
+        )
+        .expect("the maximum delta is accepted");
+        assert_eq!(
+            auth_args.approval_expiration_block_num(),
+            Some(BlockNumber::from(10 + MAX_APPROVAL_EXPIRATION_DELTA))
+        );
+    }
+
+    #[test]
+    fn rejects_an_approval_expiration_the_auth_procedure_would_clamp() {
+        let delta = NonZeroU32::new(MAX_APPROVAL_EXPIRATION_DELTA + 1).expect("non-zero");
+        let error = multisig_auth_args(
+            fee_faucet_id(),
+            BlockNumber::from(10),
+            Word::default(),
+            Some(delta),
+        )
+        .expect_err("a delta past the kernel maximum is refused");
+        assert!(
+            error.to_string().contains("65535"),
+            "the error names the limit: {error}"
+        );
+    }
 }

@@ -312,8 +312,9 @@ Full configuration and a dev walkthrough are in
 > be migrated. For what changed on the Miden side and why none of it survives, see
 > [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017).
 > Guardian 0.18.x is the release that adopts Miden 0.17; Guardian 0.17.x runs on
-> Miden 0.16. Until Miden 0.17.0 is stable and devnet and testnet run it, 0.18.x
-> tracks the release candidates and is not a production target.
+> Miden 0.16. Whether 0.18.x is a production target yet depends on the upstream
+> items tracked in
+> [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
 
 What happens on the first 0.17 startup (Postgres backend):
 
@@ -328,9 +329,10 @@ Operator actions are the 0.16 list below with two additions:
 
 - **Every Rust or browser client needs the chain's fee faucet** at creation
   (`MultisigClientBuilder::fee_faucet_id`, `ClientOptions.feeFaucetId`, or
-  `MIDEN_FEE_FAUCET_ID` / `VITE_MIDEN_FEE_FAUCET_ID` in the examples). The node
-  does not serve the protocol configuration over RPC yet, so a client without it
-  cannot execute or screen notes.
+  `MIDEN_FEE_FAUCET_ID` / `VITE_MIDEN_FEE_FAUCET_ID` in the examples). The client
+  builds its protocol configuration from it, and without one it can neither
+  execute nor screen notes. Where the value comes from is in
+  [LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet).
 - **Client stores must be recreated**, not just cleared: a Rust SQLite store or a
   browser IndexedDB store created under 0.16 does not open under 0.17.
 

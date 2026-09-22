@@ -51,6 +51,8 @@ pub struct ProposalOptions {
     /// Blocks after the proposal's anchor block by which the transaction must be
     /// included; past that the approvers' signatures no longer authorize it. The
     /// summary binds it, so the executing party can neither shorten nor extend it.
+    /// At most [`MAX_APPROVAL_EXPIRATION_DELTA`](crate::MAX_APPROVAL_EXPIRATION_DELTA)
+    /// blocks, the furthest a transaction can expire after its reference block.
     /// `None` means the approval never expires, the upstream default.
     pub approval_expiration_delta: Option<NonZeroU32>,
 }
@@ -894,7 +896,7 @@ mod tests {
         }
 
         /// The request must carry the three-word auth args itself: a declared fee
-        /// conversion salt would have miden-client commit the two-word pair over them.
+        /// conversion salt would let miden-client commit its own auth arg over them.
         fn assert_carries_auth_args(request: &TransactionRequest) {
             let commitment = auth_args().to_commitment();
             assert_eq!(request.fee_conversion_salt(), None);

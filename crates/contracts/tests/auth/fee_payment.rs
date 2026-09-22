@@ -8,8 +8,8 @@
 //! These cases are its only coverage outside a manual localnet run.
 //!
 //! [`reversed_advice_preimage_is_rejected`] pins the advice layout against the MASM implementation.
-//! Both SDKs build the preimage from `MultisigAuthArgs` rather than through `miden-client`, whose
-//! own fee path still commits the two-word 0.16 shape.
+//! Both SDKs build the preimage from `MultisigAuthArgs` rather than through `miden-client`'s own
+//! fee path (the multisig client's `transaction/auth_args.rs` explains why).
 
 use guardian_shared::SignatureScheme;
 use miden_confidential_contracts::multisig_guardian::{
@@ -244,7 +244,7 @@ fn fee_note_amount(executed: &ExecutedTransaction) -> anyhow::Result<u64> {
 /// drops it instead of calling `fee::pay_fee` (protocol #3757), so no TX_FEE note is created and
 /// nothing enforces payment. The assertions state the behavior the upstream fix restores.
 #[tokio::test]
-#[ignore = "protocol #3757: AuthGuardedMultisig pays no fee on 0.17.0-rc.3 through rc.5"]
+#[ignore = "protocol #3757: AuthGuardedMultisig pays no fee on the 0.17 release candidates"]
 async fn committed_conversion_info_pays_the_fee() -> anyhow::Result<()> {
     let salt = Word::from([11u32, 22, 33, 44]);
 
@@ -266,7 +266,7 @@ async fn committed_conversion_info_pays_the_fee() -> anyhow::Result<()> {
 /// non-zero output-note count and user note indices are unaffected. Ignored for the same reason
 /// as [`committed_conversion_info_pays_the_fee`].
 #[tokio::test]
-#[ignore = "protocol #3757: AuthGuardedMultisig pays no fee on 0.17.0-rc.3 through rc.5"]
+#[ignore = "protocol #3757: AuthGuardedMultisig pays no fee on the 0.17 release candidates"]
 async fn committed_conversion_info_pays_the_fee_alongside_a_user_note() -> anyhow::Result<()> {
     let salt = Word::from([1u32, 2, 3, 4]);
 

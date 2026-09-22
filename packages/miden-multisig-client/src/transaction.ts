@@ -1,4 +1,5 @@
 export {
+  MAX_APPROVAL_EXPIRATION_DELTA,
   buildMultisigRequest,
   multisigRequestBuilder,
   requestBoundBlockNum,

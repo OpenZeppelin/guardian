@@ -48,9 +48,6 @@ client.submit_transaction(submission).await?;
 // account id list is rejected here.
 let sync_response = client.sync_state(block_num, Vec::new(), note_tags).await?;
 
-// Check nullifiers
-let proofs = client.check_nullifiers(nullifiers).await?;
-
 // Get notes by ID. Each id is a `primitives::Word`.
 let notes = client.get_notes_by_id(note_ids).await?;
 

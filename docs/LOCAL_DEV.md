@@ -27,17 +27,43 @@ Three decisions when running Guardian locally:
 - Node 24+ (bundles npm 11, which the `packages/` workspace lockfile requires) if you will run any TS examples or packages.
 - Docker if you will use `docker-compose.*.yml`.
 - A Miden node — required for almost every flow. Either point at a
-  Miden Devnet endpoint or run one locally; configure via
+  public Miden endpoint or run one locally; configure via
   `GUARDIAN_NETWORK_TYPE`. A node on a non-default host or port (for
   example a sidecar container) is reachable via
   `GUARDIAN_MIDEN_RPC_ENDPOINT` without changing the network type; see
   [CONFIGURATION.md](./CONFIGURATION.md) for that and the optional
   `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` / `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS`
-  read-retry knobs. The node's Miden line must match the workspace
-  baseline (currently the 0.16 pre-release line; devnet already runs
-  the 0.16 node) — a mismatched node is rejected at the RPC boundary
-  (see
+  read-retry knobs. The node's Miden line must match the one this
+  workspace pins; which line that is, and which public networks run it,
+  is tracked in [MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#support-matrix).
+  When no public network runs it, run a local `miden-node` from that line.
+  A mismatched node is rejected at the RPC boundary (see
   [Troubleshooting](./TROUBLESHOOTING.md#client-and-node-disagree-about-the-network-version)).
+
+## The fee faucet
+
+Since Miden 0.17 the fee asset lives in the chain's protocol configuration
+rather than the block header, and every Rust or browser client builds that
+configuration from the fee faucet's account id: `MultisigClientBuilder::fee_faucet_id`,
+`ClientOptions.feeFaucetId`, or `MIDEN_FEE_FAUCET_ID` and
+`VITE_MIDEN_FEE_FAUCET_ID` in the examples. Where the value comes from:
+
+- **A node you run.** The fee faucet is one of the genesis accounts the node
+  was bootstrapped with, so its id is in the genesis configuration and the
+  bootstrap output of whoever set the node up.
+- **Devnet and testnet.** The fee asset is the network's native token, and the
+  public faucet that dispenses it is the fee faucet: its account id is shown on
+  <https://faucet.devnet.miden.io/> and <https://faucet.testnet.miden.io/>, and
+  returned as `id` (bech32, `mdev1...` or `mtst1...`) by the faucet API's
+  `/get_metadata` endpoint. Verified on devnet, where that account is the
+  native fee asset the block header reports. The value is only usable from a
+  network running the Miden line this workspace pins; the
+  [compatibility matrix](./MIDEN_COMPATIBILITY.md#support-matrix) says which
+  networks do, and a local node is the alternative.
+- **From a running node.** `GetBlockHeaderByNumber` with
+  `include_protocol_config` set returns the `ProtocolConfig`; its
+  `fee_asset_id` is the fee asset's id word, and `AssetId::faucet_id` in
+  miden-protocol reads the faucet's account id out of it.
 
 ## Environment file
 

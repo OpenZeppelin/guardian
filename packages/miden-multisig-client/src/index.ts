@@ -81,6 +81,7 @@ export {
   buildP2idTransactionRequest,
   requestBoundBlockNum,
   requestSaltHex,
+  MAX_APPROVAL_EXPIRATION_DELTA,
   parseP2idNoteType,
   p2idNoteTypeToMetadata,
   type P2idTransactionOptions,
@@ -192,7 +193,6 @@ export {
 export {
   type AuthArgErrorCode,
   MultisigAuthArgsMissingError,
-  ProposalAuthArgUnresolvableError,
   ProposalSaltMalformedError,
 } from './multisig/authArgErrors.js';
 

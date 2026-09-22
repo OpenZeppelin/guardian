@@ -2897,9 +2897,8 @@ export class Multisig {
 
     if (saltHex === undefined || saltHex === null || saltHex === '') {
       throw new Error(
-        `Proposal ${proposalId} has no salt; its request cannot be rebuilt because ` +
-          'the auth arg commits hash(CONVERSION_INFO || SALT) and is not invertible ' +
-          'to the salt',
+        `Proposal ${proposalId} has no salt; its request cannot be rebuilt without the ` +
+          'salt its auth args and signed summary bind',
       );
     }
 

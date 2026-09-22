@@ -4,7 +4,7 @@ Low-level reference clients showing how to wire `guardian-client` directly:
 
 | Binary | Backend | Command |
 | --- | --- | --- |
-| `guardian-rust-example` | Real Miden node (default `http://localhost:57291`) + GUARDIAN (`http://localhost:50051`); `MIDEN_FEE_FAUCET_ID` set to the chain's fee faucet (hex account ID), from which the client builds its Miden 0.17 protocol configuration | `MIDEN_FEE_FAUCET_ID=0x... cargo run --bin guardian-rust-example` |
+| `guardian-rust-example` | Real Miden node (default `http://localhost:57291`) + GUARDIAN (`http://localhost:50051`); `MIDEN_FEE_FAUCET_ID` set to the chain's fee faucet (bech32 or hex account ID; see [docs/LOCAL_DEV.md](../../docs/LOCAL_DEV.md#the-fee-faucet)), from which the client builds its Miden 0.17 protocol configuration | `MIDEN_FEE_FAUCET_ID=mdev1... cargo run --bin guardian-rust-example` |
 | `recover_by_key` | GUARDIAN only (no Miden node required) | `cargo run --bin recover_by_key -- --secret-key-hex 0x<falcon-secret-key-hex>` |
 
 `guardian-rust-example` walks through creating a multisig account, registering it on GUARDIAN, pulling state as another cosigner, and executing signer updates / transactions. Use this if you need to copy/paste minimal code rather than the full demo UI.

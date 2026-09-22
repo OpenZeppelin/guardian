@@ -14,6 +14,8 @@
 //!     // Create a client with auto-generated keys
 //!     let mut client = MultisigClient::builder()
 //!         .miden_endpoint(Endpoint::new("http://localhost:57291"))
+//!         // The chain's fee faucet (Miden 0.17); see docs/LOCAL_DEV.md#the-fee-faucet
+//!         .fee_faucet_id(fee_faucet_id)
 //!         .guardian_endpoint("http://localhost:50051")
 //!         .account_dir("/tmp/multisig-client")
 //!         .prover_config(
@@ -104,9 +106,10 @@ pub use proposal::{
 pub use prover::{ProverConfig, ProverRetryPolicy};
 pub use rpc::{RpcConfig, RpcRetryPolicy};
 pub use transaction::{
-    ProposalBuilder, ProposalOptions, TransactionRequestBuilderExt, build_p2id_transaction_request,
-    deserialize_transaction_request, generate_salt, multisig_auth_args, proposal_auth_args,
-    proposer_auth_args, summary_approval_expiration_block_num, summary_salt,
+    MAX_APPROVAL_EXPIRATION_DELTA, ProposalBuilder, ProposalOptions, TransactionRequestBuilderExt,
+    build_p2id_transaction_request, deserialize_transaction_request, generate_salt,
+    multisig_auth_args, proposal_auth_args, proposer_auth_args,
+    summary_approval_expiration_block_num, summary_salt,
 };
 
 // Export/Import

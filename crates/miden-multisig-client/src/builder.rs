@@ -206,9 +206,9 @@ impl MultisigClientBuilder {
     /// Sets the chain's fee faucet.
     ///
     /// Since Miden 0.17 the fee asset lives in the protocol configuration
-    /// rather than the block header, and the node does not serve that
-    /// configuration over RPC yet, so the client builds it from the fee
-    /// faucet. Without one the client can neither execute nor screen notes.
+    /// rather than the block header, and the client builds that configuration
+    /// from the fee faucet rather than fetching it from the node. Without one
+    /// the client can neither execute nor screen notes.
     pub fn fee_faucet_id(mut self, fee_faucet_id: AccountId) -> Self {
         self.fee_faucet_id = Some(fee_faucet_id);
         self

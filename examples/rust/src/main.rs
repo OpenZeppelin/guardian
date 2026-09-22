@@ -22,8 +22,7 @@ use miden_standards::account::auth::{FeeConversionInfo, MultisigAuthArgs};
 
 use guardian_client::auth_config::AuthType;
 use guardian_client::{
-    verify_commitment_signature, AuthConfig, ClientResult, FalconKeyStore, GuardianClient,
-    MidenFalconRpoAuth,
+    verify_commitment_signature, AuthConfig, FalconKeyStore, GuardianClient, MidenFalconRpoAuth,
 };
 use guardian_shared::hex::FromHex;
 use guardian_shared::ToJson;
@@ -67,15 +66,23 @@ fn commitment_from_hex(hex_commitment: &str) -> Result<Word, String> {
         .map_err(|err| format!("Failed to deserialize commitment word '{hex_commitment}': {err}"))
 }
 
-/// The chain's fee faucet, from `MIDEN_FEE_FAUCET_ID` (hex account ID). Since Miden
-/// 0.17 the client builds its protocol configuration from it; the node does not serve
-/// that configuration over RPC yet.
+/// The chain's fee faucet, from `MIDEN_FEE_FAUCET_ID` as bech32 (the form the faucet
+/// pages show) or hex. Since Miden 0.17 the client builds its protocol configuration
+/// from it; where to find the value is in docs/LOCAL_DEV.md#the-fee-faucet.
 fn fee_faucet_id_from_env() -> Result<AccountId, String> {
     let raw = std::env::var("MIDEN_FEE_FAUCET_ID").map_err(|_| {
-        "MIDEN_FEE_FAUCET_ID is not set: name the chain's fee faucet (hex account ID)".to_string()
+        "MIDEN_FEE_FAUCET_ID is not set: name the chain's fee faucet (bech32 or hex account ID)"
+            .to_string()
     })?;
-    AccountId::from_hex(raw.trim())
-        .map_err(|err| format!("Invalid MIDEN_FEE_FAUCET_ID '{raw}': {err}"))
+    let value = raw.trim();
+    let parsed = if value.starts_with("0x") || value.starts_with("0X") {
+        AccountId::from_hex(value).map_err(|err| err.to_string())
+    } else {
+        AccountId::from_bech32(value)
+            .map(|(_, account_id)| account_id)
+            .map_err(|err| err.to_string())
+    };
+    parsed.map_err(|err| format!("Invalid MIDEN_FEE_FAUCET_ID '{raw}': {err}"))
 }
 
 fn protocol_config(fee_faucet_id: AccountId) -> Result<ProtocolConfig, String> {
@@ -119,7 +126,7 @@ async fn add_account_and_sync(
 }
 
 #[tokio::main]
-async fn main() -> ClientResult<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     println!("=== GUARDIAN Multi-Client E2E Flow ===\n");
@@ -187,7 +194,7 @@ async fn main() -> ClientResult<()> {
             Ok(config) => config,
             Err(err) => {
                 println!("  ✗ {err}");
-                return Ok(());
+                return Err(err.into());
             }
         };
     let client_config: Word = protocol_config.to_commitment();

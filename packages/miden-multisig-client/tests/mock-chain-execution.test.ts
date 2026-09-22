@@ -116,4 +116,10 @@ describe('guarded multisig auth procedure on the mock chain', () => {
       b.anchor.free();
     }
   });
+
+  it('refuses an approval expiration the auth procedure would clamp', async () => {
+    await expect(buildRequest({ approvalExpirationDelta: 65_536 })).rejects.toThrow(
+      /between 1 and 65535/,
+    );
+  });
 });

@@ -37,7 +37,7 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.18.x (this branch) | 0.17.x (`0.17.0-rc.5`, pre-release) |
+| 0.18.x | 0.17.x |
 | 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
@@ -240,7 +240,7 @@ the min of the current threshold and the remaining signer count on remove.
 The option shapes are exported as `CreateProposalOptions`,
 `CreateSignerProposalOptions`, and `CreateP2idProposalOptions`.
 
-All methods also accept `approvalExpirationDelta`: the number of blocks after
+All methods also accept `approvalExpirationDelta` (1 to 65535): the number of blocks after
 the proposal's anchor block by which the transaction must be included. Past
 that block the approvers' signatures no longer authorize it, the SDK refuses to
 execute it, and the node rejects it as expired. The summary binds the value, so

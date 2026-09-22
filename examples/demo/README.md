@@ -26,10 +26,10 @@ once.
 
 ## Environment
 
-- `MIDEN_FEE_FAUCET_ID` (hex account ID): the chain's fee faucet, offered as the
+- `MIDEN_FEE_FAUCET_ID` (bech32 or hex account ID): the chain's fee faucet, offered as the
   default at the fee-faucet prompt. Since Miden 0.17 the client builds its
-  protocol configuration from it; the node does not serve that configuration over
-  RPC yet, so the demo cannot execute without one.
+  protocol configuration from it and cannot execute without one. Where to find
+  the value: [docs/LOCAL_DEV.md](../../docs/LOCAL_DEV.md#the-fee-faucet).
 
 ## Typical Flow
 

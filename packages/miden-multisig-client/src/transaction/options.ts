@@ -16,8 +16,9 @@ export interface SignatureOptions {
   /**
    * Blocks after the bound block at which the approvers' signatures stop
    * authorizing the transaction, so it must be included by then. Bound by the
-   * summary, so a rebuild must pass the same value; omitted, the approval never
-   * expires, which is the upstream default.
+   * summary, so a rebuild must pass the same value. At most 65535 blocks, the
+   * furthest a transaction can expire after its reference block; omitted, the
+   * approval never expires, which is the upstream default.
    */
   approvalExpirationDelta?: number;
 }

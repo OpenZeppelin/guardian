@@ -1,17 +1,9 @@
-//! Typed failures for auth-arg recovery.
-//!
-//! The surface lands here deliberately ahead of the code that raises it: nothing in this
-//! change constructs these, and the proposal paths that do arrive in the PR that commits
-//! the anchored fee faucet. Landing the codes first keeps them out of that PR's diff and
-//! lets a caller pin `code` before the raiser exists — `public-api.test.ts` covers the
-//! barrel so a dropped re-export is caught either way.
+//! Typed failures a caller branches on rather than reports: each means the proposal or
+//! request itself is unusable, as against a transport or WASM failure a retry might clear.
+//! `public-api.test.ts` covers the barrel so a dropped re-export is caught.
 
 /** Stable error identifiers for auth-arg recovery failures. */
-export type AuthArgErrorCode =
-  | 'proposal_auth_arg_unresolvable'
-  | 'proposal_salt_malformed'
-  | 'fee_faucet_anchor_mismatch'
-  | 'multisig_auth_args_missing';
+export type AuthArgErrorCode = 'proposal_salt_malformed' | 'multisig_auth_args_missing';
 
 /** How much of an untrusted value an error message will quote. */
 const MAX_QUOTED_CHARS = 80;
@@ -57,11 +49,10 @@ function coerceForMessage(value: unknown): string {
  * A proposal's recorded salt is not a readable 32-byte word, so no rebuild can
  * use it.
  *
- * Coded for the same reason as {@link ProposalAuthArgUnresolvableError}, and
- * recoverable in the same one place: a `switch_guardian`'s salt is served by the
- * GUARDIAN being switched away from, which can make it unreadable as easily as
- * it can make it wrong. Treating only the latter as recoverable would leave that
- * GUARDIAN able to strand a fully signed switch.
+ * Coded because `switch_guardian` recovery acts on it rather than reporting it:
+ * the salt is served by the GUARDIAN being switched away from, which can make it
+ * unreadable, and treating that as fatal would leave that GUARDIAN able to strand
+ * a fully signed switch.
  */
 export class ProposalSaltMalformedError extends Error {
   readonly code: AuthArgErrorCode = 'proposal_salt_malformed';
@@ -89,54 +80,6 @@ export class ProposalSaltMalformedError extends Error {
     });
   }
 }
-
-/**
- * A proposal's signed auth arg is not the fee-conversion commitment its recorded
- * salt and anchored fee faucet derive, so no reconstruction from that salt
- * succeeds. Raised before the rebuild, so the proposal fails on the value that is
- * actually wrong rather than on an `ERR_FEE_CONVERSION_INFO_MISSING` abort at
- * proving.
- *
- * `switch_guardian` is the exception, and deliberately so: it rebuilds from the
- * summary's own auth arg, which reproduces the signed word but not the fee
- * preimage behind it, so it executes only on a zero-fee chain.
- *
- * Coded because one caller acts on it rather than reporting it:
- * `switch_guardian` recovery falls back to the summary's own auth arg when it
- * sees this or {@link ProposalSaltMalformedError}, and must not extend that
- * treatment to an unreadable anchor or a WASM failure.
- */
-export class ProposalAuthArgUnresolvableError extends Error {
-  readonly code: AuthArgErrorCode = 'proposal_auth_arg_unresolvable';
-  readonly proposalId: string;
-  readonly signedAuthArgHex: string;
-  readonly saltHex: string;
-  readonly feeFaucetIdHex: string;
-
-  constructor(details: {
-    proposalId: string;
-    signedAuthArgHex: string;
-    saltHex: string;
-    feeFaucetIdHex: string;
-  }) {
-    super(
-      `Proposal ${quoteUntrusted(details.proposalId)} auth arg ` +
-        `${quoteUntrusted(details.signedAuthArgHex)} is not the fee-conversion commitment to ` +
-        `its metadata salt ${quoteUntrusted(details.saltHex)} under fee faucet ` +
-        `${quoteUntrusted(details.feeFaucetIdHex)}, so the signed transaction summary cannot ` +
-        `be reproduced ` +
-        'from that salt, and the proposal cannot be executed. Recreate the proposal and ' +
-        'collect signatures again, and have the original dropped server-side — while ' +
-        'GUARDIAN keeps serving it, syncing this account keeps failing on it',
-    );
-    this.name = 'ProposalAuthArgUnresolvableError';
-    this.proposalId = details.proposalId;
-    this.signedAuthArgHex = details.signedAuthArgHex;
-    this.saltHex = details.saltHex;
-    this.feeFaucetIdHex = details.feeFaucetIdHex;
-  }
-}
-
 
 /**
  * A request built for `accountId` came back without the multisig auth args.

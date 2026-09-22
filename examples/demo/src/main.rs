@@ -7,6 +7,7 @@ use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
     MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
 };
+use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use rustyline::DefaultEditor;
 
@@ -55,21 +56,22 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     };
 
     // Since Miden 0.17 the fee asset lives in the protocol configuration, which the
-    // node does not serve over RPC yet; the client builds it from the chain's fee faucet.
+    // client builds from the chain's fee faucet rather than fetching from the node;
+    // see docs/LOCAL_DEV.md#the-fee-faucet for where the value comes from.
     let fee_faucet_default = std::env::var("MIDEN_FEE_FAUCET_ID").unwrap_or_default();
     let fee_faucet_prompt = if fee_faucet_default.is_empty() {
-        "Fee faucet account ID (hex): ".to_string()
+        "Fee faucet account ID (bech32 or hex): ".to_string()
     } else {
-        format!("Fee faucet account ID (hex) [{fee_faucet_default}]: ")
+        format!("Fee faucet account ID (bech32 or hex) [{fee_faucet_default}]: ")
     };
     let fee_faucet_input = prompt_input(editor, &fee_faucet_prompt)?;
-    let fee_faucet_hex = if fee_faucet_input.trim().is_empty() {
+    let fee_faucet_raw = if fee_faucet_input.trim().is_empty() {
         fee_faucet_default
     } else {
         fee_faucet_input.trim().to_string()
     };
-    let fee_faucet_id = miden_protocol::account::AccountId::from_hex(&fee_faucet_hex)
-        .map_err(|error| format!("Invalid fee faucet account ID '{fee_faucet_hex}': {error}"))?;
+    let fee_faucet_id = parse_account_id(&fee_faucet_raw)
+        .map_err(|error| format!("Invalid fee faucet account ID '{fee_faucet_raw}': {error}"))?;
 
     // GUARDIAN endpoint selection
     println!("\n  Select GUARDIAN gRPC server:");
@@ -182,6 +184,17 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     println!("\n  Share this commitment with other cosigners to be added to multisig accounts.");
 
     Ok(state)
+}
+
+/// An account id as the faucet pages and explorers show it (bech32) or as hex.
+fn parse_account_id(input: &str) -> Result<AccountId, String> {
+    if input.starts_with("0x") || input.starts_with("0X") {
+        AccountId::from_hex(input).map_err(|error| error.to_string())
+    } else {
+        AccountId::from_bech32(input)
+            .map(|(_, account_id)| account_id)
+            .map_err(|error| error.to_string())
+    }
 }
 
 fn parse_miden_endpoint(input: &str) -> Result<Endpoint, String> {

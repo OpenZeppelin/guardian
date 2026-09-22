@@ -11,12 +11,25 @@ For local-dev setup see [`docs/LOCAL_DEV.md`](./LOCAL_DEV.md).
 
 ### Client and node disagree about the network version
 
-A Guardian server or SDK built on the Miden 0.16 line rejects a 0.15 node
-(and vice versa) at the RPC boundary: the Miden client sends the genesis
-commitment with every request, so a version mismatch surfaces as a gRPC
-rejection when connecting or syncing, not as silent corruption. Point the
-client at a node running the matching Miden line (devnet runs the 0.16
-node; for local work run a matching `miden-node`).
+A Guardian server or SDK rejects a node from a different Miden line (for
+example a 0.17 build against a 0.16 node, or the reverse) at the RPC
+boundary: the Miden client sends the genesis commitment with every request,
+so a version mismatch surfaces as a gRPC rejection when connecting or
+syncing, not as silent corruption. Point the client at a node running the
+line this build pins. The
+[compatibility matrix](./MIDEN_COMPATIBILITY.md#support-matrix) lists that
+line and the public networks running it; a local `miden-node` from that
+line is the fallback when none does.
+
+### State created on Miden 0.16 fails to load after the 0.17 upgrade
+
+The same shape as the 0.15 to 0.16 case below. A Rust SQLite store or a
+browser IndexedDB store created under 0.16 does not open under 0.17, stored
+accounts fail to deserialize with a version error, and the first 0.17 server
+startup runs the irreversible Miden reset. Recreate client stores rather than
+clearing them, and recreate accounts. Operator steps are in
+[`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017); what changed is in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md).
 
 ### State created on Miden 0.15 fails to load after the 0.16 upgrade
 
