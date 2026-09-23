@@ -41,6 +41,14 @@ pub struct ApiErrorMeta {
     /// Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused_reason: Option<String>,
+    /// Rejected signature scheme. Present only for
+    /// `signature_scheme_not_allowed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
+    /// Signature schemes this Guardian accepts for new accounts. Present
+    /// only for `signature_scheme_not_allowed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_schemes: Option<Vec<String>>,
     /// RFC 3339 timestamp of the guardian-switch release. Present only
     /// for `GUARDIAN_ACCOUNT_RELEASED`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,6 +230,8 @@ pub struct ClientApiDoc;
         crate::api::dashboard::logout_operator,
         crate::api::dashboard::list_operator_accounts,
         crate::api::dashboard::get_dashboard_info_handler,
+        crate::api::dashboard::get_dashboard_stats_handler,
+        crate::api::dashboard::request_dashboard_stats_refresh_handler,
         crate::api::dashboard::get_dashboard_session_handler,
         crate::api::dashboard::get_operator_account,
         crate::api::dashboard::get_operator_account_snapshot,

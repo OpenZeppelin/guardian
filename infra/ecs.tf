@@ -122,7 +122,7 @@ resource "aws_ecs_task_definition" "server" {
           },
           {
             name  = "GUARDIAN_LOG_FORMAT"
-            value = lower(trimspace(var.guardian_log_format))
+            value = local.effective_guardian_log_format
           },
           {
             name  = "GUARDIAN_NETWORK_TYPE"
@@ -210,6 +210,12 @@ resource "aws_ecs_task_definition" "server" {
             {
               name  = "GUARDIAN_CORS_ALLOWED_ORIGINS"
               value = var.guardian_cors_allowed_origins
+            }
+          ] : [],
+          var.guardian_allowed_account_schemes != "" ? [
+            {
+              name  = "GUARDIAN_ALLOWED_ACCOUNT_SCHEMES"
+              value = var.guardian_allowed_account_schemes
             }
           ] : [],
           var.guardian_evm_entrypoint_address != "" ? [

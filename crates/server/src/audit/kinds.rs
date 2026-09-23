@@ -33,6 +33,11 @@ pub const ACCOUNTS_UNPAUSE: &str = "accounts.unpause";
 /// `target_account_id` is set.
 pub const ACCOUNTS_RELEASE: &str = "accounts.release";
 
+/// Operator requested an out-of-cycle `/dashboard/stats` refresh
+/// (`POST /dashboard/stats/refresh`, issue #371). Payload: the
+/// request outcome (`queued` / `in_progress` / `cooldown`).
+pub const STATS_REFRESH: &str = "stats.refresh";
+
 /// All registered kinds in v1, for tests and introspection. Append
 /// new consts above and add them to this slice in the same commit.
 pub const ALL_KINDS: &[&str] = &[
@@ -41,6 +46,7 @@ pub const ALL_KINDS: &[&str] = &[
     ACCOUNTS_PAUSE,
     ACCOUNTS_UNPAUSE,
     ACCOUNTS_RELEASE,
+    STATS_REFRESH,
 ];
 
 #[cfg(test)]
@@ -57,6 +63,7 @@ mod tests {
                 ACCOUNTS_PAUSE,
                 ACCOUNTS_UNPAUSE,
                 ACCOUNTS_RELEASE,
+                STATS_REFRESH,
             ]
         );
     }

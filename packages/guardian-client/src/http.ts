@@ -60,6 +60,17 @@ export interface GuardianErrorMeta {
   pausedAt?: string;
   pausedReason?: string | null;
   releasedAt?: string;
+  /**
+   * Signature scheme the server refused for a new account registration.
+   * Present only when `code === 'signature_scheme_not_allowed'`.
+   */
+  scheme?: string;
+  /**
+   * Schemes this Guardian accepts for new accounts
+   * (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`). Present only when
+   * `code === 'signature_scheme_not_allowed'`.
+   */
+  allowedSchemes?: string[];
 }
 
 interface ParsedGuardianError {
@@ -111,6 +122,13 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   }
   if (typeof rawMeta.paused_at === 'string') meta.pausedAt = rawMeta.paused_at;
   if (typeof rawMeta.released_at === 'string') meta.releasedAt = rawMeta.released_at;
+  if (typeof rawMeta.scheme === 'string') meta.scheme = rawMeta.scheme;
+  if (
+    Array.isArray(rawMeta.allowed_schemes) &&
+    rawMeta.allowed_schemes.every((x): x is string => typeof x === 'string')
+  ) {
+    meta.allowedSchemes = rawMeta.allowed_schemes;
+  }
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
     meta.pausedReason = rawMeta.paused_reason as string | null;
   }

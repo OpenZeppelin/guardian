@@ -264,7 +264,7 @@ console.log('Signatures:', signedProposal.signatures.length);
 
 ### Sync Proposals
 
-Fetches proposals from the GUARDIAN server and updates local state:
+Fetches proposals from the GUARDIAN server and reconciles local state. A proposal GUARDIAN reported on an earlier sync but no longer reports (executed, canonicalized, or abandoned) is pruned from the cache. A proposal GUARDIAN holds but has not listed yet (a freshly pushed create) survives the first listing that omits it, absorbing a read-your-writes lag, and is pruned once a second consecutive listing omits it. Proposals GUARDIAN never received (offline switch-guardian creations and imports) are not pruned by listings. The response is parsed in full before the cache changes (a malformed payload rejects and leaves the cache untouched), a proposal that fails metadata-binding verification is still cached and returned with `verification.status === 'failed'` (see [Proposal Verification Status](#proposal-verification-status)), a proposal executed or signed offline while a sync is in flight keeps that local outcome (it is neither reverted to the listed state nor pruned by that sync), and overlapping calls share a single in-flight sync:
 
 ```typescript
 const proposals = await multisig.syncProposals();

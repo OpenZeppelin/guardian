@@ -4,6 +4,7 @@ pub mod cursor;
 mod middleware;
 pub mod permissions;
 mod state;
+pub mod stats;
 mod types;
 mod util;
 

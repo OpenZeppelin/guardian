@@ -11,19 +11,18 @@
 //!   - in-flight (Pending) proposal count
 //!   - which aggregates were marked degraded
 //!
-//! Aggregates that fan out across all accounts (`delta_status_counts`,
-//! `in_flight_proposal_count`, `latest_activity`) are short-circuited
-//! to a degraded marker when the configured filesystem threshold is
-//! exceeded, per FR-029. Total account count is always returned (cheap
-//! single-call to the metadata store).
-//!
-//! Per the v1 Miden-oriented scope, `GROUP BY` and `MAX` aggregates are
-//! computed via service-layer fan-out using the existing
-//! `pull_deltas_after` and `pull_pending_proposals` storage trait
-//! methods. A future feature can promote `delta.status` /
-//! `status_timestamp` to typed indexed columns for native SQL
-//! aggregates if profiling under real load shows pain (research.md
-//! Decision 1).
+//! Every cross-account aggregate (`accounts_by_auth_method`,
+//! `delta_status_counts`, `in_flight_proposal_count`, `latest_activity`,
+//! and the total once available) is served from the published
+//! `/dashboard/stats` snapshot (issue #371), so the overview reports one
+//! consistent `aggregates_as_of` and can never contradict
+//! `/dashboard/stats`. The walk that builds the snapshot applies the
+//! FR-029 filesystem inventory threshold and marks any aggregate it
+//! declined or failed to compute; those names surface here in
+//! `degraded_aggregates`. Until the first publication after startup the
+//! snapshot-served aggregates are reported degraded rather than as zeros.
+//! This deliberately trades freshness (Postgres used to compute the delta
+//! and proposal aggregates live) for a consistent cached overview.
 
 use std::collections::BTreeMap;
 
@@ -115,15 +114,29 @@ pub struct DashboardInfoResponse {
     pub environment: String,
     pub build: DashboardBuildInfo,
     pub backend: DashboardBackendInfo,
+    /// Total registered accounts. Once the `/dashboard/stats` snapshot
+    /// is available this is `accounts.total` from that snapshot, so it
+    /// always equals the sum of `accounts_by_auth_method` and matches
+    /// `/dashboard/stats`; before the first publication it is a live
+    /// count.
     pub total_account_count: u64,
+    /// RFC3339 time the published snapshot that backs every
+    /// cross-account aggregate below was computed; `null` until the
+    /// first publication after startup (all of them are then listed in
+    /// `degraded_aggregates`). Same value as `/dashboard/stats.as_of`.
+    pub aggregates_as_of: Option<String>,
     /// Counts of accounts grouped by stable `Auth::method_label()`.
-    /// Keys never collide with internal enum names. Absent when the
-    /// aggregate is marked degraded (see `degraded_aggregates`).
+    /// Keys never collide with internal enum names. Served from the
+    /// same snapshot as `GET /dashboard/stats` (`accounts.by_auth_method`),
+    /// so the two endpoints agree; empty and listed in
+    /// `degraded_aggregates` only until that snapshot first publishes
+    /// after startup.
     pub accounts_by_auth_method: BTreeMap<String, u64>,
     /// Greater of the most recent delta status timestamp and the most
-    /// recent proposal originating timestamp across all accounts;
-    /// `None` (serialized as `null`) when the inventory has produced
-    /// no activity yet, OR when this aggregate is degraded.
+    /// recent proposal originating timestamp across all accounts as of
+    /// `aggregates_as_of`; `None` (serialized as `null`) when the
+    /// inventory has produced no activity yet, OR when this aggregate
+    /// is degraded.
     pub latest_activity: Option<String>,
     pub delta_status_counts: DashboardDeltaStatusCounts,
     pub in_flight_proposal_count: u64,
@@ -136,15 +149,26 @@ pub struct DashboardInfoResponse {
 /// Compute the dashboard info snapshot.
 ///
 /// Errors:
-///   - [`GuardianError::StorageError`] if even the cheap account-count
-///     read fails. Per-aggregate fan-out failures are downgraded to
-///     `degraded_aggregates` entries rather than failing the whole
-///     response.
+///   - [`GuardianError::StorageError`] if no snapshot is published yet
+///     and the fallback account-count read fails. Aggregates the walk
+///     declined are `degraded_aggregates` entries, never errors.
 pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoResponse> {
-    let account_ids = state.metadata.list().await.map_err(|e| {
-        GuardianError::StorageError(format!("Failed to list account metadata: {e}"))
-    })?;
-    let total_account_count = account_ids.len() as u64;
+    // Every cross-account aggregate comes from the published snapshot;
+    // the live inventory count is read only while no snapshot exists yet,
+    // so a metadata-store blip never fails the overview once one is
+    // published and steady-state requests do no inventory reads.
+    let snapshot = state.dashboard.stats().current();
+    let total_account_count = match &snapshot {
+        Some(snapshot) => snapshot.accounts.total,
+        None => state
+            .metadata
+            .list()
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to list account metadata: {e}"))
+            })?
+            .len() as u64,
+    };
 
     // Storage label reflects the *runtime* backend selected by the
     // builder, not the cargo feature the binary was compiled with — a
@@ -183,6 +207,7 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
         build,
         backend,
         total_account_count,
+        aggregates_as_of: None,
         accounts_by_auth_method: BTreeMap::new(),
         latest_activity: None,
         delta_status_counts: DashboardDeltaStatusCounts::default(),
@@ -190,121 +215,46 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
         degraded_aggregates: Vec::new(),
     };
 
-    // FR-029: filesystem-only threshold. Postgres serves these
-    // aggregates from indexed `GROUP BY` / `MAX` queries and is not
-    // bounded by inventory size. Above-threshold filesystem
-    // deployments mark the fan-out aggregates as degraded and skip
-    // the scan; total account count is always reported.
-    if state.storage.kind() == crate::storage::StorageType::Filesystem {
-        let threshold = state.dashboard.filesystem_aggregate_threshold();
-        if account_ids.len() > threshold {
+    // Issue #371: every cross-account aggregate is served from the
+    // published `/dashboard/stats` snapshot, so the overview reports one
+    // consistent `aggregates_as_of` and never contradicts
+    // `/dashboard/stats`. Until the first publication after startup the
+    // snapshot-served aggregates are reported degraded (never as zeros);
+    // the live account count is still returned. An aggregate the walk
+    // itself declined (filesystem inventory threshold, storage failure)
+    // carries its stable name in `degraded_aggregates`.
+    match snapshot {
+        Some(snapshot) => {
+            response.aggregates_as_of = Some(snapshot.as_of.to_rfc3339());
+            response.accounts_by_auth_method = snapshot.accounts.by_auth_method.clone();
+            let inventory = &snapshot.inventory;
+            if let Some(counts) = inventory.delta_status_counts {
+                response.delta_status_counts = DashboardDeltaStatusCounts {
+                    candidate: counts.candidate,
+                    canonical: counts.canonical,
+                    retained: counts.retained,
+                    discarded: counts.discarded,
+                };
+            }
+            if let Some(in_flight) = inventory.in_flight_proposal_count {
+                response.in_flight_proposal_count = in_flight;
+            }
+            response.latest_activity = inventory.latest_activity.map(|dt| dt.to_rfc3339());
+            if !inventory.degraded.is_empty() {
+                response.service_status = DashboardServiceStatus::Degraded;
+                response
+                    .degraded_aggregates
+                    .extend(inventory.degraded.iter().cloned());
+            }
+        }
+        None => {
             response.service_status = DashboardServiceStatus::Degraded;
             response.degraded_aggregates.extend([
+                AGG_ACCOUNTS_BY_AUTH_METHOD.to_string(),
                 AGG_DELTA_STATUS_COUNTS.to_string(),
                 AGG_IN_FLIGHT_PROPOSAL_COUNT.to_string(),
                 AGG_LATEST_ACTIVITY.to_string(),
-                AGG_ACCOUNTS_BY_AUTH_METHOD.to_string(),
             ]);
-            return Ok(response);
-        }
-    }
-
-    // accounts_by_auth_method: fan out over metadata to bucket each
-    // account by its stable `Auth::method_label()`. Unlike the
-    // delta/proposal aggregates above, this fan-out is N point reads
-    // on *both* backends today (Postgres serves it from per-row JSONB
-    // metadata; no SQL `GROUP BY` over a typed column exists yet), so
-    // the FR-029 inventory threshold is applied to *both* backends
-    // here rather than filesystem-only. Above the threshold we mark
-    // the aggregate degraded and skip the scan. A future migration
-    // that promotes `Auth::method_label()` to a typed indexed column
-    // would let us push this down to SQL and lift the cap.
-    let aggregate_threshold = state.dashboard.filesystem_aggregate_threshold();
-    if account_ids.len() > aggregate_threshold {
-        response.service_status = DashboardServiceStatus::Degraded;
-        response
-            .degraded_aggregates
-            .push(AGG_ACCOUNTS_BY_AUTH_METHOD.to_string());
-    } else {
-        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
-        let mut counts_degraded = false;
-        for id in &account_ids {
-            match state.metadata.get(id).await {
-                Ok(Some(meta)) => {
-                    *counts
-                        .entry(meta.auth.method_label().to_string())
-                        .or_insert(0) += 1;
-                }
-                Ok(None) => {
-                    // Account ID was listed but metadata is missing —
-                    // race against deletion. Skip rather than fail;
-                    // the row simply won't be counted in this
-                    // snapshot.
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        account_id = %id,
-                        "dashboard info: metadata.get failed during auth-method aggregation"
-                    );
-                    counts_degraded = true;
-                    break;
-                }
-            }
-        }
-        if counts_degraded {
-            response.service_status = DashboardServiceStatus::Degraded;
-            response
-                .degraded_aggregates
-                .push(AGG_ACCOUNTS_BY_AUTH_METHOD.to_string());
-        } else {
-            response.accounts_by_auth_method = counts;
-        }
-    }
-
-    // Push aggregates down to the storage layer. Postgres serves them
-    // as indexed `GROUP BY` / `MAX` queries; filesystem fans out as
-    // before but encapsulates the logic. Any per-aggregate failure is
-    // marked degraded rather than failing the whole response.
-    match state.storage.count_deltas_by_status().await {
-        Ok(counts) => {
-            response.delta_status_counts.candidate = counts.candidate;
-            response.delta_status_counts.canonical = counts.canonical;
-            response.delta_status_counts.retained = counts.retained;
-            response.delta_status_counts.discarded = counts.discarded;
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "dashboard info: count_deltas_by_status failed");
-            response.service_status = DashboardServiceStatus::Degraded;
-            response
-                .degraded_aggregates
-                .push(AGG_DELTA_STATUS_COUNTS.to_string());
-        }
-    }
-
-    match state.storage.count_in_flight_proposals().await {
-        Ok(n) => {
-            response.in_flight_proposal_count = n;
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "dashboard info: count_in_flight_proposals failed");
-            response.service_status = DashboardServiceStatus::Degraded;
-            response
-                .degraded_aggregates
-                .push(AGG_IN_FLIGHT_PROPOSAL_COUNT.to_string());
-        }
-    }
-
-    match state.storage.latest_activity_timestamp().await {
-        Ok(ts) => {
-            response.latest_activity = ts.map(|dt| dt.to_rfc3339());
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "dashboard info: latest_activity_timestamp failed");
-            response.service_status = DashboardServiceStatus::Degraded;
-            response
-                .degraded_aggregates
-                .push(AGG_LATEST_ACTIVITY.to_string());
         }
     }
 
@@ -314,43 +264,28 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
-    use crate::testing::mocks::{MockMetadataStore, MockStorageBackend};
+    use crate::ack::AckRegistry;
+    use crate::builder::clock::test::MockClock;
+    use crate::dashboard::stats::{
+        AccountLifecycle, AccountStatsRecord, InventoryAggregates, SnapshotDeltaCounts,
+        StatsSnapshot, VaultOutcome,
+    };
+    use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
 
-    /// Build an `AppState` whose dashboard aggregate trait calls are
-    /// each pre-stubbed. The new architecture (Decision 1, revised)
-    /// has the storage layer own `count_deltas_by_status`,
-    /// `count_in_flight_proposals`, and `latest_activity_timestamp`,
-    /// so the service-layer test simply queues stubbed responses.
-    #[allow(clippy::too_many_arguments)]
-    async fn build_state(
-        account_ids: Vec<String>,
-        delta_counts: crate::storage::DeltaStatusCounts,
-        in_flight_proposals: u64,
-        latest_activity: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> AppState {
-        use crate::ack::AckRegistry;
-        use crate::builder::clock::test::MockClock;
-        use crate::testing::mocks::MockNetworkClient;
-
+    async fn build_state(account_ids: Vec<String>, storage: MockStorageBackend) -> AppState {
         let metadata_store = MockMetadataStore::new().with_list(Ok(account_ids));
-        let storage = MockStorageBackend::new()
-            .with_count_deltas_by_status(Ok(delta_counts))
-            .with_count_in_flight_proposals(Ok(in_flight_proposals))
-            .with_latest_activity_timestamp(Ok(latest_activity));
-
         let keystore_dir =
             std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
-
         AppState {
             storage: Arc::new(storage),
             metadata: Arc::new(metadata_store),
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
-            clock: Arc::new(MockClock::default()),
+            clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
             #[cfg(feature = "evm")]
@@ -358,76 +293,165 @@ mod tests {
         }
     }
 
+    fn records(
+        composition: &[(&str, usize)],
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<AccountStatsRecord> {
+        let mut out = Vec::new();
+        for (auth_method, count) in composition {
+            for i in 0..*count {
+                out.push(AccountStatsRecord {
+                    account_id: format!("{auth_method}-{i}"),
+                    updated_at: Some(updated_at),
+                    auth_method: auth_method.to_string(),
+                    authorized_signer_count: 1,
+                    lifecycle: AccountLifecycle::Active,
+                    state_commitment: None,
+                    vault: VaultOutcome::NotApplicable,
+                });
+            }
+        }
+        out
+    }
+
+    /// Publish a `/dashboard/stats` snapshot into the replica cache with
+    /// the given account composition and inventory aggregates.
+    fn publish_stats_snapshot(
+        state: &AppState,
+        composition: &[(&str, usize)],
+        inventory: InventoryAggregates,
+    ) {
+        let now = state.clock.now();
+        state.dashboard.stats().publish(Arc::new(StatsSnapshot::new(
+            7,
+            now,
+            now,
+            records(composition, now),
+            inventory,
+        )));
+    }
+
+    fn available(
+        counts: SnapshotDeltaCounts,
+        in_flight: u64,
+        latest: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> InventoryAggregates {
+        InventoryAggregates::available(counts, in_flight, latest)
+    }
+
     #[tokio::test]
-    async fn accounts_by_auth_method_buckets_each_metadata_entry() {
-        use crate::ack::AckRegistry;
-        use crate::builder::clock::test::MockClock;
-        use crate::metadata::auth::Auth;
-        use crate::metadata::{AccountMetadata, NetworkConfig};
-        use crate::testing::mocks::MockNetworkClient;
-
-        let account_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-
-        let make = |id: &str, auth: Auth| AccountMetadata {
-            account_id: id.to_string(),
-            auth,
-            network_config: NetworkConfig::miden_default(),
-            created_at: "2026-05-11T00:00:00Z".to_string(),
-            updated_at: "2026-05-11T00:00:00Z".to_string(),
-            has_pending_candidate: false,
-            paused_at: None,
-            paused_reason: None,
-            released_at: None,
-        };
-        let metadata = MockMetadataStore::new()
-            .with_list(Ok(account_ids))
-            .with_get(Ok(Some(make(
-                "a",
-                Auth::MidenFalconRpo {
-                    cosigner_commitments: vec![],
-                },
-            ))))
-            .with_get(Ok(Some(make(
-                "b",
-                Auth::MidenFalconRpo {
-                    cosigner_commitments: vec![],
-                },
-            ))))
-            .with_get(Ok(Some(make(
-                "c",
-                Auth::MidenEcdsa {
-                    cosigner_commitments: vec![],
-                },
-            ))));
-
-        let storage = MockStorageBackend::new()
-            .with_count_deltas_by_status(Ok(Default::default()))
-            .with_count_in_flight_proposals(Ok(0))
-            .with_latest_activity_timestamp(Ok(None));
-
+    async fn every_cross_account_aggregate_is_served_from_the_stats_snapshot() {
+        // Once a snapshot exists the live inventory is not consulted at
+        // all: a failing metadata store must not fail the overview.
         let keystore_dir =
             std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
-
         let state = AppState {
-            storage: Arc::new(storage),
-            metadata: Arc::new(metadata),
+            storage: Arc::new(MockStorageBackend::new()),
+            metadata: Arc::new(
+                MockMetadataStore::new().with_list(Err("metadata store unreachable".into())),
+            ),
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
-            clock: Arc::new(MockClock::default()),
+            clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
             #[cfg(feature = "evm")]
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         };
+        let latest = state.clock.now() - chrono::Duration::minutes(3);
+        publish_stats_snapshot(
+            &state,
+            &[("miden_falcon", 2), ("miden_ecdsa", 1)],
+            available(
+                SnapshotDeltaCounts {
+                    candidate: 5,
+                    canonical: 100,
+                    retained: 3,
+                    discarded: 2,
+                },
+                4,
+                Some(latest),
+            ),
+        );
 
         let info = get_dashboard_info(&state).await.unwrap();
+        // The total comes from the snapshot (3), never the live list, so
+        // it always equals the sum of the per-method counts.
         assert_eq!(info.total_account_count, 3);
         assert_eq!(info.accounts_by_auth_method.get("miden_falcon"), Some(&2));
         assert_eq!(info.accounts_by_auth_method.get("miden_ecdsa"), Some(&1));
-        // The aggregate is not degraded on the happy path.
+        assert_eq!(info.delta_status_counts.candidate, 5);
+        assert_eq!(info.delta_status_counts.canonical, 100);
+        assert_eq!(info.delta_status_counts.retained, 3);
+        assert_eq!(info.delta_status_counts.discarded, 2);
+        assert_eq!(info.in_flight_proposal_count, 4);
+        assert_eq!(info.latest_activity, Some(latest.to_rfc3339()));
+        assert_eq!(info.aggregates_as_of, Some(state.clock.now().to_rfc3339()));
+        assert_eq!(info.service_status, DashboardServiceStatus::Healthy);
+        assert!(info.degraded_aggregates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn snapshot_served_aggregates_are_degraded_until_first_publication() {
+        // Nothing published yet (process just started, or the shared
+        // store is empty). Every snapshot-served aggregate is reported
+        // degraded — never as an empty map or zero masquerading as data —
+        // while the live account count is still returned.
+        let state = build_state(
+            vec!["a".to_string(), "b".to_string()],
+            MockStorageBackend::new(),
+        )
+        .await;
+
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert_eq!(info.total_account_count, 2);
+        assert_eq!(info.aggregates_as_of, None);
+        assert_eq!(info.service_status, DashboardServiceStatus::Degraded);
+        assert_eq!(
+            info.degraded_aggregates,
+            vec![
+                AGG_ACCOUNTS_BY_AUTH_METHOD.to_string(),
+                AGG_DELTA_STATUS_COUNTS.to_string(),
+                AGG_IN_FLIGHT_PROPOSAL_COUNT.to_string(),
+                AGG_LATEST_ACTIVITY.to_string(),
+            ]
+        );
+        assert!(info.accounts_by_auth_method.is_empty());
+        assert!(info.latest_activity.is_none());
+    }
+
+    #[tokio::test]
+    async fn aggregates_the_walk_declined_are_reported_by_stable_name() {
+        // The walk marks what it could not compute (filesystem inventory
+        // threshold, a failed storage aggregate); info relays those
+        // names and keeps the aggregates it did get.
+        let state = build_state(vec!["a".to_string()], MockStorageBackend::new()).await;
+        let inventory = InventoryAggregates {
+            delta_status_counts: None,
+            in_flight_proposal_count: Some(2),
+            latest_activity: None,
+            degraded: vec![
+                AGG_DELTA_STATUS_COUNTS.to_string(),
+                AGG_LATEST_ACTIVITY.to_string(),
+            ],
+        };
+        publish_stats_snapshot(&state, &[("miden_falcon", 1)], inventory);
+
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert_eq!(info.total_account_count, 1);
+        assert_eq!(info.accounts_by_auth_method.get("miden_falcon"), Some(&1));
+        assert_eq!(info.in_flight_proposal_count, 2);
+        assert_eq!(info.service_status, DashboardServiceStatus::Degraded);
+        assert_eq!(
+            info.degraded_aggregates,
+            vec![
+                AGG_DELTA_STATUS_COUNTS.to_string(),
+                AGG_LATEST_ACTIVITY.to_string()
+            ]
+        );
         assert!(
             !info
                 .degraded_aggregates
@@ -437,60 +461,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accounts_by_auth_method_marks_degraded_when_metadata_get_fails() {
-        use crate::ack::AckRegistry;
-        use crate::builder::clock::test::MockClock;
-        use crate::testing::mocks::MockNetworkClient;
-
-        // List has two accounts; the first metadata.get returns Err.
-        // The aggregator should bail and mark the aggregate degraded
-        // without failing the overall response.
-        let metadata = MockMetadataStore::new()
-            .with_list(Ok(vec!["a".to_string(), "b".to_string()]))
-            .with_get(Err("synthetic metadata read failure".to_string()));
-        let storage = MockStorageBackend::new()
-            .with_count_deltas_by_status(Ok(Default::default()))
-            .with_count_in_flight_proposals(Ok(0))
-            .with_latest_activity_timestamp(Ok(None));
-        let keystore_dir =
-            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
-        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
-
-        let state = AppState {
-            storage: Arc::new(storage),
-            metadata: Arc::new(metadata),
-            network_client: Arc::new(MockNetworkClient::new()),
-            ack,
-            canonicalization: None,
-            clock: Arc::new(MockClock::default()),
-            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
-            auditor: Arc::new(crate::audit::LogAuditor::new()),
-            #[cfg(feature = "evm")]
-            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
-        };
-
-        let info = get_dashboard_info(&state).await.unwrap();
-        assert_eq!(info.total_account_count, 2);
-        assert_eq!(info.service_status, DashboardServiceStatus::Degraded);
-        assert!(
-            info.degraded_aggregates
-                .iter()
-                .any(|s| s == AGG_ACCOUNTS_BY_AUTH_METHOD)
-        );
-        // Counts map left empty when the aggregate is marked degraded.
-        assert!(info.accounts_by_auth_method.is_empty());
-    }
-
-    #[tokio::test]
     async fn empty_inventory_returns_explicit_zeros_and_no_activity() {
-        let state = build_state(
-            Vec::new(),
-            crate::storage::DeltaStatusCounts::default(),
-            0,
-            None,
-        )
-        .await;
+        let state = build_state(Vec::new(), MockStorageBackend::new()).await;
+        publish_stats_snapshot(
+            &state,
+            &[],
+            available(SnapshotDeltaCounts::default(), 0, None),
+        );
         let info = get_dashboard_info(&state).await.unwrap();
         assert_eq!(info.total_account_count, 0);
         assert_eq!(info.delta_status_counts.candidate, 0);
@@ -503,270 +480,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aggregates_propagate_storage_response_into_wire_shape() {
-        let state = build_state(
-            vec!["0xa".into(), "0xb".into()],
-            crate::storage::DeltaStatusCounts {
-                candidate: 1,
-                canonical: 1,
-                retained: 1,
-                discarded: 1,
-            },
-            2,
-            chrono::DateTime::parse_from_rfc3339("2026-05-09T11:00:00Z")
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Utc)),
-        )
-        .await;
-
-        let info = get_dashboard_info(&state).await.unwrap();
-        assert_eq!(info.total_account_count, 2);
-        assert_eq!(info.delta_status_counts.candidate, 1);
-        assert_eq!(info.delta_status_counts.canonical, 1);
-        assert_eq!(info.delta_status_counts.retained, 1);
-        assert_eq!(info.delta_status_counts.discarded, 1);
-        assert_eq!(info.in_flight_proposal_count, 2);
-        assert_eq!(
-            info.latest_activity.as_deref(),
-            Some("2026-05-09T11:00:00+00:00")
-        );
-    }
-
-    #[tokio::test]
     async fn build_info_fields_are_populated_from_compile_time_constants() {
-        let state = build_state(
-            Vec::new(),
-            crate::storage::DeltaStatusCounts::default(),
-            0,
-            None,
-        )
-        .await;
+        let state = build_state(Vec::new(), MockStorageBackend::new()).await;
         let info = get_dashboard_info(&state).await.unwrap();
-        assert_eq!(info.build.version, env!("CARGO_PKG_VERSION"));
-        assert!(!info.build.git_commit.is_empty());
+        assert_eq!(info.build.version, build_info::VERSION);
+        assert_eq!(info.build.git_commit, build_info::GIT_SHA);
         assert!(info.build.profile == "debug" || info.build.profile == "release");
         assert!(chrono::DateTime::parse_from_rfc3339(&info.build.started_at).is_ok());
     }
 
     #[tokio::test]
     async fn backend_storage_label_reflects_runtime_storage_kind() {
-        // `MockStorageBackend` defaults to `StorageType::Postgres`
-        // unless explicitly overridden via `with_kind`. The dashboard
-        // info handler reports the *runtime* kind via
-        // `state.storage.kind()`, not the compiled cargo feature, so
-        // this test exercises the postgres-label path regardless of
-        // whether the binary was built with `--features postgres`.
         let state = build_state(
             Vec::new(),
-            crate::storage::DeltaStatusCounts::default(),
-            0,
-            None,
+            MockStorageBackend::new().with_kind(crate::storage::StorageType::Postgres),
         )
         .await;
         let info = get_dashboard_info(&state).await.unwrap();
         assert_eq!(info.backend.storage, "postgres");
-        assert!(info.backend.supported_ack_schemes.contains(&"falcon"));
-        assert!(info.backend.supported_ack_schemes.contains(&"ecdsa"));
+        assert_eq!(info.backend.supported_ack_schemes, vec!["ecdsa", "falcon"]);
     }
 
     #[tokio::test]
     async fn backend_storage_label_reports_filesystem_when_storage_kind_is_filesystem() {
-        use crate::ack::AckRegistry;
-        use crate::builder::clock::test::MockClock;
-        use crate::testing::mocks::MockNetworkClient;
-
-        // Override the mock to report Filesystem; verifies that the
-        // dashboard handler dispatches off the *runtime* storage kind
-        // and not a compile-time constant.
-        let metadata = MockMetadataStore::new().with_list(Ok(Vec::new()));
-        let storage = MockStorageBackend::new()
-            .with_kind(crate::storage::StorageType::Filesystem)
-            .with_count_deltas_by_status(Ok(Default::default()))
-            .with_count_in_flight_proposals(Ok(0))
-            .with_latest_activity_timestamp(Ok(None));
-        let keystore_dir =
-            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
-        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
-
-        let state = AppState {
-            storage: Arc::new(storage),
-            metadata: Arc::new(metadata),
-            network_client: Arc::new(MockNetworkClient::new()),
-            ack,
-            canonicalization: None,
-            clock: Arc::new(MockClock::default()),
-            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
-            auditor: Arc::new(crate::audit::LogAuditor::new()),
-            #[cfg(feature = "evm")]
-            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
-        };
+        let state = build_state(
+            Vec::new(),
+            MockStorageBackend::new().with_kind(crate::storage::StorageType::Filesystem),
+        )
+        .await;
         let info = get_dashboard_info(&state).await.unwrap();
         assert_eq!(info.backend.storage, "filesystem");
     }
 
     #[tokio::test]
     async fn canonicalization_is_none_when_disabled_in_state() {
-        let state = build_state(
-            Vec::new(),
-            crate::storage::DeltaStatusCounts::default(),
-            0,
-            None,
-        )
-        .await;
-        // build_state leaves canonicalization = None.
+        let state = build_state(Vec::new(), MockStorageBackend::new()).await;
         let info = get_dashboard_info(&state).await.unwrap();
         assert!(info.backend.canonicalization.is_none());
     }
 
     #[tokio::test]
     async fn canonicalization_is_populated_from_app_state_config() {
-        let mut state = build_state(
-            Vec::new(),
-            crate::storage::DeltaStatusCounts::default(),
-            0,
-            None,
-        )
-        .await;
-        state.canonicalization = Some(crate::canonicalization::CanonicalizationConfig {
-            abandon_quarantine_seconds: 15,
-            abandon_quarantine_checks: 2,
-            check_interval_seconds: 7,
-            fast_promotion_enabled: true,
-            fast_promotion_interval_seconds: 3,
-            fast_promotion_window_seconds: 30,
-            max_retries: 13,
-            submission_grace_period_seconds: 42,
-            divergence_confirmations: 2,
-            max_concurrent_accounts: 4,
-            retained_ttl_seconds: 86_400,
-            reconcile_interval_seconds: 60,
-            reconcile_page_size: 100,
-        });
+        let mut state = build_state(Vec::new(), MockStorageBackend::new()).await;
+        state.canonicalization = Some(
+            crate::canonicalization::CanonicalizationConfig::new(30, 5)
+                .with_submission_grace_period_seconds(120),
+        );
         let info = get_dashboard_info(&state).await.unwrap();
-        let cfg = info.backend.canonicalization.expect("config present");
-        assert_eq!(cfg.check_interval_seconds, 7);
-        assert_eq!(cfg.max_retries, 13);
-        assert_eq!(cfg.submission_grace_period_seconds, 42);
+        let canon = info
+            .backend
+            .canonicalization
+            .expect("canonicalization config");
+        assert_eq!(canon.check_interval_seconds, 30);
+        assert_eq!(canon.max_retries, 5);
+        assert_eq!(canon.submission_grace_period_seconds, 120);
     }
 
     #[tokio::test]
     async fn environment_comes_from_dashboard_state_default() {
-        let state = build_state(
-            Vec::new(),
-            crate::storage::DeltaStatusCounts::default(),
-            0,
-            None,
-        )
-        .await;
+        let state = build_state(Vec::new(), MockStorageBackend::new()).await;
         let info = get_dashboard_info(&state).await.unwrap();
         assert_eq!(info.environment, "testnet");
-    }
-
-    #[tokio::test]
-    async fn delta_read_failure_marks_status_counts_degraded_but_keeps_total() {
-        use crate::ack::AckRegistry;
-        use crate::builder::clock::test::MockClock;
-        use crate::testing::mocks::MockNetworkClient;
-
-        let metadata = MockMetadataStore::new().with_list(Ok(vec!["0xa".into()]));
-        // count_deltas_by_status fails; the other two aggregates
-        // succeed. Service should mark only the affected aggregate as
-        // degraded.
-        let storage = MockStorageBackend::new()
-            .with_count_deltas_by_status(Err("boom".into()))
-            .with_count_in_flight_proposals(Ok(0))
-            .with_latest_activity_timestamp(Ok(None));
-
-        let keystore_dir =
-            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
-        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
-
-        let state = AppState {
-            storage: Arc::new(storage),
-            metadata: Arc::new(metadata),
-            network_client: Arc::new(MockNetworkClient::new()),
-            ack,
-            canonicalization: None,
-            clock: Arc::new(MockClock::default()),
-            dashboard: Arc::new(crate::dashboard::DashboardState::default()),
-            auditor: Arc::new(crate::audit::LogAuditor::new()),
-            #[cfg(feature = "evm")]
-            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
-        };
-
-        let info = get_dashboard_info(&state).await.unwrap();
-        assert_eq!(info.total_account_count, 1);
-        assert_eq!(info.service_status, DashboardServiceStatus::Degraded);
-        assert!(
-            info.degraded_aggregates
-                .iter()
-                .any(|s| s == AGG_DELTA_STATUS_COUNTS)
-        );
-    }
-
-    #[tokio::test]
-    async fn above_filesystem_threshold_marks_fanout_aggregates_degraded() {
-        use crate::dashboard::DashboardState;
-
-        // Build a state with 3 accounts but a threshold of 1 — the
-        // service must short-circuit fan-out aggregates to degraded.
-        let mut config = crate::dashboard::DashboardConfig::for_tests();
-        // Hack: we can't reach private fields from outside the module,
-        // but we can construct DashboardState through for_tests + then
-        // test by ensuring our default threshold of 1000 means 1001
-        // accounts trigger it. However that's a lot of test data, so
-        // we just simulate with a custom DashboardState if possible.
-        let _ = &mut config;
-        // Use the default threshold (1000); seed 1001 account IDs.
-        let account_ids: Vec<String> = (0..1001).map(|i| format!("acc{i}")).collect();
-        // We don't need pull_deltas to succeed — the threshold check
-        // returns before that.
-        let metadata = MockMetadataStore::new().with_list(Ok(account_ids.clone()));
-        // Threshold check is filesystem-only; flag the mock as
-        // Filesystem so the FR-029 short-circuit fires.
-        let storage = MockStorageBackend::new().with_kind(crate::storage::StorageType::Filesystem);
-        use crate::ack::AckRegistry;
-        use crate::builder::clock::test::MockClock;
-        use crate::testing::mocks::MockNetworkClient;
-
-        let keystore_dir =
-            std::env::temp_dir().join(format!("guardian_test_keystore_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
-        let ack = AckRegistry::new(keystore_dir).await.expect("ack");
-        let state = AppState {
-            storage: Arc::new(storage),
-            metadata: Arc::new(metadata),
-            network_client: Arc::new(MockNetworkClient::new()),
-            ack,
-            canonicalization: None,
-            clock: Arc::new(MockClock::default()),
-            dashboard: Arc::new(DashboardState::default()),
-            auditor: Arc::new(crate::audit::LogAuditor::new()),
-            #[cfg(feature = "evm")]
-            evm: Arc::new(crate::evm::EvmAppState::for_tests()),
-        };
-        let info = get_dashboard_info(&state).await.unwrap();
-        assert_eq!(info.total_account_count, 1001);
-        assert_eq!(info.service_status, DashboardServiceStatus::Degraded);
-        assert!(
-            info.degraded_aggregates
-                .iter()
-                .any(|s| s == AGG_DELTA_STATUS_COUNTS)
-        );
-        assert!(
-            info.degraded_aggregates
-                .iter()
-                .any(|s| s == AGG_IN_FLIGHT_PROPOSAL_COUNT)
-        );
-        assert!(
-            info.degraded_aggregates
-                .iter()
-                .any(|s| s == AGG_LATEST_ACTIVITY)
-        );
-        // Counts are zero because we didn't fan out.
-        assert_eq!(info.delta_status_counts.candidate, 0);
-        assert_eq!(info.in_flight_proposal_count, 0);
     }
 }

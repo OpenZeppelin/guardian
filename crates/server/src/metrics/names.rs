@@ -93,6 +93,15 @@ pub const ACCOUNTS_CREATED_TOTAL: &str = "guardian_accounts_created_total";
 pub const METRICS_REFRESH_TIMESTAMP_SECONDS: &str = "guardian_metrics_refresh_timestamp_seconds";
 pub const METRICS_REFRESH_FAILURES_TOTAL: &str = "guardian_metrics_refresh_failures_total";
 
+// --- Dashboard stats aggregate (set by its background refresher) ---------
+
+pub const DASHBOARD_STATS_REFRESH_TIMESTAMP_SECONDS: &str =
+    "guardian_dashboard_stats_refresh_timestamp_seconds";
+pub const DASHBOARD_STATS_REFRESH_FAILURES_TOTAL: &str =
+    "guardian_dashboard_stats_refresh_failures_total";
+pub const DASHBOARD_STATS_REFRESH_DURATION_SECONDS: &str =
+    "guardian_dashboard_stats_refresh_duration_seconds";
+
 // --- Build identity ------------------------------------------------------
 
 pub const BUILD_INFO: &str = "guardian_build_info";
@@ -419,6 +428,27 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Counter,
         labels: &[],
         help: "Slow-aggregate refresh attempts that failed (gauges left stale).",
+    },
+    MetricDef {
+        name: DASHBOARD_STATS_REFRESH_TIMESTAMP_SECONDS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Unix time of the last successfully published /dashboard/stats aggregate \
+               (the response's as_of). Staleness is time() minus this value.",
+    },
+    MetricDef {
+        name: DASHBOARD_STATS_REFRESH_FAILURES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[],
+        help: "/dashboard/stats aggregate refresh attempts that failed (previous \
+               snapshot left published).",
+    },
+    MetricDef {
+        name: DASHBOARD_STATS_REFRESH_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Wall-clock duration of one /dashboard/stats aggregate refresh \
+               (metadata walk, batched state reads, vault decoding).",
     },
 ];
 

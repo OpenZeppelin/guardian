@@ -11,6 +11,7 @@ use guardian_client::{
     AccountState, DeltaObject as ProtoDeltaObject, DeltaStatus, GetStateResponse, PendingStatus,
     delta_status,
 };
+use guardian_shared::SignatureScheme;
 use miden_client::Serializable;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
@@ -33,7 +34,7 @@ use miden_standards::note::P2idNote;
 use miden_tx::utils::sync::RwLock;
 
 use super::MultisigClient;
-use crate::keystore::GuardianKeyStore;
+use crate::keystore::{GuardianKeyStore, KeyManager};
 use crate::prover::ProverConfig;
 use crate::rpc::RpcConfig;
 use crate::transaction::word_to_hex;
@@ -59,12 +60,13 @@ pub(crate) async fn offline_client_parts(
 
 /// [`offline_client_parts`] with an injected keystore, for tests that need
 /// the client's signer commitment known up front (e.g. to build a multisig
-/// account whose cosigner set contains this client's key).
+/// account whose cosigner set contains this client's key) or that need a
+/// signer of a specific scheme.
 pub(crate) async fn offline_client_parts_with_keystore(
     dir: &Path,
     node: Arc<dyn NodeRpcClient>,
     transport: Option<Arc<dyn NoteTransportClient>>,
-    keystore: Arc<GuardianKeyStore>,
+    keystore: Arc<dyn KeyManager>,
 ) -> (MultisigClient, Arc<SqliteStore>) {
     let store = Arc::new(
         SqliteStore::new(dir.join("store.sqlite3"))
@@ -218,7 +220,19 @@ pub(crate) fn p2id_note_for(target: &Account, seed: u32, note_type: NoteType) ->
 /// same construction `MultisigClient::create_account` performs, minus the
 /// GUARDIAN pubkey fetch (the guardian commitment is fixed by the test).
 pub(crate) fn multisig_account(signer: Word, guardian_commitment: Word, seed: u8) -> Account {
-    let config = MultisigGuardianConfig::new(1, vec![signer], guardian_commitment);
+    multisig_account_with_scheme(signer, guardian_commitment, seed, SignatureScheme::Falcon)
+}
+
+/// [`multisig_account`] for a given signer scheme, so a test can pair the
+/// account with a keystore of the same scheme.
+pub(crate) fn multisig_account_with_scheme(
+    signer: Word,
+    guardian_commitment: Word,
+    seed: u8,
+    scheme: SignatureScheme,
+) -> Account {
+    let config = MultisigGuardianConfig::new(1, vec![signer], guardian_commitment)
+        .with_signature_scheme(scheme);
     MultisigGuardianBuilder::new(config)
         .with_seed([seed; 32])
         .build()

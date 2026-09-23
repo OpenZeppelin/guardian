@@ -45,13 +45,14 @@ Guardian identity — see [What is shared](#what-is-shared-and-why)). The files
 must be owner-only or the server refuses to start:
 
 ```sh
-mkdir -p ack-keys
-cargo run --quiet -p guardian-server --bin ack-keygen \
-  | { read -r json; \
-      jq -rj '.falcon_secret_key' <<<"$json" > ack-keys/ack-falcon-secret-key; \
-      jq -rj '.ecdsa_secret_key'  <<<"$json" > ack-keys/ack-ecdsa-secret-key; }
-chmod 600 ack-keys/ack-falcon-secret-key ack-keys/ack-ecdsa-secret-key
+cargo run --quiet -p guardian-server --bin ack-keygen -- --out-dir ack-keys
 ```
+
+(`ack-keygen` writes both files as `0600` and refuses to overwrite existing
+ones. Images later than `v0.17.0` also ship it, so with such a tag pinned in
+`.env` you can run it from the image instead:
+`docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/ack-keys:/out"
+ghcr.io/openzeppelin/guardian:<tag> /app/ack-keygen --out-dir /out`.)
 
 `ack-keys/` is git-ignored. Treat it like any private key material — and note
 that regenerating it changes the Guardian's identity, freezing any multisig

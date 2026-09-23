@@ -16,6 +16,19 @@ pub fn is_storage_not_found(err: &str) -> bool {
     lower.contains("not found") || lower.contains("notfound") || lower.contains("no such file")
 }
 
+/// Whether a state read error describes one corrupt record — an
+/// undecryptable envelope (see [`encryption::is_record_corruption`]) or a
+/// state file that does not deserialize — as opposed to a systemic
+/// failure (I/O, connection, key provider). Callers that aggregate across
+/// many records report the former as explicit per-record coverage and
+/// treat the latter as a reason to keep their previous result.
+pub fn is_record_corruption(err: &str) -> bool {
+    encryption::is_record_corruption(err)
+        || err
+            .to_ascii_lowercase()
+            .contains("failed to deserialize state")
+}
+
 /// Stable lifecycle status identifiers used in the typed `status_kind`
 /// column promoted by the Phase A migration. Service-layer callers
 /// pass these to filter and group cross-account aggregates.
@@ -492,10 +505,12 @@ pub trait StorageBackend: Send + Sync {
 
     /// Batch fetch states for `account_ids` in a single round trip
     /// (Postgres: one `SELECT ... WHERE account_id = ANY($1)`;
-    /// filesystem: bounded-concurrency parallel reads). Missing
+    /// filesystem: this default, one sequential read per id). Missing
     /// accounts are simply absent from the returned map — callers
     /// must distinguish "no state yet" from "metadata-without-state"
-    /// at the service layer if needed. Used by the dashboard account
+    /// at the service layer if needed. Any other per-account read
+    /// failure is propagated as `Err` so callers never mistake a
+    /// storage fault for an absent row. Used by the dashboard account
     /// list to avoid the N+1 pattern that the per-account history
     /// endpoints already collapsed.
     async fn pull_states_batch(
@@ -505,29 +520,25 @@ pub trait StorageBackend: Send + Sync {
         // Default: sequential single-account fetches. Concrete
         // backends override with their batched form.
         //
-        // Error policy: `pull_state` currently returns `Result<_,
-        // String>` so we can't structurally distinguish "missing
-        // state row" from "transient storage failure". Until that
-        // surface is typed, we surface ANY error from `pull_state`
-        // via tracing so operators see degraded reads in logs
-        // instead of silent flips to `state_status: Unavailable` at
-        // the dashboard layer. Concrete backends SHOULD override
-        // this method with their own batched form that can
-        // distinguish the two cases (postgres already does — see
-        // `PostgresService::pull_states_batch`).
+        // Error policy: `pull_state` returns `Result<_, String>`, so a
+        // missing row is recognized by the shared `is_storage_not_found`
+        // heuristic and simply omitted; every other failure (I/O,
+        // decryption, corruption) is propagated so the caller decides —
+        // the stats refresher, for one, must not publish reduced totals
+        // over a storage fault.
         let mut out = std::collections::HashMap::with_capacity(account_ids.len());
         for id in account_ids {
             match self.pull_state(id).await {
                 Ok(state) => {
                     out.insert((*id).to_string(), state);
                 }
-                Err(e) => {
-                    tracing::warn!(
+                Err(e) if is_storage_not_found(&e) => {
+                    tracing::debug!(
                         account_id = %id,
-                        error = %e,
-                        "pull_states_batch: pull_state failed; treating as missing-state at dashboard layer",
+                        "pull_states_batch: no state row; treating as missing-state at dashboard layer",
                     );
                 }
+                Err(e) => return Err(format!("pull_states_batch: account '{id}': {e}")),
             }
         }
         Ok(out)
@@ -820,4 +831,37 @@ pub trait StorageBackend: Send + Sync {
     /// in-flight proposals. `None` when the inventory has produced no
     /// activity.
     async fn latest_activity_timestamp(&self) -> Result<Option<DateTime<Utc>>, String>;
+}
+
+#[cfg(test)]
+mod record_classification_tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_records_are_distinguished_from_missing_and_systemic_failures() {
+        // Missing rows.
+        assert!(is_storage_not_found(
+            "Failed to read state file: No such file or directory"
+        ));
+        assert!(!is_record_corruption(
+            "Failed to read state file: No such file or directory"
+        ));
+        // Corrupt rows: undecryptable envelope or unreadable state file.
+        assert!(is_record_corruption(
+            "stored payload is not an encryption envelope"
+        ));
+        assert!(is_record_corruption("decryption failed"));
+        assert!(is_record_corruption(
+            "Failed to deserialize state: expected value at line 1"
+        ));
+        // Systemic: I/O, connection, key material.
+        assert!(!is_record_corruption(
+            "Failed to read state file: Permission denied"
+        ));
+        assert!(!is_record_corruption(
+            "Failed to get connection: pool timed out"
+        ));
+        assert!(!is_record_corruption("unknown encryption key id 'k1'"));
+        assert!(!is_record_corruption("key store unavailable: kms timeout"));
+    }
 }

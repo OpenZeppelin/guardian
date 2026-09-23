@@ -4,6 +4,7 @@ import {
   ACCOUNTS_PAUSE,
   DASHBOARD_READ,
   POLICIES_WRITE,
+  STATS_REFRESH,
 } from './permissions.js';
 
 describe('operator permission wire strings', () => {
@@ -14,5 +15,6 @@ describe('operator permission wire strings', () => {
     expect(DASHBOARD_READ).toBe('dashboard:read');
     expect(ACCOUNTS_PAUSE).toBe('accounts:pause');
     expect(POLICIES_WRITE).toBe('policies:write');
+    expect(STATS_REFRESH).toBe('stats:refresh');
   });
 });

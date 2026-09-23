@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -10,6 +11,7 @@ use crate::secret::FixedKey;
 
 pub(crate) const ENV_KEY: &str = "GUARDIAN_STORAGE_ENCRYPTION_KEY";
 pub(crate) const ENV_KEY_ID: &str = "GUARDIAN_STORAGE_ENCRYPTION_KEY_ID";
+pub(crate) const ENV_KEY_FILE: &str = "GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE";
 pub(crate) const ENV_SECRET_ID: &str = "GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID";
 pub(crate) const DEFAULT_KID: &str = "k1";
 
@@ -21,6 +23,7 @@ pub(crate) enum KeyProviderError {
     MalformedSecret,
     UnknownKeyId(String),
     KeyStoreUnavailable(String),
+    KeyFileAccessible(String),
 }
 
 impl fmt::Display for KeyProviderError {
@@ -43,6 +46,12 @@ impl fmt::Display for KeyProviderError {
             }
             KeyProviderError::KeyStoreUnavailable(detail) => {
                 write!(f, "storage encryption key store unavailable: {detail}")
+            }
+            KeyProviderError::KeyFileAccessible(path) => {
+                write!(
+                    f,
+                    "storage encryption key file {path} must not be accessible by group or others (set its permissions to 0600)"
+                )
             }
         }
     }
@@ -86,8 +95,9 @@ impl InMemoryKeyProvider {
         Self::new(kid.to_string(), keys)
     }
 
-    /// Build a provider from the structured Secrets Manager document
-    /// `{ "active": kid, "keys": { kid: base64-32-bytes } }`.
+    /// Build a provider from the structured key document
+    /// `{ "active": kid, "keys": { kid: base64-32-bytes } }`, whether it came
+    /// from Secrets Manager or from a mounted file.
     pub(crate) fn from_secret_json(secret: &str) -> Result<Self, KeyProviderError> {
         let doc: SecretDocument =
             serde_json::from_str(secret).map_err(|_| KeyProviderError::MalformedSecret)?;
@@ -97,6 +107,39 @@ impl InMemoryKeyProvider {
         }
         Self::new(doc.active, keys)
     }
+
+    /// Build a provider from a key document on disk. The file holds long-lived
+    /// key material, so like the ACK key files it must be owner-only on Unix.
+    pub(crate) fn from_document_file(path: &Path) -> Result<Self, KeyProviderError> {
+        ensure_owner_only(path)?;
+        let document = Zeroizing::new(std::fs::read_to_string(path).map_err(|error| {
+            KeyProviderError::KeyStoreUnavailable(format!("file {}: {error}", path.display()))
+        })?);
+        Self::from_secret_json(&document)
+    }
+}
+
+#[cfg(unix)]
+fn ensure_owner_only(path: &Path) -> Result<(), KeyProviderError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = std::fs::metadata(path)
+        .map_err(|error| {
+            KeyProviderError::KeyStoreUnavailable(format!("file {}: {error}", path.display()))
+        })?
+        .permissions()
+        .mode();
+    if mode & 0o077 != 0 {
+        return Err(KeyProviderError::KeyFileAccessible(
+            path.display().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_owner_only(_path: &Path) -> Result<(), KeyProviderError> {
+    Ok(())
 }
 
 impl StorageKeyProvider for InMemoryKeyProvider {
@@ -190,5 +233,51 @@ mod tests {
     fn malformed_secret_json_is_error() {
         let err = InMemoryKeyProvider::from_secret_json("{not json").unwrap_err();
         assert!(matches!(err, KeyProviderError::MalformedSecret));
+    }
+
+    fn write_document(dir: &Path, mode: u32) -> std::path::PathBuf {
+        let path = dir.join("storage-encryption-keys.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"active":"k2","keys":{{"k1":"{}","k2":"{}"}}}}"#,
+                key_b64(1),
+                key_b64(2)
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let _ = mode;
+        path
+    }
+
+    #[test]
+    fn document_file_loads_multiple_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_document(dir.path(), 0o600);
+        let provider = InMemoryKeyProvider::from_document_file(&path).unwrap();
+        assert_eq!(provider.active_key_id(), "k2");
+        assert_eq!(provider.key("k1").unwrap().expose_secret(), &[1u8; 32]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_file_must_be_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_document(dir.path(), 0o644);
+        let err = InMemoryKeyProvider::from_document_file(&path).unwrap_err();
+        assert!(matches!(err, KeyProviderError::KeyFileAccessible(_)));
+    }
+
+    #[test]
+    fn missing_document_file_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let err =
+            InMemoryKeyProvider::from_document_file(&dir.path().join("absent.json")).unwrap_err();
+        assert!(matches!(err, KeyProviderError::KeyStoreUnavailable(_)));
     }
 }

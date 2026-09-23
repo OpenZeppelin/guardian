@@ -380,6 +380,13 @@ impl MetadataStore for FilesystemMetadataStore {
         Ok(rows)
     }
 
+    /// One snapshot of the in-memory inventory instead of a scan-and-sort
+    /// under the read lock per page.
+    async fn list_all(&self, _page_size: u32) -> Result<Vec<AccountMetadata>, String> {
+        let cache = self.cache.read().await;
+        Ok(cache.values().cloned().collect())
+    }
+
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String> {
         let cache = self.cache.read().await;
         Ok(cache
