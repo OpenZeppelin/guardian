@@ -9,8 +9,8 @@ use std::collections::HashSet;
 use std::num::NonZeroU32;
 
 use guardian_shared::FromJson;
-use guardian_shared::SignatureScheme;
 use guardian_shared::hex::FromHex;
+use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, Signature as EcdsaSignature,
@@ -62,6 +62,8 @@ pub struct ExportedSignature {
     pub scheme: SignatureScheme,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_key_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "EcdsaMessageFormat::is_raw")]
+    pub message_format: EcdsaMessageFormat,
 }
 
 /// Metadata needed for proposal reconstruction.
@@ -187,18 +189,36 @@ impl ExportedProposal {
             let signature_hex = ensure_hex_prefix(&signature.signature);
             match signature.scheme {
                 SignatureScheme::Falcon => {
+                    if signature.message_format != EcdsaMessageFormat::Raw {
+                        return Err(MultisigError::Signature(
+                            "EIP-712 requires an ECDSA signer".to_string(),
+                        ));
+                    }
                     Poseidon2FalconSignature::from_hex(&signature_hex).map_err(|e| {
                         MultisigError::Signature(format!("invalid exported signature: {}", e))
                     })?;
                 }
                 SignatureScheme::Ecdsa => {
-                    let signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
+                    let mut signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
                         .map_err(|e| {
-                            MultisigError::Signature(format!(
-                                "invalid ECDSA exported signature hex: {}",
-                                e
-                            ))
-                        })?;
+                        MultisigError::Signature(format!(
+                            "invalid ECDSA exported signature hex: {}",
+                            e
+                        ))
+                    })?;
+                    if signature.message_format == EcdsaMessageFormat::Eip712
+                        && signature_bytes.len() == 65
+                    {
+                        signature_bytes[64] = match signature_bytes[64] {
+                            0 | 1 => signature_bytes[64],
+                            27 | 28 => signature_bytes[64] - 27,
+                            _ => {
+                                return Err(MultisigError::Signature(
+                                    "invalid EIP-712 recovery ID".to_string(),
+                                ));
+                            }
+                        };
+                    }
                     EcdsaSignature::read_from_bytes(&signature_bytes).map_err(|e| {
                         MultisigError::Signature(format!(
                             "invalid ECDSA exported signature bytes: {}",
@@ -379,6 +399,7 @@ impl ExportedProposal {
                     signature_hex: signature.signature.clone(),
                     scheme: signature.scheme,
                     public_key_hex: signature.public_key_hex.clone(),
+                    message_format: signature.message_format,
                 })
                 .collect(),
             metadata,
@@ -503,6 +524,7 @@ mod tests {
             signature: "0xdef456".to_string(),
             scheme: SignatureScheme::Falcon,
             public_key_hex: None,
+            message_format: EcdsaMessageFormat::Raw,
         };
 
         let json = serde_json::to_string(&sig).expect("should serialize");
@@ -510,6 +532,8 @@ mod tests {
 
         assert_eq!(sig.signer_commitment, parsed.signer_commitment);
         assert_eq!(sig.signature, parsed.signature);
+        assert_eq!(parsed.message_format, EcdsaMessageFormat::Raw);
+        assert!(!json.contains("message_format"));
     }
 
     #[test]
@@ -592,6 +616,7 @@ mod tests {
             signature: "0xsig1".to_string(),
             scheme: SignatureScheme::Falcon,
             public_key_hex: None,
+            message_format: EcdsaMessageFormat::Raw,
         });
         assert!(!proposal.is_ready());
 
@@ -600,6 +625,7 @@ mod tests {
             signature: "0xsig2".to_string(),
             scheme: SignatureScheme::Falcon,
             public_key_hex: None,
+            message_format: EcdsaMessageFormat::Raw,
         });
         assert!(proposal.is_ready());
     }
@@ -644,6 +670,7 @@ mod tests {
             signature: "0xsig1".to_string(),
             scheme: SignatureScheme::Falcon,
             public_key_hex: None,
+            message_format: EcdsaMessageFormat::Raw,
         });
 
         assert_eq!(proposal.signature_counts(), (1, 3));
@@ -664,12 +691,14 @@ mod tests {
                     signature: "0xsig1".to_string(),
                     scheme: SignatureScheme::Falcon,
                     public_key_hex: None,
+                    message_format: EcdsaMessageFormat::Raw,
                 },
                 ExportedSignature {
                     signer_commitment: "0xsigner2".to_string(),
                     signature: "0xsig2".to_string(),
                     scheme: SignatureScheme::Falcon,
                     public_key_hex: None,
+                    message_format: EcdsaMessageFormat::Raw,
                 },
             ],
             signatures_required: 3,
@@ -697,12 +726,14 @@ mod tests {
                     signature: "0xsig1".to_string(),
                     scheme: SignatureScheme::Falcon,
                     public_key_hex: None,
+                    message_format: EcdsaMessageFormat::Raw,
                 },
                 ExportedSignature {
                     signer_commitment: "0xsigner2".to_string(),
                     signature: "0xsig2".to_string(),
                     scheme: SignatureScheme::Falcon,
                     public_key_hex: None,
+                    message_format: EcdsaMessageFormat::Raw,
                 },
             ],
             signatures_required: 3,
@@ -778,6 +809,7 @@ mod tests {
             signature: format!("0x{}", hex::encode(signature.to_bytes())),
             scheme: SignatureScheme::Falcon,
             public_key_hex: None,
+            message_format: EcdsaMessageFormat::Raw,
         }
     }
 

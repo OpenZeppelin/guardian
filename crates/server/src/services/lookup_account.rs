@@ -20,7 +20,7 @@
 
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::lookup::{commitment_of, derive_pubkey_from_lookup_signature};
-use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS};
+use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat};
 use crate::state::AppState;
 use guardian_shared::hex::FromHex;
 use miden_protocol::Word;
@@ -60,6 +60,12 @@ pub async fn lookup_account(
     params: LookupAccountParams,
 ) -> Result<LookupAccountResult> {
     tracing::debug!("Looking up accounts by key commitment");
+
+    if params.credentials.auth_format() != RequestAuthFormat::Raw {
+        return Err(GuardianError::AuthenticationFailed(
+            "EIP-712 lookup authentication is not supported".to_string(),
+        ));
+    }
 
     let normalized_commitment = normalize_commitment_hex(&params.key_commitment)?;
     let key_commitment_word = Word::from_hex(&normalized_commitment)

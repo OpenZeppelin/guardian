@@ -281,6 +281,32 @@ describe('GuardianHttpClient', () => {
   });
 
   describe('getState', () => {
+    it('uses the existing signed headers with an EIP-712 format selector', async () => {
+      const signer: Signer = {
+        ...mockSigner,
+        scheme: 'ecdsa',
+        requestAuthFormat: 'eip712',
+      };
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+        }),
+      });
+
+      await client.getState('0x' + 'a'.repeat(30));
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      expect(headers['x-pubkey']).toBe(signer.publicKey);
+      expect(headers['x-signature']).toMatch(/^0x/);
+      expect(headers['x-timestamp']).toMatch(/^\d+$/);
+      expect(headers['x-auth-format']).toBe('eip712');
+    });
+
     it('should get account state with authentication', async () => {
       client.setSigner(mockSigner);
 

@@ -4,7 +4,7 @@ use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::{normalize_payload, resolve_account};
-use guardian_shared::DeltaSignature;
+use guardian_shared::{DeltaSignature, EcdsaMessageFormat};
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
 const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
@@ -185,6 +185,18 @@ pub async fn push_delta_proposal(
         let parsed: DeltaSignature = serde_json::from_value(sig_value).map_err(|e| {
             GuardianError::InvalidDelta(format!("Invalid signature entry in payload: {e}"))
         })?;
+
+        if matches!(
+            &parsed.signature,
+            crate::delta_object::ProposalSignature::Ecdsa {
+                message_format: EcdsaMessageFormat::Eip712,
+                ..
+            }
+        ) {
+            return Err(GuardianError::InvalidDelta(
+                "EIP-712 approvals must be submitted through the signing endpoint".to_string(),
+            ));
+        }
 
         cosigner_sigs.push(CosignerSignature {
             signature: parsed.signature,

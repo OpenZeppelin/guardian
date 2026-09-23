@@ -6,7 +6,7 @@
 //! (issue #356).
 
 use guardian_client::delta_status::Status;
-use guardian_shared::SignatureScheme;
+use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
 use miden_client::note::NoteFile;
 use miden_client::store::NoteExportType;
 use miden_protocol::note::NoteId;
@@ -108,6 +108,15 @@ impl MultisigClient {
                     signature: sig.signature.clone(),
                     scheme,
                     public_key_hex: sig.public_key.clone(),
+                    message_format: match sig.message_format.as_str() {
+                        "eip712" => EcdsaMessageFormat::Eip712,
+                        "" | "raw" => EcdsaMessageFormat::Raw,
+                        other => {
+                            return Err(MultisigError::Signature(format!(
+                                "unknown signature format: {other}"
+                            )));
+                        }
+                    },
                 });
             }
         }

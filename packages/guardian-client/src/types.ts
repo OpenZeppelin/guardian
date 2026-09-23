@@ -4,6 +4,10 @@ export interface Signer {
   readonly commitment: string;
   readonly publicKey: string;
   readonly scheme: SignatureScheme;
+  /** Selects EIP-712 request authentication; absent keeps the raw signature path. */
+  readonly requestAuthFormat?: 'eip712';
+  /** Tags an ECDSA proposal approval as an EIP-712 transaction-summary signature. */
+  readonly proposalMessageFormat?: 'eip712';
   signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> | string;
   signRequest?(
     accountId: string,
@@ -37,6 +41,7 @@ export interface EcdsaSignature {
   scheme: 'ecdsa';
   signature: string;
   publicKey?: string;
+  messageFormat?: 'eip712';
 }
 
 export type ProposalSignature = FalconSignature | EcdsaSignature;

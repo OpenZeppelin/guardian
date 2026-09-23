@@ -595,14 +595,20 @@ fn proposal_signature_to_proto(signature: &ProposalSignature) -> guardian::Propo
             scheme: "falcon".to_string(),
             signature: signature.clone(),
             public_key: None,
+            message_format: String::new(),
         },
         ProposalSignature::Ecdsa {
             signature,
             public_key,
+            message_format,
         } => guardian::ProposalSignature {
             scheme: "ecdsa".to_string(),
             signature: signature.clone(),
             public_key: public_key.clone(),
+            message_format: match message_format {
+                guardian_shared::EcdsaMessageFormat::Raw => String::new(),
+                guardian_shared::EcdsaMessageFormat::Eip712 => "eip712".to_string(),
+            },
         },
     }
 }
@@ -612,12 +618,21 @@ fn proto_signature_to_internal(
     signature: guardian::ProposalSignature,
 ) -> Result<ProposalSignature, Status> {
     match signature.scheme.as_str() {
-        "falcon" => Ok(ProposalSignature::Falcon {
+        "falcon" if signature.message_format.is_empty() => Ok(ProposalSignature::Falcon {
             signature: signature.signature,
         }),
         "ecdsa" => Ok(ProposalSignature::Ecdsa {
             signature: signature.signature,
             public_key: signature.public_key,
+            message_format: match signature.message_format.as_str() {
+                "" | "raw" => guardian_shared::EcdsaMessageFormat::Raw,
+                "eip712" => guardian_shared::EcdsaMessageFormat::Eip712,
+                other => {
+                    return Err(Status::invalid_argument(format!(
+                        "Unknown ECDSA message format: {other}"
+                    )));
+                }
+            },
         }),
         other => Err(Status::invalid_argument(format!(
             "Unknown signature scheme: {other}"
@@ -1234,6 +1249,7 @@ mod tests {
                 scheme: "falcon".to_string(),
                 signature: dummy_sig,
                 public_key: None,
+                message_format: String::new(),
             }),
         };
 

@@ -583,14 +583,20 @@ fn proto_signature_from_json(signature: &JsonProposalSignature) -> ProtoProposal
             scheme: "falcon".to_string(),
             signature: signature.clone(),
             public_key: None,
+            message_format: String::new(),
         },
         JsonProposalSignature::Ecdsa {
             signature,
             public_key,
+            message_format,
         } => ProtoProposalSignature {
             scheme: "ecdsa".to_string(),
             signature: signature.clone(),
             public_key: public_key.clone(),
+            message_format: match message_format {
+                guardian_shared::EcdsaMessageFormat::Raw => String::new(),
+                guardian_shared::EcdsaMessageFormat::Eip712 => "eip712".to_string(),
+            },
         },
     }
 }

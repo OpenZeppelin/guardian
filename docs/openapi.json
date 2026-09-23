@@ -5571,6 +5571,14 @@
           "client_abandoned"
         ]
       },
+      "EcdsaMessageFormat": {
+        "type": "string",
+        "description": "Message format used by an ECDSA approval.",
+        "enum": [
+          "raw",
+          "eip712"
+        ]
+      },
       "EvmProposal": {
         "type": "object",
         "required": [
@@ -6678,6 +6686,9 @@
               "scheme"
             ],
             "properties": {
+              "message_format": {
+                "$ref": "#/components/schemas/EcdsaMessageFormat"
+              },
               "public_key": {
                 "type": [
                   "string",
@@ -6698,7 +6709,7 @@
             }
           }
         ],
-        "description": "Signature type for delta proposals"
+        "description": "Signature type for delta proposals."
       },
       "ProposalsResponse": {
         "type": "object",

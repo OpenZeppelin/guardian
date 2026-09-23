@@ -363,6 +363,7 @@ impl From<&EvmProposalSignature> for CosignerSignature {
             signature: ProposalSignature::Ecdsa {
                 signature: value.signature.clone(),
                 public_key: None,
+                message_format: guardian_shared::EcdsaMessageFormat::Raw,
             },
             timestamp: value.signed_at.to_string(),
         }

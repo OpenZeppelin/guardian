@@ -45,10 +45,13 @@
 - HTTP request payload digest: RPO256 over canonical JSON bytes of the request payload (`body` for `POST`/`PUT`, query object for `GET`).
 - gRPC request payload digest: RPO256 over protobuf-encoded request bytes.
 - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0, payload_hash_1, payload_hash_2, payload_hash_3])`.
+- ECDSA accounts may send `x-auth-format: eip712` with the same three required headers. The signature is over `GuardianRequest(bytes32 requestHash)` in the `EIP712Domain` `{ name: "Guardian Request", version: "1" }`; `requestHash` is the 32-byte little-endian encoding of the signed message above. An absent format header keeps the raw signature behavior. Falcon does not accept EIP-712 request auth. The existing timestamp skew and replay checks apply to both formats.
+- The typed request message displays a hash, not the decoded HTTP operation or proposal. The client must show the transaction details separately before prompting a hardware wallet.
 
 ### Lookup Request Signing
 
 The `GET /state/lookup` endpoint and the matching `GetAccountByKeyCommitment` gRPC method use a dedicated, account-less signed-message format because the account ID is the very value the caller is trying to discover. The format is **domain-separated by construction** from `Miden Request Signing` above so a signature crafted for one shape cannot validate against the other in either direction.
+This endpoint currently accepts only raw Falcon or ECDSA signatures; it rejects `x-auth-format: eip712`.
 
 - Domain tag: `DOMAIN_TAG = RPO256(felts(b"guardian.lookup.v1"))` — a fixed 4-felt word, computed once and embedded in the binary. Future incompatible changes MUST bump the version segment.
 - Signed message format: `RPO256_hash([DOMAIN_TAG_w0..w3, timestamp_ms, key_commitment_w0..w3])`.
@@ -242,6 +245,8 @@ EVM proposal response:
   "signature": { "scheme": "ecdsa", "signature": "0x...", "public_key": "0x..." }
 }
 ```
+
+For an EIP-712 Miden approval, the same endpoint and envelope use `"message_format": "eip712"` inside the ECDSA signature. The signed type is `MidenTransaction(bytes32 txSummaryHash)` under `{ name: "Miden Transaction", version: "1" }`. `txSummaryHash` is the transaction-summary commitment encoded as four little-endian `u64` field elements. The ECDSA signature is `r || s || v`; Guardian accepts `v` as `0/1` or `27/28` and verifies the approval against the stored summary and the request signer. The request-auth signature remains a separate signature over `GuardianRequest`.
 
 - Miden Falcon signer IDs are signer commitments.
 - Miden ECDSA signer IDs are signer commitments.

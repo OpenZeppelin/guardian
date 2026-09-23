@@ -588,6 +588,7 @@ export class GuardianHttpClient {
           'x-pubkey': this.signer.publicKey,
           'x-signature': signature,
           'x-timestamp': timestamp.toString(),
+          ...(this.signer.requestAuthFormat ? { 'x-auth-format': this.signer.requestAuthFormat } : {}),
         },
       });
     } catch (err) {

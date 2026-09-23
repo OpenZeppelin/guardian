@@ -7,6 +7,7 @@ export interface ServerEcdsaSignature {
   scheme: 'ecdsa';
   signature: string;
   public_key?: string;
+  message_format?: 'eip712';
 }
 
 export type ServerProposalSignature = ServerFalconSignature | ServerEcdsaSignature;

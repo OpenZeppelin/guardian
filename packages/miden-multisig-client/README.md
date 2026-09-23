@@ -75,6 +75,22 @@ const client = new MultisigClient(midenClient, {
 });
 ```
 
+For an ECDSA cosigner using a Ledger-compatible EIP-1193 provider, call
+`LedgerSigner.connect(provider)` once to select the Ethereum address and
+recover its secp256k1 public key from a dedicated key-discovery signature.
+Alternatively, pass an already-enrolled public key and its matching address
+to `new LedgerSigner(provider, publicKeyHex, address)`. Use the resulting signer
+with the same `client.load(accountId, signer)` and `multisig.signProposal(id)`
+flow as a raw signer. The proposal approval and its Guardian submission each
+require a separate `eth_signTypedData_v4` signature; authenticated reads in
+the flow also prompt the device. All signatures use the enrolled key; no
+separate Guardian signing endpoint is needed. The device displays hashes,
+not human-readable transferred assets. `recoverByKey` is not supported by
+this signer because the lookup endpoint currently accepts only raw signatures.
+EIP-712 execution requires an account compiled with the Miden 0.17 multisig
+authentication component; changing Guardian's signature format does not upgrade
+an older account's code root.
+
 The nested `prover` configuration is optional. Without it, the injected Miden
 client's prover is preserved. By default, cloneable remote provers get two total
 attempts; endpoint-less injected provers, including local and callback provers,

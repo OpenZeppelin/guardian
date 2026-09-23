@@ -2,12 +2,16 @@
 
 use std::collections::HashSet;
 
-use guardian_shared::SignatureScheme;
+use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::FungibleAsset;
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature as EcdsaSignature};
+use miden_protocol::transaction::TransactionSummary;
+use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::Eip712TransactionSummary;
 use miden_standards::account::auth::MultisigAuthArgs;
 
 use crate::MidenSdkClient;
@@ -28,6 +32,7 @@ pub struct SignatureInput {
     pub scheme: SignatureScheme,
     /// Hex-encoded public key (required for ECDSA signatures).
     pub public_key_hex: Option<String>,
+    pub message_format: EcdsaMessageFormat,
 }
 
 /// Collects and validates cosigner signatures into advice entries.
@@ -46,6 +51,7 @@ pub fn collect_signature_advice(
     signatures: impl IntoIterator<Item = SignatureInput>,
     required_commitments: &HashSet<String>,
     tx_summary_commitment: Word,
+    tx_summary: Option<&TransactionSummary>,
 ) -> Result<Vec<SignatureAdvice>> {
     let mut advice = Vec::new();
     let mut added_signers: HashSet<String> = HashSet::new();
@@ -67,19 +73,74 @@ pub fn collect_signature_advice(
         let commitment =
             word_from_hex(&sig_input.signer_commitment).map_err(MultisigError::HexDecode)?;
 
-        let signature = sig_input
-            .scheme
-            .parse_signature_hex(&ensure_hex_prefix(&sig_input.signature_hex))
-            .map_err(MultisigError::Signature)?;
-        let entry = sig_input
-            .scheme
-            .build_signature_advice_entry(
-                commitment,
-                tx_summary_commitment,
-                &signature,
-                sig_input.public_key_hex.as_deref(),
-            )
-            .map_err(MultisigError::Signature)?;
+        let entry = if sig_input.message_format == EcdsaMessageFormat::Eip712 {
+            if sig_input.scheme != SignatureScheme::Ecdsa {
+                return Err(MultisigError::Signature(
+                    "EIP-712 requires ECDSA".to_string(),
+                ));
+            }
+            let summary = tx_summary.ok_or_else(|| {
+                MultisigError::Signature("EIP-712 requires the transaction summary".to_string())
+            })?;
+            if summary.to_commitment() != tx_summary_commitment {
+                return Err(MultisigError::Signature(
+                    "transaction summary commitment mismatch".to_string(),
+                ));
+            }
+            let public_key_hex = sig_input.public_key_hex.as_deref().ok_or_else(|| {
+                MultisigError::Signature("EIP-712 requires a public key".to_string())
+            })?;
+            let public_key_bytes =
+                hex::decode(public_key_hex.trim_start_matches("0x")).map_err(|e| {
+                    MultisigError::Signature(format!("invalid EIP-712 public key: {e}"))
+                })?;
+            let public_key = PublicKey::read_from_bytes(&public_key_bytes).map_err(|e| {
+                MultisigError::Signature(format!("invalid EIP-712 public key: {e}"))
+            })?;
+            if public_key.to_commitment() != commitment {
+                return Err(MultisigError::Signature(
+                    "EIP-712 public-key commitment mismatch".to_string(),
+                ));
+            }
+            let mut signature_bytes = hex::decode(sig_input.signature_hex.trim_start_matches("0x"))
+                .map_err(|e| MultisigError::Signature(format!("invalid EIP-712 signature: {e}")))?;
+            if signature_bytes.len() != 65 {
+                return Err(MultisigError::Signature(
+                    "EIP-712 signature must be 65 bytes".to_string(),
+                ));
+            }
+            signature_bytes[64] = match signature_bytes[64] {
+                0 | 1 => signature_bytes[64],
+                27 | 28 => signature_bytes[64] - 27,
+                _ => {
+                    return Err(MultisigError::Signature(
+                        "invalid EIP-712 recovery ID".to_string(),
+                    ));
+                }
+            };
+            let signature = EcdsaSignature::read_from_bytes(&signature_bytes)
+                .map_err(|e| MultisigError::Signature(format!("invalid EIP-712 signature: {e}")))?;
+            if !public_key.verify_prehash(summary.eip712_hash().into_bytes(), &signature) {
+                return Err(MultisigError::Signature(
+                    "EIP-712 signature does not match the proposal".to_string(),
+                ));
+            }
+            summary.eip712_signature_advice(&public_key, &signature)
+        } else {
+            let signature = sig_input
+                .scheme
+                .parse_signature_hex(&ensure_hex_prefix(&sig_input.signature_hex))
+                .map_err(MultisigError::Signature)?;
+            sig_input
+                .scheme
+                .build_signature_advice_entry(
+                    commitment,
+                    tx_summary_commitment,
+                    &signature,
+                    sig_input.public_key_hex.as_deref(),
+                )
+                .map_err(MultisigError::Signature)?
+        };
         advice.push(entry);
     }
 
@@ -245,7 +306,83 @@ pub async fn build_final_transaction_request(
 mod tests {
     use super::*;
     use miden_client::Serializable;
+    use miden_protocol::account::{
+        AccountDelta, AccountIdVersion, AccountStoragePatch, AccountType, AccountVaultDelta,
+        AssetCallbackFlag,
+    };
+    use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
+
+    #[test]
+    fn test_collect_mixed_raw_and_eip712_ecdsa_advice() {
+        let account_id = AccountId::dummy(
+            [3u8; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            AssetCallbackFlag::Disabled,
+        );
+        let delta = AccountDelta::new(
+            account_id,
+            AccountStoragePatch::default(),
+            AccountVaultDelta::default(),
+            None,
+            Felt::ZERO,
+        )
+        .unwrap();
+        let summary = TransactionSummary::new(
+            delta,
+            InputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+        );
+        let raw_key = SigningKey::new();
+        let eip_key = SigningKey::new();
+        let raw_signature = raw_key.sign(summary.to_commitment());
+        let eip_signature = eip_key.sign_prehash(summary.eip712_hash().into_bytes());
+        let mut eip_signature_bytes = eip_signature.to_bytes();
+        eip_signature_bytes[64] += 27;
+        let raw_commitment = raw_key.public_key().to_commitment();
+        let eip_commitment = eip_key.public_key().to_commitment();
+        let raw_hex = format!("0x{}", hex::encode(raw_commitment.to_bytes()));
+        let eip_hex = format!("0x{}", hex::encode(eip_commitment.to_bytes()));
+        let required = [raw_hex.clone(), eip_hex.clone()].into_iter().collect();
+        let inputs = vec![
+            SignatureInput {
+                signer_commitment: raw_hex,
+                signature_hex: format!("0x{}", hex::encode(raw_signature.to_bytes())),
+                scheme: SignatureScheme::Ecdsa,
+                public_key_hex: Some(format!(
+                    "0x{}",
+                    hex::encode(raw_key.public_key().to_bytes())
+                )),
+                message_format: EcdsaMessageFormat::Raw,
+            },
+            SignatureInput {
+                signer_commitment: eip_hex,
+                signature_hex: format!("0x{}", hex::encode(eip_signature_bytes)),
+                scheme: SignatureScheme::Ecdsa,
+                public_key_hex: Some(format!(
+                    "0x{}",
+                    hex::encode(eip_key.public_key().to_bytes())
+                )),
+                message_format: EcdsaMessageFormat::Eip712,
+            },
+        ];
+
+        let advice =
+            collect_signature_advice(inputs, &required, summary.to_commitment(), Some(&summary))
+                .unwrap();
+        assert_eq!(advice.len(), 2);
+        assert_eq!(
+            advice[1],
+            summary.eip712_signature_advice(&eip_key.public_key(), &eip_signature)
+        );
+        assert_ne!(advice[0].0, advice[1].0);
+    }
 
     #[test]
     fn test_collect_signature_advice_filters_by_required() {
@@ -259,10 +396,11 @@ mod tests {
             signature_hex: "0x1234".to_string(),
             scheme: SignatureScheme::Falcon,
             public_key_hex: None,
+            message_format: EcdsaMessageFormat::Raw,
         }];
 
         // Unknown signer should be filtered out
-        let result = collect_signature_advice(signatures, &required, Word::default());
+        let result = collect_signature_advice(signatures, &required, Word::default(), None);
         // This will fail on signature parsing, but validates filtering happens first
         // In production, only valid signatures would be provided
         assert!(result.is_ok()); // Empty vec since unknown was filtered
@@ -279,18 +417,20 @@ mod tests {
                 signature_hex: "0x1234".to_string(),
                 scheme: SignatureScheme::Falcon,
                 public_key_hex: None,
+                message_format: EcdsaMessageFormat::Raw,
             },
             SignatureInput {
                 signer_commitment: "0xabc".to_string(), // lowercase duplicate
                 signature_hex: "0x5678".to_string(),
                 scheme: SignatureScheme::Falcon,
                 public_key_hex: None,
+                message_format: EcdsaMessageFormat::Raw,
             },
         ];
 
         // Both will fail signature parsing, but second should be deduplicated
         // before reaching that point (based on lowercase comparison)
-        let result = collect_signature_advice(signatures, &required, Word::default());
+        let result = collect_signature_advice(signatures, &required, Word::default(), None);
         // Will error on first sig parse since it's not a valid Falcon sig,
         // but the dedup logic is what we're testing
         assert!(result.is_err()); // Error on invalid sig, but only one attempt
@@ -313,9 +453,11 @@ mod tests {
             signature_hex,
             scheme: SignatureScheme::Falcon,
             public_key_hex: None,
+            message_format: EcdsaMessageFormat::Raw,
         }];
 
-        let advice = collect_signature_advice(signatures, &required, msg).expect("valid advice");
+        let advice =
+            collect_signature_advice(signatures, &required, msg, None).expect("valid advice");
         assert_eq!(advice.len(), 1);
     }
 }

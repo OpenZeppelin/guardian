@@ -170,6 +170,7 @@ message ProposalSignature {
   string scheme = 1;
   string signature = 2;
   optional string public_key = 3;
+  string message_format = 4; // Empty means raw for existing clients.
 }
 
 // Delta object
