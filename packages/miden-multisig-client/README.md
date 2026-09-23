@@ -80,8 +80,9 @@ For an ECDSA cosigner using a Ledger-compatible EIP-1193 provider, call
 recover its secp256k1 public key from a dedicated key-discovery signature.
 Alternatively, pass an already-enrolled public key and its matching address
 to `new LedgerSigner(provider, publicKeyHex, address)`. Use the resulting signer
-with the same `client.load(accountId, signer)` and `multisig.signProposal(id)`
-flow as a raw signer. The proposal approval and its Guardian submission each
+with the same `client.load(accountId, signer)`, proposal-creation methods, and
+`multisig.signProposal(id)` flow as a raw signer. The Ledger user can create
+the proposal, then approve it. The approval and Guardian submission each
 require a separate `eth_signTypedData_v4` signature; authenticated reads in
 the flow also prompt the device. All signatures use the enrolled key; no
 separate Guardian signing endpoint is needed. The device displays hashes,

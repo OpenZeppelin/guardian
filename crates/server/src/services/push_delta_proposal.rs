@@ -424,6 +424,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_push_delta_proposal_with_eip712_proposer() {
+        use crate::metadata::auth::RequestAuthFormat;
+        use guardian_shared::auth_request_eip712::request_digest;
+        use guardian_shared::auth_request_message::AuthRequestMessage;
+        use guardian_shared::auth_request_payload::AuthRequestPayload;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
+        use miden_protocol::utils::serde::Serializable;
+
+        let (state, storage, network, metadata) = create_test_state();
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let key = SigningKey::new();
+        let public_key = key.public_key();
+        let public_key_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+        let proposer_id = format!("0x{}", hex::encode(public_key.to_commitment().to_bytes()));
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenEcdsa {
+                cosigner_commitments: vec![proposer_id.clone()],
+            },
+        ))));
+        let storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x123".to_string(),
+            account_json,
+        )));
+        let _network = network.with_verify_delta(Ok(()));
+
+        let delta_payload = serde_json::json!({
+            "tx_summary": delta_fixture["delta_payload"],
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [proposer_id]
+            }
+        });
+        let body = serde_json::json!({
+            "account_id": account_id,
+            "nonce": 1,
+            "delta_payload": delta_payload,
+        });
+        let payload = AuthRequestPayload::from_json_serializable(&body).unwrap();
+        let timestamp = state.clock.now().timestamp_millis();
+        let request_hash =
+            AuthRequestMessage::from_account_id_hex(&account_id, timestamp, payload.clone())
+                .unwrap()
+                .to_word();
+        let signature = key.sign_prehash(request_digest(request_hash));
+
+        let result = push_delta_proposal(
+            &state,
+            PushDeltaProposalParams {
+                account_id,
+                nonce: 1,
+                delta_payload,
+                credentials: Credentials::signature(
+                    public_key_hex,
+                    format!("0x{}", hex::encode(signature.to_bytes())),
+                    timestamp,
+                )
+                .with_auth_format(RequestAuthFormat::Eip712)
+                .with_request_payload(payload),
+            },
+        )
+        .await
+        .unwrap();
+
+        match result.delta.status {
+            DeltaStatus::Pending {
+                proposer_id: actual,
+                cosigner_sigs,
+                ..
+            } => {
+                assert_eq!(actual, proposer_id);
+                assert!(cosigner_sigs.is_empty());
+            }
+            _ => panic!("expected pending proposal"),
+        }
+        assert_eq!(storage.get_submit_delta_proposal_calls().len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_push_delta_proposal_accepts_custom_proposal_type() {
         // Issue #266: a proposal_type outside the first-party set (e.g. an
         // agglayer bridge note) must be accepted at ingress — the old
