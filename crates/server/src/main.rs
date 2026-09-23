@@ -52,11 +52,11 @@ async fn main() {
                 .with_retained_ttl_seconds_from_env()
                 .expect("Invalid retained TTL configuration")
                 .with_reconcile_interval_seconds_from_env()
-                .expect("Invalid reconcile interval configuration")
-                .with_release_sweep_enabled_from_env()
-                .expect("Invalid release sweep configuration")
-                .with_release_sweep_interval_seconds_from_env()
-                .expect("Invalid release sweep interval configuration"),
+                .expect("Invalid reconcile interval configuration"),
+        ))
+        .with_release_sweep(Some(
+            server::release_sweep::ReleaseSweepConfig::from_env()
+                .expect("Invalid release sweep configuration"),
         ))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())
