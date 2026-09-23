@@ -16,6 +16,8 @@
 mod account;
 #[cfg(test)]
 mod anchor_binding_tests;
+#[cfg(test)]
+mod canonical_nonce_sync_tests;
 mod delta_history;
 #[cfg(test)]
 mod endpoint_scheme_tests;

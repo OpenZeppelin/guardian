@@ -1798,6 +1798,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_nonce_tracks_applied_deltas() {
+        let network = NetworkType::MidenTestnet;
+        let client = MidenNetworkClient::lazy_for_test(network);
+
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse account fixture");
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::DELTA_1_JSON)
+                .expect("Failed to parse delta fixture");
+        let delta_payload = delta_fixture
+            .get("delta_payload")
+            .expect("delta_payload field missing");
+
+        let before = client
+            .account_nonce(&account_json)
+            .expect("account_nonce should succeed on the fixture")
+            .expect("a Miden account always carries a nonce");
+
+        let (after_json, _) = client
+            .apply_delta(&account_json, delta_payload)
+            .expect("apply_delta should succeed");
+        let after = client
+            .account_nonce(&after_json)
+            .expect("account_nonce should succeed after apply_delta")
+            .expect("a Miden account always carries a nonce");
+        assert!(
+            after > before,
+            "applying a delta must advance the nonce ({before} -> {after})"
+        );
+    }
+
+    #[tokio::test]
     async fn test_apply_delta_full_state() {
         use miden_protocol::Felt;
         use miden_protocol::account::AccountDelta;

@@ -69,6 +69,20 @@ console.log('Commitment:', state.commitment);
 console.log('State data:', state.state_json.data);
 ```
 
+### Get Canonical Nonce
+
+Nonce and commitment of the latest canonical state, without the state blob
+(`GET /state/nonce`). A local account whose nonce is at or above the returned
+nonce is not behind Guardian, so the full `getState` fetch can be skipped;
+the multisig SDK's `syncState()` runs this pre-check for you.
+
+```typescript
+const head = await client.getCanonicalNonce(accountId);
+if (head.nonce > localNonce) {
+  const state = await client.getState(accountId);
+}
+```
+
 ### Abandon a Stuck Candidate
 
 If an approved transaction died client-side after guardian approval, its

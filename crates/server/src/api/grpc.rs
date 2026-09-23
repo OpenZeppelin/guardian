@@ -2,8 +2,8 @@ use crate::delta_object::{DeltaObject, ProposalSignature};
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials, ExtractCredentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaHistoryParams, GetDeltaParams, GetDeltaProposalParams,
-    GetStateParams, LookupAccountParams, PushDeltaParams,
+    self, ConfigureAccountParams, GetCanonicalNonceParams, GetDeltaHistoryParams, GetDeltaParams,
+    GetDeltaProposalParams, GetStateParams, LookupAccountParams, PushDeltaParams,
 };
 use crate::state::AppState;
 use guardian_shared::SignatureScheme;
@@ -227,6 +227,32 @@ impl Guardian for GuardianService {
                 success: true,
                 message: "State retrieved successfully".to_string(),
                 state: Some(state_to_proto(&response.state)),
+                error_code: String::new(),
+            })),
+            Err(e) => Err(Status::from(e)),
+        }
+    }
+
+    async fn get_canonical_nonce(
+        &self,
+        request: Request<GetCanonicalNonceRequest>,
+    ) -> Result<Response<GetCanonicalNonceResponse>, Status> {
+        let auth = authenticated_request(&request)?;
+
+        let req = request.into_inner();
+
+        let params = GetCanonicalNonceParams {
+            account_id: req.account_id,
+            credentials: auth,
+        };
+
+        match services::get_canonical_nonce(&self.app_state, params).await {
+            Ok(response) => Ok(Response::new(GetCanonicalNonceResponse {
+                success: true,
+                message: "Canonical nonce retrieved successfully".to_string(),
+                account_id: response.account_id,
+                nonce: response.nonce,
+                commitment: response.commitment,
                 error_code: String::new(),
             })),
             Err(e) => Err(Status::from(e)),

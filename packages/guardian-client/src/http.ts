@@ -21,11 +21,13 @@ import type {
   Signer,
   StateObject,
   StatusResponse,
+  CanonicalNonce,
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
 import type {
   ServerAbandonCandidateRequest,
   ServerAbandonCandidateResponse,
+  ServerCanonicalNonceResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
   ServerHistoryPage,
@@ -38,6 +40,7 @@ import type {
   ServerStatusResponse,
 } from './server-types.js';
 import {
+  fromServerCanonicalNonce,
   fromServerConfigureResponse,
   fromServerDeltaObject,
   fromServerHistoryPage,
@@ -292,6 +295,21 @@ export class GuardianHttpClient {
     }, accountId, requestQuery);
     const server = (await response.json()) as ServerStateObject;
     return fromServerStateObject(server);
+  }
+
+  /**
+   * Nonce and commitment of the latest canonical state, without the state
+   * blob (`GET /state/nonce`). A local account whose nonce is at or above
+   * the returned nonce is not behind GUARDIAN and can skip `getState`.
+   */
+  async getCanonicalNonce(accountId: string): Promise<CanonicalNonce> {
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/state/nonce?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery);
+    const server = (await response.json()) as ServerCanonicalNonceResponse;
+    return fromServerCanonicalNonce(server);
   }
 
   /**

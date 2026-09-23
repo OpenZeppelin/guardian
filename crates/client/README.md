@@ -43,6 +43,21 @@ assert_eq!(response.state, "pending");
 let delta = client.get_delta(&account_id, nonce).await?;
 ```
 
+### Canonical Nonce
+
+Nonce and commitment of the latest canonical state, without the state blob
+(issue #191). It is the cheap pre-check the multisig SDK's `sync` runs before
+`get_state`: a local account whose nonce is at or above the returned nonce is
+not behind Guardian, so the full state fetch can be skipped.
+
+```rust
+let head = client.get_canonical_nonce(&account_id).await?;
+if head.nonce > local_nonce {
+    let state = client.get_state(&account_id).await?;
+    // reconcile the local store with `state`
+}
+```
+
 ### Delta History
 
 Paginated canonical delta history (issue #413), newest-first by nonce, with

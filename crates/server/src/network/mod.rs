@@ -358,7 +358,9 @@ pub trait NetworkClient: Send + Sync {
     /// The nonce of the account state in `state_json`, or `Ok(None)` when
     /// the network has no such notion. The release sweep compares it with
     /// the nonce of an on-chain read: a read older than the stored state
-    /// is stale and never evidence of a switch. The default is `Ok(None)`.
+    /// is stale and never evidence of a switch. The canonical-nonce
+    /// pre-check (issue #191) serves it without shipping the blob. The
+    /// default is `Ok(None)`.
     fn account_nonce(&self, state_json: &serde_json::Value) -> Result<Option<u64>, String> {
         let _ = state_json;
         Ok(None)
