@@ -305,23 +305,45 @@ export QUAL_OPERATOR_ALLOWLIST
 
 qual_install_teardown_trap "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${RUN_DIR}"
 
+# Redaction runs over everything retained, not just diagnostics, and the scan
+# gates the release marker. CI uploads artifacts only when that marker exists,
+# so a failed scan cannot be followed by an upload of the thing that failed it.
+seal_artifacts() {
+  echo "==> redacting and scanning artifacts"
+  mkdir -p "${OUT_DIR}"
+  rm -f "${OUT_DIR}/.scan-passed"
+  qual_redact_dir "${OUT_DIR}"
+  if ! qual_scan_for_secrets "${OUT_DIR}" "${QUAL_POSTGRES_PASSWORD}" "${QUAL_TREASURY_KEY:-}"; then
+    echo "error: a configured secret reached a retained artifact" >&2
+    find "${OUT_DIR}" -type f -delete 2>/dev/null || true
+    return 1
+  fi
+  touch "${OUT_DIR}/.scan-passed"
+}
+
+# A stack that never became ready is exactly when its logs are wanted, so they
+# go through the same scan as a finished run's rather than being captured and
+# then left out of the upload for want of the marker.
+stack_setup_failed() {
+  qual_capture_diagnostics "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${OUT_DIR}/diagnostics"
+  seal_artifacts || true
+  exit "${EXIT_SETUP_FAILURE}"
+}
+
 echo "==> starting the stack (project ${QUAL_PROJECT})"
 if ! docker compose -p "${QUAL_PROJECT}" -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" up -d --wait --wait-timeout 180; then
-  qual_capture_diagnostics "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${OUT_DIR}/diagnostics"
   echo "error: the stack did not start" >&2
-  exit "${EXIT_SETUP_FAILURE}"
+  stack_setup_failed
 fi
 
 echo "==> waiting for readiness on ports ${QUAL_HTTP_PORT} and ${QUAL_GRPC_PORT}"
 if ! qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180; then
-  qual_capture_diagnostics "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${OUT_DIR}/diagnostics"
-  exit "${EXIT_SETUP_FAILURE}"
+  stack_setup_failed
 fi
 
 echo "==> waiting for the migration target on ports ${QUAL_HTTP_PORT_B} and ${QUAL_GRPC_PORT_B}"
 if ! qual_wait_ready "${QUAL_HTTP_PORT_B}" "${QUAL_GRPC_PORT_B}" 180; then
-  qual_capture_diagnostics "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${OUT_DIR}/diagnostics"
-  exit "${EXIT_SETUP_FAILURE}"
+  stack_setup_failed
 fi
 # The Rust SDK speaks gRPC to GUARDIAN and the TypeScript SDK speaks HTTP, so
 # one shared endpoint would send one of them to a listener that cannot answer.
@@ -331,8 +353,7 @@ export QUAL_GUARDIAN_MIGRATION_GRPC QUAL_GUARDIAN_MIGRATION_HTTP
 
 echo "==> waiting for the scheme-gated server on ports ${QUAL_HTTP_PORT_C} and ${QUAL_GRPC_PORT_C}"
 if ! qual_wait_ready "${QUAL_HTTP_PORT_C}" "${QUAL_GRPC_PORT_C}" 180; then
-  qual_capture_diagnostics "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${OUT_DIR}/diagnostics"
-  exit "${EXIT_SETUP_FAILURE}"
+  stack_setup_failed
 fi
 QUAL_GUARDIAN_SCHEME_GATED_GRPC="http://127.0.0.1:${QUAL_GRPC_PORT_C}"
 QUAL_GUARDIAN_SCHEME_GATED_HTTP="http://127.0.0.1:${QUAL_HTTP_PORT_C}"
@@ -388,8 +409,9 @@ print(sum(1 for s in scenarios if s['profile'] == 'live'))
   export QUAL_SPEND_CAP
   echo "==> capping this run at ${QUAL_SPEND_CAP} units"
   # Cleared per run: the tally lives beside the treasury lock so it can span the
-  # processes the TypeScript leg spawns, which also means it would otherwise
-  # carry the previous run's spending into this one.
+  # processes the TypeScript leg spawns. It is keyed by QUAL_RUN_ID, so this
+  # clears only this run's, and a reused run id cannot carry an earlier run's
+  # spending into this one.
   "${DRIVER[@]}" spend-reset --network "${NETWORK}" >/dev/null 2>&1 || true
 fi
 
@@ -412,14 +434,16 @@ DRIVER_ARGS=(
 DRIVER_ARGS+=(--sdk rust)
 [[ -n "${REQUESTED_BY}" ]] && DRIVER_ARGS+=(--requested-by "${REQUESTED_BY}")
 (( CORE_ONLY == 1 )) && DRIVER_ARGS+=(--core-only)
-(( FILTERED == 1 )) && DRIVER_ARGS+=(--filtered)
 
 # Kept out of DRIVER_ARGS so a phase can ask for a different set. Only the seed
-# phase does, and it is the reason this is separable at all.
+# phase does, and it is the reason this is separable at all. `--filtered` goes
+# with the selection it describes: in DRIVER_ARGS it reached the seed phase a
+# second time beside the seed's own, and clap refuses a repeated flag.
 SELECTED_SCENARIOS=()
 for scenario in "${SCENARIOS[@]+"${SCENARIOS[@]}"}"; do
   SELECTED_SCENARIOS+=(--scenario "${scenario}")
 done
+(( FILTERED == 1 )) && SELECTED_SCENARIOS+=(--filtered)
 
 # What the seed phase runs: the scenarios that write rows an upgrade has to
 # find again, and nothing else.
@@ -468,8 +492,13 @@ if [[ -n "${UPGRADE_FROM}" ]]; then
   fi
 
   echo "==> upgrading from ${UPGRADE_FROM} to the image under test"
+  # All three are recreated on the new image, so all three are waited for: a
+  # migration target or scheme-gated server still booting would fail its
+  # scenario as though the image under test had refused it.
   if ! qual_swap_server_image "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${SERVER_IMAGE}" \
-     || ! qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180; then
+     || ! qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180 \
+     || ! qual_wait_ready "${QUAL_HTTP_PORT_B}" "${QUAL_GRPC_PORT_B}" 180 \
+     || ! qual_wait_ready "${QUAL_HTTP_PORT_C}" "${QUAL_GRPC_PORT_C}" 180; then
     # Refusing to boot on an older release's data is the defect this looks
     # for, so it is a product failure rather than a setup problem.
     echo "error: the image under test did not become ready on the upgraded database" >&2
@@ -557,18 +586,7 @@ if (( DRIVER_EXIT != 0 )); then
   qual_capture_diagnostics "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${OUT_DIR}/diagnostics"
 fi
 
-# Redaction runs over everything retained, not just diagnostics, and the scan
-# gates the release marker. CI uploads artifacts only when that marker exists,
-# so a failed scan cannot be followed by an upload of the thing that failed it.
-echo "==> redacting and scanning artifacts"
-rm -f "${OUT_DIR}/.scan-passed"
-qual_redact_dir "${OUT_DIR}"
-if ! qual_scan_for_secrets "${OUT_DIR}" "${QUAL_POSTGRES_PASSWORD}" "${QUAL_TREASURY_KEY:-}"; then
-  echo "error: a configured secret reached a retained artifact" >&2
-  find "${OUT_DIR}" -type f -delete 2>/dev/null || true
-  exit "${EXIT_SETUP_FAILURE}"
-fi
-touch "${OUT_DIR}/.scan-passed"
+seal_artifacts || exit "${EXIT_SETUP_FAILURE}"
 
 # After the scan, deliberately. A reason is scenario text rather than anything
 # configured, but printing artifacts before the thing that gates them is how a

@@ -24,5 +24,10 @@ qual_teardown() {
 qual_install_teardown_trap() {
   local project="$1" compose_file="$2" env_file="$3" run_dir="${4:-}"
   # shellcheck disable=SC2064
-  trap "qual_teardown '${project}' '${compose_file}' '${env_file}' '${run_dir}'" EXIT INT TERM
+  trap "qual_teardown '${project}' '${compose_file}' '${env_file}' '${run_dir}'" EXIT
+  # A signal exits, and the exit runs the teardown once. Tearing down in the
+  # signal trap itself returned to the script afterwards, so an interrupted run
+  # carried on driving scenarios against the stack it had just removed.
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 }

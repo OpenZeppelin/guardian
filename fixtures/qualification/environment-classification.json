@@ -15,7 +15,17 @@
     "socket hang up",
     "fetch failed",
     "err_http2_stream_error",
-    "invalid content type: application/grpc"
+    "invalid content type: application/grpc",
+    "the service is currently unavailable",
+    "the operation was cancelled",
+    "the deadline expired before the operation could complete",
+    "deadline exceeded",
+    "i/o timeout",
+    "connection reset",
+    "broken pipe",
+    "bad gateway",
+    "gateway timeout",
+    "service unavailable"
   ],
   "reasons": [
     {
@@ -106,6 +116,21 @@
     {
       "name": "a proving failure with no transport evidence is the product answering",
       "reason": "executing the proposal failed: transaction proving failed: constraint evaluation failed at step 42",
+      "environmental": false
+    },
+    {
+      "name": "a GUARDIAN 500 on delta history behind the driver's own wording",
+      "reason": "the proposal left the pending set without becoming canonical: delta history unavailable: gRPC Internal server error",
+      "environmental": false
+    },
+    {
+      "name": "a server message about a quorum timeout is the product answering",
+      "reason": "executing the proposal failed: timeout waiting for quorum",
+      "environmental": false
+    },
+    {
+      "name": "a bare cancellation is not evidence of the link",
+      "reason": "the proposal was cancelled by its proposer before execution",
       "environmental": false
     }
   ]

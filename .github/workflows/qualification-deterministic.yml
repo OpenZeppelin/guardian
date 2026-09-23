@@ -45,7 +45,7 @@ jobs:
   deterministic:
     name: Deterministic Profile
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     if: github.repository_owner == 'OpenZeppelin'
     steps:
       - name: Harden the runner (Audit all outbound calls)

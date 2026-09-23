@@ -1,4 +1,4 @@
-import { isTransientError } from '../../src/retry/classify.js';
+import { grpcMessageEvidence, httpMessageEvidence } from '../../src/retry/classify.js';
 
 /**
  * Tells the network the suite runs over apart from the product it tests.
@@ -10,20 +10,28 @@ import { isTransientError } from '../../src/retry/classify.js';
  * how a nightly schedule stops being read, so a failure whose evidence points
  * at the link is reported as environment-blocked instead.
  *
- * The rule is `isTransientError` unchanged, which is itself the mirror of the
- * Rust `guardian-shared` classifier. The Rust driver applies the same rule, and
- * both are pinned to `fixtures/qualification/environment-classification.json`.
+ * Status evidence is read the way `isTransientError` reads it: permanent
+ * anywhere vetoes transient anywhere. Its generic wording fallback
+ * (`unavailable`, `timeout`, `cancelled`, ...) is not used. A reason is the
+ * driver's own sentence wrapped around whatever it caught, and those words turn
+ * up in both halves, so a GUARDIAN 500 behind `delta history unavailable` or a
+ * server message about a quorum timeout would otherwise stop blocking the
+ * nightly. Only `ENVIRONMENT_SIGNALS`, each specific to a failing link, stands
+ * in for a missing status. The Rust driver applies the same rule, and both are
+ * pinned to `fixtures/qualification/environment-classification.json`.
  */
 
 /**
- * Transport wording the shared fallback does not carry: the node-RPC transport
- * signals plus the operating-system and runtime error names that reach the
- * driver as bare text through the WASM boundary, where the typed cause is
- * already lost.
+ * Wording that stands in for a missing status: the node-RPC transport signals,
+ * the operating-system and runtime error names that reach the driver as bare
+ * text through the WASM boundary, where the typed cause is already lost,
+ * tonic's rendering of the transient gRPC codes, and the link-specific part of
+ * the retry fallback.
  *
  * Every entry must be unambiguous evidence of a link failure. Guardian's own
- * error codes travel in these same strings, so wording a scenario could assert
- * on (`network_error`, for one) stays out deliberately.
+ * error codes and messages travel in these same strings, so wording a scenario
+ * could assert on (`network_error`, for one) or a bare `timeout` or
+ * `unavailable` stays out deliberately.
  */
 export const ENVIRONMENT_SIGNALS: readonly string[] = [
   'connection error',
@@ -41,9 +49,23 @@ export const ENVIRONMENT_SIGNALS: readonly string[] = [
   'fetch failed',
   'err_http2_stream_error',
   'invalid content type: application/grpc',
+  'the service is currently unavailable',
+  'the operation was cancelled',
+  'the deadline expired before the operation could complete',
+  'deadline exceeded',
+  'i/o timeout',
+  'connection reset',
+  'broken pipe',
+  'bad gateway',
+  'gateway timeout',
+  'service unavailable',
 ];
 
 /** Whether a failure reason is the environment failing under the suite. */
 export function isEnvironmental(reason: string): boolean {
-  return isTransientError(reason, ENVIRONMENT_SIGNALS);
+  const message = reason.toLowerCase();
+  const evidence = [httpMessageEvidence(message), grpcMessageEvidence(message)];
+  if (evidence.includes('permanent')) return false;
+  if (evidence.includes('transient')) return true;
+  return ENVIRONMENT_SIGNALS.some((signal) => message.includes(signal));
 }

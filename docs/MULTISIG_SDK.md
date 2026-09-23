@@ -593,6 +593,15 @@ console.log('Signers:', detected.signerCommitments);
 console.log('Vault balances:', detected.vaultBalances);
 ```
 
+`load()` reconciles GUARDIAN's account with the local store under the same
+rule `syncState()` uses: it keeps local state when GUARDIAN is behind (a pushed
+delta not yet canonicalized), adopts GUARDIAN's when it is ahead and matches the
+on-chain commitment, and throws on divergence. Loading an account that has
+transacted into an empty store reads its commitment from the Miden node, so the
+node must be reachable, and it throws while GUARDIAN's canonical state still
+lags the chain; retry once GUARDIAN has canonicalized. The Rust `pull_account`
+does not reconcile (see below).
+
 ### Delta History
 
 Guardian retains the account's canonical delta history, allowing a wallet to
@@ -1209,6 +1218,11 @@ println!("Threshold: {}", account.threshold()?);
 println!("Nonce: {}", account.nonce());
 println!("GUARDIAN commitment: {:?}", account.guardian_commitment()?);
 ```
+
+Unlike the TypeScript `load()`, `pull_account` overwrites the local store with
+GUARDIAN's state unconditionally, by design: it is for joining an account or
+discarding a store known to be bad. Use `sync_from_guardian` to refresh an
+account you intend to keep.
 
 ### Delta History
 

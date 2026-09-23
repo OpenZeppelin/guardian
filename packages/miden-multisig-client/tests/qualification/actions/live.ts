@@ -246,20 +246,60 @@ type Completion =
  * proposal leaves the pending set there is nothing left to read the nonce from,
  * so callers capture it before executing.
  */
-async function proposalNonce(session: LiveSession, proposalId: string): Promise<number | null> {
+async function proposalNonce(
+  session: LiveSession,
+  proposalId: string,
+): Promise<{ nonce: number } | { reason: string }> {
   try {
     const proposals = await session.multisig!.syncProposals();
     const mine = proposals.find((proposal) => proposal.id === proposalId);
-    return mine ? Number(mine.nonce) : null;
-  } catch {
-    return null;
+    return mine ? { nonce: Number(mine.nonce) } : { reason: `proposal ${proposalId} is not listed` };
+  } catch (error) {
+    return { reason: `listing proposals failed: ${String(error)}` };
   }
+}
+
+/**
+ * What ties an executed proposal's completion to that proposal: the nonce its
+ * canonical delta must land at, or, for a migration, chain agreement alone.
+ */
+type Binding = { kind: 'nonce'; nonce: number } | { kind: 'migration' };
+
+/**
+ * Reads the binding before executing, and refuses to execute without one.
+ *
+ * Completion cannot be confirmed without the nonce, so executing anyway spent
+ * the transaction, waited out the whole canonicalization deadline and then
+ * reported the product, for what was never more than a listing the harness
+ * could not read. An offline document carries the nonce it was signed at, so
+ * an offline proposal GUARDIAN never listed is still bound.
+ */
+async function bindExecution(
+  session: LiveSession,
+  proposalId: string,
+): Promise<Binding | { failure: ActionOutcome }> {
+  if (session.migrating) return { kind: 'migration' };
+  if (session.exportedProposal) {
+    const document = JSON.parse(session.exportedProposal) as { commitment?: unknown; nonce?: unknown };
+    if (document.commitment === proposalId && typeof document.nonce === 'number') {
+      return { kind: 'nonce', nonce: document.nonce };
+    }
+  }
+  const read = await proposalNonce(session, proposalId);
+  if ('nonce' in read) return { kind: 'nonce', nonce: read.nonce };
+  return {
+    failure: {
+      kind: 'failed',
+      classification: 'setup',
+      reason: `the proposal nonce could not be read before executing, so completion could not be bound to it; nothing was executed: ${read.reason}`,
+    },
+  };
 }
 
 async function waitForExecution(
   session: LiveSession,
   proposalId: string,
-  nonce: number | null,
+  binding: Binding,
 ): Promise<Completion> {
   const deadline = Date.now() + CANONICALIZATION_DEADLINE_MS;
   let wait = POLL_START_MS;
@@ -298,7 +338,7 @@ async function waitForExecution(
         // demanding it here would wait for something that cannot arrive.
         // Chain agreement plus the new GUARDIAN serving the account is what
         // completion means for this proposal type.
-        if (session.migrating) {
+        if (binding.kind === 'migration') {
           const state = await session.multisig!.syncState();
           if (state) return { kind: 'confirmed' };
           last = 'the new GUARDIAN does not serve the migrated account';
@@ -309,24 +349,16 @@ async function waitForExecution(
           // whose delta was discarded satisfies just as well: it never moved, so
           // it still agrees with chain and the *previous* delta still carries
           // that commitment. The nonce ties the answer to the delta under test.
-          //
-          // No nonce means no confirmation. The listing that reads it runs
-          // before execute, and a failure there is exactly when the unbound
-          // comparison would wrongly confirm, so it fails closed rather than
-          // falling back to it.
-          if (nonce === null) {
-            last = 'the proposal nonce could not be read before executing, so completion cannot be bound to it';
-          } else {
-            const history = await session.multisig!.deltaHistory({ limit: 20 });
-            const canonical = history.entries.some(
-              (entry) =>
-                entry.newCommitment &&
-                normalizeHex(entry.newCommitment) === commitment &&
-                Number(entry.nonce) === nonce,
-            );
-            if (canonical) return { kind: 'confirmed' };
-            last = `no canonical delta at nonce ${nonce} carries commitment ${commitment}`;
-          }
+          const { nonce } = binding;
+          const history = await session.multisig!.deltaHistory({ limit: 20 });
+          const canonical = history.entries.some(
+            (entry) =>
+              entry.newCommitment &&
+              normalizeHex(entry.newCommitment) === commitment &&
+              Number(entry.nonce) === nonce,
+          );
+          if (canonical) return { kind: 'confirmed' };
+          last = `no canonical delta at nonce ${nonce} carries commitment ${commitment}`;
         }
       } catch (error) {
         last = String(error);
@@ -436,7 +468,8 @@ export async function executeProposal(_context: ActionContext, scenarioId: strin
   const nonceBefore = await chainNonce(session);
   // Read before executing: once the proposal leaves the pending set there is
   // nothing left to read it from, and completion has to be bound to it.
-  const proposalLandsAt = await proposalNonce(session, session.proposalId);
+  const proposalLandsAt = await bindExecution(session, session.proposalId);
+  if ('failure' in proposalLandsAt) return proposalLandsAt.failure;
 
   try {
     // Signatures were added through the other cosigners' clients, so the
@@ -801,7 +834,8 @@ export async function consumeNote(
     };
   }
 
-  const consumeLandsAt = await proposalNonce(session, session.proposalId);
+  const consumeLandsAt = await bindExecution(session, session.proposalId);
+  if ('failure' in consumeLandsAt) return consumeLandsAt.failure;
 
   try {
     await session.cosigners[0].midenClient.sync();
@@ -2133,7 +2167,7 @@ export async function abandonAndAssertHidden(
   // other live scenario trusts its verdict. Ask it about a delta that really was
   // discarded, and it must say so rather than read the empty pending set as
   // completion.
-  const completion = await waitForExecution(session, proposalId, nonce);
+  const completion = await waitForExecution(session, proposalId, { kind: 'nonce', nonce });
   switch (completion.kind) {
     case 'discarded':
       return { kind: 'passed' };

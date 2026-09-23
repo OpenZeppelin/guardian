@@ -31,13 +31,14 @@ spends from, and the limits above.
 |---|---|---|
 | Rust `1.98.1` | builds the Rust driver | pinned in `rust-toolchain.toml`, so `rustup` selects it for you |
 | `protoc` | the driver's build tree includes `tonic-build` | a build failure mentioning protoc means this is missing |
-| Docker, daemon running | the stack: server, Postgres, RPC stub, migration target, scheme-gated server | Docker Desktop on macOS is supported; its bind mount can serve a torn view of a replaced file, which the allowlist reload now retries through |
+| Docker, daemon running | the stack: server, Postgres, RPC stub, migration target, scheme-gated server | Docker Desktop on macOS is supported; its bind mount can serve a torn view of a file rewritten in place, so the allowlist-reload scenario swaps the file with an atomic rename instead |
 | Node 18 or newer, `npm` | the TypeScript leg | |
 | `python3` | the shell harness parses JSON with it | any 3.x |
 | `curl` | health waits | |
 
-`libpq` is not needed. The driver's dependency tree contains no `pq-sys`; CI
-installs `libpq-dev` for the server jobs, not for this suite.
+`libpq` is not needed locally. The driver's dependency tree contains no
+`pq-sys`; the qualification workflows install `libpq-dev` alongside `protoc`
+anyway, so CI is not evidence either way.
 
 On macOS:
 

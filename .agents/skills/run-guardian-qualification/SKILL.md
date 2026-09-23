@@ -30,9 +30,12 @@ Do not reach for the full stack to debug a scenario body. It rebuilds an image.
 cargo build -p guardian-qualification-driver
 ```
 
-Every entry point shells out to `target/debug/qualification-driver`. Going
-through `cargo run` instead costs about 3.5s of build-graph checking per call
-and can stall on a rebuild in the middle of a chain operation.
+`qualification/stack/run.sh` invokes the driver through `cargo run`, which
+builds it if needed. The TypeScript leg's funding bridge does not: it shells out
+to `target/debug/qualification-driver` (override with `QUAL_DRIVER_BIN`),
+because `cargo run` costs about 3.5s of build-graph checking per call and can
+stall on a rebuild in the middle of a chain operation. The commands below use
+the built binary directly for the same reason.
 
 ## Fast path: one scenario, no Docker
 

@@ -35,8 +35,35 @@ fn spend_cap() -> anyhow::Result<Option<u64>> {
 /// account, so a counter held in a static would reset on every transfer and cap
 /// nothing. The tally is read and written under the treasury lock the caller
 /// already holds, which is the same lock that serialises the transfers.
+///
+/// Keyed by `QUAL_RUN_ID` as well, which every process in a run inherits. The
+/// lock is taken per transfer, not for the whole run, so a tally shared by two
+/// concurrent runs was capped jointly and zeroed by whichever of them started
+/// second.
 fn ledger_path(data_dir: &std::path::Path, network: NetworkName) -> std::path::PathBuf {
-    data_dir.join(format!("{}.spent", network.as_str()))
+    ledger_path_for(
+        data_dir,
+        network,
+        std::env::var("QUAL_RUN_ID").ok().as_deref(),
+    )
+}
+
+fn ledger_path_for(
+    data_dir: &std::path::Path,
+    network: NetworkName,
+    run_id: Option<&str>,
+) -> std::path::PathBuf {
+    let run = run_id
+        .map(|id| {
+            id.chars()
+                .filter(|character| character.is_ascii_alphanumeric() || "-_.".contains(*character))
+                .collect::<String>()
+        })
+        .filter(|id| !id.is_empty());
+    match run {
+        Some(run) => data_dir.join(format!("{}.{run}.spent", network.as_str())),
+        None => data_dir.join(format!("{}.spent", network.as_str())),
+    }
 }
 
 fn read_ledger(path: &std::path::Path) -> u64 {
@@ -146,7 +173,7 @@ mod tests {
     fn the_lock_and_the_ledger_share_one_directory() {
         let dir = std::path::Path::new(crate::funding::DEFAULT_TREASURY_DIR);
         assert_eq!(
-            ledger_path(dir, NetworkName::Testnet).parent(),
+            ledger_path_for(dir, NetworkName::Testnet, Some("qual-1")).parent(),
             Some(dir),
             "the ledger must sit in the treasury directory, not beside a run's accounts"
         );
@@ -156,8 +183,23 @@ mod tests {
     fn the_ledger_is_scoped_per_network() {
         let dir = std::path::Path::new("/tmp/probe");
         assert_ne!(
-            ledger_path(dir, NetworkName::Testnet),
-            ledger_path(dir, NetworkName::Devnet)
+            ledger_path_for(dir, NetworkName::Testnet, None),
+            ledger_path_for(dir, NetworkName::Devnet, None)
+        );
+    }
+
+    /// Two local runs against one treasury each reset and cap their own tally.
+    #[test]
+    fn the_ledger_is_scoped_per_run() {
+        let dir = std::path::Path::new("/tmp/probe");
+        assert_ne!(
+            ledger_path_for(dir, NetworkName::Testnet, Some("qual-a")),
+            ledger_path_for(dir, NetworkName::Testnet, Some("qual-b"))
+        );
+        assert_eq!(
+            ledger_path_for(dir, NetworkName::Testnet, Some("../qual-a")),
+            dir.join("testnet...qual-a.spent"),
+            "a run id cannot steer the ledger out of the treasury directory"
         );
     }
 }

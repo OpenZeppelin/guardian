@@ -165,24 +165,29 @@ pub async fn cosign_with_typescript(request: TypescriptCosign) -> anyhow::Result
 /// crash dump that echoed the environment would otherwise reach a CI log
 /// unredacted.
 fn captured(stream: &[u8]) -> String {
+    redacted_and_bounded(stream, std::env::var("QUAL_TREASURY_KEY").ok().as_deref())
+}
+
+/// Redacts before it bounds. Cutting first can split the secret across the
+/// limit, and the fragment left on the kept side no longer matches the whole
+/// value, so it survives both this replacement and the post-run scan, which
+/// also looks only for the whole value.
+fn redacted_and_bounded(stream: &[u8], secret: Option<&str>) -> String {
     const LIMIT: usize = 4096;
 
-    let text = String::from_utf8_lossy(stream);
-    let mut kept = match text.char_indices().nth(LIMIT) {
-        Some((cut, _)) => format!("{}… [truncated at {LIMIT} characters]", &text[..cut]),
-        None => text.into_owned(),
-    };
-    if let Ok(secret) = std::env::var("QUAL_TREASURY_KEY")
-        && !secret.is_empty()
-    {
-        kept = kept.replace(&secret, "[redacted]");
+    let mut text = String::from_utf8_lossy(stream).into_owned();
+    if let Some(secret) = secret.filter(|secret| !secret.is_empty()) {
+        text = text.replace(secret, "[redacted]");
     }
-    kept
+    match text.char_indices().nth(LIMIT) {
+        Some((cut, _)) => format!("{}… [truncated at {LIMIT} characters]", &text[..cut]),
+        None => text,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::captured;
+    use super::{captured, redacted_and_bounded};
 
     #[test]
     fn short_output_is_passed_through() {
@@ -210,5 +215,21 @@ mod tests {
             Some(value) => unsafe { std::env::set_var("QUAL_TREASURY_KEY", value) },
             None => unsafe { std::env::remove_var("QUAL_TREASURY_KEY") },
         }
+    }
+
+    /// A Falcon key is 2562 hex characters, so one printed near the limit
+    /// straddles it. Truncating first kept its head, which no whole-value
+    /// match could then find.
+    #[test]
+    fn a_key_straddling_the_limit_leaves_no_fragment() {
+        let secret = "ab".repeat(1281);
+        let mut stream = "x".repeat(3000).into_bytes();
+        stream.extend_from_slice(secret.as_bytes());
+        let kept = redacted_and_bounded(&stream, Some(&secret));
+        assert!(
+            !kept.contains(&secret[..64]),
+            "a fragment of the key survived"
+        );
+        assert!(kept.contains("[redacted]"));
     }
 }

@@ -385,33 +385,44 @@ pub async fn execute_proposal(runner: &Runner) -> ActionOutcome {
     };
 
     let migrating = session.migrating;
-    let exported = session.exported_proposal.clone();
-    let client = &mut session.clients[0];
-    let nonce_before = chain_nonce(client).await;
-    // Read before executing: once the proposal leaves the pending set there is
-    // nothing left to read it from, and completion has to be bound to it.
-    let nonce = proposal_nonce(client, &proposal_id).await;
-
     // Signatures collected off-channel live in the document and were never
     // pushed, so GUARDIAN's copy is short of the threshold and the online path
     // refuses. An offline-created proposal is not there at all. Either way the
     // document is the thing the cosigners actually signed, so execute from it;
     // the acknowledgement still comes from GUARDIAN.
-    let executed = if exported.is_some() {
-        match exported
-            .as_deref()
-            .map(miden_multisig_client::ExportedProposal::from_json)
-        {
-            Some(Ok(document)) => client.execute_imported_proposal(&document).await,
-            Some(Err(error)) => {
-                return ActionOutcome::failed_setup(format!(
-                    "the offline proposal is not readable: {error}"
-                ));
-            }
-            None => unreachable!("the document was just checked to be present"),
+    let document = match session
+        .exported_proposal
+        .as_deref()
+        .map(miden_multisig_client::ExportedProposal::from_json)
+    {
+        Some(Ok(document)) => Some(document),
+        Some(Err(error)) => {
+            return ActionOutcome::failed_setup(format!(
+                "the offline proposal is not readable: {error}"
+            ));
         }
+        None => None,
+    };
+    let client = &mut session.clients[0];
+    let nonce_before = chain_nonce(client).await;
+    // Read before executing: once the proposal leaves the pending set there is
+    // nothing left to read it from, and completion has to be bound to it. An
+    // offline document carries its own nonce, which is the one it was signed
+    // at, so an offline proposal GUARDIAN never listed is still bound.
+    let binding = if migrating {
+        Binding::Migration
+    } else if let Some(document) = &document {
+        Binding::Nonce(document.nonce)
     } else {
-        client.execute_proposal(&proposal_id).await
+        match proposal_nonce(client, &proposal_id).await {
+            Ok(nonce) => Binding::Nonce(nonce),
+            Err(reason) => return unbindable(reason),
+        }
+    };
+
+    let executed = match &document {
+        Some(document) => client.execute_imported_proposal(document).await,
+        None => client.execute_proposal(&proposal_id).await,
     };
 
     if let Err(error) = executed {
@@ -422,7 +433,7 @@ pub async fn execute_proposal(runner: &Runner) -> ActionOutcome {
         return ActionOutcome::failed_product(format!("syncing after execution failed: {error}"));
     }
 
-    match wait_for_execution(client, &proposal_id, nonce, migrating).await {
+    match wait_for_execution(client, &proposal_id, binding).await {
         Completion::Confirmed => ActionOutcome::Passed,
         Completion::Discarded(reason) => ActionOutcome::failed_product(format!(
             "the proposal left the pending set without becoming canonical: {reason}"
@@ -687,14 +698,40 @@ enum Completion {
 /// Completion has to be bound to the proposal it was asked about, and once the
 /// proposal leaves the pending set there is nothing left to read the nonce
 /// from, so callers capture it before executing.
-async fn proposal_nonce(client: &mut MultisigClient, proposal_id: &str) -> Option<u64> {
+async fn proposal_nonce(client: &mut MultisigClient, proposal_id: &str) -> Result<u64, String> {
     client
         .list_proposals()
         .await
-        .ok()?
+        .map_err(|error| format!("listing proposals failed: {error}"))?
         .into_iter()
         .find(|entry| entry.id == proposal_id)
         .map(|entry| entry.nonce)
+        .ok_or_else(|| format!("proposal {proposal_id} is not listed"))
+}
+
+/// A proposal whose nonce cannot be read is refused before it is executed.
+///
+/// Completion cannot be confirmed without the nonce, so executing anyway spent
+/// the transaction, waited out the whole canonicalization deadline and then
+/// reported the product, for what was never more than a listing the harness
+/// could not read.
+fn unbindable(reason: String) -> ActionOutcome {
+    ActionOutcome::failed_setup(format!(
+        "the proposal nonce could not be read before executing, so completion could not be \
+         bound to it; nothing was executed: {reason}"
+    ))
+}
+
+/// What ties an executed proposal's completion to that proposal.
+#[derive(Clone, Copy)]
+enum Binding {
+    /// The canonical delta must land at this nonce.
+    Nonce(u64),
+    /// A migration repoints the client at the GUARDIAN it just moved to, and
+    /// that GUARDIAN has no history for an account it has only just been
+    /// handed. The canonical delta stays with the one being left behind, so
+    /// chain agreement is what completion means.
+    Migration,
 }
 
 /// Waits for an executed proposal to be provably complete.
@@ -707,8 +744,7 @@ async fn proposal_nonce(client: &mut MultisigClient, proposal_id: &str) -> Optio
 async fn wait_for_execution(
     client: &mut MultisigClient,
     proposal_id: &str,
-    nonce: Option<u64>,
-    migrating: bool,
+    binding: Binding,
 ) -> Completion {
     let started = std::time::Instant::now();
     let mut wait = std::time::Duration::from_secs(1);
@@ -736,14 +772,10 @@ async fn wait_for_execution(
             match client.verify_state_commitment().await {
                 Ok(verified) => {
                     let commitment = normalize_hex(&verified.on_chain_commitment_hex);
-                    // A migration repoints the client at the GUARDIAN it just
-                    // moved to, and that GUARDIAN has no history for an account
-                    // it has only just been handed. The canonical delta stays
-                    // with the one being left behind, so demanding it here would
-                    // wait for something that cannot arrive.
-                    if migrating {
-                        return Completion::Confirmed;
-                    }
+                    let wanted = match binding {
+                        Binding::Migration => return Completion::Confirmed,
+                        Binding::Nonce(wanted) => wanted,
+                    };
                     match client.delta_history(Some(20), None).await {
                         Ok(page) => {
                             // Bound to the proposal, not merely to the account
@@ -755,36 +787,21 @@ async fn wait_for_execution(
                             // *previous* delta still carries that commitment.
                             // The nonce is what ties the answer to the delta
                             // under test.
-                            // No nonce means no confirmation. Falling back to
-                            // the commitment-only comparison would restore the
-                            // unbound match exactly when the pre-execute
-                            // listing failed, which is the one case where the
-                            // fallback is most likely to confirm a delta that
-                            // never landed.
-                            match nonce {
-                                Some(wanted) => {
-                                    let canonical = page.entries.iter().any(|entry| {
-                                        entry.nonce == wanted
-                                            && entry.new_commitment.as_deref().is_some_and(
-                                                |recorded| normalize_hex(recorded) == commitment,
-                                            )
-                                    });
-                                    if canonical {
-                                        return Completion::Confirmed;
-                                    }
-                                    last = format!(
-                                        "no canonical delta at nonce {wanted} carries commitment \
-                                         {commitment}"
-                                    );
-                                }
-                                None => {
-                                    last = "the proposal nonce could not be read before \
-                                            executing, so completion cannot be bound to it"
-                                        .to_string();
-                                }
+                            let canonical = page.entries.iter().any(|entry| {
+                                entry.nonce == wanted
+                                    && entry.new_commitment.as_deref().is_some_and(|recorded| {
+                                        normalize_hex(recorded) == commitment
+                                    })
+                            });
+                            if canonical {
+                                return Completion::Confirmed;
                             }
+                            last = format!(
+                                "no canonical delta at nonce {wanted} carries commitment \
+                                 {commitment}"
+                            );
                         }
-                        Err(error) => last = format!("delta history unavailable: {error}"),
+                        Err(error) => last = format!("reading the delta history failed: {error}"),
                     }
                 }
                 Err(error) => last = format!("state commitment disagrees: {error}"),
@@ -939,7 +956,10 @@ pub async fn consume_note(runner: &Runner) -> ActionOutcome {
     let client = &mut session.clients[0];
     // Read before executing, for the same reason: completion is bound to this
     // proposal, and the proposal is gone by the time it is judged.
-    let nonce = proposal_nonce(client, &proposal_id).await;
+    let nonce = match proposal_nonce(client, &proposal_id).await {
+        Ok(nonce) => nonce,
+        Err(reason) => return unbindable(reason),
+    };
     if let Err(error) = client.execute_proposal(&proposal_id).await {
         return ActionOutcome::failed_product(format!("consuming the note failed: {error}"));
     }
@@ -947,7 +967,7 @@ pub async fn consume_note(runner: &Runner) -> ActionOutcome {
         return ActionOutcome::failed_product(format!("syncing after the consume failed: {error}"));
     }
 
-    match wait_for_execution(client, &proposal_id, nonce, false).await {
+    match wait_for_execution(client, &proposal_id, Binding::Nonce(nonce)).await {
         Completion::Confirmed => ActionOutcome::Passed,
         Completion::Discarded(reason) => ActionOutcome::failed_product(format!(
             "the consuming proposal left the pending set without becoming canonical: {reason}"
@@ -1800,7 +1820,7 @@ pub async fn abandon_and_assert_hidden(runner: &Runner) -> ActionOutcome {
     // `wait_for_execution`: every other live scenario trusts its verdict. Ask
     // it about a delta that really was discarded, and it must say so rather
     // than read the empty pending set as completion.
-    match wait_for_execution(client, &proposal_id, Some(nonce), false).await {
+    match wait_for_execution(client, &proposal_id, Binding::Nonce(nonce)).await {
         Completion::Discarded(_) => ActionOutcome::Passed,
         Completion::Confirmed => ActionOutcome::failed_product(
             "the completion check calls a discarded delta confirmed, so every scenario that \

@@ -7,27 +7,32 @@
 //! how a nightly schedule stops being read, so a failure whose evidence points
 //! at the link is reported as environment-blocked instead.
 //!
-//! The rule is [`guardian_shared::retry`]'s transient classifier, unchanged:
-//! permanent status evidence anywhere vetoes transient evidence anywhere, and
-//! the wording fallback is consulted only when no link carried a status. The
-//! TypeScript driver applies the same rule through its own mirror of that
-//! classifier, and both are pinned to
+//! Status evidence is read the way [`guardian_shared::retry`] reads it:
+//! permanent anywhere vetoes transient anywhere. The retry classifier's generic
+//! wording fallback (`unavailable`, `timeout`, `cancelled`, ...) is not used.
+//! A reason is the driver's own sentence wrapped around whatever it caught, and
+//! those words turn up in both halves: `delta history unavailable: <a GUARDIAN
+//! 500>` or a server message about a quorum timeout would otherwise stop
+//! blocking the nightly. Only [`ENVIRONMENT_SIGNALS`], each specific to a
+//! failing link, stands in for a missing status. The TypeScript driver applies
+//! the same rule, and both are pinned to
 //! `fixtures/qualification/environment-classification.json`.
 
 use std::error::Error;
-use std::fmt;
 
-use guardian_shared::retry::{StructuredEvidence, is_transient_error_with};
+use guardian_shared::retry::{StructuredEvidence, flattened_grpc_evidence, http_evidence};
 
-/// Transport wording the shared fallback does not carry: `RPC_TRANSPORT_SIGNALS`
-/// (a node rendering a dropped connection) plus the operating-system and
-/// runtime error names that reach the driver as bare text through the
-/// TypeScript client's WASM boundary, where the typed cause is already lost.
+/// Wording that stands in for a missing status: `RPC_TRANSPORT_SIGNALS` (a node
+/// rendering a dropped connection), the operating-system and runtime error
+/// names that reach the driver as bare text through the TypeScript client's
+/// WASM boundary, where the typed cause is already lost, tonic's rendering of
+/// the transient gRPC codes, and the link-specific part of the retry fallback.
 ///
 /// Every entry must be unambiguous evidence of a link failure. Guardian's own
-/// error codes travel in these same strings, so wording a scenario could assert
-/// on (`network_error`, for one) stays out deliberately.
-pub const ENVIRONMENT_SIGNALS: [&str; 15] = [
+/// error codes and messages travel in these same strings, so wording a
+/// scenario could assert on (`network_error`, for one) or a bare `timeout` or
+/// `unavailable` stays out deliberately.
+pub const ENVIRONMENT_SIGNALS: [&str; 25] = [
     "connection error",
     "transport error",
     "timed out",
@@ -43,33 +48,37 @@ pub const ENVIRONMENT_SIGNALS: [&str; 15] = [
     "fetch failed",
     "err_http2_stream_error",
     "invalid content type: application/grpc",
+    "the service is currently unavailable",
+    "the operation was cancelled",
+    "the deadline expired before the operation could complete",
+    "deadline exceeded",
+    "i/o timeout",
+    "connection reset",
+    "broken pipe",
+    "bad gateway",
+    "gateway timeout",
+    "service unavailable",
 ];
-
-/// A failure reason, flattened to text, so the shared classifier can walk it.
-///
-/// By the time a reason reaches the report it is already a string: the driver
-/// composes what it asserted with what it caught. Wrapping it back into an
-/// error keeps one classifier for both SDKs rather than a second, subtly
-/// different, string matcher living here.
-#[derive(Debug)]
-struct Reason(String);
-
-impl fmt::Display for Reason {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl Error for Reason {}
 
 /// Whether a failure reason is the environment failing under the suite.
 #[must_use]
 pub fn is_environmental(reason: &str) -> bool {
-    is_transient_error_with(
-        &Reason(reason.to_string()),
-        |_| StructuredEvidence::Indeterminate,
-        &ENVIRONMENT_SIGNALS,
-    )
+    let message = reason.to_ascii_lowercase();
+    let mut transient = false;
+    for evidence in [http_evidence(&message), flattened_grpc_evidence(&message)]
+        .into_iter()
+        .flatten()
+    {
+        match evidence {
+            StructuredEvidence::Permanent => return false,
+            StructuredEvidence::Transient => transient = true,
+            StructuredEvidence::Indeterminate => {}
+        }
+    }
+    transient
+        || ENVIRONMENT_SIGNALS
+            .iter()
+            .any(|signal| message.contains(signal))
 }
 
 /// Renders an error together with everything that caused it.
@@ -97,6 +106,7 @@ pub fn error_chain(error: &(dyn Error + 'static)) -> String {
 mod tests {
     use super::*;
     use serde::Deserialize;
+    use std::fmt;
 
     #[derive(Deserialize)]
     struct Fixtures {
