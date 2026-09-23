@@ -3,11 +3,11 @@ use crate::testing::mocks::{
     MockGuardianService, create_mock_account_state, create_mock_delta, start_mock_server,
 };
 use crate::{
-    AccountRef, AuthConfig, ClientError, ConfigureResponse, FalconKeyStore,
-    GetAccountByKeyCommitmentResponse, GetDeltaHistoryResponse, GetDeltaProposalResponse,
-    GetDeltaProposalsResponse, GetDeltaResponse, GetDeltaSinceResponse, GetStateResponse,
-    GuardianClient, HistoryEntry, HistoryNote, HistoryNoteAsset, PushDeltaProposalResponse,
-    PushDeltaResponse, SignDeltaProposalResponse, Signer,
+    AccountRef, AccountState, AuthConfig, ClientError, ConfigureResponse, FalconKeyStore,
+    GetAccountByKeyCommitmentResponse, GetCanonicalNonceResponse, GetDeltaHistoryResponse,
+    GetDeltaProposalResponse, GetDeltaProposalsResponse, GetDeltaResponse, GetDeltaSinceResponse,
+    GetStateResponse, GuardianClient, HistoryEntry, HistoryNote, HistoryNoteAsset,
+    PushDeltaProposalResponse, PushDeltaResponse, SignDeltaProposalResponse, Signer,
 };
 use guardian_shared::ProposalSignature as JsonProposalSignature;
 use miden_protocol::account::AccountId;
@@ -606,6 +606,89 @@ async fn terminal_authentication_failure_is_not_retried() {
         Some("authentication_failed")
     );
     assert!(!error.is_replay_rejection());
+}
+
+#[tokio::test]
+async fn test_get_canonical_nonce_success() {
+    let service =
+        MockGuardianService::default().with_get_canonical_nonce(Ok(GetCanonicalNonceResponse {
+            success: true,
+            message: String::new(),
+            account_id: "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string(),
+            nonce: 9,
+            commitment: "0x123".to_string(),
+            error_code: String::new(),
+        }));
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+
+    let signer = create_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer);
+    let account_id = create_test_account_id();
+    let response = client
+        .get_canonical_nonce(&account_id)
+        .await
+        .expect("canonical nonce should resolve");
+
+    assert_eq!(response.nonce, 9);
+    assert_eq!(response.commitment, "0x123");
+    assert_eq!(handle.calls(), vec!["get_canonical_nonce".to_string()]);
+}
+
+#[tokio::test]
+async fn test_get_canonical_nonce_server_error() {
+    let service =
+        MockGuardianService::default().with_get_canonical_nonce(Ok(GetCanonicalNonceResponse {
+            success: false,
+            message: "State not found".to_string(),
+            account_id: String::new(),
+            nonce: 0,
+            commitment: String::new(),
+            error_code: "state_not_found".to_string(),
+        }));
+    let endpoint = start_mock_server(service).await.unwrap();
+
+    let signer = create_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer);
+    let err = client
+        .get_canonical_nonce(&create_test_account_id())
+        .await
+        .expect_err("unsuccessful response should be an error");
+    assert!(err.to_string().contains("State not found"), "{err}");
+}
+
+#[tokio::test]
+async fn test_get_canonical_nonce_defaults_to_the_persistent_state() {
+    let service = MockGuardianService::default();
+    let handle = service.handle();
+    handle.set_persistent_get_state(GetStateResponse {
+        success: true,
+        message: String::new(),
+        state: Some(AccountState {
+            commitment: "0xfeed".to_string(),
+            ..create_mock_account_state()
+        }),
+    });
+    let endpoint = start_mock_server(service).await.unwrap();
+
+    let signer = create_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer);
+    let response = client
+        .get_canonical_nonce(&create_test_account_id())
+        .await
+        .expect("derived head should resolve");
+
+    assert_eq!(response.commitment, "0xfeed");
+    assert_eq!(response.nonce, 0, "non-account blobs derive nonce 0");
 }
 
 #[tokio::test]

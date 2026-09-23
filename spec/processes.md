@@ -5,6 +5,7 @@
 - **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and initial state. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. EVM accounts are not configured through this service.
 - **push_delta**: verifies a Miden delta against the current state, computes the new commitment, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
+- **get_canonical_nonce**: authenticates and returns the nonce and commitment of the latest persisted account state without the state blob, so a client that is not behind can skip `get_state` (issue #191).
 - **get_delta**: authenticates and returns a specific delta by nonce.
 - **get_delta_since**: authenticates, fetches deltas after a given nonce (excluding discarded), merges their payloads via the network client, and returns a single merged delta snapshot.
 - **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against state and deriving IDs through the Miden network client.
@@ -93,6 +94,23 @@ sequenceDiagram
   S->>M: update last_auth_timestamp (per signer, CAS)
   S->>ST: pull_state(account_id)
   S-->>C: 200 {state}
+```
+
+#### get_canonical_nonce
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant S as Server
+  participant M as Metadata
+  participant ST as Storage
+  participant N as Network Client
+  C->>S: GET /state/nonce?account_id=... {credentials}
+  S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
+  S->>M: update last_auth_timestamp (per signer, CAS)
+  S->>ST: pull_state(account_id)
+  S->>N: extract_nonce(state_json)
+  S-->>C: 200 {account_id, nonce, commitment}
 ```
 
 #### get_delta

@@ -38,6 +38,7 @@ pub struct MockNetworkClient {
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
     pub extract_guardian_commitment_responses: Arc<StdMutex<Vec<ExtractGuardianCommitmentResult>>>,
+    pub extract_nonce_responses: Arc<StdMutex<Vec<StdResult<u64, String>>>>,
 }
 
 impl MockNetworkClient {
@@ -90,6 +91,11 @@ impl MockNetworkClient {
             .lock()
             .unwrap()
             .push(response);
+        self
+    }
+
+    pub fn with_extract_nonce(self, response: StdResult<u64, String>) -> Self {
+        self.extract_nonce_responses.lock().unwrap().push(response);
         self
     }
 
@@ -235,6 +241,14 @@ impl NetworkClient for MockNetworkClient {
             .unwrap()
             .pop()
             .unwrap_or(Ok(None))
+    }
+
+    fn extract_nonce(&self, _state_json: &serde_json::Value) -> StdResult<u64, String> {
+        self.extract_nonce_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(0))
     }
 
     async fn should_update_auth(

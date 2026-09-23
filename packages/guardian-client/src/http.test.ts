@@ -280,6 +280,80 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  describe('getCanonicalNonce', () => {
+    it('should fetch the canonical nonce with authentication over the query', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 7,
+          commitment: '0x' + 'b'.repeat(64),
+        }),
+      });
+
+      const accountId = '0x' + 'a'.repeat(30);
+      const head = await client.getCanonicalNonce(accountId);
+
+      expect(head).toEqual({
+        accountId,
+        nonce: 7,
+        commitment: '0x' + 'b'.repeat(64),
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/state/nonce?account_id='),
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            'x-pubkey': mockSigner.publicKey,
+            'x-signature': expect.any(String),
+            'x-timestamp': expect.any(String),
+          }),
+        })
+      );
+    });
+
+    it('should surface a structured server error', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 404,
+        statusText: 'Not Found',
+        text: async () =>
+          JSON.stringify({
+            code: 'account_not_found',
+            message: 'Account not found',
+            meta: { retryable: false },
+          }),
+      });
+
+      const error = await client.getCanonicalNonce('0x' + 'a'.repeat(30)).catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.status).toBe(404);
+      expect(error.code).toBe('account_not_found');
+    });
+
+    it('should reject a nonce the client cannot represent', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 2 ** 53,
+          commitment: '0x' + 'b'.repeat(64),
+        }),
+      });
+
+      await expect(client.getCanonicalNonce('0x' + 'a'.repeat(30))).rejects.toThrow(
+        'Invalid canonical nonce'
+      );
+    });
+  });
+
   describe('getState', () => {
     it('should get account state with authentication', async () => {
       client.setSigner(mockSigner);

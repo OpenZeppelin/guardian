@@ -452,6 +452,11 @@ impl NetworkClient for MidenNetworkClient {
         Ok(inspector.extract_guardian_public_key())
     }
 
+    fn extract_nonce(&self, state_json: &serde_json::Value) -> Result<u64, String> {
+        let account = Account::from_json(state_json)?;
+        Ok(account.nonce().as_canonical_u64())
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,
@@ -681,6 +686,53 @@ mod tests {
             new_state_json.get("data").is_some(),
             "New state should have data field"
         );
+    }
+
+    #[tokio::test]
+    async fn extract_nonce_reads_the_account_nonce_and_tracks_applied_deltas() {
+        let network = NetworkType::MidenTestnet;
+        let client = MidenNetworkClient::lazy_for_test(network);
+
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse account fixture");
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::DELTA_1_JSON)
+                .expect("Failed to parse delta fixture");
+        let delta_payload = delta_fixture
+            .get("delta_payload")
+            .expect("delta_payload field missing");
+
+        let expected_before = Account::from_json(&account_json)
+            .expect("fixture decodes")
+            .nonce()
+            .as_canonical_u64();
+        let before = client
+            .extract_nonce(&account_json)
+            .expect("extract_nonce should succeed on the fixture");
+        assert_eq!(before, expected_before);
+
+        let (after_json, _) = client
+            .apply_delta(&account_json, delta_payload)
+            .expect("apply_delta should succeed");
+        let after = client
+            .extract_nonce(&after_json)
+            .expect("extract_nonce should succeed after apply_delta");
+        assert!(
+            after > before,
+            "applying a delta must advance the extracted nonce ({before} -> {after})"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_nonce_rejects_a_blob_without_account_data() {
+        let network = NetworkType::MidenTestnet;
+        let client = MidenNetworkClient::lazy_for_test(network);
+
+        let err = client
+            .extract_nonce(&serde_json::json!({"balance": 0}))
+            .expect_err("a non-account blob must not yield a nonce");
+        assert!(!err.is_empty());
     }
 
     #[tokio::test]

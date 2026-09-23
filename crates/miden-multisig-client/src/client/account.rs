@@ -314,14 +314,33 @@ impl MultisigClient {
         }
     }
     /// Internal sync from GUARDIAN that returns whether the account was updated.
+    ///
+    /// Starts with the canonical-nonce pre-check (issue #191): when GUARDIAN's
+    /// canonical head is not ahead of the local account (lower nonce, or the
+    /// same nonce at the same commitment) there is nothing to pull, so the
+    /// full state fetch is skipped. Otherwise — including the same nonce at a
+    /// different commitment, which is divergence rather than staleness — the
+    /// state is fetched and reconciled as before.
     async fn sync_from_guardian_internal(&mut self) -> Result<bool> {
         let account = self.require_account()?;
         let account_id = account.id();
         let local_commitment = account.inner().to_commitment();
         let local_nonce = account.nonce();
 
-        // Fetch state from GUARDIAN
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let head = guardian_client
+            .get_canonical_nonce(&account_id)
+            .await
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!(
+                    "failed to get canonical nonce from GUARDIAN: {}",
+                    e
+                ))
+            })?;
+        if CanonicalHead::from_response(&head)?.is_not_ahead_of(local_nonce, local_commitment) {
+            return Ok(false);
+        }
+
         let state_response = guardian_client.get_state(&account_id).await.map_err(|e| {
             MultisigError::GuardianServer(format!("failed to get state from GUARDIAN: {}", e))
         })?;
@@ -554,12 +573,79 @@ impl MultisigClient {
     }
 }
 
+/// The nonce and commitment GUARDIAN reports for its canonical state
+/// (`get_canonical_nonce`), parsed at the transport boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CanonicalHead {
+    nonce: u64,
+    commitment: Word,
+}
+
+impl CanonicalHead {
+    pub(crate) fn from_response(
+        response: &guardian_client::GetCanonicalNonceResponse,
+    ) -> Result<Self> {
+        Ok(Self {
+            nonce: response.nonce,
+            commitment: word_from_hex(&response.commitment).map_err(MultisigError::HexDecode)?,
+        })
+    }
+
+    /// GUARDIAN has nothing newer than the local account when its head is
+    /// below the local nonce, or at the local nonce with the same commitment.
+    /// The same nonce at a different commitment is divergence, which the
+    /// full state fetch is left to reconcile.
+    pub(crate) fn is_not_ahead_of(&self, local_nonce: u64, local_commitment: Word) -> bool {
+        match self.nonce.cmp(&local_nonce) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => self.commitment == local_commitment,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn word(value: u32) -> Word {
         Word::from([value, 0, 0, 0])
+    }
+
+    fn head(nonce: u64, commitment: u32) -> CanonicalHead {
+        CanonicalHead {
+            nonce,
+            commitment: word(commitment),
+        }
+    }
+
+    #[test]
+    fn canonical_head_is_not_ahead_below_or_at_the_local_head() {
+        assert!(head(1, 7).is_not_ahead_of(2, word(7)));
+        assert!(head(1, 9).is_not_ahead_of(2, word(7)));
+        assert!(head(2, 7).is_not_ahead_of(2, word(7)));
+    }
+
+    #[test]
+    fn canonical_head_is_ahead_above_the_local_nonce_or_diverged_at_it() {
+        assert!(!head(3, 7).is_not_ahead_of(2, word(7)));
+        assert!(!head(2, 9).is_not_ahead_of(2, word(7)));
+    }
+
+    #[test]
+    fn canonical_head_rejects_a_malformed_commitment() {
+        let response = guardian_client::GetCanonicalNonceResponse {
+            success: true,
+            message: String::new(),
+            account_id: String::new(),
+            nonce: 1,
+            commitment: "not-hex".to_string(),
+            error_code: String::new(),
+        };
+        assert!(matches!(
+            CanonicalHead::from_response(&response),
+            Err(MultisigError::HexDecode(_))
+        ));
     }
 
     #[test]

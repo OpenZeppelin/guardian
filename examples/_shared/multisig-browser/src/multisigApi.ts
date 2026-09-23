@@ -222,16 +222,27 @@ export async function switchMultisigGuardian(
 export async function fetchAccountState(
   multisig: Multisig,
 ): Promise<{ state: AccountState; config: DetectedMultisigConfig }> {
-  const state = await multisig.syncState();
+  // An explicit fetch of GUARDIAN's copy for display and config detection;
+  // store reconciliation (with the canonical-nonce pre-check) is `syncAll`.
+  const state = await multisig.fetchState();
   const config = AccountInspector.fromBase64(state.stateDataBase64);
   return { state, config };
 }
 
 export async function syncAll(
   multisig: Multisig,
-): Promise<{ proposals: Proposal[]; state: AccountState; notes: ConsumableNote[] }> {
-  const state = await multisig.syncState();
-  const proposals = filterVisibleProposals(multisig, await multisig.syncProposals(), state);
+  lastFetchedState?: AccountState,
+): Promise<{ proposals: Proposal[]; state: AccountState | null; notes: ConsumableNote[] }> {
+  // `state` is null when GUARDIAN reported nothing newer than the local
+  // account (the canonical-nonce pre-check skipped the state fetch); the
+  // caller's last fetched copy then keeps the proposal filter's inputs stable.
+  const synced = await multisig.syncState();
+  const state = synced.source === 'guardian' ? synced.state : null;
+  const proposals = filterVisibleProposals(
+    multisig,
+    await multisig.syncProposals(),
+    state ?? lastFetchedState,
+  );
   const notes = await multisig.getConsumableNotes();
   return { proposals, state, notes };
 }

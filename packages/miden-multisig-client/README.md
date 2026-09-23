@@ -209,6 +209,28 @@ console.log('Commitment:', state.commitment);
 console.log('Created:', state.createdAt);
 ```
 
+### Sync Account State
+
+`syncState()` reconciles the local store with GUARDIAN. It first asks GUARDIAN
+for the nonce and commitment of its canonical state (`getCanonicalNonce`) and
+skips the full state fetch when that nonce is not above the local account's
+(at a matching commitment when equal). The result says which side stood:
+
+```typescript
+const synced = await multisig.syncState();
+if (synced.source === 'guardian') {
+  console.log('Imported GUARDIAN state at', synced.state.commitment);
+} else {
+  console.log(`Local nonce ${synced.localNonce} is current (GUARDIAN at ${synced.guardianNonce})`);
+}
+```
+
+Either way `multisig.account` and the cached config reflect the authoritative
+account afterwards. Call `fetchState()` when you need GUARDIAN's state copy
+regardless. The pre-check needs a GUARDIAN server that serves `GET /state/nonce`
+(issue #191); against an older server `syncState()` fails rather than falling back
+to the full fetch, so deploy the server first.
+
 ### Creating Proposals
 
 Every `create*Proposal` method takes its required arguments followed by a

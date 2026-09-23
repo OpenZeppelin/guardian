@@ -135,6 +135,20 @@ export interface AccountState {
   updatedAt: string;
 }
 
+/**
+ * Outcome of {@link Multisig.syncState}.
+ *
+ * `'guardian'`: GUARDIAN's canonical nonce was above the local nonce (or the
+ * local store had no account, or the same nonce carried a different
+ * commitment), so the state was fetched and reconciled; `state` is what
+ * GUARDIAN served. `'local'`: GUARDIAN's canonical nonce was not above the
+ * local nonce at a matching commitment, so the state fetch was skipped and
+ * the local account stands.
+ */
+export type SyncStateResult =
+  | { source: 'guardian'; state: AccountState }
+  | { source: 'local'; localNonce: bigint; guardianNonce: bigint };
+
 export interface AccountStateVerificationResult {
   accountId: string;
   localCommitment: string;
@@ -521,23 +535,41 @@ export class Multisig {
   /**
    * Sync account state from GUARDIAN into the local Miden client store.
    *
-   * If the GUARDIAN commitment differs from the local commitment (or the account
-   * is missing locally) and the GUARDIAN state is safe to import, the local store
-   * is overwritten with the GUARDIAN state. When the GUARDIAN is merely *behind*
+   * Starts with the canonical-nonce pre-check (OpenZeppelin/guardian#191):
+   * GUARDIAN reports the nonce and commitment of its canonical state, and
+   * when that nonce is not above the local account's — at a matching
+   * commitment when equal — nothing newer exists to pull, so the state
+   * fetch is skipped and the local account stands (`source: 'local'`).
+   *
+   * Otherwise the state is fetched (`source: 'guardian'`). If the GUARDIAN
+   * commitment differs from the local commitment (or the account is missing
+   * locally) and the GUARDIAN state is safe to import, the local store is
+   * overwritten with the GUARDIAN state. When the GUARDIAN is merely *behind*
    * local — e.g. the pushed execution delta has not been canonicalized yet
    * (see OpenZeppelin/guardian#316) — the local state is already ahead and
    * on-chain-verifiable, so it is kept as authoritative. Either way, config is
    * refreshed from the resulting account so callers reading `Multisig.account`
    * (e.g. the UI) observe the current state instead of a stale snapshot.
    */
-  async syncState(): Promise<AccountState> {
-    const state = await this.fetchState();
+  async syncState(): Promise<SyncStateResult> {
     const accountId = AccountId.fromHex(this._accountId);
     const webClient = await this.getRawClient();
     const localAccount = await retryRpcRead(
       () => webClient.getAccount(accountId),
       this.rpcConfig,
     );
+
+    if (localAccount) {
+      const head = await this.guardian.getCanonicalNonce(this._accountId);
+      const localNonce = localAccount.nonce().asInt();
+      const guardianNonce = BigInt(head.nonce);
+      if (this.guardianIsNotAhead(localAccount, localNonce, head.commitment, guardianNonce)) {
+        this.refreshConfigFromAccount(localAccount);
+        return { source: 'local', localNonce, guardianNonce };
+      }
+    }
+
+    const state = await this.fetchState();
     let accountForConfigRefresh: Account | null = localAccount ?? null;
 
     const guardianCommitment = normalizeHexWord(state.commitment);
@@ -556,7 +588,31 @@ export class Multisig {
 
     this.refreshConfigFromAccount(accountForConfigRefresh);
 
-    return state;
+    return { source: 'guardian', state };
+  }
+
+  /**
+   * The pre-check decision: GUARDIAN has nothing newer when its canonical
+   * nonce is below the local nonce, or equal to it at the same commitment.
+   * An equal nonce with a different commitment is divergence, which the
+   * full fetch reports (see `isSafeToOverwriteLocalState`).
+   */
+  private guardianIsNotAhead(
+    localAccount: Account,
+    localNonce: bigint,
+    guardianCommitment: string,
+    guardianNonce: bigint,
+  ): boolean {
+    if (guardianNonce < localNonce) {
+      return true;
+    }
+    if (guardianNonce > localNonce) {
+      return false;
+    }
+    return (
+      normalizeHexWord(guardianCommitment) ===
+      normalizeHexWord(localAccount.to_commitment().toHex())
+    );
   }
 
   async verifyStateCommitment(): Promise<AccountStateVerificationResult> {

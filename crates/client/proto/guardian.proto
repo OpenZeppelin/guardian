@@ -47,6 +47,11 @@ service Guardian {
   // Per-account canonical transaction history (issue #413), paginated
   // newest-first by nonce with decoded input/output note summaries.
   rpc GetDeltaHistory(GetDeltaHistoryRequest) returns (GetDeltaHistoryResponse);
+
+  // Nonce and commitment of the latest canonical state (issue #191): a
+  // lightweight pre-check so a client whose local account is not behind
+  // can skip the full GetState fetch.
+  rpc GetCanonicalNonce(GetCanonicalNonceRequest) returns (GetCanonicalNonceResponse);
 }
 
 // Auth configuration - one of the auth types
@@ -195,6 +200,23 @@ message AccountState {
   string commitment = 3;
   string created_at = 4;
   string updated_at = 5;
+}
+
+// Canonical nonce request (issue #191)
+message GetCanonicalNonceRequest {
+  string account_id = 1;
+}
+
+// Nonce of the account state GUARDIAN currently holds as canonical, with
+// the commitment of that state so a client at the same nonce can also
+// detect divergence without fetching the state blob.
+message GetCanonicalNonceResponse {
+  bool success = 1;
+  string message = 2;
+  string account_id = 3;
+  uint64 nonce = 4;
+  string commitment = 5;
+  string error_code = 6;
 }
 
 // Get pubkey request
