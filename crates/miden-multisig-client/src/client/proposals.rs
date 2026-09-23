@@ -450,7 +450,10 @@ impl MultisigClient {
             )));
         }
 
-        self.sync().await?;
+        // No sync here: the producer bound the request's auth args to the store's
+        // sync height when it built them, and the anchor captured below has to
+        // name that same block. A sync in between would move the anchor past the
+        // block the summary binds and `execute_for_summary` would refuse the pair.
         let account = self.require_account()?.clone();
         let account_id = account.id();
 

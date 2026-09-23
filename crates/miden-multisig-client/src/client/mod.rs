@@ -178,8 +178,11 @@ impl MultisigClient {
     /// The multisig auth args a request this client's account executes has to
     /// carry. Producers of custom proposals (issue #266) build them here, then
     /// attach them with [`crate::TransactionRequestBuilderExt`]. `bound_block_num`
-    /// left out binds the sync height, which a fresh proposal wants; a rebuild
-    /// passes the block its proposal's anchor names.
+    /// left out binds the store's sync height, which a fresh proposal wants:
+    /// [`sync`](Self::sync) first, then build, then
+    /// [`propose_custom_transaction`](Self::propose_custom_transaction), which
+    /// captures its anchor at that same height and does not sync again. A
+    /// rebuild passes the block its proposal's anchor names.
     pub async fn multisig_auth_args(
         &self,
         salt: Word,

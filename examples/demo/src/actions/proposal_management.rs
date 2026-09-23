@@ -1047,6 +1047,10 @@ async fn action_create_custom_proposal(
     };
 
     let client = state.get_client_mut()?;
+    client
+        .sync()
+        .await
+        .map_err(|e| format!("failed to sync before building the custom proposal: {}", e))?;
     let account = client
         .account()
         .ok_or_else(|| "No account loaded".to_string())?

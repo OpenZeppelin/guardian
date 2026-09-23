@@ -458,7 +458,10 @@ Rust and TypeScript**:
   and attach them with `builder.multisig_auth_args(&auth_args)` from
   `TransactionRequestBuilderExt`; do not
   declare `fee_conversion_salt`, which would let miden-client commit its own
-  auth arg over them. The typed proposal builders do this for you. A custom producer must retain the original salt and
+  auth arg over them. The typed proposal builders do this for you. A custom producer syncs before
+  building: `propose_custom_transaction` / `createCustomProposal` anchor the
+  proposal at the store's sync height without syncing again, and a request
+  bound to an older block is refused. It must retain the original salt and
   rebuild at the proposal's anchor block (`ChainAnchor::blockNum` /
   `ChainAnchor::block_num`) with the expiration the summary binds;
   `summarySalt(summary)` / `summary_salt(&summary)` read the salt the cosigners

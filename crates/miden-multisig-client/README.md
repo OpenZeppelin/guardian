@@ -342,7 +342,11 @@ use miden_protocol::note::NoteType;
 // Producer: build a transaction and propose it under a custom label. The account's
 // auth procedure reads three words out of the request's auth argument since Miden
 // 0.17 (bound block and approval expiration, salt, fee conversion info); the client
-// builds them, bound to its sync height, and the builder attaches them.
+// builds them, bound to its sync height, and the builder attaches them. Sync first:
+// `propose_custom_transaction` anchors the proposal at that same height and does
+// not sync again, because a sync between build and propose would move the anchor
+// past the block the request binds.
+client.sync().await?;
 let salt = generate_salt();
 let auth_args = client.multisig_auth_args(salt, None, None).await?;
 let mut request = build_p2id_transaction_request(

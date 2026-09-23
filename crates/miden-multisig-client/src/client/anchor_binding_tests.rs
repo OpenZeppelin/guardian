@@ -633,3 +633,94 @@ async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_si
     );
     assert!(updated.is_actionable());
 }
+
+/// A custom proposal's request is built by the producer against the store's
+/// sync height and handed over as bytes. Blocks landing on the node in between
+/// must not move the proposal's anchor: `propose_custom_transaction` anchors at
+/// the height the request binds and does not sync first, or the anchor and the
+/// summary would name different blocks and the pair would be refused.
+#[tokio::test]
+async fn custom_proposal_keeps_the_anchor_the_producer_bound_when_the_chain_moves_on() {
+    use guardian_client::PushDeltaProposalResponse;
+    use miden_protocol::utils::serde::Serializable;
+
+    use crate::procedures::ProcedureName;
+
+    let keystore = Arc::new(GuardianKeyStore::generate());
+    let signer_commitment = keystore.commitment();
+    let guardian_commitment = Word::from([9u32, 9, 9, 9]);
+    let account = multisig_account(signer_commitment, guardian_commitment, 48);
+    let api = chain_with_notes(Vec::new());
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut proposer, _store) =
+        offline_client_parts_with_keystore(dir.path(), api.clone(), None, keystore.clone()).await;
+    proposer.set_node_rpc_client(api.clone());
+    proposer
+        .add_or_update_account(&account, true)
+        .await
+        .unwrap();
+    proposer.account = Some(MultisigAccount::new(account.clone()));
+    proposer.miden_client.sync_state().await.unwrap();
+
+    // The producer's side: sync, then build, bound to the sync height.
+    let bound_height = proposer.miden_client.get_sync_height().await.unwrap();
+    let auth_args = proposer
+        .multisig_auth_args(Word::from([5u32, 6, 7, 8]), None, None)
+        .await
+        .unwrap();
+    let tx_type = TransactionType::UpdateProcedureThreshold {
+        procedure: ProcedureName::SendAsset,
+        new_threshold: 1,
+    };
+    let tx_request = build_final_transaction_request(
+        &proposer.miden_client,
+        &tx_type,
+        &account,
+        &auth_args,
+        Vec::new(),
+        None,
+        None,
+        proposer.key_manager.scheme(),
+    )
+    .await
+    .unwrap();
+    let request_bytes = tx_request.to_bytes();
+
+    // The summary the producer's request yields at the bound height is the
+    // proposal id GUARDIAN has to answer with.
+    let (expected_summary, _) =
+        execute_for_summary(&mut proposer.miden_client, account.id(), tx_request)
+            .await
+            .unwrap();
+    let expected_id = word_to_hex(&expected_summary.to_commitment());
+
+    let service =
+        MockGuardianService::default().with_push_delta_proposal(Ok(PushDeltaProposalResponse {
+            success: true,
+            message: String::new(),
+            commitment: expected_id.clone(),
+            delta: None,
+        }));
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    handle.set_persistent_get_state(registered_state(&account));
+    proposer
+        .set_guardian_endpoint(&endpoint, false)
+        .await
+        .unwrap();
+
+    // The chain moves on before the producer hands the bytes over.
+    api.advance_blocks(3);
+
+    let proposal = proposer
+        .propose_custom_transaction(&request_bytes, "b2agg")
+        .await
+        .expect("the proposal anchors at the height the request binds, not at the node's tip");
+    assert!(proposal.id.eq_ignore_ascii_case(&expected_id));
+    assert_eq!(
+        proposal.metadata.chain_anchor().unwrap().block_num(),
+        bound_height,
+        "the anchor must name the block the producer bound the request to"
+    );
+}
