@@ -9,7 +9,7 @@ use miden_client::rpc::NodeRpcClient;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::note::{NoteId, NoteType};
-use miden_standards::account::auth::MultisigAuthArgs;
+use miden_standards::account::auth::{ApproverSet, MultisigAuthArgs};
 
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
@@ -55,6 +55,34 @@ pub struct ProposalOptions {
     /// blocks, the furthest a transaction can expire after its reference block.
     /// `None` means the approval never expires, the upstream default.
     pub approval_expiration_delta: Option<NonZeroU32>,
+}
+
+/// What the account's auth procedure rejects after a signer or guardian change,
+/// checked before any signature is collected: more approvers than
+/// `ApproverSet::MAX_APPROVERS`, a repeated approver, and the guardian key among
+/// the approvers. The TypeScript SDK runs the same checks through
+/// `validateMultisigConfig`.
+fn ensure_admissible_signer_set(signers: &[Word], guardian_commitment: Word) -> Result<()> {
+    let max_approvers = usize::from(ApproverSet::MAX_APPROVERS);
+    if signers.len() > max_approvers {
+        return Err(MultisigError::InvalidConfig(format!(
+            "too many signers ({}): a multisig account holds at most {max_approvers}",
+            signers.len()
+        )));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(signers.len());
+    if let Some(duplicate) = signers.iter().find(|signer| !seen.insert(**signer)) {
+        return Err(MultisigError::InvalidConfig(format!(
+            "duplicate signer commitment: {}",
+            word_to_hex(duplicate)
+        )));
+    }
+    if signers.contains(&guardian_commitment) {
+        return Err(MultisigError::InvalidConfig(
+            "GUARDIAN commitment must be different from all signer commitments".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 impl ProposalBuilder {
@@ -210,6 +238,7 @@ impl ProposalBuilder {
 
         // Add the new signer
         current_signers.push(new_commitment);
+        ensure_admissible_signer_set(&current_signers, account.guardian_commitment()?)?;
 
         // Keep same threshold
         let new_threshold = current_threshold as u64;
@@ -639,6 +668,7 @@ impl ProposalBuilder {
         let account_id = account.id();
         let required_signatures =
             account.effective_threshold_for_procedure(ProcedureName::UpdateGuardian)? as usize;
+        ensure_admissible_signer_set(&account.cosigner_commitments(), new_guardian_pubkey)?;
 
         verify_endpoint_commitment(
             &new_guardian_endpoint,
@@ -980,5 +1010,49 @@ mod tests {
 
             assert_carries_auth_args(&request);
         }
+    }
+}
+
+#[cfg(test)]
+mod signer_set_guard {
+    use super::*;
+
+    fn signer(n: u32) -> Word {
+        Word::from([n, n, n, n])
+    }
+
+    #[test]
+    fn accepts_distinct_signers_without_the_guardian() {
+        ensure_admissible_signer_set(&[signer(1), signer(2)], signer(9)).unwrap();
+    }
+
+    #[test]
+    fn rejects_more_signers_than_the_account_holds() {
+        let signers: Vec<Word> = (1..=u32::from(ApproverSet::MAX_APPROVERS) + 1)
+            .map(signer)
+            .collect();
+        let error = ensure_admissible_signer_set(&signers, signer(0))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("too many signers"), "{error}");
+    }
+
+    #[test]
+    fn rejects_a_repeated_signer() {
+        let error = ensure_admissible_signer_set(&[signer(1), signer(1)], signer(9))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate signer commitment"), "{error}");
+    }
+
+    #[test]
+    fn rejects_the_guardian_among_the_signers() {
+        let error = ensure_admissible_signer_set(&[signer(1), signer(9)], signer(9))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("GUARDIAN commitment must be different"),
+            "{error}"
+        );
     }
 }

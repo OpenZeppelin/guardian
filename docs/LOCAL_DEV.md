@@ -46,26 +46,36 @@ Since Miden 0.17 the fee asset lives in the chain's protocol configuration
 rather than the block header, and every Rust or browser client builds that
 configuration from the fee faucet's account id: `MultisigClientBuilder::fee_faucet_id`,
 `ClientOptions.feeFaucetId`, or `MIDEN_FEE_FAUCET_ID` and
-`VITE_MIDEN_FEE_FAUCET_ID` in the examples. Where the value comes from:
+`VITE_MIDEN_FEE_FAUCET_ID` in the examples. Where the value comes from, most reliable first:
 
+- **From the node itself.** `GetBlockHeaderByNumber` with
+  `include_protocol_config` set returns the chain's `ProtocolConfig`. Its
+  `fee_asset_id` is a word of four little-endian felts: asset class suffix,
+  asset class prefix, faucet id suffix (low byte holds asset metadata), faucet
+  id prefix. The faucet's account id is the prefix followed by the suffix with
+  that low byte dropped; `AssetId::faucet_id` in miden-protocol does this for
+  you. This always names the chain you are talking to.
 - **A node you run.** The fee faucet is one of the genesis accounts the node
   was bootstrapped with, so its id is in the genesis configuration and the
   bootstrap output of whoever set the node up.
-- **Devnet and testnet.** The fee asset is the network's native token, and the
-  public faucet that dispenses it is the fee faucet: its account id is shown on
-  <https://faucet.devnet.miden.io/> and <https://faucet.testnet.miden.io/>, and
-  returned as `id` (bech32, `mdev1...` or `mtst1...`) by the faucet API's
-  `/get_metadata` endpoint. Both SDKs and all examples take that bech32 form
-  directly (Rust: `miden_multisig_client::parse_account_id` reads bech32 or
-  hex). Verified on devnet, where that account is the
-  native fee asset the block header reports. The value is only usable from a
-  network running the Miden line this workspace pins; the
-  [compatibility matrix](./MIDEN_COMPATIBILITY.md#support-matrix) says which
-  networks do, and a local node is the alternative.
-- **From a running node.** `GetBlockHeaderByNumber` with
-  `include_protocol_config` set returns the `ProtocolConfig`; its
-  `fee_asset_id` is the fee asset's id word, and `AssetId::faucet_id` in
-  miden-protocol reads the faucet's account id out of it.
+- **A public faucet service.** On devnet and testnet the fee asset is the
+  network's native token, so the public faucet can be the fee faucet. Its id is
+  the `id` field (bech32, `mdev1...` / `mtst1...`) of `/get_metadata` on the
+  faucet's API host, which the faucet site names as `api_url` in its
+  `/config.json` (`/get_metadata` on the site itself is a 404 page). Only trust
+  it when that response's `version` matches the node's: a faucet service is
+  upgraded separately from its network and can lag behind a reset, still
+  reporting the previous chain's faucet.
+
+Both SDKs and all examples accept the bech32 form as well as hex (Rust:
+`miden_multisig_client::parse_account_id`). A wrong value is reported by name:
+the Rust SDK checks the synced chain's protocol configuration at every sync and
+fails with `ProtocolConfigMismatch`; the TypeScript SDK raises
+`ProtocolConfigMismatchError` at the first execution, since the web SDK cannot
+rebuild the expected configuration ahead of time. The value is only usable on a
+network running the Miden line this workspace pins; the
+[compatibility matrix](./MIDEN_COMPATIBILITY.md#open-upstream-items) says which
+networks do, and a local node is the alternative.
 
 ## Environment file
 

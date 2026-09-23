@@ -2067,7 +2067,8 @@ export class Multisig {
   }
 
   async createTransactionProposalRequest(proposalId: string): Promise<TransactionRequest> {
-    const { finalRequest } = await this.prepareProposalExecution(proposalId);
+    const { finalRequest, anchor } = await this.prepareProposalExecution(proposalId);
+    anchor.free();
     return finalRequest;
   }
 
@@ -2833,12 +2834,9 @@ export class Multisig {
         return txSummaryCommitment;
       }
 
-      if (proposal.metadata.proposalType === 'switch_guardian') {
-        // Re-execution would mutate the WASM account twice. The proposal ID and
-        // guardian endpoint commitment provide the binding checks for this type.
-        return txSummaryCommitment;
-      }
-
+      // The salt check needs no re-execution, so it runs for every built-in
+      // type, switch_guardian included (as in the Rust SDK): a mismatched salt
+      // would otherwise collect signatures and only fail in the VM.
       const binding = proposalRequestBinding(
         summary,
         anchor,
@@ -2848,6 +2846,13 @@ export class Multisig {
         throw new Error(
           `Invalid proposal: metadata salt does not match the salt bound into the tx_summary for ${proposal.id}`,
         );
+      }
+
+      if (proposal.metadata.proposalType === 'switch_guardian') {
+        // Re-execution would mutate the WASM account twice. The proposal ID,
+        // the salt above and the guardian endpoint commitment provide the
+        // binding checks for this type.
+        return txSummaryCommitment;
       }
 
       // A consume-notes summary commits to *authenticated* consumption (see

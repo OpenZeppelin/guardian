@@ -21,6 +21,21 @@ line this build pins. The
 line and the public networks running it; a local `miden-node` from that
 line is the fallback when none does.
 
+### "protocol configuration 0x… is not stored" or `ProtocolConfigMismatch`
+
+The chain's protocol configuration is not the one the client built from its
+fee faucet. Either `fee_faucet_id` / `feeFaucetId` names a different faucet
+than the chain's fee asset, or the node runs a different Miden protocol line
+than this build pins (for example a newer release candidate on a freshly reset
+devnet). Nothing notices earlier: client build, account creation and GUARDIAN
+registration do not execute a transaction. The Rust SDK now checks at every
+sync and fails with `ProtocolConfigMismatch`; the TypeScript SDK raises
+`ProtocolConfigMismatchError` at the first proposal instead of miden-client's
+raw "is not stored; register it with Client::add_protocol_config" error. Read
+the fee faucet from the node ([LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet)),
+and if it already matches, the node's protocol line differs: check
+[MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#open-upstream-items).
+
 ### State created on Miden 0.16 fails to load after the 0.17 upgrade
 
 The same shape as the 0.15 to 0.16 case below. A Rust SQLite store or a

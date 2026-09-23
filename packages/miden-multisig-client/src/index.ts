@@ -72,6 +72,7 @@ export {
   executeForSummaryAt,
   summaryApprovalExpirationBlockNum,
   summarySalt,
+  ProtocolConfigMismatchError,
   SummaryAnchorMismatchError,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,

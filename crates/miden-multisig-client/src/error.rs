@@ -41,6 +41,19 @@ pub enum MultisigError {
         summary_block_commitment: String,
     },
 
+    /// The node's protocol configuration is not the one this client was built
+    /// for. Either `fee_faucet_id` names a different faucet than the chain's
+    /// fee asset, or the node runs a different Miden protocol line.
+    #[error(
+        "the node's protocol configuration {node_commitment} is not the one this client built \
+         from fee faucet {fee_faucet_id}; check `fee_faucet_id` against the chain's fee asset \
+         and that the node runs the Miden line this build pins (docs/LOCAL_DEV.md#the-fee-faucet)"
+    )]
+    ProtocolConfigMismatch {
+        node_commitment: String,
+        fee_faucet_id: AccountId,
+    },
+
     /// Miden client error retaining the concrete source and its RPC status.
     #[error("miden client error: {message}")]
     MidenClientSource {

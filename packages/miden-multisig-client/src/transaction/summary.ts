@@ -37,6 +37,41 @@ export class SummaryAnchorMismatchError extends Error {
 }
 
 /**
+ * The node's protocol configuration is not the one the Miden client was built
+ * for: `feeFaucetId` names another faucet than the chain's fee asset, or the
+ * node runs a different Miden protocol line. miden-client reports this only as
+ * an unregistered protocol configuration at the first execution, which names
+ * neither cause; this names both. (The Rust SDK checks the same condition at
+ * sync; the web SDK exposes no way to rebuild the expected configuration, so
+ * TypeScript can only recognise it when it surfaces.)
+ */
+export class ProtocolConfigMismatchError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "the node's protocol configuration is not the one this client was built for; check " +
+        "`feeFaucetId` against the chain's fee asset and that the node runs the Miden line " +
+        'this build pins (docs/LOCAL_DEV.md#the-fee-faucet)',
+      { cause },
+    );
+    this.name = 'ProtocolConfigMismatchError';
+  }
+}
+
+const UNREGISTERED_PROTOCOL_CONFIG = /protocol configuration \S+ is not stored/;
+
+async function withProtocolConfigCheck<T>(execution: Promise<T>): Promise<T> {
+  try {
+    return await execution;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (UNREGISTERED_PROTOCOL_CONFIG.test(message)) {
+      throw new ProtocolConfigMismatchError(error);
+    }
+    throw error;
+  }
+}
+
+/**
  * Captures a `ChainAnchor` for the request at the current sync height and
  * executes the transaction against it to obtain the summary awaiting
  * authorization. The anchor is returned alongside the summary so the proposer
@@ -72,7 +107,7 @@ export async function executeForSummary(
   const anchor = await rawClient.chainAnchorForRequest(txRequest);
   let summary: TransactionSummary;
   try {
-    summary = await rawClient.executeForSummaryAt(acc, txRequest, anchor);
+    summary = await withProtocolConfigCheck(rawClient.executeForSummaryAt(acc, txRequest, anchor));
   } catch (error) {
     anchor.free();
     throw error;
@@ -120,7 +155,7 @@ export async function executeForSummaryAt(
 ): Promise<TransactionSummary> {
   const acc = AccountId.fromHex(accountId);
   const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
-  return rawClient.executeForSummaryAt(acc, txRequest, anchor);
+  return withProtocolConfigCheck(rawClient.executeForSummaryAt(acc, txRequest, anchor));
 }
 
 /**

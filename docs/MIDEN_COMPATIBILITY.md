@@ -126,12 +126,18 @@ Nothing stored under Miden 0.16 survives:
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-09-22.
+Last checked 2026-09-23.
 
-- **Public networks.** Devnet and testnet run Miden 0.16. Until they move to
-  0.17 the examples need a local `miden-node` from the 0.17 line, and the
-  public faucets (see [LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet)) name a
-  0.16 fee faucet. When a network upgrades: use its faucet as the fee faucet.
+- **Public networks.** Testnet runs Miden 0.16. Devnet was being redeployed on
+  2026-09-23 onto a fresh chain with node 0.17.0-rc.2, which embeds protocol
+  0.17.0-rc.6. This workspace pins protocol rc.5 with client rc.1, so its
+  protocol configuration does not match that chain: the SDKs refuse it at sync
+  (Rust) or at the first execution (TypeScript). It cannot run on devnet until
+  it re-pins to the protocol line devnet runs (see **Pins** below). The devnet
+  faucet service still reported 0.16.0 and the previous chain's faucet, so read
+  the fee faucet from the node ([LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet)).
+  Until a public network runs the pinned line, the examples need a local
+  `miden-node` from it.
 - **Fee payment** ([protocol#3757](https://github.com/0xMiden/protocol/issues/3757)).
   On the 0.17 release candidates `guarded_multisig` drops the conversion-info
   word instead of paying the fee. The auth args both SDKs build are the ones

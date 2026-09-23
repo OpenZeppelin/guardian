@@ -100,3 +100,28 @@ describe('executeForSummary', () => {
     expect(anchor.free).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ProtocolConfigMismatchError', () => {
+  it("replaces miden-client's unregistered-config failure with a named cause", async () => {
+    const { executeForSummaryAt, ProtocolConfigMismatchError } = await import('./summary.js');
+    const upstream = new Error(
+      'protocol configuration 0xabc is not stored; register it with Client::add_protocol_config',
+    );
+    mockExecuteForSummaryAt.mockRejectedValueOnce(upstream);
+
+    const failure = executeForSummaryAt({} as never, '0xaa', {} as never, {} as never);
+
+    await expect(failure).rejects.toBeInstanceOf(ProtocolConfigMismatchError);
+    await expect(failure).rejects.toMatchObject({ cause: upstream });
+  });
+
+  it('leaves other execution failures untouched', async () => {
+    const { executeForSummaryAt } = await import('./summary.js');
+    const other = new Error('advice stack read failed');
+    mockExecuteForSummaryAt.mockRejectedValueOnce(other);
+
+    await expect(
+      executeForSummaryAt({} as never, '0xaa', {} as never, {} as never),
+    ).rejects.toBe(other);
+  });
+});

@@ -250,7 +250,38 @@ impl MultisigClient {
             .sync_state()
             .await
             .map_err(|e| MultisigError::miden_client_with_context("failed to sync state", e))?;
-        Ok(())
+        self.ensure_node_protocol_config().await
+    }
+
+    /// Fails fast when the synced chain's protocol configuration is not the one
+    /// registered from `fee_faucet_id`. Without this a wrong faucet (or a node on
+    /// another protocol line) goes unnoticed through build, sync, account
+    /// creation and registration, and only the first execution fails.
+    async fn ensure_node_protocol_config(&self) -> Result<()> {
+        let header = self
+            .miden_client
+            .get_latest_block_header()
+            .await
+            .map_err(|e| {
+                MultisigError::miden_client_with_context(
+                    "failed to read the latest block header",
+                    e,
+                )
+            })?;
+        let node_commitment = header.protocol_config_commitment();
+        match self.miden_client.get_protocol_config(node_commitment).await {
+            Ok(_) => Ok(()),
+            Err(miden_client::ClientError::StoreError(
+                miden_client::store::StoreError::ProtocolConfigNotFound(_),
+            )) => Err(MultisigError::ProtocolConfigMismatch {
+                node_commitment: crate::transaction::word_to_hex(&node_commitment),
+                fee_faucet_id: self.fee_faucet_id,
+            }),
+            Err(e) => Err(MultisigError::miden_client_with_context(
+                "failed to read the registered protocol configuration",
+                e,
+            )),
+        }
     }
 
     async fn refresh_cached_account_from_store(&mut self) -> Result<()> {
@@ -571,6 +602,68 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate signer commitment")
+        );
+    }
+
+    /// A client whose protocol configuration was registered from the wrong fee
+    /// faucet fails at its first sync, naming `fee_faucet_id`, instead of at the
+    /// first execution with miden-client's "is not stored" store error.
+    #[tokio::test]
+    async fn sync_refuses_a_protocol_config_the_node_does_not_run() {
+        use std::sync::Arc;
+
+        use miden_client::builder::ClientBuilder;
+        use miden_client::keystore::FilesystemKeyStore;
+        use miden_client::rpc::Endpoint;
+        use miden_client::testing::mock::MockRpcApi;
+        use miden_client_sqlite_store::SqliteStore;
+        use miden_protocol::asset::AssetId;
+        use miden_protocol::protocol_config::ProtocolConfig;
+        use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2;
+
+        use crate::keystore::GuardianKeyStore;
+        use crate::prover::ProverConfig;
+        use crate::rpc::RpcConfig;
+
+        let dir = tempfile::tempdir().unwrap();
+        let node = Arc::new(MockRpcApi::default());
+        let wrong_faucet = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2).unwrap();
+        assert_ne!(
+            wrong_faucet,
+            node.protocol_config().fee_asset_id().faucet_id()
+        );
+
+        let keystore_dir = dir.path().join("keys");
+        std::fs::create_dir_all(&keystore_dir).unwrap();
+        let miden_client = ClientBuilder::<FilesystemKeyStore>::new()
+            .rpc(node)
+            .protocol_config(ProtocolConfig::current(AssetId::new_fungible(wrong_faucet)).unwrap())
+            .store(Arc::new(
+                SqliteStore::new(dir.path().join("store.sqlite3"))
+                    .await
+                    .unwrap(),
+            ))
+            .filesystem_keystore(keystore_dir)
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let mut client = MultisigClient::new(
+            miden_client,
+            Arc::new(GuardianKeyStore::generate()),
+            "http://localhost:1".to_string(),
+            dir.path().to_path_buf(),
+            Endpoint::localhost(),
+            None,
+            wrong_faucet,
+            ProverConfig::new(),
+            RpcConfig::new(),
+        );
+
+        let error = client.sync_network_state().await.unwrap_err();
+        assert!(
+            matches!(error, MultisigError::ProtocolConfigMismatch { fee_faucet_id, .. } if fee_faucet_id == wrong_faucet),
+            "{error}"
         );
     }
 }
