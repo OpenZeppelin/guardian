@@ -35,6 +35,12 @@ const CANONICALIZATION_RUN_BUCKETS: &[f64] = &[
 /// Candidate age spans from sub-tick freshness through the submission
 /// grace period (default 600s) out to a day, so stuck candidates stay
 /// visible instead of saturating at +Inf.
+/// One rotation of the release sweep spans minutes to a day, so its
+/// histogram gets buckets from one minute up to 24 hours.
+const RELEASE_SWEEP_ROTATION_BUCKETS: &[f64] = &[
+    60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0, 14400.0, 21600.0, 43200.0, 86400.0,
+];
+
 const CANDIDATE_AGE_BUCKETS: &[f64] = &[
     1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0, 14400.0, 86400.0,
 ];
@@ -66,10 +72,10 @@ pub fn build_recorder() -> PrometheusRecorder {
         )
         .expect("static reconcile canonicalization buckets are non-empty")
         .set_buckets_for_metric(
-            Matcher::Full(names::CANONICALIZATION_RELEASE_SWEEP_RUN_DURATION_SECONDS.to_string()),
-            CANONICALIZATION_RUN_BUCKETS,
+            Matcher::Full(names::RELEASE_SWEEP_ROTATION_DURATION_SECONDS.to_string()),
+            RELEASE_SWEEP_ROTATION_BUCKETS,
         )
-        .expect("static release sweep buckets are non-empty")
+        .expect("static release sweep rotation buckets are non-empty")
         .set_buckets_for_metric(
             Matcher::Full(names::CANONICALIZATION_CANDIDATE_AGE_SECONDS.to_string()),
             CANDIDATE_AGE_BUCKETS,

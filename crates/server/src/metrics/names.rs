@@ -62,10 +62,13 @@ pub const CANONICALIZATION_RECONCILE_RUNS_TOTAL: &str =
     "guardian_canonicalization_reconcile_runs_total";
 pub const CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS: &str =
     "guardian_canonicalization_reconcile_run_duration_seconds";
-pub const CANONICALIZATION_RELEASE_SWEEP_RUNS_TOTAL: &str =
-    "guardian_canonicalization_release_sweep_runs_total";
-pub const CANONICALIZATION_RELEASE_SWEEP_RUN_DURATION_SECONDS: &str =
-    "guardian_canonicalization_release_sweep_run_duration_seconds";
+
+// --- Release sweep (issue #434) --------------------------------------------
+
+pub const RELEASE_SWEEP_ROTATIONS_TOTAL: &str = "guardian_release_sweep_rotations_total";
+pub const RELEASE_SWEEP_ROTATION_DURATION_SECONDS: &str =
+    "guardian_release_sweep_rotation_duration_seconds";
+pub const RELEASE_SWEEP_HOT_PASSES_TOTAL: &str = "guardian_release_sweep_hot_passes_total";
 pub const RELEASE_SWEEP_ACCOUNTS_TOTAL: &str = "guardian_release_sweep_accounts_total";
 pub const CANONICALIZATION_CANDIDATES_TOTAL: &str = "guardian_canonicalization_candidates_total";
 pub const CANONICALIZATION_RETRIES_TOTAL: &str = "guardian_canonicalization_retries_total";
@@ -314,16 +317,24 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Duration of one recoverable-delta reconcile pass, in seconds.",
     },
     MetricDef {
-        name: CANONICALIZATION_RELEASE_SWEEP_RUNS_TOTAL,
+        name: RELEASE_SWEEP_ROTATIONS_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
-        help: "Chain-driven release sweep passes (issue #434), by outcome (completed, partial, cancelled, error).",
+        help: "Walks of the fleet completed by the release sweep (issue #434), by outcome \
+               (completed, partial, cancelled).",
     },
     MetricDef {
-        name: CANONICALIZATION_RELEASE_SWEEP_RUN_DURATION_SECONDS,
+        name: RELEASE_SWEEP_ROTATION_DURATION_SECONDS,
         kind: MetricKind::Histogram,
         labels: &[],
-        help: "Duration of one release sweep pass, in seconds.",
+        help: "Wall-clock duration of one release sweep rotation over the fleet, in seconds.",
+    },
+    MetricDef {
+        name: RELEASE_SWEEP_HOT_PASSES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Release sweep hot passes over accounts awaiting confirmation or carrying a \
+               pending switch proposal, by outcome (completed, partial, cancelled, error).",
     },
     MetricDef {
         name: RELEASE_SWEEP_ACCOUNTS_TOTAL,

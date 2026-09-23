@@ -43,6 +43,9 @@ pub const CANONICALIZATION_LEASE: &str = "canonicalization";
 /// Lease name for the single-owner `/dashboard/stats` refresher (issue #371).
 pub const DASHBOARD_STATS_LEASE: &str = "dashboard_stats";
 
+/// Single-owner lease of the chain-driven release sweep (issue #434).
+pub const RELEASE_SWEEP_LEASE: &str = "release_sweep";
+
 /// Coordination store handles selected by the storage backend, threaded from the
 /// storage builder (where the Postgres pool is available) into the realm-scoped
 /// consumers.
@@ -54,6 +57,8 @@ pub struct CoordinationHandles {
     pub leader: Arc<dyn LeaderElector>,
     /// Single-owner lease for the `/dashboard/stats` refresher.
     pub stats_leader: Arc<dyn LeaderElector>,
+    /// Single-owner lease for the chain-driven release sweep (issue #434).
+    pub release_sweep_leader: Arc<dyn LeaderElector>,
     /// Shared publication store for the `/dashboard/stats` aggregate.
     pub stats_store: Arc<dyn StatsStore>,
     #[cfg(feature = "evm")]
@@ -70,6 +75,10 @@ impl CoordinationHandles {
             operator_challenges: Arc::new(InMemoryChallengeStore::new()),
             leader: Arc::new(AlwaysLeader::new(CANONICALIZATION_LEASE, "single-process")),
             stats_leader: Arc::new(AlwaysLeader::new(DASHBOARD_STATS_LEASE, "single-process")),
+            release_sweep_leader: Arc::new(AlwaysLeader::new(
+                RELEASE_SWEEP_LEASE,
+                "single-process",
+            )),
             stats_store: Arc::new(InMemoryStatsStore::new()),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(InMemorySessionStore::new()),
@@ -101,6 +110,11 @@ impl CoordinationHandles {
             stats_leader: Arc::new(PgLeaseElector::new(
                 pool.clone(),
                 DASHBOARD_STATS_LEASE,
+                holder_id.clone(),
+            )),
+            release_sweep_leader: Arc::new(PgLeaseElector::new(
+                pool.clone(),
+                RELEASE_SWEEP_LEASE,
                 holder_id,
             )),
             stats_store: Arc::new(PgStatsStore::new(pool.clone(), cipher)),

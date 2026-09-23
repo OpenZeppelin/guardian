@@ -244,6 +244,7 @@ pub async fn create_test_app_state() -> AppState {
         network_client: Arc::new(mock_client),
         ack,
         canonicalization: Some(crate::canonicalization::CanonicalizationConfig::default()),
+        release_sweep: None,
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
         auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -682,6 +683,7 @@ pub fn create_test_app_state_with_mocks(
         network_client,
         ack,
         canonicalization: None, // Use optimistic mode for unit tests
+        release_sweep: None,
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
         auditor: Arc::new(crate::audit::LogAuditor::new()),

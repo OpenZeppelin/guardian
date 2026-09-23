@@ -459,6 +459,7 @@ mod tests {
             network_client: Arc::new(network),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(clock),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

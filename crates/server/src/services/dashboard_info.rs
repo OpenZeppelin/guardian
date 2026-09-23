@@ -90,17 +90,25 @@ pub struct DashboardCanonicalizationConfig {
     pub reconcile_interval_seconds: u64,
     /// Accounts one reconcile pass visits at most (rotation cursor).
     pub reconcile_page_size: u32,
-    /// Whether the chain-driven release sweep (issue #434) runs: it
-    /// releases accounts whose on-chain guardian key is no longer this
-    /// server's even when the switch delta never reached the push path.
-    pub release_sweep_enabled: bool,
-    /// Cadence of the release sweep pass.
-    pub release_sweep_interval_seconds: u64,
-    /// Accounts one release sweep pass visits at most (rotation cursor).
-    pub release_sweep_page_size: u32,
-    /// Consecutive passes that must observe a foreign guardian key on
-    /// chain before the sweep releases an account.
-    pub release_sweep_confirmations: u32,
+}
+
+/// Chain-driven release sweep settings (issue #434): the background
+/// task that releases accounts whose on-chain guardian key is no longer
+/// this server's even when the switch delta never reached the push
+/// path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct DashboardReleaseSweepConfig {
+    /// Target time for one full walk of the fleet; every unreleased
+    /// Miden account is probed once per rotation.
+    pub rotation_seconds: u64,
+    /// Upper bound on accounts probed per second during the walk.
+    pub max_rate_per_second: u32,
+    /// Cadence of the hot pass over accounts awaiting confirmation or
+    /// carrying a pending `switch_guardian` proposal.
+    pub hot_interval_seconds: u64,
+    /// Consecutive observations of a foreign guardian key in published
+    /// storage required before releasing on that evidence.
+    pub confirmations: u32,
 }
 
 /// Backend configuration snapshot. Stable for the lifetime of the
@@ -110,6 +118,8 @@ pub struct DashboardCanonicalizationConfig {
 pub struct DashboardBackendInfo {
     /// `"filesystem"` or `"postgres"` from the cargo feature flag.
     pub storage: &'static str,
+    /// Release sweep settings; `None` when the sweep is disabled.
+    pub release_sweep: Option<DashboardReleaseSweepConfig>,
     /// Acknowledgement signature schemes wired into the server's
     /// `AckRegistry`. Stable order (alphabetic) so clients can rely on
     /// the listing.
@@ -201,10 +211,14 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
                 retained_ttl_seconds: c.retained_ttl_seconds,
                 reconcile_interval_seconds: c.reconcile_interval_seconds,
                 reconcile_page_size: c.reconcile_page_size,
-                release_sweep_enabled: c.release_sweep_enabled,
-                release_sweep_interval_seconds: c.release_sweep_interval_seconds,
-                release_sweep_page_size: c.release_sweep_page_size,
-                release_sweep_confirmations: c.release_sweep_confirmations,
+            }
+        }),
+        release_sweep: state.release_sweep.as_ref().filter(|c| c.enabled).map(|c| {
+            DashboardReleaseSweepConfig {
+                rotation_seconds: c.rotation_seconds,
+                max_rate_per_second: c.max_rate_per_second,
+                hot_interval_seconds: c.hot_interval_seconds,
+                confirmations: c.confirmations,
             }
         }),
     };
@@ -300,6 +314,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -370,6 +385,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

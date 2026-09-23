@@ -17,10 +17,11 @@
 //! 3. Onboard the pre-switch state on this (soon to be old) guardian and
 //!    push nothing. Register the executed commitment as the on-chain
 //!    answer and the executed state as the account's published storage.
-//! 4. Run the worker's process-now entry point (full + reconcile +
-//!    release sweep). Assert the sweep released the account with the
-//!    chain-sweep audit evidence, and that a still-bound or opaque
-//!    account is left alone.
+//! 4. Run the sweep's process-now entry point. Assert it released the
+//!    account with the chain-sweep audit evidence, that a still-bound
+//!    account is left alone, and that a private account is released only
+//!    through a pending switch proposal whose post-state the chain
+//!    reached (the proposal-match detector), never on an opaque read.
 
 use std::sync::Arc;
 
@@ -43,14 +44,15 @@ use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 
 use crate::delta_object::DeltaObject;
+use crate::jobs::release_sweep::run_release_sweep_now;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
 use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::services::{
-    ConfigureAccountParams, PushDeltaParams, configure_account, process_canonicalizations_now,
-    push_delta,
+    ConfigureAccountParams, PushDeltaParams, PushDeltaProposalParams, configure_account,
+    push_delta, push_delta_proposal,
 };
 use crate::state::AppState;
 use crate::testing::helpers::{
@@ -89,6 +91,9 @@ fn falcon_credentials(
 /// a switch this server never heard about.
 struct UnannouncedSwitch {
     state: AppState,
+    /// The abort `TransactionSummary` the wallet pushes as the switch
+    /// proposal / delta payload.
+    switch_summary: serde_json::Value,
     auditor: CapturingAuditor,
     account_id_hex: String,
     pre_switch_account: Account,
@@ -160,6 +165,10 @@ impl UnannouncedSwitch {
 }
 
 async fn unannounced_switch() -> UnannouncedSwitch {
+    unannounced_switch_for(AccountType::Public).await
+}
+
+async fn unannounced_switch_for(account_type: AccountType) -> UnannouncedSwitch {
     let mut state = create_test_app_state().await;
 
     // The account's guardian key is this server's ack key, mirroring the
@@ -175,17 +184,16 @@ async fn unannounced_switch() -> UnannouncedSwitch {
         .map(|pk| pk.to_commitment())
         .collect();
 
-    // A public account: the sweep can only read the guardian key from
-    // published storage.
     let config = MultisigGuardianConfig::new(2, signer_commitments, ack_commitment_word)
-        .with_account_type(AccountType::Public)
+        .with_account_type(account_type)
         .with_signature_scheme(SignatureScheme::Falcon);
     let multisig_account = MultisigGuardianBuilder::new(config)
         .build_existing()
         .expect("multisig account builds");
-    assert!(
+    assert_eq!(
         multisig_account.id().is_public(),
-        "fixture must be a public account for the sweep's storage read"
+        account_type == AccountType::Public,
+        "fixture visibility must follow the requested account type"
     );
 
     let account_id_hex = multisig_account.id().to_hex();
@@ -215,8 +223,10 @@ async fn unannounced_switch() -> UnannouncedSwitch {
     // (see switch_guardian_canonicalization.rs for the caveat).
     let salt = Word::from([Felt::new_unchecked(7); 4]);
 
+    // The mock chain holds no state for private accounts, so the
+    // transaction is built from the account itself for both visibilities.
     let abort_summary = match mock_chain
-        .build_transaction(multisig_account.id())
+        .build_transaction(multisig_account.clone())
         .authenticator(None)
         .tx_script(tx_script.clone())
         .auth_args(salt)
@@ -230,6 +240,7 @@ async fn unannounced_switch() -> UnannouncedSwitch {
         error => panic!("expected abort with tx effects: {error:?}"),
     };
     let msg = abort_summary.as_ref().to_commitment();
+    let switch_summary = abort_summary.as_ref().to_json();
     let signing = SigningInputs::TransactionSummary(abort_summary);
     let authenticator_1 =
         BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(cosigner_keys[0].clone())]);
@@ -248,7 +259,7 @@ async fn unannounced_switch() -> UnannouncedSwitch {
     // multisig threshold alone — the one transaction that needs no
     // guardian signature, which is exactly why this server never saw it.
     let executed_tx = mock_chain
-        .build_transaction(multisig_account.id())
+        .build_transaction(multisig_account.clone())
         .authenticator(None)
         .tx_script(tx_script)
         .add_signature(cosigner_pubkeys[0].clone().into(), msg, sig_1)
@@ -284,6 +295,7 @@ async fn unannounced_switch() -> UnannouncedSwitch {
 
     let mut fixture = UnannouncedSwitch {
         state,
+        switch_summary,
         auditor,
         account_id_hex: account_id_hex.clone(),
         pre_switch_account: multisig_account.clone(),
@@ -346,9 +358,9 @@ async fn test_release_sweep_releases_account_whose_switch_never_reached_the_push
         .expect("deltas readable");
     assert!(deltas.is_empty(), "no delta was ever pushed for the switch");
 
-    let pass = process_canonicalizations_now(&fixture.state)
+    let pass = run_release_sweep_now(&fixture.state)
         .await
-        .expect("process-now succeeds");
+        .expect("sweep succeeds");
     assert_eq!(pass.failed_accounts, 0);
     assert!(!pass.cancelled);
 
@@ -406,9 +418,9 @@ async fn test_release_sweep_releases_account_whose_switch_never_reached_the_push
         .await
         .expect("released account state must remain readable");
     assert_eq!(stored_after.commitment, fixture.pre_switch_commitment);
-    process_canonicalizations_now(&fixture.state)
+    run_release_sweep_now(&fixture.state)
         .await
-        .expect("second pass succeeds");
+        .expect("second sweep succeeds");
     assert_eq!(fixture.released_at().await, released_at);
     assert_eq!(
         fixture
@@ -480,9 +492,9 @@ async fn test_release_sweep_leaves_a_still_bound_lagging_account_alone() {
     let advanced = fixture.advanced_still_bound_account();
     fixture.install_chain(&advanced, true);
 
-    let pass = process_canonicalizations_now(&fixture.state)
+    let pass = run_release_sweep_now(&fixture.state)
         .await
-        .expect("process-now succeeds");
+        .expect("sweep succeeds");
     assert_eq!(pass.failed_accounts, 0);
     assert!(
         fixture.released_at().await.is_none(),
@@ -498,21 +510,22 @@ async fn test_release_sweep_leaves_a_still_bound_lagging_account_alone() {
 }
 
 #[tokio::test]
-async fn test_release_sweep_cannot_verify_an_account_without_published_storage() {
-    // Same unannounced switch, but the chain publishes nothing for the
-    // account (a private account): the binding is opaque and the sweep
+async fn test_release_sweep_cannot_verify_a_private_account_without_a_pending_proposal() {
+    // A private account switched without leaving a proposal on this
+    // server (offline switch): the chain publishes no storage, no
+    // pending proposal explains the new commitment, and the sweep
     // records that it cannot tell rather than guessing.
-    let mut fixture = unannounced_switch().await;
+    let mut fixture = unannounced_switch_for(AccountType::Private).await;
     let executed = fixture.executed_account.clone();
     fixture.install_chain(&executed, false);
 
-    let pass = process_canonicalizations_now(&fixture.state)
+    let pass = run_release_sweep_now(&fixture.state)
         .await
-        .expect("process-now succeeds");
+        .expect("sweep succeeds");
     assert_eq!(pass.failed_accounts, 0);
     assert!(
         fixture.released_at().await.is_none(),
-        "without published storage the sweep has no evidence and must not release"
+        "without published storage or a matching proposal the sweep has no evidence"
     );
     assert!(
         fixture
@@ -520,5 +533,86 @@ async fn test_release_sweep_cannot_verify_an_account_without_published_storage()
             .snapshot()
             .iter()
             .all(|e| e.action_kind != crate::audit::kinds::ACCOUNTS_RELEASE)
+    );
+}
+
+#[tokio::test]
+async fn test_release_sweep_matches_a_pending_switch_proposal_for_a_private_account() {
+    // The normal online flow: the wallet creates the switch proposal on
+    // this (old) guardian, then executes the switch elsewhere. The
+    // proposal sits pending here; applying its summary to the stored
+    // state gives exactly the commitment the chain now holds, which
+    // proves the switch executed — with no published storage at all.
+    let mut fixture = unannounced_switch_for(AccountType::Private).await;
+    let executed_nonce = fixture.executed_account.nonce().as_canonical_u64();
+    let creds = fixture.credentials();
+    let proposal = push_delta_proposal(
+        &fixture.state,
+        PushDeltaProposalParams {
+            account_id: fixture.account_id_hex.clone(),
+            nonce: executed_nonce,
+            delta_payload: serde_json::json!({
+                "tx_summary": fixture.switch_summary.clone(),
+                "signatures": [],
+                "metadata": {
+                    "proposal_type": "switch_guardian",
+                    "description": "switch to the new operator",
+                    "new_guardian_endpoint": "https://new-guardian.example",
+                    "new_guardian_pubkey": fixture.new_guardian_commitment_hex.clone(),
+                    "required_signatures": 2
+                }
+            }),
+            credentials: creds,
+        },
+    )
+    .await
+    .expect("the switch proposal is accepted on the old guardian");
+    let proposal_id = proposal.commitment.clone();
+
+    // The switch executes on chain; this server never receives a delta.
+    let executed = fixture.executed_account.clone();
+    fixture.install_chain(&executed, false);
+
+    let pass = run_release_sweep_now(&fixture.state)
+        .await
+        .expect("sweep succeeds");
+    assert_eq!(pass.failed_accounts, 0);
+    assert!(
+        fixture.released_at().await.is_some(),
+        "the proposal match must release a private account"
+    );
+    let release_events: Vec<_> = fixture
+        .auditor
+        .snapshot()
+        .into_iter()
+        .filter(|e| e.action_kind == crate::audit::kinds::ACCOUNTS_RELEASE)
+        .collect();
+    assert_eq!(release_events.len(), 1);
+    let event = &release_events[0];
+    assert_eq!(event.payload["detected_by"], "proposal_match");
+    assert_eq!(event.payload["proposal_id"], proposal_id);
+    assert_eq!(
+        event.payload["new_guardian_commitment"],
+        fixture.new_guardian_commitment_hex
+    );
+    assert_eq!(
+        event.payload["on_chain_commitment"],
+        fixture.executed_commitment
+    );
+    assert_eq!(
+        event.payload["stored_commitment"],
+        fixture.pre_switch_commitment
+    );
+
+    // The executed proposal no longer lingers as pending.
+    let remaining = fixture
+        .state
+        .storage
+        .pull_pending_proposals(&fixture.account_id_hex)
+        .await
+        .expect("proposals readable");
+    assert!(
+        remaining.is_empty(),
+        "the switch proposal the chain proved executed is finalized"
     );
 }

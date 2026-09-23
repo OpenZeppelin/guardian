@@ -22,10 +22,12 @@
 //! The push path is not the only detector. A switch executed while this
 //! server was unreachable, from a client that never pushes (the offline
 //! switch path), or whose best-effort push failed, never arrives here;
-//! the periodic release sweep (`jobs::canonicalization::release_sweep`,
-//! issue #434) reads the guardian binding straight from published
-//! on-chain storage and drives the same transition through
-//! [`release_switched_account`] with `ReleaseEvidence::ChainSweep`.
+//! the release sweep (`jobs::release_sweep`, issue #434) either matches
+//! the chain against a pending switch proposal's precomputed post-state
+//! or reads the guardian binding straight from published on-chain
+//! storage, and drives the same transition through
+//! [`release_switched_account`] with `ReleaseEvidence::ProposalMatch` /
+//! `ReleaseEvidence::ChainSweep`.
 
 use serde_json::json;
 
@@ -53,6 +55,16 @@ pub enum ReleaseEvidence<'a> {
         on_chain_commitment: &'a str,
         stored_commitment: &'a str,
     },
+    /// The release sweep found the chain at exactly the post-state of a
+    /// `switch_guardian` proposal pending on this server (the proposal's
+    /// summary applied to the stored state reproduces the on-chain
+    /// commitment), which proves that switch executed. Works without
+    /// published storage, i.e. for private accounts.
+    ProposalMatch {
+        proposal_id: &'a str,
+        on_chain_commitment: &'a str,
+        stored_commitment: &'a str,
+    },
 }
 
 impl ReleaseEvidence<'_> {
@@ -60,6 +72,7 @@ impl ReleaseEvidence<'_> {
         match self {
             Self::Delta { .. } => "delta",
             Self::ChainSweep { .. } => "chain_sweep",
+            Self::ProposalMatch { .. } => "proposal_match",
         }
     }
 
@@ -83,6 +96,17 @@ impl ReleaseEvidence<'_> {
             } => json!({
                 "new_guardian_commitment": new_guardian_commitment,
                 "detected_by": self.detected_by(),
+                "on_chain_commitment": on_chain_commitment,
+                "stored_commitment": stored_commitment,
+            }),
+            Self::ProposalMatch {
+                proposal_id,
+                on_chain_commitment,
+                stored_commitment,
+            } => json!({
+                "new_guardian_commitment": new_guardian_commitment,
+                "detected_by": self.detected_by(),
+                "proposal_id": proposal_id,
                 "on_chain_commitment": on_chain_commitment,
                 "stored_commitment": stored_commitment,
             }),
@@ -260,6 +284,7 @@ mod tests {
             network_client: Arc::new(network),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(auditor),

@@ -21,9 +21,6 @@ use tokio_util::sync::CancellationToken;
 
 #[path = "reconciliation.rs"]
 mod reconciliation;
-#[path = "release_sweep.rs"]
-mod release_sweep;
-pub(super) use release_sweep::ReleaseSweepState;
 
 const FAST_PROMOTION_PAGE_SIZE: u32 = 100;
 
@@ -46,7 +43,6 @@ pub(super) struct ReconcileState {
 pub(super) struct PassControls {
     pub fast_state: Arc<FastPromotionState>,
     pub reconcile_state: Arc<ReconcileState>,
-    pub release_sweep_state: Arc<ReleaseSweepState>,
     pub deadline: Option<Instant>,
     /// Age-derived per-account backoff for the reconcile pass. The
     /// worker enables it; the test processor disables it so
@@ -59,7 +55,6 @@ impl PassControls {
         Self {
             fast_state: Arc::new(FastPromotionState::default()),
             reconcile_state: Arc::new(ReconcileState::default()),
-            release_sweep_state: Arc::new(ReleaseSweepState::default()),
             deadline: None,
             reconcile_backoff: false,
         }
@@ -145,11 +140,6 @@ pub(super) enum ProcessingMode {
     /// own, slower cadence so per-account chain probes never crowd out
     /// ordinary candidate processing in the full pass.
     ReconcileRecoverable,
-    /// Dedicated chain-driven release detection (issue #434): walks
-    /// unreleased Miden accounts and releases those whose published
-    /// on-chain guardian key is no longer this server's. Own cadence,
-    /// bounded like the reconcile pass.
-    ReleaseSweep,
 }
 
 #[async_trait]
@@ -183,11 +173,8 @@ struct DeltasProcessorBase {
     reconcile_interval_seconds: u64,
     reconcile_page_size: u32,
     reconcile_backoff: bool,
-    release_sweep_page_size: u32,
-    release_sweep_confirmations: u32,
     fast_promotion_state: Arc<FastPromotionState>,
     reconcile_state: Arc<ReconcileState>,
-    release_sweep_state: Arc<ReleaseSweepState>,
     pass_deadline: Option<Instant>,
 }
 
@@ -251,9 +238,8 @@ impl DeltasProcessorBase {
                 .candidate_age_seconds(delta, self.state.clock.now())
                 .is_some_and(|age| age < max_age_seconds),
             // The reconcile pass never processes candidates — it skips
-            // any account that has one in flight — and neither does the
-            // release sweep.
-            ProcessingMode::ReconcileRecoverable | ProcessingMode::ReleaseSweep => false,
+            // any account that has one in flight.
+            ProcessingMode::ReconcileRecoverable => false,
         }
     }
 
@@ -264,7 +250,6 @@ impl DeltasProcessorBase {
                 self.process_recent_pass(max_age_seconds).await
             }
             ProcessingMode::ReconcileRecoverable => self.process_reconcile_pass().await,
-            ProcessingMode::ReleaseSweep => self.process_release_sweep_pass().await,
         }
     }
 
@@ -590,9 +575,7 @@ impl DeltasProcessorBase {
                 candidates = candidates.len(),
                 "Processing delta candidates"
             ),
-            ProcessingMode::PromoteRecent { .. }
-            | ProcessingMode::ReconcileRecoverable
-            | ProcessingMode::ReleaseSweep => {
+            ProcessingMode::PromoteRecent { .. } | ProcessingMode::ReconcileRecoverable => {
                 tracing::debug!(
                     account_id = %account_id,
                     candidates = candidates.len(),
@@ -660,12 +643,12 @@ impl DeltasProcessorBase {
 
     async fn process_candidate(&self, delta: DeltaObject) -> Result<()> {
         match self.mode {
-            // The reconcile and release-sweep passes filter out every
-            // candidate before this point; the full path is the safe
-            // behavior if one ever slips through.
-            ProcessingMode::Full
-            | ProcessingMode::ReconcileRecoverable
-            | ProcessingMode::ReleaseSweep => self.process_full_candidate(delta).await,
+            // The reconcile pass filters out every candidate before this
+            // point; the full path is the safe behavior if one ever slips
+            // through.
+            ProcessingMode::Full | ProcessingMode::ReconcileRecoverable => {
+                self.process_full_candidate(delta).await
+            }
             ProcessingMode::PromoteRecent { .. } => self.process_recent_candidate(delta).await,
         }
     }
@@ -1690,11 +1673,8 @@ impl DeltasProcessor {
                 reconcile_interval_seconds: config.reconcile_interval_seconds,
                 reconcile_page_size: config.reconcile_page_size,
                 reconcile_backoff: controls.reconcile_backoff,
-                release_sweep_page_size: config.release_sweep_page_size,
-                release_sweep_confirmations: config.release_sweep_confirmations,
                 fast_promotion_state: controls.fast_state,
                 reconcile_state: controls.reconcile_state,
-                release_sweep_state: controls.release_sweep_state,
                 pass_deadline: controls.deadline,
             },
         }
@@ -1733,11 +1713,8 @@ impl TestDeltasProcessor {
                 reconcile_interval_seconds: 1,
                 reconcile_page_size: u32::MAX, // ...and reconciles everything at once
                 reconcile_backoff: false,      // ...immediately, every run
-                release_sweep_page_size: u32::MAX, // ...sweeps every account per run
-                release_sweep_confirmations: 1, // ...and releases on the first observation
                 fast_promotion_state: Arc::new(FastPromotionState::default()),
                 reconcile_state: Arc::new(ReconcileState::default()),
-                release_sweep_state: Arc::new(ReleaseSweepState::default()),
                 pass_deadline: None,
             },
         }
@@ -1747,20 +1724,15 @@ impl TestDeltasProcessor {
 #[async_trait]
 impl Processor for TestDeltasProcessor {
     /// Process-now semantics for tests, demos and e2e endpoints: one call
-    /// runs a full candidate pass, a reconcile pass AND a release sweep,
-    /// so callers that previously observed reconciliation inside the
-    /// full pass still do, and a switch the chain shows is released in
-    /// the same call.
+    /// runs a full candidate pass AND a reconcile pass, so callers that
+    /// previously observed reconciliation inside the full pass still do.
     async fn process_all_accounts(&self) -> Result<PassSummary> {
         let full = self.base.process_full_pass().await?;
         let reconcile = self.base.process_reconcile_pass().await?;
-        let sweep = self.base.process_release_sweep_pass().await?;
         Ok(PassSummary {
-            accounts: full.accounts + reconcile.accounts + sweep.accounts,
-            failed_accounts: full.failed_accounts
-                + reconcile.failed_accounts
-                + sweep.failed_accounts,
-            cancelled: full.cancelled || reconcile.cancelled || sweep.cancelled,
+            accounts: full.accounts + reconcile.accounts,
+            failed_accounts: full.failed_accounts + reconcile.failed_accounts,
+            cancelled: full.cancelled || reconcile.cancelled,
         })
     }
 
@@ -2254,7 +2226,6 @@ mod tests {
             PassControls {
                 fast_state: fast_state.clone(),
                 reconcile_state: Arc::new(ReconcileState::default()),
-                release_sweep_state: Arc::new(ReleaseSweepState::default()),
                 deadline: None,
                 reconcile_backoff: false,
             },
@@ -2295,7 +2266,6 @@ mod tests {
             PassControls {
                 fast_state: Arc::new(FastPromotionState::default()),
                 reconcile_state: Arc::new(ReconcileState::default()),
-                release_sweep_state: Arc::new(ReleaseSweepState::default()),
                 deadline: Some(Instant::now()),
                 reconcile_backoff: false,
             },
@@ -4310,7 +4280,6 @@ mod tests {
                 PassControls {
                     fast_state: Arc::new(FastPromotionState::default()),
                     reconcile_state: Arc::new(ReconcileState::default()),
-                    release_sweep_state: Arc::new(ReleaseSweepState::default()),
                     deadline: None,
                     reconcile_backoff: true,
                 },
@@ -4381,7 +4350,6 @@ mod tests {
             PassControls {
                 fast_state: Arc::new(FastPromotionState::default()),
                 reconcile_state: Arc::new(ReconcileState::default()),
-                release_sweep_state: Arc::new(ReleaseSweepState::default()),
                 deadline: None,
                 reconcile_backoff: false,
             },

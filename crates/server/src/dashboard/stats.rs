@@ -1333,6 +1333,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(dashboard),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -2663,6 +2664,7 @@ mod postgres_tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::fixed("2026-09-17T12:00:00Z")),
             dashboard: Arc::new(DashboardState::for_tests_with_stats_store(
                 Vec::new(),
