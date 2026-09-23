@@ -286,10 +286,11 @@ backend_override_files() {
 }
 
 override_declares_backend() {
-  local files
-  files=$(backend_override_files)
-  [ -n "$files" ] || return 1
-  grep -lqE '^[[:space:]]*(backend[[:space:]]+"|cloud[[:space:]]*\{)' $files 2>/dev/null
+  local file
+  while IFS= read -r file; do
+    grep -qE '^[[:space:]]*(backend[[:space:]]+"|cloud[[:space:]]*\{)' "$file" 2>/dev/null && return 0
+  done < <(backend_override_files)
+  return 1
 }
 
 initialized_backend_type() {
@@ -377,7 +378,9 @@ ensure_terraform_init() {
   if [ -n "$backend_type" ] && [ "$backend_type" != "local" ] && ! override_declares_backend; then
     log_error "${TF_DIR}/.terraform was initialized with a '${backend_type}' backend but no infra/*_override.tf declares a backend block anymore."
     log_error "Refusing to reconfigure down to local state, which would leave every live resource unmanaged."
-    log_error "Restore the override file, or return to local state deliberately with: terraform -chdir=${TF_DIR} init -reconfigure"
+    log_error "Restore the override file. To return to local state deliberately, with the override restored run:"
+    log_error "  TF_WORKSPACE=<workspace> terraform -chdir=${TF_DIR} state pull > ${TF_STATE_PATH}"
+    log_error "then remove the override and rm -rf ${TF_DIR}/.terraform (see docs/SERVER_AWS_DEPLOY.md)."
     return 1
   fi
 

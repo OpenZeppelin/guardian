@@ -572,8 +572,8 @@ refuses either one alone. With both set it:
 - refuses to run at all when `infra/.terraform` was initialized with a
   non-local backend but no override declares a backend block anymore
   (deleted or reduced to provider settings). Reconfiguring would silently
-  drop to empty local state; restore the override, or return to local state
-  deliberately with `terraform -chdir=infra init -reconfigure`
+  drop to empty local state. Restore the override, or return to local state
+  deliberately as described in [Returning to local state](#returning-to-local-state)
 
 The script's own AWS CLI calls (ECR, Secrets Manager, STS) use the ambient
 credentials, not the provider's `assume_role`. If your override assumes a role
@@ -581,8 +581,10 @@ into another account, make sure the shell is authenticated to that same
 account before running the script.
 
 Do not run `terraform` directly in `infra/` while the override is present and
-`TF_WORKSPACE` is unset. Terraform would use the backend's default workspace
-with the module's default variables, which is a separate, unrelated state.
+`TF_WORKSPACE` is unset. Terraform would use whichever workspace the script
+last selected (recorded in `infra/.terraform/environment`) with the module's
+default variables instead of the stack's, so a `plan` or `apply` there acts on
+a live stack with the wrong inputs.
 
 Move existing local state into the backend deliberately, one workspace per
 stack. Run `init` and `workspace select` with `TF_WORKSPACE` unset, since
@@ -602,6 +604,27 @@ STACK_NAME=guardian-prod DEPLOY_STAGE=prod TF_WORKSPACE=prod ./scripts/aws-deplo
 The final `plan` must use the same `STACK_NAME` and `DEPLOY_STAGE` the pushed
 state was created with. If it proposes changes, stop and compare the variables
 before deploying.
+
+#### Returning to local state
+
+`terraform init -reconfigure` cannot leave a remote backend: with the backend
+block removed it exits successfully but keeps `infra/.terraform` pointing at the
+old backend, so the script keeps refusing. `init -migrate-state` does
+unconfigure it, but copies every workspace into `terraform.tfstate.d/`, which
+the script's `-state=` path never reads. Instead, pull each stack's state into
+the file the script expects while the override is still in place, then drop the
+override and the backend metadata:
+
+```bash
+TF_WORKSPACE=prod terraform -chdir=infra state pull > infra/terraform.guardian-prod.prod.tfstate
+rm infra/backend_override.tf
+rm -rf infra/.terraform
+STACK_NAME=guardian-prod DEPLOY_STAGE=prod ./scripts/aws-deploy.sh plan   # must report no changes
+```
+
+Repeat the `state pull` for every workspace before removing the override. The
+target file name is `infra/terraform.<STACK_NAME>.<DEPLOY_STAGE>.tfstate` (or
+`TF_STATE_PATH`), and the pull overwrites any file already there.
 
 Use `--skip-build` when the image already exists in ECR and you only need infra/runtime changes, or when you are applying immediately after a reviewed `plan`:
 
