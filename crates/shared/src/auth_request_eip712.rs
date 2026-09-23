@@ -31,3 +31,20 @@ pub fn request_digest(request_hash: Word) -> [u8; 32] {
     preimage[34..].copy_from_slice(&struct_hash);
     keccak(&preimage)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hex::FromHex;
+
+    #[test]
+    fn matches_viem_guardian_request_digest() {
+        let request_hash =
+            Word::from_hex("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .unwrap();
+        assert_eq!(
+            hex::encode(request_digest(request_hash)),
+            "a37b07bbe236b49fd5be224928bd181a37622afe2caa3295e33b5482c08636d5"
+        );
+    }
+}

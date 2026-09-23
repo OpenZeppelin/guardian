@@ -7,6 +7,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use guardian_client::DeltaObject;
 use guardian_shared::FromJson;
+use guardian_shared::eip712_signature::FromEip712Hex;
 use guardian_shared::hex::FromHex;
 use guardian_shared::{EcdsaMessageFormat, ProposalSignature, SignatureScheme};
 use miden_protocol::Word;
@@ -642,28 +643,20 @@ impl ProposalSignatureEntry {
                 })?;
             }
             SignatureScheme::Ecdsa => {
-                let mut signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
-                    .map_err(|e| {
-                        MultisigError::Signature(format!("invalid ECDSA signature hex: {}", e))
+                if self.message_format == EcdsaMessageFormat::Eip712 {
+                    EcdsaSignature::from_eip712_hex(&signature_hex)
+                        .map_err(MultisigError::Signature)?;
+                } else {
+                    let bytes =
+                        hex::decode(signature_hex.trim_start_matches("0x")).map_err(|e| {
+                            MultisigError::Signature(format!("invalid ECDSA signature hex: {e}"))
+                        })?;
+                    EcdsaSignature::read_from_bytes(&bytes).map_err(|e| {
+                        MultisigError::Signature(format!(
+                            "invalid ECDSA proposal signature bytes: {e}"
+                        ))
                     })?;
-                if self.message_format == EcdsaMessageFormat::Eip712 && signature_bytes.len() == 65
-                {
-                    signature_bytes[64] = match signature_bytes[64] {
-                        0 | 1 => signature_bytes[64],
-                        27 | 28 => signature_bytes[64] - 27,
-                        _ => {
-                            return Err(MultisigError::Signature(
-                                "invalid EIP-712 recovery ID".to_string(),
-                            ));
-                        }
-                    };
                 }
-                EcdsaSignature::read_from_bytes(&signature_bytes).map_err(|e| {
-                    MultisigError::Signature(format!(
-                        "invalid ECDSA proposal signature bytes: {}",
-                        e
-                    ))
-                })?;
 
                 let public_key_hex = self.public_key_hex.as_ref().ok_or_else(|| {
                     MultisigError::Signature(

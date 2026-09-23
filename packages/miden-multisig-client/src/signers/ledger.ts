@@ -105,11 +105,7 @@ export class LedgerSigner implements Signer {
     if (signature[64] !== 0 && signature[64] !== 1) {
       throw new Error('Ledger returned an invalid ECDSA recovery ID');
     }
-    const recovered = secp256k1.Signature.fromCompact(signature.slice(0, 64))
-      .addRecoveryBit(signature[64])
-      .recoverPublicKey(typedDataDigest(data))
-      .toRawBytes(true);
-    if (bytesToHex(recovered).toLowerCase() !== this.publicKey.toLowerCase()) {
+    if (!secp256k1.verify(signature.slice(0, 64), typedDataDigest(data), hexToBytes(this.publicKey))) {
       throw new Error('Ledger signature was produced by a different key');
     }
     return signatureHex;

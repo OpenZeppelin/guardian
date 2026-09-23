@@ -2323,6 +2323,34 @@ export class Multisig {
     );
   }
 
+  private buildCosignerAdviceEntry(
+    cosignerSig: ProposalSignatureEntry,
+    signerCommitment: Word,
+    txCommitmentHex: string,
+  ): { key: Word; values: Felt[] } {
+    const approval = cosignerSig.signature;
+    const txCommitment = Word.fromHex(txCommitmentHex);
+    if (approval.scheme === 'ecdsa' && approval.messageFormat === 'eip712') {
+      if (!approval.publicKey) {
+        throw new Error(`ECDSA proposal signature for ${cosignerSig.signerId} is missing publicKey`);
+      }
+      return buildEip712SignatureAdviceEntry(
+        signerCommitment,
+        txCommitment,
+        approval.signature,
+        approval.publicKey,
+      );
+    }
+
+    const signature = Signature.deserialize(
+      signatureHexToBytes(approval.signature, approval.scheme),
+    );
+    if (approval.scheme === 'ecdsa' && approval.publicKey) {
+      assertEcdsaSignatureRecoverable(approval.signature, txCommitmentHex, approval.publicKey);
+    }
+    return buildSignatureAdviceEntry(signerCommitment, txCommitment, signature);
+  }
+
   private async assembleCustomAdvice(
     proposalId: string,
     signaturesForExecution: ProposalSignatureEntry[],
@@ -2359,30 +2387,9 @@ export class Multisig {
       }
 
       const signerCommitment = Word.fromHex(signerCommitmentHex);
-      let entry: { key: Word; values: Felt[] };
-      if (cosignerSig.signature.scheme === 'ecdsa' && cosignerSig.signature.messageFormat === 'eip712') {
-        entry = buildEip712SignatureAdviceEntry(
-          signerCommitment,
-          createTxCommitmentWord(),
-          cosignerSig.signature.signature,
-          ecdsaPublicKey!,
-        );
-      } else {
-        const sigBytes = signatureHexToBytes(
-          cosignerSig.signature.signature,
-          cosignerSig.signature.scheme,
-        );
-        const signature = Signature.deserialize(sigBytes);
-        if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
-          assertEcdsaSignatureRecoverable(
-            cosignerSig.signature.signature,
-            normalizedTxCommitmentHex,
-            ecdsaPublicKey,
-          );
-        }
-        entry = buildSignatureAdviceEntry(signerCommitment, createTxCommitmentWord(), signature);
-      }
-      const { key, values } = entry;
+      const { key, values } = this.buildCosignerAdviceEntry(
+        cosignerSig, signerCommitment, normalizedTxCommitmentHex,
+      );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
         throw new Error(`Duplicate advice-map key detected for proposal ${proposalId}`);
@@ -2544,30 +2551,9 @@ export class Multisig {
       }
 
       const signerCommitment = Word.fromHex(signerCommitmentHex);
-      let entry: { key: Word; values: Felt[] };
-      if (cosignerSig.signature.scheme === 'ecdsa' && cosignerSig.signature.messageFormat === 'eip712') {
-        entry = buildEip712SignatureAdviceEntry(
-          signerCommitment,
-          createTxCommitmentWord(),
-          cosignerSig.signature.signature,
-          ecdsaPublicKey!,
-        );
-      } else {
-        const sigBytes = signatureHexToBytes(
-          cosignerSig.signature.signature,
-          cosignerSig.signature.scheme,
-        );
-        const signature = Signature.deserialize(sigBytes);
-        if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
-          assertEcdsaSignatureRecoverable(
-            cosignerSig.signature.signature,
-            normalizedTxCommitmentHex,
-            ecdsaPublicKey,
-          );
-        }
-        entry = buildSignatureAdviceEntry(signerCommitment, createTxCommitmentWord(), signature);
-      }
-      const { key, values } = entry;
+      const { key, values } = this.buildCosignerAdviceEntry(
+        cosignerSig, signerCommitment, normalizedTxCommitmentHex,
+      );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
         throw new Error(`Duplicate advice-map key detected for proposal ${proposalId}`);

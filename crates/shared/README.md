@@ -6,6 +6,8 @@ This crate contains shared types and utilities for the GUARDIAN project.
 
 - `auth`: Authentication utilities for Miden Falcon RPO-512
 - `hex`: Hex utilities for converting between types and hex strings
+- `eip712_signature`: Parses Ethereum `r || s || v` signatures into Miden
+  ECDSA signatures, including recovery-byte normalization
 - `retry`: Transient-failure classification, jittered backoff, and the retry
   policy types shared by the Guardian server and the Miden SDK clients
 - `account_delta`: Applying a Miden `AccountDelta` to an account, with or

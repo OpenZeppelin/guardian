@@ -5,6 +5,7 @@ use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::resolve_account;
 use crate::utils::normalize_commitment_hex;
+use guardian_shared::eip712_signature::FromEip712Hex;
 use guardian_shared::{DeltaSignature, EcdsaMessageFormat, FromJson};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
 use miden_protocol::transaction::TransactionSummary;
@@ -93,19 +94,7 @@ pub async fn sign_delta_proposal(
         }
     };
 
-    // Extract signer ID from credentials
-    let signer_commitment_hex = match &credentials {
-        Credentials::Signature { pubkey, .. } => resolved
-            .metadata
-            .auth
-            .compute_signer_commitment(pubkey)
-            .map_err(|e| {
-                GuardianError::AuthenticationFailed(format!(
-                    "invalid signer public key for {}: {}",
-                    account_id, e
-                ))
-            })?,
-    };
+    let signer_commitment_hex = resolved.signer_commitment.clone();
     tracing::Span::current().record(
         "signer_commitment",
         tracing::field::display(&signer_commitment_hex),
@@ -151,37 +140,12 @@ pub async fn sign_delta_proposal(
                 "EIP-712 approval signer differs from request signer".to_string(),
             ));
         }
-        let mut signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
-            .map_err(|_| GuardianError::InvalidDelta("Invalid EIP-712 signature".to_string()))?;
-        if signature_bytes.len() != 65 {
-            return Err(GuardianError::InvalidDelta(
-                "EIP-712 signature must contain r, s, and v".to_string(),
-            ));
-        }
-        signature_bytes[64] = match signature_bytes[64] {
-            0 | 1 => signature_bytes[64],
-            27 | 28 => signature_bytes[64] - 27,
-            _ => {
-                return Err(GuardianError::InvalidDelta(
-                    "Invalid EIP-712 recovery ID".to_string(),
-                ));
-            }
-        };
-        let parsed_signature = Signature::read_from_bytes(&signature_bytes)
-            .map_err(|_| GuardianError::InvalidDelta("Invalid EIP-712 signature".to_string()))?;
+        let parsed_signature =
+            Signature::from_eip712_hex(signature_hex).map_err(GuardianError::InvalidDelta)?;
         let digest = tx_summary.eip712_hash().into_bytes();
         if !public_key.verify_prehash(digest, &parsed_signature) {
             return Err(GuardianError::InvalidDelta(
                 "EIP-712 signature does not match the proposal".to_string(),
-            ));
-        }
-        let recovered =
-            PublicKey::recover_from_prehash(digest, &parsed_signature).map_err(|_| {
-                GuardianError::InvalidDelta("EIP-712 public-key recovery failed".to_string())
-            })?;
-        if recovered != public_key {
-            return Err(GuardianError::InvalidDelta(
-                "EIP-712 signature recovered another signer".to_string(),
             ));
         }
     } else if matches!(
@@ -335,16 +299,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sign_delta_proposal_success() {
+    async fn test_sign_delta_proposal_credits_verified_falcon_signer() {
         let (state, storage, _network, metadata) = create_test_state();
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
+        let (proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+        let (_signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -369,7 +333,7 @@ mod tests {
                 signature: dummy_sig.clone(),
             },
             credentials: Credentials::signature(
-                signer_pubkey.clone(),
+                proposer_pubkey,
                 signer_signature.clone(),
                 signer_timestamp,
             ),
@@ -410,7 +374,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sign_delta_proposal_success_for_ecdsa() {
+    async fn test_sign_delta_proposal_credits_verified_ecdsa_signer() {
         use crate::testing::helpers::TestEcdsaSigner;
         use guardian_shared::auth_request_payload::AuthRequestPayload;
 
@@ -463,7 +427,7 @@ mod tests {
             commitment: commitment.clone(),
             signature: proposal_signature,
             credentials: Credentials::signature(
-                signer.pubkey_hex.clone(),
+                proposer.pubkey_hex.clone(),
                 signer_signature,
                 signer_timestamp,
             )
@@ -532,8 +496,10 @@ mod tests {
             .with_update_delta_proposal(Ok(()));
 
         let approval_signature = key.sign_prehash(summary.eip712_hash().into_bytes());
+        let mut approval_bytes = approval_signature.to_bytes();
+        approval_bytes[64] ^= 1;
         let proposal_signature = ProposalSignature::Ecdsa {
-            signature: format!("0x{}", hex::encode(approval_signature.to_bytes())),
+            signature: format!("0x{}", hex::encode(approval_bytes)),
             public_key: Some(public_key_hex.clone()),
             message_format: EcdsaMessageFormat::Eip712,
         };

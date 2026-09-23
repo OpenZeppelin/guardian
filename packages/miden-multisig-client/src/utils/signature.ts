@@ -79,11 +79,7 @@ export function buildEip712SignatureAdviceEntry(
     throw new Error('EIP-712 signature must contain a valid recovery ID');
   }
   const typedData = midenTransactionTypedData(wordToBytes(txSummaryCommitment));
-  const recovered = secp256k1.Signature.fromCompact(signature.slice(0, 64))
-    .addRecoveryBit(signature[64])
-    .recoverPublicKey(typedDataDigest(typedData))
-    .toRawBytes(true);
-  if (!publicKey.equals(secp256k1.ProjectivePoint.fromHex(recovered))) {
+  if (!secp256k1.verify(signature.slice(0, 64), typedDataDigest(typedData), publicKey.toRawBytes(true))) {
     throw new Error('EIP-712 signature does not match the transaction summary');
   }
 

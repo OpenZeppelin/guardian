@@ -163,19 +163,7 @@ pub async fn push_delta_proposal(
     };
     tracing::Span::current().record("commitment", tracing::field::display(&commitment));
 
-    // Extract proposer ID from credentials
-    let proposer_id = match &credentials {
-        Credentials::Signature { pubkey, .. } => resolved
-            .metadata
-            .auth
-            .compute_signer_commitment(pubkey)
-            .map_err(|e| {
-                GuardianError::AuthenticationFailed(format!(
-                    "invalid proposer public key for {}: {}",
-                    account_id, e
-                ))
-            })?,
-    };
+    let proposer_id = resolved.signer_commitment.clone();
     tracing::Span::current().record("proposer_id", tracing::field::display(&proposer_id));
 
     // Parse cosigner signatures from the payload and add timestamp

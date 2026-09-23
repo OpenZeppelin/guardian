@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use guardian_shared::eip712_signature::FromEip712Hex;
 use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
@@ -32,6 +33,7 @@ pub struct SignatureInput {
     pub scheme: SignatureScheme,
     /// Hex-encoded public key (required for ECDSA signatures).
     pub public_key_hex: Option<String>,
+    /// Message format used by an ECDSA signature.
     pub message_format: EcdsaMessageFormat,
 }
 
@@ -44,6 +46,7 @@ pub struct SignatureInput {
 /// * `signatures` - Raw signature inputs to process
 /// * `required_commitments` - Set of valid signer commitments (lowercase hex)
 /// * `tx_summary_commitment` - The transaction summary commitment being signed
+/// * `tx_summary` - Required for EIP-712 signatures to derive their digest and advice key
 ///
 /// # Returns
 /// Vector of (key, prepared_signature) tuples for transaction advice.
@@ -102,24 +105,8 @@ pub fn collect_signature_advice(
                     "EIP-712 public-key commitment mismatch".to_string(),
                 ));
             }
-            let mut signature_bytes = hex::decode(sig_input.signature_hex.trim_start_matches("0x"))
-                .map_err(|e| MultisigError::Signature(format!("invalid EIP-712 signature: {e}")))?;
-            if signature_bytes.len() != 65 {
-                return Err(MultisigError::Signature(
-                    "EIP-712 signature must be 65 bytes".to_string(),
-                ));
-            }
-            signature_bytes[64] = match signature_bytes[64] {
-                0 | 1 => signature_bytes[64],
-                27 | 28 => signature_bytes[64] - 27,
-                _ => {
-                    return Err(MultisigError::Signature(
-                        "invalid EIP-712 recovery ID".to_string(),
-                    ));
-                }
-            };
-            let signature = EcdsaSignature::read_from_bytes(&signature_bytes)
-                .map_err(|e| MultisigError::Signature(format!("invalid EIP-712 signature: {e}")))?;
+            let signature = EcdsaSignature::from_eip712_hex(&sig_input.signature_hex)
+                .map_err(MultisigError::Signature)?;
             if !public_key.verify_prehash(summary.eip712_hash().into_bytes(), &signature) {
                 return Err(MultisigError::Signature(
                     "EIP-712 signature does not match the proposal".to_string(),
@@ -382,6 +369,23 @@ mod tests {
             summary.eip712_signature_advice(&eip_key.public_key(), &eip_signature)
         );
         assert_ne!(advice[0].0, advice[1].0);
+
+        let mut other_recovery_bit = eip_signature.to_bytes();
+        other_recovery_bit[64] ^= 1;
+        let input = SignatureInput {
+            signer_commitment: format!("0x{}", hex::encode(eip_commitment.to_bytes())),
+            signature_hex: format!("0x{}", hex::encode(other_recovery_bit)),
+            scheme: SignatureScheme::Ecdsa,
+            public_key_hex: Some(format!(
+                "0x{}",
+                hex::encode(eip_key.public_key().to_bytes())
+            )),
+            message_format: EcdsaMessageFormat::Eip712,
+        };
+        let other_advice =
+            collect_signature_advice([input], &required, summary.to_commitment(), Some(&summary))
+                .unwrap();
+        assert_eq!(other_advice, vec![advice[1].clone()]);
     }
 
     #[test]

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { privateKeyToAccount } from 'viem/accounts';
 import { LedgerSigner } from './ledger.js';
 import { bytesToHex } from '../utils/encoding.js';
-import { typedDataDigest } from '../utils/eip712.js';
 
 vi.mock('../utils/signature.js', () => ({
   tryComputeEcdsaCommitmentHex: () => '0x' + 'ab'.repeat(32),
@@ -17,6 +17,7 @@ vi.mock('../utils/digest.js', () => ({
 
 describe('LedgerSigner', () => {
   const privateKey = new Uint8Array(32).fill(7);
+  const account = privateKeyToAccount(`0x${'07'.repeat(32)}`);
   const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true));
   const uncompressed = secp256k1.getPublicKey(privateKey, false);
   const address = bytesToHex(keccak_256(uncompressed.slice(1)).slice(-20));
@@ -28,8 +29,7 @@ describe('LedgerSigner', () => {
       const data = JSON.parse(params[1] as string);
       expect(data.primaryType).toBe('MidenTransaction');
       expect(data.domain.name).toBe('Miden Transaction');
-      const signature = secp256k1.sign(typedDataDigest(data), privateKey);
-      return bytesToHex(new Uint8Array([...signature.toCompactRawBytes(), signature.recovery + 27]));
+      return account.signTypedData(data);
     });
     const signer = new LedgerSigner({ request }, publicKey, address);
     const signature = await signer.signCommitment('0x' + '01'.repeat(32));
@@ -46,13 +46,34 @@ describe('LedgerSigner', () => {
       .toThrow('does not match');
   });
 
+  it('rejects a typed-data signature from another key', async () => {
+    const otherAccount = privateKeyToAccount(`0x${'08'.repeat(32)}`);
+    const signer = new LedgerSigner({
+      request: async ({ params }) => otherAccount.signTypedData(JSON.parse(params[1] as string)),
+    }, publicKey, address);
+
+    await expect(signer.signCommitment('0x' + '01'.repeat(32)))
+      .rejects.toThrow('different key');
+  });
+
+  it('verifies the enrolled key even when the recovery bit differs', async () => {
+    const signer = new LedgerSigner({
+      request: async ({ params }) => {
+        const signed = await account.signTypedData(JSON.parse(params[1] as string));
+        return `${signed.slice(0, -2)}${signed.endsWith('1b') ? '1c' : '1b'}`;
+      },
+    }, publicKey, address);
+
+    await expect(signer.signCommitment('0x' + '01'.repeat(32)))
+      .resolves.toMatch(/^0x[0-9a-f]{130}$/);
+  });
+
   it('signs a separate Guardian request-auth typed message', async () => {
     const request = vi.fn(async ({ params }: { method: string; params: unknown[] }) => {
       const data = JSON.parse(params[1] as string);
       expect(data.primaryType).toBe('GuardianRequest');
       expect(data.domain.name).toBe('Guardian Request');
-      const signature = secp256k1.sign(typedDataDigest(data), privateKey);
-      return bytesToHex(new Uint8Array([...signature.toCompactRawBytes(), signature.recovery + 27]));
+      return account.signTypedData(data);
     });
     const signer = new LedgerSigner({ request }, publicKey, address);
     const signature = await signer.signRequest('0x' + 'aa'.repeat(15), 1_700_000_000, {
@@ -70,8 +91,7 @@ describe('LedgerSigner', () => {
       expect(method).toBe('eth_signTypedData_v4');
       const data = JSON.parse(params[1] as string);
       expect(data.primaryType).toBe('GuardianKeyDiscovery');
-      const signature = secp256k1.sign(typedDataDigest(data), privateKey);
-      return bytesToHex(new Uint8Array([...signature.toCompactRawBytes(), signature.recovery + 27]));
+      return account.signTypedData(data);
     });
 
     const signer = await LedgerSigner.connect({ request });
