@@ -45,13 +45,14 @@ miden-multisig-client = { git = "https://github.com/OpenZeppelin/guardian", pack
 
 ```rust
 use miden_client::rpc::Endpoint;
-use miden_multisig_client::{MultisigClient, TransactionType};
-use miden_objects::{Word, account::AccountId};
+use miden_multisig_client::{parse_account_id, MultisigClient, TransactionType};
+use miden_objects::Word;
 
 # async fn example() -> anyhow::Result<()> {
 let signer1: Word = /* your RPO Falcon commitment */ Word::default();
 let signer2: Word = Word::default();
-let fee_faucet_id: AccountId = /* the chain's fee faucet */ AccountId::from_hex("0x...")?;
+// The chain's fee faucet, as the faucet page shows it (bech32) or as hex.
+let fee_faucet_id = parse_account_id("mdev1...")?;
 
 let mut client = MultisigClient::builder()
     .miden_endpoint(Endpoint::try_from("http://localhost:57291")?)

@@ -1255,23 +1255,20 @@ fn prompt_remove_cosigner(
     Ok(TransactionType::remove_cosigner(commitment))
 }
 
-/// Parses an account address from either a `0x` hex account ID or a bech32m
-/// address (e.g. `mdev1...`). Miden 0.15 uses bech32m as the canonical
-/// user-facing address format, so faucets and other tools emit that form.
+/// Parses an account address as a `0x` hex account ID or a bech32m address
+/// (e.g. `mdev1...`), the form faucets and explorers show. A bech32m address
+/// names its network, which has to be the session's.
 fn parse_account_address(input: &str, expected_network: &NetworkId) -> Result<AccountId, String> {
-    if input.starts_with("0x") || input.starts_with("0X") {
-        AccountId::from_hex(input).map_err(|e| e.to_string())
-    } else {
-        let (network_id, account_id) = AccountId::from_bech32(input).map_err(|e| e.to_string())?;
-        if &network_id != expected_network {
-            return Err(format!(
-                "address belongs to the {} network but the session is configured for {}",
-                network_id.as_str(),
-                expected_network.as_str()
-            ));
-        }
-        Ok(account_id)
+    let (network_id, account_id) =
+        miden_multisig_client::parse_account_address(input).map_err(|e| e.to_string())?;
+    if let Some(network_id) = network_id.filter(|network_id| network_id != expected_network) {
+        return Err(format!(
+            "address belongs to the {} network but the session is configured for {}",
+            network_id.as_str(),
+            expected_network.as_str()
+        ));
     }
+    Ok(account_id)
 }
 
 fn prompt_p2id(

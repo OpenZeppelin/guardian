@@ -5,9 +5,9 @@ mod state;
 
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
-    MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
+    parse_account_id, MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy,
+    SignatureScheme,
 };
-use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
 use rustyline::DefaultEditor;
 
@@ -200,17 +200,6 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     println!("\n  Share this commitment with other cosigners to be added to multisig accounts.");
 
     Ok(state)
-}
-
-/// An account id as the faucet pages and explorers show it (bech32) or as hex.
-fn parse_account_id(input: &str) -> Result<AccountId, String> {
-    if input.starts_with("0x") || input.starts_with("0X") {
-        AccountId::from_hex(input).map_err(|error| error.to_string())
-    } else {
-        AccountId::from_bech32(input)
-            .map(|(_, account_id)| account_id)
-            .map_err(|error| error.to_string())
-    }
 }
 
 fn parse_miden_endpoint(input: &str) -> Result<Endpoint, String> {

@@ -55,7 +55,9 @@ configuration from the fee faucet's account id: `MultisigClientBuilder::fee_fauc
   public faucet that dispenses it is the fee faucet: its account id is shown on
   <https://faucet.devnet.miden.io/> and <https://faucet.testnet.miden.io/>, and
   returned as `id` (bech32, `mdev1...` or `mtst1...`) by the faucet API's
-  `/get_metadata` endpoint. Verified on devnet, where that account is the
+  `/get_metadata` endpoint. Both SDKs and all examples take that bech32 form
+  directly (Rust: `miden_multisig_client::parse_account_id` reads bech32 or
+  hex). Verified on devnet, where that account is the
   native fee asset the block header reports. The value is only usable from a
   network running the Miden line this workspace pins; the
   [compatibility matrix](./MIDEN_COMPATIBILITY.md#support-matrix) says which

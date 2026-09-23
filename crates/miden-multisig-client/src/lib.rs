@@ -45,6 +45,7 @@ use miden_client::Client;
 use miden_client::keystore::FilesystemKeyStore;
 
 mod account;
+mod address;
 mod builder;
 mod client;
 mod error;
@@ -79,6 +80,7 @@ pub use procedures::{ProcedureName, ProcedureThreshold};
 
 // Account types
 pub use account::MultisigAccount;
+pub use address::{parse_account_address, parse_account_id};
 
 // Key management and hex utilities
 pub use keystore::{

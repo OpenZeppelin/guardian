@@ -128,8 +128,10 @@ let client = MultisigClient::builder()
 
 Every Rust builder also takes `fee_faucet_id`, the chain's fee faucet, since
 Miden 0.17; `build()` fails with `MissingConfig("fee_faucet_id")` without it.
-The Rust snippets in this document assume the value is in scope; where it comes
-from is in [LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet).
+`parse_account_id` turns the bech32 address a faucet page shows, or hex, into
+the `AccountId` the builder takes; the TypeScript `feeFaucetId` option accepts
+either form as a string. The Rust snippets in this document assume the value is
+in scope; where it comes from is in [LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet).
 
 URLs are validated during construction and must be absolute HTTP(S) URLs. A
 custom prover never falls back to a default endpoint. Retries cover transient
