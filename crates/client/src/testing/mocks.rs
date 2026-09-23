@@ -29,6 +29,8 @@ pub struct MockGuardianHandle {
     calls: Arc<StdMutex<Vec<String>>>,
     /// Every `push_delta_proposal` request body, in arrival order.
     push_delta_proposal_requests: Arc<StdMutex<Vec<PushDeltaProposalRequest>>>,
+    /// The `scheme` field of every `get_pubkey` request, in arrival order.
+    get_pubkey_schemes: Arc<StdMutex<Vec<Option<String>>>>,
     persistent_get_pubkey: Arc<StdMutex<Option<String>>>,
     persistent_get_state: Arc<StdMutex<Option<GetStateResponse>>>,
     persistent_get_delta_proposal: Arc<StdMutex<Option<GetDeltaProposalResponse>>>,
@@ -44,6 +46,14 @@ impl MockGuardianHandle {
     /// Every `push_delta_proposal` request received so far.
     pub fn pushed_proposals(&self) -> Vec<PushDeltaProposalRequest> {
         self.push_delta_proposal_requests.lock().unwrap().clone()
+    }
+
+    /// The signature scheme each `get_pubkey` call asked for, in arrival
+    /// order. GUARDIAN serves one acknowledgement identity per scheme, so a
+    /// caller that omits it (`None`) or names the wrong one is served an
+    /// identity that is not the account's.
+    pub fn get_pubkey_schemes(&self) -> Vec<Option<String>> {
+        self.get_pubkey_schemes.lock().unwrap().clone()
     }
 
     /// Serve `pubkey` from `get_pubkey` whenever no one-shot response is queued.
@@ -216,9 +226,14 @@ fn persistent_or<T: Clone>(slot: &StdMutex<Option<T>>, default: impl FnOnce() ->
 impl Guardian for MockGuardianService {
     async fn get_pubkey(
         &self,
-        _request: Request<GetPubkeyRequest>,
+        request: Request<GetPubkeyRequest>,
     ) -> Result<Response<crate::proto::GetPubkeyResponse>, Status> {
         self.record_call("get_pubkey");
+        self.handle
+            .get_pubkey_schemes
+            .lock()
+            .unwrap()
+            .push(request.into_inner().scheme);
         let response = self
             .get_pubkey_response
             .lock()

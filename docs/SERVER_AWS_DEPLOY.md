@@ -141,7 +141,7 @@ One-time setup per target (infra):
 
 ## Prerequisites
 
-- [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
+- [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.12 (older releases fail the plan on the null-default variable validations)
 - AWS CLI configured with permissions for ECS, ECR, ELB, EC2, IAM, CloudWatch, RDS, and Secrets Manager
 - Docker installed locally
 - `jq` installed locally when deploying with `GUARDIAN_SERVER_FEATURES=postgres,evm`
@@ -260,6 +260,7 @@ aws_region = "us-east-1"
 # guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
 # guardian_evm_entrypoint_address = "0x433709009b8330fda32311df1c2afa402ed8d009"
 # guardian_cors_allowed_origins = "https://accounts.openzeppelin.com"
+# guardian_allowed_account_schemes = "ecdsa"   # new accounts only; existing Falcon accounts keep working
 
 # Optional: stage/runtime capacity overrides
 # deployment_stage = "prod"
@@ -284,10 +285,15 @@ aws_region = "us-east-1"
 # cloudwatch_metrics_enabled = true # ADOT sidecar + dashboard + alarms
 # metrics_namespace = "Guardian/Server"
 # alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
+# alarm_notifications_enabled = true # managed SNS topic <stack>-alarms
+# alarm_slack_workspace_id = "T0123456789" # Amazon Q chat: authorized workspace
+# alarm_slack_channel_id = "C0123456789"   # e.g. #guardian-alerts-devnet
 # alarm_error_rate_threshold_percent = 5
 # alarm_latency_threshold_seconds = 1
 # alarm_cpu_threshold_percent = 85
 # alarm_memory_threshold_percent = 90
+# cloudwatch_log_alarms_enabled = true # ERROR log metric filter + log-errors alarm, WARN filter with the dashboard (needs guardian_log_format = "json")
+# alarm_log_error_threshold = 0
 
 # Optional: Route 53 hosted zone ID
 # route53_zone_id = "Z1234567890ABC"
@@ -558,9 +564,10 @@ grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian-
 Application metrics ship to CloudWatch by default. Two switches control
 this: `guardian_metrics_enabled` turns on the server's Prometheus endpoint,
 and `cloudwatch_metrics_enabled` deploys the ADOT sidecar, EMF log group,
-IAM policy, dashboard, and alarms on top of it. The export pipeline
-cascades off with the endpoint, so `guardian_metrics_enabled = false` alone
-turns everything off. Disabling only `cloudwatch_metrics_enabled` keeps the
+IAM policy, dashboard, and metric-based alarms on top of it. The export
+pipeline cascades off with the endpoint, so `guardian_metrics_enabled =
+false` alone turns all of that off (the [log-level alarm](#log-level-alarms)
+is gated separately). Disabling only `cloudwatch_metrics_enabled` keeps the
 endpoint without publishing CloudWatch custom metrics — but note the
 endpoint stays **loopback-only**, so that mode is useful only for an
 alternative in-task collector you add by customizing the module; the stack
@@ -619,36 +626,198 @@ exposes no knobs for a routable bind address.
 | `<stack>-metrics-refresh-failures` | Slow-aggregate refresher attempts are failing; delta/proposal/account gauges are stale |
 | `<stack>-metrics-refresh-stale` | The refresh timestamp stopped advancing for ≥ 10 min (hung or dead refresher — catches what the failures counter cannot) |
 | `<stack>-ecs-cpu-high` / `<stack>-ecs-memory-high` | ECS service average CPU/memory exceeds `alarm_cpu_threshold_percent` (85%) / `alarm_memory_threshold_percent` (90%); must sit above the autoscaling targets (enforced at plan time) |
+| `<stack>-server-log-errors` | More than `alarm_log_error_threshold` (default 0) ERROR-level server log lines per 5-minute period for two consecutive periods. Absolute count from a log metric filter, so it catches low-volume faults the rate alarms cannot; independent of the metrics pipeline. See [Log-level alarms](#log-level-alarms) |
 
-To receive notifications, point the alarms at one or more SNS topics:
+Every alarm description ends with the stack name and console links to the
+`<stack>-server` dashboard and the server log group (streams `ecs/*` for
+the server, `adot/*` for the sidecar), so a notification alone is enough to
+start debugging.
 
-```hcl
-alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
-```
+### Alarm notifications
 
-This stack does **not** provision the SNS topic or a chat integration. The
-supported notification path is: CloudWatch alarm → an existing **same-region
-SNS topic** (listed in `alarm_actions`) → [Amazon Q Developer in chat
-applications](https://docs.aws.amazon.com/chatbot/latest/adminguide/what-is.html)
-(formerly AWS Chatbot) subscribed to that topic → Slack channel. Create the
-topic and the chat subscription out of band, then pass the topic ARN here;
-alarms fire both `alarm_actions` and `ok_actions`, so the channel sees
-recovery too.
+Alarms fire both `alarm_actions` and `ok_actions`, so every target sees the
+recovery too. There are two ways to receive them, and they compose:
+
+- **Bring your own pipeline**: list existing same-region SNS topic ARNs in
+  `alarm_actions`. Nothing else is provisioned.
+
+  ```hcl
+  alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
+  ```
+
+- **Managed topic + Slack channel** (`infra/alerting.tf`, opt-in): with
+  `alarm_notifications_enabled = true` Terraform creates the SNS topic
+  `<stack>-alarms` in the stack's region with a policy scoped to this
+  account (its CloudWatch alarms via a confused-deputy condition, plus the
+  account's own principals), and appends it to every alarm's actions
+  (after any `alarm_actions` ARNs; CloudWatch caps actions at five per
+  state, enforced at plan time). Adding `alarm_slack_workspace_id` and
+  `alarm_slack_channel_id` also creates an [Amazon Q Developer in chat
+  applications](https://docs.aws.amazon.com/chatbot/latest/adminguide/what-is.html)
+  (formerly AWS Chatbot) channel configuration `<stack>-alarms-slack`
+  subscribed to that topic, with a notifications-only IAM role
+  (`<stack>-chatbot-alarms`, CloudWatch read so the message carries the
+  metric graph) capped by the `CloudWatchReadOnlyAccess` guardrail. Use one
+  Slack channel per environment (for example `#guardian-alerts-devnet` for
+  the `guardian` stack and `#guardian-alerts-testnet` for `guardian-prod`)
+  so the channel itself carries the environment context; the alarm name,
+  description, and links carry the stack. The Slack IDs must be set together
+  and require `alarm_notifications_enabled`; the plan fails otherwise. The
+  topic and the Slack configuration cascade off with
+  `cloudwatch_metrics_enabled`, like the alarms they serve, so the metrics
+  kill switch still needs only one variable. The topic is not
+  KMS-encrypted: CloudWatch cannot publish to a topic encrypted with the
+  AWS-managed SNS key, and alarm payloads contain only alarm metadata.
+
+  The topic is plain SNS, so operators can additionally subscribe email,
+  PagerDuty, or anything else to it out of band (`alarm_sns_topic_arn`
+  output). Such subscriptions live outside Terraform state: anything that
+  destroys the topic (disabling the flag or the metrics pipeline,
+  `aws-deploy.sh cleanup`) drops them silently, and re-enabling recreates
+  the topic without them. With the flag alone and nothing subscribed, the
+  alarms publish into an empty topic, so add the Slack IDs (or a
+  subscription) in the same apply.
+
+  The Terraform resource needs AWS provider 5.61 or newer (`versions.tf`
+  now requires `~> 5.61`); a checkout initialised earlier must run
+  `terraform -chdir=infra init -upgrade` once, otherwise `plan` stops on an
+  inconsistent lock file.
+
+  **Migrating from bring-your-own**: if this stack already notifies a
+  hand-made topic with a console-created Amazon Q channel configuration,
+  either import them or delete the console configuration and drop the old
+  ARN from `alarm_actions` before applying. Leaving both in place posts
+  every ALARM/OK twice in the channel. Do not rely on a name collision to
+  stop you: SNS `CreateTopic` is idempotent, so an existing topic already
+  named `<stack>-alarms` is silently adopted on apply and its access policy
+  replaced (or the apply fails on mismatched attributes). Import it
+  explicitly and review the plan before applying:
+
+  ```bash
+  terraform -chdir=infra import 'aws_sns_topic.alarms[0]' arn:aws:sns:<region>:<account>:<stack>-alarms
+  terraform -chdir=infra import 'aws_chatbot_slack_channel_configuration.alarms[0]' \
+    arn:aws:chatbot::<account>:chat-configuration/slack-channel/<configuration-name>
+  terraform -chdir=infra import 'aws_iam_role.chatbot_alarms[0]' <channel-role-name>
+  terraform -chdir=infra plan
+  ```
+
+  A topic or configuration with a different name is not preserved by
+  importing alone: the configured names are fixed, so the plan proposes
+  replacing the imported resource. Rename the Slack channel configuration
+  (its name cannot be edited in place) or accept the replacement, and move
+  any out-of-band subscriptions to the new topic afterwards.
+
+#### Slack setup (once per AWS account and workspace)
+
+Terraform cannot run the Slack OAuth flow, so authorize the workspace in
+the console first:
+
+1. In the AWS console open **Amazon Q Developer in chat applications**
+   (`https://console.aws.amazon.com/chatbot/`), choose **Slack** under
+   *Configure a chat client*, pick the workspace, and **Allow** (a Slack
+   workspace admin may need to approve the app). The API (and the Terraform
+   resource) has no `us-east-1` endpoint; the AWS provider routes the calls
+   to a supported region itself, so nothing changes in `aws_region`.
+2. Copy the **Workspace ID** (`T...`) from the workspace details page into
+   `alarm_slack_workspace_id`. It is the same for every stack in the account.
+3. Create the environment channel (e.g. `#guardian-alerts-devnet`), run
+   `/invite @Amazon Q` in it (required for private channels, harmless for
+   public ones), and copy its **Channel ID** (`C...`, the last path segment of
+   *Copy link*) into `alarm_slack_channel_id`. Do not use channel names.
+4. Set `alarm_notifications_enabled = true` together with the two IDs and
+   apply. Repeat 3-4 per stack with that stack's own channel.
+
+Amazon Q posts the alarm name, description (with the stack, dashboard, and
+log links), state change and reason, a link to the alarm, and the metric
+graph for both ALARM and OK transitions. When a notification never
+arrives, check the alarm's action history first (a denied CloudWatch → SNS
+publish shows there and never reaches Amazon Q), then the Amazon Q error
+log `/aws/chatbot/<stack>-alarms-slack` in **us-east-1** (a service-managed
+log group outside Terraform state, created on the first error, with no
+retention policy and negligible volume); the other usual causes are the app
+not being invited to the channel, or a workspace or channel ID typed as a
+name.
 
 Set `guardian_metrics_enabled = false` to turn everything off (no metrics env
-vars, no sidecar, no dashboard, no alarms — the CloudWatch flag cascades off
-with it), or only `cloudwatch_metrics_enabled = false` to keep the
-loopback-only endpoint without any CloudWatch export (see the caveat above
-about what that mode is useful for).
+vars, no sidecar, no dashboard, no metric-based alarms — the CloudWatch flag
+cascades off with it), or only `cloudwatch_metrics_enabled = false` to keep
+the loopback-only endpoint without any CloudWatch export (see the caveat
+above about what that mode is useful for). The log-level alarm below is
+independent of both flags and stays on.
+
+### Log-level alarms
+
+Independently of the metrics pipeline, CloudWatch Logs **metric filters** on
+the server log group (`infra/log_alarms.tf`) count the server's own log lines
+by level and publish them as custom metrics under `<metrics_namespace>/Logs`
+(the `log_metrics_namespace` output; kept apart from the scraped metrics so
+"metrics arriving in `metrics_namespace`" stays a pipeline health check):
+`log_error_events` (lines with `level = "ERROR"`) and, when the dashboard is
+deployed, `log_warn_events` (`level = "WARN"`). They read the container's log
+output directly, so they need neither the metrics endpoint nor the ADOT
+sidecar; the ERROR filter and its alarm keep working with
+`guardian_metrics_enabled = false`, and in that mode they are the only alarm
+left. They cover *logged* faults, not process liveness: a task that panics
+or crash-loops at startup prints plain-text panic output, not JSON, which
+the filters never see (the metrics-missing and ECS alarms cover that when
+the pipeline is on). The alarm notifies the same effective action list as
+every other alarm (operator `alarm_actions` plus the managed SNS topic);
+note that the managed topic and its Slack channel cascade off with the
+metrics pipeline, so with `guardian_metrics_enabled = false` it reaches only
+the ARNs you pass in `alarm_actions`.
+
+- The filters match the JSON `level` field the server emits with
+  `guardian_log_format = "json"` (the default). Terraform rejects the plan if
+  `cloudwatch_log_alarms_enabled` is true with a `text` or `compact` format;
+  set `cloudwatch_log_alarms_enabled = false` to run those formats.
+- `<stack>-server-log-errors` alarms on `log_error_events`: more than
+  `alarm_log_error_threshold` (default 0) ERROR lines in *each* of two
+  consecutive 5-minute periods. A persistent fault, however slow, pages
+  within 10 minutes; one isolated line does not; a burst confined to a single
+  period does not page on its own either (it shows on the dashboard and, if
+  large enough, through the rate alarms). It overlaps with the rate alarms on
+  purpose: on a low-traffic stack a few failures never move a percentage that
+  ALB health checks dominate, but every one is an ERROR line.
+- What counts as `ERROR`: the centralized HTTP 5xx / gRPC-internal log line,
+  background-job and canonicalization failures, **and** some client-caused
+  rejections the server logs at `ERROR` before mapping them to 4xx (rejected
+  signatures or unauthorized cosigner keys in `metadata/auth`, invalid
+  credentials in `configure_account`). A persistently misconfigured client
+  retrying every minute therefore trips the alarm at the default threshold;
+  if that is expected on a stack, raise `alarm_log_error_threshold` so a
+  known trickle is tolerated while a burst still pages. Tightening the
+  server's log levels is the longer-term fix.
+- `WARN` is dashboard-only (the *Server log lines by level* widget) and its
+  filter is created only alongside the dashboard, since nothing else reads
+  it. No alarm: the server logs `WARN` for client-caused and self-healing
+  conditions (retried RPC, rate limiting), so one would page for normal
+  operation.
+- A metric filter applies to the whole log group, which also carries the
+  `adot` and `ca-init` streams. The ADOT Collector writes console-encoded
+  lines (not JSON, lowercase level), which a JSON pattern never matches —
+  collector faults surface through `<stack>-metrics-missing` — and the
+  one-shot CA initializer prints nothing on success.
+- To see what fired, query the log group in CloudWatch Logs Insights:
+
+```sql
+fields @timestamp, message, code, detail, target, span.account_id
+| filter level = "ERROR"
+| sort @timestamp desc
+| limit 50
+```
 
 ### Verify metrics after a deploy
 
 ```bash
 # Every name below is per stack; read them all from Terraform outputs.
+# Steps 1-4 need the metrics pipeline (their outputs are empty with
+# cloudwatch_metrics_enabled = false); step 5 is independent of it.
 NS=$(terraform -chdir=infra output -raw metrics_namespace)
 DASH=$(terraform -chdir=infra output -raw metrics_dashboard_name)
 LOG_GROUP=$(terraform -chdir=infra output -raw server_log_group)
 ALARM=$(terraform -chdir=infra output -raw metrics_missing_alarm_name)
+LOG_ALARM=$(terraform -chdir=infra output -raw server_log_errors_alarm_name)
+LOG_NS=$(terraform -chdir=infra output -raw log_metrics_namespace)
 
 # 1. Metrics arriving in the namespace (allow ~2 minutes after task start)
 aws cloudwatch list-metrics --namespace "$NS" --output table | head -40
@@ -661,11 +830,47 @@ aws cloudwatch get-dashboard --dashboard-name "$DASH" --query DashboardName
 #    "Failed to scrape Prometheus endpoint"
 aws logs tail "$LOG_GROUP" --log-stream-name-prefix adot --since 15m
 
-# 4. Exercise one alarm notification path end to end
+# 4. Exercise the alarm notification path end to end: the ALARM message
+#    should appear in this stack's Slack channel (or reach every ARN in the
+#    alarm_actions output) within a minute, followed by the OK message when
+#    the next evaluation returns the alarm to OK automatically.
+terraform -chdir=infra output alarm_actions
 aws cloudwatch set-alarm-state --alarm-name "$ALARM" \
   --state-value ALARM --state-reason "notification path test"
-# the next evaluation returns it to OK automatically
+
+# Nothing in Slack? Confirm the topic is on the alarm and that the publish
+# succeeded (a denied publish is recorded here and never reaches Amazon Q):
+aws cloudwatch describe-alarms --alarm-names "$ALARM" \
+  --query 'MetricAlarms[0].[AlarmActions,OKActions]'
+aws cloudwatch describe-alarm-history --alarm-name "$ALARM" \
+  --history-item-type Action --max-items 4 --query 'AlarmHistoryItems[].HistorySummary'
+# Then the Amazon Q error log (exists only once Amazon Q has logged an error):
+SLACK_CONFIG=$(terraform -chdir=infra output -raw alarm_slack_configuration_name)
+[ -n "$SLACK_CONFIG" ] && aws logs tail "/aws/chatbot/$SLACK_CONFIG" \
+  --region us-east-1 --since 15m
+
+# 5. Log metric filters are attached and counting (skipped when
+#    cloudwatch_log_alarms_enabled = false: LOG_ALARM is empty then).
+#    default_value = "0" publishes zeros only while log lines are being
+#    ingested without matching ERROR events; a healthy but quiet service
+#    (ALB health checks log nothing at the default filter) ingests no
+#    lines, so an empty Datapoints list is expected and is handled by
+#    treat_missing_data = "notBreaching", not a sign the filter is missing.
+if [ -n "$LOG_ALARM" ]; then
+  aws logs describe-metric-filters --log-group-name "$LOG_GROUP" \
+    --query 'metricFilters[].{name:filterName,pattern:filterPattern}'
+  aws cloudwatch get-metric-statistics --namespace "$LOG_NS" \
+    --metric-name log_error_events --statistics Sum --period 300 \
+    --start-time "$(( $(date +%s) - 1800 ))" --end-time "$(date +%s)"
+  aws cloudwatch set-alarm-state --alarm-name "$LOG_ALARM" \
+    --state-value ALARM --state-reason "notification path test"
+  # returns to OK on the next evaluation (real zeros or missing data)
+fi
 ```
+
+Run step 4 on each environment's stack: a `guardian` (devnet) transition must
+land only in the devnet channel and a `guardian-prod` (testnet) transition only
+in the testnet channel.
 
 ## Operations
 
@@ -723,10 +928,13 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | Secrets Manager | Secrets containing the Falcon and ECDSA ack private keys used to seed the server keystore in prod |
 | Security Groups | ALB, server, and database security groups |
 | CloudWatch Log Groups | Cluster execute-command logs, server logs, and the EMF metrics log group |
+| CloudWatch Log Metric Filters | ERROR (and, with the dashboard, WARN) line counts from the server log group, published as custom metrics |
 | IAM Role | ECS task execution and runtime roles |
 | ADOT Sidecar | OpenTelemetry Collector container in the server task exporting Prometheus metrics to CloudWatch |
 | CloudWatch Dashboard | `<stack>-server` application and ECS overview |
-| CloudWatch Alarms | Error rate, latency, canonicalization, metrics pipeline, and ECS saturation alarms |
+| CloudWatch Alarms | Error rate, latency, canonicalization, metrics pipeline, ECS saturation, and server log-error alarms |
+| SNS Topic | Optional `<stack>-alarms` topic every alarm notifies on ALARM/OK (`alarm_notifications_enabled`) |
+| Amazon Q chat configuration | Optional Slack channel configuration `<stack>-alarms-slack` subscribed to the alarm topic, plus its notifications-only IAM role |
 
 ## Outputs
 
@@ -747,6 +955,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
 | `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
+| `guardian_allowed_account_schemes` | Signature schemes new accounts may register with (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`); empty keeps every scheme |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `dashboard_cursor_secret_name` | Secrets Manager name for the shared dashboard cursor key |
@@ -756,6 +965,13 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `metrics_dashboard_name` | CloudWatch dashboard name |
 | `metrics_emf_log_group` | Log group the ADOT sidecar writes EMF metric events into |
 | `metrics_missing_alarm_name` | Name of the metrics-pipeline heartbeat alarm for this stack |
+| `alarm_actions` | Effective ARNs notified on alarm/ok transitions (operator `alarm_actions` plus the managed topic) |
+| `alarm_sns_topic_arn` | ARN of the managed alarm SNS topic, empty when not enabled |
+| `alarm_slack_configuration_name` | Name of the Amazon Q Slack channel configuration (error log group `/aws/chatbot/<name>`, us-east-1), empty when not configured |
+| `alarm_slack_configuration_arn` | ARN of the Amazon Q Slack channel configuration, empty when not configured |
+| `cloudwatch_log_alarms_enabled` | Whether the server log group's ERROR metric filter and the log-errors alarm are deployed |
+| `log_metrics_namespace` | CloudWatch namespace receiving the log-level metric-filter counts (`<metrics_namespace>/Logs`) |
+| `server_log_errors_alarm_name` | Name of the alarm on ERROR-level server log lines for this stack |
 
 ## Stage Profiles
 

@@ -681,6 +681,56 @@ pub struct Proposal {
     pub tx_summary: TransactionSummary,
     pub signatures: Vec<ProposalSignatureEntry>,
     pub metadata: ProposalMetadata,
+    /// Result of the last summary-binding check on this value. Only
+    /// `verify_proposal_summary_binding` writes `Verified`; a freshly parsed,
+    /// imported, or built proposal is `Unchecked`. A listing surfaces failed
+    /// proposals instead of failing wholesale (issue #462); signing and
+    /// executing re-verify and refuse them.
+    pub verification: ProposalVerification,
+}
+
+/// Outcome of checking a proposal's metadata against its signed summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProposalVerification {
+    /// Nobody has run the check on this value yet.
+    Unchecked,
+    /// The metadata reproduced the signed summary commitment.
+    Verified,
+    /// The check failed. `retryable` is true when the failure came from a
+    /// transient node or RPC error, so the same proposal may verify on a
+    /// later attempt; false when the proposal itself cannot be reproduced
+    /// (tampered metadata, an anchor block the node has pruned) and it has
+    /// to be re-proposed.
+    Failed { retryable: bool, message: String },
+}
+
+impl ProposalVerification {
+    pub fn is_verified(&self) -> bool {
+        matches!(self, Self::Verified)
+    }
+
+    pub fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+
+    /// True for a failure worth retrying as-is (transient node/RPC error).
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Failed {
+                retryable: true,
+                ..
+            }
+        )
+    }
+
+    /// The failure message, if the check failed.
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            Self::Failed { message, .. } => Some(message),
+            _ => None,
+        }
+    }
 }
 
 impl Proposal {
@@ -809,6 +859,7 @@ impl Proposal {
             tx_summary,
             signatures,
             metadata,
+            verification: ProposalVerification::Unchecked,
         };
         proposal.refresh_status();
         Ok(proposal)
@@ -842,9 +893,23 @@ impl Proposal {
             tx_summary,
             signatures: Vec::new(),
             metadata,
+            verification: ProposalVerification::Unchecked,
         };
         proposal.refresh_status();
         proposal
+    }
+
+    /// True when the summary-binding check reproduced this proposal's signed
+    /// summary from its metadata (see [`Proposal::verification`]).
+    pub fn is_verified(&self) -> bool {
+        self.verification.is_verified()
+    }
+
+    /// True when the proposal is both verified and has met its signature
+    /// threshold, i.e. it can be executed. `status` alone keeps meaning
+    /// "threshold met": a fully signed proposal can still be dead.
+    pub fn is_actionable(&self) -> bool {
+        self.is_verified() && self.status.is_ready()
     }
 
     pub fn has_signed(&self, signer_commitment_hex: &str) -> bool {
@@ -1146,6 +1211,7 @@ mod tests {
                 ],
                 ..Default::default()
             },
+            verification: ProposalVerification::Unchecked,
         };
 
         assert_eq!(proposal.signature_counts(), (1, 3));
@@ -1172,6 +1238,7 @@ mod tests {
                 ],
                 ..Default::default()
             },
+            verification: ProposalVerification::Unchecked,
         };
 
         let missing = proposal.missing_signers();
@@ -1198,6 +1265,7 @@ mod tests {
                 signers: vec!["0xabc".to_string(), "0xdef".to_string()],
                 ..Default::default()
             },
+            verification: ProposalVerification::Unchecked,
         };
 
         assert_eq!(proposal.signatures_needed(), 0);

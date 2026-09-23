@@ -33,6 +33,10 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
 # guardian_evm_entrypoint_address = "0x433709009b8330fda32311df1c2afa402ed8d009"
 # guardian_cors_allowed_origins = "https://accounts.openzeppelin.com"
+# Signature schemes NEW accounts may register with (falcon, ecdsa). The
+# production checklist recommends "ecdsa"; empty keeps every scheme. Existing
+# accounts are never affected and the Falcon ACK key stays required.
+# guardian_allowed_account_schemes = "ecdsa"
 
 # Optional: VPC and subnet configuration
 # If not specified, uses the default VPC and all its subnets
@@ -86,10 +90,19 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # cloudwatch_metrics_enabled = true # ADOT sidecar + dashboard + alarms
 # metrics_namespace = "Guardian/Server"
 # alarm_actions = ["arn:aws:sns:us-east-1:123456789012:guardian-alerts"]
+# Managed alarm notifications: an SNS topic (<stack>-alarms) every alarm
+# notifies on ALARM/OK, optionally delivered to a per-environment Slack
+# channel via Amazon Q Developer in chat applications. The workspace must be
+# authorized once in the console; see "Metrics, Dashboard, And Alarms".
+# alarm_notifications_enabled = true
+# alarm_slack_workspace_id = "T0123456789"
+# alarm_slack_channel_id = "C0123456789" # e.g. #guardian-alerts-devnet
 # alarm_error_rate_threshold_percent = 5
 # alarm_latency_threshold_seconds = 1
 # alarm_cpu_threshold_percent = 85
 # alarm_memory_threshold_percent = 90
+# cloudwatch_log_alarms_enabled = true # ERROR log metric filter + log-errors alarm, WARN filter with the dashboard (needs guardian_log_format = "json")
+# alarm_log_error_threshold = 0        # ERROR lines per 5 min tolerated before the alarm counts a period as breaching
 
 # Optional: Task resource configuration
 # server_cpu    = 512

@@ -26,7 +26,7 @@ once.
 
 ## Typical Flow
 
-1. Generate Falcon keypair (shows your signer commitment).
+1. Generate a keypair (shows your signer commitment). The prompt defaults to Falcon; pick ECDSA when the target Guardian restricts new accounts with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` (the production templates do), otherwise registration fails with `signature_scheme_not_allowed`.
 2. Create multisig account (choose threshold and enter cosigner commitments).
 3. Register the account on GUARDIAN (makes it visible to other cosigners).
 4. Pull/register the account from another terminal and sign proposals.

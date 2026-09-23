@@ -55,9 +55,11 @@ import {
   type P2ideHeightOptions,
 } from './transaction.js';
 import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
+import { ensureNotesAuthenticated } from './transaction/noteAuthentication.js';
 import {
   CONSUME_NOTES_METADATA_VERSION_V2,
   MAX_CONSUME_NOTES_METADATA_BYTES,
+  type ConsumeNotesProposalMetadata,
 } from './types/proposal.js';
 import { LEGACY_CONSUME_NOTES_ENABLED } from './multisig/config.js';
 import {
@@ -116,6 +118,7 @@ import {
   resolveRpcConfig,
   type ResolvedRpcConfig,
 } from './rpc/config.js';
+import { isTransientRpcError } from './rpc/errors.js';
 import { retryRpcRead } from './rpc/retry.js';
 
 /**
@@ -231,6 +234,13 @@ const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 /** A `Word` is four field elements: 64 hex digits. Anything longer is not a salt. */
 const MAX_SALT_HEX_DIGITS = 64;
 
+/**
+ * Consecutive successful listings that must omit a guardian-known proposal
+ * not yet listed (a fresh create during read-your-writes lag, or one
+ * orphaned by a GUARDIAN repoint) before the sync prunes it.
+ */
+const UNREPORTED_LISTING_MISS_LIMIT = 2;
+
 export class Multisig {
   account: Account;
   threshold: number;
@@ -248,6 +258,24 @@ export class Multisig {
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
+  /** Ids GUARDIAN returned on the most recent sync; these prune immediately when dropped. */
+  private lastReportedProposalIds: Set<string> = new Set();
+  /**
+   * Ids GUARDIAN is known to hold: acknowledged `createProposal` pushes,
+   * acknowledged `signProposal` signatures, plus every listed id. Only these
+   * are subject to miss-based pruning; offline creations and imports GUARDIAN
+   * never received are exempt.
+   */
+  private guardianKnownProposalIds: Set<string> = new Set();
+  /**
+   * Consecutive successful listings that omitted a guardian-known proposal
+   * not yet listed; at {@link UNREPORTED_LISTING_MISS_LIMIT} it is pruned.
+   */
+  private unreportedMissCounts: Map<string, number> = new Map();
+  /** Bumped by {@link setGuardianClient}; a sync spanning a bump aborts unapplied. */
+  private syncGeneration = 0;
+  /** Pending sync shared by overlapping {@link syncProposals} callers. */
+  private syncProposalsInFlight?: Promise<Proposal[]>;
 
   constructor(
     account: Account,
@@ -454,11 +482,23 @@ export class Multisig {
    * survive a switch, and the notes embedded in them can only be imported
    * while the old GUARDIAN is still the current client.
    *
+   * Repointing abandons a {@link syncProposals} still in flight: it rejects
+   * without applying its listing, though its request to the old GUARDIAN is
+   * not cancelled, so callers already awaiting it see the rejection only
+   * once that response settles. The reported-id and miss-count bookkeeping
+   * is reset; the set of ids GUARDIAN is known to hold is kept on purpose,
+   * so proposals orphaned by the repoint expire through the two-miss rule
+   * instead of lingering.
+   *
    * @param guardianClient - The new GUARDIAN HTTP client
    */
   setGuardianClient(guardianClient: GuardianHttpClient): void {
     this.guardian = guardianClient;
     this.guardian.setSigner(this.signer);
+    this.syncGeneration += 1;
+    this.syncProposalsInFlight = undefined;
+    this.lastReportedProposalIds = new Set();
+    this.unreportedMissCounts = new Map();
   }
 
   /**
@@ -715,12 +755,67 @@ export class Multisig {
   }
 
   /**
-   * Sync proposals from the GUARDIAN server.
+   * Sync proposals from the GUARDIAN server, reconciling the local cache to
+   * the response. GUARDIAN reports only pending proposals, so a proposal it
+   * reported on an earlier sync and now omits is pruned immediately. A
+   * proposal GUARDIAN holds but has not listed yet (a fresh `createProposal`
+   * its read-your-writes has not caught up with, or a proposal orphaned by a
+   * {@link setGuardianClient} repoint) is pruned only after
+   * {@link UNREPORTED_LISTING_MISS_LIMIT} consecutive listings omit it.
+   * Proposals GUARDIAN never received (an `importProposal`, or a
+   * `createSwitchGuardianProposalOffline`) are not pruned by listings; an
+   * import graduates to the pruned classes once GUARDIAN acknowledges it
+   * (listed, or a successful online `signProposal`).
+   * Proposals cached or replaced after the sync started are not evaluated
+   * by it.
+   *
+   * Every synced proposal's metadata is checked against its signed summary
+   * and the outcome is recorded in {@link Proposal.verification}. One that
+   * fails is still cached and returned, so a single stale or corrupt
+   * proposal cannot hide the others (issue #462: once the node prunes a
+   * proposal's anchor block its re-execution fails for everyone). `failed`
+   * with `retryable: true` means a transient node error, worth syncing
+   * again; `retryable: false` means the proposal cannot be reproduced and
+   * must be re-proposed. `signProposal` and `executeProposal` re-verify and
+   * refuse a failed proposal. A failed proposal still counts as reported, so
+   * it is pruned like any other once GUARDIAN stops listing it.
+   *
+   * The response is parsed in full before the cache or the pruning state
+   * changes; a payload that does not parse at all rejects and leaves both
+   * untouched, so malformed GUARDIAN data is never silently dropped.
+   * Signatures added to a cached proposal while the sync was verifying are
+   * preserved by its apply, and a proposal executed locally in that window
+   * stays `finalized` rather than reverting to the listed pending state.
+   * Overlapping callers share the same in-flight promise. A sync that spans a {@link setGuardianClient} repoint rejects
+   * without applying its listing.
+   *
+   * Nonce-based staleness hiding is the caller's job (see the examples'
+   * `filterVisibleProposals`): callers of this shared client disagree on
+   * whether a proposal's `nonce` is the pre-execution or the next account
+   * nonce, so the Rust client's `proposal.nonce <= account.nonce()` filter
+   * cannot be applied here. This is an intentional TS/Rust surface
+   * difference.
    */
-  async syncProposals(): Promise<Proposal[]> {
+  syncProposals(): Promise<Proposal[]> {
+    if (this.syncProposalsInFlight) {
+      return this.syncProposalsInFlight;
+    }
+    const inFlight = this.reconcileProposals().finally(() => {
+      if (this.syncProposalsInFlight === inFlight) {
+        this.syncProposalsInFlight = undefined;
+      }
+    });
+    this.syncProposalsInFlight = inFlight;
+    return inFlight;
+  }
+
+  private async reconcileProposals(): Promise<Proposal[]> {
+    const generation = this.syncGeneration;
+    const candidates = new Map(this.proposals);
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
+    const reported = new Map<string, { delta: (typeof deltas)[number]; verified: Proposal }>();
     for (const delta of deltas) {
       const proposalId = normalizeHexWord(
         computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
@@ -732,10 +827,62 @@ export class Multisig {
         existingProposal?.metadata,
         existingProposal?.signatures ?? [],
       );
-      await this.verifyProposalMetadataBinding(proposal);
-
-      this.proposals.set(proposal.id, proposal);
+      // The outcome lands on the proposal either way; a failure is reported
+      // there rather than failing the sync.
+      await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
+      reported.set(proposal.id, { delta, verified: proposal });
     }
+
+    if (generation !== this.syncGeneration) {
+      throw new Error(
+        'Sync aborted: the GUARDIAN client was replaced while the sync was in flight'
+      );
+    }
+
+    const applied: Proposal[] = [];
+    for (const { delta, verified } of reported.values()) {
+      const current = this.proposals.get(verified.id);
+      if (current?.status === 'finalized') {
+        applied.push(current);
+        continue;
+      }
+      applied.push(
+        current === undefined
+          ? verified
+          : {
+              ...factory.fromDelta(delta, verified.id, verified.metadata, current.signatures),
+              verification: verified.verification,
+            }
+      );
+    }
+    for (const proposal of applied) {
+      this.proposals.set(proposal.id, proposal);
+      this.guardianKnownProposalIds.add(proposal.id);
+    }
+
+    const missCounts = new Map<string, number>();
+    for (const [id, snapshot] of candidates) {
+      if (reported.has(id) || this.proposals.get(id) !== snapshot) {
+        continue;
+      }
+      if (this.lastReportedProposalIds.has(id)) {
+        this.proposals.delete(id);
+        this.guardianKnownProposalIds.delete(id);
+        continue;
+      }
+      if (!this.guardianKnownProposalIds.has(id)) {
+        continue;
+      }
+      const misses = (this.unreportedMissCounts.get(id) ?? 0) + 1;
+      if (misses >= UNREPORTED_LISTING_MISS_LIMIT) {
+        this.proposals.delete(id);
+        this.guardianKnownProposalIds.delete(id);
+      } else {
+        missCounts.set(id, misses);
+      }
+    }
+    this.unreportedMissCounts = missCounts;
+    this.lastReportedProposalIds = new Set(reported.keys());
 
     return Array.from(this.proposals.values());
   }
@@ -802,7 +949,10 @@ export class Multisig {
   }
 
   /**
-   * List all known proposals
+   * Returns the proposals cached by the most recent {@link syncProposals}
+   * call, plus any locally created or imported proposals GUARDIAN has not
+   * reported yet (see {@link syncProposals} for their retention). Not a
+   * durable history: proposals GUARDIAN no longer reports were pruned.
    */
   listProposals(): Proposal[] {
     return Array.from(this.proposals.values());
@@ -831,6 +981,7 @@ export class Multisig {
     const proposal = this.proposalFactory().fromDelta(response.delta, response.commitment, metadata);
     await this.verifyProposalMetadataBinding(proposal);
     this.proposals.set(proposal.id, proposal);
+    this.guardianKnownProposalIds.add(proposal.id);
 
     return proposal;
   }
@@ -1184,6 +1335,10 @@ export class Multisig {
       }
       fetchedNotes.push(inputNoteRecord.toNote());
     }
+    // Canonical consumption mode is authenticated (issue #409): the summary this
+    // proposal signs must be the one every cosigner's rebuild reproduces, so
+    // the notes are authenticated here first, before the anchor is captured.
+    await this.ensureNotesAuthenticated(fetchedNotes);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
     const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes);
@@ -1441,6 +1596,18 @@ export class Multisig {
    * store, reusing this client's Miden RPC endpoint and retry
    * configuration.
    */
+  /**
+   * Puts the local store in the canonical (authenticated) consumption mode
+   * for `notes`, fetching missing inclusion proofs from this client's Miden
+   * node; see {@link ensureNotesAuthenticated}.
+   */
+  private async ensureNotesAuthenticated(notes: readonly Note[]): Promise<void> {
+    await ensureNotesAuthenticated(this.midenClient, notes, {
+      midenRpcEndpoint: this.getMidenRpcEndpoint(),
+      rpc: { retry: { maxAttempts: this.rpcConfig.maxAttempts } },
+    });
+  }
+
   private async importNotesFromProposals(
     proposals: ReadonlyArray<Pick<Proposal, 'id' | 'metadata'>>,
     cancelled?: () => boolean,
@@ -1771,6 +1938,7 @@ export class Multisig {
     await this.verifyProposalMetadataBinding(signedProposal);
 
     this.proposals.set(signedProposal.id, signedProposal);
+    this.guardianKnownProposalIds.add(signedProposal.id);
 
     return signedProposal;
   }
@@ -1871,7 +2039,7 @@ export class Multisig {
       }
     }
 
-    proposal.status = 'finalized';
+    this.proposals.set(proposal.id, { ...proposal, status: 'finalized' });
   }
 
   /**
@@ -2467,14 +2635,17 @@ export class Multisig {
       this.signerCommitments,
       localSignatureContext,
     ).entries();
-    proposal.signatures = canonicalizedSignatures;
-
-    // Update status
     const proposalType = proposal.metadata?.proposalType;
     const signaturesRequired = proposalType
       ? this.getEffectiveThreshold(proposalType)
       : this.threshold;
-    proposal.status = proposal.signatures.length >= signaturesRequired ? 'ready' : 'pending';
+    // A fresh object rather than an in-place write: a sync that snapshotted
+    // the cache before this signature tells the two apart by identity.
+    this.proposals.set(proposal.id, {
+      ...proposal,
+      signatures: canonicalizedSignatures,
+      status: canonicalizedSignatures.length >= signaturesRequired ? 'ready' : 'pending',
+    });
 
     // Return updated JSON
     return this.exportProposalToJson(proposal.id);
@@ -2493,7 +2664,29 @@ export class Multisig {
     return txSummaryCommitment;
   }
 
+  /**
+   * Verifies that a proposal's metadata reconstructs its signed summary
+   * commitment and records the outcome in {@link Proposal.verification}:
+   * `verified`, or `failed` with the message and whether the failure looked
+   * transient. Rethrows the failure so strict callers keep failing closed
+   * while `syncProposals` keeps going with the outcome recorded.
+   */
   private async verifyProposalMetadataBinding(proposal: Proposal): Promise<string> {
+    try {
+      const commitment = await this.checkProposalMetadataBinding(proposal);
+      proposal.verification = { status: 'verified' };
+      return commitment;
+    } catch (error) {
+      proposal.verification = {
+        status: 'failed',
+        retryable: isTransientRpcError(error),
+        message: error instanceof Error ? error.message : String(error),
+      };
+      throw error;
+    }
+  }
+
+  private async checkProposalMetadataBinding(proposal: Proposal): Promise<string> {
     const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
 
     const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
@@ -2528,6 +2721,17 @@ export class Multisig {
       const salt = Word.fromHex(
         normalizeHexWord(this.requireProposalSaltHex(proposal.id, proposal.metadata)),
       );
+
+      // A consume-notes summary commits to *authenticated* consumption (see
+      // ensureNotesAuthenticated), which miden-client decides from this store
+      // alone. Put the store in that mode before the rebuild, or a cosigner
+      // that never held these notes reproduces a different commitment.
+      if (
+        proposal.metadata.proposalType === 'consume_notes' &&
+        proposal.metadata.metadataVersion === CONSUME_NOTES_METADATA_VERSION_V2
+      ) {
+        await this.ensureNotesAuthenticated(decodeEmbeddedConsumeNotes(proposal.metadata));
+      }
 
       const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
       const webClient = await this.getRawClient();
@@ -2654,25 +2858,7 @@ export class Multisig {
         // v1/v2 dispatch for issue #229 / FR-009.
         const version = metadata.metadataVersion;
         if (version === CONSUME_NOTES_METADATA_VERSION_V2) {
-          const embedded = metadata.notes ?? [];
-          if (embedded.length !== metadata.noteIds.length) {
-            throw new NoteBindingMismatchError(
-              `consume_notes v2: notes.length=${embedded.length} does not match noteIds.length=${metadata.noteIds.length}`,
-            );
-          }
-          const decoded: Note[] = [];
-          for (let i = 0; i < embedded.length; i++) {
-            const note = noteFromBase64(embedded[i], Note);
-            // Normalize both sides; matches the file's other hex comparisons.
-            const embeddedId = normalizeHexWord(note.id().toString());
-            const declaredId = normalizeHexWord(metadata.noteIds[i]);
-            if (embeddedId !== declaredId) {
-              throw new NoteBindingMismatchError(
-                `consume_notes v2: notes[${i}] id ${embeddedId} != noteIds[${i}] ${declaredId}`,
-              );
-            }
-            decoded.push(note);
-          }
+          const decoded = decodeEmbeddedConsumeNotes(metadata);
           const { request } = buildConsumeNotesTransactionRequestFromNotes(decoded, {
             salt,
             signatureAdviceMap,
@@ -2717,4 +2903,32 @@ export class Multisig {
     }
   }
 
+}
+
+/**
+ * Decodes a v2 `consume_notes` proposal's embedded notes, asserting each one
+ * is the note its declared id names (spec 006 FR-007).
+ */
+function decodeEmbeddedConsumeNotes(metadata: ConsumeNotesProposalMetadata): Note[] {
+  const embedded = metadata.notes ?? [];
+  const noteIds = metadata.noteIds ?? [];
+  if (embedded.length !== noteIds.length) {
+    throw new NoteBindingMismatchError(
+      `consume_notes v2: notes.length=${embedded.length} does not match noteIds.length=${noteIds.length}`,
+    );
+  }
+  const decoded: Note[] = [];
+  for (let i = 0; i < embedded.length; i++) {
+    const note = noteFromBase64(embedded[i], Note);
+    // Normalize both sides; matches the file's other hex comparisons.
+    const embeddedId = normalizeHexWord(note.id().toString());
+    const declaredId = normalizeHexWord(noteIds[i]);
+    if (embeddedId !== declaredId) {
+      throw new NoteBindingMismatchError(
+        `consume_notes v2: notes[${i}] id ${embeddedId} != noteIds[${i}] ${declaredId}`,
+      );
+    }
+    decoded.push(note);
+  }
+  return decoded;
 }

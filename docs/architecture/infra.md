@@ -154,6 +154,8 @@ Mapping AWS resources to the Terraform files that own them:
 | CloudWatch log groups | [`logs.tf`](../../infra/logs.tf) | `server` group, `cluster` (ECS Exec) group, and the EMF metrics group when CloudWatch metrics are enabled. |
 | ADOT metrics sidecar + collector config | [`ecs.tf`](../../infra/ecs.tf), [`observability.tf`](../../infra/observability.tf) | Non-essential container in the server task; config injected via `AOT_CONFIG_CONTENT`. |
 | CloudWatch dashboard + alarms | [`observability.tf`](../../infra/observability.tf) | `<stack>-server` dashboard; error-rate, latency, canonicalization, metrics-pipeline, and ECS saturation alarms. |
+| Alarm SNS topic + Slack channel | [`alerting.tf`](../../infra/alerting.tf) | Opt-in `<stack>-alarms` topic appended to every alarm's ALARM/OK actions; optional Amazon Q Developer in chat applications Slack channel configuration subscribed to it, with a notifications-only channel role. |
+| CloudWatch log metric filters + log-errors alarm | [`log_alarms.tf`](../../infra/log_alarms.tf) | ERROR/WARN line counts from the server log group as custom metrics; alarm on sustained ERROR output. Gated by `cloudwatch_log_alarms_enabled`, requires JSON logs (plan-time precondition). |
 | ADOT EMF log-write policy | [`iam.tf`](../../infra/iam.tf) | Task-role, stream-level writes on the EMF group only. |
 | Route 53 alias | [`dns.tf:12`](../../infra/dns.tf#L12) | Created when `route53_zone_id` is set; hostname migrations may temporarily add a second record. |
 | Cloudflare CNAME | [`dns.tf:27`](../../infra/dns.tf#L27) | Created when `cloudflare_zone_id` is set; can be proxied, with the same temporary migration support. |
@@ -271,10 +273,20 @@ sidecar in the server task scrapes Guardian's loopback-only Prometheus
 endpoint and exports selected metrics to CloudWatch via EMF under a
 per-stack namespace, with a `<stack>-server` dashboard and alarms for
 error rate, latency, canonicalization failures, metrics-pipeline health,
-and ECS saturation. Gated by `guardian_metrics_enabled` (the endpoint)
+and ECS saturation. Alarm delivery is opt-in
+([`alerting.tf`](../../infra/alerting.tf)): a managed `<stack>-alarms` SNS
+topic, optionally routed to a per-environment Slack channel through Amazon Q
+Developer in chat applications, alongside any operator-supplied
+`alarm_actions` ARNs. Gated by `guardian_metrics_enabled` (the endpoint)
 and `cloudwatch_metrics_enabled` (the export pipeline), both on by
 default; enablement and verification live in
 [`SERVER_AWS_DEPLOY.md`](../SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms).
+Log-level monitoring is separate from that pipeline: metric filters on the
+server log group ([`log_alarms.tf`](../../infra/log_alarms.tf)) count
+ERROR/WARN lines from the JSON log output and an alarm fires on sustained
+ERROR output, so alerting on logged faults survives
+`guardian_metrics_enabled = false` (process liveness does not: a
+crash-looping task prints no JSON).
 Tracing exporters remain an open gap.
 
 ## Things that are deliberately not here

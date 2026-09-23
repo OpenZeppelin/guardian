@@ -37,6 +37,7 @@ set -euo pipefail
 #   GUARDIAN_NETWORK_TYPE      - Runtime Miden network for the server (default: MidenTestnet)
 #   GUARDIAN_SERVER_FEATURES   - Cargo features for guardian-server Docker build (default: postgres)
 #   GUARDIAN_CORS_ALLOWED_ORIGINS - Comma-separated explicit HTTP origins allowed by credentialed CORS (optional)
+#   GUARDIAN_ALLOWED_ACCOUNT_SCHEMES - Comma-separated signature schemes new accounts may register with: falcon, ecdsa (optional; default every scheme)
 #   GUARDIAN_EVM_CHAIN_CONFIG_FILE - JSON file used to derive EVM chain IDs, RPC URLs, and EntryPoint address (default: config/evm/chains.json)
 #   GUARDIAN_EVM_ALLOWED_CHAIN_IDS - Comma-separated EVM chain IDs allowed by the server; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN - Secrets Manager ARN with comma-separated EVM chain IDs (optional)
@@ -65,6 +66,7 @@ ALIAS_ACM_CERTIFICATE_ARN="${ALIAS_ACM_CERTIFICATE_ARN-}"
 GUARDIAN_NETWORK_TYPE="${GUARDIAN_NETWORK_TYPE:-MidenTestnet}"
 GUARDIAN_SERVER_FEATURES="${GUARDIAN_SERVER_FEATURES:-postgres}"
 GUARDIAN_CORS_ALLOWED_ORIGINS="${GUARDIAN_CORS_ALLOWED_ORIGINS:-${TF_VAR_guardian_cors_allowed_origins:-}}"
+GUARDIAN_ALLOWED_ACCOUNT_SCHEMES="${GUARDIAN_ALLOWED_ACCOUNT_SCHEMES:-${TF_VAR_guardian_allowed_account_schemes:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_GUARDIAN_EVM_CHAIN_CONFIG_FILE="${SCRIPT_DIR}/../config/evm/chains.json"
 DEFAULT_GUARDIAN_EVM_ENTRYPOINT_ADDRESS="0x433709009b8330fda32311df1c2afa402ed8d009"
@@ -292,6 +294,9 @@ build_tf_vars() {
   TF_VARS+=("-var" "guardian_operator_public_keys_secret_arn=${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN}")
   if [ -n "$GUARDIAN_CORS_ALLOWED_ORIGINS" ]; then
     TF_VARS+=("-var" "guardian_cors_allowed_origins=${GUARDIAN_CORS_ALLOWED_ORIGINS}")
+  fi
+  if [ -n "$GUARDIAN_ALLOWED_ACCOUNT_SCHEMES" ]; then
+    TF_VARS+=("-var" "guardian_allowed_account_schemes=${GUARDIAN_ALLOWED_ACCOUNT_SCHEMES}")
   fi
   if [ -n "$GUARDIAN_EVM_ALLOWED_CHAIN_IDS" ]; then
     TF_VARS+=("-var" "guardian_evm_allowed_chain_ids=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS}")

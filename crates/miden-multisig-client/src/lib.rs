@@ -98,7 +98,7 @@ pub use execution::{SignatureAdvice, build_transfer_asset};
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{
     CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, P2ideHeights, Proposal,
-    ProposalMetadata, ProposalStatus, SerializedNote, TransactionType,
+    ProposalMetadata, ProposalStatus, ProposalVerification, SerializedNote, TransactionType,
 };
 pub use prover::{ProverConfig, ProverRetryPolicy};
 pub use rpc::{RpcConfig, RpcRetryPolicy};

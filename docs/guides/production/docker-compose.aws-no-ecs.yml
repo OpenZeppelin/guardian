@@ -1,0 +1,84 @@
+# Self-managed production Guardian from the published Docker image, with AWS
+# used for secret custody only (Track C of ./README.md): the Falcon ACK key and
+# the storage-encryption key document come from AWS Secrets Manager, the ECDSA
+# ACK key lives in AWS KMS (its private key never enters the process), and the
+# operator allowlist can be a Secrets Manager secret. The server runs with
+# GUARDIAN_ENV=prod, so every prod-stage guard is active.
+#
+# Run from this directory:
+#   cp .env.aws-no-ecs.example .env.aws-no-ecs      # then fill in the values
+#   docker compose --env-file .env.aws-no-ecs -f docker-compose.aws-no-ecs.yml up -d
+#
+# The bundled Postgres exists so the stack runs standalone. For real production
+# point DATABASE_URL in .env.aws-no-ecs at your own TLS-verified Postgres and
+# start only the server (append `--no-deps server` to the command above).
+#
+# The container calls Secrets Manager and KMS, so it needs AWS credentials. Put
+# static keys in .env.aws-no-ecs (loaded as the container's env_file), or set
+# nothing and let the SDK's default chain use the host's instance/container
+# role; AWS credentials are never taken from your shell, and neither is any
+# other server variable (see the env_file note on the service).
+# Walkthrough: ./README.md   Full server config reference: ../../CONFIGURATION.md
+
+# Distinct from docker-compose.yml so the two tracks never share volumes when
+# run from this directory.
+name: guardian-production-aws-no-ecs
+
+services:
+  server:
+    image: ghcr.io/openzeppelin/guardian:${GUARDIAN_VERSION:?set GUARDIAN_VERSION in .env.aws-no-ecs (pin an explicit release, never latest, in production)}
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "${GUARDIAN_BIND_ADDR:-127.0.0.1}:${GUARDIAN_HTTP_PORT:-3000}:3000"
+      - "${GUARDIAN_BIND_ADDR:-127.0.0.1}:${GUARDIAN_GRPC_PORT:-50051}:50051"
+      - "127.0.0.1:${GUARDIAN_METRICS_PORT:-9464}:9464"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - guardian-keystore:/var/guardian/keystore
+      # Verified DB TLS against your own Postgres: mount its CA bundle and use
+      # sslmode=verify-full&sslrootcert=/etc/guardian/tls/ca.pem in DATABASE_URL.
+      # - ./certs/ca.pem:/etc/guardian/tls/ca.pem:ro
+    # Every operator-provided value (DATABASE_URL, AWS_REGION, secret ids, the
+    # KMS key, network, cursor secret, CORS, metrics,
+    # GUARDIAN_ALLOWED_ACCOUNT_SCHEMES, GUARDIAN_MAX_REPLICAS, ...) comes from
+    # .env.aws-no-ecs through env_file and nowhere else. Nothing below interpolates a
+    # server variable, so an exported shell variable cannot override the file:
+    # Compose gives the shell precedence during ${VAR} interpolation, which is
+    # why the only interpolated values in this file are the image tag and the
+    # host-side port/bind settings above. The file is required so a missing
+    # .env.aws-no-ecs aborts `up` instead of starting an unconfigured server.
+    env_file:
+      - path: .env.aws-no-ecs
+        required: true
+    # Fixed by this stack's topology; not operator input. GUARDIAN_ENV=prod also
+    # applies the production defaults for rate limits, pool sizes,
+    # canonicalization concurrency, and JSON logs.
+    environment:
+      - GUARDIAN_ENV=prod
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - GUARDIAN_ACK_ECDSA_BACKEND=aws-kms
+      - GUARDIAN_METRICS_ADDR=0.0.0.0:9464
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - guardian-postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=guardian
+      # Left non-fatal so a `--no-deps server` run against an external Postgres
+      # does not need it; the postgres image itself refuses to start when empty.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - POSTGRES_DB=guardian
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  guardian-keystore:
+  guardian-postgres:

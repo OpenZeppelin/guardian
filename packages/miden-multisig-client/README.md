@@ -264,7 +264,7 @@ console.log('Signatures:', signedProposal.signatures.length);
 
 ### Sync Proposals
 
-Fetches proposals from the GUARDIAN server and updates local state:
+Fetches proposals from the GUARDIAN server and reconciles local state. A proposal GUARDIAN reported on an earlier sync but no longer reports (executed, canonicalized, or abandoned) is pruned from the cache. A proposal GUARDIAN holds but has not listed yet (a freshly pushed create) survives the first listing that omits it, absorbing a read-your-writes lag, and is pruned once a second consecutive listing omits it. Proposals GUARDIAN never received (offline switch-guardian creations and imports) are not pruned by listings. The response is parsed in full before the cache changes (a malformed payload rejects and leaves the cache untouched), a proposal that fails metadata-binding verification is still cached and returned with `verification.status === 'failed'` (see [Proposal Verification Status](#proposal-verification-status)), a proposal executed or signed offline while a sync is in flight keeps that local outcome (it is neither reverted to the listed state nor pruned by that sync), and overlapping calls share a single in-flight sync:
 
 ```typescript
 const proposals = await multisig.syncProposals();
@@ -324,6 +324,45 @@ for (const p of proposals) {
   }
 }
 ```
+
+### Proposal Verification Status
+
+`syncProposals()` checks every proposal's metadata against its signed
+summary and records the outcome in `proposal.verification`:
+`{ status: 'unchecked' }`, `{ status: 'verified' }`, or
+`{ status: 'failed', retryable, message }`. A proposal that fails the
+check is still returned, so one stale or corrupt proposal cannot hide the
+others; only the check itself writes `verified`, and a freshly parsed or
+imported proposal is `unchecked`. `retryable: true` means the
+re-execution hit a transient node error and the proposal may verify on
+the next sync; `retryable: false` means it cannot be reproduced (tampered
+metadata, or an anchor block the node has pruned) and has to be
+re-proposed. Verification is deliberately not part of `status`: a fully
+signed proposal can be dead, so `'ready'` keeps meaning "threshold met"
+and `isProposalActionable(proposal)` answers "verified and ready".
+`signProposal` and `executeProposal` re-verify the one proposal they act
+on and throw the real error. A payload that does not parse at all still
+rejects, so malformed GUARDIAN data is never silently dropped.
+
+```typescript
+import { isProposalActionable } from '@openzeppelin/miden-multisig-client';
+
+for (const p of await multisig.syncProposals()) {
+  if (p.verification.status === 'failed') {
+    const { retryable, message } = p.verification;
+    console.log(`${p.id}: ${retryable ? 'retry later' : 're-propose'} — ${message}`);
+  } else if (isProposalActionable(p)) {
+    await multisig.executeProposal(p.id);
+  }
+}
+```
+
+Anchored re-execution needs the node to serve account state at the
+proposal's reference block, and nodes keep that history only briefly
+(devnet: about 50 blocks); once it is gone the proposal is reported as
+`failed` with `retryable: false` for everyone, the proposer included.
+Collect signatures and execute promptly, and re-propose once a proposal
+has aged out.
 
 ### Execute a Proposal
 
@@ -628,11 +667,26 @@ discriminator.
   [issue #229](https://github.com/OpenZeppelin/guardian/issues/229).
 - **v2 (self-contained)** — `metadataVersion: 2` plus a `notes` array
   of base64-encoded `Note.serialize()` bytes, aligned by index with
-  `noteIds`. Verification rebuilds the request from the embedded notes
-  alone — no `getInputNote`, no network call. Restores the same
-  "rebuild from signed metadata" invariant every other proposal type
-  already satisfied (and that audit finding **M-08** remediated for
-  `p2id`).
+  `noteIds`. Verification rebuilds the request from the embedded notes,
+  never from whatever notes the verifier's store happens to hold.
+  Restores the same "rebuild from signed metadata" invariant every other
+  proposal type already satisfied (and that audit finding **M-08**
+  remediated for `p2id`).
+
+  The rebuild is not store-independent by itself, though: miden-client
+  consumes each input note as *authenticated* when the local store holds
+  its inclusion proof and as *unauthenticated* otherwise, and the two
+  commit differently into the signed summary (issue #409). Authenticated
+  is the canonical mode, so before every rebuild (`syncProposals`,
+  `signProposal`, `executeProposal`) the verifier authenticates the
+  embedded notes: notes already authenticated locally are left alone,
+  the rest get their inclusion proofs from the Miden node in one round
+  trip and are imported into the local store as committed (with one
+  `syncState` if the store is behind the note's block). Verification
+  therefore reads and writes the local store and contacts the node.
+  `createConsumeNotesProposal` does the same before the summary and its
+  chain anchor are captured, and refuses a note that is not yet
+  committed on chain.
 
 `createConsumeNotesProposal` always emits v2 starting with this
 release; the proposer is the one party guaranteed to hold the notes
@@ -645,6 +699,7 @@ signature collection begins.
 import {
   MAX_CONSUME_NOTES_METADATA_BYTES,
   CONSUME_NOTES_METADATA_VERSION_V2,
+  ConsumeNoteNotAuthenticatedError,
   ConsumeNotesMetadataOversizeError,
   LegacyConsumeNotesNoteMissingError,
   NoteBindingMismatchError,
@@ -665,6 +720,7 @@ dashboards can branch on one taxonomy.
 | `UnsupportedMetadataVersionError` | `consume_notes_unsupported_metadata_version` | Unrecognized version (including v1 on a cut-over build) |
 | `ConsumeNotesMetadataOversizeError` | `consume_notes_metadata_oversize` | v2 metadata serialization exceeds 256 KiB at creation |
 | `LegacyConsumeNotesNoteMissingError` | `consume_notes_legacy_note_missing` | v1 path: local store does not contain the referenced note |
+| `ConsumeNoteNotAuthenticatedError` | `consume_notes_note_not_authenticated` | A note could not be authenticated: not committed on chain yet, the node served no proof, the import failed, or the store could not verify it after a sync |
 
 ### Cut-over policy
 

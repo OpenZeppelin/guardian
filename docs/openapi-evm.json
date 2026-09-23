@@ -828,6 +828,16 @@
           "retryable"
         ],
         "properties": {
+          "allowed_schemes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Signature schemes this Guardian accepts for new accounts. Present\nonly for `signature_scheme_not_allowed`."
+          },
           "missing_permissions": {
             "type": [
               "array",
@@ -871,6 +881,13 @@
           "retryable": {
             "type": "boolean",
             "description": "Whether retrying the same request could plausibly succeed."
+          },
+          "scheme": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Rejected signature scheme. Present only for\n`signature_scheme_not_allowed`."
           }
         }
       },

@@ -168,6 +168,7 @@ pub struct ConfigureResponse {
         (status = 200, description = "Account configured", body = ConfigureResponse),
         (status = 400, description = "Invalid request", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "New account uses a signature scheme excluded by GUARDIAN_ALLOWED_ACCOUNT_SCHEMES (`signature_scheme_not_allowed`; meta.scheme and meta.allowed_schemes)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn configure(

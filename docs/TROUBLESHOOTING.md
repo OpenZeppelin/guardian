@@ -430,8 +430,8 @@ Server knobs (set on the task, not per-account):
 | Variable | Default | Notes |
 |---|---|---|
 | `GUARDIAN_RATE_LIMIT_ENABLED` | `true` | Set `false` only in test environments. |
-| `GUARDIAN_RATE_BURST_PER_SEC` | `10` (dev), `200` (prod) | Requests per one-second window. |
-| `GUARDIAN_RATE_PER_MIN` | `60` (dev), `5000` (prod) | Sustained rate. |
+| `GUARDIAN_RATE_BURST_PER_SEC` | `10`; `200` when `GUARDIAN_ENV=prod` | Requests per one-second window. |
+| `GUARDIAN_RATE_PER_MIN` | `60`; `5000` when `GUARDIAN_ENV=prod` | Sustained rate. |
 | `GUARDIAN_MAX_REQUEST_BYTES` | `1048576` (1 MB) | Reject larger bodies. |
 
 If you legitimately need higher throughput, raise these via the deploy
@@ -480,6 +480,7 @@ come from
 | `authentication_replay` | 401 | Correctly signed but the timestamp lost the per-signer replay CAS. `retryable: true`; SDK clients retry it automatically with a fresh timestamp and signature. See [the auth-layer section](#signed-requests-are-rejected-at-the-auth-layer). |
 | `authorization_failed` | 403 | Account credentials don't authorize the operation. |
 | `signer_not_authorized` | 403 | Signer isn't on the proposal's allowed signer set. |
+| `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Accounts already in this Guardian's metadata are never rejected this way; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`DASHBOARD.md`](./DASHBOARD.md#permission-vocabulary). |
 
 ### Resource lookup
@@ -591,7 +592,7 @@ network network=MidenTestnet rpc_endpoint="https://rpc.testnet.miden.io"
 storage backend storage=Postgres
 ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecdsa_commitment=0x…
 dashboard operators=0 cursor_secret="ephemeral"
-canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600
+canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10
 listeners http=3000 grpc=50051
 compiled features features=["postgres"]
 =========================================

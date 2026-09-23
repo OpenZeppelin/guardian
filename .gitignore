@@ -12,11 +12,17 @@ templates/
 .env.prod
 .env.stg
 .env.registry
+.env.aws-ecs
+.env.aws-no-ecs
 docs/guides/miden-dashboard/operators.json
 docs/guides/miden-dashboard/guardian-dashboard/
 docs/guides/horizontal-scaling/operators.json
 docs/guides/horizontal-scaling/ack-keys/
 docs/guides/horizontal-scaling/docker-compose.override.yml
+docs/guides/production/operators.json
+docs/guides/production/ack-keys/
+docs/guides/production/storage-encryption-keys.json
+docs/guides/production/certs/
 
 .cursor/
 .claude/

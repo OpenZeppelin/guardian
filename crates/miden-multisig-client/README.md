@@ -202,6 +202,32 @@ client.sign_proposal(&to_sign.id).await?;
 client.execute_proposal(&proposal.id).await?;
 ```
 
+### Proposal verification status
+
+`list_proposals` checks every proposal's metadata against its signed
+summary and records the outcome in `proposal.verification`
+(`ProposalVerification::Unchecked | Verified | Failed { retryable, message }`).
+A proposal that fails the check is still listed, so one stale or corrupt
+proposal cannot hide the others; only the check itself writes `Verified`,
+and a freshly parsed or imported proposal is `Unchecked`.
+`Failed { retryable: true }` means the re-execution hit a transient node
+error and the proposal may verify on the next listing; `retryable: false`
+means it cannot be reproduced (tampered metadata, or an anchor block the
+node has pruned) and has to be re-proposed. Verification is deliberately
+not part of `ProposalStatus`: a fully signed proposal can be dead, so
+`Ready` keeps meaning "threshold met" and `proposal.is_actionable()`
+answers "verified and ready". `sign_proposal` and `execute_proposal`
+re-verify the one proposal they act on and fail with the real error. A
+payload that does not parse at all still fails the listing, so malformed
+GUARDIAN data is never silently dropped.
+
+Anchored re-execution needs the node to serve account state at the
+proposal's reference block, and nodes keep that history only briefly
+(devnet: about 50 blocks); once it is gone the proposal is reported as
+`Failed { retryable: false }` for everyone, the proposer included.
+Collect signatures and execute promptly, and re-propose once a proposal
+has aged out.
+
 ### Recovering From a Dead Transaction (Abandon)
 
 If `execute_proposal` dies after guardian approval (RPC submit failure,
@@ -469,10 +495,24 @@ is the `consume_notes_metadata_version` field on the wire.
 - **v2 (self-contained)** — `consume_notes_metadata_version: 2` plus a
   `consume_notes_notes` array carrying base64-serialized `Note` bytes
   aligned by index with `note_ids`. Verification rebuilds the request
-  from the embedded notes alone — no local-store read, no network
-  call. This restores the same "rebuild from signed metadata" invariant
-  every other proposal type already satisfied (and that audit finding
-  **M-08** remediated for `p2id`).
+  from the embedded notes, never from whatever notes the verifier's
+  store happens to hold. This restores the same "rebuild from signed
+  metadata" invariant every other proposal type already satisfied (and
+  that audit finding **M-08** remediated for `p2id`).
+
+  The rebuild is not store-independent by itself, though: miden-client
+  consumes each input note as *authenticated* when the local store holds
+  its inclusion proof and as *unauthenticated* otherwise, and the two
+  commit differently into the signed summary (issue #409). Authenticated
+  is the canonical mode, so before every rebuild (list, sign, execute)
+  the verifier authenticates the embedded notes: notes already
+  authenticated locally are left alone, the rest get their inclusion
+  proofs from the Miden node in one round trip and are imported into
+  the local store as committed (with one sync if the store is behind the
+  note's block). Verification therefore reads and writes the local store
+  and contacts the node. Proposal creation does the same before the
+  summary and its chain anchor are captured, and refuses a note that is
+  not yet committed on chain.
 
 Proposal creation always emits v2 starting with this release; the
 proposer is the one party guaranteed to hold the notes locally. The
@@ -482,7 +522,7 @@ surfaces to the proposer before any signature collection begins.
 
 ### Error taxonomy
 
-All four errors below carry a stable, cross-SDK string code via
+All five errors below carry a stable, cross-SDK string code via
 `MultisigError::code()`. The TS SDK exposes the same identifiers as
 `Error.code`.
 
@@ -492,6 +532,7 @@ All four errors below carry a stable, cross-SDK string code via
 | `UnsupportedMetadataVersion { found }` | `consume_notes_unsupported_metadata_version` | Unrecognized version (including v1 on a cut-over build) |
 | `ConsumeNotesMetadataOversize { limit, actual }` | `consume_notes_metadata_oversize` | v2 metadata serialization exceeds 256 KiB at creation |
 | `LegacyConsumeNotesNoteMissing { note_id }` | `consume_notes_legacy_note_missing` | v1 path: local store does not contain the referenced note |
+| `ConsumeNoteNotAuthenticated { note_id, reason }` | `consume_notes_note_not_authenticated` | A note could not be authenticated: not committed on chain yet, the node served no proof, the import failed, or the store could not verify it after a sync |
 
 ### Cut-over policy
 
