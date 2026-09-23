@@ -4545,7 +4545,7 @@
               "string",
               "null"
             ],
-            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
+            "description": "Why the row left the active candidate path: `retry_exhausted`,\n`diverged`, or `orphaned` on `retained` rows, `client_abandoned`\non `discarded` rows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -4801,7 +4801,7 @@
               "string",
               "null"
             ],
-            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
+            "description": "Why the row left the active candidate path: `retry_exhausted`,\n`diverged`, or `orphaned` on `retained` rows, `client_abandoned`\non `discarded` rows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -6251,7 +6251,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
+                  "description": "Why the row left the active candidate path: `retry_exhausted`,\n`diverged`, or `orphaned` on `retained` rows, `client_abandoned`\non `discarded` rows; absent elsewhere."
                 },
                 "status_timestamp": {
                   "type": "string"
