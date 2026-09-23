@@ -612,24 +612,30 @@ mod tests {
         Word::from([value, 0, 0, 0])
     }
 
-    fn head(nonce: u64, commitment: u32) -> CanonicalHead {
+    /// A GUARDIAN head at the given account nonce (a transaction counter,
+    /// not a cryptographic nonce) and commitment.
+    fn head(account_nonce: u64, commitment: u32) -> CanonicalHead {
         CanonicalHead {
-            nonce,
+            nonce: account_nonce,
             commitment: word(commitment),
         }
     }
 
+    const LOCAL_ACCOUNT_NONCE: u64 = 2;
+
     #[test]
     fn canonical_head_is_not_ahead_below_or_at_the_local_head() {
-        assert!(head(1, 7).is_not_ahead_of(2, word(7)));
-        assert!(head(1, 9).is_not_ahead_of(2, word(7)));
-        assert!(head(2, 7).is_not_ahead_of(2, word(7)));
+        let local = LOCAL_ACCOUNT_NONCE;
+        assert!(head(local - 1, 7).is_not_ahead_of(local, word(7)));
+        assert!(head(local - 1, 9).is_not_ahead_of(local, word(7)));
+        assert!(head(local, 7).is_not_ahead_of(local, word(7)));
     }
 
     #[test]
     fn canonical_head_is_ahead_above_the_local_nonce_or_diverged_at_it() {
-        assert!(!head(3, 7).is_not_ahead_of(2, word(7)));
-        assert!(!head(2, 9).is_not_ahead_of(2, word(7)));
+        let local = LOCAL_ACCOUNT_NONCE;
+        assert!(!head(local + 1, 7).is_not_ahead_of(local, word(7)));
+        assert!(!head(local, 9).is_not_ahead_of(local, word(7)));
     }
 
     #[test]
