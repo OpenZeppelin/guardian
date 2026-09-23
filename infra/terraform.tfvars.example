@@ -133,14 +133,6 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # server_container_name        = "guardian-server"
 # server_log_group_name        = "/ecs/guardian-server"
 
-# Optional: GitHub Actions OIDC roles for .github/workflows/aws-deploy.yml.
-# Shared by every stack in the account; enable on exactly one stack.
-# github_oidc_enabled               = true
-# github_oidc_provider_arn          = "arn:aws:iam::<root-account>:oidc-provider/token.actions.githubusercontent.com"
-# github_oidc_root_account_profile  = "<aws-cli-profile-for-the-root-account>"   # or:
-# github_oidc_root_account_role_arn = "arn:aws:iam::<root-account>:role/Terraform"
-# github_oidc_subjects = [
-#   "repo:OpenZeppelin/guardian:environment:devnet",
-#   "repo:OpenZeppelin/guardian:environment:testnet",
-# ]
-# github_deploy_stack_names = ["guardian", "guardian-prod"]
+# Optional: IAM roles for the AWS Deploy GitHub Actions workflow (off by default).
+# Setup and the related github_* variables: docs/runbooks/github-oidc-deploy-roles.md
+# github_oidc_enabled = true

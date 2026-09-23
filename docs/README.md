@@ -117,6 +117,7 @@ You are a contributor.
 - [Enabling verified database TLS](./runbooks/enable-db-tls.md)
 - [Database backup and restore](./runbooks/backup-restore.md)
 - [Horizontal scaling](./runbooks/horizontal-scaling.md)
+- [GitHub OIDC deploy roles](./runbooks/github-oidc-deploy-roles.md) — IAM behind the AWS Deploy workflow (off by default)
 - [Operator dashboard](./DASHBOARD.md)
 
 **SDKs**

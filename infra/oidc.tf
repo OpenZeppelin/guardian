@@ -8,9 +8,10 @@
 # restrict deployments to main.
 #
 # The roles are shared by every Guardian stack in the account, so enable them
-# on exactly one stack (guardian-prod) with github_oidc_enabled = true and list
-# every stack the workflow may roll out in github_deploy_stack_names. Roles
-# that already exist are adopted with terraform import; see infra/README.md.
+# on exactly one stack per account with github_oidc_enabled = true and list
+# every stack the workflow may roll out in github_deploy_stack_names. Setup,
+# adoption of pre-existing roles, and reuse from a fork are documented in
+# docs/runbooks/github-oidc-deploy-roles.md.
 
 locals {
   # Account that hosts the OIDC provider and the bootstrap role. Deriving the
