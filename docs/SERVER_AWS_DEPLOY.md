@@ -163,8 +163,10 @@ set -a && source .env && set +a
 # export CPU_ARCHITECTURE=ARM64
 
 # Miden network the server runs against. The server requires this at startup;
-# the deploy script passes MidenTestnet unless you override it here.
-export GUARDIAN_NETWORK_TYPE=MidenTestnet
+# the deploy script passes MidenTestnet unless you override it here. It must
+# match the stack below: MidenDevnet for guardian-devnet, MidenTestnet for
+# guardian-testnet.
+export GUARDIAN_NETWORK_TYPE=MidenDevnet
 
 # Optional: allow dashboard operators and let Terraform create the secret
 # export GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON='["0x<alice-falcon-public-key>","0x<bob-falcon-public-key>"]'
