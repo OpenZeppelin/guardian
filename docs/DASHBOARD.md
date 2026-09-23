@@ -143,14 +143,15 @@ TTL expires. The triage fields:
 `reconcile_page_size`) so operators can tell why retained rows are or
 are not being reconsidered — note that individual accounts back off as
 their recoverable rows age, so a retained row being probed less often
-than the configured interval is expected. It also exposes the release
-sweep settings (`release_sweep_enabled`,
-`release_sweep_interval_seconds`, `release_sweep_page_size`,
-`release_sweep_confirmations`, issue #434): a `released_at` set by the
+than the configured interval is expected. `backend.release_sweep`
+exposes the release sweep settings (`rotation_seconds`,
+`max_rate_per_second`, `hot_interval_seconds`, `confirmations`, issue
+#434; `null` when the sweep is disabled). A `released_at` set by the
 sweep rather than by a canonicalized switch delta is distinguishable on
-the audit trail, where the `accounts.release` row carries
-`detected_by: chain_sweep` and the on-chain / stored commitment pair
-instead of `detected_by: delta` and the delta nonce.
+the audit trail: the `accounts.release` row carries
+`detected_by: proposal_match` (with the `proposal_id` the chain proved
+executed) or `detected_by: chain_sweep` (with the on-chain / stored
+commitment pair) instead of `detected_by: delta` and the delta nonce.
 
 ## Aggregate stats
 

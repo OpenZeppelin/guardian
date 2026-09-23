@@ -326,6 +326,7 @@ mod tests {
             network_client: Arc::new(network_client),
             ack,
             canonicalization: None, // Optimistic mode for tests
+            release_sweep: None,
             clock: Arc::new(crate::clock::SystemClock),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

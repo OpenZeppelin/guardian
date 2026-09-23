@@ -2035,6 +2035,17 @@
               }
             ]
           },
+          "release_sweep": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DashboardReleaseSweepConfig",
+                "description": "Release sweep settings; `None` when the sweep is disabled."
+              }
+            ]
+          },
           "storage": {
             "type": "string",
             "description": "`\"filesystem\"` or `\"postgres\"` from the cargo feature flag."
@@ -2085,11 +2096,7 @@
           "submission_grace_period_seconds",
           "retained_ttl_seconds",
           "reconcile_interval_seconds",
-          "reconcile_page_size",
-          "release_sweep_enabled",
-          "release_sweep_interval_seconds",
-          "release_sweep_page_size",
-          "release_sweep_confirmations"
+          "reconcile_page_size"
         ],
         "properties": {
           "check_interval_seconds": {
@@ -2112,28 +2119,6 @@
             "type": "integer",
             "format": "int32",
             "description": "Accounts one reconcile pass visits at most (rotation cursor).",
-            "minimum": 0
-          },
-          "release_sweep_confirmations": {
-            "type": "integer",
-            "format": "int32",
-            "description": "Consecutive passes that must observe a foreign guardian key on\nchain before the sweep releases an account.",
-            "minimum": 0
-          },
-          "release_sweep_enabled": {
-            "type": "boolean",
-            "description": "Whether the chain-driven release sweep (issue #434) runs: it\nreleases accounts whose on-chain guardian key is no longer this\nserver's even when the switch delta never reached the push path."
-          },
-          "release_sweep_interval_seconds": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Cadence of the release sweep pass.",
-            "minimum": 0
-          },
-          "release_sweep_page_size": {
-            "type": "integer",
-            "format": "int32",
-            "description": "Accounts one release sweep pass visits at most (rotation cursor).",
             "minimum": 0
           },
           "retained_ttl_seconds": {
@@ -2763,6 +2748,42 @@
           "signatures_required": {
             "type": "integer",
             "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "DashboardReleaseSweepConfig": {
+        "type": "object",
+        "description": "Chain-driven release sweep settings (issue #434): the background\ntask that releases accounts whose on-chain guardian key is no longer\nthis server's even when the switch delta never reached the push\npath.",
+        "required": [
+          "rotation_seconds",
+          "max_rate_per_second",
+          "hot_interval_seconds",
+          "confirmations"
+        ],
+        "properties": {
+          "confirmations": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Consecutive observations of a foreign guardian key in published\nstorage required before releasing on that evidence.",
+            "minimum": 0
+          },
+          "hot_interval_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cadence of the hot pass over accounts awaiting confirmation or\ncarrying a pending `switch_guardian` proposal.",
+            "minimum": 0
+          },
+          "max_rate_per_second": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Upper bound on accounts probed per second during the walk.",
+            "minimum": 0
+          },
+          "rotation_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Target time for one full walk of the fleet; every unreleased\nMiden account is probed once per rotation.",
             "minimum": 0
           }
         }

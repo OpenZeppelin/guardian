@@ -936,36 +936,6 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
         'dashboard info.backend.canonicalization',
       );
     }
-    // Optional (issue #434): absent on servers predating the release
-    // sweep.
-    if (c.release_sweep_enabled !== undefined) {
-      canonicalization.releaseSweepEnabled = requireBoolean(
-        c,
-        'release_sweep_enabled',
-        'dashboard info.backend.canonicalization',
-      );
-    }
-    if (c.release_sweep_interval_seconds !== undefined) {
-      canonicalization.releaseSweepIntervalSeconds = requireInteger(
-        c,
-        'release_sweep_interval_seconds',
-        'dashboard info.backend.canonicalization',
-      );
-    }
-    if (c.release_sweep_page_size !== undefined) {
-      canonicalization.releaseSweepPageSize = requireInteger(
-        c,
-        'release_sweep_page_size',
-        'dashboard info.backend.canonicalization',
-      );
-    }
-    if (c.release_sweep_confirmations !== undefined) {
-      canonicalization.releaseSweepConfirmations = requireInteger(
-        c,
-        'release_sweep_confirmations',
-        'dashboard info.backend.canonicalization',
-      );
-    }
   }
   const backend: DashboardInfoResponse['backend'] = {
     storage: storageRaw,
@@ -976,6 +946,36 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
     ),
     canonicalization,
   };
+  // Optional (issue #434): absent on servers predating the release
+  // sweep, null when it is disabled.
+  const releaseSweepField = backendRecord.release_sweep;
+  if (releaseSweepField === null) {
+    backend.releaseSweep = null;
+  } else if (releaseSweepField !== undefined) {
+    const r = asRecord(releaseSweepField, 'dashboard info.backend.release_sweep');
+    backend.releaseSweep = {
+      rotationSeconds: requireInteger(
+        r,
+        'rotation_seconds',
+        'dashboard info.backend.release_sweep',
+      ),
+      maxRatePerSecond: requireInteger(
+        r,
+        'max_rate_per_second',
+        'dashboard info.backend.release_sweep',
+      ),
+      hotIntervalSeconds: requireInteger(
+        r,
+        'hot_interval_seconds',
+        'dashboard info.backend.release_sweep',
+      ),
+      confirmations: requireInteger(
+        r,
+        'confirmations',
+        'dashboard info.backend.release_sweep',
+      ),
+    };
+  }
 
   const accountsByAuthMethod = requireCountMap(
     requireField(record, 'accounts_by_auth_method', 'dashboard info'),

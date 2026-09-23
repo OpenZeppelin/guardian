@@ -10,7 +10,7 @@ use crate::state::AppState;
 
 use super::processor::{
     DeltasProcessor, FastPromotionState, PassControls, PassSummary, ProcessingMode, Processor,
-    ReconcileState, ReleaseSweepState, TestDeltasProcessor,
+    ReconcileState, TestDeltasProcessor,
 };
 
 pub fn start_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
@@ -39,14 +39,11 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
     let mut full_timer = interval(check_interval);
     let mut fast_timer = interval(config.fast_promotion_interval());
     let mut reconcile_timer = interval(config.reconcile_interval());
-    let mut release_sweep_timer = interval(config.release_sweep_interval());
     full_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
     fast_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
     reconcile_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    release_sweep_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let fast_promotion_state = Arc::new(FastPromotionState::default());
     let reconcile_state = Arc::new(ReconcileState::default());
-    let release_sweep_state = Arc::new(ReleaseSweepState::default());
     // Retention disabled (`retained_ttl_seconds = 0`) leaves nothing for
     // the reconcile pass to sweep: recoverable rows are neither written
     // nor in scope, so the timer never fires.
@@ -58,11 +55,9 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
             &mut full_timer,
             &mut fast_timer,
             &mut reconcile_timer,
-            &mut release_sweep_timer,
             config.fast_promotion_enabled,
             config.fast_promotion_window_seconds,
             reconcile_enabled,
-            config.release_sweep_enabled,
         )
         .await;
         if mode == ProcessingMode::Full {
@@ -102,9 +97,7 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
                 Instant::now() + config.fast_promotion_interval(),
                 next_full_deadline,
             )),
-            ProcessingMode::ReconcileRecoverable | ProcessingMode::ReleaseSweep => {
-                Some(next_full_deadline)
-            }
+            ProcessingMode::ReconcileRecoverable => Some(next_full_deadline),
         };
         let processor = DeltasProcessor::with_controls(
             state.clone(),
@@ -116,7 +109,6 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
             PassControls {
                 fast_state: fast_promotion_state.clone(),
                 reconcile_state: reconcile_state.clone(),
-                release_sweep_state: release_sweep_state.clone(),
                 deadline: pass_deadline,
                 reconcile_backoff: true,
             },
@@ -165,17 +157,6 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
                 )
                 .increment(1);
             }
-            ProcessingMode::ReleaseSweep => {
-                metrics::histogram!(
-                    crate::metrics::names::CANONICALIZATION_RELEASE_SWEEP_RUN_DURATION_SECONDS
-                )
-                .record(elapsed);
-                metrics::counter!(
-                    crate::metrics::names::CANONICALIZATION_RELEASE_SWEEP_RUNS_TOTAL,
-                    crate::metrics::names::LABEL_OUTCOME => outcome.as_str()
-                )
-                .increment(1);
-            }
         }
 
         cancel.cancel();
@@ -205,20 +186,16 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
 }
 
 /// Await the next due pass. Biased priority on a shared tick: the full
-/// pass wins over every bounded pass, fast promotion (a 3-second
-/// latency feature) wins over the background sweeps, and reconciliation
-/// wins over the release sweep (a pending tick just runs on the next
-/// loop iteration).
-#[allow(clippy::too_many_arguments)]
+/// pass wins over both bounded passes, and fast promotion (a 3-second
+/// latency feature) wins over reconciliation (a background sweep whose
+/// pending tick just runs on the next loop iteration).
 async fn next_processing_mode(
     full_timer: &mut Interval,
     fast_timer: &mut Interval,
     reconcile_timer: &mut Interval,
-    release_sweep_timer: &mut Interval,
     fast_promotion_enabled: bool,
     fast_window_seconds: u64,
     reconcile_enabled: bool,
-    release_sweep_enabled: bool,
 ) -> (ProcessingMode, Instant) {
     tokio::select! {
         biased;
@@ -227,7 +204,6 @@ async fn next_processing_mode(
             max_age_seconds: fast_window_seconds,
         }, scheduled_at),
         scheduled_at = reconcile_timer.tick(), if reconcile_enabled => (ProcessingMode::ReconcileRecoverable, scheduled_at),
-        scheduled_at = release_sweep_timer.tick(), if release_sweep_enabled => (ProcessingMode::ReleaseSweep, scheduled_at),
     }
 }
 
@@ -248,7 +224,7 @@ fn next_tick_after(mut scheduled_at: Instant, interval: Duration, now: Instant) 
 /// `ttl = 3 × renew_interval`, so after one missed renewal the lease (extended
 /// at the last successful renew) is still a full interval from expiry, and the
 /// fence check guards any in-flight write regardless.
-fn spawn_renewal(
+pub(crate) fn spawn_renewal(
     leader: Arc<dyn LeaderElector>,
     lease: Lease,
     ttl: Duration,
@@ -365,23 +341,19 @@ mod tests {
         full: Interval,
         fast: Interval,
         reconcile: Interval,
-        release_sweep: Interval,
     }
 
     fn test_timers() -> TestTimers {
         let mut full = interval(Duration::from_secs(10));
         let mut fast = interval(Duration::from_secs(3));
         let mut reconcile = interval(Duration::from_secs(60));
-        let mut release_sweep = interval(Duration::from_secs(60));
         full.set_missed_tick_behavior(MissedTickBehavior::Skip);
         fast.set_missed_tick_behavior(MissedTickBehavior::Skip);
         reconcile.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        release_sweep.set_missed_tick_behavior(MissedTickBehavior::Skip);
         TestTimers {
             full,
             fast,
             reconcile,
-            release_sweep,
         }
     }
 
@@ -390,24 +362,13 @@ mod tests {
         fast_enabled: bool,
         reconcile_enabled: bool,
     ) -> ProcessingMode {
-        next_mode_with_sweep(timers, fast_enabled, reconcile_enabled, false).await
-    }
-
-    async fn next_mode_with_sweep(
-        timers: &mut TestTimers,
-        fast_enabled: bool,
-        reconcile_enabled: bool,
-        release_sweep_enabled: bool,
-    ) -> ProcessingMode {
         next_processing_mode(
             &mut timers.full,
             &mut timers.fast,
             &mut timers.reconcile,
-            &mut timers.release_sweep,
             fast_enabled,
             30,
             reconcile_enabled,
-            release_sweep_enabled,
         )
         .await
         .0
@@ -469,45 +430,6 @@ mod tests {
         tokio::time::advance(Duration::from_secs(60)).await;
         let disabled = next_mode(&mut timers, false, false).await;
         assert_eq!(disabled, ProcessingMode::Full);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn release_sweep_ticks_after_reconcile_and_yields_to_full() {
-        let mut timers = test_timers();
-
-        // Consume the immediate first ticks; full wins the shared start.
-        let initial = next_mode_with_sweep(&mut timers, false, true, true).await;
-        assert_eq!(initial, ProcessingMode::Full);
-        timers.reconcile.reset();
-        timers.release_sweep.reset();
-
-        // At t+60 all three timers share a boundary: full first, then the
-        // pending reconcile tick, then the pending release sweep tick.
-        tokio::time::advance(Duration::from_secs(60)).await;
-        assert_eq!(
-            next_mode_with_sweep(&mut timers, false, true, true).await,
-            ProcessingMode::Full
-        );
-        assert_eq!(
-            next_mode_with_sweep(&mut timers, false, true, true).await,
-            ProcessingMode::ReconcileRecoverable
-        );
-        assert_eq!(
-            next_mode_with_sweep(&mut timers, false, true, true).await,
-            ProcessingMode::ReleaseSweep
-        );
-
-        // The kill switch never selects the sweep, even with its tick due.
-        tokio::time::advance(Duration::from_secs(60)).await;
-        assert_eq!(
-            next_mode_with_sweep(&mut timers, false, false, false).await,
-            ProcessingMode::Full
-        );
-        assert_eq!(
-            next_mode_with_sweep(&mut timers, false, false, false).await,
-            ProcessingMode::Full,
-            "with both sweeps disabled only the full timer is ever selected"
-        );
     }
 
     #[tokio::test(start_paused = true)]

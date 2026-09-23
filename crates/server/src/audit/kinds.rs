@@ -33,7 +33,10 @@ pub const ACCOUNTS_UNPAUSE: &str = "accounts.unpause";
 /// `detected_by: "delta"` (the switch delta committed here) adds
 /// `{ delta_nonce, new_commitment }`; `detected_by: "chain_sweep"` (the
 /// release sweep read the key from published on-chain storage, issue
-/// #434) adds `{ on_chain_commitment, stored_commitment }`.
+/// #434) adds `{ on_chain_commitment, stored_commitment }`;
+/// `detected_by: "proposal_match"` (the sweep found the chain at the
+/// post-state of a switch proposal pending here) adds
+/// `{ proposal_id, on_chain_commitment, stored_commitment }`.
 /// `target_account_id` is set.
 pub const ACCOUNTS_RELEASE: &str = "accounts.release";
 

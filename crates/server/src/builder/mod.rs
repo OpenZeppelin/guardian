@@ -10,6 +10,7 @@ pub mod canonicalization;
 pub mod clock;
 pub mod handle;
 pub mod logging;
+pub mod release_sweep;
 pub mod startup;
 pub mod state;
 pub mod storage;
@@ -26,6 +27,7 @@ use crate::metadata::MetadataStore;
 use crate::metrics::{InstrumentedStorage, MetricsConfig};
 use crate::middleware::{BodyLimitConfig, RateLimitConfig};
 use crate::network::NetworkType;
+use crate::release_sweep::ReleaseSweepConfig;
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use guardian_shared::SignatureScheme;
@@ -39,6 +41,7 @@ pub struct ServerBuilder {
     auditor: Option<crate::audit::SharedAuditor>,
     ack: Option<AckRegistry>,
     canonicalization: Option<CanonicalizationConfig>,
+    release_sweep: Option<ReleaseSweepConfig>,
     rpc: Option<crate::network::RpcSettings>,
     dashboard: Option<Arc<DashboardState>>,
     coordination: Option<crate::coordination::CoordinationHandles>,
@@ -63,6 +66,7 @@ impl ServerBuilder {
             auditor: None,
             ack: None,
             canonicalization: Some(CanonicalizationConfig::default()),
+            release_sweep: Some(ReleaseSweepConfig::default()),
             rpc: None,
             dashboard: None,
             coordination: None,
@@ -214,6 +218,13 @@ impl ServerBuilder {
     /// let builder = ServerBuilder::new()
     ///     .with_canonicalization(None);
     /// ```
+    /// Configure the chain-driven release sweep (issue #434). `None`
+    /// disables the sweep task entirely; the default runs it.
+    pub fn with_release_sweep(mut self, config: Option<ReleaseSweepConfig>) -> Self {
+        self.release_sweep = config;
+        self
+    }
+
     pub fn with_canonicalization(mut self, config: Option<CanonicalizationConfig>) -> Self {
         self.canonicalization = config;
         self
@@ -522,6 +533,15 @@ impl ServerBuilder {
                     "single-process",
                 ))
             });
+        let release_sweep_leader: Arc<dyn crate::coordination::LeaderElector> = coordination
+            .as_ref()
+            .map(|handles| handles.release_sweep_leader.clone())
+            .unwrap_or_else(|| {
+                Arc::new(crate::coordination::AlwaysLeader::new(
+                    crate::coordination::RELEASE_SWEEP_LEASE,
+                    "single-process",
+                ))
+            });
         let dashboard = match self.dashboard {
             Some(dashboard) => dashboard,
             None => match coordination.as_ref() {
@@ -565,6 +585,7 @@ impl ServerBuilder {
             ack.commitment(&SignatureScheme::Ecdsa),
             ack.account_schemes().to_string(),
             self.canonicalization.clone(),
+            self.release_sweep.clone(),
             dashboard.operator_count().await,
             dashboard.cursor_secret_configured(),
             self.http_enabled.then_some(self.http_port),
@@ -616,6 +637,7 @@ impl ServerBuilder {
             network_client,
             ack,
             canonicalization: self.canonicalization,
+            release_sweep: self.release_sweep,
             clock: Arc::new(SystemClock),
             dashboard,
             auditor,
@@ -627,6 +649,7 @@ impl ServerBuilder {
             app_state,
             leader,
             stats_leader,
+            release_sweep_leader,
             startup_info,
             cors_layer: self.cors_layer,
             rate_limit_config: Some(rate_limit_config),
