@@ -80,10 +80,10 @@ utoipa = { version = "5", features = ["axum_extras"] }
 # Miden 0.17 line: exact pins only. Must match the versions embedded in
 # the @miden-sdk/miden-sdk WASM build, or the two clients compute different
 # transaction summary commitments and auth procedure roots.
-miden-protocol = "=0.17.0-rc.5"
-miden-standards = "=0.17.0-rc.5"
-miden-tx = "=0.17.0-rc.5"
-miden-node-proto-build = { version = "=0.17.0-rc.1", default-features = false }
-miden-testing = "=0.17.0-rc.5"
-miden-client = "=0.17.0-rc.1"
-miden-client-sqlite-store = "=0.17.0-rc.1"
+miden-protocol = "=0.17.0-rc.6"
+miden-standards = "=0.17.0-rc.6"
+miden-tx = "=0.17.0-rc.6"
+miden-node-proto-build = { version = "=0.17.0-rc.2", default-features = false }
+miden-testing = "=0.17.0-rc.6"
+miden-client = "=0.17.0-rc.2"
+miden-client-sqlite-store = "=0.17.0-rc.2"

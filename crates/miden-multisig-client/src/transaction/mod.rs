@@ -10,6 +10,7 @@ mod payment;
 pub use auth_args::{
     MAX_APPROVAL_EXPIRATION_DELTA, TransactionRequestBuilderExt, multisig_auth_args,
     proposal_auth_args, proposer_auth_args, summary_approval_expiration_block_num, summary_salt,
+    synced_fee_faucet_id,
 };
 pub use builder::{ProposalBuilder, ProposalOptions};
 pub use configuration::{
@@ -171,7 +172,7 @@ mod tests {
         use miden_protocol::transaction::TransactionKernel;
 
         const EXPECTED_KERNEL_COMMITMENT: &str =
-            "0x56476fb4bdcd9b6335f1f4bf82b47d55dffc6c4b9e7e7feb97b46fd95f8a6d3c";
+            "0xe93c448e6c1f553b5e254f4a45abd5088ef11bb01d5ff2797b2d25dc75ded39f";
 
         let actual = word_to_hex(&TransactionKernel.to_commitment());
         assert_eq!(

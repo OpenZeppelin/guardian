@@ -280,7 +280,7 @@ impl MultisigClient {
         }
         let signer_commitments = proposal.metadata.signer_commitments()?;
         let auth_args =
-            proposal_auth_args(self.fee_faucet_id, &proposal.tx_summary, &chain_anchor)?;
+            proposal_auth_args(&self.miden_client, &proposal.tx_summary, &chain_anchor).await?;
 
         // A consume-notes summary commits to *authenticated* consumption
         // (see `ensure_notes_authenticated`), which miden-client decides
@@ -587,7 +587,6 @@ impl MultisigClient {
             &self.account_dir,
             &self.miden_endpoint,
             self.note_transport_endpoint.as_deref(),
-            self.fee_faucet_id,
             &self.prover_config,
             &self.rpc_config,
         )

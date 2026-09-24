@@ -325,14 +325,8 @@ What happens on the first 0.17 startup (Postgres backend):
 - A deployment upgrading across more than one line also runs the older resets in
   the same startup; this one subsumes them.
 
-Operator actions are the 0.16 list below with two additions:
+Operator actions are the 0.16 list below with one addition:
 
-- **Every Rust or browser client needs the chain's fee faucet** at creation
-  (`MultisigClientBuilder::fee_faucet_id`, `ClientOptions.feeFaucetId`, or
-  `MIDEN_FEE_FAUCET_ID` / `VITE_MIDEN_FEE_FAUCET_ID` in the examples). The client
-  builds its protocol configuration from it, and without one it can neither
-  execute nor screen notes. Where the value comes from is in
-  [LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet).
 - **Client stores must be recreated**, not just cleared: a Rust SQLite store or a
   browser IndexedDB store created under 0.16 does not open under 0.17.
 

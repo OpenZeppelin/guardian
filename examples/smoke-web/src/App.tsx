@@ -8,7 +8,6 @@ import {
 import {
   DEFAULT_BROWSER_LABEL,
   DEFAULT_GUARDIAN_ENDPOINT,
-  DEFAULT_MIDEN_FEE_FAUCET_ID,
   DEFAULT_MIDEN_RPC_URL,
 } from './config';
 
@@ -53,7 +52,6 @@ export default function App() {
   const [sessionForm, setSessionForm] = useState<InitSessionInput>({
     guardianEndpoint: DEFAULT_GUARDIAN_ENDPOINT,
     midenRpcEndpoint: DEFAULT_MIDEN_RPC_URL,
-    midenFeeFaucetId: DEFAULT_MIDEN_FEE_FAUCET_ID,
     signerSource: 'local',
     signatureScheme: 'falcon',
     browserLabel: DEFAULT_BROWSER_LABEL,
@@ -94,7 +92,6 @@ export default function App() {
     setSessionForm({
       guardianEndpoint: snapshot.guardianEndpoint ?? DEFAULT_GUARDIAN_ENDPOINT,
       midenRpcEndpoint: snapshot.midenRpcEndpoint ?? DEFAULT_MIDEN_RPC_URL,
-      midenFeeFaucetId: snapshot.midenFeeFaucetId ?? DEFAULT_MIDEN_FEE_FAUCET_ID,
       signerSource: snapshot.signerSource ?? 'local',
       signatureScheme: snapshot.signatureScheme ?? 'falcon',
       browserLabel: snapshot.browserLabel ?? DEFAULT_BROWSER_LABEL,
@@ -102,7 +99,6 @@ export default function App() {
   }, [
     snapshot.browserLabel,
     snapshot.guardianEndpoint,
-    snapshot.midenFeeFaucetId,
     snapshot.midenRpcEndpoint,
     snapshot.signatureScheme,
     snapshot.signerSource,
@@ -231,18 +227,6 @@ export default function App() {
                   setSessionForm((current) => ({
                     ...current,
                     midenRpcEndpoint: event.target.value,
-                  }))
-                }
-              />
-            </label>
-            <label>
-              <span>Miden fee faucet</span>
-              <input
-                value={sessionForm.midenFeeFaucetId ?? ''}
-                onChange={(event) =>
-                  setSessionForm((current) => ({
-                    ...current,
-                    midenFeeFaucetId: event.target.value,
                   }))
                 }
               />
@@ -701,7 +685,6 @@ export default function App() {
 await window.smoke.initSession({
   guardianEndpoint: 'http://localhost:3000',
   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
-  midenFeeFaucetId: 'mtst1...', // the chain's fee faucet, bech32 or hex
   signerSource: 'local',
   signatureScheme: 'falcon',
   browserLabel: 'chrome-a',

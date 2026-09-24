@@ -53,29 +53,12 @@ export async function getRawMidenClient(
 }
 
 /**
- * Opens the WASM client behind `client` on the same store.
- *
- * Since 0.17 a client needs the chain's fee faucet to build its protocol
- * configuration, and creation fails without one for any network the SDK has no
- * preset for. The parent client already resolved it, so it is read back from
- * there rather than asked of the caller a second time. It is the eighth
- * argument of `createClient`; the ones between are left at their defaults.
+ * Opens the WASM client behind `client` on the same store. The protocol
+ * configuration comes from the node with every sync and is read from that
+ * shared store, so the shadow needs no fee faucet of its own.
  */
 async function createRawClient(client: MidenClient, endpoint: string): Promise<WasmWebClient> {
-  const [storeName, feeFaucetId] = await Promise.all([
-    client.storeIdentifier(),
-    client.feeFaucetId(),
-  ]);
-  return WasmWebClient.createClient(
-    endpoint,
-    undefined,
-    undefined,
-    storeName,
-    undefined,
-    undefined,
-    undefined,
-    feeFaucetId?.toString(),
-  );
+  return WasmWebClient.createClient(endpoint, undefined, undefined, await client.storeIdentifier());
 }
 
 export function getTransactionProver(client: RawClientSource): TransactionProver | null {

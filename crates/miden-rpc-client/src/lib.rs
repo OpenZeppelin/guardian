@@ -12,6 +12,9 @@ use tonic::{
     transport::{Channel, ClientTlsConfig},
 };
 
+// Generated from the node's protos, which define messages this client never
+// uses (for example `asset::AssetVault` since node-proto-build 0.17.0-rc.2).
+#[allow(dead_code)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/rpc_generated.rs"));
 }

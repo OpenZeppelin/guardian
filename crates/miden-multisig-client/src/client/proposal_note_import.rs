@@ -739,7 +739,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut client = crate::MultisigClient::builder()
             .miden_endpoint(miden_client::rpc::Endpoint::try_from("http://127.0.0.1:1").unwrap())
-            .fee_faucet_id(crate::client::test_support::mock_fee_faucet_id())
             .guardian_endpoint("http://127.0.0.1:1")
             .account_dir(dir.path())
             .generate_key()

@@ -69,7 +69,6 @@ import {
   DEFAULT_BROWSER_LABEL,
   DEFAULT_GUARDIAN_ENDPOINT,
   DEFAULT_MIDEN_DB_NAME,
-  DEFAULT_MIDEN_FEE_FAUCET_ID,
   DEFAULT_MIDEN_RPC_URL,
   DEFAULT_PROVER_MAX_ATTEMPTS,
   DEFAULT_RPC_MAX_ATTEMPTS,
@@ -79,7 +78,6 @@ import {
 export interface SessionConfig {
   guardianEndpoint: string;
   midenRpcEndpoint: string;
-  midenFeeFaucetId: string;
   signerSource: WalletSource;
   signatureScheme: SignatureScheme;
   browserLabel: string;
@@ -88,7 +86,6 @@ export interface SessionConfig {
 export interface InitSessionInput {
   guardianEndpoint?: string;
   midenRpcEndpoint?: string;
-  midenFeeFaucetId?: string;
   signerSource?: WalletSource;
   signatureScheme?: SignatureScheme;
   browserLabel?: string;
@@ -205,7 +202,6 @@ interface SnapshotState {
 const defaultSessionConfig: SessionConfig = {
   guardianEndpoint: DEFAULT_GUARDIAN_ENDPOINT,
   midenRpcEndpoint: DEFAULT_MIDEN_RPC_URL,
-  midenFeeFaucetId: DEFAULT_MIDEN_FEE_FAUCET_ID,
   signerSource: 'local',
   signatureScheme: 'falcon',
   browserLabel: DEFAULT_BROWSER_LABEL,
@@ -316,7 +312,6 @@ function buildSnapshot(state: SnapshotState): BrowserSessionSnapshot {
     bootError: state.bootError,
     guardianEndpoint: state.sessionConfig.guardianEndpoint,
     midenRpcEndpoint: state.sessionConfig.midenRpcEndpoint,
-    midenFeeFaucetId: state.sessionConfig.midenFeeFaucetId,
     signerSource: state.sessionConfig.signerSource,
     signatureScheme: state.sessionConfig.signatureScheme,
     guardianPubkey: state.guardianPubkey,
@@ -365,7 +360,6 @@ function normalizeSessionInput(input: InitSessionInput): SessionConfig {
   return {
     guardianEndpoint: input.guardianEndpoint?.trim() || DEFAULT_GUARDIAN_ENDPOINT,
     midenRpcEndpoint: input.midenRpcEndpoint?.trim() || DEFAULT_MIDEN_RPC_URL,
-    midenFeeFaucetId: input.midenFeeFaucetId?.trim() || DEFAULT_MIDEN_FEE_FAUCET_ID,
     signerSource: requireWalletSource(input.signerSource),
     signatureScheme: input.signatureScheme ?? 'falcon',
     browserLabel: input.browserLabel?.trim() ?? DEFAULT_BROWSER_LABEL,
@@ -686,7 +680,6 @@ export function useSmokeHarness(): {
 
               const nextClient = await createMidenClient(
                 nextConfig.midenRpcEndpoint,
-                nextConfig.midenFeeFaucetId,
                 DEFAULT_MIDEN_DB_NAME,
               );
               const {

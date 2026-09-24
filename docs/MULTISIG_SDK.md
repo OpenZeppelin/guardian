@@ -117,7 +117,6 @@ let prover = ProverConfig::new()
 
 let client = MultisigClient::builder()
     .miden_endpoint(Endpoint::devnet())
-    .fee_faucet_id(fee_faucet_id)
     .guardian_endpoint("http://localhost:50051")
     .account_dir("/tmp/multisig-client")
     .prover_config(prover)
@@ -125,13 +124,6 @@ let client = MultisigClient::builder()
     .build()
     .await?;
 ```
-
-Every Rust builder also takes `fee_faucet_id`, the chain's fee faucet, since
-Miden 0.17; `build()` fails with `MissingConfig("fee_faucet_id")` without it.
-`parse_account_id` turns the bech32 address a faucet page shows, or hex, into
-the `AccountId` the builder takes; the TypeScript `feeFaucetId` option accepts
-either form as a string. The Rust snippets in this document assume the value is
-in scope; where it comes from is in [LOCAL_DEV.md](./LOCAL_DEV.md#the-fee-faucet).
 
 URLs are validated during construction and must be absolute HTTP(S) URLs. A
 custom prover never falls back to a default endpoint. Retries cover transient
@@ -190,7 +182,6 @@ let rpc = RpcConfig::new()
 
 let client = MultisigClient::builder()
     .miden_endpoint(Endpoint::devnet())
-    .fee_faucet_id(fee_faucet_id)
     .guardian_endpoint("http://localhost:50051")
     .account_dir("/tmp/multisig-client")
     .rpc_config(rpc)
@@ -236,7 +227,6 @@ In Rust the endpoint lives on the builder, next to the node endpoint:
 ```rust
 let client = MultisigClient::builder()
     .miden_endpoint(Endpoint::try_from("https://my-node.internal:57291")?)
-    .fee_faucet_id(fee_faucet_id)
     .note_transport_endpoint("https://my-transport.internal")
     .guardian_endpoint("http://localhost:50051")
     .account_dir("/tmp/multisig-client")
@@ -279,8 +269,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = MultisigClient::builder()
         // the Miden node RPC endpoint
         .miden_endpoint(Endpoint::new("http://localhost:57291"))
-        // the chain's fee faucet (Miden 0.17); see LOCAL_DEV.md#the-fee-faucet
-        .fee_faucet_id(fee_faucet_id)
         // the GUARDIAN server endpoint
         .guardian_endpoint("http://localhost:50051")
         // the directory where the miden-client will store the account data
@@ -1156,7 +1144,6 @@ use miden_multisig_client::{
 // Build client with fluent API
 let mut client = MultisigClient::builder()
     .miden_endpoint(Endpoint::new("http://localhost:57291"))
-    .fee_faucet_id(fee_faucet_id)
     .guardian_endpoint("http://localhost:50051")
     .account_dir("/tmp/multisig-data")
     .generate_key()  // Or: .with_secret_key(key)

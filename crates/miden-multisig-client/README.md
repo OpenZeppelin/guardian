@@ -45,20 +45,15 @@ miden-multisig-client = { git = "https://github.com/OpenZeppelin/guardian", pack
 
 ```rust
 use miden_client::rpc::Endpoint;
-use miden_multisig_client::{parse_account_id, MultisigClient, TransactionType};
+use miden_multisig_client::{MultisigClient, TransactionType};
 use miden_objects::Word;
 
 # async fn example() -> anyhow::Result<()> {
 let signer1: Word = /* your RPO Falcon commitment */ Word::default();
 let signer2: Word = Word::default();
-// The chain's fee faucet, as the faucet page shows it (bech32) or as hex.
-let fee_faucet_id = parse_account_id("mdev1...")?;
 
 let mut client = MultisigClient::builder()
     .miden_endpoint(Endpoint::try_from("http://localhost:57291")?)
-    // The chain's fee faucet. Since Miden 0.17 the client builds its protocol
-    // configuration from it; without one it can neither execute nor screen notes.
-    .fee_faucet_id(fee_faucet_id)
     .guardian_endpoint("http://localhost:50051")
     // Directory where the underlying miden-client SQLite store will live
     .account_dir("/tmp/multisig")
@@ -75,9 +70,9 @@ println!("Account registered on GUARDIAN endpoint: {}", client.guardian_endpoint
 
 On a network with a non-zero `verification_base_fee`, a new account needs the
 native fee asset before it can create or execute regular proposals. Send the
-account a note funded by the chain's fee faucet (the account passed to
-`fee_faucet_id`; see [`docs/LOCAL_DEV.md`](../../docs/LOCAL_DEV.md#the-fee-faucet)
-for where to find it), then consume that note through a
+account a note of the chain's fee asset (its faucet is the one the synced
+protocol configuration names, `synced_fee_faucet_id`), then consume that note
+through a
 `consume_notes` proposal. The bootstrap transaction can pay its fee from the
 note it consumes.
 
@@ -104,7 +99,6 @@ let rpc_config = RpcConfig::new()
 
 let mut client = MultisigClient::builder()
     .miden_endpoint(Endpoint::devnet())
-    .fee_faucet_id(fee_faucet_id)
     .guardian_endpoint("http://localhost:50051")
     .account_dir("/tmp/multisig")
     .rpc_config(rpc_config)
@@ -136,7 +130,6 @@ service, so private-note relay stays disabled until this is set explicitly.
 ```rust
 let mut client = MultisigClient::builder()
     .miden_endpoint(Endpoint::try_from("https://my-node.internal:57291")?)
-    .fee_faucet_id(fee_faucet_id)
     .note_transport_endpoint("https://my-transport.internal")
     .guardian_endpoint("http://localhost:50051")
     .account_dir("/tmp/multisig")

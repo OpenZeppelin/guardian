@@ -395,7 +395,7 @@ impl MultisigClient {
         };
 
         let auth_args =
-            proposal_auth_args(self.fee_faucet_id, &proposal.tx_summary, &chain_anchor)?;
+            proposal_auth_args(&self.miden_client, &proposal.tx_summary, &chain_anchor).await?;
 
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
@@ -674,7 +674,7 @@ impl MultisigClient {
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         let node_rpc = self.node_rpc_client();
-        ProposalBuilder::new(transaction_type, self.fee_faucet_id)
+        ProposalBuilder::new(transaction_type)
             .with_options(options)
             .build(
                 &mut self.miden_client,

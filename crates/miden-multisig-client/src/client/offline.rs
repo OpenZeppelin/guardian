@@ -246,10 +246,11 @@ impl MultisigClient {
         self.assert_approval_not_expired(&proposal.id, &proposal.tx_summary)
             .await?;
         let auth_args = crate::transaction::proposal_auth_args(
-            self.fee_faucet_id,
+            &self.miden_client,
             &proposal.tx_summary,
             &chain_anchor,
-        )?;
+        )
+        .await?;
 
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,

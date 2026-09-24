@@ -59,9 +59,7 @@ cd examples/demo && cargo run --release
 The demo also needs a Miden RPC endpoint running the Miden line this
 workspace pins. [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix)
 says which line that is and which public networks run it; when none does,
-run a local `miden-node` from that line and point the demo at it. Set
-`MIDEN_FEE_FAUCET_ID` to that chain's fee faucet (see
-[`docs/LOCAL_DEV.md`](./LOCAL_DEV.md#the-fee-faucet)). If you upgraded from
+run a local `miden-node` from that line and point the demo at it. If you upgraded from
 an older checkout, wipe stale local state first (`store.sqlite3`,
 `~/.guardian`): state from a previous Miden line does not load (see
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#data-resets)). See

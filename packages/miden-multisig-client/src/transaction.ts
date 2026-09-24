@@ -17,7 +17,6 @@ export {
   executeForSummaryAt,
   summaryApprovalExpirationBlockNum,
   summarySalt,
-  ProtocolConfigMismatchError,
   SummaryAnchorMismatchError,
 } from './transaction/summary.js';
 export {

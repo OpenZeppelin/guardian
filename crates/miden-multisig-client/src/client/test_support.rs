@@ -24,8 +24,8 @@ use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::Word;
+use miden_protocol::account::Account;
 use miden_protocol::account::auth::AuthSecretKey;
-use miden_protocol::account::{Account, AccountId};
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::crypto::rand::RandomCoin;
@@ -41,21 +41,6 @@ use crate::transaction::word_to_hex;
 
 const BASE64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
-
-/// Core offline constructor: SQLite store in `dir`, `node` as the inner
-/// Miden client's RPC, optional note transport, and an unreachable GUARDIAN
-/// endpoint. Returns the store handle for tests that seed records directly.
-///
-/// The multisig client's direct node channel is left endpoint-built (and
-/// unreachable) — use [`offline_client_with_node`] to inject `node` there
-/// too.
-/// The fee faucet of the mock chain every [`MockRpcApi`] serves.
-pub(crate) fn mock_fee_faucet_id() -> AccountId {
-    MockRpcApi::default()
-        .protocol_config()
-        .fee_asset_id()
-        .faucet_id()
-}
 
 pub(crate) async fn offline_client_parts(
     dir: &Path,
@@ -84,13 +69,12 @@ pub(crate) async fn offline_client_parts_with_keystore(
     let keystore_dir = dir.join("keys");
     std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
 
-    // The mock chain commits to its own protocol configuration; register it so
-    // execution and the auth-args builder resolve the same fee asset the chain does.
+    // A sync stores the protocol configuration each header commits to. Seed the
+    // mock chain's one so a test that executes before its first sync resolves the
+    // same fee asset the chain does.
     let protocol_config = node.protocol_config();
-    let fee_faucet_id = protocol_config.fee_asset_id().faucet_id();
     let mut builder = ClientBuilder::<FilesystemKeyStore>::new()
         .rpc(node)
-        .protocol_config(protocol_config)
         .store(store.clone())
         .filesystem_keystore(keystore_dir)
         .expect("keystore opens");
@@ -98,6 +82,10 @@ pub(crate) async fn offline_client_parts_with_keystore(
         builder = builder.note_transport(transport);
     }
     let miden_client = builder.build().await.expect("miden client builds");
+    miden_client
+        .seed_protocol_config(protocol_config)
+        .await
+        .expect("mock protocol config is stored");
 
     let client = MultisigClient::new(
         miden_client,
@@ -106,7 +94,6 @@ pub(crate) async fn offline_client_parts_with_keystore(
         dir.to_path_buf(),
         Endpoint::localhost(),
         None,
-        fee_faucet_id,
         ProverConfig::new(),
         RpcConfig::new(),
     );

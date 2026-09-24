@@ -9,15 +9,12 @@ use miden_client::account::Account;
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
+use miden_client::rpc::Endpoint;
 use miden_client::{Client, ClientError, Deserializable, Felt, Serializable, Word};
 use miden_client_sqlite_store::SqliteStore;
 
 use miden_protocol::account::auth::Signature as AccountSignature;
-use miden_protocol::account::AccountId;
-use miden_protocol::asset::AssetId;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as RawFalconSignature;
-use miden_protocol::protocol_config::ProtocolConfig;
 use miden_standards::account::auth::{FeeConversionInfo, MultisigAuthArgs};
 
 use guardian_client::auth_config::AuthType;
@@ -66,34 +63,9 @@ fn commitment_from_hex(hex_commitment: &str) -> Result<Word, String> {
         .map_err(|err| format!("Failed to deserialize commitment word '{hex_commitment}': {err}"))
 }
 
-/// The chain's fee faucet, from `MIDEN_FEE_FAUCET_ID` as bech32 (the form the faucet
-/// pages show) or hex. Since Miden 0.17 the client builds its protocol configuration
-/// from it; where to find the value is in docs/LOCAL_DEV.md#the-fee-faucet.
-fn fee_faucet_id_from_env() -> Result<AccountId, String> {
-    let raw = std::env::var("MIDEN_FEE_FAUCET_ID").map_err(|_| {
-        "MIDEN_FEE_FAUCET_ID is not set: name the chain's fee faucet (bech32 or hex account ID)"
-            .to_string()
-    })?;
-    let value = raw.trim();
-    let parsed = if value.starts_with("0x") || value.starts_with("0X") {
-        AccountId::from_hex(value).map_err(|err| err.to_string())
-    } else {
-        AccountId::from_bech32(value)
-            .map(|(_, account_id)| account_id)
-            .map_err(|err| err.to_string())
-    };
-    parsed.map_err(|err| format!("Invalid MIDEN_FEE_FAUCET_ID '{raw}': {err}"))
-}
-
-fn protocol_config(fee_faucet_id: AccountId) -> Result<ProtocolConfig, String> {
-    ProtocolConfig::current(AssetId::new_fungible(fee_faucet_id))
-        .map_err(|err| format!("Failed to build the protocol configuration: {err}"))
-}
-
 async fn create_miden_client(
     data_dir: &Path,
     endpoint: &Endpoint,
-    protocol_config: ProtocolConfig,
 ) -> Result<Client<FilesystemKeyStore>, String> {
     let store_path = data_dir.join("miden-client.sqlite");
     let store = SqliteStore::new(store_path)
@@ -104,7 +76,6 @@ async fn create_miden_client(
     let rng = Box::new(RandomCoin::new(Word::default()));
 
     configured_client_builder(endpoint)
-        .protocol_config(protocol_config)
         .store(store)
         .rng(rng)
         .tx_discard_delta(Some(20))
@@ -189,56 +160,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let (fee_faucet_id, protocol_config) =
-        match fee_faucet_id_from_env().and_then(|id| Ok((id, protocol_config(id)?))) {
-            Ok(config) => config,
-            Err(err) => {
-                println!("  ✗ {err}");
-                return Err(err.into());
+    let mut miden_client = match create_miden_client(temp_dir.path(), &miden_endpoint).await {
+        Ok(client) => {
+            println!("  ✓ Connected to Miden node");
+            client
+        }
+        Err(e) => {
+            println!("  ✗ Failed to create Miden client: {}", e);
+            if matches!(args.network, Network::Local) {
+                println!("  Hint: Start Miden node on port 57291");
             }
-        };
-    let client_config: Word = protocol_config.to_commitment();
-    let mut miden_client =
-        match create_miden_client(temp_dir.path(), &miden_endpoint, protocol_config).await {
-            Ok(client) => {
-                println!("  ✓ Connected to Miden node");
-                client
-            }
-            Err(e) => {
-                println!("  ✗ Failed to create Miden client: {}", e);
-                if matches!(args.network, Network::Local) {
-                    println!("  Hint: Start Miden node on port 57291");
-                }
-                return Ok(());
-            }
-        };
-
-    // Check for a protocol configuration mismatch between client library and node: since
-    // Miden 0.17 the block header commits to the protocol configuration (kernels + fee asset)
-    // rather than to the transaction kernel alone.
-    let grpc_client_check = GrpcClient::new(&miden_endpoint, 10_000);
-    if let Ok((block_header, _)) = grpc_client_check
-        .get_block_header_by_number(None, false)
-        .await
-    {
-        let node_config = block_header.protocol_config_commitment();
-        if node_config != client_config {
-            println!("  ✗ Protocol configuration mismatch!");
-            println!(
-                "    Node config:   0x{}",
-                hex::encode(node_config.as_bytes())
-            );
-            println!(
-                "    Client config: 0x{}",
-                hex::encode(client_config.as_bytes())
-            );
-            println!(
-                "    The Miden node runs a different protocol configuration (kernels or fee asset) than the client library."
-            );
-            println!("    Check MIDEN_FEE_FAUCET_ID and that both sides use the same miden-protocol line.");
             return Ok(());
         }
-    }
+    };
 
     println!();
 
@@ -374,14 +308,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),
         ]);
-        let bound_block_num = match miden_client.get_sync_height().await {
-            Ok(height) => height,
+        // Since Miden 0.17 the fee asset lives in the protocol configuration, which
+        // the client stores from each sync; the auth args name its fee faucet.
+        let header = match miden_client.get_latest_block_header().await {
+            Ok(header) => header,
             Err(err) => {
-                println!("  ✗ Failed to read the sync height: {}", err);
+                println!("  ✗ Failed to read the latest block header: {}", err);
                 return Ok(());
             }
         };
-        let auth_args = MultisigAuthArgs::new(bound_block_num, salt)
+        let fee_faucet_id = match miden_client
+            .get_protocol_config(header.protocol_config_commitment())
+            .await
+        {
+            Ok(config) => config.fee_asset_id().faucet_id(),
+            Err(err) => {
+                println!("  ✗ No protocol configuration stored; sync first: {}", err);
+                return Ok(());
+            }
+        };
+        let auth_args = MultisigAuthArgs::new(header.block_num(), salt)
             .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
 
         let (tx_request, _config_hash) = match multisig::build_update_signers_transaction_request(

@@ -787,7 +787,7 @@ mod tests {
 
         async fn submit_proven_transaction(
             &self,
-            _proven_transaction: miden_protocol::transaction::ProvenTransaction,
+            _proven_transaction: &miden_protocol::transaction::ProvenTransaction,
             _transaction_inputs: miden_client::rpc::encryption::SealedTransactionInputs,
         ) -> std::result::Result<BlockNumber, RpcError> {
             unimplemented!("not exercised by the backfill tests")
@@ -795,10 +795,25 @@ mod tests {
 
         async fn submit_proven_batch(
             &self,
-            _proven_batch: miden_protocol::batch::ProvenBatch,
-            _proposed_batch: miden_protocol::batch::ProposedBatch,
+            _proven_batch: &miden_protocol::batch::ProvenBatch,
+            _proposed_batch: &miden_protocol::batch::ProposedBatch,
             _transaction_inputs: Vec<miden_client::rpc::encryption::SealedTransactionInputs>,
         ) -> std::result::Result<BlockNumber, RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn register_account(
+            &self,
+            _invitation_code: &str,
+            _account_id: AccountId,
+        ) -> std::result::Result<(), RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn is_account_allowed(
+            &self,
+            _account_id: AccountId,
+        ) -> std::result::Result<bool, RpcError> {
             unimplemented!("not exercised by the backfill tests")
         }
 
@@ -958,7 +973,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut client = crate::MultisigClient::builder()
             .miden_endpoint(miden_client::rpc::Endpoint::try_from("http://127.0.0.1:1").unwrap())
-            .fee_faucet_id(crate::client::test_support::mock_fee_faucet_id())
             .guardian_endpoint("http://127.0.0.1:1")
             .account_dir(dir.path())
             .generate_key()

@@ -659,19 +659,6 @@ mod tests {
             }
             Ok(self.inner.fetch_notes(tags, cursor))
         }
-
-        async fn stream_notes(
-            &self,
-            _tag: NoteTag,
-            _cursor: miden_client::note_transport::NoteTransportCursor,
-        ) -> std::result::Result<
-            Box<dyn miden_client::note_transport::NoteStream>,
-            NoteTransportError,
-        > {
-            Ok(Box::new(
-                miden_client::testing::note_transport::DummyNoteStream {},
-            ))
-        }
     }
 
     /// A connection lost mid-drain imports nothing: since miden-client 0.17 a
@@ -765,7 +752,6 @@ mod tests {
 
         let mut builder = MultisigClient::builder()
             .miden_endpoint(Endpoint::testnet())
-            .fee_faucet_id(crate::client::test_support::mock_fee_faucet_id())
             .guardian_endpoint("http://localhost:1")
             .account_dir(dir)
             .generate_key();

@@ -16,7 +16,7 @@ use std::num::NonZeroU32;
 use miden_client::transaction::{ChainAnchor, TransactionRequestBuilder, TransactionSummary};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::SequentialCommit;
 use miden_standards::account::auth::{FeeConversionInfo, MultisigAuthArgs};
 
@@ -40,8 +40,7 @@ pub const MAX_APPROVAL_EXPIRATION_DELTA: u32 = 65_535;
 /// chain whose fee faucet is `fee_faucet_id`.
 ///
 /// The fee conversion info names that faucet at rate 1/1, the only conversion
-/// `pay_fee` accepts. The faucet is the one the client's protocol configuration
-/// was registered from, so this needs no store read.
+/// `pay_fee` accepts.
 pub fn multisig_auth_args(
     fee_faucet_id: AccountId,
     bound_block_num: BlockNumber,
@@ -67,35 +66,69 @@ pub fn multisig_auth_args(
         })
 }
 
+/// The chain's fee faucet, read from the protocol configuration that `header`
+/// commits to. The client stores every configuration a sync delivers, so this
+/// is a local read; it fails only for a header the store has no configuration
+/// for, such as one from before the client ever synced.
+async fn fee_faucet_id_at(client: &MidenSdkClient, header: &BlockHeader) -> Result<AccountId> {
+    let protocol_config = client
+        .get_protocol_config(header.protocol_config_commitment())
+        .await
+        .map_err(|e| {
+            MultisigError::miden_client_with_context(
+                format!(
+                    "no protocol configuration is stored for block {}; sync the client first",
+                    header.block_num()
+                ),
+                e,
+            )
+        })?;
+    Ok(protocol_config.fee_asset_id().faucet_id())
+}
+
+/// The fee faucet of the protocol configuration at the client's sync height.
+pub async fn synced_fee_faucet_id(client: &MidenSdkClient) -> Result<AccountId> {
+    let header = client.get_latest_block_header().await.map_err(|e| {
+        MultisigError::miden_client_with_context("failed to read the latest block header", e)
+    })?;
+    fee_faucet_id_at(client, &header).await
+}
+
 /// Auth args for a request a proposer builds now, bound to `client`'s sync
 /// height: the anchor captured right after names that block, and
 /// `execute_for_summary` refuses the pair otherwise.
 pub async fn proposer_auth_args(
     client: &MidenSdkClient,
-    fee_faucet_id: AccountId,
     salt: Word,
     approval_expiration_delta: Option<NonZeroU32>,
 ) -> Result<MultisigAuthArgs> {
-    let sync_height = client.get_sync_height().await.map_err(|e| {
+    let header = client.get_latest_block_header().await.map_err(|e| {
         MultisigError::miden_client_with_context(
-            "failed to read the sync height for the auth args",
+            "failed to read the latest block header for the auth args",
             e,
         )
     })?;
-    multisig_auth_args(fee_faucet_id, sync_height, salt, approval_expiration_delta)
+    multisig_auth_args(
+        fee_faucet_id_at(client, &header).await?,
+        header.block_num(),
+        salt,
+        approval_expiration_delta,
+    )
 }
 
 /// Auth args that rebuild an existing proposal's request: the salt and approval
-/// expiration its signed summary binds, at the anchor's block. Anything else
-/// reproduces a summary the cosigners never signed.
-pub fn proposal_auth_args(
-    fee_faucet_id: AccountId,
+/// expiration its signed summary binds, at the anchor's block, with the fee
+/// faucet of the configuration that block commits to (the one the anchored
+/// execution loads). Anything else reproduces a summary the cosigners never
+/// signed.
+pub async fn proposal_auth_args(
+    client: &MidenSdkClient,
     summary: &TransactionSummary,
     chain_anchor: &ChainAnchor,
 ) -> Result<MultisigAuthArgs> {
     let bound_block_num = chain_anchor.block_num();
     multisig_auth_args(
-        fee_faucet_id,
+        fee_faucet_id_at(client, chain_anchor.header()).await?,
         bound_block_num,
         summary_salt(summary),
         approval_expiration_delta_of(summary, bound_block_num)?,

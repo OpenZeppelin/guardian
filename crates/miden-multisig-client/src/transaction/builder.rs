@@ -35,13 +35,12 @@ use super::{
 /// ```ignore
 /// use miden_multisig_client::TransactionType;
 ///
-/// let proposal = ProposalBuilder::new(TransactionType::AddCosigner { new_commitment }, fee_faucet_id)
+/// let proposal = ProposalBuilder::new(TransactionType::AddCosigner { new_commitment })
 ///     .build(&mut miden_client, &node_rpc, &mut guardian_client, &account, key_manager)
 ///     .await?;
 /// ```
 pub struct ProposalBuilder {
     transaction_type: TransactionType,
-    fee_faucet_id: AccountId,
     approval_expiration_delta: Option<NonZeroU32>,
 }
 
@@ -86,12 +85,10 @@ fn ensure_admissible_signer_set(signers: &[Word], guardian_commitment: Word) -> 
 }
 
 impl ProposalBuilder {
-    /// Creates a new proposal builder for the given transaction type on the
-    /// chain whose fee faucet is `fee_faucet_id`, which the auth args commit to.
-    pub fn new(transaction_type: TransactionType, fee_faucet_id: AccountId) -> Self {
+    /// Creates a new proposal builder for the given transaction type.
+    pub fn new(transaction_type: TransactionType) -> Self {
         Self {
             transaction_type,
-            fee_faucet_id,
             approval_expiration_delta: None,
         }
     }
@@ -215,7 +212,6 @@ impl ProposalBuilder {
     async fn fresh_auth_args(&self, miden_client: &MidenSdkClient) -> Result<MultisigAuthArgs> {
         proposer_auth_args(
             miden_client,
-            self.fee_faucet_id,
             generate_salt(),
             self.approval_expiration_delta,
         )

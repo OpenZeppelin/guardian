@@ -127,9 +127,6 @@ pub struct MultisigClient {
     pub(crate) miden_endpoint: Endpoint,
     /// Note transport endpoint override (for recovery).
     pub(crate) note_transport_endpoint: Option<String>,
-    /// The chain's fee faucet, from which the client's protocol configuration is
-    /// built (for recovery).
-    pub(crate) fee_faucet_id: AccountId,
     /// Node client for direct commitment reads, built once so its channel is
     /// reused across reads.
     node_rpc_client: Arc<dyn miden_client::rpc::NodeRpcClient>,
@@ -154,7 +151,6 @@ impl MultisigClient {
         account_dir: PathBuf,
         miden_endpoint: Endpoint,
         note_transport_endpoint: Option<String>,
-        fee_faucet_id: AccountId,
         prover_config: ProverConfig,
         rpc_config: RpcConfig,
     ) -> Self {
@@ -168,7 +164,6 @@ impl MultisigClient {
             account_dir,
             miden_endpoint,
             note_transport_endpoint,
-            fee_faucet_id,
             node_rpc_client,
             prover_config,
             rpc_config,
@@ -182,7 +177,9 @@ impl MultisigClient {
     /// [`sync`](Self::sync) first, then build, then
     /// [`propose_custom_transaction`](Self::propose_custom_transaction), which
     /// captures its anchor at that same height and does not sync again. A
-    /// rebuild passes the block its proposal's anchor names.
+    /// rebuild passes the block its proposal's anchor names. The fee conversion
+    /// info names the fee faucet of the protocol configuration the last sync
+    /// delivered.
     pub async fn multisig_auth_args(
         &self,
         salt: Word,
@@ -191,7 +188,7 @@ impl MultisigClient {
     ) -> Result<MultisigAuthArgs> {
         match bound_block_num {
             Some(bound_block_num) => crate::transaction::multisig_auth_args(
-                self.fee_faucet_id,
+                crate::transaction::synced_fee_faucet_id(&self.miden_client).await?,
                 bound_block_num,
                 salt,
                 approval_expiration_delta,
@@ -199,7 +196,6 @@ impl MultisigClient {
             None => {
                 crate::transaction::proposer_auth_args(
                     &self.miden_client,
-                    self.fee_faucet_id,
                     salt,
                     approval_expiration_delta,
                 )

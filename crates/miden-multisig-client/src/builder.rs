@@ -14,12 +14,9 @@ use miden_client::note_transport::{
 };
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
 use miden_client_sqlite_store::SqliteStore;
-use miden_protocol::account::AccountId;
-use miden_protocol::asset::AssetId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::crypto::rand::RandomCoin;
-use miden_protocol::protocol_config::ProtocolConfig;
 
 use crate::MidenSdkClient;
 use crate::client::MultisigClient;
@@ -150,10 +147,8 @@ fn configured_client_builder(
 /// use miden_multisig_client::MultisigClient;
 /// use miden_client::rpc::Endpoint;
 ///
-/// let fee_faucet_id = miden_protocol::account::AccountId::from_hex("0x...")?;
 /// let client = MultisigClient::builder()
 ///     .miden_endpoint(Endpoint::new("http://localhost:57291"))
-///     .fee_faucet_id(fee_faucet_id)
 ///     .guardian_endpoint("http://localhost:50051")
 ///     .account_dir("/tmp/multisig-client")
 ///     .prover_config(
@@ -167,7 +162,6 @@ fn configured_client_builder(
 /// ```
 pub struct MultisigClientBuilder {
     miden_endpoint: Option<Endpoint>,
-    fee_faucet_id: Option<AccountId>,
     note_transport_endpoint: Option<String>,
     guardian_endpoint: Option<String>,
     account_dir: Option<PathBuf>,
@@ -187,7 +181,6 @@ impl MultisigClientBuilder {
     pub fn new() -> Self {
         Self {
             miden_endpoint: None,
-            fee_faucet_id: None,
             note_transport_endpoint: None,
             guardian_endpoint: None,
             account_dir: None,
@@ -200,17 +193,6 @@ impl MultisigClientBuilder {
     /// Sets the Miden node RPC endpoint.
     pub fn miden_endpoint(mut self, endpoint: Endpoint) -> Self {
         self.miden_endpoint = Some(endpoint);
-        self
-    }
-
-    /// Sets the chain's fee faucet.
-    ///
-    /// Since Miden 0.17 the fee asset lives in the protocol configuration
-    /// rather than the block header, and the client builds that configuration
-    /// from the fee faucet rather than fetching it from the node. Without one
-    /// the client can neither execute nor screen notes.
-    pub fn fee_faucet_id(mut self, fee_faucet_id: AccountId) -> Self {
-        self.fee_faucet_id = Some(fee_faucet_id);
         self
     }
 
@@ -286,9 +268,6 @@ impl MultisigClientBuilder {
         let miden_endpoint = self
             .miden_endpoint
             .ok_or_else(|| MultisigError::MissingConfig("miden_endpoint".to_string()))?;
-        let fee_faucet_id = self
-            .fee_faucet_id
-            .ok_or_else(|| MultisigError::MissingConfig("fee_faucet_id".to_string()))?;
 
         let note_transport_endpoint = match self.note_transport_endpoint {
             Some(endpoint) => {
@@ -322,7 +301,6 @@ impl MultisigClientBuilder {
             &account_dir,
             &miden_endpoint,
             note_transport_endpoint.as_deref(),
-            fee_faucet_id,
             &self.prover_config,
             &self.rpc_config,
         )
@@ -335,7 +313,6 @@ impl MultisigClientBuilder {
             account_dir,
             miden_endpoint,
             note_transport_endpoint,
-            fee_faucet_id,
             self.prover_config,
             self.rpc_config,
         ))
@@ -350,7 +327,6 @@ pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
     note_transport_endpoint: Option<&str>,
-    fee_faucet_id: AccountId,
     prover_config: &ProverConfig,
     rpc_config: &RpcConfig,
 ) -> Result<MidenSdkClient> {
@@ -372,7 +348,6 @@ pub(crate) async fn create_miden_client(
     let rng = Box::new(RandomCoin::new(rng_seed.into()));
 
     configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
-        .protocol_config(protocol_config_for(fee_faucet_id)?)
         .store(store)
         .rng(rng)
         .tx_discard_delta(Some(20))
@@ -380,16 +355,6 @@ pub(crate) async fn create_miden_client(
         .build()
         .await
         .map_err(|e| MultisigError::MidenClient(format!("failed to create miden client: {}", e)))
-}
-
-/// The protocol configuration a chain whose native fee asset is issued by
-/// `fee_faucet_id` commits to, for the kernels this build embeds.
-pub(crate) fn protocol_config_for(fee_faucet_id: AccountId) -> Result<ProtocolConfig> {
-    ProtocolConfig::current(AssetId::new_fungible(fee_faucet_id)).map_err(|e| {
-        MultisigError::InvalidConfig(format!(
-            "failed to build the protocol configuration for fee faucet {fee_faucet_id}: {e}"
-        ))
-    })
 }
 
 #[cfg(test)]

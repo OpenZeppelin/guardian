@@ -17,7 +17,7 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.17.0-rc.1
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.17.0-rc.2
 ```
 
 Miden 0.17 requires a new client database: a store created under 0.16 does
@@ -53,9 +53,7 @@ breaking changes per line, and what each upgrade does to stored data:
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
 import { AuthSecretKey, MidenClient } from '@miden-sdk/miden-sdk';
 
-// Since Miden 0.17 the client needs the chain's fee faucet (bech32 or hex) to
-// build its protocol configuration; the network presets do not carry it.
-const midenClient = await MidenClient.createDevnet({ feeFaucetId });
+const midenClient = await MidenClient.createDevnet();
 
 // Create a signer from your secret key
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);

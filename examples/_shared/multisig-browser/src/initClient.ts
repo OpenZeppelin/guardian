@@ -56,14 +56,8 @@ function prefersLocalProver(): boolean {
   return prover?.trim().toLowerCase() === 'local';
 }
 
-/**
- * `feeFaucetId` is the chain's fee faucet (bech32 or hex). Since Miden 0.17 the
- * client builds its protocol configuration from it and cannot execute or screen
- * notes without one; the network presets cover endpoints, not the fee asset.
- */
 export async function createMidenClient(
   rpcUrl: string,
-  feeFaucetId: string,
   storeName = 'MidenClientDB',
 ): Promise<MidenClient> {
   const normalizedRpcUrl = rpcUrl.trim().toLowerCase();
@@ -75,11 +69,10 @@ export async function createMidenClient(
         noteTransportUrl: 'devnet',
         proverUrl: 'local',
         storeName,
-        feeFaucetId,
         autoSync: true,
       });
     }
-    return MidenClient.createDevnet({ rpcUrl, storeName, feeFaucetId });
+    return MidenClient.createDevnet({ rpcUrl, storeName });
   }
 
   if (normalizedRpcUrl === 'testnet' || normalizedRpcUrl === 'https://rpc.testnet.miden.io') {
@@ -89,11 +82,10 @@ export async function createMidenClient(
         noteTransportUrl: 'testnet',
         proverUrl: 'local',
         storeName,
-        feeFaucetId,
         autoSync: true,
       });
     }
-    return MidenClient.createTestnet({ rpcUrl, storeName, feeFaucetId });
+    return MidenClient.createTestnet({ rpcUrl, storeName });
   }
 
   return MidenClient.create({
@@ -105,7 +97,6 @@ export async function createMidenClient(
         ? 'local'
         : undefined,
     storeName,
-    feeFaucetId,
     autoSync: true,
   });
 }

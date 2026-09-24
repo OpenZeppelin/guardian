@@ -5,8 +5,7 @@ mod state;
 
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
-    parse_account_id, MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy,
-    SignatureScheme,
+    MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
 };
 use miden_protocol::address::NetworkId;
 use rustyline::DefaultEditor;
@@ -76,24 +75,6 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
             (local(), NetworkId::Devnet)
         }
     };
-
-    // Since Miden 0.17 the fee asset lives in the protocol configuration, which the
-    // client builds from the chain's fee faucet rather than fetching from the node;
-    // see docs/LOCAL_DEV.md#the-fee-faucet for where the value comes from.
-    let fee_faucet_default = std::env::var("MIDEN_FEE_FAUCET_ID").unwrap_or_default();
-    let fee_faucet_prompt = if fee_faucet_default.is_empty() {
-        "Fee faucet account ID (bech32 or hex): ".to_string()
-    } else {
-        format!("Fee faucet account ID (bech32 or hex) [{fee_faucet_default}]: ")
-    };
-    let fee_faucet_input = prompt_input(editor, &fee_faucet_prompt)?;
-    let fee_faucet_raw = if fee_faucet_input.trim().is_empty() {
-        fee_faucet_default
-    } else {
-        fee_faucet_input.trim().to_string()
-    };
-    let fee_faucet_id = parse_account_id(&fee_faucet_raw)
-        .map_err(|error| format!("Invalid fee faucet account ID '{fee_faucet_raw}': {error}"))?;
 
     // GUARDIAN endpoint selection
     println!("\n  Select GUARDIAN gRPC server:");
@@ -174,7 +155,6 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
 
     let mut builder = MultisigClient::builder()
         .miden_endpoint(miden_endpoint)
-        .fee_faucet_id(fee_faucet_id)
         .guardian_endpoint(&guardian_endpoint)
         .prover_config(prover_config)
         .rpc_config(rpc_config);
