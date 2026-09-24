@@ -173,6 +173,28 @@ cp infra/terraform.tfstate infra/terraform.guardian.dev.tfstate
 cp infra/terraform.tfstate.backup infra/terraform.guardian.dev.tfstate.backup 2>/dev/null || true
 ```
 
+#### Remote state (optional)
+
+The module declares no backend, so state is local by default. To keep it in a
+remote backend that supports CLI workspaces (S3, GCS, azurerm and the like, not
+`http`), drop an untracked override file into `infra/` and select the stack
+through `TF_WORKSPACE`:
+
+```bash
+cp infra/backend_override.tf.example infra/backend_override.tf   # edit bucket, key, region
+export STACK_NAME=guardian-prod DEPLOY_STAGE=prod
+export TF_WORKSPACE=prod                                          # only selects state; export all three together
+./scripts/aws-deploy.sh plan
+```
+
+A non-local backend block and `TF_WORKSPACE` must be set together; the deploy
+script refuses either one alone. The workspace must already exist, and
+`deploy` or `cleanup` refuse a workspace with no resources in state. For a
+genuinely new stack, `deploy --bootstrap` creates the workspace and lifts the
+guard; `cleanup` never accepts the flag. See
+[`docs/SERVER_AWS_DEPLOY.md`](../docs/SERVER_AWS_DEPLOY.md#remote-state-backend)
+for the full behaviour and for moving existing local state into the backend.
+
 For `prod`, create the ACK key and dashboard cursor secrets once before the first
 deploy:
 
