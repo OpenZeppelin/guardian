@@ -4356,6 +4356,7 @@ describe('Multisig', () => {
                   scheme: 'ecdsa',
                   signature: '0x' + 'e'.repeat(130),
                   public_key: publicKey,
+                  message_format: 'eip712',
                 },
                 timestamp: '2024-01-01T00:00:00Z',
               },
@@ -4372,6 +4373,7 @@ describe('Multisig', () => {
           signatureHex: '0x' + 'e'.repeat(130),
           scheme: 'ecdsa',
           publicKey,
+          messageFormat: 'eip712',
           timestamp: '2024-01-01T00:00:00Z',
         },
       ]);
@@ -4443,7 +4445,10 @@ describe('Multisig', () => {
       );
     });
 
-    it('should preserve ECDSA imported signature metadata', async () => {
+    it.each([
+      ['raw', undefined],
+      ['EIP-712', 'eip712'],
+    ] as const)('should preserve ECDSA imported signature metadata (%s)', async (_label, messageFormat) => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -4465,6 +4470,7 @@ describe('Multisig', () => {
               signatureHex: '0x' + 'b'.repeat(130),
               scheme: 'ecdsa',
               publicKey,
+              ...(messageFormat ? { messageFormat } : {}),
               timestamp: '2024-01-01T00:00:00Z',
             },
           ],
@@ -4486,10 +4492,21 @@ describe('Multisig', () => {
             scheme: 'ecdsa',
             signature: '0x' + 'b'.repeat(130),
             publicKey,
+            ...(messageFormat ? { messageFormat } : {}),
           },
           timestamp: '2024-01-01T00:00:00Z',
         },
       ]);
+      const exported = JSON.parse(multisig.exportProposalToJson(proposal.id));
+      expect(exported.signatures[0].messageFormat).toBe(messageFormat);
+      if (messageFormat === undefined) {
+        expect(exported.signatures[0]).not.toHaveProperty('messageFormat');
+      }
+      const reimported = await multisig.importProposal(JSON.stringify(exported));
+      expect(reimported.signatures[0].signature).toEqual(proposal.signatures[0].signature);
+      exported.signatures[0].messageFormat = 'unknown';
+      await expect(multisig.importProposal(JSON.stringify(exported)))
+        .rejects.toThrow('unsupported message format');
     });
 
     it('should reject imported ECDSA signatures without a public key', async () => {

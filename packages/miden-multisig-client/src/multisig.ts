@@ -2642,6 +2642,8 @@ export class Multisig {
             signatureHex: s.signature.signature,
             scheme: s.signature.scheme,
             publicKey: s.signature.scheme === 'ecdsa' ? s.signature.publicKey : undefined,
+            ...(s.signature.scheme === 'ecdsa' && s.signature.messageFormat
+              ? { messageFormat: s.signature.messageFormat } : {}),
             timestamp: s.timestamp,
           }))
         : [];
@@ -2678,6 +2680,8 @@ export class Multisig {
         signatureHex: s.signature.signature,
         scheme: s.signature.scheme,
         publicKey: s.signature.scheme === 'ecdsa' ? s.signature.publicKey : undefined,
+        ...(s.signature.scheme === 'ecdsa' && s.signature.messageFormat
+          ? { messageFormat: s.signature.messageFormat } : {}),
         timestamp: s.timestamp,
       })),
       metadata: proposal.metadata,

@@ -38,7 +38,7 @@ pub struct SignatureInput {
 }
 
 impl SignatureInput {
-    fn eip712_advice(
+    fn build_eip712_signature_advice_entry(
         &self,
         signer_commitment: Word,
         tx_summary_commitment: Word,
@@ -125,7 +125,12 @@ pub fn collect_signature_advice(
             .map_err(MultisigError::Signature)?;
 
         let entry = if sig_input.message_format == EcdsaMessageFormat::Eip712 {
-            sig_input.eip712_advice(commitment, tx_summary_commitment, tx_summary, &signature)?
+            sig_input.build_eip712_signature_advice_entry(
+                commitment,
+                tx_summary_commitment,
+                tx_summary,
+                &signature,
+            )?
         } else {
             sig_input
                 .scheme
