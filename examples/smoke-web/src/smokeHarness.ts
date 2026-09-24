@@ -605,7 +605,7 @@ export function useSmokeHarness(): {
       targetMultisig: Multisig,
       targetClient?: MidenClient,
     ): Promise<{
-      state: AccountState;
+      state: AccountState | null;
       config: DetectedMultisigConfig;
       proposals: Proposal[];
       notes: ConsumableNote[];
@@ -616,21 +616,25 @@ export function useSmokeHarness(): {
       }
 
       await syncBrowserClientState(activeClient);
-      const synced = await syncAll(targetMultisig);
-      const config = AccountInspector.fromBase64(synced.state.stateDataBase64);
-      setGuardianState(synced.state);
+      const synced = await syncAll(targetMultisig, guardianStateRef.current ?? undefined);
+      // The sync leaves `Multisig.account` at the authoritative state whether
+      // it imported GUARDIAN's or kept local, so read config from there. The
+      // GUARDIAN state copy only refreshes when the sync actually fetched it.
+      const config = AccountInspector.fromAccount(targetMultisig.account);
+      const state = synced.state ?? guardianStateRef.current;
+      setGuardianState(state);
       setDetectedConfig(config);
       setProposals(synced.proposals);
       setConsumableNotes(synced.notes);
 
       return {
-        state: synced.state,
+        state,
         config,
         proposals: synced.proposals,
         notes: synced.notes,
       };
     },
-    [webClientRef],
+    [guardianStateRef, webClientRef],
   );
 
   const withCommand = useCallback(

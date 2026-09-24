@@ -110,6 +110,12 @@ export interface ServerStateObject {
   auth_scheme?: string;
 }
 
+export interface ServerCanonicalNonceResponse {
+  account_id: string;
+  nonce: number;
+  commitment: string;
+}
+
 export type ServerAuthConfig =
   | { MidenFalconRpo: { cosigner_commitments: string[] } }
   | { MidenEcdsa: { cosigner_commitments: string[] } };

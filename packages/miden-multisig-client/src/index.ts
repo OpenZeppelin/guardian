@@ -59,6 +59,7 @@ export { lookupAuthDigest } from './lookupAuth.js';
 export {
   Multisig,
   type AccountState,
+  type SyncStateResult,
   type CreateProposalOptions,
   type CreateSignerProposalOptions,
   type CreateP2idProposalOptions,

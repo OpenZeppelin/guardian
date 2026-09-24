@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  fromServerCanonicalNonce,
   fromServerCosignerSignature,
   fromServerConfigureResponse,
   fromServerDeltaObject,
@@ -34,6 +35,23 @@ import type {
 
 describe('conversion', () => {
   describe('fromServer conversions (server → camelCase)', () => {
+    it('fromServerCanonicalNonce maps the head and rejects unsafe nonces', () => {
+      expect(
+        fromServerCanonicalNonce({
+          account_id: '0xabc',
+          nonce: 5,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      ).toEqual({ accountId: '0xabc', nonce: 5, commitment: '0x' + 'c'.repeat(64) });
+
+      expect(() =>
+        fromServerCanonicalNonce({ account_id: '0xabc', nonce: -1, commitment: '0x' }),
+      ).toThrow('Invalid canonical nonce');
+      expect(() =>
+        fromServerCanonicalNonce({ account_id: '0xabc', nonce: 1.5, commitment: '0x' }),
+      ).toThrow('Invalid canonical nonce');
+    });
+
     it('converts CosignerSignature', () => {
       const server: ServerCosignerSignature = {
         signer_id: '0xabc',

@@ -2186,6 +2186,13 @@ mod tests {
             unreachable!()
         }
 
+        fn extract_nonce(
+            &self,
+            _state_json: &serde_json::Value,
+        ) -> std::result::Result<u64, String> {
+            unreachable!()
+        }
+
         async fn should_update_auth(
             &self,
             _state_json: &serde_json::Value,

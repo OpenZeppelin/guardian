@@ -156,6 +156,10 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.extract_guardian_commitment(state_json)
     }
 
+    fn extract_nonce(&self, state_json: &serde_json::Value) -> Result<u64, String> {
+        self.miden_client.extract_nonce(state_json)
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,

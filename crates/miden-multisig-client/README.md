@@ -74,6 +74,17 @@ account a note funded by the faucet identified in the block header's
 `consume_notes` proposal. The bootstrap transaction can pay its fee from the
 note it consumes.
 
+### Syncing with GUARDIAN
+
+`client.sync()` syncs the local store with the Miden node, then with GUARDIAN.
+The GUARDIAN step starts with a canonical-nonce pre-check (`get_canonical_nonce`,
+issue #191): when GUARDIAN's canonical nonce is not above the local account's
+nonce, nothing newer exists to pull and the full state fetch is skipped; when
+GUARDIAN is ahead, the state is fetched and reconciled as before. A failed
+pre-check is a sync error, not a silent fall-through to the full fetch, so the
+GUARDIAN server must serve `GetCanonicalNonce` (issue #191) before this SDK
+version is rolled out against it.
+
 ## Configuration
 
 Beyond the endpoints and the account directory, the builder carries three

@@ -3,9 +3,10 @@ use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
-    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaHistoryParams, GetDeltaParams,
-    GetDeltaProposalParams, GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams,
-    LookupAccountParams, PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
+    self, AbandonCandidateParams, CanonicalNonceResponse, ConfigureAccountParams,
+    GetCanonicalNonceParams, GetDeltaHistoryParams, GetDeltaParams, GetDeltaProposalParams,
+    GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams, LookupAccountParams,
+    PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -360,6 +361,39 @@ pub async fn get_state(
 
     let response = services::get_state(&state, params).await?;
     Ok(Json(response.state))
+}
+
+/// Nonce and commitment of the latest canonical state (issue #191). A
+/// client whose local account nonce is at or above `nonce` is not behind
+/// GUARDIAN and can skip `GET /state`.
+#[utoipa::path(
+    get,
+    path = "/state/nonce",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(StateQuery),
+    responses(
+        (status = 200, description = "Nonce and commitment of the canonical state", body = CanonicalNonceResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or state not found", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "Canonical state cannot be decoded", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_canonical_nonce(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<CanonicalNonceResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+
+    let params = GetCanonicalNonceParams {
+        account_id: query.account_id,
+        credentials: request_payload.apply_to(credentials),
+    };
+
+    let response = services::get_canonical_nonce(&state, params).await?;
+    Ok(Json(response))
 }
 
 /// `GET /state/lookup?key_commitment=<hex>` — resolves a Miden public-key
@@ -1482,6 +1516,101 @@ mod tests {
         };
 
         assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_canonical_nonce_success() {
+        let (state, storage, network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+        let _storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x123".to_string(),
+            serde_json::json!({ "data": "opaque" }),
+        )));
+        let _network = network.with_extract_nonce(Ok(42));
+
+        let query = StateQuery {
+            account_id: account_id.clone(),
+        };
+
+        let credentials = signed_credentials(&signer, &account_id, &query);
+        let Json(response) =
+            get_canonical_nonce(State(state), AuthHeader(credentials), Query(query))
+                .await
+                .expect("get_canonical_nonce should succeed");
+
+        assert_eq!(response.account_id, account_id);
+        assert_eq!(response.nonce, 42);
+        assert_eq!(response.commitment, "0x123");
+    }
+
+    #[tokio::test]
+    async fn test_get_canonical_nonce_not_found() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+        let _storage = storage.with_pull_state(Err("State not found".to_string()));
+
+        let query = StateQuery {
+            account_id: account_id.clone(),
+        };
+
+        let credentials = signed_credentials(&signer, &account_id, &query);
+        let err =
+            match get_canonical_nonce(State(state), AuthHeader(credentials), Query(query)).await {
+                Ok(_) => panic!("get_canonical_nonce should fail when state is missing"),
+                Err(err) => err,
+            };
+
+        assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_canonical_nonce_rejects_unsigned_query() {
+        let (state, storage, network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+        let _storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x123".to_string(),
+            serde_json::json!({ "data": "opaque" }),
+        )));
+        let _network = network.with_extract_nonce(Ok(42));
+
+        let signed_for_other_query = StateQuery {
+            account_id: "0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c".to_string(),
+        };
+        let credentials = signed_credentials(&signer, &account_id, &signed_for_other_query);
+        let query = StateQuery {
+            account_id: account_id.clone(),
+        };
+
+        let err =
+            match get_canonical_nonce(State(state), AuthHeader(credentials), Query(query)).await {
+                Ok(_) => panic!("a signature over a different payload must be rejected"),
+                Err(err) => err,
+            };
+
+        assert_eq!(err.http_status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

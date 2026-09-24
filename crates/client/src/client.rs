@@ -5,12 +5,13 @@ use crate::proto::guardian_client::GuardianClient as GuardianGrpcClient;
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AuthConfig, ConfigureRequest,
     ConfigureResponse, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
-    GetDeltaHistoryRequest, GetDeltaHistoryResponse, GetDeltaProposalRequest,
-    GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
-    GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
-    GetStateRequest, GetStateResponse, ProposalSignature as ProtoProposalSignature,
-    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
-    SignDeltaProposalRequest, SignDeltaProposalResponse,
+    GetCanonicalNonceRequest, GetCanonicalNonceResponse, GetDeltaHistoryRequest,
+    GetDeltaHistoryResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
+    GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
+    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
+    GetStateResponse, ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
+    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
+    SignDeltaProposalResponse,
 };
 use chrono::Utc;
 use guardian_shared::ProposalSignature as JsonProposalSignature;
@@ -343,6 +344,32 @@ impl GuardianClient {
         let inner = self
             .send_with_replay_retry(account_id, message, async |client, request| {
                 client.get_state(request).await
+            })
+            .await?;
+
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+
+        Ok(inner)
+    }
+
+    /// Retrieves the nonce and commitment of the latest canonical state
+    /// without the state blob. Mirror of HTTP `GET /state/nonce`.
+    ///
+    /// A client whose local account nonce is at or above the returned nonce
+    /// is not behind GUARDIAN and can skip [`Self::get_state`] (issue #191).
+    pub async fn get_canonical_nonce(
+        &mut self,
+        account_id: &AccountId,
+    ) -> ClientResult<GetCanonicalNonceResponse> {
+        let message = GetCanonicalNonceRequest {
+            account_id: account_id.to_string(),
+        };
+
+        let inner = self
+            .send_with_replay_retry(account_id, message, async |client, request| {
+                client.get_canonical_nonce(request).await
             })
             .await?;
 

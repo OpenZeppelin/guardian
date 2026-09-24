@@ -1,4 +1,5 @@
 import type {
+  CanonicalNonce,
   CosignerSignature,
   ConfigureRequest,
   ConfigureResponse,
@@ -16,6 +17,7 @@ import type {
   StateObject,
 } from './types.js';
 import type {
+  ServerCanonicalNonceResponse,
   ServerCosignerSignature,
   ServerConfigureRequest,
   ServerConfigureResponse,
@@ -152,6 +154,17 @@ export function fromServerStateObject(server: ServerStateObject): StateObject {
     createdAt: server.created_at,
     updatedAt: server.updated_at,
     authScheme: server.auth_scheme,
+  };
+}
+
+export function fromServerCanonicalNonce(server: ServerCanonicalNonceResponse): CanonicalNonce {
+  if (!Number.isSafeInteger(server.nonce) || server.nonce < 0) {
+    throw new Error(`Invalid canonical nonce from server: ${String(server.nonce)}`);
+  }
+  return {
+    accountId: server.account_id,
+    nonce: server.nonce,
+    commitment: server.commitment,
   };
 }
 

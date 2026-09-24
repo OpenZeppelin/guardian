@@ -1149,6 +1149,94 @@
         ]
       }
     },
+    "/state/nonce": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Nonce and commitment of the latest canonical state (issue #191). A\nclient whose local account nonce is at or above `nonce` is not behind\nGUARDIAN and can skip `GET /state`.",
+        "operationId": "get_canonical_nonce",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nonce and commitment of the canonical state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanonicalNonceResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or state not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Canonical state cannot be decoded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
     "/status": {
       "get": {
         "tags": [
@@ -1438,6 +1526,30 @@
           }
         ],
         "description": "Authentication and authorization handler\nDefines which signature scheme to use and handles verification\nEach variant contains auth-specific authorization data"
+      },
+      "CanonicalNonceResponse": {
+        "type": "object",
+        "description": "Head of the canonical state: the nonce the account carries in that\nstate and the state's commitment.",
+        "required": [
+          "account_id",
+          "nonce",
+          "commitment"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "commitment": {
+            "type": "string",
+            "description": "Commitment of the latest canonical state."
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Account nonce of the latest canonical state.",
+            "minimum": 0
+          }
+        }
       },
       "ConfigureRequest": {
         "type": "object",

@@ -272,6 +272,10 @@ pub trait NetworkClient: Send + Sync {
         Ok(None)
     }
 
+    /// Read the account nonce carried by a canonical state blob. Serves the
+    /// canonical-nonce pre-check (issue #191) without shipping the blob.
+    fn extract_nonce(&self, state_json: &serde_json::Value) -> Result<u64, String>;
+
     /// Determine if account auth should be updated given the state
     async fn should_update_auth(
         &self,

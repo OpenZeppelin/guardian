@@ -25,9 +25,9 @@ use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
-    abandon_candidate, configure, get_delta, get_delta_history, get_delta_proposal,
-    get_delta_proposals, get_delta_since, get_pubkey, get_state, lookup, push_delta,
-    push_delta_proposal, sign_delta_proposal, status, status_root,
+    abandon_candidate, configure, get_canonical_nonce, get_delta, get_delta_history,
+    get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey, get_state, lookup,
+    push_delta, push_delta_proposal, sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
 use crate::dashboard::require_dashboard_session;
@@ -387,6 +387,7 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         .route("/delta/candidate/abandon", post(abandon_candidate))
         .route("/configure", post(configure))
         .route("/state", get(get_state))
+        .route("/state/nonce", get(get_canonical_nonce))
         .route("/state/lookup", get(lookup))
         .route("/pubkey", get(get_pubkey))
         .route("/status", get(status))
@@ -516,6 +517,7 @@ mod tests {
             ("POST", "/delta/candidate/abandon"),
             ("POST", "/configure"),
             ("GET", "/state"),
+            ("GET", "/state/nonce"),
             ("GET", "/state/lookup"),
             ("GET", "/pubkey"),
             ("GET", "/status"),
