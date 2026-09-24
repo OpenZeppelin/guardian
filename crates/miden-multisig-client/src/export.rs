@@ -9,7 +9,6 @@ use std::collections::HashSet;
 use std::num::NonZeroU32;
 
 use guardian_shared::FromJson;
-use guardian_shared::eip712_signature::FromEip712Hex;
 use guardian_shared::hex::FromHex;
 use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
 use miden_protocol::account::AccountId;
@@ -200,22 +199,19 @@ impl ExportedProposal {
                     })?;
                 }
                 SignatureScheme::Ecdsa => {
-                    if signature.message_format == EcdsaMessageFormat::Eip712 {
-                        EcdsaSignature::from_eip712_hex(&signature_hex)
-                            .map_err(MultisigError::Signature)?;
-                    } else {
-                        let bytes =
-                            hex::decode(signature_hex.trim_start_matches("0x")).map_err(|e| {
-                                MultisigError::Signature(format!(
-                                    "invalid ECDSA exported signature hex: {e}"
-                                ))
-                            })?;
-                        EcdsaSignature::read_from_bytes(&bytes).map_err(|e| {
+                    let signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
+                        .map_err(|e| {
                             MultisigError::Signature(format!(
-                                "invalid ECDSA exported signature bytes: {e}"
+                                "invalid ECDSA exported signature hex: {}",
+                                e
                             ))
                         })?;
-                    }
+                    EcdsaSignature::read_from_bytes(&signature_bytes).map_err(|e| {
+                        MultisigError::Signature(format!(
+                            "invalid ECDSA exported signature bytes: {}",
+                            e
+                        ))
+                    })?;
                     let public_key_hex = signature.public_key_hex.as_ref().ok_or_else(|| {
                         MultisigError::Signature(
                             "ECDSA exported signatures require a public key".to_string(),

@@ -2,10 +2,12 @@ import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import type { RequestAuthPayload, Signer } from '@openzeppelin/guardian-client';
 import { AuthDigest } from '../utils/digest.js';
+import { lookupAuthDigest } from '../lookupAuth.js';
 import { EcdsaFormat } from '../utils/ecdsa.js';
 import { bytesToHex, hexToBytes } from '../utils/encoding.js';
 import {
   guardianKeyDiscoveryTypedData,
+  guardianLookupTypedData,
   guardianRequestTypedData,
   midenTransactionTypedData,
   typedDataDigest,
@@ -85,6 +87,11 @@ export class LedgerSigner implements Signer {
   ): Promise<string> {
     const requestHash = AuthDigest.fromRequest(accountId, timestamp, requestPayload);
     return this.signTypedData(guardianRequestTypedData(wordToBytes(requestHash)));
+  }
+
+  async signLookupMessage(keyCommitmentHex: string, timestampMs: number): Promise<string> {
+    const lookupHash = lookupAuthDigest(timestampMs, keyCommitmentHex);
+    return this.signTypedData(guardianLookupTypedData(wordToBytes(lookupHash)));
   }
 
   async signCommitment(commitmentHex: string): Promise<string> {

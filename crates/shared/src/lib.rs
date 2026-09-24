@@ -14,7 +14,6 @@ pub mod auth;
 pub mod auth_request_eip712;
 pub mod auth_request_message;
 pub mod auth_request_payload;
-pub mod eip712_signature;
 pub mod felt;
 pub mod hex;
 pub mod lookup_auth_message;

@@ -434,11 +434,11 @@ mod tests {
         let lookup_params = json["paths"]["/state/lookup"]["get"]["parameters"]
             .as_array()
             .unwrap();
-        assert!(
-            !lookup_params
-                .iter()
-                .any(|param| param["name"] == "x-auth-format")
-        );
+        assert!(lookup_params.iter().any(|param| {
+            param["name"] == "x-auth-format"
+                && param["in"] == "header"
+                && param["required"] == false
+        }));
     }
 
     #[test]

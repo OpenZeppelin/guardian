@@ -86,8 +86,8 @@ the proposal, then approve it. The approval and Guardian submission each
 require a separate `eth_signTypedData_v4` signature; authenticated reads in
 the flow also prompt the device. All signatures use the enrolled key; no
 separate Guardian signing endpoint is needed. The device displays hashes,
-not human-readable transferred assets. `recoverByKey` is not supported by
-this signer because the lookup endpoint currently accepts only raw signatures.
+not human-readable transferred assets. `recoverByKey` uses a separate
+`GuardianLookup(bytes32 lookupHash)` typed-data signature to discover accounts.
 EIP-712 execution requires an account compiled with the Miden 0.17 multisig
 authentication component; changing Guardian's signature format does not upgrade
 an older account's code root.
@@ -574,8 +574,8 @@ if (recovered.length === 0) {
 ```
 
 The `Signer` passed to `recoverByKey` MUST implement `signLookupMessage`
-(the bundled `FalconSigner` and `EcdsaSigner` both do). The lookup endpoint
-authenticates by proof-of-possession of the queried commitment — same key
+(the bundled `FalconSigner`, `EcdsaSigner`, and `LedgerSigner` do). The lookup
+endpoint authenticates by proof-of-possession of the queried commitment — same key
 that already authenticates per-account requests, so revealing the account ID
 does not grant any new capability. See the design doc for the security
 analysis.

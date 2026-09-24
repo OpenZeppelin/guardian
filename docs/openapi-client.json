@@ -1218,6 +1218,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA lookup format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {

@@ -18,8 +18,9 @@ export interface Signer {
 
   /**
    * Sign the lookup-bound digest for `/state/lookup`. The implementation
-   * MUST sign `LookupAuthMessage::to_word(timestamp_ms, key_commitment)` —
-   * domain-separated from `AuthRequestMessage`. The canonical implementation
+   * Raw signers sign `LookupAuthMessage::to_word(timestamp_ms, key_commitment)`;
+   * EIP-712 signers sign that hash as `GuardianLookup(bytes32 lookupHash)`.
+   * Both are domain-separated from `AuthRequestMessage`. The canonical implementation
    * lives in `@openzeppelin/miden-multisig-client/lookupAuth.ts`; this
    * zero-dependency package does not pull in the Miden SDK to compute it.
    *

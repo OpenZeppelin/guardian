@@ -5,7 +5,6 @@ use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::resolve_account;
 use crate::utils::normalize_commitment_hex;
-use guardian_shared::eip712_signature::FromEip712Hex;
 use guardian_shared::{DeltaSignature, EcdsaMessageFormat, FromJson};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
 use miden_protocol::transaction::TransactionSummary;
@@ -140,8 +139,10 @@ pub async fn sign_delta_proposal(
                 "EIP-712 approval signer differs from request signer".to_string(),
             ));
         }
-        let parsed_signature =
-            Signature::from_eip712_hex(signature_hex).map_err(GuardianError::InvalidDelta)?;
+        let signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
+            .map_err(|e| GuardianError::InvalidDelta(format!("Invalid EIP-712 signature: {e}")))?;
+        let parsed_signature = Signature::read_from_bytes(&signature_bytes)
+            .map_err(|e| GuardianError::InvalidDelta(format!("Invalid EIP-712 signature: {e}")))?;
         let digest = tx_summary.eip712_hash().into_bytes();
         if !public_key.verify_prehash(digest, &parsed_signature) {
             return Err(GuardianError::InvalidDelta(

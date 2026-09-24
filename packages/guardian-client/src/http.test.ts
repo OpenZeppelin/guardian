@@ -1183,6 +1183,16 @@ describe('GuardianHttpClient', () => {
       expect(init.headers['x-timestamp']).toMatch(/^\d+$/);
     });
 
+    it('sends the EIP-712 format header for typed lookup signers', async () => {
+      const signer = { ...makeLookupSigner(), requestAuthFormat: 'eip712' as const };
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ accounts: [] }) });
+
+      await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+
+      expect(mockFetch.mock.calls[0][1].headers['x-auth-format']).toBe('eip712');
+    });
+
     it('throws a clear error when no signer is configured', async () => {
       // No setSigner() call.
       await expect(

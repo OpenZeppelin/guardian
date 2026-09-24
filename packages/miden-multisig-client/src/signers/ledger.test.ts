@@ -14,6 +14,9 @@ vi.mock('../utils/digest.js', () => ({
     fromRequest: () => ({ toFelts: () => [5n, 6n, 7n, 8n].map(value => ({ asInt: () => value })) }),
   },
 }));
+vi.mock('../lookupAuth.js', () => ({
+  lookupAuthDigest: () => ({ toFelts: () => [9n, 10n, 11n, 12n].map(value => ({ asInt: () => value })) }),
+}));
 
 describe('LedgerSigner', () => {
   const privateKey = new Uint8Array(32).fill(7);
@@ -81,6 +84,20 @@ describe('LedgerSigner', () => {
     } as never);
 
     expect(signer.requestAuthFormat).toBe('eip712');
+    expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('signs an account-less Guardian lookup typed message', async () => {
+    const request = vi.fn(async ({ params }: { method: string; params: unknown[] }) => {
+      const data = JSON.parse(params[1] as string);
+      expect(data.primaryType).toBe('GuardianLookup');
+      expect(data.domain.name).toBe('Guardian Lookup');
+      return account.signTypedData(data);
+    });
+    const signer = new LedgerSigner({ request }, publicKey, address);
+    const signature = await signer.signLookupMessage('0x' + 'ab'.repeat(32), 1_700_000_000);
+
     expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
     expect(request).toHaveBeenCalledTimes(1);
   });

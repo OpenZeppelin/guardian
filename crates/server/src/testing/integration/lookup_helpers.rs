@@ -86,6 +86,17 @@ pub fn sign_lookup_ecdsa(
     signer.sign_word(lookup_digest(key_commitment_hex, timestamp_ms))
 }
 
+pub fn sign_lookup_eip712(
+    signer: &TestEcdsaSigner,
+    key_commitment_hex: &str,
+    timestamp_ms: i64,
+) -> String {
+    let lookup_hash = lookup_digest(key_commitment_hex, timestamp_ms);
+    signer.sign_prehash(guardian_shared::auth_request_eip712::lookup_digest(
+        lookup_hash,
+    ))
+}
+
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }

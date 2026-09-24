@@ -27,6 +27,10 @@ export function guardianRequestTypedData(requestHash: Uint8Array) {
   return typedData('Guardian Request', 'GuardianRequest', 'requestHash', bytesToHex(requestHash));
 }
 
+export function guardianLookupTypedData(lookupHash: Uint8Array) {
+  return typedData('Guardian Lookup', 'GuardianLookup', 'lookupHash', bytesToHex(lookupHash));
+}
+
 export function midenTransactionTypedData(txSummaryHash: Uint8Array) {
   return typedData('Miden Transaction', 'MidenTransaction', 'txSummaryHash', bytesToHex(txSummaryHash));
 }

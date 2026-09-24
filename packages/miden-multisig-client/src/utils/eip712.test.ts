@@ -3,11 +3,11 @@ import { secp256k1 } from '@noble/curves/secp256k1';
 import { Word } from '@miden-sdk/miden-sdk';
 import { hashTypedData } from 'viem';
 import { bytesToHex, hexToBytes } from './encoding.js';
-import { guardianRequestTypedData, midenTransactionTypedData, typedDataDigest } from './eip712.js';
+import { guardianLookupTypedData, guardianRequestTypedData, midenTransactionTypedData, typedDataDigest } from './eip712.js';
 import { buildEip712SignatureAdviceEntry, tryComputeEcdsaCommitmentHex } from './signature.js';
 import { wordToBytes } from './word.js';
 
-describe('EIP-712 transaction advice', () => {
+describe('EIP-712 typed data and transaction advice', () => {
   it('accepts the protocol MetaMask signTypedData v4 vector', () => {
     const publicKey = '0x034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa';
     const signature = '0x13deb6c6f8903c58117a86d11ce7140af8a1d90dc9a25cb03d1c5972deae7ae8'
@@ -28,8 +28,10 @@ describe('EIP-712 transaction advice', () => {
     const hashBytes = hexToBytes(summaryHash);
     const transaction = midenTransactionTypedData(hashBytes);
     const request = guardianRequestTypedData(hashBytes);
+    const lookup = guardianLookupTypedData(hashBytes);
     expect(bytesToHex(typedDataDigest(transaction))).toBe(hashTypedData(transaction));
     expect(bytesToHex(typedDataDigest(request))).toBe(hashTypedData(request));
+    expect(bytesToHex(typedDataDigest(lookup))).toBe(hashTypedData(lookup));
     expect(hashTypedData(transaction))
       .toBe('0xf9a8d508052b86648521d4e701982acc3c038334ba5d55ca7f83cce48026955a');
   });

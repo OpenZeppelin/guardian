@@ -372,7 +372,7 @@ pub async fn get_state(
     path = "/state/lookup",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(LookupQuery),
+    params(LookupQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA lookup format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Accounts whose authorization set contains the commitment", body = LookupResponse),
         (status = 400, description = "Malformed key commitment", body = crate::openapi::ApiErrorResponse),

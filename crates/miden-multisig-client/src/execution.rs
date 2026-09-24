@@ -2,13 +2,13 @@
 
 use std::collections::HashSet;
 
-use guardian_shared::eip712_signature::FromEip712Hex;
 use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
 use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
 use miden_protocol::account::AccountId;
+use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::asset::FungibleAsset;
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature as EcdsaSignature};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::PublicKey;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
@@ -35,6 +35,49 @@ pub struct SignatureInput {
     pub public_key_hex: Option<String>,
     /// Message format used by an ECDSA signature.
     pub message_format: EcdsaMessageFormat,
+}
+
+impl SignatureInput {
+    fn eip712_advice(
+        &self,
+        signer_commitment: Word,
+        tx_summary_commitment: Word,
+        tx_summary: Option<&TransactionSummary>,
+        signature: &AccountSignature,
+    ) -> Result<SignatureAdvice> {
+        let summary = tx_summary.ok_or_else(|| {
+            MultisigError::Signature("EIP-712 requires the transaction summary".to_string())
+        })?;
+        if summary.to_commitment() != tx_summary_commitment {
+            return Err(MultisigError::Signature(
+                "transaction summary commitment mismatch".to_string(),
+            ));
+        }
+        let public_key_hex = self
+            .public_key_hex
+            .as_deref()
+            .ok_or_else(|| MultisigError::Signature("EIP-712 requires a public key".to_string()))?;
+        let public_key_bytes = hex::decode(public_key_hex.trim_start_matches("0x"))
+            .map_err(|e| MultisigError::Signature(format!("invalid EIP-712 public key: {e}")))?;
+        let public_key = PublicKey::read_from_bytes(&public_key_bytes)
+            .map_err(|e| MultisigError::Signature(format!("invalid EIP-712 public key: {e}")))?;
+        if public_key.to_commitment() != signer_commitment {
+            return Err(MultisigError::Signature(
+                "EIP-712 public-key commitment mismatch".to_string(),
+            ));
+        }
+        let AccountSignature::EcdsaK256Keccak(signature) = signature else {
+            return Err(MultisigError::Signature(
+                "EIP-712 requires ECDSA".to_string(),
+            ));
+        };
+        if !public_key.verify_prehash(summary.eip712_hash().into_bytes(), signature) {
+            return Err(MultisigError::Signature(
+                "EIP-712 signature does not match the proposal".to_string(),
+            ));
+        }
+        Ok(summary.eip712_signature_advice(&public_key, signature))
+    }
 }
 
 /// Collects and validates cosigner signatures into advice entries.
@@ -76,48 +119,14 @@ pub fn collect_signature_advice(
         let commitment =
             word_from_hex(&sig_input.signer_commitment).map_err(MultisigError::HexDecode)?;
 
+        let signature = sig_input
+            .scheme
+            .parse_signature_hex(&ensure_hex_prefix(&sig_input.signature_hex))
+            .map_err(MultisigError::Signature)?;
+
         let entry = if sig_input.message_format == EcdsaMessageFormat::Eip712 {
-            if sig_input.scheme != SignatureScheme::Ecdsa {
-                return Err(MultisigError::Signature(
-                    "EIP-712 requires ECDSA".to_string(),
-                ));
-            }
-            let summary = tx_summary.ok_or_else(|| {
-                MultisigError::Signature("EIP-712 requires the transaction summary".to_string())
-            })?;
-            if summary.to_commitment() != tx_summary_commitment {
-                return Err(MultisigError::Signature(
-                    "transaction summary commitment mismatch".to_string(),
-                ));
-            }
-            let public_key_hex = sig_input.public_key_hex.as_deref().ok_or_else(|| {
-                MultisigError::Signature("EIP-712 requires a public key".to_string())
-            })?;
-            let public_key_bytes =
-                hex::decode(public_key_hex.trim_start_matches("0x")).map_err(|e| {
-                    MultisigError::Signature(format!("invalid EIP-712 public key: {e}"))
-                })?;
-            let public_key = PublicKey::read_from_bytes(&public_key_bytes).map_err(|e| {
-                MultisigError::Signature(format!("invalid EIP-712 public key: {e}"))
-            })?;
-            if public_key.to_commitment() != commitment {
-                return Err(MultisigError::Signature(
-                    "EIP-712 public-key commitment mismatch".to_string(),
-                ));
-            }
-            let signature = EcdsaSignature::from_eip712_hex(&sig_input.signature_hex)
-                .map_err(MultisigError::Signature)?;
-            if !public_key.verify_prehash(summary.eip712_hash().into_bytes(), &signature) {
-                return Err(MultisigError::Signature(
-                    "EIP-712 signature does not match the proposal".to_string(),
-                ));
-            }
-            summary.eip712_signature_advice(&public_key, &signature)
+            sig_input.eip712_advice(commitment, tx_summary_commitment, tx_summary, &signature)?
         } else {
-            let signature = sig_input
-                .scheme
-                .parse_signature_hex(&ensure_hex_prefix(&sig_input.signature_hex))
-                .map_err(MultisigError::Signature)?;
             sig_input
                 .scheme
                 .build_signature_advice_entry(
@@ -330,8 +339,7 @@ mod tests {
         let eip_key = SigningKey::new();
         let raw_signature = raw_key.sign(summary.to_commitment());
         let eip_signature = eip_key.sign_prehash(summary.eip712_hash().into_bytes());
-        let mut eip_signature_bytes = eip_signature.to_bytes();
-        eip_signature_bytes[64] += 27;
+        let eip_signature_bytes = eip_signature.to_bytes();
         let raw_commitment = raw_key.public_key().to_commitment();
         let eip_commitment = eip_key.public_key().to_commitment();
         let raw_hex = format!("0x{}", hex::encode(raw_commitment.to_bytes()));

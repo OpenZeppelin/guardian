@@ -1,7 +1,6 @@
 use guardian_shared::auth_request_eip712::request_digest;
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
-use guardian_shared::eip712_signature::FromEip712Hex;
 use miden_protocol::Word;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
@@ -29,7 +28,8 @@ pub fn verify_request_signature(
     let (public_key, commitment_hex) = resolve_authorized_public_key(
         account_id,
         authorized_commitments,
-        PublicKey::recover_from(message, &sig).ok(),
+        &message,
+        &sig,
         pubkey_hex,
     )?;
 
@@ -56,13 +56,9 @@ pub fn verify_eip712_request_signature(
 ) -> Result<String, String> {
     let request_hash = account_id_timestamp_to_digest(account_id, timestamp, request_payload)?;
     let digest = request_digest(request_hash);
-    let signature = Signature::from_eip712_hex(signature)?;
-    let (public_key, commitment) = resolve_authorized_public_key(
-        account_id,
-        authorized_commitments,
-        PublicKey::recover_from_prehash(digest, &signature).ok(),
-        pubkey_hex,
-    )?;
+    let signature = parse_signature(signature)?;
+    let (public_key, commitment) =
+        authorized_public_key_from_header(account_id, authorized_commitments, pubkey_hex)?;
     if !public_key.verify_prehash(digest, &signature) {
         return Err("EIP-712 request signature verification failed".to_string());
     }
@@ -131,11 +127,12 @@ fn parse_public_key(hex_str: &str) -> Result<PublicKey, String> {
 fn resolve_authorized_public_key(
     account_id: &str,
     authorized_commitments: &[String],
-    recovered_key: Option<PublicKey>,
+    message: &Word,
+    signature: &Signature,
     provided_pubkey_hex: &str,
 ) -> Result<(PublicKey, String), String> {
     if let Some(recovered_key) =
-        recover_authorized_public_key(account_id, authorized_commitments, recovered_key)
+        recover_authorized_public_key(account_id, authorized_commitments, message, signature)
     {
         let commitment_hex = commitment_hex(&recovered_key);
         return Ok((recovered_key, commitment_hex));
@@ -147,10 +144,11 @@ fn resolve_authorized_public_key(
 fn recover_authorized_public_key(
     account_id: &str,
     authorized_commitments: &[String],
-    recovered_key: Option<PublicKey>,
+    message: &Word,
+    signature: &Signature,
 ) -> Option<PublicKey> {
-    match recovered_key {
-        Some(recovered_key) => {
+    match PublicKey::recover_from(*message, signature) {
+        Ok(recovered_key) => {
             let recovered_commitment = commitment_hex(&recovered_key);
             if authorized_commitments.contains(&recovered_commitment) {
                 return Some(recovered_key);
@@ -164,7 +162,7 @@ fn recover_authorized_public_key(
             );
             None
         }
-        None => {
+        Err(_) => {
             tracing::warn!(
                 account_id = %account_id,
                 "ECDSA public key recovery failed; trying provided x-pubkey"
@@ -249,7 +247,6 @@ mod tests {
             account_id_timestamp_to_digest(&account_id, timestamp, &payload).unwrap();
         let signature = key.sign_prehash(request_digest(request_hash));
         let mut signature_bytes = signature.to_bytes();
-        signature_bytes[64] += 27;
         let signature_hex = format!("0x{}", hex::encode(&signature_bytes));
         let public_key_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
         let commitment = commitment_hex(&public_key);
@@ -265,7 +262,7 @@ mod tests {
             ),
             Ok(commitment.clone()),
         );
-        assert_eq!(
+        assert!(
             verify_eip712_request_signature(
                 &account_id,
                 timestamp,
@@ -273,11 +270,11 @@ mod tests {
                 &signature_hex,
                 "0x00",
                 &payload,
-            ),
-            Ok(commitment.clone()),
+            )
+            .is_err()
         );
         let other_key = SecretKey::new().public_key();
-        assert_eq!(
+        assert!(
             verify_eip712_request_signature(
                 &account_id,
                 timestamp,
@@ -285,10 +282,10 @@ mod tests {
                 &signature_hex,
                 &format!("0x{}", hex::encode(other_key.to_bytes())),
                 &payload,
-            ),
-            Ok(commitment.clone()),
+            )
+            .is_err()
         );
-        signature_bytes[64] = (signature_bytes[64] - 27) ^ 1;
+        signature_bytes[64] ^= 1;
         assert_eq!(
             verify_eip712_request_signature(
                 &account_id,
