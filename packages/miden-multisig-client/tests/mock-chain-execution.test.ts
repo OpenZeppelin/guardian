@@ -1,4 +1,6 @@
-import { MockWebClient, Word } from '@miden-sdk/miden-sdk';
+import { AccountId, AdviceMap, FeltArray, MockWebClient, Signature, Word } from '@miden-sdk/miden-sdk';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createMultisigAccount } from '../src/account/builder.js';
@@ -10,6 +12,15 @@ import {
   summaryApprovalExpirationBlockNum,
   summarySalt,
 } from '../src/transaction.js';
+import { midenTransactionTypedData, typedDataDigest } from '../src/utils/eip712.js';
+import { bytesToHex } from '../src/utils/encoding.js';
+import {
+  buildEip712SignatureAdviceEntry,
+  buildSignatureAdviceEntry,
+  signatureHexToBytes,
+  tryComputeEcdsaCommitmentHex,
+} from '../src/utils/signature.js';
+import { wordToBytes } from '../src/utils/word.js';
 
 /**
  * Runs the 0.17 guarded-multisig auth procedure in the real VM against the SDK's
@@ -59,6 +70,84 @@ function buildRequest(options: { boundBlockNum?: number; approvalExpirationDelta
 }
 
 describe('guarded multisig auth procedure on the mock chain', () => {
+  it('executes mixed raw and TypeScript-generated EIP-712 advice', async () => {
+    const rawKey = new Uint8Array(32).fill(7);
+    const eip712Key = new Uint8Array(32).fill(8);
+    const guardianKey = new Uint8Array(32).fill(9);
+    const keys = [rawKey, eip712Key, guardianKey];
+    const publicKeys = keys.map(key => bytesToHex(secp256k1.getPublicKey(key, true)));
+    const commitments = publicKeys.map(key => tryComputeEcdsaCommitmentHex(key));
+    if (commitments.some(commitment => !commitment)) {
+      throw new Error('Could not derive ECDSA commitments');
+    }
+    const [rawCommitment, eip712Commitment, guardianCommitment] = commitments as string[];
+    const mockClient = await MockWebClient.createClient();
+    try {
+      const { account } = await createMultisigAccount(mockClient, {
+        threshold: 2,
+        signerCommitments: [rawCommitment, eip712Commitment],
+        guardianCommitment,
+        signatureScheme: 'ecdsa',
+        seed: new Uint8Array(32).fill(10),
+      }, RPC);
+      const id = account.id().toString();
+      const requestOptions = {
+        accountId: id,
+        salt: Word.fromHex(SALT_HEX),
+        midenRpcEndpoint: RPC,
+        signatureScheme: 'ecdsa' as const,
+      };
+      const unsigned = await buildUpdateSignersTransactionRequest(
+        mockClient, 1, [rawCommitment, eip712Commitment], requestOptions,
+      );
+      const { summary, anchor } = await executeForSummary(mockClient, id, unsigned.request, RPC);
+      try {
+        const commitment = summary.toCommitment();
+        const commitmentHex = commitment.toHex();
+        const rawDigest = keccak_256(wordToBytes(Word.fromHex(commitmentHex)));
+        const rawSignature = secp256k1.sign(rawDigest, rawKey);
+        const guardianSignature = secp256k1.sign(rawDigest, guardianKey);
+        const eip712Signature = secp256k1.sign(
+          typedDataDigest(midenTransactionTypedData(wordToBytes(Word.fromHex(commitmentHex)))), eip712Key,
+        );
+        const rawEntry = buildSignatureAdviceEntry(
+          Word.fromHex(rawCommitment), Word.fromHex(commitmentHex),
+          Signature.deserialize(signatureHexToBytes(bytesToHex(new Uint8Array([
+            ...rawSignature.toCompactRawBytes(), rawSignature.recovery,
+          ])), 'ecdsa')),
+        );
+        const eip712Entry = buildEip712SignatureAdviceEntry(
+          Word.fromHex(eip712Commitment), Word.fromHex(commitmentHex),
+          bytesToHex(new Uint8Array([...eip712Signature.toCompactRawBytes(), eip712Signature.recovery])),
+          publicKeys[1],
+        );
+        const guardianEntry = buildSignatureAdviceEntry(
+          Word.fromHex(guardianCommitment), Word.fromHex(commitmentHex),
+          Signature.deserialize(signatureHexToBytes(bytesToHex(new Uint8Array([
+            ...guardianSignature.toCompactRawBytes(), guardianSignature.recovery,
+          ])), 'ecdsa')),
+        );
+        const advice = new AdviceMap();
+        for (const entry of [rawEntry, eip712Entry, guardianEntry]) {
+          advice.insert(entry.key, new FeltArray(entry.values));
+        }
+        const signed = await buildUpdateSignersTransactionRequest(
+          mockClient, 1, [rawCommitment, eip712Commitment], {
+            ...requestOptions,
+            boundBlockNum: anchor.blockNum(),
+            signatureAdviceMap: advice,
+          },
+        );
+        const result = await mockClient.executeTransaction(AccountId.fromHex(id), signed.request);
+        expect(result).toBeDefined();
+      } finally {
+        anchor.free();
+      }
+    } finally {
+      mockClient.free();
+    }
+  });
+
   it('accepts the auth args and binds the salt into the summary', async () => {
     const { request } = await buildRequest();
 

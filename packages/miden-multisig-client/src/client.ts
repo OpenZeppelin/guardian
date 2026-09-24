@@ -143,7 +143,7 @@ export class MultisigClient {
    * which would fail authentication first).
    *
    * @throws if `signer` does not implement `signLookupMessage`. The bundled
-   *   `FalconSigner` and `EcdsaSigner` both do.
+   *   `FalconSigner`, `EcdsaSigner`, and `LedgerSigner` do.
    */
   async recoverByKey(signer: Signer): Promise<RecoveredAccount[]> {
     this._guardianClient.setSigner(signer);

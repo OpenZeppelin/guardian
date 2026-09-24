@@ -111,6 +111,7 @@ impl MultisigClient {
                 signature: signature_hex,
                 scheme: self.key_manager.scheme(),
                 public_key_hex: proposal_public_key_hex(self.key_manager.as_ref()),
+                message_format: guardian_shared::EcdsaMessageFormat::Raw,
             }],
             signatures_required,
             metadata,
@@ -179,6 +180,7 @@ impl MultisigClient {
             signature: signature_hex,
             scheme: self.key_manager.scheme(),
             public_key_hex: proposal_public_key_hex(self.key_manager.as_ref()),
+            message_format: guardian_shared::EcdsaMessageFormat::Raw,
         })?;
 
         Ok(())
@@ -263,6 +265,7 @@ impl MultisigClient {
                 signature_hex: sig.signature.clone(),
                 scheme: sig.scheme,
                 public_key_hex: sig.public_key_hex.clone(),
+                message_format: sig.message_format,
             })
             .collect();
 
@@ -273,6 +276,7 @@ impl MultisigClient {
             signature_inputs,
             &required_commitments,
             tx_summary_commitment,
+            Some(&tx_summary),
         )?;
 
         // Cosigner signatures come from the document; the acknowledgement comes

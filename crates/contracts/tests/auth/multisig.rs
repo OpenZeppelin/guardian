@@ -8,16 +8,22 @@ use miden_protocol::account::{
 use miden_protocol::assembly::Package;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
-    PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
+    PublicKey as EcdsaPublicKey, Signature as EcdsaSignature, SigningKey as EcdsaSecretKey,
 };
 use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE;
-use miden_protocol::transaction::{RawOutputNote, TransactionScript};
+use miden_protocol::transaction::{
+    RawOutputNote, TransactionScript, TransactionSummary, TransactionSummaryUserParams,
+};
+use miden_protocol::utils::hex_to_bytes;
+use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::vm::{AdviceInputs, AdviceMap};
 use miden_protocol::{Felt, Hasher, Word};
 use miden_standards::StandardsLib;
-use miden_standards::account::auth::{AuthGuardedMultisig, AuthMultisig, MultisigAuthArgs};
+use miden_standards::account::auth::{
+    AuthGuardedMultisig, AuthMultisig, Eip712TransactionSummary, MultisigAuthArgs,
+};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::{MockChain, MockChainBuilder};
@@ -25,6 +31,7 @@ use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rstest::rstest;
 
 use super::{MultisigAuthArgsExt, auth_args_at_tip};
 
@@ -254,6 +261,159 @@ fn build_update_procedure_threshold_script(
 // ================================================================================================
 // TESTS
 // ================================================================================================
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Eip712AdviceFixture {
+    public_key: String,
+    signature: String,
+    tx_summary_hash: String,
+    public_key_commitment: String,
+    advice_key: String,
+    witness: Vec<u32>,
+}
+
+#[test]
+fn metamask_advice_fixture_matches_upstream_encoding() -> anyhow::Result<()> {
+    let fixture: Eip712AdviceFixture = serde_json::from_str(include_str!(
+        "../../../../packages/miden-multisig-client/tests/fixtures/eip712-metamask-advice.json"
+    ))?;
+    let public_key = EcdsaPublicKey::read_from_bytes(&hex_to_bytes::<33>(&fixture.public_key)?)?;
+    let signature_bytes = hex_to_bytes::<65>(&fixture.signature)?;
+    let signature = EcdsaSignature::from_sec1_bytes_and_recovery_id(
+        signature_bytes[..64].try_into()?,
+        signature_bytes[64] - 27,
+    )?;
+    let public_key_commitment =
+        Word::read_from_bytes(&hex_to_bytes::<32>(&fixture.public_key_commitment)?)?;
+    assert_eq!(public_key.to_commitment(), public_key_commitment);
+    let summary_hash = Word::read_from_bytes(&hex_to_bytes::<32>(&fixture.tx_summary_hash)?)?;
+    let raw_key = Hasher::merge(&[public_key_commitment, summary_hash]);
+    let domain = Word::new([
+        Felt::new_unchecked(u64::from_le_bytes(*b"EIP712\0\0")),
+        Felt::ZERO,
+        Felt::ZERO,
+        Felt::ZERO,
+    ]);
+    let expected_key = Hasher::merge(&[raw_key, domain]);
+    assert_eq!(
+        expected_key,
+        Word::read_from_bytes(&hex_to_bytes::<32>(&fixture.advice_key)?)?
+    );
+    let encoded = miden_core_lib::dsa::ecdsa_k256_keccak::encode_signature(&public_key, &signature);
+    assert_eq!(
+        encoded
+            .iter()
+            .map(|felt| felt.as_canonical_u64())
+            .collect::<Vec<_>>(),
+        fixture
+            .witness
+            .iter()
+            .map(|value| u64::from(*value))
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Eip712WitnessCase {
+    Valid,
+    WrongSigner,
+    WrongSummary,
+    RawKey,
+}
+
+#[rstest]
+#[case::valid(Eip712WitnessCase::Valid)]
+#[case::wrong_signer(Eip712WitnessCase::WrongSigner)]
+#[case::wrong_summary(Eip712WitnessCase::WrongSummary)]
+#[case::raw_key(Eip712WitnessCase::RawKey)]
+#[tokio::test]
+async fn guarded_multisig_executes_mixed_raw_and_eip712_approvals(
+    #[case] case: Eip712WitnessCase,
+) -> anyhow::Result<()> {
+    let (secret_keys, public_keys, authenticators, _, guardian_key, guardian_authenticator) =
+        setup_ecdsa_keys_and_authenticators_with_guardian(2, 2)?;
+    let account = create_multisig_account_with_guardian_commitments(
+        2,
+        public_keys.iter().map(|key| key.to_commitment()).collect(),
+        guardian_key.to_commitment(),
+        SignatureScheme::Ecdsa,
+    )?;
+    let mock_chain = MockChainBuilder::with_accounts([account.clone()])?.build()?;
+    let auth_args = auth_args_at_tip(&mock_chain, Word::from([Felt::new_unchecked(17); 4]));
+    let script = build_update_procedure_threshold_script_for_scheme(
+        BasicWallet::move_asset_to_note_root().into(),
+        1,
+        SignatureScheme::Ecdsa,
+    )?;
+    let builder = mock_chain
+        .build_transaction(account.id())
+        .authenticator(None)
+        .tx_script(script)
+        .multisig_auth_args(&auth_args);
+    let tx_summary = match builder.clone().build()?.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(effects) => effects,
+        error => panic!("expected unsigned transaction summary: {error:?}"),
+    };
+    let summary = tx_summary.as_ref();
+    let message = summary.to_commitment();
+    let signing_inputs = SigningInputs::TransactionSummary(tx_summary.clone());
+    let raw_signature = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &signing_inputs)
+        .await?;
+    let guardian_signature = guardian_authenticator
+        .get_signature(guardian_key.to_commitment().into(), &signing_inputs)
+        .await?;
+
+    let digest = summary.eip712_hash().into_bytes();
+    let eip712_signature = match case {
+        Eip712WitnessCase::WrongSigner => secret_keys[0].sign_prehash(digest),
+        Eip712WitnessCase::WrongSummary => {
+            let other_summary = TransactionSummary::new(
+                summary.account_delta().clone(),
+                summary.input_notes().clone(),
+                summary.output_notes().clone(),
+                summary.block_number(),
+                summary.block_commitment(),
+                summary.expiration_delta(),
+                TransactionSummaryUserParams::new(
+                    [Felt::new_unchecked(42); TransactionSummaryUserParams::NUM_ELEMENTS],
+                ),
+            );
+            secret_keys[1].sign_prehash(other_summary.eip712_hash().into_bytes())
+        }
+        _ => secret_keys[1].sign_prehash(digest),
+    };
+    let (eip712_key, witness) = summary.eip712_signature_advice(&public_keys[1], &eip712_signature);
+    let advice_key = if matches!(case, Eip712WitnessCase::RawKey) {
+        Hasher::merge(&[public_keys[1].to_commitment().into(), message])
+    } else {
+        eip712_key
+    };
+    let result = builder
+        .add_signature(
+            public_keys[0].to_commitment().into(),
+            message,
+            raw_signature,
+        )
+        .add_signature(
+            guardian_key.to_commitment().into(),
+            message,
+            guardian_signature,
+        )
+        .add_advice_map_entry(advice_key, witness)
+        .build()?
+        .execute()
+        .await;
+
+    if matches!(case, Eip712WitnessCase::Valid) {
+        assert!(result.is_ok(), "mixed approvals failed: {result:?}");
+    } else {
+        assert!(result.is_err(), "invalid EIP-712 witness was accepted");
+    }
+    Ok(())
+}
 
 /// Tests basic 2-of-2 multisig functionality with note creation.
 ///

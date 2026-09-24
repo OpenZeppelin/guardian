@@ -163,6 +163,7 @@ pub struct ConfigureResponse {
     path = "/configure",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = ConfigureRequest,
     responses(
         (status = 200, description = "Account configured", body = ConfigureResponse),
@@ -199,6 +200,7 @@ pub async fn configure(
     path = "/delta",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = DeltaObject,
     responses(
         (status = 200, description = "Delta accepted", body = DeltaObject),
@@ -233,7 +235,7 @@ pub async fn push_delta(
     path = "/delta",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(DeltaQuery),
+    params(DeltaQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Delta found", body = DeltaObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -265,7 +267,7 @@ pub async fn get_delta(
     path = "/delta/since",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(DeltaQuery),
+    params(DeltaQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Merged delta", body = DeltaObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -298,7 +300,7 @@ pub async fn get_delta_since(
     path = "/delta/history",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(HistoryQuery),
+    params(HistoryQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "One page of canonical history", body = crate::services::PagedResult<crate::services::HistoryEntry>),
         (status = 400, description = "Invalid limit or cursor, or account on an unsupported network (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),
@@ -338,7 +340,7 @@ pub async fn get_delta_history(
     path = "/state",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(StateQuery),
+    params(StateQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Current account state", body = StateObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -370,7 +372,7 @@ pub async fn get_state(
     path = "/state/lookup",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(LookupQuery),
+    params(LookupQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA lookup format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Accounts whose authorization set contains the commitment", body = LookupResponse),
         (status = 400, description = "Malformed key commitment", body = crate::openapi::ApiErrorResponse),
@@ -490,6 +492,7 @@ pub async fn get_pubkey(
     path = "/delta/proposal",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = DeltaProposalRequest,
     responses(
         (status = 200, description = "Proposal created", body = DeltaProposalResponse),
@@ -542,6 +545,7 @@ pub async fn push_delta_proposal(
     path = "/delta/candidate/abandon",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = AbandonCandidateRequest,
     responses(
         (status = 202, description = "Abandon intent accepted (or already resolved)", body = AbandonCandidateResponse),
@@ -582,7 +586,7 @@ pub async fn abandon_candidate(
     path = "/delta/proposal",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(ProposalQuery),
+    params(ProposalQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Pending proposals", body = ProposalsResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -613,7 +617,7 @@ pub async fn get_delta_proposals(
     path = "/delta/proposal/single",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(ProposalItemQuery),
+    params(ProposalItemQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Proposal found", body = DeltaObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -645,6 +649,7 @@ pub async fn get_delta_proposal(
     path = "/delta/proposal",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = SignProposalRequest,
     responses(
         (status = 200, description = "Signature accepted", body = DeltaObject),

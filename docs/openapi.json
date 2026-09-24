@@ -256,6 +256,20 @@
         ],
         "summary": "Configure (register) an account with its authorization set and\ninitial state. Requires the signed `x-pubkey` / `x-signature` /\n`x-timestamp` auth headers.",
         "operationId": "configure",
+        "parameters": [
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1688,6 +1702,18 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -1756,6 +1782,20 @@
         ],
         "summary": "Push a signed state delta for a single-key account. The request\nbody is the JSON-encoded [`DeltaObject`] to commit.",
         "operationId": "push_delta",
+        "parameters": [
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1845,6 +1885,20 @@
         "summary": "Request abandonment of a pending canonicalization candidate whose\ntransaction will never land on-chain (issue #319).",
         "description": "The request records an abandon *intent* and returns `202 Accepted`;\nthe delta stays a candidate — the account stays locked — until the\ncanonicalization worker confirms over the abandon quarantine that the\ntransaction did not land, then discards the delta as\n`client_abandoned` and releases the account (typically well under a\nminute, versus the full submission grace + retry window).\n\nRefused with `GUARDIAN_CANDIDATE_LANDED` (409) when the transaction\nalready landed. Retries are idempotent and preserve the original\nrequest timestamp. Poll `GET /delta` for the resolution: still\n`candidate` → waiting; `canonical` → landed after all; `discarded`\nwith reason `client_abandoned` → abandoned; `retained` → the worker\nalready released the account, but the outcome is still uncertain\n(reconciliation may promote it until the retention TTL expires).",
         "operationId": "abandon_candidate",
+        "parameters": [
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1959,6 +2013,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2047,6 +2113,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2105,6 +2183,20 @@
         ],
         "summary": "Add a cosigner signature to an existing multisig proposal. When the\nsignature threshold is reached the proposal is promoted to a delta.",
         "operationId": "sign_delta_proposal",
+        "parameters": [
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2201,6 +2293,20 @@
         ],
         "summary": "Create a new multisig delta proposal for cosigners to sign.",
         "operationId": "push_delta_proposal",
+        "parameters": [
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2305,6 +2411,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2392,6 +2510,18 @@
               "type": "integer",
               "format": "int64",
               "minimum": 0
+            }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -3330,6 +3460,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -3407,6 +3549,18 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA lookup format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -5571,6 +5725,14 @@
           "client_abandoned"
         ]
       },
+      "EcdsaMessageFormat": {
+        "type": "string",
+        "description": "Message format used by an ECDSA approval.",
+        "enum": [
+          "raw",
+          "eip712"
+        ]
+      },
       "EvmProposal": {
         "type": "object",
         "required": [
@@ -6678,6 +6840,9 @@
               "scheme"
             ],
             "properties": {
+              "message_format": {
+                "$ref": "#/components/schemas/EcdsaMessageFormat"
+              },
               "public_key": {
                 "type": [
                   "string",
@@ -6698,7 +6863,7 @@
             }
           }
         ],
-        "description": "Signature type for delta proposals"
+        "description": "Signature type for delta proposals."
       },
       "ProposalsResponse": {
         "type": "object",

@@ -2,15 +2,9 @@
 //!
 //! Resolves a Miden public-key commitment to the set of account IDs whose
 //! authorization set contains that commitment. Authentication is by
-//! proof-of-possession: the caller submits a signature over a
-//! `LookupAuthMessage` digest; the service derives the public key from the
-//! signature itself (Falcon embeds it; ECDSA recovers it), verifies the
-//! signature, and requires the derived commitment to equal the queried
-//! commitment.
-//!
-//! The `x-pubkey` header is part of the wire format for consistency with
-//! per-account requests but is not consulted on this path — identity is
-//! sourced from the signature.
+//! proof-of-possession over a `LookupAuthMessage` digest. Raw lookup derives
+//! the key from the signature; EIP-712 lookup verifies against `x-pubkey`.
+//! Both require the verified key's commitment to equal the queried commitment.
 //!
 //! The service is intentionally account-less. It does NOT call
 //! `services::resolve_account` because that path requires an `account_id`
@@ -19,8 +13,10 @@
 //! `last_auth_timestamp` to compare against.
 
 use crate::error::{GuardianError, Result};
-use crate::metadata::auth::lookup::{commitment_of, derive_pubkey_from_lookup_signature};
-use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS};
+use crate::metadata::auth::lookup::{
+    commitment_of, derive_pubkey_from_lookup_signature, verify_eip712_lookup_signature,
+};
+use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat};
 use crate::state::AppState;
 use guardian_shared::hex::FromHex;
 use miden_protocol::Word;
@@ -32,10 +28,8 @@ const COMMITMENT_HEX_CHARS: usize = 64;
 #[derive(Debug, Clone)]
 pub struct LookupAccountParams {
     pub key_commitment: String,
-    /// Standard request credentials. The `pubkey` field is not consulted on
-    /// the lookup path — the public key is derived from the signature itself
-    /// (Falcon embeds it; ECDSA recovers it). The field is part of the wire
-    /// format only for API consistency with per-account requests.
+    /// Standard request credentials. Raw lookup derives the key from the
+    /// signature; EIP-712 lookup verifies against the supplied public key.
     pub credentials: Credentials,
 }
 
@@ -83,21 +77,28 @@ pub async fn lookup_account(
         )));
     }
 
-    let (_pubkey_hex, signature_hex, _) = params.credentials.as_signature().ok_or_else(|| {
+    let (pubkey_hex, signature_hex, _) = params.credentials.as_signature().ok_or_else(|| {
         GuardianError::AuthenticationFailed("missing signature credentials".into())
     })?;
 
-    // Derive the pubkey from the signature itself (Falcon embeds it; ECDSA
-    // recovers it). LookupAuthMessage is domain-separated from
-    // AuthRequestMessage by construction (see lookup_auth_message.rs).
-    let parsed_pubkey =
-        derive_pubkey_from_lookup_signature(signature_hex, request_timestamp, key_commitment_word)
-            .map_err(GuardianError::AuthenticationFailed)?;
+    // Raw lookup derives the key from the signature; typed lookup verifies
+    // against the supplied key. Both sign the account-less lookup hash.
+    let parsed_pubkey = match params.credentials.auth_format() {
+        RequestAuthFormat::Raw => derive_pubkey_from_lookup_signature(
+            signature_hex,
+            request_timestamp,
+            key_commitment_word,
+        ),
+        RequestAuthFormat::Eip712 => verify_eip712_lookup_signature(
+            signature_hex,
+            pubkey_hex,
+            request_timestamp,
+            key_commitment_word,
+        ),
+    }
+    .map_err(GuardianError::AuthenticationFailed)?;
 
-    // Bind the recovered key to the queried commitment: this is the
-    // proof-of-possession check. Knowing only the queried commitment is not
-    // enough to forge a signature whose embedded/recovered pubkey hashes to
-    // that same commitment.
+    // Bind the verified key to the queried commitment.
     let derived_commitment = commitment_of(&parsed_pubkey);
     if derived_commitment != normalized_commitment {
         tracing::warn!(

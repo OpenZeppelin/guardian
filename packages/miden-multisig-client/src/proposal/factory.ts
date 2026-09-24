@@ -118,6 +118,10 @@ export class ProposalFactory {
             `Invalid imported proposal signatures: ECDSA signature for ${signature.commitment} is missing publicKey`,
           );
         }
+        if (signature.messageFormat !== undefined &&
+          (scheme !== 'ecdsa' || signature.messageFormat !== 'eip712')) {
+          throw new Error('Invalid imported proposal signatures: unsupported message format');
+        }
 
         return {
           signerId: signature.commitment,
@@ -127,6 +131,7 @@ export class ProposalFactory {
                   scheme,
                   signature: signature.signatureHex,
                   publicKey: signature.publicKey,
+                  ...(signature.messageFormat ? { messageFormat: signature.messageFormat } : {}),
                 }
               : {
                   scheme,

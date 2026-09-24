@@ -551,6 +551,11 @@ impl TestEcdsaSigner {
         let signature = self.secret_key.sign(message);
         format!("0x{}", hex::encode(signature.to_bytes()))
     }
+
+    pub fn sign_prehash(&self, digest: [u8; 32]) -> String {
+        let signature = self.secret_key.sign_prehash(digest);
+        format!("0x{}", hex::encode(signature.to_bytes()))
+    }
 }
 
 /// Generates a Falcon signature for replay-resistant authentication.

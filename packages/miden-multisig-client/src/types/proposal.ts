@@ -214,6 +214,7 @@ export interface ExportedProposal {
     signatureHex: string;
     scheme?: SignatureScheme;
     publicKey?: string;
+    messageFormat?: 'eip712';
     timestamp?: string;
   }>;
   metadata: ProposalMetadata;

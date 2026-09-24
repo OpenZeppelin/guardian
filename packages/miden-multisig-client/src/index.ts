@@ -146,9 +146,12 @@ export type {
 export {
   FalconSigner,
   EcdsaSigner,
+  Eip712Signer,
+  LedgerSigner,
   ParaSigner,
   MidenWalletSigner,
   type ParaSigningContext,
+  type Eip1193SignerProvider,
   type WalletSigningContext,
 } from './signer.js';
 export { PublicKeyFormat } from './utils/key.js';

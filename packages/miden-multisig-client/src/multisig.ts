@@ -27,6 +27,7 @@ import {
   AccountId,
   AdviceMap,
   Endpoint,
+  type Felt,
   FeltArray,
   Note,
   NoteExportFormat,
@@ -80,6 +81,7 @@ import {
 } from './utils/encoding.js';
 import {
   assertEcdsaSignatureRecoverable,
+  buildEip712SignatureAdviceEntry,
   buildSignatureAdviceEntry,
   normalizeSignerCommitment,
   signatureHexToBytes,
@@ -2272,6 +2274,34 @@ export class Multisig {
     );
   }
 
+  private buildCosignerAdviceEntry(
+    cosignerSig: ProposalSignatureEntry,
+    signerCommitment: Word,
+    txCommitmentHex: string,
+  ): { key: Word; values: Felt[] } {
+    const approval = cosignerSig.signature;
+    const txCommitment = Word.fromHex(txCommitmentHex);
+    if (approval.scheme === 'ecdsa' && approval.messageFormat === 'eip712') {
+      if (!approval.publicKey) {
+        throw new Error(`ECDSA proposal signature for ${cosignerSig.signerId} is missing publicKey`);
+      }
+      return buildEip712SignatureAdviceEntry(
+        signerCommitment,
+        txCommitment,
+        approval.signature,
+        approval.publicKey,
+      );
+    }
+
+    const signature = Signature.deserialize(
+      signatureHexToBytes(approval.signature, approval.scheme),
+    );
+    if (approval.scheme === 'ecdsa' && approval.publicKey) {
+      assertEcdsaSignatureRecoverable(approval.signature, txCommitmentHex, approval.publicKey);
+    }
+    return buildSignatureAdviceEntry(signerCommitment, txCommitment, signature);
+  }
+
   private async assembleCustomAdvice(
     proposalId: string,
     signaturesForExecution: ProposalSignatureEntry[],
@@ -2308,22 +2338,8 @@ export class Multisig {
       }
 
       const signerCommitment = Word.fromHex(signerCommitmentHex);
-      const sigBytes = signatureHexToBytes(
-        cosignerSig.signature.signature,
-        cosignerSig.signature.scheme,
-      );
-      const signature = Signature.deserialize(sigBytes);
-      if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
-        assertEcdsaSignatureRecoverable(
-          cosignerSig.signature.signature,
-          normalizedTxCommitmentHex,
-          ecdsaPublicKey,
-        );
-      }
-      const { key, values } = buildSignatureAdviceEntry(
-        signerCommitment,
-        createTxCommitmentWord(),
-        signature,
+      const { key, values } = this.buildCosignerAdviceEntry(
+        cosignerSig, signerCommitment, normalizedTxCommitmentHex,
       );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
@@ -2486,22 +2502,8 @@ export class Multisig {
       }
 
       const signerCommitment = Word.fromHex(signerCommitmentHex);
-      const sigBytes = signatureHexToBytes(
-        cosignerSig.signature.signature,
-        cosignerSig.signature.scheme,
-      );
-      const signature = Signature.deserialize(sigBytes);
-      if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
-        assertEcdsaSignatureRecoverable(
-          cosignerSig.signature.signature,
-          normalizedTxCommitmentHex,
-          ecdsaPublicKey,
-        );
-      }
-      const { key, values } = buildSignatureAdviceEntry(
-        signerCommitment,
-        createTxCommitmentWord(),
-        signature,
+      const { key, values } = this.buildCosignerAdviceEntry(
+        cosignerSig, signerCommitment, normalizedTxCommitmentHex,
       );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
@@ -2591,6 +2593,8 @@ export class Multisig {
             signatureHex: s.signature.signature,
             scheme: s.signature.scheme,
             publicKey: s.signature.scheme === 'ecdsa' ? s.signature.publicKey : undefined,
+            ...(s.signature.scheme === 'ecdsa' && s.signature.messageFormat
+              ? { messageFormat: s.signature.messageFormat } : {}),
             timestamp: s.timestamp,
           }))
         : [];
@@ -2627,6 +2631,8 @@ export class Multisig {
         signatureHex: s.signature.signature,
         scheme: s.signature.scheme,
         publicKey: s.signature.scheme === 'ecdsa' ? s.signature.publicKey : undefined,
+        ...(s.signature.scheme === 'ecdsa' && s.signature.messageFormat
+          ? { messageFormat: s.signature.messageFormat } : {}),
         timestamp: s.timestamp,
       })),
       metadata: proposal.metadata,

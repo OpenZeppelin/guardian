@@ -27,14 +27,14 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.16.0
+npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.17.0-rc.2
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
 miden-multisig-client = "0.17.0"
-miden-client = "=0.16.0"
+miden-client = "=0.17.0-rc.2"
 ```
 
 ### 5-Minute Example
@@ -89,6 +89,22 @@ await multisig.executeProposal(proposal.id);
 
 console.log('Transfer executed!');
 ```
+
+### EIP-712 wallet signing (TypeScript)
+
+`Eip712Signer` accepts a compatible EIP-1193 provider, including a Ledger
+wallet. Connect it to discover the public key, then use it with the same
+`client.load`, proposal creation, `signProposal`, and `executeProposal` calls as
+other signers. `LedgerSigner` remains an alias.
+
+Guardian request authentication uses the `x-auth-format: eip712` header and
+signs `GuardianRequest`. Proposal approvals use `message_format: eip712` on
+the ECDSA signature and sign `MidenTransaction`. These are separate messages
+and signatures; enabling one format does not replace the other.
+
+The proposal ID is the transaction-summary commitment, while the wallet signs
+an EIP-712 digest derived from it. See the TypeScript package README for a
+call-by-call example of the wallet prompts.
 
 ### Prover endpoint and retry policy
 
@@ -315,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 A multisig account requires **M-of-N** signatures to authorize transactions:
 - **Threshold (M)**: Minimum signatures required
 - **Signers (N)**: Total number of authorized cosigners
-- **Commitment**: Each signer's Falcon public key commitment (32 bytes, 64 hex chars)
+- **Commitment**: Each signer's public-key commitment (32 bytes, 64 hex chars)
 
 ### Guardian
 

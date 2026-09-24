@@ -4,7 +4,7 @@ use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::{normalize_payload, resolve_account};
-use guardian_shared::DeltaSignature;
+use guardian_shared::{DeltaSignature, EcdsaMessageFormat};
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
 const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
@@ -163,19 +163,7 @@ pub async fn push_delta_proposal(
     };
     tracing::Span::current().record("commitment", tracing::field::display(&commitment));
 
-    // Extract proposer ID from credentials
-    let proposer_id = match &credentials {
-        Credentials::Signature { pubkey, .. } => resolved
-            .metadata
-            .auth
-            .compute_signer_commitment(pubkey)
-            .map_err(|e| {
-                GuardianError::AuthenticationFailed(format!(
-                    "invalid proposer public key for {}: {}",
-                    account_id, e
-                ))
-            })?,
-    };
+    let proposer_id = resolved.signer_commitment.clone();
     tracing::Span::current().record("proposer_id", tracing::field::display(&proposer_id));
 
     // Parse cosigner signatures from the payload and add timestamp
@@ -185,6 +173,18 @@ pub async fn push_delta_proposal(
         let parsed: DeltaSignature = serde_json::from_value(sig_value).map_err(|e| {
             GuardianError::InvalidDelta(format!("Invalid signature entry in payload: {e}"))
         })?;
+
+        if matches!(
+            &parsed.signature,
+            crate::delta_object::ProposalSignature::Ecdsa {
+                message_format: EcdsaMessageFormat::Eip712,
+                ..
+            }
+        ) {
+            return Err(GuardianError::InvalidDelta(
+                "EIP-712 approvals must be submitted through the signing endpoint".to_string(),
+            ));
+        }
 
         cosigner_sigs.push(CosignerSignature {
             signature: parsed.signature,
@@ -409,6 +409,92 @@ mod tests {
             submit_calls[0].0,
             "0xabababababababababababababababababababababababababababababababab"
         );
+    }
+
+    #[tokio::test]
+    async fn test_push_delta_proposal_with_eip712_proposer() {
+        use crate::metadata::auth::RequestAuthFormat;
+        use guardian_shared::auth_request_eip712::request_digest;
+        use guardian_shared::auth_request_message::AuthRequestMessage;
+        use guardian_shared::auth_request_payload::AuthRequestPayload;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
+        use miden_protocol::utils::serde::Serializable;
+
+        let (state, storage, network, metadata) = create_test_state();
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let key = SigningKey::new();
+        let public_key = key.public_key();
+        let public_key_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+        let proposer_id = format!("0x{}", hex::encode(public_key.to_commitment().to_bytes()));
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenEcdsa {
+                cosigner_commitments: vec![proposer_id.clone()],
+            },
+        ))));
+        let storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x123".to_string(),
+            account_json,
+        )));
+        let _network = network.with_verify_delta(Ok(()));
+
+        let delta_payload = serde_json::json!({
+            "tx_summary": delta_fixture["delta_payload"],
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "change_threshold",
+                "target_threshold": 1,
+                "signer_commitments": [proposer_id]
+            }
+        });
+        let body = serde_json::json!({
+            "account_id": account_id,
+            "nonce": 1,
+            "delta_payload": delta_payload,
+        });
+        let payload = AuthRequestPayload::from_json_serializable(&body).unwrap();
+        let timestamp = state.clock.now().timestamp_millis();
+        let request_hash =
+            AuthRequestMessage::from_account_id_hex(&account_id, timestamp, payload.clone())
+                .unwrap()
+                .to_word();
+        let signature = key.sign_prehash(request_digest(request_hash));
+
+        let result = push_delta_proposal(
+            &state,
+            PushDeltaProposalParams {
+                account_id,
+                nonce: 1,
+                delta_payload,
+                credentials: Credentials::signature(
+                    public_key_hex,
+                    format!("0x{}", hex::encode(signature.to_bytes())),
+                    timestamp,
+                )
+                .with_auth_format(RequestAuthFormat::Eip712)
+                .with_request_payload(payload),
+            },
+        )
+        .await
+        .unwrap();
+
+        match result.delta.status {
+            DeltaStatus::Pending {
+                proposer_id: actual,
+                cosigner_sigs,
+                ..
+            } => {
+                assert_eq!(actual, proposer_id);
+                assert!(cosigner_sigs.is_empty());
+            }
+            _ => panic!("expected pending proposal"),
+        }
+        assert_eq!(storage.get_submit_delta_proposal_calls().len(), 1);
     }
 
     #[tokio::test]

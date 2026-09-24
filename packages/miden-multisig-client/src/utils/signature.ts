@@ -1,7 +1,10 @@
 import { AdviceMap, Felt, FeltArray, Poseidon2, Signature, Word } from '@miden-sdk/miden-sdk';
 import * as midenSdk from '@miden-sdk/miden-sdk';
 import { EcdsaFormat } from './ecdsa.js';
+import { midenTransactionTypedData, typedDataDigest } from './eip712.js';
 import { hexToBytes, normalizeHexWord } from './encoding.js';
+import { wordToBytes } from './word.js';
+import { secp256k1 } from '@noble/curves/secp256k1';
 import type { ProposalSignatureEntry, SignatureScheme } from '../types.js';
 
 export const ECDSA_AUTH_SCHEME_ID = 1;
@@ -41,6 +44,60 @@ export function buildSignatureAdviceEntry(
   const key = Poseidon2.hashElements(elements);
 
   return { key, values: signature.toPreparedSignature(message) };
+}
+
+// Little-endian ASCII "EIP712", matching the protocol advice-key domain.
+const EIP712_SIGNATURE_KEY_DOMAIN = 0x323137504945n;
+
+function littleEndianU32Limbs(bytes: Uint8Array): Felt[] {
+  const limbs: Felt[] = [];
+  for (let i = 28; i >= 0; i -= 4) {
+    const limb = (bytes[i] << 24) | (bytes[i + 1] << 16) | (bytes[i + 2] << 8) | bytes[i + 3];
+    limbs.push(new Felt(BigInt(limb >>> 0)));
+  }
+  return limbs;
+}
+
+export function buildEip712SignatureAdviceEntry(
+  pubkeyCommitment: Word,
+  txSummaryCommitment: Word,
+  signatureHex: string,
+  publicKeyHex: string,
+): { key: Word; values: Felt[] } {
+  const expectedCommitment = tryComputeEcdsaCommitmentHex(publicKeyHex);
+  if (expectedCommitment !== normalizeHexWord(pubkeyCommitment.toHex())) {
+    throw new Error('EIP-712 public key commitment mismatch');
+  }
+  const publicKey = secp256k1.ProjectivePoint.fromHex(publicKeyHex.replace(/^0x/i, ''));
+  const uncompressed = publicKey.toRawBytes(false);
+  const normalizedSignature = EcdsaFormat.normalizeRecoveryByte(signatureHex);
+  if (!/^0x[0-9a-fA-F]{130}$/.test(normalizedSignature)) {
+    throw new Error('EIP-712 signature must be 65 hex-encoded bytes');
+  }
+  const signature = hexToBytes(normalizedSignature);
+  if (signature.length !== 65 || (signature[64] !== 0 && signature[64] !== 1)) {
+    throw new Error('EIP-712 signature must contain a valid recovery ID');
+  }
+  const typedData = midenTransactionTypedData(wordToBytes(txSummaryCommitment));
+  if (!secp256k1.verify(signature.slice(0, 64), typedDataDigest(typedData), publicKey.toRawBytes(true))) {
+    throw new Error('EIP-712 signature does not match the transaction summary');
+  }
+
+  const rawKey = Poseidon2.hashElements(new FeltArray([
+    ...pubkeyCommitment.toFelts(),
+    ...txSummaryCommitment.toFelts(),
+  ]));
+  const domain = new Word(new BigUint64Array([EIP712_SIGNATURE_KEY_DOMAIN, 0n, 0n, 0n]));
+  const key = Poseidon2.hashElements(new FeltArray([...rawKey.toFelts(), ...domain.toFelts()]));
+  return {
+    key,
+    values: [
+      ...littleEndianU32Limbs(uncompressed.slice(1, 33)),
+      ...littleEndianU32Limbs(uncompressed.slice(33, 65)),
+      ...littleEndianU32Limbs(signature.slice(0, 32)),
+      ...littleEndianU32Limbs(signature.slice(32, 64)),
+    ],
+  };
 }
 
 /** Rejects unrecoverable ECDSA signatures before entering WASM. */

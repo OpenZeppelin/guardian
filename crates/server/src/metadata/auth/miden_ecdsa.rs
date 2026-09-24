@@ -1,3 +1,4 @@
+use guardian_shared::auth_request_eip712::request_digest;
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use miden_protocol::Word;
@@ -42,6 +43,26 @@ pub fn verify_request_signature(
     )?;
 
     Ok(commitment_hex)
+}
+
+/// Verifies typed request authentication against an authorized public key.
+pub fn verify_eip712_request_signature(
+    account_id: &str,
+    timestamp: i64,
+    authorized_commitments: &[String],
+    signature: &str,
+    pubkey_hex: &str,
+    request_payload: &AuthRequestPayload,
+) -> Result<String, String> {
+    let request_hash = account_id_timestamp_to_digest(account_id, timestamp, request_payload)?;
+    let digest = request_digest(request_hash);
+    let signature = parse_signature(signature)?;
+    let (public_key, commitment) =
+        authorized_public_key_from_header(account_id, authorized_commitments, pubkey_hex)?;
+    if !public_key.verify_prehash(digest, &signature) {
+        return Err("EIP-712 request signature verification failed".to_string());
+    }
+    Ok(commitment)
 }
 
 /// Convert an account ID and timestamp to a message digest (Word)
@@ -206,6 +227,121 @@ mod tests {
     use miden_protocol::account::AccountId;
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as SecretKey;
     use miden_protocol::utils::serde::Serializable;
+
+    #[test]
+    fn eip712_request_auth_binds_payload_and_signer() {
+        use miden_protocol::account::{AccountIdVersion, AccountType, AssetCallbackFlag};
+
+        let key = SecretKey::new();
+        let public_key = key.public_key();
+        let account_id = AccountId::dummy(
+            [7u8; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            AssetCallbackFlag::Disabled,
+        )
+        .to_hex();
+        let timestamp = 1_700_000_000;
+        let payload = AuthRequestPayload::from_bytes(b"proposal A");
+        let request_hash =
+            account_id_timestamp_to_digest(&account_id, timestamp, &payload).unwrap();
+        let signature = key.sign_prehash(request_digest(request_hash));
+        let mut signature_bytes = signature.to_bytes();
+        let signature_hex = format!("0x{}", hex::encode(&signature_bytes));
+        let public_key_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+        let commitment = commitment_hex(&public_key);
+
+        assert_eq!(
+            verify_eip712_request_signature(
+                &account_id,
+                timestamp,
+                &[commitment.clone()],
+                &signature_hex,
+                &public_key_hex,
+                &payload,
+            ),
+            Ok(commitment.clone()),
+        );
+        assert!(
+            verify_eip712_request_signature(
+                &account_id,
+                timestamp,
+                &[commitment.clone()],
+                &signature_hex,
+                "0x00",
+                &payload,
+            )
+            .is_err()
+        );
+        let other_key = SecretKey::new().public_key();
+        assert!(
+            verify_eip712_request_signature(
+                &account_id,
+                timestamp,
+                &[commitment.clone(), commitment_hex(&other_key)],
+                &signature_hex,
+                &format!("0x{}", hex::encode(other_key.to_bytes())),
+                &payload,
+            )
+            .is_err()
+        );
+        signature_bytes[64] ^= 1;
+        assert_eq!(
+            verify_eip712_request_signature(
+                &account_id,
+                timestamp,
+                &[commitment.clone()],
+                &format!("0x{}", hex::encode(signature_bytes)),
+                &public_key_hex,
+                &payload,
+            ),
+            Ok(commitment.clone()),
+        );
+        assert!(
+            verify_eip712_request_signature(
+                &account_id,
+                timestamp + 1,
+                &[commitment.clone()],
+                &signature_hex,
+                &public_key_hex,
+                &payload,
+            )
+            .is_err()
+        );
+        assert!(
+            verify_eip712_request_signature(
+                &account_id,
+                timestamp,
+                &[commitment.clone()],
+                &signature_hex,
+                &public_key_hex,
+                &AuthRequestPayload::from_bytes(b"proposal B"),
+            )
+            .is_err()
+        );
+        assert!(
+            verify_eip712_request_signature(
+                &account_id,
+                timestamp,
+                &["0x00".to_string()],
+                &signature_hex,
+                &public_key_hex,
+                &payload,
+            )
+            .is_err()
+        );
+        assert!(
+            verify_request_signature(
+                &account_id,
+                timestamp,
+                &[commitment],
+                &signature_hex,
+                &public_key_hex,
+                &payload,
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn test_ecdsa_sign_and_verify_account_id_with_timestamp() {

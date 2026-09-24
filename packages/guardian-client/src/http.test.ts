@@ -281,6 +281,32 @@ describe('GuardianHttpClient', () => {
   });
 
   describe('getState', () => {
+    it('uses the existing signed headers with an EIP-712 format selector', async () => {
+      const signer: Signer = {
+        ...mockSigner,
+        scheme: 'ecdsa',
+        requestAuthFormat: 'eip712',
+      };
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+        }),
+      });
+
+      await client.getState('0x' + 'a'.repeat(30));
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      expect(headers['x-pubkey']).toBe(signer.publicKey);
+      expect(headers['x-signature']).toMatch(/^0x/);
+      expect(headers['x-timestamp']).toMatch(/^\d+$/);
+      expect(headers['x-auth-format']).toBe('eip712');
+    });
+
     it('should get account state with authentication', async () => {
       client.setSigner(mockSigner);
 
@@ -424,6 +450,51 @@ describe('GuardianHttpClient', () => {
   });
 
   describe('pushDeltaProposal', () => {
+    it('lets an EIP-712 signer create an unsigned proposal', async () => {
+      const signer: Signer = {
+        ...mockSigner,
+        scheme: 'ecdsa',
+        requestAuthFormat: 'eip712',
+      };
+      client.setSigner(signer);
+      const accountId = '0x' + 'a'.repeat(30);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: accountId,
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: {
+              tx_summary: { data: 'base64summary' },
+              signatures: [],
+            },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: signer.commitment,
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'd'.repeat(64),
+        }),
+      });
+
+      const result = await client.pushDeltaProposal({
+        accountId,
+        nonce: 1,
+        deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+      });
+
+      expect(result.delta.status).toMatchObject({ proposerId: signer.commitment, cosignerSigs: [] });
+      const request = mockFetch.mock.calls[0][1];
+      expect(request.headers['x-auth-format']).toBe('eip712');
+      expect(request.headers['x-pubkey']).toBe(signer.publicKey);
+      expect(request.headers['x-signature']).toMatch(/^0x/);
+      expect(JSON.parse(request.body).delta_payload.signatures).toEqual([]);
+      expect(signer.signRequest).toHaveBeenCalledOnce();
+    });
+
     it('should push a new delta proposal', async () => {
       client.setSigner(mockSigner);
 
@@ -1110,6 +1181,16 @@ describe('GuardianHttpClient', () => {
       expect(init.headers['x-pubkey']).toBe(signer.publicKey);
       expect(init.headers['x-signature']).toMatch(/^0x/);
       expect(init.headers['x-timestamp']).toMatch(/^\d+$/);
+    });
+
+    it('sends the EIP-712 format header for typed lookup signers', async () => {
+      const signer = { ...makeLookupSigner(), requestAuthFormat: 'eip712' as const };
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ accounts: [] }) });
+
+      await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+
+      expect(mockFetch.mock.calls[0][1].headers['x-auth-format']).toBe('eip712');
     });
 
     it('throws a clear error when no signer is configured', async () => {

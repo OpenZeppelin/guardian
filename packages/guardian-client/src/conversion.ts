@@ -64,6 +64,7 @@ export function fromServerSignature(signature: ServerProposalSignature): Proposa
       scheme: 'ecdsa',
       signature: signature.signature,
       publicKey: signature.public_key,
+      ...(signature.message_format ? { messageFormat: signature.message_format } : {}),
     };
   }
   return signature;
@@ -179,6 +180,7 @@ export function toServerSignature(sig: ProposalSignature): ServerProposalSignatu
       scheme: 'ecdsa',
       signature: sig.signature,
       public_key: sig.publicKey,
+      ...(sig.messageFormat ? { message_format: sig.messageFormat } : {}),
     };
   }
   return sig;

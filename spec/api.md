@@ -45,14 +45,18 @@
 - HTTP request payload digest: RPO256 over canonical JSON bytes of the request payload (`body` for `POST`/`PUT`, query object for `GET`).
 - gRPC request payload digest: RPO256 over protobuf-encoded request bytes.
 - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0, payload_hash_1, payload_hash_2, payload_hash_3])`.
+- ECDSA accounts may send `x-auth-format: eip712` with the same three required headers. The signature is over `GuardianRequest(bytes32 requestHash)` in the `EIP712Domain` `{ name: "Guardian Request", version: "1" }`; `requestHash` is the 32-byte little-endian encoding of the signed message above. An absent format header keeps the raw signature behavior. Falcon does not accept EIP-712 request auth. The existing timestamp skew and replay checks apply to both formats.
+- The typed request message displays a hash, not the decoded HTTP operation or proposal. The client must show the transaction details separately before prompting a hardware wallet.
+- EIP-712 ECDSA signatures use the Miden `r || s || v` encoding with `v` normalized to `0` or `1` before submission.
 
 ### Lookup Request Signing
 
 The `GET /state/lookup` endpoint and the matching `GetAccountByKeyCommitment` gRPC method use a dedicated, account-less signed-message format because the account ID is the very value the caller is trying to discover. The format is **domain-separated by construction** from `Miden Request Signing` above so a signature crafted for one shape cannot validate against the other in either direction.
+Raw Falcon and ECDSA signatures remain supported. ECDSA signers may instead send `x-auth-format: eip712` and sign `GuardianLookup(bytes32 lookupHash)` in the `EIP712Domain` `{ name: "Guardian Lookup", version: "1" }`, where `lookupHash` is the 32-byte little-endian encoding of the lookup message below.
 
 - Domain tag: `DOMAIN_TAG = RPO256(felts(b"guardian.lookup.v1"))` — a fixed 4-felt word, computed once and embedded in the binary. Future incompatible changes MUST bump the version segment.
 - Signed message format: `RPO256_hash([DOMAIN_TAG_w0..w3, timestamp_ms, key_commitment_w0..w3])`.
-- Authentication: proof-of-possession of the queried commitment. Identity is derived from the signature itself — Falcon signatures embed the public key, ECDSA signatures recover it via the recovery byte. The server then requires `commitment_of(derived_pk) == key_commitment` after cryptographic signature verification. `x-pubkey` is sent on the wire for parity with per-account requests but is not consulted on this path; signers that only expose the 32-byte commitment (e.g., browser Miden wallet) work because the signature is what proves possession.
+- Authentication: proof-of-possession of the queried commitment. Raw signatures derive the identity from the signature itself — Falcon embeds the public key and ECDSA recovers it. For EIP-712, the server verifies the typed digest against `x-pubkey`. Both paths require the verified public key's commitment to equal the queried commitment. Raw lookup continues to ignore `x-pubkey`.
 - Replay protection: `MAX_TIMESTAMP_SKEW_MS` skew window only. No per-commitment last-seen tracking; a replayed valid request returns the same `account_id` to a key holder who already obtained it.
 
 ### EVM Session Authentication
@@ -242,6 +246,8 @@ EVM proposal response:
   "signature": { "scheme": "ecdsa", "signature": "0x...", "public_key": "0x..." }
 }
 ```
+
+For an EIP-712 Miden approval, the same endpoint and envelope use `"message_format": "eip712"` inside the ECDSA signature. The signed type is `MidenTransaction(bytes32 txSummaryHash)` under `{ name: "Miden Transaction", version: "1" }`. `txSummaryHash` is the transaction-summary commitment encoded as four little-endian `u64` field elements. The ECDSA signature is `r || s || v`; Guardian requires `v` as `0/1` and verifies the approval against the stored summary and the request signer. Wallets returning `27/28` must normalize it before submission. The request-auth signature remains a separate signature over `GuardianRequest`.
 
 - Miden Falcon signer IDs are signer commitments.
 - Miden ECDSA signer IDs are signer commitments.
@@ -503,7 +509,7 @@ Every gRPC method is rate limited from the same store as the HTTP surface;
 see [Rate Limiting](#rate-limiting) for the keying rules and the rejection
 shape.
 
-`GetAccountByKeyCommitment` mirrors the HTTP `GET /state/lookup` route. Authentication is carried in gRPC metadata (`x-pubkey`, `x-signature`, `x-timestamp`) and signed under the **Lookup Request Signing** format. Errors propagate as `tonic::Status` via the structured `GuardianError` mapping (`InvalidInput → INVALID_ARGUMENT`, `AuthenticationFailed → UNAUTHENTICATED`, `StorageError → INTERNAL`); the response contains a `repeated AccountRef accounts` field, with empty list as the success-with-no-matches signal.
+`GetAccountByKeyCommitment` mirrors the HTTP `GET /state/lookup` route. Authentication is carried in gRPC metadata (`x-pubkey`, `x-signature`, `x-timestamp`, and optional `x-auth-format`) and signed under the **Lookup Request Signing** format. Errors propagate as `tonic::Status` via the structured `GuardianError` mapping (`InvalidInput → INVALID_ARGUMENT`, `AuthenticationFailed → UNAUTHENTICATED`, `StorageError → INTERNAL`); the response contains a `repeated AccountRef accounts` field, with empty list as the success-with-no-matches signal.
 
 ## Metrics Endpoint (Prometheus)
 

@@ -132,7 +132,7 @@ impl GuardianClient {
     ///
     /// The server derives the public key from the signature itself (Falcon
     /// embeds it; ECDSA recovers it). The `x-pubkey` header is sent for
-    /// API consistency but ignored by the lookup verification path.
+    /// API consistency; raw lookup derives identity from the signature.
     fn add_lookup_auth_metadata<T: prost::Message + std::fmt::Debug>(
         &self,
         request: &mut tonic::Request<T>,
@@ -583,14 +583,20 @@ fn proto_signature_from_json(signature: &JsonProposalSignature) -> ProtoProposal
             scheme: "falcon".to_string(),
             signature: signature.clone(),
             public_key: None,
+            message_format: String::new(),
         },
         JsonProposalSignature::Ecdsa {
             signature,
             public_key,
+            message_format,
         } => ProtoProposalSignature {
             scheme: "ecdsa".to_string(),
             signature: signature.clone(),
             public_key: public_key.clone(),
+            message_format: match message_format {
+                guardian_shared::EcdsaMessageFormat::Raw => String::new(),
+                guardian_shared::EcdsaMessageFormat::Eip712 => "eip712".to_string(),
+            },
         },
     }
 }
