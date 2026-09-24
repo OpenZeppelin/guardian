@@ -146,6 +146,7 @@ export type {
 export {
   FalconSigner,
   EcdsaSigner,
+  Eip712Signer,
   LedgerSigner,
   ParaSigner,
   MidenWalletSigner,

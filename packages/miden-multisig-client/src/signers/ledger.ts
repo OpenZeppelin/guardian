@@ -19,7 +19,7 @@ export interface Eip1193SignerProvider {
   request(args: { method: string; params: unknown[] }): Promise<unknown>;
 }
 
-export class LedgerSigner implements Signer {
+export class Eip712Signer implements Signer {
   readonly scheme = 'ecdsa';
   readonly requestAuthFormat = 'eip712';
   readonly proposalMessageFormat = 'eip712';
@@ -27,10 +27,10 @@ export class LedgerSigner implements Signer {
   readonly commitment: string;
   readonly address: string;
 
-  static async connect(provider: Eip1193SignerProvider): Promise<LedgerSigner> {
+  static async connect(provider: Eip1193SignerProvider): Promise<Eip712Signer> {
     const accounts = await provider.request({ method: 'eth_requestAccounts', params: [] });
     if (!Array.isArray(accounts) || typeof accounts[0] !== 'string') {
-      throw new Error('Ledger did not provide an Ethereum address');
+      throw new Error('Wallet did not provide an Ethereum address');
     }
     const address = accounts[0];
     const challenge = crypto.getRandomValues(new Uint8Array(32));
@@ -40,17 +40,17 @@ export class LedgerSigner implements Signer {
       params: [address, JSON.stringify(data)],
     });
     if (typeof result !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(result)) {
-      throw new Error('Ledger returned an invalid key-discovery signature');
+      throw new Error('Wallet returned an invalid key-discovery signature');
     }
     const signature = hexToBytes(EcdsaFormat.normalizeRecoveryByte(result));
     if (signature[64] !== 0 && signature[64] !== 1) {
-      throw new Error('Ledger returned an invalid recovery ID');
+      throw new Error('Wallet returned an invalid recovery ID');
     }
     const publicKey = secp256k1.Signature.fromCompact(signature.slice(0, 64))
       .addRecoveryBit(signature[64])
       .recoverPublicKey(typedDataDigest(data))
       .toRawBytes(true);
-    return new LedgerSigner(provider, bytesToHex(publicKey), address);
+    return new Eip712Signer(provider, bytesToHex(publicKey), address);
   }
 
   constructor(
@@ -59,25 +59,25 @@ export class LedgerSigner implements Signer {
     address: string,
   ) {
     if (!EcdsaFormat.isValidPublicKeyPoint(publicKey)) {
-      throw new Error('Invalid Ledger public key');
+      throw new Error('Invalid wallet public key');
     }
     this.publicKey = EcdsaFormat.compressPublicKey(publicKey);
     const commitment = tryComputeEcdsaCommitmentHex(this.publicKey);
     if (!commitment) {
-      throw new Error('Cannot derive the Miden commitment for the Ledger public key');
+      throw new Error('Cannot derive the Miden commitment for the wallet public key');
     }
     this.commitment = commitment;
 
     const uncompressed = secp256k1.ProjectivePoint.fromHex(this.publicKey.slice(2)).toRawBytes(false);
     const derivedAddress = bytesToHex(keccak_256(uncompressed.slice(1)).slice(-20));
     if (derivedAddress.toLowerCase() !== address.toLowerCase()) {
-      throw new Error('Ledger address does not match its public key');
+      throw new Error('Wallet address does not match its public key');
     }
     this.address = address;
   }
 
   signAccountIdWithTimestamp(): Promise<string> {
-    throw new Error('LedgerSigner requires request-bound Guardian authentication');
+    throw new Error('Eip712Signer requires request-bound Guardian authentication');
   }
 
   async signRequest(
@@ -105,16 +105,18 @@ export class LedgerSigner implements Signer {
       params: [this.address, JSON.stringify(data)],
     });
     if (typeof result !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(result)) {
-      throw new Error('Ledger returned an invalid EIP-712 signature');
+      throw new Error('Wallet returned an invalid EIP-712 signature');
     }
     const signatureHex = EcdsaFormat.normalizeRecoveryByte(result);
     const signature = hexToBytes(signatureHex);
     if (signature[64] !== 0 && signature[64] !== 1) {
-      throw new Error('Ledger returned an invalid ECDSA recovery ID');
+      throw new Error('Wallet returned an invalid ECDSA recovery ID');
     }
     if (!secp256k1.verify(signature.slice(0, 64), typedDataDigest(data), hexToBytes(this.publicKey))) {
-      throw new Error('Ledger signature was produced by a different key');
+      throw new Error('Wallet signature was produced by a different key');
     }
     return signatureHex;
   }
 }
+
+export { Eip712Signer as LedgerSigner };

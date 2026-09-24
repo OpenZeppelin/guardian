@@ -6,21 +6,21 @@ import { bytesToHex, hexToBytes } from './encoding.js';
 import { guardianLookupTypedData, guardianRequestTypedData, midenTransactionTypedData, typedDataDigest } from './eip712.js';
 import { buildEip712SignatureAdviceEntry, tryComputeEcdsaCommitmentHex } from './signature.js';
 import { wordToBytes } from './word.js';
+import metamaskAdvice from '../../tests/fixtures/eip712-metamask-advice.json';
 
 describe('EIP-712 typed data and transaction advice', () => {
   it('accepts the protocol MetaMask signTypedData v4 vector', () => {
-    const publicKey = '0x034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa';
-    const signature = '0x13deb6c6f8903c58117a86d11ce7140af8a1d90dc9a25cb03d1c5972deae7ae8'
-      + '06dda37b581ebcb290000fc2f460c964c5fbca5e6ad4b77109609db80743ca8d1b';
-    const summary = Word.fromHex('0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
+    const { publicKey, signature } = metamaskAdvice;
+    const summary = Word.fromHex(metamaskAdvice.txSummaryHash);
     const commitmentHex = tryComputeEcdsaCommitmentHex(publicKey);
     if (!commitmentHex) throw new Error('Could not derive the fixture public-key commitment');
+    expect(commitmentHex).toBe(metamaskAdvice.publicKeyCommitment);
 
     const advice = buildEip712SignatureAdviceEntry(
       Word.fromHex(commitmentHex), summary, signature, publicKey,
     );
-    expect(advice.values).toHaveLength(32);
-    expect(advice.key.toHex()).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(advice.key.toHex()).toBe(metamaskAdvice.adviceKey);
+    expect(advice.values.map(value => Number(value.asInt()))).toEqual(metamaskAdvice.witness);
   });
 
   it('matches viem typed-data hashes and the Miden transaction vector', () => {

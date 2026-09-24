@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { privateKeyToAccount } from 'viem/accounts';
-import { LedgerSigner } from './ledger.js';
+import { Eip712Signer, LedgerSigner } from './ledger.js';
 import { bytesToHex } from '../utils/encoding.js';
 
 vi.mock('../utils/signature.js', () => ({
@@ -19,6 +19,10 @@ vi.mock('../lookupAuth.js', () => ({
 }));
 
 describe('LedgerSigner', () => {
+  it('keeps LedgerSigner as an alias for the EIP-1193 signer', () => {
+    expect(LedgerSigner).toBe(Eip712Signer);
+  });
+
   const privateKey = new Uint8Array(32).fill(7);
   const account = privateKeyToAccount(`0x${'07'.repeat(32)}`);
   const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true));

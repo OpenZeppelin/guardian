@@ -247,7 +247,7 @@ EVM proposal response:
 }
 ```
 
-For an EIP-712 Miden approval, the same endpoint and envelope use `"message_format": "eip712"` inside the ECDSA signature. The signed type is `MidenTransaction(bytes32 txSummaryHash)` under `{ name: "Miden Transaction", version: "1" }`. `txSummaryHash` is the transaction-summary commitment encoded as four little-endian `u64` field elements. The ECDSA signature is `r || s || v`; Guardian accepts `v` as `0/1` or `27/28` and verifies the approval against the stored summary and the request signer. The request-auth signature remains a separate signature over `GuardianRequest`.
+For an EIP-712 Miden approval, the same endpoint and envelope use `"message_format": "eip712"` inside the ECDSA signature. The signed type is `MidenTransaction(bytes32 txSummaryHash)` under `{ name: "Miden Transaction", version: "1" }`. `txSummaryHash` is the transaction-summary commitment encoded as four little-endian `u64` field elements. The ECDSA signature is `r || s || v`; Guardian requires `v` as `0/1` and verifies the approval against the stored summary and the request signer. Wallets returning `27/28` must normalize it before submission. The request-auth signature remains a separate signature over `GuardianRequest`.
 
 - Miden Falcon signer IDs are signer commitments.
 - Miden ECDSA signer IDs are signer commitments.

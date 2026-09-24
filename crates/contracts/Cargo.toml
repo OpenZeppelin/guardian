@@ -24,6 +24,7 @@ miden-confidential-contracts = { path = ".", features = ["testing"] }
 miden-client = { workspace = true, features = ["testing", "tonic"] }
 miden-tx = { workspace = true }
 miden-testing = { workspace = true }
+miden-core-lib = "=0.33.0"
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "fs"] }
 
 rand = { workspace = true }
@@ -31,3 +32,4 @@ rand_chacha = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
 assert_matches = { workspace = true }
+rstest = { workspace = true }

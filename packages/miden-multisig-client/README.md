@@ -75,12 +75,13 @@ const client = new MultisigClient(midenClient, {
 });
 ```
 
-For an ECDSA cosigner using a Ledger-compatible EIP-1193 provider, call
-`LedgerSigner.connect(provider)` once to select the Ethereum address and
+For an ECDSA cosigner using an EIP-1193 wallet (including Ledger), call
+`Eip712Signer.connect(provider)` once to select the Ethereum address and
 recover its secp256k1 public key from a dedicated key-discovery signature.
 Alternatively, pass an already-enrolled public key and its matching address
-to `new LedgerSigner(provider, publicKeyHex, address)`. Use the resulting signer
-with the same `client.load(accountId, signer)`, proposal-creation methods, and
+to `new Eip712Signer(provider, publicKeyHex, address)`. `LedgerSigner` remains
+an alias. Use the resulting signer with the same `client.load(accountId, signer)`,
+proposal-creation methods, and
 `multisig.signProposal(id)` flow as a raw signer. The Ledger user can create
 the proposal, then approve it. The approval and Guardian submission each
 require a separate `eth_signTypedData_v4` signature; authenticated reads in
@@ -91,6 +92,24 @@ not human-readable transferred assets. `recoverByKey` uses a separate
 EIP-712 execution requires an account compiled with the Miden 0.17 multisig
 authentication component; changing Guardian's signature format does not upgrade
 an older account's code root.
+
+For example, a Ledger-backed proposer follows the same proposal lifecycle as a
+raw signer:
+
+```typescript
+import { Eip712Signer } from '@openzeppelin/miden-multisig-client';
+
+const signer = await Eip712Signer.connect(provider); // key-discovery prompt
+const multisig = await client.load(accountId, signer); // authenticated reads may prompt
+const proposal = await multisig.createAddSignerProposal(newSignerCommitment); // request-auth prompt
+await multisig.signProposal(proposal.id); // EIP-712 approval and request-auth prompts
+await multisig.executeProposal(proposal.id); // authenticated calls may prompt again
+```
+
+The proposal ID is the transaction-summary commitment. The wallet signs an
+EIP-712 digest derived from that commitment, so the digest displayed by the
+wallet need not equal the proposal ID. The approval signature and the
+Guardian request-authentication signature are separate.
 
 The nested `prover` configuration is optional. Without it, the injected Miden
 client's prover is preserved. By default, cloneable remote provers get two total
@@ -574,7 +593,7 @@ if (recovered.length === 0) {
 ```
 
 The `Signer` passed to `recoverByKey` MUST implement `signLookupMessage`
-(the bundled `FalconSigner`, `EcdsaSigner`, and `LedgerSigner` do). The lookup
+(the bundled `FalconSigner`, `EcdsaSigner`, and `Eip712Signer` do). The lookup
 endpoint authenticates by proof-of-possession of the queried commitment — same key
 that already authenticates per-account requests, so revealing the account ID
 does not grant any new capability. See the design doc for the security
