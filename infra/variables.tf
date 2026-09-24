@@ -798,3 +798,54 @@ variable "server_log_group_name" {
   type        = string
   default     = ""
 }
+
+variable "github_oidc_enabled" {
+  description = "Manage the GitHub Actions OIDC roles used by .github/workflows/aws-deploy.yml. The roles are shared by every stack in the account, so enable this on exactly one stack"
+  type        = bool
+  default     = false
+}
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of the GitHub Actions OIDC identity provider in the root account (arn:aws:iam::<root-account>:oidc-provider/token.actions.githubusercontent.com). Required when github_oidc_enabled is true"
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_root_account_role_arn" {
+  description = "Role assumed in the root account to manage the OIDC bootstrap role. When github_oidc_enabled is true, set this or github_oidc_root_account_profile"
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_root_account_profile" {
+  description = "Named AWS CLI profile that already resolves to root-account credentials, used instead of github_oidc_root_account_role_arn when the stack credentials cannot assume a root-account role"
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_role_name" {
+  description = "Name of the OIDC bootstrap role in the root account"
+  type        = string
+  default     = "github-actions-solutions-account-guardian-oidc-role"
+}
+
+variable "github_deploy_role_name" {
+  description = "Name of the deploy role in this account that the bootstrap role chains into"
+  type        = string
+  default     = "GithubOIDCGuardianRole"
+}
+
+variable "github_oidc_subjects" {
+  description = "GitHub OIDC subject claims allowed to assume the bootstrap role, matched exactly; one per GitHub environment of the AWS Deploy workflow"
+  type        = list(string)
+  default = [
+    "repo:OpenZeppelin/guardian:environment:devnet",
+    "repo:OpenZeppelin/guardian:environment:testnet",
+  ]
+}
+
+variable "github_deploy_stack_names" {
+  description = "Stacks (stack_name values) the AWS Deploy workflow may roll out; scopes the deploy role to their ECR repositories, ECS services, task definitions, and task roles under the default resource naming"
+  type        = list(string)
+  default     = ["guardian", "guardian-prod"]
+}

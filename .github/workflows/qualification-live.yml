@@ -1,0 +1,402 @@
+---
+name: Qualification (live)
+
+# The live profile drives real transactions funded from a treasury, so the
+# treasury key must never enter a process running code from an unreviewed ref.
+#
+# There is exactly one checkout, and it is always the default branch. The ref
+# under test is not checked out here: a second checkout of an unreviewed ref in
+# this job is the original leak, because editing the harness that ref carries is
+# enough to read the key without touching this file. Qualifying another ref
+# therefore requires the funding handoff first, where a trusted step funds
+# ephemeral accounts and hands the driver only those ephemeral keys.
+#
+# BEFORE ARMING QUAL_TREASURY_KEY: lock the deployment branches of the
+# qualification-devnet and qualification-testnet environments to the default
+# branch. The guard job below inspects `inputs.ref` but cannot constrain
+# `github.ref`: anyone with write access can dispatch this workflow from a
+# branch whose edited copy of this file drops the guard entirely, and the job
+# would still enter the environment. Only the environment's own branch
+# restriction closes that, so the guard job is defence in depth, never the
+# control.
+#
+# The nightly schedule covers both networks, and all three of its preconditions
+# are met. An environment-blocked run exits 0 rather than leaving the job red
+# through a Miden upgrade window, and a live failure the network caused is
+# classified `environment` so it does not page as a product defect either. A
+# failure that is the product's opens or updates a tracking issue, so a red
+# night reaches someone. The `qualification-devnet` and `qualification-testnet`
+# environments exist, hold QUAL_TREASURY_KEY, and have their deployment branches
+# locked to the default branch.
+
+on:
+  schedule:
+    # Nightly, after the working day in both hemispheres and away from the hour
+    # boundary where GitHub's scheduler is most contended.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Target network"
+        type: choice
+        required: true
+        options:
+          - testnet
+          - devnet
+      ref:
+        description: "Ref to qualify (must be the default branch until the treasury handoff exists)"
+        type: string
+        required: false
+      image-tag:
+        description: "Published image to qualify, e.g. v1.2.3 (leave blank to build from ref)"
+        type: string
+        required: false
+      pairing:
+        description: "Image and SDK pairing"
+        type: choice
+        required: false
+        default: branch
+        options:
+          - branch
+          - release
+          # `published` is deliberately absent: it would have to install the
+          # SDKs from the registry outside this workspace, and until it does a
+          # pass would claim consumer coverage nobody has.
+      sdk:
+        description: "Restrict to one SDK (leave blank for both)"
+        type: choice
+        required: false
+        default: both
+        options:
+          - both
+          - rust
+          - typescript
+      core-only:
+        description: "Run only the core subset"
+        type: boolean
+        required: false
+        default: false
+
+# The treasury-backed job runs a whole scenario harness, which executes this
+# repository's code and its dependencies with `QUAL_TREASURY_KEY` in scope. It
+# gets read and nothing else. Opening the tracking issue for a failed night
+# needs a write, so that work moved to a job of its own below, which touches no
+# treasury and runs no scenario code.
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Guard
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'OpenZeppelin'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      # Runs before the environment's protection rules so an unsafe request is
+      # rejected without the treasury environment ever being entered.
+      - name: Reject a ref the treasury must not follow
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ -z "${REQUESTED_REF}" || "${REQUESTED_REF}" == "${DEFAULT_BRANCH}" ]]; then
+            echo "ref is the default branch; proceeding"
+            exit 0
+          fi
+          if [[ "${REQUESTED_REF}" == refs/pull/* || "${REQUESTED_REF}" == pull/* ]]; then
+            echo "::error::Refusing a pull-request ref. The scenario driver would run from that ref with the treasury key in its environment."
+            exit 1
+          fi
+          echo "::error::Refusing ref '${REQUESTED_REF}'. Until funding is separated from scenario execution, the treasury is only exposed to the default branch's harness."
+          echo "::error::Fund ephemeral accounts from a trusted step and hand the scenario driver only those ephemeral keys, then relax this guard."
+          exit 1
+
+  live:
+    name: Live Profile (${{ matrix.network }})
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    if: github.repository_owner == 'OpenZeppelin'
+    strategy:
+      # Both networks nightly, one on dispatch. `fail-fast: false` so a devnet
+      # outage does not cancel the testnet run, which is the one that gates a
+      # release.
+      fail-fast: false
+      matrix:
+        network: ${{ github.event_name == 'schedule' && fromJSON('["testnet","devnet"]') || fromJSON(format('["{0}"]', inputs.network)) }}
+    # Per network, and on the job rather than the workflow: `matrix` is not in
+    # scope at workflow level, so grouping there collapsed every scheduled run
+    # into one key with an empty suffix and never queued it against a dispatched
+    # run of the same network. Two runs would then spend the same treasury
+    # concurrently, and the harness lock is a `flock` on one runner that cannot
+    # span GitHub-hosted VMs.
+    concurrency:
+      group: qualification-live-${{ matrix.network }}
+      cancel-in-progress: false
+    environment: qualification-${{ matrix.network }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout the harness from the default branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@351f82a4dc29e4159746a068ed925da17341219f # 1.89.0
+        with:
+          toolchain: 1.98.1
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpq-dev
+
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-rust
+          cache-on-failure: true
+
+      - name: Install Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: packages/package-lock.json
+
+      # The stack script drives the TypeScript leg through `test:qualification`,
+      # which needs the workspace installed and both clients built. Their
+      # `dist/` is gitignored, and the qualification runner imports the operator
+      # client at module scope through `actions/operator.ts`, so a missing build
+      # is a package-resolution failure before any scenario runs, on either
+      # profile rather than only the operator ones.
+      - name: Install workspace dependencies
+        working-directory: packages
+        run: npm ci
+
+      - name: Build the GUARDIAN clients
+        working-directory: packages
+        run: |
+          npm run build -w @openzeppelin/guardian-client
+          npm run build -w @openzeppelin/guardian-operator-client
+
+      # A dispatched run was asked for, so a missing treasury is an error. A
+      # scheduled one is the standing nightly, and until the environments are
+      # created and branch-locked it has nothing to run with: reporting that as
+      # a failure every night, and opening an issue about it, is how a nightly
+      # becomes noise nobody reads.
+      - name: Verify the environment carries a treasury
+        id: treasury
+        env:
+          TREASURY_KEY: ${{ secrets.QUAL_TREASURY_KEY }}
+          SCHEDULED: ${{ github.event_name == 'schedule' }}
+        run: |
+          if [[ -n "${TREASURY_KEY}" ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "present=false" >> "$GITHUB_OUTPUT"
+          if [[ "${SCHEDULED}" == "true" ]]; then
+            echo "::notice::Environment 'qualification-${{ matrix.network }}' has no QUAL_TREASURY_KEY yet; nothing to qualify."
+            exit 0
+          fi
+          echo "::error::GitHub environment 'qualification-${{ matrix.network }}' is missing QUAL_TREASURY_KEY"
+          exit 1
+
+      - name: Run the live profile
+        id: run
+        if: steps.treasury.outputs.present == 'true'
+        env:
+          QUAL_TREASURY_KEY: ${{ secrets.QUAL_TREASURY_KEY }}
+          NETWORK: ${{ matrix.network }}
+          EVENT_NAME: ${{ github.event_name }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          PAIRING: ${{ inputs.pairing }}
+          SDK: ${{ inputs.sdk }}
+          CORE_ONLY: ${{ inputs.core-only }}
+          REQUESTED_BY: ${{ github.actor }}
+        run: |
+          # The nightly is a schedule, and the run result records the trigger
+          # it was actually started by; labelling every scheduled run as a
+          # dispatch would misattribute it to a person.
+          trigger=dispatch
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            trigger=schedule
+          fi
+          args=(--profile live --network "${NETWORK}" --trigger "${trigger}")
+          args+=(--requested-by "${REQUESTED_BY}")
+          args+=(--out "${GITHUB_WORKSPACE}/qualification-results")
+          if [[ -n "${IMAGE_TAG}" ]]; then
+            args+=(--image-source pulled --image-tag "ghcr.io/openzeppelin/guardian:${IMAGE_TAG}")
+          fi
+          # `pairing` defaults to `branch`, and `branch` means the image was
+          # built from this checkout. Forwarding that alongside a pulled image
+          # makes `qual_check_pairing` refuse the run, so the published-image
+          # path could never be taken from the default form. Let the harness
+          # infer it from the image source unless the caller asked for something
+          # other than the default.
+          if [[ -n "${PAIRING}" && ! ( -n "${IMAGE_TAG}" && "${PAIRING}" == "branch" ) ]]; then
+            args+=(--pairing "${PAIRING}")
+          fi
+          if [[ -n "${SDK}" && "${SDK}" != "both" ]]; then
+            args+=(--sdk "${SDK}")
+          fi
+          if [[ "${CORE_ONLY}" == "true" ]]; then
+            args+=(--core-only)
+          fi
+
+          set +e
+          qualification/stack/run.sh "${args[@]}"
+          code=$?
+          set -e
+          echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
+
+          # An environment-blocked run is not a failure. Leaving the job red
+          # through a Miden upgrade window is how a signal stops being read.
+          if [[ "${code}" == "3" ]]; then
+            echo "::notice::Environment blocked; the network could not serve this run."
+            exit 0
+          fi
+          exit "${code}"
+
+      - name: Confirm the secret scan passed
+        if: always()
+        id: scan
+        run: |
+          if [[ -f qualification-results/.scan-passed ]]; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Artifacts are not being uploaded because the secret scan did not pass."
+          fi
+
+      - name: Upload results and diagnostics
+        if: always() && steps.scan.outputs.clean == 'true'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: qualification-live-${{ matrix.network }}-${{ github.run_id }}
+          path: qualification-results/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # A nightly that goes red and notifies nobody trains people to ignore it,
+      # but opening the issue from here would mean holding `issues: write` in
+      # the job that also holds the treasury key. This leaves a marker instead,
+      # and the `report` job below turns markers into issues.
+      #
+      # The marker carries the network and the harness exit code, both of which
+      # are already in the run's public log, and nothing else.
+      - name: Mark the failure for the reporting job
+        if: failure() && github.event_name == 'schedule'
+        env:
+          NETWORK: ${{ matrix.network }}
+          EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        run: |
+          mkdir -p failure-marker
+          printf '%s %s\n' "${NETWORK}" "${EXIT_CODE:-unknown}" > "failure-marker/${NETWORK}.txt"
+
+      - name: Upload the failure marker
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: qualification-failure-${{ matrix.network }}
+          path: failure-marker/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          NETWORK: ${{ matrix.network }}
+          EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        run: |
+          {
+            echo "## Live qualification: ${NETWORK}"
+            echo
+            echo "Status: ${JOB_STATUS} (harness exit ${EXIT_CODE:-unknown})"
+            echo
+            echo "This result informs the release decision; it does not block publication."
+            echo "Read \`qualification_claim\` for what it proved, and \`classification\`"
+            echo "on any failure to tell a product defect from a network outage."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The same lines a local run prints. A green night that lost scenarios
+          # to the network reads as a clean one unless the losses are in front
+          # of the reader.
+          # shellcheck source=qualification/stack/lib/summary.sh
+          source qualification/stack/lib/summary.sh
+          {
+            echo
+            echo '```'
+            qual_print_summary qualification-results/merged/report.json "${QUAL_RUN_ID:-}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Separated from the run so the permission it needs is not held anywhere near
+  # the treasury. It downloads markers, runs no scenario code, and touches no
+  # secret beyond the token that opens the issue.
+  report:
+    name: Report a failed night
+    needs: live
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'schedule' && needs.live.result == 'failure'
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Collect the failure markers
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: qualification-failure-*
+          path: markers
+          merge-multiple: true
+
+      # One issue per network, reopened and commented rather than a new one each
+      # night, so a week of failures is one thread instead of seven.
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          shopt -s nullglob
+          markers=(markers/*.txt)
+          if (( ${#markers[@]} == 0 )); then
+            echo "::warning::The live job failed but left no marker, so there is nothing to report."
+            exit 0
+          fi
+          for marker in "${markers[@]}"; do
+            read -r network exit_code < "${marker}"
+            title="Nightly qualification failing on ${network}"
+            body="Harness exit ${exit_code}. Run: ${RUN_URL}
+
+            Read \`classification\` on the failing scenario before treating this as a
+            product defect: exit 2 is the harness, exit 1 is the product. A
+            scenario the network broke under is classified \`environment\`, does not
+            block the conclusion, and never reaches here; neither does an
+            environment-blocked run."
+            existing="$(gh issue list --state all --search "\"${title}\" in:title" \
+              --json number,state --jq '.[0].number' || true)"
+            state="$(gh issue list --state all --search "\"${title}\" in:title" \
+              --json number,state --jq '.[0].state' || true)"
+            if [[ -n "${existing}" ]]; then
+              if [[ "${state}" == "CLOSED" ]]; then
+                gh issue reopen "${existing}"
+              fi
+              gh issue comment "${existing}" --body "${body}"
+            else
+              gh issue create --title "${title}" --body "${body}" --label bug
+            fi
+          done

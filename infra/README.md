@@ -388,6 +388,14 @@ This Terraform stack is RDS-only. Existing stacks that still run ECS-hosted Post
 5. Validate the public Guardian endpoints.
 6. Confirm the old Postgres ECS and Cloud Map resources are gone from AWS before considering the cutover complete.
 
+## GitHub Actions OIDC roles
+
+`oidc.tf` can manage the IAM roles behind OpenZeppelin's **AWS Deploy** GitHub
+Actions workflow. They are off by default (`github_oidc_enabled = false`) and
+are not needed for `scripts/aws-deploy.sh`. Setup, adoption of the existing
+roles, and reuse from a fork are covered in
+[`docs/runbooks/github-oidc-deploy-roles.md`](../docs/runbooks/github-oidc-deploy-roles.md).
+
 ## Storage encryption key
 
 Optional storage-at-rest encryption (see

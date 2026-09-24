@@ -497,14 +497,26 @@ integration extends rather than replaces its advice map.
 > Cosigners must verify the raw `tx_summary` they are signing — not trust the
 > label or description.
 
-### Offline Workflow
+### Side-channel (offline) workflow
 
-For air-gapped or offline signing scenarios:
+For moving a proposal between cosigners as a document instead of through
+GUARDIAN's pending set.
+
+> **This is off-channel signature collection, not air-gapped operation.**
+> Nothing here avoids the chain: executing any proposal, `switch_guardian`
+> included, submits a transaction to the Miden network. What `switch_guardian`
+> alone avoids is the *current* GUARDIAN, which is the point of it, since the
+> flow exists for leaving a GUARDIAN that will not cooperate. Even that path
+> reaches the network to verify the new endpoint and to sync before it builds
+> the proposal. For every other type the signing step reproduces the
+> transaction to verify the summary, so the signer needs a synced store (and,
+> for `consume_notes`, the node), and execution needs an acknowledgement from
+> GUARDIAN. A transfer executed this way still reaches GUARDIAN.
 
 ```
 ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
 │  Proposer   │         │  Cosigner   │         │  Executor   │
-│  (Online)   │         │ (Air-gapped)│         │  (Online)   │
+│  (Online)   │         │ (Off-channel)│        │  (Online)   │
 └──────┬──────┘         └──────┬──────┘         └──────┬──────┘
        │                       │                       │
        │  Export proposal.json │                       │
@@ -592,6 +604,15 @@ console.log('Threshold:', detected.threshold);
 console.log('Signers:', detected.signerCommitments);
 console.log('Vault balances:', detected.vaultBalances);
 ```
+
+`load()` reconciles GUARDIAN's account with the local store under the same
+rule `syncState()` uses: it keeps local state when GUARDIAN is behind (a pushed
+delta not yet canonicalized), adopts GUARDIAN's when it is ahead and matches the
+on-chain commitment, and throws on divergence. Loading an account that has
+transacted into an empty store reads its commitment from the Miden node, so the
+node must be reachable, and it throws while GUARDIAN's canonical state still
+lags the chain; retry once GUARDIAN has canonicalized. The Rust `pull_account`
+does not reconcile (see below).
 
 ### Delta History
 
@@ -933,9 +954,20 @@ const proposal = await multisig.createRemoveSignerProposal(
 
 ```typescript
 const proposal = await multisig.createChangeThresholdProposal(
-  newThreshold           // New threshold value
+  newThreshold           // New account-wide threshold, 1..=signer count
 );
 ```
+
+This moves the **account-wide default** threshold, the "N" in N-of-M. It is not
+the per-procedure override that `createUpdateProcedureThresholdProposal` sets.
+Where an override exists it takes precedence for the procedure it names, so
+lowering the default does not lower an overridden procedure, and this call is
+itself gated by whatever threshold governs `update_signers`. The signer set is
+not a parameter: membership changes go through `createAddSignerProposal` and
+`createRemoveSignerProposal`.
+
+The Rust equivalent is `TransactionType::update_signers(threshold, commitments)`,
+passing the account's current signer set unchanged.
 
 #### Switch GUARDIAN Provider
 
@@ -960,6 +992,17 @@ const exported = await multisig.createSwitchGuardianProposalOffline(
 ```
 
 ### Signing & Executing Proposals
+
+> **The two SDKs differ on who has signed a new proposal.** On ordinary
+> creation the Rust SDK attaches the proposer's signature and the TypeScript SDK
+> does not, so the same 2-of-3 flow needs one more signature collected on the
+> TypeScript path. The exception is
+> `createSwitchGuardianProposalOffline`, which signs as it exports and so
+> carries the proposer's signature on both SDKs. Neither convention is wrong,
+> but threshold arithmetic written against one SDK is wrong against the other,
+> and arithmetic written against ordinary creation is wrong for the offline
+> switch. Offer the proposal to every cosigner and let `signaturesCollected`
+> decide, rather than assuming who has already signed.
 
 ```typescript
 // List all pending proposals
@@ -996,7 +1039,8 @@ if (signed.status.type === 'ready') {
 const json = multisig.exportProposalToJson(proposalId);
 // Share via file, QR code, etc.
 
-// On air-gapped machine: import and sign
+// On the cosigner's machine: import and sign. Needs a synced store
+// unless this is a switch_guardian proposal.
 const imported = multisig.importProposal(json);
 const signedJson = multisig.signProposalOffline(proposalId);
 
@@ -1071,7 +1115,7 @@ one implicitly.
 | `preservePreSwitchProposalNotes()` | Pre-switch slice of the flow (issue #417): import notes embedded in the old GUARDIAN's pending proposals before repointing; run automatically by `executeProposal` on the switch path; returns the report or `undefined` |
 | `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
-| `createChangeThresholdProposal(threshold, { nonce }?)` | Create threshold change proposal |
+| `createChangeThresholdProposal(threshold, { nonce }?)` | Change the account-wide threshold (not a per-procedure override) |
 | `createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)` | Create per-procedure threshold override proposal (`threshold: 0` clears the override) |
 | `createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal |
 | `createSwitchGuardianProposalOffline(endpoint, pubkey, { nonce }?)` | Create GUARDIAN switch proposal without contacting the current GUARDIAN; returns a signed `ExportedProposal` for side-channel cosigning (issue #433) |
@@ -1186,6 +1230,11 @@ println!("Threshold: {}", account.threshold()?);
 println!("Nonce: {}", account.nonce());
 println!("GUARDIAN commitment: {:?}", account.guardian_commitment()?);
 ```
+
+Unlike the TypeScript `load()`, `pull_account` overwrites the local store with
+GUARDIAN's state unconditionally, by design: it is for joining an account or
+discarding a store known to be bad. Use `sync_from_guardian` to refresh an
+account you intend to keep.
 
 ### Delta History
 
@@ -1498,7 +1547,8 @@ client.execute_proposal(&proposal_id).await?;
 let exported = client.create_proposal_offline(tx).await?;
 std::fs::write("proposal.json", exported.to_json()?)?;
 
-// On air-gapped machine: load and sign
+// On the cosigner's machine: load and sign. Needs a synced store
+// unless this is a switch_guardian proposal.
 let json = std::fs::read_to_string("proposal.json")?;
 let mut exported: ExportedProposal = serde_json::from_str(&json)?;
 client.sign_imported_proposal(&mut exported)?;
@@ -1759,7 +1809,7 @@ console.log('Notes consumed, funds now in vault');
 │                         OFFLINE SIGNING FLOW                         │
 └─────────────────────────────────────────────────────────────────────┘
 
-  PROPOSER (Online)           COSIGNER (Air-gapped)        EXECUTOR (Online)
+  PROPOSER (Online)           COSIGNER (Off-channel)       EXECUTOR (Online)
   ─────────────────           ────────────────────         ────────────────
         │                            │                            │
         │ create_proposal_offline()  │                            │

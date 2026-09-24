@@ -127,15 +127,10 @@ One-time setup per target (infra):
 - Each environment must restrict **deployment branches** to `main`. Without
   that, anyone able to dispatch the workflow could run an edited copy of it
   from a feature branch and obtain the environment's AWS OIDC identity.
-- The OIDC role's trust policy must accept this repository's environment
-  subject claims (`repo:OpenZeppelin/guardian:environment:devnet` / `:testnet`).
-- The deploy role needs ECR push/pull on `<stack>-server`
-  (`ecr:GetAuthorizationToken`, `ecr:DescribeRepositories`,
-  `ecr:BatchCheckLayerAvailability`, `ecr:BatchGetImage`,
-  `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`,
-  `ecr:PutImage`), `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`,
-  `ecs:RegisterTaskDefinition`, `ecs:UpdateService`, and `iam:PassRole` on the
-  stack's task and task-execution roles.
+- The IAM roles the workflow assumes (bootstrap role → deploy role, scoped to
+  the deployable stacks) are managed by `infra/oidc.tf` on one stack; see the
+  [GitHub OIDC deploy roles runbook](./runbooks/github-oidc-deploy-roles.md)
+  for setup and for adding environments or stacks.
 - The ECR repository must already exist; `scripts/aws-deploy.sh build` creates
   it on a new stack.
 

@@ -132,3 +132,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # server_task_family           = "guardian-server"
 # server_container_name        = "guardian-server"
 # server_log_group_name        = "/ecs/guardian-server"
+
+# Optional: IAM roles for the AWS Deploy GitHub Actions workflow (off by default).
+# Setup and the related github_* variables: docs/runbooks/github-oidc-deploy-roles.md
+# github_oidc_enabled = true

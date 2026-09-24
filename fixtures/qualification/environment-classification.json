@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "signals": [
+    "connection error",
+    "transport error",
+    "timed out",
+    "etimedout",
+    "econnreset",
+    "econnrefused",
+    "econnaborted",
+    "ehostunreach",
+    "enetunreach",
+    "epipe",
+    "eai_again",
+    "socket hang up",
+    "fetch failed",
+    "err_http2_stream_error",
+    "invalid content type: application/grpc",
+    "the service is currently unavailable",
+    "the operation was cancelled",
+    "the deadline expired before the operation could complete",
+    "deadline exceeded",
+    "i/o timeout",
+    "connection reset",
+    "broken pipe",
+    "bad gateway",
+    "gateway timeout",
+    "service unavailable"
+  ],
+  "reasons": [
+    {
+      "name": "typescript prover read timeout while proving an execution",
+      "reason": "executing the proposal failed: Error: failed to prove transaction: failed to prove transaction: code: 'Unknown error', message: \"JS API error: Error: read ETIMEDOUT\", source: JsError(\"Error: read ETIMEDOUT\"): JS API error: Error: read ETIMEDOUT",
+      "environmental": true
+    },
+    {
+      "name": "typescript node read timeout while fetching the genesis block header",
+      "reason": "creating the multisig account failed: Error: Failed to ensure genesis in place: RPC error: grpc request failed for get_block_header_by_number: unknown error: JS API error: Error: read ETIMEDOUT: code: 'Unknown error', message: \"JS API error: Error: read ETIMEDOUT\", source: JsError(\"Error: read ETIMEDOUT\"): JS API error: Error: read ETIMEDOUT",
+      "environmental": true
+    },
+    {
+      "name": "typescript http/2 stream refused while fetching the genesis block header",
+      "reason": "creating the multisig account failed: Error: Failed to ensure genesis in place: RPC error: grpc request failed for get_block_header_by_number: unknown error: JS API error: Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM: code: 'Unknown error', message: \"JS API error: Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM\", source: JsError(\"Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM\"): JS API error: Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_REFUSED_STREAM",
+      "environmental": true
+    },
+    {
+      "name": "the node's front end answered a grpc-web submission with native grpc framing",
+      "reason": "consuming the note failed: Error: failed to submit proven transaction: submission of transaction 0x115f07a026bbb74e6bbf1d267664432af94e6a705d74c1c9130095f79590df48 came back without a definite outcome, so the node may or may not have accepted it; nothing was recorded locally: grpc request failed for submit_proven_transaction: unknown error: invalid content type: application/grpc: code: 'Unknown error', message: \"invalid content type: application/grpc\", source: InvalidContentType(\"application/grpc\"): invalid content type: application/grpc",
+      "environmental": true
+    },
+    {
+      "name": "rust remote prover deadline while consuming a note",
+      "reason": "consuming the note failed: transaction execution failed: transaction proving failed: transaction proving failed: failed to prove transaction: code: 'The operation was cancelled', message: \"Timeout expired\", source: tonic::transport::Error(Transport, TimeoutExpired(())): transport error: Timeout expired",
+      "environmental": true
+    },
+    {
+      "name": "rust remote prover deadline while executing a proposal",
+      "reason": "executing the proposal failed: transaction execution failed: transaction proving failed: transaction proving failed: failed to prove transaction: code: 'The operation was cancelled', message: \"Timeout expired\", source: tonic::transport::Error(Transport, TimeoutExpired(())): transport error: Timeout expired",
+      "environmental": true
+    },
+    {
+      "name": "funding transfer carrying the transport cause",
+      "reason": "cannot fund 0x9072aae4bf542d41695fabf3c2e51c: the funding transfer failed: transaction proving failed: failed to prove transaction: transport error: connection error: connection reset by peer",
+      "environmental": true
+    },
+    {
+      "name": "node reports the service unavailable",
+      "reason": "syncing after execution failed: gRPC status error: code: 'The service is currently unavailable', message: \"Guardian can't reach the network right now. Please try again.\"",
+      "environmental": true
+    },
+    {
+      "name": "harness gRPC request exceeded its own deadline",
+      "reason": "creating the multisig account failed: Error: gRPC request timed out",
+      "environmental": true
+    },
+    {
+      "name": "funding transfer without a cause is not evidence of anything",
+      "reason": "cannot transfer to 0x17c37a9f389a0d0109dd4bc0920704: the funding transfer failed: transaction proving failed",
+      "environmental": false
+    },
+    {
+      "name": "quorum refused an under-signed proposal",
+      "reason": "executing the proposal failed: proposal not ready: need 2 signatures, have 1",
+      "environmental": false
+    },
+    {
+      "name": "the signer set never converged on the expected membership",
+      "reason": "GUARDIAN serves 0x2e02887a2a7b41abf3f6c2245e48b04664d8075ccb98529a390b2aac850ed990,0x5ca239924a803a7f2388ce7aba6bb5740436fe55ed45d34aec73338fd87f2717,0xf20873aaea1df11d6913792974bd1b009d285ad08a47cc4e6b208a263831b1ab but 0x2e02887a2a7b41abf3f6c2245e48b04664d8075ccb98529a390b2aac850ed990,0x5ca239924a803a7f2388ce7aba6bb5740436fe55ed45d34aec73338fd87f2717 was expected after 180s",
+      "environmental": false
+    },
+    {
+      "name": "the server rejected a delta as invalid",
+      "reason": "pushing the fixture proposal failed with `invalid_delta`: gRPC status error: code: 'Client specified an invalid argument', message: \"That request couldn't be processed. Please check the details and try again.\"",
+      "environmental": false
+    },
+    {
+      "name": "a paused account refused the proposal under the wrong code",
+      "reason": "the proposal was refused with `GUARDIAN_ACCOUNT_PAUSED` rather than `account_paused`, so the pause is not what stopped it: gRPC status error: code: 'The system is not in a state required for the operation's execution', message: \"This account is paused and can't approve transactions right now.\"",
+      "environmental": false
+    },
+    {
+      "name": "the operator was refused authentication",
+      "reason": "pause was refused with 401 Unauthorized",
+      "environmental": false
+    },
+    {
+      "name": "state did not survive a restart",
+      "reason": "the account was not readable after the restart: gRPC status error: code: 'Some requested entity was not found', message: \"We couldn't find that. It may have been completed or removed.\"",
+      "environmental": false
+    },
+    {
+      "name": "permanent status evidence outranks transport wording",
+      "reason": "submitting the transaction failed: grpc code: InvalidArgument; connection error while submitting",
+      "environmental": false
+    },
+    {
+      "name": "a proving failure with no transport evidence is the product answering",
+      "reason": "executing the proposal failed: transaction proving failed: constraint evaluation failed at step 42",
+      "environmental": false
+    },
+    {
+      "name": "a GUARDIAN 500 on delta history behind the driver's own wording",
+      "reason": "the proposal left the pending set without becoming canonical: delta history unavailable: gRPC Internal server error",
+      "environmental": false
+    },
+    {
+      "name": "a server message about a quorum timeout is the product answering",
+      "reason": "executing the proposal failed: timeout waiting for quorum",
+      "environmental": false
+    },
+    {
+      "name": "a bare cancellation is not evidence of the link",
+      "reason": "the proposal was cancelled by its proposer before execution",
+      "environmental": false
+    }
+  ]
+}

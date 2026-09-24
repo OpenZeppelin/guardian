@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use aws_config::BehaviorVersion;
 use aws_sdk_secretsmanager::Client as SecretsManagerClient;
@@ -14,6 +15,12 @@ use serde::Deserialize;
 
 use super::permissions::Permission;
 use super::types::AuthenticatedOperator;
+
+/// Attempts made per allowlist load before a failure is surfaced,
+/// and the pause between them. Sized for the window in which a
+/// replaced file is observable torn, not for a failing backing store.
+const LOAD_ATTEMPTS: u32 = 3;
+const LOAD_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Wire shape of a single operator allowlist array element: either a
 /// bare hex string (legacy, `{dashboard:read}` only — FR-002) or a
@@ -115,7 +122,30 @@ impl AllowlistSource {
         }
     }
 
+    /// Loads the allowlist, retrying a failed attempt within
+    /// [`LOAD_ATTEMPTS`]. A source replaced under a running server is
+    /// briefly observable torn, so one failed read is not evidence of
+    /// a misconfiguration; a source that stays unreadable still fails
+    /// once the budget is spent.
     pub(crate) async fn load(&self) -> std::result::Result<OperatorAllowlist, String> {
+        for _ in 1..LOAD_ATTEMPTS {
+            match self.load_once().await {
+                Ok(allowlist) => return Ok(allowlist),
+                Err(error) => {
+                    tracing::debug!(
+                        auth_event = "allowlist_load_retried",
+                        source = %self.label(),
+                        %error,
+                        "Operator allowlist load failed; retrying"
+                    );
+                    tokio::time::sleep(LOAD_RETRY_DELAY).await;
+                }
+            }
+        }
+        self.load_once().await
+    }
+
+    async fn load_once(&self) -> std::result::Result<OperatorAllowlist, String> {
         match self {
             Self::Static => Ok(OperatorAllowlist::default()),
             Self::File(path) => {
@@ -363,6 +393,61 @@ mod tests {
 
     fn pk(signer: &TestSigner) -> &str {
         &signer.pubkey_hex
+    }
+
+    /// A file replaced while the server is running is observable in a
+    /// torn state: the writer's page cache and the reader's view are
+    /// only eventually coherent across a container bind mount, and a
+    /// plain truncate-then-write is torn even locally. A load that
+    /// settles within the retry budget must not surface as a failure.
+    #[tokio::test]
+    async fn torn_allowlist_file_is_retried_until_the_write_settles() {
+        let signer = TestSigner::new();
+        let good = format!(
+            r#"[{{"public_key": {:?}, "permissions": ["dashboard:read"]}}]"#,
+            pk(&signer)
+        );
+        let path = std::env::temp_dir().join(format!(
+            "guardian_allowlist_torn_{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, &good[..good.len() - 30]).expect("torn allowlist should be written");
+
+        let repair_path = path.clone();
+        let repaired = good.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            std::fs::write(&repair_path, repaired).expect("allowlist repair should be written");
+        });
+
+        let loaded = AllowlistSource::File(path.clone()).load().await;
+        std::fs::remove_file(&path).ok();
+
+        let allowlist =
+            loaded.expect("a torn write that settles must not surface as a load failure");
+        assert_eq!(allowlist.len(), 1);
+    }
+
+    /// The retry budget must stay bounded: a source that never becomes
+    /// readable still fails closed rather than loading an empty or
+    /// stale allowlist.
+    #[tokio::test]
+    async fn permanently_torn_allowlist_file_still_fails() {
+        let signer = TestSigner::new();
+        let good = format!(
+            r#"[{{"public_key": {:?}, "permissions": ["dashboard:read"]}}]"#,
+            pk(&signer)
+        );
+        let path = std::env::temp_dir().join(format!(
+            "guardian_allowlist_unsettled_{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, &good[..good.len() - 30]).expect("torn allowlist should be written");
+
+        let loaded = AllowlistSource::File(path.clone()).load().await;
+        std::fs::remove_file(&path).ok();
+
+        assert!(loaded.is_err(), "a source that never settles must not load");
     }
 
     /// FR-001 + FR-002: legacy bare-hex array still loads, every entry
