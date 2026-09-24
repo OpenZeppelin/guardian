@@ -367,7 +367,91 @@ sequenceDiagram
     move (e.g. `configure`) can never promote — the base gate rules it
     out — and ages out through the TTL.
 
+- Release on guardian switch, push path (issue #305): when a delta
+  commits (optimistic mode) or canonicalizes (candidate mode) and the
+  resulting state's guardian public key commitment differs from this
+  server's ack key, the account is released (`released_at` set,
+  `accounts.release` audit row with `detected_by: delta`). Switches that
+  never reach the push path are covered by the release sweep, a separate
+  background task described below.
+
 EVM proposals are not processed by Miden canonicalization. They are stored in the EVM proposal store and deleted lazily when expired or when the configured EntryPoint nonce indicates finality.
+
+## Release sweep
+
+A background task (issue #434), independent of the canonicalization
+worker, that recognises guardian switches whose `SwitchGuardian` delta
+never reached this server — the offline switch path, a failed
+best-effort push, a client predating the push, a switch executed while
+this server was unreachable — and releases the account exactly as the
+push-path hook does. Release detection is not latency-sensitive (an
+undetected switch costs stale reads and dead pending proposals, never
+funds or custody), so the sweep is deliberately slow and rate-bounded.
+
+### Configuration
+- Shipped defaults: `enabled = true`, `rotation_seconds = 21600` (6 h),
+  `max_rate_per_second = 5`, `page_size = 100`,
+  `hot_interval_seconds = 60`, `confirmations = 2`. Every value has a
+  `GUARDIAN_RELEASE_SWEEP_*` env override (see `docs/CONFIGURATION.md`);
+  `GUARDIAN_RELEASE_SWEEP_ENABLED=false` is the runtime kill switch.
+- One replica holds the `release_sweep` lease (its own single-owner
+  lease, renewed every 10 s with a 30 s TTL; a lost lease cancels the
+  walk, which the next holder resumes from its own cursor).
+
+### Behavior
+- **Rotation.** The holder walks every unreleased Miden account with no
+  candidate in flight (the store filters both; the push path owns busy
+  accounts) in `account_id` order, one visit at a time, paced so the
+  walk spreads over `rotation_seconds` and never exceeds
+  `max_rate_per_second`. The cursor advances per visited account, so a
+  lost lease, a slow node or a failed listing never skips accounts. A
+  completed walk idles until `rotation_seconds` after it started; a
+  fleet too large for one rotation at the rate bound simply takes longer.
+- **Hot pass.** Every `hot_interval_seconds` the holder re-probes only
+  the accounts that need attention sooner: those with an open
+  confirmation streak, and those carrying a pending `switch_guardian`
+  proposal (a switch that may execute elsewhere any moment). These
+  therefore release within a minute or two, not a rotation.
+- **Per visit**, cheapest first:
+  1. Probe the chain once against the stored state commitment. A match
+     (or an absent on-chain account) means the stored state *is* the
+     on-chain state, so its guardian key — this server's, as
+     `/configure` validated — is the on-chain one too: nothing to do.
+  2. Only when the chain moved past the stored base, **proposal match**:
+     for each pending `switch_guardian` proposal that chains from the
+     stored base, apply its summary to the stored state (the same
+     `apply_delta` canonicalization uses; computed once and cached) and
+     compare the resulting commitment with the chain head. An exact
+     match proves that switch executed — a lagging node cannot invent
+     the post-switch commitment — so the account is released at once
+     with `detected_by: proposal_match` and the proposal id, and the
+     executed proposal is finalized (deleted) like a proposal whose
+     delta canonicalized. This needs no published storage, so it covers
+     **private** accounts, but only while the chain sits exactly at the
+     post-switch commitment.
+  3. Otherwise, **storage read**: read the guardian public key map from
+     the account's **published** on-chain storage (`GetAccount` with
+     storage-map details). Private accounts publish no storage; for
+     them the chain holds a bare commitment and the sweep records that
+     it cannot tell (`storage_opaque`) rather than guessing. A key equal
+     to this server's means the stored state merely lags the chain
+     (issue #345 territory), not a switch. A foreign key must be
+     observed on `confirmations` consecutive visits (hot passes, so the
+     wait is `confirmations × hot_interval_seconds`), then the account
+     is released with `detected_by: chain_sweep` and the
+     `on_chain_commitment` / `stored_commitment` pair.
+  - The stored base is re-read right before every release write (a
+    `/configure` re-onboarding meanwhile voids the evidence). The stored
+    state itself is left as is; reads keep serving the last state this
+    server verified.
+  - The sweep ignores `paused_at` like the canonicalization passes:
+    pause gates client mutations, the sweep records chain truth.
+- The one transaction a guarded multisig executes without this server's
+  signature is the guardian key rotation, so "chain moved past the
+  stored base" is either that rotation or an acknowledged delta whose
+  promotion never caught up; only the two detectors above tell them
+  apart, and the sweep never infers a switch from a commitment mismatch
+  alone.
 
 #### Canonicalization worker (diagram)
 ```mermaid

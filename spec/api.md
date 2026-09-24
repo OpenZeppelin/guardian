@@ -568,6 +568,10 @@ behavior.
 | `guardian_canonicalization_fast_run_duration_seconds` | histogram | — |
 | `guardian_canonicalization_reconcile_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_reconcile_run_duration_seconds` | histogram | — |
+| `guardian_release_sweep_rotations_total` | counter | `outcome` (`completed`/`partial`/`cancelled`) |
+| `guardian_release_sweep_rotation_duration_seconds` | histogram | — |
+| `guardian_release_sweep_hot_passes_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
+| `guardian_release_sweep_accounts_total` | counter | `outcome` (`released`/`confirming`/`still_bound`/`storage_opaque`/`no_binding`/`probe_failed`) |
 | `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |
@@ -596,7 +600,8 @@ Durations use seconds with explicit buckets from 1ms to 10s, except
 `guardian_canonicalization_fast_run_duration_seconds`,
 `guardian_canonicalization_reconcile_run_duration_seconds` and
 `guardian_dashboard_stats_refresh_duration_seconds`, which use extended
-buckets up to 5 minutes, and
+buckets up to 5 minutes, `guardian_release_sweep_rotation_duration_seconds`,
+which spans 1 minute to 24 hours, and
 `guardian_canonicalization_candidate_age_seconds` which spans 1 second
 to 24 hours so stuck candidates stay visible. The
 authoritative taxonomy (including help text and the enforced label

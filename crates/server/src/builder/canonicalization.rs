@@ -86,6 +86,7 @@ pub struct CanonicalizationConfig {
     /// the selection fair, so a large backlog (e.g. after a correlated
     /// node outage) drains across passes instead of monopolizing one.
     pub reconcile_page_size: u32,
+
     /// How many accounts one canonicalization pass processes concurrently.
     /// Candidates within an account are always sequential (nonce order);
     /// this only overlaps the per-account work — dominated by the Miden

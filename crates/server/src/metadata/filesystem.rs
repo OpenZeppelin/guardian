@@ -396,6 +396,23 @@ impl MetadataStore for FilesystemMetadataStore {
             .collect())
     }
 
+    async fn list_release_sweep_page(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<AccountMetadata>, String> {
+        let cache = self.cache.read().await;
+        let mut rows: Vec<&AccountMetadata> = cache
+            .values()
+            .filter(|m| {
+                m.released_at.is_none() && !m.has_pending_candidate && m.network_config.is_miden()
+            })
+            .filter(|m| after.is_none_or(|after| m.account_id.as_str() > after))
+            .collect();
+        rows.sort_by(|a, b| a.account_id.cmp(&b.account_id));
+        Ok(rows.into_iter().take(limit as usize).cloned().collect())
+    }
+
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,
@@ -657,6 +674,62 @@ mod pause_tests {
             Some(first),
             "original released_at preserved"
         );
+    }
+
+    #[tokio::test]
+    async fn list_release_sweep_page_walks_ids_in_order_and_skips_released() {
+        // Release sweep rotation (issue #434): pages are ordered by
+        // account_id, resume strictly after the cursor, and never
+        // include released rows.
+        let (store, _dir) = fresh_store().await;
+        let ts = Utc.with_ymd_and_hms(2026, 9, 22, 10, 0, 0).unwrap();
+        for id in ["acct-c", "acct-a", "acct-b", "acct-d"] {
+            let mut metadata = store.get("acct").await.unwrap().unwrap();
+            metadata.account_id = id.into();
+            store.set(metadata).await.unwrap();
+        }
+        store.set_released("acct-b", ts).await.unwrap();
+        // Rows the sweep cannot act on never take a page slot: a
+        // candidate in flight (the push path owns it) and EVM accounts
+        // (no on-chain guardian binding).
+        let mut busy = store.get("acct").await.unwrap().unwrap();
+        busy.account_id = "acct-ab-busy".into();
+        busy.has_pending_candidate = true;
+        store.set(busy).await.unwrap();
+        let mut evm = store.get("acct").await.unwrap().unwrap();
+        evm.account_id = "acct-ac-evm".into();
+        evm.network_config = NetworkConfig::Evm {
+            chain_id: 1,
+            account_address: "0xabc".into(),
+            multisig_validator_address: "0xdef".into(),
+        };
+        store.set(evm).await.unwrap();
+
+        let ids = |rows: Vec<AccountMetadata>| -> Vec<String> {
+            rows.into_iter().map(|m| m.account_id).collect()
+        };
+
+        let first = store.list_release_sweep_page(None, 2).await.unwrap();
+        assert_eq!(ids(first), vec!["acct", "acct-a"]);
+
+        let second = store
+            .list_release_sweep_page(Some("acct-a"), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            ids(second),
+            vec!["acct-c", "acct-d"],
+            "released, busy and EVM rows are skipped and the cursor is exclusive"
+        );
+
+        let tail = store
+            .list_release_sweep_page(Some("acct-d"), 2)
+            .await
+            .unwrap();
+        assert!(tail.is_empty(), "past the last id the page is empty");
+
+        let everything = store.list_release_sweep_page(None, 100).await.unwrap();
+        assert_eq!(ids(everything), vec!["acct", "acct-a", "acct-c", "acct-d"]);
     }
 
     #[tokio::test]

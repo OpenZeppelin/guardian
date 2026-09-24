@@ -344,6 +344,36 @@ Operator checks:
   `guardian_canonicalization_candidates_total` — a healthy steady state
   probes every due account and finds the chain unmoved, and counting
   that would dwarf every other outcome.
+- The release sweep (issue #434, its own task with the `release_sweep`
+  lease) emits its own stable events, with `account_id` and, where
+  applicable, `stored_commitment` / `on_chain` /
+  `new_guardian_commitment` / `proposal_id`:
+  - `Release sweep rotation started` / `completed` (with `fleet_size`,
+    `spacing_ms`, `accounts`, `failed_accounts`, `duration_seconds`)
+  - `event=release_sweep_skipped reason=pending_candidate`
+  - `event=release_sweep_deferred reason=chain_at_stored_base|chain_probe_unavailable|binding_read_unavailable|storage_opaque|no_guardian_binding|guardian_still_bound|stored_base_moved`
+  - `event=release_sweep_confirming` (with `observations` / `confirmations`)
+  - `event=release_sweep_released` (with `detected_by=proposal_match|chain_sweep`)
+  - `event=release_sweep_proposal_finalized`
+  `storage_opaque` at info level is the one to watch: the chain moved
+  past the stored state of a **private** account, no pending
+  `switch_guardian` proposal on this server explains the new commitment,
+  and the guardian key cannot be read from chain. If that account is
+  known to have switched guardians (an offline switch, or a busy account
+  that already moved past the post-switch commitment), it will not
+  release by itself. `guardian_still_bound` means the chain moved but
+  the account is still bound here — the stored state lags the chain
+  (see the `retained` section above).
+- `guardian_release_sweep_rotations_total{outcome=...}` and
+  `guardian_release_sweep_rotation_duration_seconds` cover the walk of
+  the fleet, `guardian_release_sweep_hot_passes_total{outcome=...}` the
+  short-cadence pass; `guardian_release_sweep_accounts_total{outcome=...}`
+  counts per-account findings for accounts found off their stored base
+  (`released`, `confirming`, `still_bound`, `storage_opaque`,
+  `no_binding`, `probe_failed`). Accounts at their stored base — the
+  healthy steady state — are not counted (`chain_at_stored_base` is
+  logged at debug only); a failed probe or storage read is counted as
+  `probe_failed`.
 - `guardian_canonicalization_commitment_mismatches_total` counting up
   means a client omitted `new_commitment` or claimed one that differs
   from the recomputed value. The full pass can promote using the value it
@@ -509,7 +539,7 @@ come from
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 (gRPC `FailedPrecondition`) | Account is paused by an operator. Response body includes the operator-supplied `paused_reason`. Unpause via `POST /dashboard/accounts/{id}/unpause` (requires `accounts:pause`). See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
-| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian (a canonicalized `switch_guardian` delta moved the guardian key away from this server) and this server released it. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
+| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or the release sweep proved the switch from chain: either a pending `switch_guardian` proposal on this server whose post-state the chain reached (`detected_by: proposal_match`, any account) or, for a public account, a foreign guardian key read from the account's published on-chain storage (`detected_by: chain_sweep`). The `accounts.release` audit row says which. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
 
 ### Validation
 
@@ -598,7 +628,8 @@ network network=MidenTestnet rpc_endpoint="https://rpc.testnet.miden.io"
 storage backend storage=Postgres
 ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecdsa_commitment=0x…
 dashboard operators=0 cursor_secret="ephemeral"
-canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10
+canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10 retained_ttl_seconds=86400 reconcile_interval_seconds=60
+release sweep rotation_seconds=21600 max_rate_per_second=5 page_size=100 hot_interval_seconds=60 confirmations=2
 listeners http=3000 grpc=50051
 compiled features features=["postgres"]
 =========================================
@@ -646,6 +677,15 @@ ECS Exec requires the task role's `ssmmessages:*` actions
 - **`authentication_failed` rate** — sudden spike usually means a client
   clock drift event or an attacker probing.
 - **ACK pubkey on `GET /pubkey`** — should not change unless you rotated.
+- **`guardian_release_sweep_accounts_total{outcome="storage_opaque"}`
+  growing** — private accounts whose chain state moved past the stored
+  one with no pending switch proposal explaining it; the sweep cannot
+  verify their guardian binding, so switched ones stay active here until
+  the wallet re-onboards or the operator acts.
+- **`guardian_release_sweep_rotations_total` not advancing** for longer
+  than `GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS` — no replica holds the
+  `release_sweep` lease, or the walk keeps failing (see the rotation
+  log lines).
 
 There are no Terraform-managed dashboards or alarms yet — building these
 out remains an open production-hardening item.

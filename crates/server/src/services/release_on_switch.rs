@@ -18,6 +18,16 @@
 //! delta commit — the delta itself is valid and already persisted. In
 //! candidate mode a mid-canonicalization failure leaves the delta a
 //! candidate, so the worker retries and this hook runs again.
+//!
+//! The push path is not the only detector. A switch executed while this
+//! server was unreachable, from a client that never pushes (the offline
+//! switch path), or whose best-effort push failed, never arrives here;
+//! the release sweep (`jobs::release_sweep`, issue #434) either matches
+//! the chain against a pending switch proposal's precomputed post-state
+//! or reads the guardian binding straight from published on-chain
+//! storage, and drives the same transition through
+//! [`release_switched_account`] with `ReleaseEvidence::ProposalMatch` /
+//! `ReleaseEvidence::ChainSweep`.
 
 use serde_json::json;
 
@@ -27,6 +37,95 @@ use crate::state::AppState;
 
 /// `operator_identity` recorded on system-initiated release audit rows.
 pub const SYSTEM_OPERATOR_IDENTITY: &str = "system";
+
+/// How a guardian switch was observed, recorded on the release audit
+/// row (`detected_by`) with the observation that proves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseEvidence<'a> {
+    /// A `SwitchGuardian` delta committed / canonicalized on this
+    /// server; the resulting state carries the new guardian key.
+    Delta {
+        delta_nonce: u64,
+        new_commitment: &'a str,
+    },
+    /// The release sweep read the new guardian key from the account's
+    /// published on-chain storage, at a chain state that had moved past
+    /// this server's stored one.
+    ChainSweep {
+        on_chain_commitment: &'a str,
+        stored_commitment: &'a str,
+    },
+    /// The release sweep found the chain at exactly the post-state of a
+    /// `switch_guardian` proposal pending on this server (the proposal's
+    /// summary applied to the stored state reproduces the on-chain
+    /// commitment), which proves that switch executed. Works without
+    /// published storage, i.e. for private accounts.
+    ProposalMatch {
+        proposal_id: &'a str,
+        on_chain_commitment: &'a str,
+        stored_commitment: &'a str,
+    },
+}
+
+impl ReleaseEvidence<'_> {
+    fn detected_by(&self) -> &'static str {
+        match self {
+            Self::Delta { .. } => "delta",
+            Self::ChainSweep { .. } => "chain_sweep",
+            Self::ProposalMatch { .. } => "proposal_match",
+        }
+    }
+
+    /// The `accounts.release` audit payload. Every variant carries
+    /// `new_guardian_commitment` and `detected_by`; the delta variant
+    /// keeps the original `{ delta_nonce, new_commitment }` keys.
+    fn audit_payload(&self, new_guardian_commitment: &str) -> serde_json::Value {
+        match self {
+            Self::Delta {
+                delta_nonce,
+                new_commitment,
+            } => json!({
+                "new_guardian_commitment": new_guardian_commitment,
+                "detected_by": self.detected_by(),
+                "delta_nonce": delta_nonce,
+                "new_commitment": new_commitment,
+            }),
+            Self::ChainSweep {
+                on_chain_commitment,
+                stored_commitment,
+            } => json!({
+                "new_guardian_commitment": new_guardian_commitment,
+                "detected_by": self.detected_by(),
+                "on_chain_commitment": on_chain_commitment,
+                "stored_commitment": stored_commitment,
+            }),
+            Self::ProposalMatch {
+                proposal_id,
+                on_chain_commitment,
+                stored_commitment,
+            } => json!({
+                "new_guardian_commitment": new_guardian_commitment,
+                "detected_by": self.detected_by(),
+                "proposal_id": proposal_id,
+                "on_chain_commitment": on_chain_commitment,
+                "stored_commitment": stored_commitment,
+            }),
+        }
+    }
+}
+
+/// Outcome of [`release_switched_account`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseWrite {
+    /// This call transitioned the account to `released` and audited it.
+    Released,
+    /// The account was already released (first-writer-wins); nothing
+    /// was written or audited.
+    AlreadyReleased,
+    /// The transition could not be persisted; logged, retried by the
+    /// caller's own schedule (next canonicalization / sweep pass).
+    Failed,
+}
 
 /// Release the account when `new_state_json` (the just-committed state)
 /// carries a guardian public key commitment different from this
@@ -43,7 +142,7 @@ pub async fn release_if_guardian_switched(
         return;
     }
 
-    let own_commitment = state.ack.commitment(&metadata.auth.scheme());
+    let own_commitment = own_guardian_commitment(state, metadata);
 
     let extracted = {
         let client = &state.network_client;
@@ -68,6 +167,35 @@ pub async fn release_if_guardian_switched(
         }
     };
 
+    release_switched_account(
+        state,
+        metadata,
+        &new_guardian_commitment,
+        ReleaseEvidence::Delta {
+            delta_nonce,
+            new_commitment,
+        },
+    )
+    .await;
+}
+
+/// This server's own guardian public key commitment for the account's
+/// signature scheme — the value a bound account's guardian slot holds.
+pub fn own_guardian_commitment(state: &AppState, metadata: &AccountMetadata) -> String {
+    state.ack.commitment(&metadata.auth.scheme())
+}
+
+/// Transition the account to `released` because its guardian key is
+/// verifiably `new_guardian_commitment` rather than this server's, and
+/// audit the transition with the evidence. Shared by the push-path hook
+/// and the release sweep so both detectors produce one lifecycle and
+/// one audit shape. Infallible for callers: all failures are logged.
+pub async fn release_switched_account(
+    state: &AppState,
+    metadata: &AccountMetadata,
+    new_guardian_commitment: &str,
+    evidence: ReleaseEvidence<'_>,
+) -> ReleaseWrite {
     match state
         .metadata
         .set_released(&metadata.account_id, state.clock.now())
@@ -76,7 +204,8 @@ pub async fn release_if_guardian_switched(
         Ok(true) => {
             tracing::warn!(
                 account_id = %metadata.account_id,
-                nonce = delta_nonce,
+                detected_by = evidence.detected_by(),
+                evidence = ?evidence,
                 new_guardian_commitment = %new_guardian_commitment,
                 "Account switched to a different guardian; released \
                  (mutations refused until re-onboarded via /configure)"
@@ -85,25 +214,24 @@ pub async fn release_if_guardian_switched(
                 operator_identity: SYSTEM_OPERATOR_IDENTITY.to_string(),
                 action_kind: kinds::ACCOUNTS_RELEASE,
                 target_account_id: Some(metadata.account_id.clone()),
-                payload: json!({
-                    "new_guardian_commitment": new_guardian_commitment,
-                    "delta_nonce": delta_nonce,
-                    "new_commitment": new_commitment,
-                }),
+                payload: evidence.audit_payload(new_guardian_commitment),
                 outcome: AuditOutcome::Success,
                 error_code: None,
                 client_ip: None,
             });
+            ReleaseWrite::Released
         }
         // Already released — first-writer-wins, nothing to audit.
-        Ok(false) => {}
+        Ok(false) => ReleaseWrite::AlreadyReleased,
         Err(e) => {
             tracing::error!(
                 account_id = %metadata.account_id,
-                nonce = delta_nonce,
+                detected_by = evidence.detected_by(),
+                evidence = ?evidence,
                 error = %e,
                 "Detected guardian switch but failed to persist released state"
             );
+            ReleaseWrite::Failed
         }
     }
 }
@@ -156,6 +284,7 @@ mod tests {
             network_client: Arc::new(network),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(auditor),
@@ -197,6 +326,50 @@ mod tests {
         );
         assert_eq!(events[0].payload["delta_nonce"], 7);
         assert_eq!(events[0].payload["new_commitment"], "0xnew_commitment");
+        assert_eq!(events[0].payload["detected_by"], "delta");
+    }
+
+    #[tokio::test]
+    async fn chain_sweep_release_audits_the_chain_observation() {
+        let metadata_store = MockMetadataStore::new();
+        let auditor = CapturingAuditor::new();
+        let state = state_with(
+            MockNetworkClient::new(),
+            metadata_store.clone(),
+            auditor.clone(),
+        )
+        .await;
+
+        let outcome = release_switched_account(
+            &state,
+            &miden_meta("acc-1"),
+            "0xother_guardian",
+            ReleaseEvidence::ChainSweep {
+                on_chain_commitment: "0xchain",
+                stored_commitment: "0xstored",
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, ReleaseWrite::Released);
+        assert_eq!(
+            metadata_store.set_released_calls.lock().unwrap().clone(),
+            vec!["acc-1".to_string()]
+        );
+        let events = auditor.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action_kind, kinds::ACCOUNTS_RELEASE);
+        assert_eq!(events[0].operator_identity, SYSTEM_OPERATOR_IDENTITY);
+        assert_eq!(events[0].target_account_id.as_deref(), Some("acc-1"));
+        assert_eq!(
+            events[0].payload,
+            serde_json::json!({
+                "new_guardian_commitment": "0xother_guardian",
+                "detected_by": "chain_sweep",
+                "on_chain_commitment": "0xchain",
+                "stored_commitment": "0xstored",
+            })
+        );
     }
 
     #[tokio::test]

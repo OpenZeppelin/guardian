@@ -35,6 +35,11 @@ pub use tonic::{Request, metadata::MetadataValue};
 pub struct IntegrationMockNetworkClient {
     miden_client: crate::network::miden::MidenNetworkClient,
     initial_commitments: std::sync::Mutex<HashMap<String, String>>,
+    /// Published on-chain state per account, as the release sweep's
+    /// storage read would see it (issue #434): the account JSON whose
+    /// guardian slot is inspected with the real inspector. Absent =
+    /// the account does not publish its storage (`Opaque`).
+    published_states: std::sync::Mutex<HashMap<String, serde_json::Value>>,
 }
 
 impl IntegrationMockNetworkClient {
@@ -42,6 +47,7 @@ impl IntegrationMockNetworkClient {
         Self {
             miden_client,
             initial_commitments: std::sync::Mutex::new(HashMap::new()),
+            published_states: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -50,6 +56,17 @@ impl IntegrationMockNetworkClient {
             .lock()
             .expect("commitments lock")
             .insert(account_id, commitment);
+    }
+
+    /// Register the account state the chain publishes for `account_id`.
+    /// `fetch_on_chain_guardian_binding` then reports the registered
+    /// commitment together with the guardian key this state carries,
+    /// mirroring a public account whose storage the node serves.
+    pub fn publish_state(&mut self, account_id: String, state_json: serde_json::Value) {
+        self.published_states
+            .lock()
+            .expect("published states lock")
+            .insert(account_id, state_json);
     }
 }
 
@@ -156,6 +173,34 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.extract_guardian_commitment(state_json)
     }
 
+    async fn fetch_on_chain_guardian_binding(
+        &self,
+        account_id: &str,
+        _read_mode: crate::network::RpcReadMode,
+    ) -> Result<crate::network::OnChainGuardianBinding, String> {
+        let published = self
+            .published_states
+            .lock()
+            .expect("published states lock")
+            .get(account_id)
+            .cloned();
+        let Some(state_json) = published else {
+            return Ok(crate::network::OnChainGuardianBinding::Opaque);
+        };
+        let on_chain_commitment = self
+            .initial_commitments
+            .lock()
+            .expect("commitments lock")
+            .get(account_id)
+            .cloned()
+            .ok_or_else(|| format!("no registered on-chain commitment for {account_id}"))?;
+        let guardian_commitment = self.miden_client.extract_guardian_commitment(&state_json)?;
+        Ok(crate::network::OnChainGuardianBinding::Visible {
+            on_chain_commitment,
+            guardian_commitment,
+        })
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,
@@ -199,6 +244,7 @@ pub async fn create_test_app_state() -> AppState {
         network_client: Arc::new(mock_client),
         ack,
         canonicalization: Some(crate::canonicalization::CanonicalizationConfig::default()),
+        release_sweep: None,
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
         auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -637,6 +683,7 @@ pub fn create_test_app_state_with_mocks(
         network_client,
         ack,
         canonicalization: None, // Use optimistic mode for unit tests
+        release_sweep: None,
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
         auditor: Arc::new(crate::audit::LogAuditor::new()),

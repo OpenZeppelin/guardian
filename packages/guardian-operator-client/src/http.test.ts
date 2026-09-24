@@ -692,6 +692,12 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             reconcile_interval_seconds: 60,
             reconcile_page_size: 100,
           },
+          release_sweep: {
+            rotation_seconds: 21600,
+            max_rate_per_second: 5,
+            hot_interval_seconds: 60,
+            confirmations: 2,
+          },
         },
         total_account_count: 1,
         accounts_by_auth_method: {},
@@ -712,6 +718,12 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       retainedTtlSeconds: 86400,
       reconcileIntervalSeconds: 60,
       reconcilePageSize: 100,
+    });
+    expect(info.backend.releaseSweep).toEqual({
+      rotationSeconds: 21600,
+      maxRatePerSecond: 5,
+      hotIntervalSeconds: 60,
+      confirmations: 2,
     });
   });
 

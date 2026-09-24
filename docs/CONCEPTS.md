@@ -232,7 +232,7 @@ flowchart TB
 | Operator censors / withholds | Other cosigners see stale state | Rotate Guardian by meeting the applicable user threshold (the cold key can participate); the new operator inherits canonical state from Miden. |
 | Guardian database corruption (or restore from an older backup) | Accounts whose on-chain commitment advanced past the stored state fail state verification; accounts onboarded after the restore point fail with `account_not_found` because no guardian record remains | For an advanced account, a device holding the newer state re-syncs it, or rotate to another operator. For a missing account, a device holding it re-onboards via `/configure`, which re-registers the account with the state that device holds. The guardian cannot regenerate lost deltas because guarded accounts are private. |
 | Account paused by operator | State-transition, proposal, and EVM mutation paths return `409 GUARDIAN_ACCOUNT_PAUSED` with `paused_reason` (reads and `ConfigureAccount` keep working) | Operator-driven safety lever, not a fault. An operator with `accounts:pause` clears it via `POST /dashboard/accounts/{id}/unpause`. See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
-| Account switched to another guardian | After the `switch_guardian` delta canonicalizes on this server, mutation paths return `409 GUARDIAN_ACCOUNT_RELEASED` with `released_at` (reads and `ConfigureAccount` keep working); the dashboard shows `released_at` | Expected outcome of a guardian switch, not a fault. Terminal until the wallet re-onboards via `/configure`, which re-validates the guardian binding. An operator unpause never reactivates a released account. |
+| Account switched to another guardian | After the `switch_guardian` delta canonicalizes on this server — or, when that delta never arrived, after the background release sweep proves the switch from chain (the pending switch proposal's post-state is what the chain holds, or for a public account the new guardian key is in its published storage) — mutation paths return `409 GUARDIAN_ACCOUNT_RELEASED` with `released_at` (reads and `ConfigureAccount` keep working); the dashboard shows `released_at` | Expected outcome of a guardian switch, not a fault. Terminal until the wallet re-onboards via `/configure`, which re-validates the guardian binding. An operator unpause never reactivates a released account. A **private** account that switched without leaving a proposal here (offline switch) cannot be verified from chain and stays active here until re-onboarded. |
 | Pubkey changed unexpectedly | `/pubkey` returns a key your client doesn't pin | Treat as compromise. Halt, verify rotation through an out-of-band channel. |
 
 ## Provider rotation
@@ -251,6 +251,15 @@ operator to another without the current operator's cooperation:
 
 The multisig SDK's `SwitchGuardian` flow implements this. See
 [`docs/MULTISIG_SDK.md`](./MULTISIG_SDK.md).
+
+The old operator learns about the rotation in one of two ways: the SDK
+pushes the `SwitchGuardian` delta to it best-effort, or — when that push
+never happens (offline switch, network-dead old operator) — the old
+operator's background release sweep proves the switch from chain, either
+by matching the chain against the switch proposal still pending on it or
+by reading the new guardian key from the account's published storage.
+Either way it marks the account `released` and stops accepting mutations
+for it.
 
 ## What Guardian is *not*
 

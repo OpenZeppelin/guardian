@@ -224,7 +224,7 @@ fn next_tick_after(mut scheduled_at: Instant, interval: Duration, now: Instant) 
 /// `ttl = 3 × renew_interval`, so after one missed renewal the lease (extended
 /// at the last successful renew) is still a full interval from expiry, and the
 /// fence check guards any in-flight write regardless.
-fn spawn_renewal(
+pub(crate) fn spawn_renewal(
     leader: Arc<dyn LeaderElector>,
     lease: Lease,
     ttl: Duration,

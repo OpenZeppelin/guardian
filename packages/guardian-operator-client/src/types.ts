@@ -726,6 +726,24 @@ export interface DashboardCanonicalizationConfig {
   reconcilePageSize?: number;
 }
 
+/** Chain-driven release sweep settings (issue #434): the background
+ * task that releases accounts whose on-chain guardian key is no longer
+ * this server's even when the switch delta never reached the push
+ * path. */
+export interface DashboardReleaseSweepConfig {
+  /** Target time for one full walk of the fleet; every unreleased
+   * Miden account is probed once per rotation. */
+  rotationSeconds: number;
+  /** Upper bound on accounts probed per second during the walk. */
+  maxRatePerSecond: number;
+  /** Cadence of the hot pass over accounts awaiting confirmation or
+   * carrying a pending `switch_guardian` proposal. */
+  hotIntervalSeconds: number;
+  /** Consecutive observations of a foreign guardian key in published
+   * storage required before releasing on that evidence. */
+  confirmations: number;
+}
+
 /** Backend configuration snapshot. */
 export interface DashboardBackendInfo {
   /** `"filesystem"` or `"postgres"` based on the server's compiled
@@ -736,6 +754,9 @@ export interface DashboardBackendInfo {
   supportedAckSchemes: string[];
   /** `null` in optimistic-commit mode. */
   canonicalization: DashboardCanonicalizationConfig | null;
+  /** Release sweep settings; `null` when the sweep is disabled, absent
+   * on servers predating it. */
+  releaseSweep?: DashboardReleaseSweepConfig | null;
 }
 
 export interface DashboardInfoResponse {
