@@ -1,4 +1,20 @@
 ---
+# Builds the server image for linux/amd64 and linux/arm64 on native runners
+# and publishes them as one multi-platform manifest list.
+#
+# Each platform builds in its own job and pushes its image to GHCR by digest
+# only; the `merge` job then stitches the two digests into the tagged manifest
+# list and attests that digest. Before this split, one job built both
+# platforms with QEMU emulating arm64, and the emulated `cargo build` took
+# about 80 minutes against 12 minutes native (v0.17.0 release build).
+#
+# `prepare` validates the request and resolves the commit before the `release`
+# environment gate, so reviewers are only asked to approve a run that can
+# succeed, and both platforms build the same commit. The build jobs carry the
+# gate because they are what pushes image content; `merge` only tags and
+# attests digests that approved builds pushed, so it runs without a second
+# approval round.
+
 name: Docker Publish
 
 on:
@@ -27,9 +43,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
-  attestations: write
 
 concurrency:
   group: docker-publish
@@ -39,14 +52,25 @@ env:
   IMAGE: ghcr.io/openzeppelin/guardian
 
 jobs:
-  publish:
-    name: Build and Push Docker Image
+  prepare:
+    name: Resolve build parameters
     runs-on: ubuntu-latest
     if: github.repository_owner == 'OpenZeppelin'
-    environment: release
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      version: ${{ steps.params.outputs.version }}
+      ref: ${{ steps.params.outputs.ref }}
+      features: ${{ steps.params.outputs.features }}
+      sha: ${{ steps.commit.outputs.sha }}
+      short: ${{ steps.commit.outputs.short }}
+      short12: ${{ steps.commit.outputs.short12 }}
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -89,7 +113,7 @@ jobs:
           fi
 
       - name: Checkout build ref
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ steps.params.outputs.ref }}
           persist-credentials: false
@@ -97,9 +121,11 @@ jobs:
       - name: Resolve checked-out commit
         id: commit
         run: |
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "short12=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "short=$(git rev-parse --short HEAD)"
+            echo "short12=$(git rev-parse --short=12 HEAD)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Determine full-release flag
         id: release
@@ -129,12 +155,6 @@ jobs:
             exit 1
           fi
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
@@ -153,40 +173,172 @@ jobs:
             org.openzeppelin.guardian.features=${{ steps.params.outputs.features }}
             org.openzeppelin.guardian.source-ref=${{ steps.params.outputs.ref }}
 
-      - name: Build and push
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Name the platform for cache scopes and artifacts
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+
+      - name: Checkout resolved commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      # Pushes by digest only: the tags are applied by the merge job on the
+      # manifest list that references both platform images.
+      - name: Build and push by digest
         id: build
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           context: .
           target: server-runner
-          platforms: linux/amd64,linux/arm64
-          push: true
+          platforms: ${{ matrix.platform }}
           build-args: |
-            GUARDIAN_SERVER_FEATURES=${{ steps.params.outputs.features }}
-            GUARDIAN_GIT_SHA=${{ steps.commit.outputs.short12 }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+            GUARDIAN_SERVER_FEATURES=${{ needs.prepare.outputs.features }}
+            GUARDIAN_GIT_SHA=${{ needs.prepare.outputs.short12 }}
+          labels: ${{ needs.prepare.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
           # mode=min stores only final-stage layers: mode=max held ~2.4GB of the
           # 10GB repo cache quota that the CI cargo caches need, and this
           # workflow only runs on releases, where a slower image build is fine.
-          cache-to: type=gha,mode=min
+          cache-to: type=gha,mode=min,scope=${{ env.PLATFORM_PAIR }}
           provenance: mode=max
           sbom: true
 
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Build did not return an image digest (got '$DIGEST')"
+            exit 1
+          fi
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: digest-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish manifest list and attest
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Download platform digests
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Create and push the manifest list
+        env:
+          TAGS: ${{ needs.prepare.outputs.tags }}
+        run: |
+          set -euo pipefail
+          cd /tmp/digests
+          digests=(*)
+          if (( ${#digests[@]} != 2 )); then
+            echo "::error::Expected one digest per platform (2), found ${#digests[@]}: ${digests[*]}"
+            exit 1
+          fi
+          tag_args=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && tag_args+=(--tag "$tag")
+          done <<< "$TAGS"
+          sources=()
+          for digest in "${digests[@]}"; do
+            sources+=("${IMAGE}@sha256:${digest}")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+
+      - name: Resolve the published manifest digest
+        id: manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not resolve the digest of ${IMAGE}:${VERSION} (got '$digest')"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+
+      # The deploy workflow verifies this attestation against the manifest
+      # list digest it mirrors, so the subject must be the list, not a
+      # platform image.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
 
       - name: Publish summary
         env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-          SOURCE_REF: ${{ steps.params.outputs.ref }}
-          SHORT_SHA: ${{ steps.commit.outputs.short }}
+          TAGS: ${{ needs.prepare.outputs.tags }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+          SOURCE_REF: ${{ needs.prepare.outputs.ref }}
+          SHORT_SHA: ${{ needs.prepare.outputs.short }}
         run: |
           {
             echo "### Published \`${IMAGE}\`"
@@ -194,6 +346,13 @@ jobs:
             echo "**Digest:** \`${DIGEST}\`"
             echo
             echo "**Source ref:** \`${SOURCE_REF}\` @ \`${SHORT_SHA}\`"
+            echo
+            echo "**Platform images:**"
+            echo '```'
+            for digest in /tmp/digests/*; do
+              echo "${IMAGE}@sha256:$(basename "$digest")"
+            done
+            echo '```'
             echo
             echo "**Tags:**"
             echo '```'
