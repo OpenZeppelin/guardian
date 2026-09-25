@@ -111,6 +111,7 @@ import {
   type RecoverNotesOptions,
 } from './recovery/recoverNotes.js';
 import {
+  getRawClientAdapter,
   getRawMidenClient,
   getTransactionProver,
   requireMidenRpcEndpoint,
@@ -373,7 +374,7 @@ export class Multisig {
     this.midenClient = midenClient;
     this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
     this.midenRpcEndpoint = requireMidenRpcEndpoint(midenRpcEndpoint);
-    this.rawClientPromise = getRawMidenClient(midenClient, this.midenRpcEndpoint);
+    this.rawClientPromise = getRawMidenClient(midenClient);
     this.proverWorkflow = new ProverWorkflow(
       this.midenClient,
       proverConfig ?? resolveProverConfig(undefined, getTransactionProver(midenClient)),
@@ -1760,7 +1761,8 @@ export class Multisig {
         // own — so sync the chain state first. Incremental, so cheap when
         // the store is already synced.
         try {
-          await this.midenClient.syncChain();
+          const adapter = getRawClientAdapter(this.midenClient);
+          await (adapter ? adapter.syncChain() : this.midenClient.syncChain());
         } catch (error) {
           throw new Error(
             `failed to sync the chain state the backfill imports against: ${
@@ -1777,7 +1779,9 @@ export class Multisig {
         // Parity with the Rust flow's `sync()`: the transport fetch plus the
         // chain sync (`MidenClient.sync()` runs both, fail-fast), then the
         // GUARDIAN state sync.
-        await this.midenClient.sync();
+        // An application's adapter syncs its own writer instead.
+        const adapter = getRawClientAdapter(this.midenClient);
+        await (adapter ? adapter.syncState() : this.midenClient.sync());
         await this.syncState();
       },
     };

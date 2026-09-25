@@ -72,7 +72,7 @@ export async function buildConsumeNotesTransactionRequest(
     throw new Error('At least one note ID is required');
   }
 
-  const rawClient = await getRawMidenClient(client, options.midenRpcEndpoint);
+  const rawClient = await getRawMidenClient(client);
   const notes: Note[] = [];
   for (const noteIdHex of noteIds) {
     const inputNoteRecord = await rawClient.getInputNote(noteIdHex);

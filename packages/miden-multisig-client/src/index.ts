@@ -260,3 +260,5 @@ export type {
   PubkeyResponse,
   SignProposalRequest,
 } from './types.js';
+
+export { setRawClientAdapter, type RawClientAdapter } from './raw-client.js';

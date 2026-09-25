@@ -87,11 +87,13 @@ describe('ensureNotesAuthenticated (issue #409)', () => {
     expect(webClient.importNoteFile).not.toHaveBeenCalled();
   });
 
-  it('resolves the raw client with the configured RPC endpoint', async () => {
-    // A public MidenClient wrapper needs the endpoint to build its raw client.
+  it('resolves the raw client from the supplied client alone', async () => {
+    // The raw client is the one the supplied client wraps (issue #481), so it
+    // needs no endpoint of its own.
     records.set(NOTE_A, { authenticated: true });
     await run([makeNote(NOTE_A)]);
-    expect(mockGetRawMidenClient).toHaveBeenCalledWith(expect.anything(), MIDEN_RPC_ENDPOINT);
+    expect(mockGetRawMidenClient).toHaveBeenCalledWith(expect.anything());
+    expect(mockGetRawMidenClient.mock.calls[0]).toHaveLength(1);
   });
 
   it('fetches the proofs of unauthenticated notes in one round trip and imports each as committed', async () => {

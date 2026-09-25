@@ -265,7 +265,10 @@ export class MultisigClient {
     accountId: string,
     incomingAccount: Account,
   ): Promise<Account> {
-    const localAccount = await this.midenClient.accounts.get(AccountId.fromHex(accountId));
+    // Through the raw client, so an application's adapter (`setRawClientAdapter`)
+    // reads and writes the account on its own writer.
+    const rawClient = await getRawMidenClient(this.midenClient);
+    const localAccount = await rawClient.getAccount(AccountId.fromHex(accountId));
     if (!localAccount) {
       // Still checked against chain, and through the same rule the other path
       // uses. An empty store is the ordinary shape for loading an account this
@@ -306,7 +309,7 @@ export class MultisigClient {
         incomingAccount,
         readCommitment: () => Promise.resolve(onChain),
       });
-      await this.midenClient.accounts.insert({ account: incomingAccount, overwrite: true });
+      await rawClient.newAccount(incomingAccount, true);
       return incomingAccount;
     }
 
@@ -329,7 +332,7 @@ export class MultisigClient {
       return localAccount;
     }
 
-    await this.midenClient.accounts.insert({ account: incomingAccount, overwrite: true });
+    await rawClient.newAccount(incomingAccount, true);
     return incomingAccount;
   }
 }

@@ -102,6 +102,13 @@ describe('MultisigClient', () => {
         insert: vi.fn().mockResolvedValue(undefined),
       },
     };
+    // `load` reads and writes the account through the raw client (so an adapter
+    // can take them). This mock has no `sync`, so it is used as the raw client
+    // itself; its raw methods delegate to `accounts` to keep the assertions below.
+    webClient.getAccount = vi.fn((id: unknown) => webClient.accounts.get(id));
+    webClient.newAccount = vi.fn((account: unknown, overwrite: boolean) =>
+      webClient.accounts.insert({ account, overwrite }),
+    );
 
     mockSigner = {
       commitment: '0x' + '1'.repeat(64),

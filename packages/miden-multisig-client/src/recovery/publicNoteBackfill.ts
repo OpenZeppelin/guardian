@@ -240,7 +240,7 @@ export async function backfillPublicNotesByTag(
 ): Promise<PublicBackfillReport> {
   const midenRpcEndpoint = requireMidenRpcEndpoint(options.midenRpcEndpoint);
   const rpcConfig = resolveRpcConfig(options.rpc);
-  const webClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
+  const webClient = await getRawMidenClient(midenClient);
   const rpcClient = new RpcClient(new Endpoint(midenRpcEndpoint));
   // Parse eagerly so a malformed account ID throws before any network work.
   AccountId.fromHex(options.accountId);

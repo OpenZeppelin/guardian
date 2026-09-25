@@ -335,7 +335,7 @@ export async function importNotesFromProposals(
   const midenRpcEndpoint = requireMidenRpcEndpoint(options.midenRpcEndpoint);
   const rpcConfig = resolveRpcConfig(options.rpc);
   throwIfCancelled(options.cancelled);
-  const webClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
+  const webClient = await getRawMidenClient(midenClient);
 
   const outcomes: NoteImportOutcome[] = [];
 

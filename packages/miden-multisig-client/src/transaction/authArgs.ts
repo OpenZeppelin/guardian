@@ -53,7 +53,7 @@ export async function multisigRequestBuilder(
     });
     return { builder, saltHex };
   }
-  const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
+  const rawClient = await getRawMidenClient(client);
   const builder = await rawClient.feeAwareTransactionRequestBuilder(
     AccountId.fromHex(accountId),
     approvalExpirationDelta ?? null,

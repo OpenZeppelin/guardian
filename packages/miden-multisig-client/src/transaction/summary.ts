@@ -68,7 +68,7 @@ export async function executeForSummary(
   midenRpcEndpoint?: string,
 ): Promise<{ summary: TransactionSummary; anchor: ChainAnchor }> {
   const acc = AccountId.fromHex(accountId);
-  const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
+  const rawClient = await getRawMidenClient(client);
   const anchor = await rawClient.chainAnchorForRequest(txRequest);
   let summary: TransactionSummary;
   try {
@@ -119,7 +119,7 @@ export async function executeForSummaryAt(
   midenRpcEndpoint?: string,
 ): Promise<TransactionSummary> {
   const acc = AccountId.fromHex(accountId);
-  const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
+  const rawClient = await getRawMidenClient(client);
   return rawClient.executeForSummaryAt(acc, txRequest, anchor);
 }
 
