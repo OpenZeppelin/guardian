@@ -21,6 +21,39 @@ line this build pins. The
 line and the public networks running it; a local `miden-node` from that
 line is the fallback when none does.
 
+### "does not contain a canonical TX_FEE output note" on submission
+
+The node rejected a transaction that pays no transaction fee. The current
+guarded-multisig auth procedure always creates the fee note, so this means the
+account was deployed by a build pinned to an earlier Miden 0.17 release
+candidate, whose auth procedure never paid the fee. Funding that account does
+not help, because its code cannot change: recreate it with the current build
+(see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017)).
+
+The execute path requests the GUARDIAN acknowledgement before it submits, so a
+rejected submission leaves the delta pending on GUARDIAN, and the next proposal
+for the account is refused with `conflict_pending_delta`. Release it with
+`abandon_candidate(nonce)` / `abandonCandidate(nonce)` (see
+[`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait for the submission grace period
+to expire.
+
+### "the amount of the asset in the vault is less than the amount to remove" when proposing or executing
+
+The full message is `failed to remove the fungible asset from the vault since
+the amount of the asset in the vault is less than the amount to remove`. On
+Miden 0.17 the guarded-multisig auth procedure pays the transaction fee from
+the account's own vault, so the account needs a balance in the chain's native
+fee asset for every transaction, including the first one that deploys it. The
+fee is paid before any signature is checked, so the failure already appears
+when the proposal is created (the unsigned run that produces the transaction
+summary), before anything is signed or submitted.
+
+Fund the account with the fee asset, then retry. On devnet, which has no
+faucet front end, call the node's `RegisterAccount` RPC for the undeployed
+account (`scripts/devnet-register-account.sh <account-id>`), sync until the
+note arrives, and consume it; see
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
+
 ### State created on Miden 0.16 fails to load after the 0.17 upgrade
 
 The same shape as the 0.15 to 0.16 case below. A Rust SQLite store or a

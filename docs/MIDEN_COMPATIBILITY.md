@@ -20,7 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| 0.18.x (pre-release) | 0.17 | `=0.17.0-rc.6` | `=0.17.0-rc.2` | `0.17.0-rc.2` (exact) |
+| 0.18.x (pre-release) | 0.17 | `=0.17.0-rc.7` | `=0.17.0-rc.3` | `0.17.0-rc.3` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
 | 0.15.x | 0.15 | `0.15.x` | `0.15.0` | `^0.15.0` |
@@ -28,9 +28,9 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
-0.18.x tracks the Miden 0.17 release candidates. `@miden-sdk/miden-sdk` 0.17.0-rc.2
-embeds `miden-client` 0.17.0-rc.2 and `miden-protocol` / `miden-standards` 0.17.0-rc.6,
-which is why the Rust pins are rc.6 for the protocol crates and rc.2 for the client
+0.18.x tracks the Miden 0.17 release candidates. `@miden-sdk/miden-sdk` 0.17.0-rc.3
+embeds `miden-client` 0.17.0-rc.3 and `miden-protocol` / `miden-standards` 0.17.0-rc.7,
+which is why the Rust pins are rc.7 for the protocol crates and rc.3 for the client
 crates. It is not a production target until Miden 0.17.0 is stable and devnet and
 testnet run it.
 
@@ -110,6 +110,14 @@ Nothing stored under Miden 0.16 survives:
   `MultisigAuthArgs`; TypeScript starts from `feeAwareTransactionRequestBuilder`.
   A 0.16 request that only declared `fee_conversion_salt` is one word short and
   aborts in the auth procedure.
+- **The guarded-multisig auth procedure pays the transaction fee** (since
+  `miden-standards` 0.17.0-rc.7). It creates the `TX_FEE` note from the
+  account's vault before the transaction summary is built, so the fee note is
+  covered by the approver and GUARDIAN signatures. Every transaction therefore
+  needs a balance in the chain's native fee asset, including the first one
+  that deploys the account. A node rejects a transaction without a canonical
+  `TX_FEE` note, and an account created by a build pinned to an earlier release
+  candidate never creates one, so it cannot transact and must be recreated.
 - **The fee asset left the block header.** It lives in the chain's protocol
   configuration, which the client receives from the node with each sync and
   stores per header. The auth args name the fee faucet of the configuration the
@@ -123,27 +131,26 @@ Nothing stored under Miden 0.16 survives:
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-09-24.
+Last checked 2026-09-25.
 
-- **Public networks.** Devnet runs node 0.17.0-rc.2 with protocol 0.17.0-rc.6,
-  the line this workspace pins: this build's protocol configuration for devnet's
-  fee asset hashes to the commitment in devnet's block headers. Testnet runs
-  Miden 0.16, so on testnet the examples need a local `miden-node` from the
-  pinned line until it upgrades. No live end-to-end run on devnet yet.
-- **Fee payment** ([protocol#3757](https://github.com/0xMiden/protocol/issues/3757)).
-  On the 0.17 release candidates (still true in 0.17.0-rc.6) `guarded_multisig`
-  drops the conversion-info word instead of paying the fee. The auth args both
-  SDKs build are the ones the fix will consume. When it lands: the `auth_tx`
-  root moves, so the pinned roots and the server fixtures are regenerated and
-  the two `#[ignore]`d tests in `crates/contracts/tests/auth/fee_payment.rs`
-  come back.
-- **miden-client fee path.** miden-client (still in 0.17.0-rc.2) commits the
+- **Public networks.** Devnet runs node 0.17.0-rc.2, and this build's protocol
+  configuration for devnet's fee asset hashes to the commitment in devnet's
+  block headers, so the transaction kernels match. A guarded-multisig
+  transaction from this build has not yet been executed there end to end.
+  Devnet has no faucet front end: an account is funded by calling the node's
+  `RegisterAccount` RPC, which pays it a small public P2ID note in the fee asset
+  (`scripts/devnet-register-account.sh`). `miden-client`'s `register_account`
+  does not send the request on devnet, because devnet enforces no allowlist and
+  reports every account as already allowed. Testnet runs Miden 0.16, so
+  on testnet the examples need a local `miden-node` from the pinned line until
+  it upgrades.
+- **miden-client fee path.** miden-client (still in 0.17.0-rc.3) commits the
   two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
   SDKs set the three-word auth arg themselves (rationale in the multisig
   client's `transaction/auth_args.rs`). When the client builds
   `MultisigAuthArgs` itself: the helper can delegate to it; nothing stored or
   signed changes.
-- **Pins.** The workspace pins protocol 0.17.0-rc.6 and client 0.17.0-rc.2 (see
+- **Pins.** The workspace pins protocol 0.17.0-rc.7 and client 0.17.0-rc.3 (see
   the matrix). The protocol pin follows the client and web SDK releases, not the
   protocol tags, because both SDKs must embed the same kernel. Moving to stable
   re-pins, regenerates roots, fixtures and the cross-SDK determinism vectors,

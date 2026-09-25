@@ -238,13 +238,9 @@ fn fee_note_amount(executed: &ExecutedTransaction) -> anyhow::Result<u64> {
 }
 
 /// The auth args a typed create path commits are accepted by the auth procedure at a non-zero
-/// verification base fee, and the fee is actually paid.
-///
-/// Ignored on the 0.17 release candidates: `AuthGuardedMultisig` resolves the conversion info and
-/// drops it instead of calling `fee::pay_fee` (protocol #3757), so no TX_FEE note is created and
-/// nothing enforces payment. The assertions state the behavior the upstream fix restores.
+/// verification base fee, and the fee is actually paid: a node rejects a transaction without a
+/// canonical TX_FEE note, and the mock chain does not enforce that, so this test does.
 #[tokio::test]
-#[ignore = "protocol #3757: AuthGuardedMultisig pays no fee on the 0.17 release candidates"]
 async fn committed_conversion_info_pays_the_fee() -> anyhow::Result<()> {
     let salt = Word::from([11u32, 22, 33, 44]);
 
@@ -263,10 +259,8 @@ async fn committed_conversion_info_pays_the_fee() -> anyhow::Result<()> {
 }
 
 /// The fee note is appended after the transaction's own output notes, so `pay_fee` runs with a
-/// non-zero output-note count and user note indices are unaffected. Ignored for the same reason
-/// as [`committed_conversion_info_pays_the_fee`].
+/// non-zero output-note count and user note indices are unaffected.
 #[tokio::test]
-#[ignore = "protocol #3757: AuthGuardedMultisig pays no fee on the 0.17 release candidates"]
 async fn committed_conversion_info_pays_the_fee_alongside_a_user_note() -> anyhow::Result<()> {
     let salt = Word::from([1u32, 2, 3, 4]);
 
@@ -284,8 +278,7 @@ async fn committed_conversion_info_pays_the_fee_alongside_a_user_note() -> anyho
 }
 
 /// The committed auth args pass `resolve_auth_args` and the whole signed flow on a fee-charging
-/// chain: what the guarded component does with the conversion info afterwards is upstream's
-/// (#3757), but the shape both SDKs build is the one the auth procedure accepts.
+/// chain, so the shape both SDKs build is the one the auth procedure accepts.
 #[tokio::test]
 async fn committed_auth_args_are_accepted_on_a_fee_charging_chain() -> anyhow::Result<()> {
     let salt = Word::from([11u32, 22, 33, 44]);

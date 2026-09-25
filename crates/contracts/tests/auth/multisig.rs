@@ -387,7 +387,7 @@ async fn guarded_multisig_executes_mixed_raw_and_eip712_approvals(
     };
     let (eip712_key, witness) = summary.eip712_signature_advice(&public_keys[1], &eip712_signature);
     let advice_key = if matches!(case, Eip712WitnessCase::RawKey) {
-        Hasher::merge(&[public_keys[1].to_commitment().into(), message])
+        Hasher::merge(&[public_keys[1].to_commitment(), message])
     } else {
         eip712_key
     };

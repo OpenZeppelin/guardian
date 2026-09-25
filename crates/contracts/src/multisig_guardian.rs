@@ -396,10 +396,10 @@ mod tests {
         // Cross-SDK parity: the TypeScript builder must derive these same identity
         // values from the same pinned miden-standards version; regenerate both if
         // the pin changes (`packages/miden-multisig-client/tests/browser/determinism.spec.ts`).
-        assert_eq!(account.id().to_hex(), "0x58a250c0ead6af4111070db140927b");
+        assert_eq!(account.id().to_hex(), "0x5ca4f74a7aa342c124cb4493ac905e");
         assert_eq!(
             account.to_commitment().to_hex(),
-            "0xcf603750aa98f70fb9ca3dcad896988e92b34a064553b9c53fd45ba5e20c019c"
+            "0xf3fe926f69a8a80bb32e9daedb1095b34988d43559f0d8521727378fc170f7b5"
         );
     }
 }

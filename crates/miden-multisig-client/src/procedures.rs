@@ -44,7 +44,7 @@ impl ProcedureName {
                 "0x5de3563f30c5dd130da49c8fdd86d867fed6dbbd928363021c53ef99d8034bac",
             ),
             ProcedureName::AuthTx => procedure_root_word(
-                "0x4989b90cb5b605195fcf702903fa1c8b3eab9d5c6ccb2ed4a81b345069a36671",
+                "0xf988ff88c7a9c2104d77862d580239ec40e060a9b4d2d96028135abeb8cc58bc",
             ),
             ProcedureName::UpdateGuardian => procedure_root_word(
                 "0x93dedb135fd5bb7112c07aacf4a5680ddc76e45ecf043bfc42ea735b6d971911",
