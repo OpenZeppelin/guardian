@@ -20,7 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| 0.18.x (pre-release) | 0.17 | `=0.17.0-rc.7` | `=0.17.0-rc.3` | `0.17.0-rc.3` (exact) |
+| 0.18.0-rc.1 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.3` | `0.17.0-rc.3` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
 | 0.15.x | 0.15 | `0.15.x` | `0.15.0` | `^0.15.0` |
@@ -32,7 +32,9 @@ elsewhere and link here:
 embeds `miden-client` 0.17.0-rc.3 and `miden-protocol` / `miden-standards` 0.17.0-rc.7,
 which is why the Rust pins are rc.7 for the protocol crates and rc.3 for the client
 crates. It is not a production target until Miden 0.17.0 is stable and devnet and
-testnet run it.
+testnet run it. The 0.18 release candidates are published to npm under the `rc`
+dist-tag, so `npm install` without an explicit version still resolves the 0.17.x
+line (Miden 0.16).
 
 0.17.0 builds on the stable Miden 0.16 release. `@miden-sdk/miden-sdk` 0.16.0 embeds
 `miden-client` 0.16.0 and `miden-protocol` / `miden-standards` 0.16.1, which is why the

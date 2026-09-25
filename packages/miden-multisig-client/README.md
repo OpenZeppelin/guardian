@@ -17,7 +17,7 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client @miden-sdk/miden-sdk@0.17.0-rc.3
+npm install @openzeppelin/miden-multisig-client@0.18.0-rc.1 @miden-sdk/miden-sdk@0.17.0-rc.3
 ```
 
 Miden 0.17 requires a new client database: a store created under 0.16 does
@@ -37,7 +37,7 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.18.x | 0.17.x |
+| 0.18.x | 0.17.x (pre-release) |
 | 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |

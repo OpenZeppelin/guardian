@@ -1,6 +1,6 @@
 {
   "name": "@openzeppelin/miden-multisig-client",
-  "version": "0.17.0",
+  "version": "0.18.0-rc.1",
   "description": "TypeScript SDK for Miden multisig accounts with GUARDIAN integration",
   "repository": {
     "type": "git",
@@ -45,10 +45,10 @@
     "@miden-sdk/miden-sdk": "0.17.0-rc.3",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^2.0.1",
-    "@openzeppelin/guardian-client": "^0.17.0"
+    "@openzeppelin/guardian-client": "^0.18.0-rc.1"
   },
   "devDependencies": {
-    "@openzeppelin/guardian-operator-client": "^0.17.0",
+    "@openzeppelin/guardian-operator-client": "^0.18.0-rc.1",
     "@playwright/test": "^1.60.0",
     "@types/node": "^24.13.5",
     "fake-indexeddb": "^6.2.5",
