@@ -208,6 +208,8 @@ jobs:
           guardian_client_dependency=$(jq -r '.dependencies["@openzeppelin/guardian-client"]' miden-multisig-client/package.json)
           guardian_client_version=$(jq -r '.version' guardian-client/package.json)
           guardian_client_built=false
+          guardian_operator_client_name="@openzeppelin/guardian-operator-client"
+          guardian_operator_client_built=false
 
           for index in "${!packages[@]}"; do
             package="${packages[${index}]}"
@@ -217,10 +219,17 @@ jobs:
             package_version=$(jq -r '.version' "${package_dir}/package.json")
             next_index=$((index + 1))
 
-            if [[ "${package}" == "miden-multisig-client" && "${guardian_client_built}" != "true" ]]; then
+            if [[ "${package}" == "miden-multisig-client" ]]; then
               # npm ci links the local workspace, but the multisig SDK imports
-              # the guardian-client's generated dist output.
-              if ! npm run build -w "${guardian_client_name}"; then
+              # the generated dist output of guardian-client, and its
+              # qualification tests import guardian-operator-client's (a
+              # test-only dependency), as ci.yml builds for the same job. A
+              # release run builds both earlier in this loop; a manual run that
+              # selects only this package must build them here.
+              if [[ "${guardian_client_built}" != "true" ]] && ! npm run build -w "${guardian_client_name}"; then
+                abort "${package_name}" "${package_version}" "❌ Workspace dependency build failed" "${next_index}"
+              fi
+              if [[ "${guardian_operator_client_built}" != "true" ]] && ! npm run build -w "${guardian_operator_client_name}"; then
                 abort "${package_name}" "${package_version}" "❌ Workspace dependency build failed" "${next_index}"
               fi
             fi
@@ -230,6 +239,9 @@ jobs:
             fi
             if [[ "${package}" == "guardian-client" ]]; then
               guardian_client_built=true
+            fi
+            if [[ "${package}" == "guardian-operator-client" ]]; then
+              guardian_operator_client_built=true
             fi
 
             if ! npm test -w "${workspace_name}"; then
