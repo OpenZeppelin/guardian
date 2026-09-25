@@ -1671,16 +1671,18 @@ describe('Multisig', () => {
       expect(seeded.signatures).toHaveLength(1);
 
       let releaseVerify: (() => void) | undefined;
-      vi.mocked(executeForSummaryAt)
+      vi.mocked(executeForSummary)
         .mockResolvedValueOnce({
-          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+          summary: { toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }) },
+          anchor: createMockChainAnchor(),
         } as any)
         .mockImplementationOnce(
           () =>
             new Promise((resolve) => {
               releaseVerify = () =>
                 resolve({
-                  toCommitment: () => ({ toHex: () => '0x' + 'd'.repeat(64) }),
+                  summary: { toCommitment: () => ({ toHex: () => '0x' + 'd'.repeat(64) }) },
+                  anchor: createMockChainAnchor(),
                 } as any);
             })
         );
@@ -1725,16 +1727,18 @@ describe('Multisig', () => {
       expect(seeded.status).toBe('ready');
 
       let releaseVerify: (() => void) | undefined;
-      vi.mocked(executeForSummaryAt)
+      vi.mocked(executeForSummary)
         .mockResolvedValueOnce({
-          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+          summary: { toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }) },
+          anchor: createMockChainAnchor(),
         } as any)
         .mockImplementationOnce(
           () =>
             new Promise((resolve) => {
               releaseVerify = () =>
                 resolve({
-                  toCommitment: () => ({ toHex: () => '0x' + 'd'.repeat(64) }),
+                  summary: { toCommitment: () => ({ toHex: () => '0x' + 'd'.repeat(64) }) },
+                  anchor: createMockChainAnchor(),
                 } as any);
             })
         );
@@ -2006,8 +2010,11 @@ describe('Multisig', () => {
 
       // While the listing is in flight, a proposal is created locally (the
       // 4-byte summary commits to 0xdd…, distinct from the listing's 0xcc…).
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({ toHex: () => '0x' + 'd'.repeat(64) }),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -2202,10 +2209,13 @@ describe('Multisig', () => {
         }),
       });
 
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       // Issue #462: the listing reports the failure instead of failing.
@@ -2269,7 +2279,7 @@ describe('Multisig', () => {
         serialize: () => new Uint8Array([9, 9, 9]),
       } as never);
 
-      const reExecutionsBefore = vi.mocked(executeForSummaryAt).mock.calls.length;
+      const reExecutionsBefore = vi.mocked(executeForSummary).mock.calls.length;
       const [listed] = await multisig.syncProposals();
       expect(listed.verification).toMatchObject({
         status: 'failed',
@@ -2278,7 +2288,7 @@ describe('Multisig', () => {
           'chain anchor does not match the block commitment bound into the tx_summary'
         ),
       });
-      expect(vi.mocked(executeForSummaryAt).mock.calls.length).toBe(reExecutionsBefore);
+      expect(vi.mocked(executeForSummary).mock.calls.length).toBe(reExecutionsBefore);
       expect(freed).toHaveBeenCalledTimes(1);
     });
 
@@ -2414,18 +2424,20 @@ describe('Multisig', () => {
       vi.mocked(chainAnchorFromBase64).mockClear();
       vi.mocked(chainAnchorFromBase64).mockReturnValueOnce(proposalAnchor as never);
       vi.mocked(executeForSummary).mockClear();
-      vi.mocked(executeForSummaryAt).mockClear();
+      vi.mocked(executeForSummary).mockClear();
 
       const proposals = await multisig.syncProposals();
       expect(proposals).toHaveLength(1);
       expect(proposals[0].verification).toEqual({ status: 'verified' });
 
       expect(chainAnchorFromBase64).toHaveBeenCalledWith(MOCK_CHAIN_ANCHOR_B64);
-      // Re-executed exactly once, at that decoded anchor object — not a
-      // freshly captured one, and never via the sync-height variant.
-      expect(executeForSummaryAt).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(executeForSummaryAt).mock.calls[0][3]).toBe(proposalAnchor);
-      expect(executeForSummary).not.toHaveBeenCalled();
+      // The decoded anchor is validated against the summary's bound block, but
+      // re-execution now happens at the current tip (executeForSummary): since
+      // the summary binds a caller-chosen block (protocol #3731) it is stable
+      // across reference blocks, so nothing is fetched at the (prunable) anchor
+      // (#462).
+      expect(executeForSummary).toHaveBeenCalledTimes(1);
+      expect(executeForSummaryAt).not.toHaveBeenCalled();
       expect(freed).toHaveBeenCalledTimes(1);
     });
 
@@ -2482,12 +2494,15 @@ describe('Multisig', () => {
       mockEnsureNotesAuthenticated.mockImplementationOnce(async () => {
         order.push('authenticate');
       });
-      vi.mocked(executeForSummaryAt).mockClear();
-      vi.mocked(executeForSummaryAt).mockImplementationOnce(async () => {
+      vi.mocked(executeForSummary).mockClear();
+      vi.mocked(executeForSummary).mockImplementationOnce(async () => {
         order.push('re-execute');
         return {
-          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
-          serialize: () => new Uint8Array([1, 2, 3]),
+          summary: {
+            toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+            serialize: () => new Uint8Array([1, 2, 3]),
+          },
+          anchor: createMockChainAnchor(),
         } as never;
       });
 
@@ -2791,10 +2806,13 @@ describe('Multisig', () => {
         }),
       });
 
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       await expect(
@@ -4109,10 +4127,13 @@ describe('Multisig', () => {
         description: '',
       });
 
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       await expect(multisig.signProposal('0x' + 'c'.repeat(64))).rejects.toThrow(
@@ -4178,10 +4199,13 @@ describe('Multisig', () => {
 
       const multisig = createTestMultisig(config);
 
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       await expect(
@@ -4216,10 +4240,13 @@ describe('Multisig', () => {
 
       const multisig = createTestMultisig(config);
 
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({
           toHex: () => '0x' + 'c'.repeat(64),
         }),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       const proposal = await multisig.importProposal(
@@ -4249,10 +4276,13 @@ describe('Multisig', () => {
         description: '',
       };
 
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({
           toHex: () => '0x' + 'f'.repeat(64),
         }),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       await expect(multisig.signProposalOffline(proposal.id)).rejects.toThrow(
@@ -4973,10 +5003,13 @@ describe('Multisig', () => {
       const multisig = createTestMultisig(config);
       const proposalId = '0x' + 'c'.repeat(64);
 
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({
           toHex: () => '0x' + 'd'.repeat(64),
         }),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       (multisig as any).proposals.set(proposalId, {
@@ -6034,9 +6067,12 @@ describe('Multisig', () => {
       });
       // The consume binding re-execution must reproduce the consume
       // proposal's summary commitment.
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({ toHex: () => consumeProposalId }),
         serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as never);
 
       const pendingConsumeDelta = {
@@ -6626,11 +6662,14 @@ describe('Multisig', () => {
 
       // Signed commitment comes from TransactionSummary.deserialize -> 'c' * 64.
       // Make the binding request derive a different commitment so the check fails.
-      vi.mocked(executeForSummaryAt).mockResolvedValueOnce({
+      vi.mocked(executeForSummary).mockResolvedValueOnce({
+        summary: {
         toCommitment: () => ({
           toHex: () => '0x' + '9'.repeat(64),
         }),
         serialize: () => new Uint8Array([1, 2, 3]),
+      },
+        anchor: createMockChainAnchor(),
       } as any);
 
       mockFetch.mockResolvedValueOnce({

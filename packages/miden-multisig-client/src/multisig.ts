@@ -44,7 +44,6 @@ import {
   chainAnchorFromBase64,
   chainAnchorToBase64,
   executeForSummary,
-  executeForSummaryAt,
   summaryApprovalExpirationBlockNum,
   summarySalt,
   buildUpdateSignersTransactionRequest,
@@ -2237,11 +2236,15 @@ export class Multisig {
 
     const bindingRequest = deserializeTransactionRequest(transactionRequestBytes);
 
-    // Probe at the proposal's anchored reference block: the signed summary
-    // binds that block's commitment, so probing at the local sync height would
-    // never reproduce it. The anchor arrives from an untrusted party via
-    // GUARDIAN, so its block commitment is checked against the signed summary
-    // before executing against it.
+    // The anchor arrives from an untrusted party via GUARDIAN, so its block
+    // commitment is checked against the signed summary's bound block. The anchor
+    // is only validated here, not executed against: since the multisig summary
+    // binds a caller-chosen block via the request's MultisigAuthArgs (miden
+    // 0.17, protocol #3731) it is stable across reference blocks, so the binding
+    // is reproduced by re-executing at the current chain tip. Executing at the
+    // anchor instead would load the fee faucet as a foreign account at that
+    // block, which nodes prune after a short window (~50 blocks on devnet),
+    // making the proposal unverifiable/unexecutable once aged (#462).
     const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
     let derivedCommitmentHex: string;
     try {
@@ -2253,8 +2256,18 @@ export class Multisig {
         );
       }
       const webClient = await this.getRawClient();
-      const derived = await executeForSummaryAt(webClient, this._accountId, bindingRequest, anchor);
-      derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
+      // Re-execute at the current chain tip (not the pinned anchor); the summary
+      // binds the caller-chosen block, so this reproduces the same commitment.
+      const { summary: derived, anchor: tipAnchor } = await executeForSummary(
+        webClient,
+        this._accountId,
+        bindingRequest,
+      );
+      try {
+        derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
+      } finally {
+        tipAnchor.free();
+      }
     } finally {
       anchor.free();
     }
@@ -2825,8 +2838,25 @@ export class Multisig {
 
       const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, binding);
       const webClient = await this.getRawClient();
-      const reconstructed = await executeForSummaryAt(webClient, this._accountId, request, anchor);
-      const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
+      // Re-execute at the current chain tip rather than the proposal's anchor
+      // block. Since the multisig summary binds a caller-chosen block via the
+      // request's MultisigAuthArgs (miden 0.17, protocol #3731), it is stable
+      // across reference blocks, so the tip reproduces the same commitment while
+      // the fee-faucet foreign load happens at the (unpruned) tip. Executing at
+      // the anchor loads that foreign account at a block the node prunes after a
+      // short window (~50 blocks on devnet), which made aged proposals fail with
+      // `before_foreign_load` for everyone, the proposer included (#462).
+      const { summary: reconstructed, anchor: tipAnchor } = await executeForSummary(
+        webClient,
+        this._accountId,
+        request,
+      );
+      let reconstructedCommitment: string;
+      try {
+        reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
+      } finally {
+        tipAnchor.free();
+      }
 
       if (reconstructedCommitment !== txSummaryCommitment) {
         throw new Error(`Invalid proposal: metadata does not match tx_summary for ${proposal.id}`);
