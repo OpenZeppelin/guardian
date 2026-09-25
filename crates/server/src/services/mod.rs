@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 mod abandon_candidate;
 pub mod account_status;
+pub mod candidate_chain;
 mod configure_account;
 mod dashboard_account_delta_detail;
 mod dashboard_account_deltas;

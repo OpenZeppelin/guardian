@@ -159,11 +159,13 @@ gRPC uses `NetworkConfig::{miden, evm}`.
 - `{ "status": "pending", "timestamp": string, "proposer_id": string, "cosigner_sigs": CosignerSignature[] }`
 - `{ "status": "candidate", "timestamp": string, "retry_count": number }`
 - `{ "status": "canonical", "timestamp": string }`
-- `{ "status": "retained", "timestamp": string, "reason": "retry_exhausted" | "diverged" }` —
+- `{ "status": "retained", "timestamp": string, "reason": "retry_exhausted" | "diverged" | "orphaned" }` —
   a candidate the worker gave up verifying, kept for background
   reconciliation (issue #345): promoted to `canonical` if the chain ever
-  shows it landed, dropped after a server-side TTL otherwise. `reason`
-  is omitted when not recorded.
+  shows it landed, dropped after a server-side TTL otherwise. `orphaned`
+  (issue #17) marks a candidate whose predecessor in the account's
+  candidate queue was parked, discarded, or abandoned. `reason` is
+  omitted when not recorded.
 - `{ "status": "discarded", "timestamp": string, "reason": "client_abandoned" }` —
   `reason` is omitted for discards without a recorded reason.
 
@@ -574,7 +576,7 @@ behavior.
 | `guardian_canonicalization_fast_run_duration_seconds` | histogram | — |
 | `guardian_canonicalization_reconcile_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_reconcile_run_duration_seconds` | histogram | — |
-| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
+| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`orphaned`/`abandoned`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |
 | `guardian_canonicalization_pass_accounts` | gauge | — |

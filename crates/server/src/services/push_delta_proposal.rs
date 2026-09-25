@@ -3,6 +3,7 @@ use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
+use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::{normalize_payload, resolve_account};
 use guardian_shared::{DeltaSignature, EcdsaMessageFormat};
 
@@ -79,29 +80,36 @@ pub async fn push_delta_proposal(
     }
 
     // Fetch current state to validate delta
-    let current_state = resolved
+    let mut current_state = resolved
         .storage
         .pull_state(&account_id)
         .await
         .map_err(|_| GuardianError::StateNotFound(account_id.clone()))?;
 
-    // Check for pending candidates before accepting new proposal
-    let has_pending = resolved
-        .storage
-        .has_pending_candidate(&account_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                account_id = %account_id,
-                error = %e,
-                "Failed to check pending candidate in push_delta_proposal"
-            );
-            GuardianError::StorageError(format!("Failed to check pending candidate: {e}"))
-        })?;
-
-    if has_pending {
+    // Queue admission (issue #17): a proposal is pinned to the tail of
+    // the account's candidate chain — the state the eventual delta must
+    // build on. While the queue is full the delta could not be admitted
+    // anyway, so the proposal is refused up front rather than after
+    // cosigners have signed it (with depth 1 this is the historical
+    // "one in-flight candidate" refusal).
+    let chain = CandidateChain::load_for_admission(
+        resolved.storage.as_ref(),
+        &account_id,
+        &mut current_state,
+    )
+    .await?;
+    let max_pending_candidates = candidate_chain::max_pending_candidates(state);
+    if chain.len() >= max_pending_candidates {
+        tracing::info!(
+            account_id = %account_id,
+            nonce,
+            queued = chain.len(),
+            max_pending_candidates,
+            "Candidate queue is full; refusing proposal as pending-delta conflict"
+        );
         return Err(GuardianError::ConflictPendingDelta);
     }
+    let tail = chain.reconstruct_tail(state, &current_state).await?;
 
     let pending_proposals = resolved
         .storage
@@ -121,9 +129,11 @@ pub async fn push_delta_proposal(
     // would let dead proposals accumulate until the account is permanently
     // locked out with PendingProposalsLimit (#337). Non-viable proposals
     // stay in storage and remain visible via pull_pending_proposals.
+    // Viability is measured against the chain tail: that commitment is
+    // what promotion drives the canonical state towards.
     let viable_pending = pending_proposals
         .iter()
-        .filter(|record| record.proposal.prev_commitment == current_state.commitment)
+        .filter(|record| record.proposal.prev_commitment == tail.commitment)
         .count();
 
     let max_pending_proposals = max_pending_proposals_per_account();
@@ -149,11 +159,7 @@ pub async fn push_delta_proposal(
     let commitment = {
         let client = &state.network_client;
         client
-            .verify_delta(
-                &current_state.commitment,
-                &current_state.state_json,
-                tx_summary,
-            )
+            .verify_delta(&tail.commitment, &tail.state_json, tx_summary)
             .map_err(GuardianError::InvalidDelta)?;
 
         // Compute the delta proposal ID from the tx_summary
@@ -207,7 +213,7 @@ pub async fn push_delta_proposal(
     let delta_proposal = DeltaObject {
         account_id: account_id.clone(),
         nonce,
-        prev_commitment: current_state.commitment.clone(),
+        prev_commitment: tail.commitment.clone(),
         new_commitment: None,
         delta_payload,
         ack_sig: String::new(),
@@ -958,6 +964,166 @@ mod tests {
             }
             e => panic!("Expected ConflictPendingDelta error, got: {:?}", e),
         }
+    }
+
+    /// Issue #17: with queue depth to spare, a proposal is pinned to the
+    /// replayed queue tail — the state its delta will have to build on —
+    /// rather than refused or pinned to the canonical state.
+    #[tokio::test]
+    async fn test_push_delta_proposal_is_pinned_to_the_queue_tail() {
+        let (state, storage, network, metadata) = create_test_state();
+        let mut state = state;
+        state.canonicalization = Some(
+            crate::canonicalization::CanonicalizationConfig::default()
+                .with_max_pending_candidates_per_account(4),
+        );
+
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let canonical_commitment =
+            "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
+        ))));
+        let _storage = storage
+            .with_pull_state(Ok(create_state_object(
+                account_id.clone(),
+                canonical_commitment.to_string(),
+                account_json.clone(),
+            )))
+            .with_pull_deltas_after(Ok(vec![DeltaObject {
+                account_id: account_id.clone(),
+                nonce: 1,
+                prev_commitment: canonical_commitment.to_string(),
+                new_commitment: Some("0xtail".to_string()),
+                delta_payload: serde_json::json!({}),
+                ack_sig: String::new(),
+                ack_pubkey: String::new(),
+                ack_scheme: String::new(),
+                status: DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string()),
+                metadata: None,
+            }]));
+        // The queue replay reproduces the stored tail commitment.
+        let _network = network
+            .with_validate_credential(Ok(()))
+            .with_apply_delta(Ok((account_json, "0xtail".to_string())));
+
+        let delta_payload = serde_json::json!({
+            "tx_summary": delta_fixture["delta_payload"].clone(),
+            "signatures": [],
+            "metadata": {
+                "proposal_type": "custom",
+                "description": "queued behind an in-flight candidate"
+            }
+        });
+        let result = push_delta_proposal(
+            &state,
+            PushDeltaProposalParams {
+                account_id: account_id.clone(),
+                nonce: 2,
+                delta_payload,
+                credentials: Credentials::signature(test_pubkey, test_signature, test_timestamp),
+            },
+        )
+        .await
+        .expect("the proposal is accepted against the queue tail");
+        assert_eq!(result.delta.prev_commitment, "0xtail");
+        assert!(result.delta.status.is_pending());
+    }
+
+    /// Issue #17: a proposal is refused up front once the queue is full —
+    /// its delta could not be admitted anyway, and refusing before
+    /// cosigners sign is cheaper than refusing after.
+    #[tokio::test]
+    async fn test_push_delta_proposal_refused_when_the_queue_is_full() {
+        let (state, storage, network, metadata) = create_test_state();
+        let mut state = state;
+        state.canonicalization = Some(
+            crate::canonicalization::CanonicalizationConfig::default()
+                .with_max_pending_candidates_per_account(2),
+        );
+
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let canonical_commitment =
+            "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+
+        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![test_commitment_hex.clone()],
+            },
+        ))));
+        let queued = |nonce: u64, prev: &str, new: &str| DeltaObject {
+            account_id: account_id.clone(),
+            nonce,
+            prev_commitment: prev.to_string(),
+            new_commitment: Some(new.to_string()),
+            delta_payload: serde_json::json!({}),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string()),
+            metadata: None,
+        };
+        let storage = storage
+            .with_pull_state(Ok(create_state_object(
+                account_id.clone(),
+                canonical_commitment.to_string(),
+                account_json,
+            )))
+            .with_pull_deltas_after(Ok(vec![
+                queued(1, canonical_commitment, "0xc1"),
+                queued(2, "0xc1", "0xc2"),
+            ]));
+        // A replay response is registered so the assertion below can
+        // prove the refusal happened before any reconstruction.
+        let network = network
+            .with_validate_credential(Ok(()))
+            .with_apply_delta(Ok((serde_json::json!({}), "0xc2".to_string())));
+
+        let result = push_delta_proposal(
+            &state,
+            PushDeltaProposalParams {
+                account_id: account_id.clone(),
+                nonce: 3,
+                delta_payload: serde_json::json!({
+                    "tx_summary": delta_fixture["delta_payload"].clone(),
+                    "signatures": [],
+                    "metadata": {
+                        "proposal_type": "custom",
+                        "description": "refused while the queue is full"
+                    }
+                }),
+                credentials: Credentials::signature(test_pubkey, test_signature, test_timestamp),
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert_eq!(
+            network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "refused before any replay"
+        );
+        assert!(
+            storage.get_submit_delta_proposal_calls().is_empty(),
+            "refused before any write"
+        );
     }
 
     #[tokio::test]

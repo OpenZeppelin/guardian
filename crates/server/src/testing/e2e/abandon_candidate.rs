@@ -137,6 +137,13 @@ impl StrandedCandidateSetup {
 /// commitment (transaction never landed — the issue's scenario).
 async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
     let mut state = create_test_app_state().await;
+    // Issue #17 queues candidates per account; the stranded-candidate
+    // lock this test reproduces is the queue-full refusal, which a depth
+    // of one makes immediate (the historical single-candidate behavior).
+    state.canonicalization = Some(
+        crate::canonicalization::CanonicalizationConfig::default()
+            .with_max_pending_candidates_per_account(1),
+    );
 
     let scheme = SignatureScheme::Falcon;
     let ack_commitment_hex = state.ack.commitment(&scheme);

@@ -32,6 +32,7 @@ the runtime env vars in this document.
 | `GUARDIAN_METADATA_DB_POOL_MAX_SIZE` | matches storage | `postgres` | Metadata backend pool size; usually leave equal. |
 | `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED` | `true` | any | Enables the additional promotion-only pass for recent candidates. Set to `false` to use only the full canonicalization interval; AWS deployments can set Terraform variable `guardian_canonicalization_fast_promotion_enabled = false`. |
 | `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` | `10`; `50` when `GUARDIAN_ENV=prod` | any | Accounts one canonicalization pass processes in parallel; `1` = fully sequential. Each account holds a DB connection only during its short fenced transactions (the dominant cost is a connectionless chain RPC), so this may exceed `GUARDIAN_DB_POOL_MAX_SIZE`; simultaneous write bursts just queue briefly at the pool. |
+| `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` | `4` | any | Candidate deltas one account may hold in flight at once (issue #17), as a strictly ordered chain: each new delta must build on the newest queued candidate's post-state (or the canonical state when nothing is queued) and carry a higher nonce. A delta or proposal arriving while the queue is full, or a delta competing for a base another queued candidate already claimed, gets `409 conflict_pending_delta`; a delta building on a state the server does not know gets `400 commitment_mismatch` against the canonical commitment. `1` restores the historical one-in-flight-candidate behavior. Each chained admission replays the queued payloads onto the canonical state (one delta application per queued candidate), so this also bounds per-push reconstruction cost. |
 | `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in. Not read at runtime — controls how the image is built. |
 
 Canonicalization settings apply as follows:
@@ -395,10 +396,14 @@ this saves you from grepping:
   `max_retries`, `submission_grace_period_seconds`,
   `divergence_confirmations`). Currently hard-coded in the canonicalization
   worker; require a code change to alter. The exceptions are
-  `fast_promotion_enabled` and `max_concurrent_accounts`, configurable via
-  `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED` and
-  `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS` (see the
-  environment table above).
+  `fast_promotion_enabled`, `max_concurrent_accounts`, `retained_ttl_seconds`,
+  `reconcile_interval_seconds`, and `max_pending_candidates_per_account`,
+  configurable via `GUARDIAN_CANONICALIZATION_FAST_PROMOTION_ENABLED`,
+  `GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS`,
+  `GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS`,
+  `GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS`, and
+  `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` (see the environment table
+  above).
 - **Auth timestamp window.** `MAX_TIMESTAMP_SKEW_MS = 300_000` (5 min) is
   hard-coded in
   [`metadata/auth/credentials.rs:6`](../crates/server/src/metadata/auth/credentials.rs#L6).
