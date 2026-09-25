@@ -135,6 +135,15 @@ jobs:
         # before those concurrent invocations race to install it themselves.
         run: rustup toolchain install
 
+      - name: Prebuild the example fixtures the multisig SDK tests run
+        # tests/account-roundtrip.test.ts and tests/procedure-roots.test.ts
+        # call `cargo run --example …` synchronously inside vitest's 5 s test
+        # timeout, so the examples must already be built when the tests start.
+        # ci.yml does the same; without it a cold build here takes over ten
+        # minutes and both tests fail on the timeout (v0.18.0-rc.1 publish).
+        if: contains(needs.prepare.outputs.packages, 'miden-multisig-client')
+        run: cargo build --quiet --example procedure_roots --example serialized_account -p miden-multisig-client
+
       - name: Build, test, and publish
         working-directory: packages
         env:
