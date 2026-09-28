@@ -20,7 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| 0.18.x (pre-release) | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.4` | `0.17.0-rc.4` (exact) |
+| 0.18.0-rc.2 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.4` | `0.17.0-rc.4` (exact) |
 | 0.18.0-rc.1 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.3` | `0.17.0-rc.3` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
@@ -68,7 +68,7 @@ Execute or cancel every pending proposal on the rc version, have GUARDIAN drop a
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
 
-**Moving from 0.18.0-rc.1 to the `miden-client` 0.17.0-rc.4 pin** keeps the protocol
+**Moving from 0.18.0-rc.1 to 0.18.0-rc.2** (the `miden-client` 0.17.0-rc.4 pin) keeps the protocol
 pin (0.17.0-rc.7), so procedure roots, accounts and stored data are unchanged.
 `miden-client` / `@miden-sdk/miden-sdk` 0.17.0-rc.4 always serialize a
 `TransactionRequest`'s declared block numbers, so request bytes written by 0.17.0-rc.3 or
