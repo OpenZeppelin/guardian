@@ -127,10 +127,9 @@ pub struct ExportedMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
 
-    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
-    /// tx_summary was built at. Mirrors
-    /// `ProposalMetadataPayload::chain_anchor`; required to verify or execute
-    /// the imported proposal.
+    /// Base64-serialized Miden `ChainAnchor` at the block the tx_summary binds.
+    /// Mirrors `ProposalMetadataPayload::chain_anchor`; required to verify or
+    /// execute the imported proposal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_anchor: Option<String>,
 }

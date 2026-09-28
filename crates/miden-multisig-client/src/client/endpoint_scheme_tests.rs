@@ -156,13 +156,12 @@ async fn finalization_queries(scheme: SignatureScheme, seed: u8) -> Vec<Option<S
     )
     .await
     .expect("switch request builds");
-    let (_summary, chain_anchor) =
-        execute_for_summary(&mut client.miden_client, account.id(), tx_request.clone())
-            .await
-            .expect("switch request executes for a summary");
+    execute_for_summary(&mut client.miden_client, account.id(), tx_request.clone())
+        .await
+        .expect("switch request executes for a summary");
 
     let _ = client
-        .finalize_transaction(account.id(), tx_request, &tx_type, chain_anchor)
+        .finalize_transaction(account.id(), tx_request, &tx_type)
         .await;
 
     handle.get_pubkey_schemes()

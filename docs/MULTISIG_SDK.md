@@ -359,23 +359,33 @@ GUARDIAN is a coordination server that:
 - **Ready**: Threshold met, can be executed
 - **Finalized**: Executed on-chain or discarded
 
-#### Chain-anchored execution
+#### Tip execution and the bound block
 
-Since Miden protocol 0.16 a signed transaction summary binds the reference
-block commitment, so a summary produced at one block cannot be reproduced by
-re-executing at a later one. Proposals therefore carry a **chain anchor**
-(`chain_anchor` in the proposal metadata): a serialized Miden `ChainAnchor`
-capturing the reference block the proposer executed at. Cosigners verify and
-the executor executes against that anchor, so everyone reproduces the exact
-summary the signatures authorize regardless of their own sync height. The
-anchor is validated on receipt — its internal consistency at deserialization,
-and its block commitment against the one signed into the summary — before
-anything executes against it. A proposal without an anchor cannot be verified
-or executed.
+Since Miden protocol 0.17 a multisig transaction summary binds the block its
+auth args name (the **bound block**), not the block the transaction executes
+against. The proposer binds its sync height, and every request rebuilt from
+the proposal binds the same block and declares it
+(`TransactionRequestBuilder::block_numbers` / `withBlockNumbers`), which puts
+it in the transaction's partial blockchain. Cosigners verify and the executor
+executes **at the chain tip** and still reproduce the exact summary the
+signatures authorize. An execution runs at the Miden client's sync height, so
+the SDK syncs the client before it verifies, signs, or executes a proposal.
+Foreign accounts, the fee faucet among them, therefore load at the tip, and a
+proposal stays verifiable and executable however long it waits for signatures
+(issue #462). A client whose node has not reached the bound block yet fails with
+a retryable error.
+
+Proposals still carry a **chain anchor** (`chain_anchor` in the proposal
+metadata): a serialized Miden `ChainAnchor` at the bound block. Nothing
+executes against it. It names the bound block for a rebuild, and it keeps
+proposals readable by 0.18.0-rc.1 clients, which re-execute at it. The anchor
+is validated on receipt: its internal consistency at deserialization, and its
+block commitment against the one signed into the summary. A proposal without
+an anchor cannot be verified or executed.
 
 #### Authenticated note consumption
 
-The anchor pins the block, but a `consume_notes` summary also depends on
+The bound block pins the block, but a `consume_notes` summary also depends on
 *how* each input note is consumed. miden-client decides that per note, at
 execution time and from the local store alone: a note whose record carries
 its inclusion proof is consumed **authenticated**, anything else
@@ -396,17 +406,16 @@ consume-notes proposal can only be created for notes already committed on
 chain; a note that cannot be authenticated fails with
 `ConsumeNoteNotAuthenticatedError` (`consume_notes_note_not_authenticated`)
 naming the note, rather than with a summary mismatch.
-> **Anchor lifetime.** Re-executing at the anchor also loads every foreign
-> account the transaction touches at that block, and every fee-paying
-> transaction touches the fee faucet (the kernel's asset callbacks check it).
-> Nodes serve historical account state only for a limited window — devnet
-> serves about 50 blocks, roughly 2.5 minutes — after which the node answers
-> `block N has been pruned` and the proposal can no longer be verified or
-> executed by anyone, the proposer included. Until proposals can carry those
-> inputs themselves (tracked in issue #462), collect signatures and execute
-> promptly, and re-propose once a proposal has aged out. A listing keeps
-> working: such a proposal is returned with `verification` set to `failed`
-> (`retryable: false`) rather than failing the whole sync.
+> **Mixed versions.** A 0.18.0-rc.1 client still re-executes at the anchor,
+> which loads every foreign account the transaction touches at the bound block,
+> and every fee-paying transaction touches the fee faucet (the kernel's asset
+> callbacks load a faucet whose account ID enables them, as devnet's does).
+> Nodes serve historical account state only for a limited window, about 50
+> blocks (roughly 2.5 minutes) on devnet, so such a client reports
+> `block N has been pruned` for an older proposal. Upgrade every party that
+> signs or executes. A listing keeps working either way: a proposal that
+> cannot be verified is returned with `verification` set to `failed` rather
+> than failing the whole sync.
 
 #### Proposal verification status
 
@@ -418,8 +427,8 @@ check: `verification` on the TS `Proposal` (`{ status: 'unchecked' }`,
 a freshly parsed or imported proposal is `unchecked`. `failed` with
 `retryable: true` means the re-execution hit a transient node error and
 the same proposal may verify on the next sync; `retryable: false` means
-the proposal cannot be reproduced (tampered metadata, a pruned anchor
-block) and has to be re-proposed. Verification is kept out of `status`
+the proposal cannot be reproduced (tampered metadata, for example) and has
+to be re-proposed. Verification is kept out of `status`
 on purpose: a proposal can be fully signed and dead at the same time, so
 `status: 'ready'` keeps meaning "threshold met" and
 `isProposalActionable(proposal)` / `proposal.is_actionable()` answers
@@ -471,7 +480,12 @@ Rust and TypeScript**:
   rebuild at the proposal's anchor block (`ChainAnchor::blockNum` /
   `ChainAnchor::block_num`) with the expiration the summary binds;
   `summarySalt(summary)` / `summary_salt(&summary)` read the salt the cosigners
-  signed over for a cross-check.
+  signed over for a cross-check. The request has to declare its bound block,
+  since proposals execute at the tip: both builders above do, and a request
+  that binds a block without declaring it is refused with
+  `BoundBlockNotDeclaredError` / `MultisigError::BoundBlockNotDeclared`.
+  Serialize the request with a client on the SDK's `miden-client` pin
+  (see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md)).
 - **Execute** — `prepare_custom_execution(proposal_id, transaction_request_bytes)` (Rust) /
   `prepareCustomExecution(proposalId, transactionRequestBytes)` (TS). The SDK verifies the
   proposal is ready, binding-checks the request against the signed commitment
@@ -1027,7 +1041,7 @@ const proposals = await multisig.syncProposals();
 for (const proposal of proposals) {
   if (proposal.verification.status === 'failed') {
     // The signed summary could not be reproduced from the metadata (for
-    // example, its anchor block is pruned). Signing and executing refuse it.
+    // example, the metadata was tampered with). Signing and executing refuse it.
     const { retryable, message } = proposal.verification;
     console.log(`${proposal.id}: ${retryable ? 'retry later' : 're-propose'} — ${message}`);
     continue;
@@ -1528,7 +1542,7 @@ let proposals = client.list_proposals().await?;
 for proposal in &proposals {
     if let ProposalVerification::Failed { retryable, message } = &proposal.verification {
         // The signed summary could not be reproduced from the metadata (for
-        // example, its anchor block is pruned). Signing and executing refuse it.
+        // example, the metadata was tampered with). Signing and executing refuse it.
         let hint = if *retryable { "retry later" } else { "re-propose" };
         println!("{}: {hint} — {message}", proposal.id);
         continue;

@@ -47,7 +47,7 @@ pub struct ProposalBuilder {
 /// Per-proposal settings a caller may set when proposing a transaction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProposalOptions {
-    /// Blocks after the proposal's anchor block by which the transaction must be
+    /// Blocks after the block the proposal binds by which the transaction must be
     /// included; past that the approvers' signatures no longer authorize it. The
     /// summary binds it, so the executing party can neither shorten nor extend it.
     /// At most [`MAX_APPROVAL_EXPIRATION_DELTA`](crate::MAX_APPROVAL_EXPIRATION_DELTA)
@@ -1126,6 +1126,8 @@ mod tests {
 
         /// The request must carry the three-word auth args itself: a declared fee
         /// conversion salt would let miden-client commit its own auth arg over them.
+        /// It must also declare the block they bind, or it cannot execute at a later
+        /// chain tip.
         fn assert_carries_auth_args(request: &TransactionRequest) {
             let commitment = auth_args().to_commitment();
             assert_eq!(request.fee_conversion_salt(), None);
@@ -1135,6 +1137,11 @@ mod tests {
                 .get(&commitment)
                 .expect("the auth-args preimage is in the advice map");
             assert_eq!(preimage.to_vec(), auth_args().to_elements());
+            assert_eq!(
+                request.block_numbers().iter().copied().collect::<Vec<_>>(),
+                vec![auth_args().bound_block_num()],
+                "the request declares exactly the block its auth args bind"
+            );
         }
 
         #[test]

@@ -5,8 +5,10 @@ import type {
   WasmWebClient,
 } from '@miden-sdk/miden-sdk';
 import { AccountId, ChainAnchor, Word } from '@miden-sdk/miden-sdk';
+import { BoundBlockNotDeclaredError } from '../multisig/authArgErrors.js';
 import { getRawMidenClient } from '../raw-client.js';
 import { base64ToUint8Array, normalizeHexWord, uint8ArrayToBase64 } from '../utils/encoding.js';
+import { requestBoundBlockNum } from './authArgs.js';
 
 /**
  * Layout of the six user params a multisig auth component binds into the
@@ -37,17 +39,51 @@ export class SummaryAnchorMismatchError extends Error {
 }
 
 /**
- * Captures a `ChainAnchor` for the request at the current sync height and
- * executes the transaction against it to obtain the summary awaiting
- * authorization. The anchor is returned alongside the summary so the proposer
- * can ship it with the signed data; cosigners and the executor then reproduce
- * the summary with {@link executeForSummaryAt} regardless of their own sync
- * height.
+ * The Miden client synced and its node still has not produced the block a
+ * proposal binds, so the proposal cannot execute at this client's tip yet.
+ * Worth retrying once the node catches up.
+ */
+export class ChainBehindBoundBlockError extends Error {
+  readonly retryable = true;
+  readonly syncHeight: number;
+  readonly boundBlockNum: number;
+
+  constructor(details: { syncHeight: number; boundBlockNum: number }) {
+    super(
+      `the Miden client synced to block ${details.syncHeight}, below block ` +
+        `${details.boundBlockNum} the proposal binds; its node has not reached that block yet`,
+    );
+    this.name = 'ChainBehindBoundBlockError';
+    this.syncHeight = details.syncHeight;
+    this.boundBlockNum = details.boundBlockNum;
+  }
+}
+
+/**
+ * Whether a failed re-execution came from chain state this client can catch up
+ * with rather than from the proposal itself: a node that has not reached the
+ * bound block yet, or account state the node pruned because this client had
+ * not synced recently. Either clears on a later attempt, which syncs first.
+ */
+export function isStaleChainError(error: unknown): boolean {
+  if (error instanceof ChainBehindBoundBlockError) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('has been pruned');
+}
+
+/**
+ * Derives the summary awaiting authorization for a proposal the caller is
+ * creating now, and captures a `ChainAnchor` at the current sync height to ship
+ * with it.
  *
- * The request's auth args bind the block its summary commits to, and this
- * package pins that block to the anchor: a proposer builds at the sync height
- * the anchor is captured at, and a rebuild passes the anchor's block number.
- * The check below is what makes the first half hold.
+ * The summary is derived at the chain tip, like every other execution of a
+ * multisig proposal (see {@link executeForSummaryAtTip}). The anchor still
+ * travels in the proposal: it names the block the request's auth args bind,
+ * which is how a rebuild learns that block, and 0.18.0-rc.1 clients re-execute
+ * at it. A proposer builds at the sync height the anchor is captured at, and
+ * the check below is what makes that hold.
  */
 export function executeForSummary(
   client: MidenClient,
@@ -67,12 +103,11 @@ export async function executeForSummary(
   txRequest: TransactionRequest,
   midenRpcEndpoint?: string,
 ): Promise<{ summary: TransactionSummary; anchor: ChainAnchor }> {
-  const acc = AccountId.fromHex(accountId);
   const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
   const anchor = await rawClient.chainAnchorForRequest(txRequest);
   let summary: TransactionSummary;
   try {
-    summary = await rawClient.executeForSummaryAt(acc, txRequest, anchor);
+    summary = await executeForSummaryAtTip(rawClient, accountId, txRequest);
   } catch (error) {
     anchor.free();
     throw error;
@@ -92,10 +127,119 @@ export async function executeForSummary(
 }
 
 /**
+ * Executes a multisig request at the chain tip to obtain the summary awaiting
+ * authorization. This is how cosigners and the executor reproduce a proposal's
+ * summary, whatever block they have synced to.
+ *
+ * Since protocol 0.17 a multisig summary binds the block its auth args name
+ * (the bound block), not the block the transaction executes against, so it
+ * reproduces at any later tip once the bound block is in the transaction's
+ * partial blockchain. The request declares it through `withBlockNumbers`, and
+ * foreign accounts, the fee faucet among them, load at the tip. Re-executing at
+ * the proposal's anchor instead loads them at the bound block, which a node
+ * prunes about 50 blocks later (issue #462).
+ *
+ * The client has to have synced to at least the bound block. When it has not,
+ * this syncs once before executing.
+ *
+ * @throws BoundBlockNotDeclaredError when the request binds a block in its
+ *   multisig auth args without declaring it.
+ */
+export function executeForSummaryAtTip(
+  client: MidenClient,
+  accountId: string,
+  txRequest: TransactionRequest,
+  midenRpcEndpoint: string,
+): Promise<TransactionSummary>;
+export function executeForSummaryAtTip(
+  client: WasmWebClient,
+  accountId: string,
+  txRequest: TransactionRequest,
+  midenRpcEndpoint?: string,
+): Promise<TransactionSummary>;
+export async function executeForSummaryAtTip(
+  client: MidenClient | WasmWebClient,
+  accountId: string,
+  txRequest: TransactionRequest,
+  midenRpcEndpoint?: string,
+): Promise<TransactionSummary> {
+  const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
+  await prepareTipExecution(rawClient, txRequest);
+  return rawClient.executeForSummary(AccountId.fromHex(accountId), txRequest);
+}
+
+/**
+ * Gets `client` ready to execute `request` at the chain tip: checks the
+ * request declares the block its multisig auth args bind, and syncs to that
+ * block (see {@link syncToBoundBlock}).
+ *
+ * @throws BoundBlockNotDeclaredError when the request binds a block in its
+ *   multisig auth args without declaring it.
+ */
+export async function prepareTipExecution(
+  client: WasmWebClient,
+  request: TransactionRequest,
+  syncState?: () => Promise<unknown>,
+): Promise<void> {
+  const boundBlockNum = requireDeclaredBoundBlock(request);
+  if (boundBlockNum !== undefined) {
+    await syncToBoundBlock(client, boundBlockNum, syncState);
+  }
+}
+
+/**
+ * The block `request`'s multisig auth args bind, after checking the request
+ * declares it. `undefined` for a request without multisig auth args, which
+ * has no bound block to declare.
+ *
+ * @throws BoundBlockNotDeclaredError when the block is bound but not declared.
+ */
+export function requireDeclaredBoundBlock(request: TransactionRequest): number | undefined {
+  const boundBlockNum = requestBoundBlockNum(request);
+  if (boundBlockNum !== undefined && !request.blockNumbers().includes(boundBlockNum)) {
+    throw new BoundBlockNotDeclaredError(boundBlockNum);
+  }
+  return boundBlockNum;
+}
+
+/**
+ * Syncs `client` once when its sync height is below `blockNum`, the block a
+ * proposal binds. Execution at a tip below it fails with "requested block N is
+ * after transaction reference block M", and a store that has never synced (a
+ * cosigner that has only just loaded the account) holds no header to rebuild
+ * the request from. `syncState` lets a caller wrap the sync in its own retry
+ * policy.
+ *
+ * This does not make a store that is already past the bound block current. An
+ * execution loads foreign accounts, the fee faucet among them, at the store's
+ * sync height, which a node prunes about 50 blocks later, so the multisig
+ * entry points that re-execute a proposal sync the chain first.
+ *
+ * @throws ChainBehindBoundBlockError when the node has not reached the block.
+ */
+export async function syncToBoundBlock(
+  client: WasmWebClient,
+  blockNum: number,
+  syncState: () => Promise<unknown> = () => client.syncState(),
+): Promise<void> {
+  if ((await client.getSyncHeight()) >= blockNum) {
+    return;
+  }
+  await syncState();
+  const syncHeight = await client.getSyncHeight();
+  if (syncHeight < blockNum) {
+    throw new ChainBehindBoundBlockError({ syncHeight, boundBlockNum: blockNum });
+  }
+}
+
+/**
  * Executes a transaction at the given `ChainAnchor`'s reference block to
- * obtain the summary awaiting authorization: the anchored counterpart of
- * {@link executeForSummary} for cosigners and executors holding a proposal's
- * anchor.
+ * obtain the summary awaiting authorization.
+ *
+ * For a summary that binds the reference block, such as a single-signature
+ * one. A multisig proposal's summary binds its bound block instead and is
+ * reproduced with {@link executeForSummaryAtTip}: re-executing it at an anchor
+ * fails once the node prunes the anchor block's account state.
  */
 export function executeForSummaryAt(
   client: MidenClient,
@@ -134,7 +278,8 @@ export function chainAnchorToBase64(anchor: ChainAnchor): string {
  * Deserializes a `ChainAnchor` from its base64 wire form. `ChainAnchor`
  * deserialization validates the header/chain consistency internally, so a
  * decoded anchor only needs its block commitment checked against the signed
- * transaction summary before it is safe to execute against.
+ * transaction summary before the block it names is taken as the one the
+ * summary binds.
  */
 export function chainAnchorFromBase64(anchorBase64: string): ChainAnchor {
   return ChainAnchor.deserialize(base64ToUint8Array(anchorBase64));

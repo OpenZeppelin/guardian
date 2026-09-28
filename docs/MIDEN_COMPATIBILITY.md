@@ -76,7 +76,12 @@ earlier do not deserialize under rc.4, and the reverse. A GUARDIAN proposal carr
 serialized request, but a custom-proposal producer passes one to
 `propose_custom_transaction` / `createCustomProposal` and
 `prepare_custom_execution` / `prepareCustomExecution`, so it must serialize the request
-with a client on the same pin as the SDK.
+with a client on the same pin as the SDK. Proposals now execute at the chain tip (see
+[`MULTISIG_SDK.md`](./MULTISIG_SDK.md#tip-execution-and-the-bound-block)). A proposal
+still pending from 0.18.0-rc.1 carries the chain anchor a rebuild reads its bound block
+from, so it verifies and executes the same way. A 0.18.0-rc.1 client still re-executes at
+the anchor and cannot verify a proposal older than the node's account history (about 50
+blocks on devnet).
 
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
@@ -133,8 +138,9 @@ Nothing stored under Miden 0.16 survives:
   candidate never creates one, so it cannot transact and must be recreated.
 - **The fee asset left the block header.** It lives in the chain's protocol
   configuration, which the client receives from the node with each sync and
-  stores per header. The auth args name the fee faucet of the configuration the
-  bound block commits to, read from that store.
+  stores per header. The auth args name the fee faucet of the configuration at
+  the client's sync height, the one an execution at the tip loads, read from
+  that store.
 - **P2ID note storage is four felts** (target account, then a two-felt salt that
   defaults to zero) and **P2IDE storage is six** (reclaimer, target, reclaim
   height, timelock height). The script roots moved with the layouts.
@@ -144,12 +150,17 @@ Nothing stored under Miden 0.16 survives:
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-09-25.
+Last checked 2026-09-28.
 
 - **Public networks.** Devnet runs node 0.17.0-rc.2, and this build's protocol
   configuration for devnet's fee asset hashes to the commitment in devnet's
-  block headers, so the transaction kernels match. A guarded-multisig
-  transaction from this build has not yet been executed there end to end.
+  block headers, so the transaction kernels match. A guarded 2-of-2 multisig
+  from this build ran two proposals there end to end, a first consume-notes
+  transaction and a P2ID send. Each was verified, signed and executed at the tip
+  more than 70 blocks after the block it binds, once devnet already answered
+  `block N has been pruned` for that block's account state. Devnet keeps about
+  50 blocks of account history, and its fee faucet's account ID enables asset
+  callbacks, so every fee payment loads the faucet as a foreign account.
   Devnet has no faucet front end: an account is funded by calling the node's
   `RegisterAccount` RPC, which pays it a small public P2ID note in the fee asset
   (`scripts/devnet-register-account.sh`). `miden-client`'s `register_account`

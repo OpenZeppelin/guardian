@@ -1,6 +1,5 @@
 import type {
   AccountId,
-  ChainAnchor,
   MidenClient,
   TransactionProver,
   TransactionRequest,
@@ -13,8 +12,6 @@ import { ProverWorkflow } from './workflow.js';
 function asType<T>(value: unknown): T {
   return value as T;
 }
-
-const anchor = asType<ChainAnchor>({ marker: 'anchor' });
 
 describe('ProverWorkflow', () => {
   it('executes once, retries proof with fresh provers, submits once, and applies once', async () => {
@@ -50,14 +47,11 @@ describe('ProverWorkflow', () => {
       runtime,
     );
 
-    await workflow.submitAt(
-      asType<AccountId>({}),
-      asType<TransactionRequest>({}),
-      anchor,
-    );
+    await workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({}));
 
     expect(executeRequest).toHaveBeenCalledTimes(1);
-    expect(executeRequest.mock.calls[0][2]).toEqual({ anchor });
+    // Executed at the chain tip: no anchor option reaches the client.
+    expect(executeRequest.mock.calls[0]).toHaveLength(2);
     expect(prove).toHaveBeenCalledTimes(2);
     expect(provers).toHaveLength(2);
     expect(provers[0]).not.toBe(provers[1]);
@@ -88,7 +82,7 @@ describe('ProverWorkflow', () => {
     );
 
     await expect(
-      workflow.submitAt(asType<AccountId>({}), asType<TransactionRequest>({}), anchor),
+      workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({})),
     ).rejects.toBe(final);
     expect(prove).toHaveBeenCalledTimes(2);
     expect(runtime.sleep).toHaveBeenCalledTimes(1);
@@ -118,7 +112,7 @@ describe('ProverWorkflow', () => {
     );
 
     await expect(
-      workflow.submitAt(asType<AccountId>({}), asType<TransactionRequest>({}), anchor),
+      workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({})),
     ).rejects.toBe(rateLimited);
     expect(prove).toHaveBeenCalledTimes(1);
     expect(submit).toHaveBeenCalledTimes(1);
@@ -138,7 +132,7 @@ describe('ProverWorkflow', () => {
       createProver: () => undefined,
     });
 
-    await workflow.submitAt(asType<AccountId>({}), asType<TransactionRequest>({}), anchor);
+    await workflow.submit(asType<AccountId>({}), asType<TransactionRequest>({}));
 
     expect(prove).toHaveBeenCalledWith();
   });

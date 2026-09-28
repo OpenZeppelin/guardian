@@ -382,10 +382,12 @@ pub struct ProposalMetadata {
     pub required_signatures: Option<usize>,
     pub signers: Vec<String>,
 
-    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
-    /// tx_summary was built at. Required to verify or execute the proposal:
-    /// since protocol 0.16 the signed summary binds the reference block
-    /// commitment, so it only reproduces when re-executed at that block.
+    /// Base64-serialized Miden `ChainAnchor` at the block the tx_summary binds,
+    /// the proposer's sync height when it built the request. Required, and
+    /// checked against the summary's block commitment. The proposal executes
+    /// at the chain tip rather than at the anchor; the anchor names the bound
+    /// block for a rebuild in the TypeScript SDK and for 0.18.0-rc.1 clients,
+    /// which re-execute at it.
     pub chain_anchor_b64: Option<String>,
 }
 
@@ -398,15 +400,14 @@ impl ProposalMetadata {
         self.consume_notes_metadata_version == Some(CONSUME_NOTES_METADATA_VERSION_V2)
     }
 
-    /// Decodes the proposal's chain anchor. Errors when absent: a proposal
-    /// without an anchor was created at an unknown reference block, so its
-    /// signed summary cannot be reproduced, verified, or executed.
+    /// Decodes the proposal's chain anchor. Errors when absent: every proposal
+    /// names the block its summary binds with one, so a proposal without it is
+    /// malformed and is neither verified nor executed.
     pub fn chain_anchor(&self) -> Result<miden_client::transaction::ChainAnchor> {
         let anchor_b64 = self.chain_anchor_b64.as_deref().ok_or_else(|| {
             MultisigError::InvalidConfig(
-                "proposal metadata has no chain_anchor; it was created without \
-                 chain-anchored execution and its signed summary cannot be \
-                 reproduced at the original reference block"
+                "proposal metadata has no chain_anchor, which names the block its signed \
+                 summary binds; the proposal cannot be verified or executed"
                     .to_string(),
             )
         })?;
@@ -715,8 +716,7 @@ pub enum ProposalVerification {
     /// The check failed. `retryable` is true when the failure came from a
     /// transient node or RPC error, so the same proposal may verify on a
     /// later attempt; false when the proposal itself cannot be reproduced
-    /// (tampered metadata, an anchor block the node has pruned) and it has
-    /// to be re-proposed.
+    /// (tampered metadata, for example) and it has to be re-proposed.
     Failed { retryable: bool, message: String },
 }
 
