@@ -86,6 +86,7 @@ async fn run_worker(state: AppState, leader: Arc<dyn LeaderElector>) {
             lease_ttl,
             renew_interval,
             cancel.clone(),
+            "Canonicalization",
         );
 
         // Bounded passes stop at the next full-pass tick so they can
@@ -224,12 +225,16 @@ fn next_tick_after(mut scheduled_at: Instant, interval: Duration, now: Instant) 
 /// `ttl = 3 × renew_interval`, so after one missed renewal the lease (extended
 /// at the last successful renew) is still a full interval from expiry, and the
 /// fence check guards any in-flight write regardless.
+///
+/// `lease_name` names the lease in the log lines ("Canonicalization",
+/// "Release sweep"): the renewal is shared by every leased task.
 pub(crate) fn spawn_renewal(
     leader: Arc<dyn LeaderElector>,
     lease: Lease,
     ttl: Duration,
     renew_interval: Duration,
     cancel: CancellationToken,
+    lease_name: &'static str,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = interval(renew_interval);
@@ -241,18 +246,18 @@ pub(crate) fn spawn_renewal(
                 _ = ticker.tick() => match leader.renew(&lease, ttl).await {
                     Ok(true) => renew_errors = 0,
                     Ok(false) => {
-                        tracing::warn!("Canonicalization lease lost during pass; cancelling");
+                        tracing::warn!("{lease_name} lease lost during pass; cancelling");
                         cancel.cancel();
                         break;
                     }
                     Err(error) => {
                         renew_errors += 1;
                         if renew_errors >= 2 {
-                            tracing::warn!(error = %error, "Canonicalization lease renew failed again; cancelling pass");
+                            tracing::warn!(error = %error, "{lease_name} lease renew failed again; cancelling pass");
                             cancel.cancel();
                             break;
                         }
-                        tracing::warn!(error = %error, "Canonicalization lease renew failed; retrying once before cancelling");
+                        tracing::warn!(error = %error, "{lease_name} lease renew failed; retrying once before cancelling");
                     }
                 },
             }
@@ -452,6 +457,7 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(10),
             cancel.clone(),
+            "Canonicalization",
         );
 
         run_ticks(1).await;
@@ -471,6 +477,7 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(10),
             cancel.clone(),
+            "Canonicalization",
         );
 
         run_ticks(3).await;
@@ -490,6 +497,7 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(10),
             cancel.clone(),
+            "Canonicalization",
         );
 
         run_ticks(2).await;

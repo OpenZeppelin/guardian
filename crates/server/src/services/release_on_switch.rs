@@ -22,17 +22,25 @@
 //! The push path is not the only detector. A switch executed while this
 //! server was unreachable, from a client that never pushes (the offline
 //! switch path), or whose best-effort push failed, never arrives here;
-//! the release sweep (`jobs::release_sweep`, issue #434) either matches
-//! the chain against a pending switch proposal's precomputed post-state
-//! or reads the guardian binding straight from published on-chain
-//! storage, and drives the same transition through
-//! [`release_switched_account`] with `ReleaseEvidence::ProposalMatch` /
-//! `ReleaseEvidence::ChainSweep`.
+//! the release sweep (`jobs::release_sweep`, issue #434) either finds the
+//! post-state of a pending proposal or an unpromoted switch delta on
+//! chain (at the head or in the account's transaction history) or reads
+//! the guardian binding from a state the chain holds (published storage,
+//! or this server's own stored state when the chain sits at it), and
+//! drives the same transition through [`release_switched_account`] with
+//! `ReleaseEvidence::ProposalMatch` / `RecoverableDelta` / `ChainSweep`.
+//! It also retries a push-path release whose write failed, with the
+//! `Delta` evidence this hook would have recorded.
+//!
+//! Every release is conditional on the stored state still being the one
+//! the evidence was proved against (see
+//! [`crate::metadata::MetadataStore::set_released_if_state`]): a
+//! `/configure` that re-onboarded the account meanwhile voids it.
 
 use serde_json::json;
 
 use crate::audit::{AuditEvent, AuditOutcome, kinds};
-use crate::metadata::AccountMetadata;
+use crate::metadata::{AccountMetadata, ReleaseTransition};
 use crate::state::AppState;
 
 /// `operator_identity` recorded on system-initiated release audit rows.
@@ -43,7 +51,9 @@ pub const SYSTEM_OPERATOR_IDENTITY: &str = "system";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReleaseEvidence<'a> {
     /// A `SwitchGuardian` delta committed / canonicalized on this
-    /// server; the resulting state carries the new guardian key.
+    /// server; the resulting state carries the new guardian key. The
+    /// release sweep records the same evidence when that delta's own
+    /// release write failed.
     Delta {
         delta_nonce: u64,
         new_commitment: &'a str,
@@ -55,24 +65,57 @@ pub enum ReleaseEvidence<'a> {
         on_chain_commitment: &'a str,
         stored_commitment: &'a str,
     },
-    /// The release sweep found the chain at exactly the post-state of a
-    /// `switch_guardian` proposal pending on this server (the proposal's
-    /// summary applied to the stored state reproduces the on-chain
-    /// commitment), which proves that switch executed. Works without
-    /// published storage, i.e. for private accounts.
+    /// The release sweep found the post-state of a proposal pending on
+    /// this server (its summary applied to the stored state) on chain:
+    /// either the chain sits at it now, or the account's transaction
+    /// history holds a transaction that ended at it (`switch_block_num`).
+    /// An exact commitment proves that switch executed, and needs no
+    /// published storage, so it covers private accounts.
     ProposalMatch {
         proposal_id: &'a str,
         on_chain_commitment: &'a str,
         stored_commitment: &'a str,
+        switch_commitment: &'a str,
+        switch_block_num: Option<u32>,
+    },
+    /// Like `ProposalMatch`, for a switch delta that did reach this
+    /// server but was never promoted: canonicalization retained it (the
+    /// chain had moved past its post-state) or the client abandoned it,
+    /// and its proposal was deleted on the way.
+    RecoverableDelta {
+        delta_nonce: u64,
+        on_chain_commitment: &'a str,
+        stored_commitment: &'a str,
+        switch_commitment: &'a str,
+        switch_block_num: Option<u32>,
     },
 }
 
 impl ReleaseEvidence<'_> {
-    fn detected_by(&self) -> &'static str {
+    /// The `detected_by` label of the audit row and the release logs.
+    pub(crate) fn detected_by(&self) -> &'static str {
         match self {
             Self::Delta { .. } => "delta",
             Self::ChainSweep { .. } => "chain_sweep",
             Self::ProposalMatch { .. } => "proposal_match",
+            Self::RecoverableDelta { .. } => "recoverable_delta",
+        }
+    }
+
+    /// The stored state the evidence was proved against: the release is
+    /// written only while the store still holds it.
+    fn expected_state_commitment(&self) -> &str {
+        match self {
+            Self::Delta { new_commitment, .. } => new_commitment,
+            Self::ChainSweep {
+                stored_commitment, ..
+            }
+            | Self::ProposalMatch {
+                stored_commitment, ..
+            }
+            | Self::RecoverableDelta {
+                stored_commitment, ..
+            } => stored_commitment,
         }
     }
 
@@ -103,12 +146,31 @@ impl ReleaseEvidence<'_> {
                 proposal_id,
                 on_chain_commitment,
                 stored_commitment,
+                switch_commitment,
+                switch_block_num,
             } => json!({
                 "new_guardian_commitment": new_guardian_commitment,
                 "detected_by": self.detected_by(),
                 "proposal_id": proposal_id,
                 "on_chain_commitment": on_chain_commitment,
                 "stored_commitment": stored_commitment,
+                "switch_commitment": switch_commitment,
+                "switch_block_num": switch_block_num,
+            }),
+            Self::RecoverableDelta {
+                delta_nonce,
+                on_chain_commitment,
+                stored_commitment,
+                switch_commitment,
+                switch_block_num,
+            } => json!({
+                "new_guardian_commitment": new_guardian_commitment,
+                "detected_by": self.detected_by(),
+                "delta_nonce": delta_nonce,
+                "on_chain_commitment": on_chain_commitment,
+                "stored_commitment": stored_commitment,
+                "switch_commitment": switch_commitment,
+                "switch_block_num": switch_block_num,
             }),
         }
     }
@@ -122,8 +184,15 @@ pub enum ReleaseWrite {
     /// The account was already released (first-writer-wins); nothing
     /// was written or audited.
     AlreadyReleased,
-    /// The transition could not be persisted; logged, retried by the
-    /// caller's own schedule (next canonicalization / sweep pass).
+    /// The stored state moved away from the one the evidence was proved
+    /// against (a `/configure` re-onboarded the account): nothing was
+    /// written or audited, and the evidence no longer applies.
+    StateMoved,
+    /// The transition could not be persisted; logged. The release sweep
+    /// retries it: its next visit either re-proves the switch it was
+    /// working on, or (after a push-path promotion) finds a stored state
+    /// whose guardian key is not this server's, produced by a switch
+    /// delta whose ack this server signed.
     Failed,
 }
 
@@ -189,7 +258,10 @@ pub fn own_guardian_commitment(state: &AppState, metadata: &AccountMetadata) -> 
 /// verifiably `new_guardian_commitment` rather than this server's, and
 /// audit the transition with the evidence. Shared by the push-path hook
 /// and the release sweep so both detectors produce one lifecycle and
-/// one audit shape. Infallible for callers: all failures are logged.
+/// one audit shape. The write happens only while the stored state is
+/// still the one the evidence was proved against, atomically with that
+/// check, so a concurrent `/configure` re-onboarding never ends up
+/// released. Infallible for callers: all failures are logged.
 pub async fn release_switched_account(
     state: &AppState,
     metadata: &AccountMetadata,
@@ -198,10 +270,15 @@ pub async fn release_switched_account(
 ) -> ReleaseWrite {
     match state
         .metadata
-        .set_released(&metadata.account_id, state.clock.now())
+        .set_released_if_state(
+            &metadata.account_id,
+            state.clock.now(),
+            evidence.expected_state_commitment(),
+            state.storage.as_ref(),
+        )
         .await
     {
-        Ok(true) => {
+        Ok(ReleaseTransition::Released) => {
             tracing::warn!(
                 account_id = %metadata.account_id,
                 detected_by = evidence.detected_by(),
@@ -222,7 +299,18 @@ pub async fn release_switched_account(
             ReleaseWrite::Released
         }
         // Already released — first-writer-wins, nothing to audit.
-        Ok(false) => ReleaseWrite::AlreadyReleased,
+        Ok(ReleaseTransition::AlreadyReleased) => ReleaseWrite::AlreadyReleased,
+        Ok(ReleaseTransition::StateMoved) => {
+            tracing::info!(
+                account_id = %metadata.account_id,
+                detected_by = evidence.detected_by(),
+                evidence = ?evidence,
+                "Guardian switch evidence no longer applies: the stored state was \
+                 replaced (a /configure re-onboarding or a promoted delta) before the \
+                 release was written"
+            );
+            ReleaseWrite::StateMoved
+        }
         Err(e) => {
             tracing::error!(
                 account_id = %metadata.account_id,
@@ -327,6 +415,128 @@ mod tests {
         assert_eq!(events[0].payload["delta_nonce"], 7);
         assert_eq!(events[0].payload["new_commitment"], "0xnew_commitment");
         assert_eq!(events[0].payload["detected_by"], "delta");
+        assert_eq!(
+            metadata_store
+                .set_released_expected_states
+                .lock()
+                .unwrap()
+                .clone(),
+            vec!["0xnew_commitment".to_string()],
+            "the push path proves the switch against the state it just stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_state_replaced_before_the_write_releases_nothing() {
+        // A /configure re-onboarded the account between the detection
+        // and the write: the store refuses, and nothing is audited.
+        let metadata_store = MockMetadataStore::new()
+            .with_set_released(Ok(crate::metadata::ReleaseTransition::StateMoved));
+        let auditor = CapturingAuditor::new();
+        let state = state_with(
+            MockNetworkClient::new(),
+            metadata_store.clone(),
+            auditor.clone(),
+        )
+        .await;
+
+        let outcome = release_switched_account(
+            &state,
+            &miden_meta("acc-1"),
+            "0xother_guardian",
+            ReleaseEvidence::ChainSweep {
+                on_chain_commitment: "0xchain",
+                stored_commitment: "0xstored",
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, ReleaseWrite::StateMoved);
+        assert_eq!(
+            metadata_store
+                .set_released_expected_states
+                .lock()
+                .unwrap()
+                .clone(),
+            vec!["0xstored".to_string()]
+        );
+        assert!(auditor.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_is_reported_and_not_audited() {
+        let metadata_store = MockMetadataStore::new().with_set_released(Err("db down".into()));
+        let auditor = CapturingAuditor::new();
+        let state = state_with(
+            MockNetworkClient::new(),
+            metadata_store.clone(),
+            auditor.clone(),
+        )
+        .await;
+
+        let outcome = release_switched_account(
+            &state,
+            &miden_meta("acc-1"),
+            "0xother_guardian",
+            ReleaseEvidence::ChainSweep {
+                on_chain_commitment: "0xchain",
+                stored_commitment: "0xstored",
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, ReleaseWrite::Failed);
+        assert!(auditor.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn proposal_match_release_audits_where_the_switch_was_found() {
+        let metadata_store = MockMetadataStore::new();
+        let auditor = CapturingAuditor::new();
+        let state = state_with(
+            MockNetworkClient::new(),
+            metadata_store.clone(),
+            auditor.clone(),
+        )
+        .await;
+
+        let outcome = release_switched_account(
+            &state,
+            &miden_meta("acc-1"),
+            "0xother_guardian",
+            ReleaseEvidence::ProposalMatch {
+                proposal_id: "0xproposal",
+                on_chain_commitment: "0xhead",
+                stored_commitment: "0xstored",
+                switch_commitment: "0xpost_switch",
+                switch_block_num: Some(406_750),
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, ReleaseWrite::Released);
+        assert_eq!(
+            metadata_store
+                .set_released_expected_states
+                .lock()
+                .unwrap()
+                .clone(),
+            vec!["0xstored".to_string()]
+        );
+        let events = auditor.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].payload,
+            serde_json::json!({
+                "new_guardian_commitment": "0xother_guardian",
+                "detected_by": "proposal_match",
+                "proposal_id": "0xproposal",
+                "on_chain_commitment": "0xhead",
+                "stored_commitment": "0xstored",
+                "switch_commitment": "0xpost_switch",
+                "switch_block_num": 406_750,
+            })
+        );
     }
 
     #[tokio::test]

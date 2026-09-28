@@ -7,32 +7,48 @@
 //! this server was unreachable — left the old guardian serving the account
 //! as active forever: stale reads, dead pending proposals, and a capacity
 //! slot held for nothing. This background task closes that gap by asking
-//! the chain directly, with two complementary detectors:
+//! the chain directly, with three complementary detectors:
 //!
 //! * **Proposal match.** In the normal online flow the switch proposal is
 //!   pushed to the old guardian first and sits there pending once the
 //!   switch executes elsewhere. Its summary applied to the stored state
-//!   gives the exact post-switch commitment; when the chain sits at that
-//!   commitment the switch provably executed. This needs only the
-//!   commitment probe, so it covers **private** accounts, and it resolves
-//!   the stale proposal at the same time.
+//!   gives the exact post-switch commitment. When the chain sits at that
+//!   commitment, or the account's transaction history holds a transaction
+//!   that ended at it, the switch provably executed: a lagging node cannot
+//!   invent the commitment, and transaction headers are public for every
+//!   account. So it covers **private** accounts, even ones that transacted
+//!   again under the new guardian, and resolves the stale proposal at the
+//!   same time. Every pending proposal counts, whatever its label, and so
+//!   does a switch delta canonicalization retained (its proposal is gone
+//!   by then, its payload is not).
+//! * **Stored state.** The stored state's own guardian key is checked once
+//!   per stored state: a promoted switch whose push-path release was never
+//!   written is released here, proved by the ack this server signed for
+//!   that delta with its current key, wherever the chain has gone since.
 //! * **Storage read.** For accounts with public state, the guardian
 //!   `pub_key` slot is read straight from published on-chain storage and
 //!   compared with this server's key. This covers switches with no
-//!   proposal on the old guardian (offline switches, other clients) and
-//!   accounts that already moved past the post-switch commitment.
+//!   proposal on the old guardian (offline switches, other clients). A
+//!   read of a state older than the stored one is never evidence, and a
+//!   foreign key must be seen again at a strictly later block
+//!   (`confirmations`) before it releases.
+//!
+//! A key counts as foreign only when it is neither this server's nor the
+//! stored base's. A server whose own ack key changed (a new ack secret, or
+//! the ephemeral keys a non-prod server generates on every boot) therefore
+//! sees its accounts as bound to a key it does not hold
+//! (`own_key_mismatch`) instead of as switched, and releases none of them.
 //!
 //! Release detection is not latency-sensitive (an undetected switch costs
 //! stale reads and a confusing failure for a lagging cosigner, never funds
 //! or custody), so the sweep is its own task, independent of the
-//! canonicalization loop: it walks the fleet slowly at a bounded RPC rate
-//! (one rotation per `rotation_seconds`), and re-probes only the small
-//! "hot" set — accounts with an open confirmation streak or a pending
-//! `switch_guardian` proposal — on a short cadence. One replica holds the
-//! `release_sweep` lease at a time.
+//! canonicalization loop: one paced loop visits one account at a time,
+//! walking the fleet once per `rotation_seconds` and interleaving the few
+//! confirmation re-checks, never faster than `max_rate_per_second` in
+//! total. One replica holds the `release_sweep` lease at a time.
 
 mod sweep;
 mod worker;
 
-pub use sweep::{ReleaseSweeper, SweepState, SweepSummary, run_release_sweep_now};
+pub use sweep::{SweepSummary, run_release_sweep_now};
 pub use worker::start_release_sweep_worker;

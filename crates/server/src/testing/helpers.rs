@@ -32,6 +32,10 @@ use prost::Message;
 pub use crate::api::grpc::guardian::*;
 pub use tonic::{Request, metadata::MetadataValue};
 
+/// Committed transactions per account as `(block, initial, final)` state
+/// commitments.
+type TransactionLog = HashMap<String, Vec<(u32, String, String)>>;
+
 pub struct IntegrationMockNetworkClient {
     miden_client: crate::network::miden::MidenNetworkClient,
     initial_commitments: std::sync::Mutex<HashMap<String, String>>,
@@ -40,6 +44,11 @@ pub struct IntegrationMockNetworkClient {
     /// guardian slot is inspected with the real inspector. Absent =
     /// the account does not publish its storage (`Opaque`).
     published_states: std::sync::Mutex<HashMap<String, serde_json::Value>>,
+    /// Committed transactions per account as `(block, initial, final)`
+    /// state commitments, as `SyncTransactions` would list them.
+    transactions: std::sync::Mutex<TransactionLog>,
+    /// The chain tip every read answers at; `advance_chain` moves it.
+    chain_tip: std::sync::atomic::AtomicU32,
 }
 
 impl IntegrationMockNetworkClient {
@@ -48,7 +57,34 @@ impl IntegrationMockNetworkClient {
             miden_client,
             initial_commitments: std::sync::Mutex::new(HashMap::new()),
             published_states: std::sync::Mutex::new(HashMap::new()),
+            transactions: std::sync::Mutex::new(HashMap::new()),
+            chain_tip: std::sync::atomic::AtomicU32::new(1),
         }
+    }
+
+    /// Record a transaction the chain committed against `account_id` in
+    /// `block`, moving the tip up to it if needed.
+    pub fn register_transaction(
+        &mut self,
+        account_id: String,
+        block: u32,
+        initial_state_commitment: String,
+        final_state_commitment: String,
+    ) {
+        self.chain_tip
+            .fetch_max(block, std::sync::atomic::Ordering::SeqCst);
+        self.transactions
+            .lock()
+            .expect("transactions lock")
+            .entry(account_id)
+            .or_default()
+            .push((block, initial_state_commitment, final_state_commitment));
+    }
+
+    /// Produce one more (empty) block.
+    pub fn advance_chain(&self) {
+        self.chain_tip
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn register_account(&mut self, account_id: String, commitment: String) {
@@ -195,10 +231,46 @@ impl NetworkClient for IntegrationMockNetworkClient {
             .cloned()
             .ok_or_else(|| format!("no registered on-chain commitment for {account_id}"))?;
         let guardian_commitment = self.miden_client.extract_guardian_commitment(&state_json)?;
+        let nonce = self
+            .miden_client
+            .account_nonce(&state_json)?
+            .ok_or_else(|| "published state carries no nonce".to_string())?;
         Ok(crate::network::OnChainGuardianBinding::Visible {
             on_chain_commitment,
             guardian_commitment,
+            nonce,
+            block_num: self.chain_tip.load(std::sync::atomic::Ordering::SeqCst),
         })
+    }
+
+    async fn find_transaction_ending_at(
+        &self,
+        account_id: &str,
+        final_state_commitment: &str,
+        from_block: u32,
+        _read_mode: crate::network::RpcReadMode,
+    ) -> Result<crate::network::TransactionSearch, String> {
+        let tip = self.chain_tip.load(std::sync::atomic::Ordering::SeqCst);
+        let found_in_block = self
+            .transactions
+            .lock()
+            .expect("transactions lock")
+            .get(account_id)
+            .and_then(|transactions| {
+                transactions
+                    .iter()
+                    .filter(|(block, _, _)| (from_block..=tip).contains(block))
+                    .find(|(_, _, final_commitment)| final_commitment == final_state_commitment)
+                    .map(|(block, _, _)| *block)
+            });
+        Ok(crate::network::TransactionSearch {
+            found_in_block,
+            resume_from_block: tip.saturating_add(1).max(from_block),
+        })
+    }
+
+    fn account_nonce(&self, state_json: &serde_json::Value) -> Result<Option<u64>, String> {
+        self.miden_client.account_nonce(state_json)
     }
 
     async fn should_update_auth(

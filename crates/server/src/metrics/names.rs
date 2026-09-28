@@ -62,14 +62,6 @@ pub const CANONICALIZATION_RECONCILE_RUNS_TOTAL: &str =
     "guardian_canonicalization_reconcile_runs_total";
 pub const CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS: &str =
     "guardian_canonicalization_reconcile_run_duration_seconds";
-
-// --- Release sweep (issue #434) --------------------------------------------
-
-pub const RELEASE_SWEEP_ROTATIONS_TOTAL: &str = "guardian_release_sweep_rotations_total";
-pub const RELEASE_SWEEP_ROTATION_DURATION_SECONDS: &str =
-    "guardian_release_sweep_rotation_duration_seconds";
-pub const RELEASE_SWEEP_HOT_PASSES_TOTAL: &str = "guardian_release_sweep_hot_passes_total";
-pub const RELEASE_SWEEP_ACCOUNTS_TOTAL: &str = "guardian_release_sweep_accounts_total";
 pub const CANONICALIZATION_CANDIDATES_TOTAL: &str = "guardian_canonicalization_candidates_total";
 pub const CANONICALIZATION_RETRIES_TOTAL: &str = "guardian_canonicalization_retries_total";
 pub const CANONICALIZATION_COMMITMENT_MISMATCHES_TOTAL: &str =
@@ -79,6 +71,13 @@ pub const CANONICALIZATION_DELTAS_FETCHED_TOTAL: &str =
     "guardian_canonicalization_deltas_fetched_total";
 pub const CANONICALIZATION_CANDIDATE_AGE_SECONDS: &str =
     "guardian_canonicalization_candidate_age_seconds";
+
+// --- Release sweep (issue #434) --------------------------------------------
+
+pub const RELEASE_SWEEP_ROTATIONS_TOTAL: &str = "guardian_release_sweep_rotations_total";
+pub const RELEASE_SWEEP_ROTATION_DURATION_SECONDS: &str =
+    "guardian_release_sweep_rotation_duration_seconds";
+pub const RELEASE_SWEEP_ACCOUNTS_TOTAL: &str = "guardian_release_sweep_accounts_total";
 
 // --- Delta / proposal lifecycle ------------------------------------------
 
@@ -317,34 +316,6 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Duration of one recoverable-delta reconcile pass, in seconds.",
     },
     MetricDef {
-        name: RELEASE_SWEEP_ROTATIONS_TOTAL,
-        kind: MetricKind::Counter,
-        labels: &[LABEL_OUTCOME],
-        help: "Walks of the fleet completed by the release sweep (issue #434), by outcome \
-               (completed, partial, cancelled).",
-    },
-    MetricDef {
-        name: RELEASE_SWEEP_ROTATION_DURATION_SECONDS,
-        kind: MetricKind::Histogram,
-        labels: &[],
-        help: "Wall-clock duration of one release sweep rotation over the fleet, in seconds.",
-    },
-    MetricDef {
-        name: RELEASE_SWEEP_HOT_PASSES_TOTAL,
-        kind: MetricKind::Counter,
-        labels: &[LABEL_OUTCOME],
-        help: "Release sweep hot passes over accounts awaiting confirmation or carrying a \
-               pending switch proposal, by outcome (completed, partial, cancelled, error).",
-    },
-    MetricDef {
-        name: RELEASE_SWEEP_ACCOUNTS_TOTAL,
-        kind: MetricKind::Counter,
-        labels: &[LABEL_OUTCOME],
-        help: "Accounts the release sweep found off their stored base, by what the chain \
-               showed (released, confirming, still_bound, storage_opaque, no_binding, \
-               probe_failed). Accounts at their stored base are not counted.",
-    },
-    MetricDef {
         name: CANONICALIZATION_CANDIDATES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
@@ -386,6 +357,29 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Age of a candidate delta (since it entered candidate status) each \
                time the worker processes it; sustained growth means candidates \
                are not converging.",
+    },
+    MetricDef {
+        name: RELEASE_SWEEP_ROTATIONS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Walks of the fleet completed by the release sweep (issue #434), by outcome \
+               (completed: every account was checked; partial: at least one could not be).",
+    },
+    MetricDef {
+        name: RELEASE_SWEEP_ROTATION_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Wall-clock duration of one release sweep rotation over the fleet, in seconds.",
+    },
+    MetricDef {
+        name: RELEASE_SWEEP_ACCOUNTS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Release sweep findings for accounts whose chain state is not their stored \
+               one, by what the chain showed (released, confirming, still_bound, \
+               own_key_mismatch, storage_opaque, no_binding, chain_behind_stored, \
+               probe_failed). Accounts at their stored base are counted only when that \
+               state's guardian key is not this server's.",
     },
     MetricDef {
         name: DELTAS_SUBMITTED_TOTAL,

@@ -99,15 +99,17 @@ pub struct DashboardCanonicalizationConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardReleaseSweepConfig {
     /// Target time for one full walk of the fleet; every unreleased
-    /// Miden account is probed once per rotation.
+    /// Miden account is visited once per rotation.
     pub rotation_seconds: u64,
-    /// Upper bound on accounts probed per second during the walk.
+    /// Upper bound on account visits per second, rotation and
+    /// confirmation re-checks together.
     pub max_rate_per_second: u32,
-    /// Cadence of the hot pass over accounts awaiting confirmation or
-    /// carrying a pending `switch_guardian` proposal.
-    pub hot_interval_seconds: u64,
-    /// Consecutive observations of a foreign guardian key in published
-    /// storage required before releasing on that evidence.
+    /// Delay between confirmation re-checks of an account whose published
+    /// storage showed a foreign guardian key.
+    pub recheck_seconds: u64,
+    /// Observations of a foreign guardian key in published storage, each
+    /// at a strictly later block, required before releasing on that
+    /// evidence.
     pub confirmations: u32,
 }
 
@@ -217,7 +219,7 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
             DashboardReleaseSweepConfig {
                 rotation_seconds: c.rotation_seconds,
                 max_rate_per_second: c.max_rate_per_second,
-                hot_interval_seconds: c.hot_interval_seconds,
+                recheck_seconds: c.recheck_seconds,
                 confirmations: c.confirmations,
             }
         }),

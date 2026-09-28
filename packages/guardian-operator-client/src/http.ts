@@ -964,9 +964,9 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
         'max_rate_per_second',
         'dashboard info.backend.release_sweep',
       ),
-      hotIntervalSeconds: requireInteger(
+      recheckSeconds: requireInteger(
         r,
-        'hot_interval_seconds',
+        'recheck_seconds',
         'dashboard info.backend.release_sweep',
       ),
       confirmations: requireInteger(

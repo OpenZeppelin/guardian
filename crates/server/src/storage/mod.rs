@@ -502,6 +502,16 @@ pub trait StorageBackend: Send + Sync {
     async fn submit_state(&self, state: &StateObject) -> Result<(), String>;
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String>;
     async fn pull_state(&self, account_id: &str) -> Result<StateObject, String>;
+    /// The commitment of the account's stored state, without its
+    /// payload. The release sweep probes the chain with it for every
+    /// account and needs the state itself only when the chain moved.
+    /// The default reads the whole state; backends that keep the
+    /// commitment apart override it.
+    async fn pull_state_commitment(&self, account_id: &str) -> Result<String, String> {
+        self.pull_state(account_id)
+            .await
+            .map(|state| state.commitment)
+    }
 
     /// Batch fetch states for `account_ids` in a single round trip
     /// (Postgres: one `SELECT ... WHERE account_id = ANY($1)`;

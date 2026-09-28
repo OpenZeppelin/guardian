@@ -538,6 +538,44 @@ variable "guardian_canonicalization_fast_promotion_enabled" {
   default     = true
 }
 
+variable "guardian_release_sweep_enabled" {
+  description = <<-EOT
+    Whether the chain-driven release sweep runs (GUARDIAN_RELEASE_SWEEP_ENABLED).
+    false is the kill switch: release detection then relies on the push path
+    alone.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "guardian_release_sweep_rotation_seconds" {
+  description = "Optional override for GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS, the target time for one walk of the fleet (server default 21600)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_release_sweep_rotation_seconds == null ? true : (
+      var.guardian_release_sweep_rotation_seconds >= 1 &&
+      var.guardian_release_sweep_rotation_seconds <= 2592000 &&
+      floor(var.guardian_release_sweep_rotation_seconds) == var.guardian_release_sweep_rotation_seconds
+    )
+    error_message = "guardian_release_sweep_rotation_seconds must be an integer between 1 and 2592000 when provided."
+  }
+}
+
+variable "guardian_release_sweep_max_rate_per_second" {
+  description = "Optional override for GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND, the cap on sweep account visits per second, i.e. its share of chain-node RPC capacity (server default 5)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_release_sweep_max_rate_per_second == null ? true : (
+      var.guardian_release_sweep_max_rate_per_second >= 1 &&
+      var.guardian_release_sweep_max_rate_per_second <= 1000 &&
+      floor(var.guardian_release_sweep_max_rate_per_second) == var.guardian_release_sweep_max_rate_per_second
+    )
+    error_message = "guardian_release_sweep_max_rate_per_second must be an integer between 1 and 1000 when provided."
+  }
+}
+
 variable "guardian_log_format" {
   description = "Log output format for GUARDIAN_LOG_FORMAT (text, json, compact). json enables flattened JSON for CloudWatch Logs Insights"
   type        = string

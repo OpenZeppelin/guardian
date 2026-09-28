@@ -196,6 +196,15 @@ impl ServerBuilder {
         self
     }
 
+    /// Configure the chain-driven release sweep (issue #434). `None`, or
+    /// a config with `enabled = false`, disables the sweep task entirely;
+    /// the default runs it. A disabled config is stored as `None`, so the
+    /// rest of the server has one way to see "not running".
+    pub fn with_release_sweep(mut self, config: Option<ReleaseSweepConfig>) -> Self {
+        self.release_sweep = config.filter(|config| config.enabled);
+        self
+    }
+
     /// Configure canonicalization mode
     ///
     /// # Arguments
@@ -218,13 +227,6 @@ impl ServerBuilder {
     /// let builder = ServerBuilder::new()
     ///     .with_canonicalization(None);
     /// ```
-    /// Configure the chain-driven release sweep (issue #434). `None`
-    /// disables the sweep task entirely; the default runs it.
-    pub fn with_release_sweep(mut self, config: Option<ReleaseSweepConfig>) -> Self {
-        self.release_sweep = config;
-        self
-    }
-
     pub fn with_canonicalization(mut self, config: Option<CanonicalizationConfig>) -> Self {
         self.canonicalization = config;
         self

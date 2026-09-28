@@ -141,7 +141,7 @@ impl ServerHandle {
                 tracing::info!(
                     rotation_seconds = config.rotation_seconds,
                     max_rate_per_second = config.max_rate_per_second,
-                    hot_interval_seconds = config.hot_interval_seconds,
+                    recheck_seconds = config.recheck_seconds,
                     "Starting release sweep worker"
                 );
                 crate::jobs::release_sweep::start_release_sweep_worker(

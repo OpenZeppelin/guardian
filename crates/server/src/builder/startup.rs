@@ -145,7 +145,7 @@ impl StartupInfo {
                 rotation_seconds = config.rotation_seconds,
                 max_rate_per_second = config.max_rate_per_second,
                 page_size = config.page_size,
-                hot_interval_seconds = config.hot_interval_seconds,
+                recheck_seconds = config.recheck_seconds,
                 confirmations = config.confirmations,
                 "release sweep"
             ),

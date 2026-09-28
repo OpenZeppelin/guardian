@@ -173,24 +173,38 @@ impl PoolKind {
 }
 
 /// What the release sweep (issue #434) found for an account whose chain
-/// state moved past the stored one (`guardian_release_sweep_accounts_total`).
+/// state moved past the stored one, or whose stored state carries a
+/// guardian key other than this server's
+/// (`guardian_release_sweep_accounts_total`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseSweepOutcome {
-    /// A foreign guardian key was confirmed on chain; the account was
-    /// released.
+    /// The switch was proved on chain; the account was released.
     Released,
-    /// A foreign guardian key was observed but not yet on enough
-    /// consecutive passes; re-probed next pass.
+    /// A foreign guardian key was observed in published storage but not
+    /// yet at enough distinct blocks; re-checked later.
     Confirming,
     /// The chain moved but its guardian key is still this server's: the
     /// stored state lags the chain (issue #345 territory), not a switch.
     StillBound,
-    /// The account does not publish its storage, so the guardian binding
-    /// cannot be read from chain.
+    /// The account is still bound to the key it was onboarded under,
+    /// which is not this server's current ack key: the server's key
+    /// changed (a new ack secret, or ephemeral keys after a restart).
+    /// Not a switch; never released.
+    OwnKeyMismatch,
+    /// The chain state differs from the stored one, nothing pending here
+    /// explains it, and the account does not publish its storage, so the
+    /// guardian binding cannot be read from chain.
     StorageOpaque,
     /// Published storage carries no guardian binding at all.
     NoBinding,
-    /// The commitment probe or the storage read failed; deferred.
+    /// A storage read observed a state older than the stored one: the
+    /// stored state has not landed yet (just re-onboarded, or an
+    /// optimistic commit) or the node lags. Never evidence.
+    ChainBehindStored,
+    /// The commitment probe or the storage read failed, or the
+    /// transaction history search failed for an account whose storage is
+    /// private (a public account falls through to the storage read);
+    /// deferred to a later visit.
     ProbeFailed,
 }
 
@@ -200,8 +214,10 @@ impl ReleaseSweepOutcome {
             Self::Released => "released",
             Self::Confirming => "confirming",
             Self::StillBound => "still_bound",
+            Self::OwnKeyMismatch => "own_key_mismatch",
             Self::StorageOpaque => "storage_opaque",
             Self::NoBinding => "no_binding",
+            Self::ChainBehindStored => "chain_behind_stored",
             Self::ProbeFailed => "probe_failed",
         }
     }
@@ -258,8 +274,10 @@ mod tests {
             ReleaseSweepOutcome::Released.as_str(),
             ReleaseSweepOutcome::Confirming.as_str(),
             ReleaseSweepOutcome::StillBound.as_str(),
+            ReleaseSweepOutcome::OwnKeyMismatch.as_str(),
             ReleaseSweepOutcome::StorageOpaque.as_str(),
             ReleaseSweepOutcome::NoBinding.as_str(),
+            ReleaseSweepOutcome::ChainBehindStored.as_str(),
             ReleaseSweepOutcome::ProbeFailed.as_str(),
             AccountKind::Miden.as_str(),
             PoolKind::Storage.as_str(),

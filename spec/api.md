@@ -574,10 +574,9 @@ behavior.
 | `guardian_canonicalization_fast_run_duration_seconds` | histogram | — |
 | `guardian_canonicalization_reconcile_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_reconcile_run_duration_seconds` | histogram | — |
-| `guardian_release_sweep_rotations_total` | counter | `outcome` (`completed`/`partial`/`cancelled`) |
+| `guardian_release_sweep_rotations_total` | counter | `outcome` (`completed`/`partial`) |
 | `guardian_release_sweep_rotation_duration_seconds` | histogram | — |
-| `guardian_release_sweep_hot_passes_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
-| `guardian_release_sweep_accounts_total` | counter | `outcome` (`released`/`confirming`/`still_bound`/`storage_opaque`/`no_binding`/`probe_failed`) |
+| `guardian_release_sweep_accounts_total` | counter | `outcome` (`released`/`confirming`/`still_bound`/`own_key_mismatch`/`storage_opaque`/`no_binding`/`chain_behind_stored`/`probe_failed`) |
 | `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |

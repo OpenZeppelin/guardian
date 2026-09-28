@@ -4,7 +4,7 @@ use guardian_shared::{FromJson, hex::IntoHex};
 use miden_keystore::{FilesystemKeyStore, KeyStore};
 use miden_protocol::{
     Word,
-    crypto::dsa::falcon512_poseidon2::{SecretKey, Signature},
+    crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey, Signature},
     transaction::TransactionSummary,
     utils::serde::Serializable,
 };
@@ -16,6 +16,7 @@ use std::sync::Arc;
 pub struct MidenFalconRpoSigner {
     keystore: Arc<FilesystemKeyStore<ChaCha20Rng>>,
     server_pubkey_word: Word,
+    public_key: PublicKey,
     pubkey_hex: String,
     commitment_hex: String,
 }
@@ -41,6 +42,7 @@ impl MidenFalconRpoSigner {
         Ok(Self {
             keystore,
             server_pubkey_word,
+            public_key,
             pubkey_hex,
             commitment_hex,
         })
@@ -76,5 +78,14 @@ impl MidenFalconRpoSigner {
         let signature = self.sign_with_server_key(tx_commitment)?;
         delta.ack_sig = hex::encode(signature.to_bytes());
         Ok(delta)
+    }
+
+    /// Whether `delta`'s ack signature was made with this signer's key.
+    pub(crate) fn signed_ack(&self, delta: &DeltaObject) -> bool {
+        crate::ack::ack_message(delta)
+            .zip(crate::ack::decode_ack_signature::<Signature>(
+                &delta.ack_sig,
+            ))
+            .is_some_and(|(message, signature)| self.public_key.verify(message, &signature))
     }
 }

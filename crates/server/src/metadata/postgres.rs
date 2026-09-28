@@ -1,8 +1,8 @@
 use crate::metadata::{
-    AccountListCursor, AccountMetadata, Auth, LEGACY_ACCOUNT_AUTH_FLOOR, MetadataStore,
-    NetworkConfig,
+    AccountListCursor, AccountMetadata, Auth, ClearTransition, LEGACY_ACCOUNT_AUTH_FLOOR,
+    MetadataStore, NetworkConfig, ReleaseTransition,
 };
-use crate::schema::account_metadata;
+use crate::schema::{account_metadata, states};
 use crate::services::account_status::{AccountStatus, PauseTransition};
 use crate::storage::postgres::build_postgres_pool;
 use async_trait::async_trait;
@@ -10,7 +10,22 @@ use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use diesel::sql_types::Text;
 use diesel_async::pooled_connection::deadpool::Pool;
-use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+
+/// The rows the release sweep (issue #434) walks and counts: unreleased
+/// Miden accounts with no candidate in flight. One definition, so the
+/// pacing count always matches the walk. The network predicate reads the
+/// JSONB tag serde writes for `NetworkConfig` (`{"kind": "miden", ...}`).
+fn release_sweepable_rows<'a>() -> account_metadata::BoxedQuery<'a, diesel::pg::Pg> {
+    account_metadata::table
+        .filter(account_metadata::released_at.is_null())
+        .filter(account_metadata::has_pending_candidate.eq(false))
+        .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+            "network_config->>'kind' = 'miden'",
+        ))
+        .into_boxed()
+}
 
 pub struct PostgresMetadataStore {
     pool: Pool<AsyncPgConnection>,
@@ -261,11 +276,11 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(rows)
     }
 
-    async fn list_release_sweep_page(
+    async fn list_release_sweep_ids(
         &self,
         after: Option<&str>,
         limit: u32,
-    ) -> Result<Vec<AccountMetadata>, String> {
+    ) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
             .get()
@@ -274,27 +289,18 @@ impl MetadataStore for PostgresMetadataStore {
 
         // Primary-key order: the walk is served by the `account_id` PK
         // index, filtering the (rare) released / busy / EVM rows as it
-        // goes. The network predicate reads the JSONB tag serde writes
-        // for `NetworkConfig` (`{"kind": "miden", ...}`).
-        let mut query = account_metadata::table
-            .filter(account_metadata::released_at.is_null())
-            .filter(account_metadata::has_pending_candidate.eq(false))
-            .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
-                "network_config->>'kind' = 'miden'",
-            ))
-            .into_boxed();
+        // goes. Only ids are read: each visit re-reads its row.
+        let mut query = release_sweepable_rows();
         if let Some(after) = after {
             query = query.filter(account_metadata::account_id.gt(after.to_string()));
         }
-        let rows: Vec<MetadataRow> = query
+        query
             .order(account_metadata::account_id.asc())
             .limit(i64::from(limit))
-            .select(MetadataRow::as_select())
-            .load(&mut conn)
+            .select(account_metadata::account_id)
+            .load::<String>(&mut conn)
             .await
-            .map_err(|e| format!("Failed to list unreleased account metadata: {e}"))?;
-
-        rows.into_iter().map(AccountMetadata::try_from).collect()
+            .map_err(|e| format!("Failed to list sweepable account ids: {e}"))
     }
 
     async fn update_last_auth_timestamp_cas(
@@ -521,59 +527,142 @@ impl MetadataStore for PostgresMetadataStore {
         })
     }
 
-    /// First-writer-wins release: the `released_at IS NULL` filter
-    /// encodes the transition atomically; zero rows updated means the
-    /// account was already released (or missing — disambiguated below).
-    async fn set_released(&self, account_id: &str, now: DateTime<Utc>) -> Result<bool, String> {
+    /// Conditional first-writer-wins release. One transaction locks the
+    /// account's metadata row first (the lock every candidate write and
+    /// `clear_released_if_state` also take), then reads the stored
+    /// state's commitment and writes only while it is still the one the
+    /// switch evidence was proved against. A `/configure` re-onboarding
+    /// stores its state before it clears the release, so either its state
+    /// commits before the read below (the check fails) or its clear waits
+    /// behind this transaction and undoes the write. `storage` is unused:
+    /// the `states` table lives in this database.
+    async fn set_released_if_state(
+        &self,
+        account_id: &str,
+        now: DateTime<Utc>,
+        expected_state_commitment: &str,
+        _storage: &dyn crate::storage::StorageBackend,
+    ) -> Result<ReleaseTransition, String> {
         let mut conn = self
             .pool
             .get()
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        let rows_updated = diesel::update(account_metadata::table)
-            .filter(account_metadata::account_id.eq(account_id))
-            .filter(account_metadata::released_at.is_null())
-            .set(account_metadata::released_at.eq(Some(now)))
-            .execute(&mut conn)
+        let account = account_id.to_string();
+        let expected = expected_state_commitment.to_string();
+        let transition = conn
+            .transaction::<Option<ReleaseTransition>, diesel::result::Error, _>(|conn| {
+                async move {
+                    let released_at: Option<Option<DateTime<Utc>>> = account_metadata::table
+                        .filter(account_metadata::account_id.eq(&account))
+                        .select(account_metadata::released_at)
+                        .for_update()
+                        .first(conn)
+                        .await
+                        .optional()?;
+                    let Some(released_at) = released_at else {
+                        return Ok(None);
+                    };
+                    if released_at.is_some() {
+                        return Ok(Some(ReleaseTransition::AlreadyReleased));
+                    }
+                    let current: Option<String> = states::table
+                        .filter(states::account_id.eq(&account))
+                        .select(states::commitment)
+                        .first(conn)
+                        .await
+                        .optional()?;
+                    if current.as_deref() != Some(expected.as_str()) {
+                        return Ok(Some(ReleaseTransition::StateMoved));
+                    }
+                    diesel::update(account_metadata::table)
+                        .filter(account_metadata::account_id.eq(&account))
+                        .set(account_metadata::released_at.eq(Some(now)))
+                        .execute(conn)
+                        .await?;
+                    Ok(Some(ReleaseTransition::Released))
+                }
+                .scope_boxed()
+            })
             .await
             .map_err(|e| format!("Failed to set released: {e}"))?;
-
-        if rows_updated > 0 {
-            return Ok(true);
-        }
-
-        let exists: Option<MetadataRow> = account_metadata::table
-            .filter(account_metadata::account_id.eq(account_id))
-            .select(MetadataRow::as_select())
-            .first(&mut conn)
-            .await
-            .optional()
-            .map_err(|e| format!("Failed to load account_metadata: {e}"))?;
-        match exists {
-            Some(_) => Ok(false),
-            None => Err(format!("Account not found: {account_id}")),
-        }
+        transition.ok_or_else(|| format!("Account not found: {account_id}"))
     }
 
-    async fn clear_released(&self, account_id: &str) -> Result<(), String> {
+    /// Conditional clear, the twin of `set_released_if_state`: one
+    /// transaction locks the metadata row first (so it waits behind an
+    /// in-flight release and sees its result), then reads the stored
+    /// state's commitment and clears only while it is still the one the
+    /// caller wrote. Under READ COMMITTED a plain `UPDATE ... WHERE
+    /// released_at IS NOT NULL` would skip a row whose release has not
+    /// committed yet instead of waiting for it.
+    async fn clear_released_if_state(
+        &self,
+        account_id: &str,
+        expected_state_commitment: &str,
+        _storage: &dyn crate::storage::StorageBackend,
+    ) -> Result<ClearTransition, String> {
         let mut conn = self
             .pool
             .get()
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        let rows_updated = diesel::update(account_metadata::table)
-            .filter(account_metadata::account_id.eq(account_id))
-            .set(account_metadata::released_at.eq::<Option<DateTime<Utc>>>(None))
-            .execute(&mut conn)
+        let account = account_id.to_string();
+        let expected = expected_state_commitment.to_string();
+        let transition = conn
+            .transaction::<Option<ClearTransition>, diesel::result::Error, _>(|conn| {
+                async move {
+                    let released_at: Option<Option<DateTime<Utc>>> = account_metadata::table
+                        .filter(account_metadata::account_id.eq(&account))
+                        .select(account_metadata::released_at)
+                        .for_update()
+                        .first(conn)
+                        .await
+                        .optional()?;
+                    let Some(released_at) = released_at else {
+                        return Ok(None);
+                    };
+                    if released_at.is_none() {
+                        return Ok(Some(ClearTransition::NotReleased));
+                    }
+                    let current: Option<String> = states::table
+                        .filter(states::account_id.eq(&account))
+                        .select(states::commitment)
+                        .first(conn)
+                        .await
+                        .optional()?;
+                    if current.as_deref() != Some(expected.as_str()) {
+                        return Ok(Some(ClearTransition::StateMoved));
+                    }
+                    diesel::update(account_metadata::table)
+                        .filter(account_metadata::account_id.eq(&account))
+                        .set(account_metadata::released_at.eq::<Option<DateTime<Utc>>>(None))
+                        .execute(conn)
+                        .await?;
+                    Ok(Some(ClearTransition::Cleared))
+                }
+                .scope_boxed()
+            })
             .await
             .map_err(|e| format!("Failed to clear released: {e}"))?;
+        transition.ok_or_else(|| format!("Account not found: {account_id}"))
+    }
 
-        if rows_updated == 0 {
-            return Err(format!("Account not found: {account_id}"));
-        }
-        Ok(())
+    async fn count_release_sweep_accounts(&self) -> Result<usize, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let count: i64 = release_sweepable_rows()
+            .count()
+            .get_result(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to count sweepable account metadata: {e}"))?;
+        usize::try_from(count).map_err(|_| format!("negative account count {count}"))
     }
 
     async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {
@@ -997,9 +1086,29 @@ mod tests {
         .expect("insert metadata");
     }
 
+    async fn upsert_state_row(store: &PostgresMetadataStore, account_id: &str, commitment: &str) {
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO states (account_id, state_json, commitment, created_at, updated_at) \
+             VALUES ($1, '{}'::jsonb, $2, now(), now()) \
+             ON CONFLICT (account_id) DO UPDATE SET commitment = EXCLUDED.commitment",
+        )
+        .bind::<Text, _>(account_id)
+        .bind::<Text, _>(commitment)
+        .execute(&mut conn)
+        .await
+        .expect("upsert state");
+    }
+
+    /// The Postgres store reads `states` itself; the storage handle is
+    /// only part of the trait signature.
+    fn unused_storage() -> crate::testing::mocks::MockStorageBackend {
+        crate::testing::mocks::MockStorageBackend::new()
+    }
+
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
-    async fn list_release_sweep_page_walks_ids_in_order_and_skips_released() {
+    async fn list_release_sweep_ids_walks_in_order_and_skips_released() {
         // Release sweep rotation (issue #434) on the SQL path: ordered by
         // account_id, exclusive cursor, released rows filtered out.
         let url = test_database_url().await;
@@ -1010,11 +1119,19 @@ mod tests {
             .iter()
             .map(|suffix| format!("{prefix}-{suffix}"))
             .collect();
+        let count_before = store.count_release_sweep_accounts().await.unwrap();
         for id in &ids {
             insert_unreleased_miden_row(&store, id).await;
         }
         let released_id = format!("{prefix}-b");
-        assert!(store.set_released(&released_id, Utc::now()).await.unwrap());
+        upsert_state_row(&store, &released_id, "0xbase").await;
+        assert_eq!(
+            store
+                .set_released_if_state(&released_id, Utc::now(), "0xbase", &unused_storage())
+                .await
+                .unwrap(),
+            ReleaseTransition::Released
+        );
         // Rows the sweep cannot act on never take a page slot.
         let busy_id = format!("{prefix}-ab-busy");
         insert_unreleased_miden_row(&store, &busy_id).await;
@@ -1040,16 +1157,15 @@ mod tests {
 
         // Other tests' rows may sit before or after ours; scope every
         // assertion to this run's prefix.
-        let ours = |rows: Vec<AccountMetadata>| -> Vec<String> {
-            rows.into_iter()
-                .map(|m| m.account_id)
+        let ours = |ids: Vec<String>| -> Vec<String> {
+            ids.into_iter()
                 .filter(|id| id.starts_with(&prefix))
                 .collect()
         };
 
         let after_prefix = format!("{prefix}-");
         let first = store
-            .list_release_sweep_page(Some(&after_prefix), 2)
+            .list_release_sweep_ids(Some(&after_prefix), 2)
             .await
             .unwrap();
         assert_eq!(
@@ -1058,7 +1174,7 @@ mod tests {
         );
 
         let second = store
-            .list_release_sweep_page(Some(&format!("{prefix}-c")), 2)
+            .list_release_sweep_ids(Some(&format!("{prefix}-c")), 2)
             .await
             .unwrap();
         let second = ours(second);
@@ -1072,7 +1188,7 @@ mod tests {
         }
         let everything = ours(
             store
-                .list_release_sweep_page(Some(&after_prefix), 100)
+                .list_release_sweep_ids(Some(&after_prefix), 100)
                 .await
                 .unwrap(),
         );
@@ -1083,10 +1199,160 @@ mod tests {
 
         // The cursor is strictly exclusive.
         let exclusive = store
-            .list_release_sweep_page(Some(&format!("{prefix}-d")), 100)
+            .list_release_sweep_ids(Some(&format!("{prefix}-d")), 100)
             .await
             .unwrap();
         assert!(ours(exclusive).is_empty());
+
+        // The pacing count uses the page filter: of this run's rows only
+        // a, c and d are sweepable.
+        assert_eq!(
+            store.count_release_sweep_accounts().await.unwrap() - count_before,
+            3
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn set_released_if_state_writes_only_while_the_state_matches() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account = format!("0xrelease{}", Utc::now().timestamp_micros());
+        insert_unreleased_miden_row(&store, &account).await;
+        upsert_state_row(&store, &account, "0xreonboarded").await;
+
+        // The evidence was proved against 0xbase; the store holds a
+        // re-onboarded state: nothing is written.
+        assert_eq!(
+            store
+                .set_released_if_state(&account, Utc::now(), "0xbase", &unused_storage())
+                .await
+                .unwrap(),
+            ReleaseTransition::StateMoved
+        );
+        assert!(
+            store
+                .get(&account)
+                .await
+                .unwrap()
+                .unwrap()
+                .released_at
+                .is_none()
+        );
+
+        upsert_state_row(&store, &account, "0xbase").await;
+        let first = Utc::now();
+        assert_eq!(
+            store
+                .set_released_if_state(&account, first, "0xbase", &unused_storage())
+                .await
+                .unwrap(),
+            ReleaseTransition::Released
+        );
+        assert_eq!(
+            store
+                .set_released_if_state(&account, Utc::now(), "0xbase", &unused_storage())
+                .await
+                .unwrap(),
+            ReleaseTransition::AlreadyReleased,
+            "first writer wins"
+        );
+        let released_at = store.get(&account).await.unwrap().unwrap().released_at;
+        assert_eq!(
+            released_at.map(|t| t.timestamp_micros()),
+            Some(first.timestamp_micros())
+        );
+
+        // A clear on behalf of a state that is no longer stored keeps the
+        // release: it belongs to the later state.
+        assert_eq!(
+            store
+                .clear_released_if_state(&account, "0xreonboarded", &unused_storage())
+                .await
+                .unwrap(),
+            ClearTransition::StateMoved
+        );
+        assert_eq!(
+            store
+                .clear_released_if_state(&account, "0xbase", &unused_storage())
+                .await
+                .unwrap(),
+            ClearTransition::Cleared
+        );
+        assert_eq!(
+            store
+                .clear_released_if_state(&account, "0xbase", &unused_storage())
+                .await
+                .unwrap(),
+            ClearTransition::NotReleased,
+            "idempotent"
+        );
+
+        let missing = format!("{account}-missing");
+        assert!(
+            store
+                .set_released_if_state(&missing, Utc::now(), "0xbase", &unused_storage())
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .clear_released_if_state(&missing, "0xbase", &unused_storage())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_reonboarding_racing_a_release_never_ends_released() {
+        // /configure stores its new state and then clears the release;
+        // the release locks the metadata row and re-reads the state in
+        // one transaction. Whatever the interleaving on real row locks,
+        // an account whose stored state is the re-onboarded one ends up
+        // active.
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = std::sync::Arc::new(PostgresMetadataStore::new(&url, 4).await.expect("store"));
+        let account = format!("0xrace{}", Utc::now().timestamp_micros());
+        insert_unreleased_miden_row(&store, &account).await;
+        for round in 0..50 {
+            upsert_state_row(&store, &account, "0xbase").await;
+            let release = {
+                let store = store.clone();
+                let account = account.clone();
+                tokio::spawn(async move {
+                    store
+                        .set_released_if_state(&account, Utc::now(), "0xbase", &unused_storage())
+                        .await
+                        .unwrap()
+                })
+            };
+            let reonboard = {
+                let store = store.clone();
+                let account = account.clone();
+                tokio::spawn(async move {
+                    upsert_state_row(&store, &account, "0xreonboarded").await;
+                    store
+                        .clear_released_if_state(&account, "0xreonboarded", &unused_storage())
+                        .await
+                        .unwrap()
+                })
+            };
+            let _ = release.await.unwrap();
+            let _ = reonboard.await.unwrap();
+            assert!(
+                store
+                    .get(&account)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .released_at
+                    .is_none(),
+                "round {round}: a re-onboarded account ended up released"
+            );
+        }
     }
 
     #[tokio::test]

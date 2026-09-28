@@ -39,6 +39,12 @@ pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 pub const CONNECT_MAX_ATTEMPTS: u32 = 5;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Largest response the client decodes: 15% above tonic's 4 MiB default,
+/// as miden-client allows. The node fills a `SyncTransactions` page up to
+/// 4 MiB by its own size estimate, which undercounts the encoded size, so
+/// a full page can exceed the default limit and be refused every time.
+pub const MAX_RESPONSE_SIZE_BYTES: usize = 4 * 1024 * 1024 * 115 / 100;
+
 /// Failure surface of [`MidenRpcClient`]. `Call` retains the typed
 /// `tonic::Status` so transient and permanent failures stay distinguishable.
 /// Endpoint values are never echoed in errors.
@@ -193,7 +199,7 @@ impl MidenRpcClient {
         .map_err(RpcClientError::Connect)?;
 
         Ok(Self {
-            client: ApiClient::new(channel),
+            client: ApiClient::new(channel).max_decoding_message_size(MAX_RESPONSE_SIZE_BYTES),
             settings,
             runtime,
             retry_observer: None,
@@ -212,7 +218,7 @@ impl MidenRpcClient {
             .connect_lazy();
 
         Ok(Self {
-            client: ApiClient::new(channel),
+            client: ApiClient::new(channel).max_decoding_message_size(MAX_RESPONSE_SIZE_BYTES),
             settings: RpcClientSettings::default(),
             runtime: Arc::new(ProductionRetryRuntime),
             retry_observer: None,
@@ -471,6 +477,67 @@ impl MidenRpcClient {
                     .map(tonic::Response::into_inner)
             },
         )
+        .await
+    }
+
+    /// The node's chain tip: the number of the latest block header it
+    /// serves. Takes `&self` like [`Self::get_account_commitment`].
+    pub async fn get_chain_tip(&self, read_mode: RpcReadMode) -> Result<u32, RpcClientError> {
+        const OPERATION: &str = "get_chain_tip";
+        let response = self
+            .retry_read(OPERATION, read_mode, |mut client| async move {
+                let request = rpc::BlockHeaderByNumberRequest {
+                    block_num: None,
+                    include_mmr_proof: Some(false),
+                    include_protocol_config: None,
+                };
+                client
+                    .get_block_header_by_number(Request::new(request))
+                    .await
+                    .map(tonic::Response::into_inner)
+            })
+            .await?;
+        response
+            .block_header
+            .and_then(|header| header.block_num)
+            .map(|number| number.block_num)
+            .ok_or_else(|| RpcClientError::MalformedResponse {
+                operation: OPERATION,
+                reason: "no block number in the latest block header".to_string(),
+            })
+    }
+
+    /// One page of the transactions committed against `account_id` in
+    /// `block_from..=block_to`. The node records a header for every
+    /// account, private ones included, never prunes them, and rejects a
+    /// range that ends past its tip. It caps the payload and paginates
+    /// by block: `pagination_info.block_num` is the last block the page
+    /// fully covers, so a caller continues from the next block until it
+    /// reaches `block_to`. Takes `&self` like
+    /// [`Self::get_account_commitment`].
+    pub async fn sync_transactions(
+        &self,
+        account_id: &AccountId,
+        block_from: u32,
+        block_to: u32,
+        read_mode: RpcReadMode,
+    ) -> Result<rpc::SyncTransactionsResponse, RpcClientError> {
+        let proto_account_id = proto_account_id(account_id);
+
+        let proto_account_id = &proto_account_id;
+        self.retry_read("sync_transactions", read_mode, |mut client| async move {
+            let request = rpc::SyncTransactionsRequest {
+                block_range: Some(rpc::BlockRange {
+                    block_from,
+                    block_to,
+                }),
+                account_ids: vec![*proto_account_id],
+            };
+            client
+                .sync_transactions(Request::new(request))
+                .await
+                .map(tonic::Response::into_inner)
+        })
         .await
     }
 
@@ -934,5 +1001,125 @@ mod tests {
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(observed.load(Ordering::SeqCst), 0);
+    }
+
+    async fn history_client(
+        tip: u32,
+        pages: Vec<rpc::SyncTransactionsResponse>,
+    ) -> (
+        MidenRpcClient,
+        Arc<Mutex<Vec<rpc::SyncTransactionsRequest>>>,
+    ) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let node = test_node::ScriptedNode::failing(
+            0,
+            || tonic::Status::unavailable("unused"),
+            Arc::new(AtomicU32::new(0)),
+        )
+        .with_chain_tip(tip, pages, requests.clone());
+        let endpoint = test_node::serve(node).await;
+        let client = MidenRpcClient::connect_with_runtime(
+            endpoint,
+            RpcClientSettings::new(Duration::from_secs(2), RetryPolicy::new(1)),
+            Arc::new(RecordingRuntime::default()),
+        )
+        .await
+        .expect("the scripted node must accept connections");
+        (client, requests)
+    }
+
+    fn test_account_id() -> AccountId {
+        AccountId::from_hex("0xe33cde61b266e9c1753136d03a5572").expect("valid account id")
+    }
+
+    #[tokio::test]
+    async fn the_chain_tip_is_the_latest_block_header_number_over_a_real_wire() {
+        let (client, _) = history_client(548_942, vec![]).await;
+        assert_eq!(
+            client
+                .get_chain_tip(RpcReadMode::SingleAttempt)
+                .await
+                .expect("tip"),
+            548_942
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_transactions_sends_one_account_and_the_inclusive_range_over_a_real_wire() {
+        let page = rpc::SyncTransactionsResponse {
+            pagination_info: Some(rpc::PaginationInfo {
+                chain_tip: 100,
+                block_num: 60,
+            }),
+            transactions: vec![rpc::TransactionRecord {
+                block_num: 42,
+                header: Some(transaction::TransactionHeader {
+                    transaction_id: None,
+                    account_id: None,
+                    initial_state_commitment: Some(primitives::Word {
+                        encoded: vec![0; 32],
+                    }),
+                    final_state_commitment: Some(primitives::Word {
+                        encoded: vec![7; 32],
+                    }),
+                    input_notes: vec![],
+                    output_notes: vec![],
+                }),
+                output_note_proofs: vec![],
+                consumed_note_refs: vec![],
+            }],
+        };
+        let (client, requests) = history_client(100, vec![page.clone()]).await;
+        let account_id = test_account_id();
+
+        let answered = client
+            .sync_transactions(&account_id, 0, 100, RpcReadMode::SingleAttempt)
+            .await
+            .expect("page");
+        assert_eq!(answered, page);
+
+        let requests = requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].block_range,
+            Some(rpc::BlockRange {
+                block_from: 0,
+                block_to: 100
+            })
+        );
+        assert_eq!(requests[0].account_ids, vec![proto_account_id(&account_id)]);
+    }
+
+    #[tokio::test]
+    async fn a_range_past_the_tip_is_rejected_like_the_node_does() {
+        let (client, _) = history_client(100, vec![]).await;
+        let error = client
+            .sync_transactions(&test_account_id(), 0, 101, RpcReadMode::SingleAttempt)
+            .await
+            .expect_err("block_to past the tip");
+        let RpcClientError::Call { operation, status } = error else {
+            panic!("expected a call error, got {error:?}");
+        };
+        assert_eq!(operation, "sync_transactions");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn word_to_hex_requires_exactly_32_bytes() {
+        let zero = primitives::Word {
+            encoded: vec![0; 32],
+        };
+        assert_eq!(
+            word_to_hex(&zero).as_deref(),
+            Some("0x0000000000000000000000000000000000000000000000000000000000000000")
+        );
+        // proto3's default word is empty, not the zero word.
+        assert_eq!(word_to_hex(&primitives::Word::default()), None);
+        assert_eq!(
+            word_to_hex(&primitives::Word {
+                encoded: vec![1; 31]
+            }),
+            None
+        );
     }
 }

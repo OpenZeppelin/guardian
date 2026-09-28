@@ -732,15 +732,17 @@ export interface DashboardCanonicalizationConfig {
  * path. */
 export interface DashboardReleaseSweepConfig {
   /** Target time for one full walk of the fleet; every unreleased
-   * Miden account is probed once per rotation. */
+   * Miden account is visited once per rotation. */
   rotationSeconds: number;
-  /** Upper bound on accounts probed per second during the walk. */
+  /** Upper bound on account visits per second, rotation and
+   * confirmation re-checks together. */
   maxRatePerSecond: number;
-  /** Cadence of the hot pass over accounts awaiting confirmation or
-   * carrying a pending `switch_guardian` proposal. */
-  hotIntervalSeconds: number;
-  /** Consecutive observations of a foreign guardian key in published
-   * storage required before releasing on that evidence. */
+  /** Delay between confirmation re-checks of an account whose published
+   * storage showed a foreign guardian key. */
+  recheckSeconds: number;
+  /** Observations of a foreign guardian key in published storage, each
+   * at a strictly later block, required before releasing on that
+   * evidence. */
   confirmations: number;
 }
 

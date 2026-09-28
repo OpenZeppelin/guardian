@@ -695,7 +695,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
           release_sweep: {
             rotation_seconds: 21600,
             max_rate_per_second: 5,
-            hot_interval_seconds: 60,
+            recheck_seconds: 60,
             confirmations: 2,
           },
         },
@@ -722,9 +722,52 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     expect(info.backend.releaseSweep).toEqual({
       rotationSeconds: 21600,
       maxRatePerSecond: 5,
-      hotIntervalSeconds: 60,
+      recheckSeconds: 60,
       confirmations: 2,
     });
+  });
+
+  it('decodes a disabled or absent release sweep', async () => {
+    const info = (releaseSweep: Record<string, unknown>) => ({
+      service_status: 'healthy',
+      environment: 'devnet',
+      build: {
+        version: '0.18.0',
+        git_commit: 'abcdef123456',
+        profile: 'release',
+        started_at: '2026-09-28T10:00:00Z',
+      },
+      backend: {
+        storage: 'postgres',
+        supported_ack_schemes: ['ecdsa', 'falcon'],
+        ...releaseSweep,
+      },
+      total_account_count: 1,
+      accounts_by_auth_method: {},
+      latest_activity: null,
+      delta_status_counts: {
+        candidate: 0,
+        canonical: 0,
+        retained: 0,
+        discarded: 0,
+      },
+      in_flight_proposal_count: 0,
+      degraded_aggregates: [],
+    });
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+
+    // The server sends null when the sweep is disabled.
+    mockFetch.mockResolvedValueOnce(okJson(info({ release_sweep: null })));
+    expect((await client.getDashboardInfo()).backend.releaseSweep).toBeNull();
+
+    // An older server omits the field.
+    mockFetch.mockResolvedValueOnce(okJson(info({})));
+    expect((await client.getDashboardInfo()).backend.releaseSweep).toBeUndefined();
+
+    mockFetch.mockResolvedValueOnce(
+      okJson(info({ release_sweep: { rotation_seconds: 21600 } })),
+    );
+    await expect(client.getDashboardInfo()).rejects.toThrow(/release_sweep/);
   });
 
   it('passes limit and cursor query params for delta listing', async () => {
