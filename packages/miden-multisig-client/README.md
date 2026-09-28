@@ -275,7 +275,7 @@ The option shapes are exported as `CreateProposalOptions`,
 `CreateSignerProposalOptions`, and `CreateP2idProposalOptions`.
 
 All methods also accept `approvalExpirationDelta` (1 to 65535): the number of blocks after
-the proposal's anchor block by which the transaction must be included. Past
+the block the proposal binds by which the transaction must be included. Past
 that block the approvers' signatures no longer authorize it, the SDK refuses to
 execute it, and the node rejects it as expired. The summary binds the value, so
 the executing party cannot change it. Omitted, the approval never expires,
@@ -385,8 +385,7 @@ others; only the check itself writes `verified`, and a freshly parsed or
 imported proposal is `unchecked`. `retryable: true` means the
 re-execution hit a transient node error and the proposal may verify on
 the next sync; `retryable: false` means it cannot be reproduced (tampered
-metadata, or an anchor block the node has pruned) and has to be
-re-proposed. Verification is deliberately not part of `status`: a fully
+metadata, for example) and has to be re-proposed. Verification is deliberately not part of `status`: a fully
 signed proposal can be dead, so `'ready'` keeps meaning "threshold met"
 and `isProposalActionable(proposal)` answers "verified and ready".
 `signProposal` and `executeProposal` re-verify the one proposal they act
@@ -406,12 +405,23 @@ for (const p of await multisig.syncProposals()) {
 }
 ```
 
-Anchored re-execution needs the node to serve account state at the
-proposal's reference block, and nodes keep that history only briefly
-(devnet: about 50 blocks); once it is gone the proposal is reported as
-`failed` with `retryable: false` for everyone, the proposer included.
-Collect signatures and execute promptly, and re-propose once a proposal
-has aged out.
+Verification and execution run at the chain tip. Since Miden 0.17 a
+multisig summary binds the block its auth args name (the bound block), and
+every request the SDK builds declares that block (`withBlockNumbers`), so the
+summary reproduces at any later tip. An execution runs at the Miden client's
+sync height, so `syncProposals`, `signProposal`, `executeProposal`,
+`createTransactionProposalRequest` and the custom and offline paths sync the
+client first. Foreign accounts, the fee faucet among them, load at the tip, so
+a proposal stays verifiable however long it waits for signatures, even after
+the node has pruned the bound block's account state (devnet keeps about 50
+blocks). The proposal's `chainAnchor` still names the bound block, and
+0.18.0-rc.1 clients still re-execute at it.
+
+`createTransactionProposalRequest(proposalId)` returns the final, fully
+signed request for an integration that proves and submits with its own
+pipeline. Execute it at the chain tip, without an anchor, on a client that has
+synced recently: this call syncs first, and an execution loads the fee faucet
+at the client's sync height, which a node serves for only about 50 blocks.
 
 ### Execute a Proposal
 
@@ -517,8 +527,7 @@ const advice = await multisig.prepareCustomExecution(proposal.id, request.serial
 
 // The browser TransactionRequest is immutable, so rebuild from the same recipe
 // (inputs + salt + bound block) with the advice, then submit. `submitTransaction`
-// takes the proposal id to execute at the proposal's anchored reference block,
-// since the collected signatures only authorize the summary produced there.
+// executes at the chain tip: the rebuilt request declares the block it binds.
 const boundBlockNum = chainAnchorBlockNum(proposal.metadata.chainAnchor);
 const { request: finalRequest } = await buildP2idTransactionRequest(
   midenClient, senderId, recipientId, faucetId, amount,
@@ -531,8 +540,11 @@ Since Miden 0.17 a multisig auth procedure reads three words out of the
 transaction's auth arg: the block the summary binds together with the approval
 expiration, the salt, and the fee conversion info. The exported builders get
 them from `client.feeAwareTransactionRequestBuilder(account, { feeConversionSalt,
-boundBlockNum })`, which sets the commitment as the request's auth arg and puts
-the preimage in its advice map. An integration that assembles a request itself
+boundBlockNum })`, which sets the commitment as the request's auth arg, puts
+the preimage in its advice map, and declares the bound block with
+`withBlockNumbers` so the request executes at the chain tip. A request whose
+auth args bind a block it does not declare is refused with
+`BoundBlockNotDeclaredError`. An integration that assembles a request itself
 must start from that builder for a multisig account, and must not call
 `withFeeConversionSalt` or `withAuthArg` on it: the two setters clear each other
 and either one discards the auth args. The approval never expires unless the

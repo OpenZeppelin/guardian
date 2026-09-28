@@ -252,8 +252,8 @@ proposal cannot hide the others; only the check itself writes `Verified`,
 and a freshly parsed or imported proposal is `Unchecked`.
 `Failed { retryable: true }` means the re-execution hit a transient node
 error and the proposal may verify on the next listing; `retryable: false`
-means it cannot be reproduced (tampered metadata, or an anchor block the
-node has pruned) and has to be re-proposed. Verification is deliberately
+means it cannot be reproduced (tampered metadata, for example) and has to
+be re-proposed. Verification is deliberately
 not part of `ProposalStatus`: a fully signed proposal can be dead, so
 `Ready` keeps meaning "threshold met" and `proposal.is_actionable()`
 answers "verified and ready". `sign_proposal` and `execute_proposal`
@@ -261,12 +261,17 @@ re-verify the one proposal they act on and fail with the real error. A
 payload that does not parse at all still fails the listing, so malformed
 GUARDIAN data is never silently dropped.
 
-Anchored re-execution needs the node to serve account state at the
-proposal's reference block, and nodes keep that history only briefly
-(devnet: about 50 blocks); once it is gone the proposal is reported as
-`Failed { retryable: false }` for everyone, the proposer included.
-Collect signatures and execute promptly, and re-propose once a proposal
-has aged out.
+Verification and execution run at the chain tip. Since Miden 0.17 a
+multisig summary binds the block its auth args name (the bound block), and
+every request the SDK builds declares that block
+(`TransactionRequestBuilder::block_numbers`), so the summary reproduces at
+any later tip. An execution runs at the Miden client's sync height, so
+`list_proposals`, `sign_proposal`, `execute_proposal` and the custom and
+offline paths sync the client first. Foreign accounts, the fee faucet among
+them, load at the tip, so a proposal stays verifiable however long it waits
+for signatures, even after the node has pruned the bound block's account
+state (devnet keeps about 50 blocks). The proposal's `chain_anchor` still
+names the bound block, and 0.18.0-rc.1 clients still re-execute at it.
 
 ### Recovering From a Dead Transaction (Abandon)
 
@@ -395,13 +400,13 @@ let bound_block_num = proposal.metadata.chain_anchor()?.block_num();
 
 // Cosigners review and sign through the usual list/sign flow.
 
-// Producer (once threshold is met): rebuild the request from the recipe at the
-// proposal's anchor block, bind-check it, fetch the validated advice, inject it,
-// and submit. `prepare_custom_execution` verifies the request against the signed
-// commitment *before* the GUARDIAN ack, re-executing at the proposal's anchored
-// reference block; `submit_transaction` takes the proposal id to execute at that
-// same anchor, since the collected signatures only authorize the summary produced
-// there.
+// Producer (once threshold is met): rebuild the request from the recipe, bound to
+// the proposal's anchor block, bind-check it, fetch the validated advice, inject
+// it, and submit. `prepare_custom_execution` verifies the request against the
+// signed commitment *before* the GUARDIAN ack, re-executing at the chain tip;
+// `submit_transaction` executes at the tip too. Both work because the request
+// declares the block it binds (`TransactionRequestBuilderExt::multisig_auth_args`
+// does this), and refuse one that does not with `BoundBlockNotDeclared`.
 let auth_args = client.multisig_auth_args(salt, Some(bound_block_num), None).await?;
 let mut request = build_p2id_transaction_request(
     account.inner(), recipient, vec![asset], NoteType::Public, P2ideHeights::default(),
@@ -419,8 +424,10 @@ transaction matches the commitment the cosigners signed.
 
 Every exported transaction builder takes the `MultisigAuthArgs` and attaches them
 with `TransactionRequestBuilderExt::multisig_auth_args`: the commitment becomes the
-request's auth argument
-and the preimage goes into the advice map, which `miden-client` then leaves alone.
+request's auth argument,
+the preimage goes into the advice map, which `miden-client` then leaves alone, and
+the block they bind is declared with `block_numbers`, so the request executes at
+the chain tip.
 A producer assembling a different custom request directly with
 `TransactionRequestBuilder` must do the same, and must not call
 `fee_conversion_salt`, which would let `miden-client` commit its own auth arg

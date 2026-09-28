@@ -1,13 +1,23 @@
-import { AccountId, AdviceMap, FeltArray, MockWebClient, Signature, Word } from '@miden-sdk/miden-sdk';
+import {
+  AccountId,
+  AdviceMap,
+  FeltArray,
+  MockWebClient,
+  Signature,
+  TransactionRequestBuilder,
+  Word,
+} from '@miden-sdk/miden-sdk';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createMultisigAccount } from '../src/account/builder.js';
+import { BoundBlockNotDeclaredError } from '../src/multisig/authArgErrors.js';
 import {
   buildUpdateSignersTransactionRequest,
   executeForSummary,
   executeForSummaryAt,
+  executeForSummaryAtTip,
   requestBoundBlockNum,
   summaryApprovalExpirationBlockNum,
   summarySalt,
@@ -29,8 +39,8 @@ import { wordToBytes } from '../src/utils/word.js';
  * The request-level tests prove what the builders attach. This is where the auth
  * procedure has to accept it: `resolve_auth_args` pipes the three-word preimage,
  * the summary comes back with the salt and the approval expiration where the
- * readers expect them, and a cosigner rebuilding at the proposer's anchor
- * reproduces the commitment the proposer signed over.
+ * readers expect them, and a cosigner rebuilding at the block the proposer bound
+ * reproduces the commitment the proposer signed over, at any later tip.
  */
 const SIGNER_COMMITMENT = '0x260a375ca01f1f05cd7bf22298b40c47290fc09f209011d39049b7f2ef61387b';
 const NEW_SIGNER_COMMITMENT = '0x' + '11'.repeat(31) + '00';
@@ -173,6 +183,49 @@ describe('guarded multisig auth procedure on the mock chain', () => {
     } finally {
       anchor.free();
     }
+  });
+
+  it('declares the block its auth args bind', async () => {
+    const { request } = await buildRequest();
+
+    expect(request.blockNumbers()).toEqual([requestBoundBlockNum(request)]);
+  });
+
+  // Issue #462: a multisig summary binds the block its auth args name, not the
+  // block it executes against, so a cosigner reproduces it at its own tip long
+  // after the proposal was made, with no anchor involved.
+  it('lets a cosigner reproduce the commitment at a later tip, without the anchor', async () => {
+    const proposer = await buildRequest();
+    const { summary, anchor } = await executeForSummary(client, accountId, proposer.request, RPC);
+    const boundBlockNum = anchor.blockNum();
+    anchor.free();
+
+    await client.proveBlock();
+    await client.proveBlock();
+    await client.syncState();
+    expect(await client.getSyncHeight()).toBeGreaterThan(boundBlockNum);
+
+    const rebuilt = await buildRequest({ boundBlockNum });
+    const reproduced = await executeForSummaryAtTip(client, accountId, rebuilt.request, RPC);
+
+    expect(reproduced.toCommitment().toHex()).toBe(summary.toCommitment().toHex());
+  });
+
+  it('refuses at the tip a request that binds a block without declaring it', async () => {
+    const { request } = await buildRequest();
+    const authArg = request.authArg();
+    if (!authArg) {
+      throw new Error('the multisig request must carry auth args');
+    }
+    const undeclared = new TransactionRequestBuilder()
+      .withAuthArg(authArg)
+      .extendAdviceMap(request.adviceMap())
+      .build();
+
+    expect(undeclared.blockNumbers()).toEqual([]);
+    await expect(
+      executeForSummaryAtTip(client, accountId, undeclared, RPC),
+    ).rejects.toBeInstanceOf(BoundBlockNotDeclaredError);
   });
 
   it('binds an approval expiration the proposer asks for', async () => {

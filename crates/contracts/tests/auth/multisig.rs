@@ -1643,9 +1643,10 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     }
 }
 
-/// A transaction summary commits to the reference block, so an otherwise
-/// identical re-execution at a later block produces a different commitment.
-/// SDKs capture a `ChainAnchor` at proposal time and re-execute against it.
+/// A multisig transaction summary commits to the block its auth args name, not
+/// the reference block, so a re-execution at a later reference block reproduces
+/// it and only auth args naming another block change it. This is why the SDKs
+/// execute a proposal at the chain tip rather than at its anchor.
 #[tokio::test]
 async fn transaction_summary_binds_the_block_the_auth_args_name() -> anyhow::Result<()> {
     let (_secret_keys, public_keys, _authenticators, _, guardian_public_key, _) =

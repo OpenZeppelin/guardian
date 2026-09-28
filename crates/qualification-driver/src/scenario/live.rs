@@ -1677,8 +1677,8 @@ pub async fn assert_p2ide_timelocked(runner: &Runner) -> ActionOutcome {
 /// integration, and says so.
 ///
 /// What the boundary is worth asserting for: preparing re-executes the
-/// producer's own bytes at the proposal's anchored block and refuses unless
-/// they reproduce the signed commitment. So a pass here means the label
+/// producer's own bytes at the chain tip, bound to the proposal's block, and
+/// refuses unless they reproduce the signed commitment. So a pass here means the label
 /// survived, the threshold was met, and the bytes still match what was signed.
 /// That last part is the anti-tamper property of the producer API.
 pub async fn prepare_custom_execution(runner: &Runner) -> ActionOutcome {

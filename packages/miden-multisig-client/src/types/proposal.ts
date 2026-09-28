@@ -38,11 +38,11 @@ interface BaseProposalMetadata {
   saltHex?: string;
   requiredSignatures?: number;
   /**
-   * Base64-serialized Miden `ChainAnchor` pinning the reference block the
-   * proposal's transaction summary was built at. Required to verify or
-   * execute the proposal: since protocol 0.16 the signed summary binds the
-   * reference block commitment, so it only reproduces when re-executed at
-   * that block.
+   * Base64-serialized Miden `ChainAnchor` at the block the proposal's
+   * transaction summary binds, the proposer's sync height when it built the
+   * request. Required, and checked against the summary's block commitment: a
+   * rebuild binds the block it names. The proposal executes at the chain tip,
+   * not at the anchor; 0.18.0-rc.1 clients still re-execute at it.
    */
   chainAnchor?: string;
 }
@@ -175,9 +175,10 @@ export interface Proposal {
 /**
  * Outcome of checking a proposal's metadata against its signed summary.
  * `failed.retryable` is true when the failure came from a transient node or
- * RPC error, so the same proposal may verify on a later sync; false when the
- * proposal itself cannot be reproduced (tampered metadata, an anchor block the
- * node has pruned) and it has to be re-proposed.
+ * RPC error, or from chain state this client had not caught up with, so the
+ * same proposal may verify on a later sync; false when the proposal itself
+ * cannot be reproduced (tampered metadata, for example) and it has to be
+ * re-proposed.
  */
 export type ProposalVerification =
   | { status: 'unchecked' }

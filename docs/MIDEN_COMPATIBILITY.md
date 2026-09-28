@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.18.x (pre-release) | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.4` | `0.17.0-rc.4` (exact) |
 | 0.18.0-rc.1 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.3` | `0.17.0-rc.3` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
@@ -28,9 +29,9 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
-0.18.x tracks the Miden 0.17 release candidates. `@miden-sdk/miden-sdk` 0.17.0-rc.3
-embeds `miden-client` 0.17.0-rc.3 and `miden-protocol` / `miden-standards` 0.17.0-rc.7,
-which is why the Rust pins are rc.7 for the protocol crates and rc.3 for the client
+0.18.x tracks the Miden 0.17 release candidates. `@miden-sdk/miden-sdk` 0.17.0-rc.4
+embeds `miden-client` 0.17.0-rc.4 and `miden-protocol` / `miden-standards` 0.17.0-rc.7,
+which is why the Rust pins are rc.7 for the protocol crates and rc.4 for the client
 crates. It is not a production target until Miden 0.17.0 is stable and devnet and
 testnet run it. The 0.18 release candidates are published to npm under the `rc`
 dist-tag, so `npm install` without an explicit version still resolves the 0.17.x
@@ -66,6 +67,21 @@ be reproduced: `TransactionRequest` serialization changed and the auth arg commi
 Execute or cancel every pending proposal on the rc version, have GUARDIAN drop any that
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
+
+**Moving from 0.18.0-rc.1 to the `miden-client` 0.17.0-rc.4 pin** keeps the protocol
+pin (0.17.0-rc.7), so procedure roots, accounts and stored data are unchanged.
+`miden-client` / `@miden-sdk/miden-sdk` 0.17.0-rc.4 always serialize a
+`TransactionRequest`'s declared block numbers, so request bytes written by 0.17.0-rc.3 or
+earlier do not deserialize under rc.4, and the reverse. A GUARDIAN proposal carries no
+serialized request, but a custom-proposal producer passes one to
+`propose_custom_transaction` / `createCustomProposal` and
+`prepare_custom_execution` / `prepareCustomExecution`, so it must serialize the request
+with a client on the same pin as the SDK. Proposals now execute at the chain tip (see
+[`MULTISIG_SDK.md`](./MULTISIG_SDK.md#tip-execution-and-the-bound-block)). A proposal
+still pending from 0.18.0-rc.1 carries the chain anchor a rebuild reads its bound block
+from, so it verifies and executes the same way. A 0.18.0-rc.1 client still re-executes at
+the anchor and cannot verify a proposal older than the node's account history (about 50
+blocks on devnet).
 
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
@@ -122,8 +138,9 @@ Nothing stored under Miden 0.16 survives:
   candidate never creates one, so it cannot transact and must be recreated.
 - **The fee asset left the block header.** It lives in the chain's protocol
   configuration, which the client receives from the node with each sync and
-  stores per header. The auth args name the fee faucet of the configuration the
-  bound block commits to, read from that store.
+  stores per header. The auth args name the fee faucet of the configuration at
+  the client's sync height, the one an execution at the tip loads, read from
+  that store.
 - **P2ID note storage is four felts** (target account, then a two-felt salt that
   defaults to zero) and **P2IDE storage is six** (reclaimer, target, reclaim
   height, timelock height). The script roots moved with the layouts.
@@ -133,12 +150,17 @@ Nothing stored under Miden 0.16 survives:
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-09-25.
+Last checked 2026-09-28.
 
 - **Public networks.** Devnet runs node 0.17.0-rc.2, and this build's protocol
   configuration for devnet's fee asset hashes to the commitment in devnet's
-  block headers, so the transaction kernels match. A guarded-multisig
-  transaction from this build has not yet been executed there end to end.
+  block headers, so the transaction kernels match. A guarded 2-of-2 multisig
+  from this build ran two proposals there end to end, a first consume-notes
+  transaction and a P2ID send. Each was verified, signed and executed at the tip
+  more than 70 blocks after the block it binds, once devnet already answered
+  `block N has been pruned` for that block's account state. Devnet keeps about
+  50 blocks of account history, and its fee faucet's account ID enables asset
+  callbacks, so every fee payment loads the faucet as a foreign account.
   Devnet has no faucet front end: an account is funded by calling the node's
   `RegisterAccount` RPC, which pays it a small public P2ID note in the fee asset
   (`scripts/devnet-register-account.sh`). `miden-client`'s `register_account`
@@ -146,13 +168,13 @@ Last checked 2026-09-25.
   reports every account as already allowed. Testnet runs Miden 0.16, so
   on testnet the examples need a local `miden-node` from the pinned line until
   it upgrades.
-- **miden-client fee path.** miden-client (still in 0.17.0-rc.3) commits the
+- **miden-client fee path.** miden-client (still in 0.17.0-rc.4) commits the
   two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
   SDKs set the three-word auth arg themselves (rationale in the multisig
   client's `transaction/auth_args.rs`). When the client builds
   `MultisigAuthArgs` itself: the helper can delegate to it; nothing stored or
   signed changes.
-- **Pins.** The workspace pins protocol 0.17.0-rc.7 and client 0.17.0-rc.3 (see
+- **Pins.** The workspace pins protocol 0.17.0-rc.7 and client 0.17.0-rc.4 (see
   the matrix). The protocol pin follows the client and web SDK releases, not the
   protocol tags, because both SDKs must embed the same kernel. Moving to stable
   re-pins, regenerates roots, fixtures and the cross-SDK determinism vectors,

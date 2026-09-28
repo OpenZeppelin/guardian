@@ -10,10 +10,17 @@
 //! pair a fixed-salt component reads, which the multisig aborts on while piping
 //! the preimage (`advice stack read failed`). This is the one place that
 //! rationale lives; other comments refer here.
+//!
+//! The request also declares the bound block through
+//! `TransactionRequestBuilder::block_numbers`. The summary binds that block
+//! rather than the block the transaction executes against, so a proposal
+//! executes at whatever tip each party has synced to, as long as the bound
+//! block is in the transaction's partial blockchain (see
+//! [`execute_for_summary_at_tip`](super::execute_for_summary_at_tip)).
 
 use std::num::NonZeroU32;
 
-use miden_client::transaction::{ChainAnchor, TransactionRequestBuilder, TransactionSummary};
+use miden_client::transaction::{TransactionRequestBuilder, TransactionSummary};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
@@ -116,19 +123,18 @@ pub async fn proposer_auth_args(
     )
 }
 
-/// Auth args that rebuild an existing proposal's request: the salt and approval
-/// expiration its signed summary binds, at the anchor's block, with the fee
-/// faucet of the configuration that block commits to (the one the anchored
-/// execution loads). Anything else reproduces a summary the cosigners never
-/// signed.
+/// Auth args that rebuild an existing proposal's request: the block, salt and
+/// approval expiration its signed summary binds, with the fee faucet of the
+/// protocol configuration at the client's sync height, which is the one an
+/// execution at the tip loads. Anything else reproduces a summary the cosigners
+/// never signed.
 pub async fn proposal_auth_args(
     client: &MidenSdkClient,
     summary: &TransactionSummary,
-    chain_anchor: &ChainAnchor,
 ) -> Result<MultisigAuthArgs> {
-    let bound_block_num = chain_anchor.block_num();
+    let bound_block_num = summary.block_number();
     multisig_auth_args(
-        fee_faucet_id_at(client, chain_anchor.header()).await?,
+        synced_fee_faucet_id(client).await?,
         bound_block_num,
         summary_salt(summary),
         approval_expiration_delta_of(summary, bound_block_num)?,
@@ -137,9 +143,10 @@ pub async fn proposal_auth_args(
 
 /// Attaches multisig auth args to a request under construction.
 pub trait TransactionRequestBuilderExt {
-    /// Sets `auth_args` as the request's auth arg and puts its preimage in the
-    /// advice map. A request declaring `fee_conversion_salt` instead would let
-    /// miden-client commit its own auth arg over this.
+    /// Sets `auth_args` as the request's auth arg, puts its preimage in the
+    /// advice map, and declares the block it binds, so the request executes at
+    /// the chain tip. A request declaring `fee_conversion_salt` instead would
+    /// let miden-client commit its own auth arg over this.
     fn multisig_auth_args(self, auth_args: &MultisigAuthArgs) -> Self;
 }
 
@@ -148,6 +155,7 @@ impl TransactionRequestBuilderExt for TransactionRequestBuilder {
         let commitment = auth_args.to_commitment();
         self.auth_arg(commitment)
             .extend_advice_map([(commitment, auth_args.to_elements())])
+            .block_numbers([auth_args.bound_block_num()])
     }
 }
 

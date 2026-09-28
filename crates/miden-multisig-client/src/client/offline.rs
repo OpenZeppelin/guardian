@@ -148,6 +148,11 @@ impl MultisigClient {
     /// ```
     pub async fn sign_imported_proposal(&mut self, proposal: &mut ExportedProposal) -> Result<()> {
         let mut bound_proposal = proposal.to_proposal()?;
+        // The binding check re-executes every type but a custom one at the
+        // store's sync height, so bring the store to the tip first.
+        if !matches!(bound_proposal.transaction_type, TransactionType::Custom) {
+            crate::transaction::sync_chain(&mut self.miden_client).await?;
+        }
         self.verify_proposal_summary_binding(&mut bound_proposal)
             .await?;
         let account = self.require_account()?;
@@ -296,18 +301,14 @@ impl MultisigClient {
             signature_advice.push(guardian_advice);
         }
 
-        // Execute and finalize at the proposal's anchored reference block; the
-        // anchor was checked against the signed summary's block commitment in
-        // `verify_proposal_summary_binding` above.
-        let chain_anchor = proposal.metadata.chain_anchor()?;
+        // Execute and finalize at the chain tip, bound to the block the signed
+        // summary names; `verify_proposal_summary_binding` above reproduced the
+        // summary the same way.
         self.assert_approval_not_expired(&proposal.id, &proposal.tx_summary)
             .await?;
-        let auth_args = crate::transaction::proposal_auth_args(
-            &self.miden_client,
-            &proposal.tx_summary,
-            &chain_anchor,
-        )
-        .await?;
+        let auth_args =
+            crate::transaction::proposal_auth_args(&self.miden_client, &proposal.tx_summary)
+                .await?;
 
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
@@ -336,12 +337,7 @@ impl MultisigClient {
             );
         }
 
-        self.finalize_transaction(
-            account_id,
-            final_tx_request,
-            &proposal.transaction_type,
-            chain_anchor,
-        )
-        .await
+        self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
+            .await
     }
 }

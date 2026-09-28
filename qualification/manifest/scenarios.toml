@@ -529,8 +529,8 @@ core = false
 # executed by `execute_proposal` (the SDK cannot rebuild an arbitrary producer
 # transaction), so it hands back the cosigner signatures and GUARDIAN's
 # acknowledgement and the integration submits with its own Miden client.
-# Preparing re-executes the producer's own bytes at the proposal's anchored
-# block and refuses unless they reproduce the signed commitment, so reaching it
+# Preparing re-executes the producer's own bytes at the chain tip, bound to the
+# proposal's block, and refuses unless they reproduce the signed commitment, so reaching it
 # proves the label survived, the threshold was met, and the bytes still match
 # what was signed.
 #

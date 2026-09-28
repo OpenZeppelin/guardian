@@ -3,7 +3,10 @@
 //! `public-api.test.ts` covers the barrel so a dropped re-export is caught.
 
 /** Stable error identifiers for auth-arg recovery failures. */
-export type AuthArgErrorCode = 'proposal_salt_malformed' | 'multisig_auth_args_missing';
+export type AuthArgErrorCode =
+  | 'proposal_salt_malformed'
+  | 'multisig_auth_args_missing'
+  | 'bound_block_not_declared';
 
 /** How much of an untrusted value an error message will quote. */
 const MAX_QUOTED_CHARS = 80;
@@ -101,5 +104,29 @@ export class MultisigAuthArgsMissingError extends Error {
     );
     this.name = 'MultisigAuthArgsMissingError';
     this.accountId = accountId;
+  }
+}
+
+/**
+ * A multisig request does not list the block its auth args bind among the
+ * blocks it declares through `withBlockNumbers`. A proposal executes at the
+ * chain tip, where the auth procedure can read the bound block only from the
+ * transaction's partial blockchain, so such a request fails in the VM with
+ * `failed to lookup value in Merkle store` once the chain moves past that
+ * block. `feeAwareTransactionRequestBuilder` declares it; a request whose auth
+ * args are attached by hand has to call `withBlockNumbers([boundBlockNum])`.
+ */
+export class BoundBlockNotDeclaredError extends Error {
+  readonly code: AuthArgErrorCode = 'bound_block_not_declared';
+  readonly boundBlockNum: number;
+
+  constructor(boundBlockNum: number) {
+    super(
+      `The transaction request binds block ${boundBlockNum} in its multisig auth args but does ` +
+        'not declare it, so it cannot execute at a later chain tip. Build it with ' +
+        `feeAwareTransactionRequestBuilder or add withBlockNumbers([${boundBlockNum}])`,
+    );
+    this.name = 'BoundBlockNotDeclaredError';
+    this.boundBlockNum = boundBlockNum;
   }
 }

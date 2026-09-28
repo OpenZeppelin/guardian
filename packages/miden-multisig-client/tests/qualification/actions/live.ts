@@ -1943,8 +1943,8 @@ function adviceKeyFor(commitmentHex: string, messageHex: string): Word {
  * scenario stops at that boundary rather than reimplementing an integration.
  *
  * What the boundary is worth asserting for: preparing re-executes the producer's
- * own bytes at the proposal's anchored block and refuses unless they reproduce
- * the signed commitment. So a pass here means the label survived, the threshold
+ * own bytes at the chain tip, bound to the proposal's block, and refuses unless
+ * they reproduce the signed commitment. So a pass here means the label survived, the threshold
  * was met, and the bytes still match what was signed.
  *
  * The Rust leg checks the returned advice is not empty. This SDK returns an

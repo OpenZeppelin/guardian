@@ -9,7 +9,7 @@ use guardian_shared::ToJson;
 use miden_client::account::Account;
 use miden_client::rpc::domain::account::GetAccountRequest;
 use miden_client::rpc::{GrpcError, RpcError};
-use miden_client::transaction::{ChainAnchor, TransactionRequest, TransactionSummary};
+use miden_client::transaction::{TransactionRequest, TransactionSummary};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::utils::serde::Serializable;
@@ -218,7 +218,8 @@ impl MultisigClient {
         proposal.verification = match &outcome {
             Ok(()) => ProposalVerification::Verified,
             Err(e) => ProposalVerification::Failed {
-                retryable: crate::rpc::is_transient_multisig_error(e),
+                retryable: crate::rpc::is_transient_multisig_error(e)
+                    || crate::transaction::is_stale_chain_error(e),
                 message: e.to_string(),
             },
         };
@@ -236,10 +237,12 @@ impl MultisigClient {
             )));
         }
 
-        // The anchor arrives from an untrusted party via GUARDIAN, so check
-        // its block commitment against the one bound into the signed summary
-        // before anything executes against it. ChainAnchor deserialization
-        // already enforced internal header/chain consistency.
+        // The anchor arrives from an untrusted party via GUARDIAN. Nothing here
+        // executes against it, since the rebuild below runs at the tip, but it
+        // has to name the block the signed summary binds: the TypeScript SDK
+        // rebuilds at the block it names, and 0.18.0-rc.1 clients re-execute
+        // at it. ChainAnchor deserialization already enforced internal
+        // header/chain consistency.
         let chain_anchor = proposal.metadata.chain_anchor()?;
         if chain_anchor.block_commitment() != proposal.tx_summary.block_commitment() {
             return Err(MultisigError::InvalidConfig(format!(
@@ -279,8 +282,16 @@ impl MultisigClient {
             )));
         }
         let signer_commitments = proposal.metadata.signer_commitments()?;
-        let auth_args =
-            proposal_auth_args(&self.miden_client, &proposal.tx_summary, &chain_anchor).await?;
+        // The rebuild reads the chain's fee faucet from the synced protocol
+        // configuration and executes at the tip, so the store has to have
+        // synced to the block the summary binds; a cosigner that has only
+        // just pulled the account has not.
+        crate::transaction::sync_to_block(
+            &mut self.miden_client,
+            proposal.tx_summary.block_number(),
+        )
+        .await?;
+        let auth_args = proposal_auth_args(&self.miden_client, &proposal.tx_summary).await?;
 
         // A consume-notes summary commits to *authenticated* consumption
         // (see `ensure_notes_authenticated`), which miden-client decides
@@ -318,11 +329,10 @@ impl MultisigClient {
         )
         .await?;
 
-        let reconstructed = crate::transaction::execute_for_summary_at(
+        let reconstructed = crate::transaction::execute_for_summary_at_tip(
             &mut self.miden_client,
             account.id(),
             tx_request,
-            chain_anchor,
         )
         .await?;
 
@@ -375,7 +385,9 @@ impl MultisigClient {
 
     /// Finalizes a transaction by executing it on-chain and updating local state.
     ///
-    /// This handles the common post-execution logic for all proposal types.
+    /// This handles the common post-execution logic for all proposal types. The
+    /// transaction executes at the chain tip; the request declares the block its
+    /// summary binds (see [`crate::transaction::execute_for_summary_at_tip`]).
     ///
     /// Note-less storage-config changes on private accounts take a manual
     /// execute/prove/submit pipeline and rebuild the account from the proven
@@ -395,7 +407,6 @@ impl MultisigClient {
         account_id: AccountId,
         tx_request: TransactionRequest,
         transaction_type: &TransactionType,
-        chain_anchor: ChainAnchor,
     ) -> Result<()> {
         if let TransactionType::SwitchGuardian {
             new_endpoint,
@@ -428,9 +439,10 @@ impl MultisigClient {
                     MultisigError::MissingConfig("account not found before execution".to_string())
                 })?;
 
+            crate::transaction::prepare_tip_execution(&mut self.miden_client, &tx_request).await?;
             let tx_result = self
                 .miden_client
-                .execute_transaction_at(account_id, tx_request, chain_anchor)
+                .execute_transaction(account_id, tx_request)
                 .await
                 .map_err(|e| {
                     MultisigError::transaction_execution_with_context(
@@ -485,7 +497,7 @@ impl MultisigClient {
 
             rebuilt
         } else {
-            self.submit_transaction_at(account_id, tx_request, chain_anchor)
+            self.submit_transaction_at_tip(account_id, tx_request)
                 .await?;
 
             let _ = self.miden_client.sync_state().await;
@@ -522,19 +534,19 @@ impl MultisigClient {
         Ok(())
     }
 
-    /// Executes a transaction at the given chain anchor's reference block,
-    /// proves it, submits it, and applies the resulting store update — the
-    /// anchored equivalent of miden-client's `submit_new_transaction`, which
-    /// always executes at the local sync height.
-    pub(crate) async fn submit_transaction_at(
+    /// Executes a transaction at the chain tip, proves it, submits it, and
+    /// applies the resulting store update, syncing first when the store is
+    /// still below the block the request binds. Otherwise the same pipeline as
+    /// miden-client's `submit_new_transaction`.
+    pub(crate) async fn submit_transaction_at_tip(
         &mut self,
         account_id: AccountId,
         tx_request: TransactionRequest,
-        chain_anchor: ChainAnchor,
     ) -> Result<()> {
+        crate::transaction::prepare_tip_execution(&mut self.miden_client, &tx_request).await?;
         let tx_result = self
             .miden_client
-            .execute_transaction_at(account_id, tx_request, chain_anchor)
+            .execute_transaction(account_id, tx_request)
             .await
             .map_err(|e| {
                 MultisigError::transaction_execution_with_context("transaction execution failed", e)

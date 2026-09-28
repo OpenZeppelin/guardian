@@ -173,7 +173,7 @@ where
     // Since Miden 0.17 the multisig reads its auth arg as the commitment to a three-word
     // preimage (bound block + expiration, salt, fee conversion info) carried in the advice
     // map. A declared `fee_conversion_salt` would let miden-client commit its own auth arg
-    // over this one.
+    // over this one. Declaring the bound block lets the request execute at any later tip.
     let auth_args_commitment = auth_args.to_commitment();
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
@@ -182,6 +182,7 @@ where
         .extend_advice_map([(auth_args_commitment, auth_args.to_elements())])
         .extend_advice_map(extra_advice)
         .auth_arg(auth_args_commitment)
+        .block_numbers([auth_args.bound_block_num()])
         .build()?;
 
     Ok((request, config_hash))

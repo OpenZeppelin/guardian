@@ -10,11 +10,17 @@ export {
   buildConsumeNotesTransactionRequestFromNotes,
 } from './transaction/consumeNotes.js';
 export {
+  ChainBehindBoundBlockError,
   chainAnchorBlockNum,
   chainAnchorFromBase64,
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
+  executeForSummaryAtTip,
+  prepareTipExecution,
+  isStaleChainError,
+  requireDeclaredBoundBlock,
+  syncToBoundBlock,
   summaryApprovalExpirationBlockNum,
   summarySalt,
   SummaryAnchorMismatchError,
