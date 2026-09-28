@@ -75,6 +75,15 @@ const client = new MultisigClient(midenClient, {
 });
 ```
 
+The SDK does all of its local work (account reads and writes, note imports and
+exports, chain syncs, proposal previews) through the `MidenClient` you pass in,
+and never opens a second client on that client's store. Pass the client your
+application executes transactions with: miden-client keeps account state in
+memory per client, so two live clients writing one store can leave either of
+them persisting a storage root computed from state it never saw.
+`midenRpcEndpoint` serves only the SDK's direct node reads (on-chain
+commitments and note inclusion proofs).
+
 For an ECDSA cosigner using an EIP-1193 wallet (including Ledger), call
 `Eip712Signer.connect(provider)` once to select the Ethereum address and
 recover its secp256k1 public key from a dedicated key-discovery signature.
@@ -514,7 +523,7 @@ import { buildP2idTransactionRequest, chainAnchorBlockNum } from '@openzeppelin/
 // The builder takes the Miden client because the executing account decides
 // the auth args the request has to carry (see below).
 const { request, salt } = await buildP2idTransactionRequest(
-  midenClient, senderId, recipientId, faucetId, amount, { midenRpcEndpoint },
+  midenClient, senderId, recipientId, faucetId, amount,
 );
 const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg');
 
@@ -531,7 +540,7 @@ const advice = await multisig.prepareCustomExecution(proposal.id, request.serial
 const boundBlockNum = chainAnchorBlockNum(proposal.metadata.chainAnchor);
 const { request: finalRequest } = await buildP2idTransactionRequest(
   midenClient, senderId, recipientId, faucetId, amount,
-  { salt, boundBlockNum, signatureAdviceMap: advice, midenRpcEndpoint },
+  { salt, boundBlockNum, signatureAdviceMap: advice },
 );
 await multisig.submitTransaction(proposal.id, finalRequest);
 ```

@@ -6,15 +6,13 @@ import {
   Poseidon2,
   TransactionRequest,
   TransactionScript,
-  type WasmWebClient,
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
-import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { authSchemeId } from '../utils/signature.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
-import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
+import type { MultisigRequestOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
 function buildMultisigConfigFelts(
@@ -56,10 +54,7 @@ export function buildMultisigConfigAdvice(
   return { configHash, payload };
 }
 
-async function buildUpdateSignersScript(
-  client: MidenClient | WasmWebClient,
-  midenRpcEndpoint?: string,
-): Promise<TransactionScript> {
+async function buildUpdateSignersScript(client: MidenClient): Promise<TransactionScript> {
   const scriptSource = `
 use miden::standards::auth::multisig
 
@@ -69,23 +64,11 @@ pub proc main
 end
   `;
 
-  return compileTxScript(client, scriptSource, [], midenRpcEndpoint);
+  return client.compile.txScript({ code: scriptSource });
 }
 
-export function buildUpdateSignersTransactionRequest(
-  client: MidenClient,
-  threshold: number,
-  signerCommitments: string[],
-  options: MidenClientMultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
-export function buildUpdateSignersTransactionRequest(
-  client: WasmWebClient,
-  threshold: number,
-  signerCommitments: string[],
-  options: MultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
 export async function buildUpdateSignersTransactionRequest(
-  client: MidenClient | WasmWebClient,
+  client: MidenClient,
   threshold: number,
   signerCommitments: string[],
   options: MultisigRequestOptions,
@@ -112,7 +95,7 @@ export async function buildUpdateSignersTransactionRequest(
   const advice = new AdviceMap();
   advice.insert(configHashForAdvice, payload);
 
-  const script = await buildUpdateSignersScript(client, options.midenRpcEndpoint);
+  const script = await buildUpdateSignersScript(client);
 
   const { builder, saltHex } = await multisigRequestBuilder(client, options);
   let txBuilder = builder

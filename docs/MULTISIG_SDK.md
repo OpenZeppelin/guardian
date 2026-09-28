@@ -591,6 +591,13 @@ const client = new MultisigClient(midenClient, {
 });
 ```
 
+The SDK does all of its local work through the injected `MidenClient` and never
+opens a second client on its store, so pass the client your application executes
+transactions with: miden-client keeps account state in memory per client, and a
+second live client writing the same store can persist a storage root computed
+from state it never saw. `midenRpcEndpoint` serves only the SDK's direct node
+reads (on-chain commitments and note inclusion proofs).
+
 ### Creating Accounts
 
 ```typescript

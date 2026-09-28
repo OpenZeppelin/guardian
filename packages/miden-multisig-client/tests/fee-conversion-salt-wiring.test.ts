@@ -28,16 +28,12 @@ let accountId: string;
 
 beforeAll(async () => {
   client = await MidenClient.createMock();
-  const { account } = await createMultisigAccount(
-    client,
-    {
-      threshold: 1,
-      signerCommitments: [SIGNER_COMMITMENT],
-      guardianCommitment: GUARDIAN_COMMITMENT,
-      seed: new Uint8Array(32).fill(9),
-    },
-    'mock',
-  );
+  const { account } = await createMultisigAccount(client, {
+    threshold: 1,
+    signerCommitments: [SIGNER_COMMITMENT],
+    guardianCommitment: GUARDIAN_COMMITMENT,
+    seed: new Uint8Array(32).fill(9),
+  });
   accountId = account.id().toString();
 });
 
@@ -50,7 +46,7 @@ async function buildRequest(boundBlockNum?: number): Promise<TransactionRequest>
     client,
     1,
     [SIGNER_COMMITMENT],
-    { accountId, salt: Word.fromHex(SALT_HEX), boundBlockNum, midenRpcEndpoint: 'mock' },
+    { accountId, salt: Word.fromHex(SALT_HEX), boundBlockNum },
   );
   return request;
 }

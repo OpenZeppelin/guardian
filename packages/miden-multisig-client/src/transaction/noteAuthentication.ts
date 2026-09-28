@@ -13,11 +13,16 @@
  * {@link ensureNotesAuthenticated} first, so the executed transaction is the
  * one the cosigners signed regardless of what each store held before.
  */
-import { Endpoint, type Note, type NoteInclusionProof, RpcClient } from '@miden-sdk/miden-sdk';
+import {
+  Endpoint,
+  type MidenClient,
+  type Note,
+  type NoteInclusionProof,
+  RpcClient,
+} from '@miden-sdk/miden-sdk';
 
+import { requireMidenRpcEndpoint } from '../config.js';
 import { ConsumeNoteNotAuthenticatedError } from '../multisig/consumeNotesErrors.js';
-import type { RawClientSource } from '../raw-client.js';
-import { getRawMidenClient } from '../raw-client.js';
 import { importNoteWithProof } from '../recovery/proposalNoteImport.js';
 import { resolveRpcConfig, type RpcConfig } from '../rpc/config.js';
 import { retryRpcRead } from '../rpc/retry.js';
@@ -44,19 +49,19 @@ export interface EnsureNotesAuthenticatedOptions {
  *   record still lacks authentication after a sync.
  */
 export async function ensureNotesAuthenticated(
-  midenClient: RawClientSource,
+  midenClient: MidenClient,
   notes: readonly Note[],
   options: EnsureNotesAuthenticatedOptions,
 ): Promise<void> {
-  const webClient = await getRawMidenClient(midenClient, options.midenRpcEndpoint);
-  const pending = await unauthenticatedNotes(webClient, notes);
+  const midenRpcEndpoint = requireMidenRpcEndpoint(options.midenRpcEndpoint);
+  const pending = await unauthenticatedNotes(midenClient, notes);
   if (pending.length === 0) {
     return;
   }
 
   const proofs = new Map<string, NoteInclusionProof>();
   try {
-    const rpcClient = new RpcClient(new Endpoint(options.midenRpcEndpoint));
+    const rpcClient = new RpcClient(new Endpoint(midenRpcEndpoint));
     const fetched = await retryRpcRead(
       () => rpcClient.getNotesById(pending.map((note) => note.id())),
       resolveRpcConfig(options.rpc),
@@ -81,7 +86,7 @@ export async function ensureNotesAuthenticated(
       );
     }
     const { outcome, wasImported } = await importNoteWithProof(
-      webClient,
+      midenClient,
       'proposal',
       idHex,
       note,
@@ -99,10 +104,10 @@ export async function ensureNotesAuthenticated(
   // height; a newer one lands unverified until a sync fetches its block
   // header. A cosigner that just loaded the account is typically behind the
   // note's block, so sync once and re-check before failing.
-  if ((await unauthenticatedNotes(webClient, notes)).length > 0) {
-    await webClient.syncState();
+  if ((await unauthenticatedNotes(midenClient, notes)).length > 0) {
+    await midenClient.syncChain();
   }
-  const still = await unauthenticatedNotes(webClient, notes);
+  const still = await unauthenticatedNotes(midenClient, notes);
   if (still.length > 0) {
     throw new ConsumeNoteNotAuthenticatedError(
       noteIdHex(still[0]),
@@ -114,12 +119,12 @@ export async function ensureNotesAuthenticated(
 
 /** The subset of `notes` whose local record is missing or carries no proof. */
 async function unauthenticatedNotes(
-  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+  midenClient: MidenClient,
   notes: readonly Note[],
 ): Promise<Note[]> {
   const pending: Note[] = [];
   for (const note of notes) {
-    const record = await webClient.getInputNote(noteIdHex(note));
+    const record = await midenClient.notes.get(noteIdHex(note));
     if (!record || !record.isAuthenticated()) {
       pending.push(note);
     }

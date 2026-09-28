@@ -95,8 +95,6 @@ export {
 // hex, directly comparable to `ExportedProposal.commitment` / `Proposal.id`.
 export { computeCommitmentFromTxSummary } from './multisig/helpers.js';
 export type {
-  MidenClientMultisigRequestOptions,
-  MidenClientSignatureOptions,
   MultisigRequestOptions,
   SignatureOptions,
 } from './transaction/options.js';

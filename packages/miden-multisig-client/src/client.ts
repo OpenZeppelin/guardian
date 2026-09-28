@@ -11,7 +11,7 @@ import type { StateObject } from '@openzeppelin/guardian-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
 import { AccountInspector, assertCompleteDetectedConfig } from './inspector.js';
-import { getRawMidenClient, requireConfigValue, requireMidenRpcEndpoint } from './raw-client.js';
+import { requireConfigValue, requireMidenRpcEndpoint } from './config.js';
 import type { MultisigConfig, Signer } from './types.js';
 import { isSafeToAdoptGuardianState, readOnChainCommitment } from './state/adopt.js';
 import { normalizeHexWord } from './utils/encoding.js';
@@ -48,9 +48,11 @@ export interface MultisigClientConfig {
   /** GUARDIAN server endpoint. Required — there is no default. */
   guardianEndpoint: string;
   /**
-   * Miden node RPC endpoint used for proposal execution and state
-   * commitment verification. Required — must point at the same network as
-   * the injected `MidenClient`; there is no default.
+   * Miden node RPC endpoint the SDK reads directly: on-chain commitments for
+   * state verification, and note inclusion proofs for consume-notes proposals
+   * and note recovery. Everything else, execution included, goes through the
+   * injected `MidenClient`. Required — must point at the same network as the
+   * injected `MidenClient`; there is no default.
    */
   midenRpcEndpoint: string;
   /** Multisig-owned remote prover override and proof retry policy. */
@@ -170,11 +172,7 @@ export class MultisigClient {
   async create(config: MultisigConfig, signer: Signer): Promise<Multisig> {
     this._guardianClient.setSigner(signer);
 
-    const { account } = await createMultisigAccount(
-      this.midenClient,
-      config,
-      this.midenRpcEndpoint,
-    );
+    const { account } = await createMultisigAccount(this.midenClient, config);
     const accountId = account.id().toString();
     await bindSignerAccountKey(signer, this.midenClient, accountId);
 

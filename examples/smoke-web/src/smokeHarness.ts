@@ -1144,7 +1144,6 @@ export function useSmokeHarness(): {
 
         const result = await createCustomP2idProposal(
           activeClient,
-          sessionConfigRef.current.midenRpcEndpoint,
           currentMultisig,
           input.recipientId.trim(),
           input.faucetId.trim(),
@@ -1199,12 +1198,7 @@ export function useSmokeHarness(): {
           throw new Error('MidenClient is not initialized');
         }
 
-        await prepareAndSubmitCustomProposal(
-          activeClient,
-          sessionConfigRef.current.midenRpcEndpoint,
-          currentMultisig,
-          recipe,
-        );
+        await prepareAndSubmitCustomProposal(activeClient, currentMultisig, recipe);
         customRecipesRef.current.delete(recipe.proposalId);
 
         const refreshed = await refreshMultisigState(currentMultisig);

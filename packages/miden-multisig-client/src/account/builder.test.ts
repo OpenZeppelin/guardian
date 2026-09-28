@@ -114,21 +114,17 @@ describe("createMultisigAccount", () => {
     return { webClient };
   }
 
-  it("inserts through the WASM client's own account store when given one", async () => {
-    const rawClient = { newAccount: vi.fn().mockResolvedValue(undefined) };
+  it("inserts the new account through the supplied MidenClient without overwriting", async () => {
+    const { webClient } = makeClient();
 
-    await createMultisigAccount(
-      rawClient as never,
-      {
-        threshold: 1,
-        signerCommitments: ["0x" + "1".repeat(64)],
-        guardianCommitment: "0x" + "2".repeat(64),
-      },
-      "http://localhost:57291",
-    );
+    const { account } = await createMultisigAccount(webClient as never, {
+      threshold: 1,
+      signerCommitments: ["0x" + "1".repeat(64)],
+      guardianCommitment: "0x" + "2".repeat(64),
+    });
 
-    expect(rawClient.newAccount).toHaveBeenCalledTimes(1);
-    expect(rawClient.newAccount.mock.calls[0][1]).toBe(false);
+    expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
+    expect(webClient.accounts.insert).toHaveBeenCalledWith({ account, overwrite: false });
   });
 
   it("builds the guarded component from the upstream standard component (Falcon)", async () => {
@@ -141,7 +137,6 @@ describe("createMultisigAccount", () => {
         signerCommitments: ["0x" + "1".repeat(64)],
         guardianCommitment: "0x" + "2".repeat(64),
       },
-      "http://localhost:57291",
     );
 
     // The component must come from the SDK, not from MASM compiled here: a locally compiled
@@ -163,7 +158,6 @@ describe("createMultisigAccount", () => {
         guardianCommitment: "0x" + "2".repeat(64),
         signatureScheme: "ecdsa",
       },
-      "http://localhost:57291",
     );
 
     // The scheme is no longer implicit in the MASM — it is an explicit parameter, and the
@@ -188,7 +182,6 @@ describe("createMultisigAccount", () => {
           { procedure: "update_signers", threshold: 2 },
         ],
       } as never,
-      "http://localhost",
     );
 
     // `send_asset` and `update_signers` are this package's names. The component exports

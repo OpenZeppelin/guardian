@@ -18,10 +18,7 @@ import type {
 } from './types.js';
 import { ProposalSaltMalformedError } from './multisig/authArgErrors.js';
 import type { ProcedureName } from './procedures.js';
-import type {
-  MidenClient,
-  WasmWebClient,
-} from '@miden-sdk/miden-sdk';
+import type { MidenClient, OutputNoteRecord } from '@miden-sdk/miden-sdk';
 import {
   Account,
   AccountId,
@@ -113,11 +110,7 @@ import {
   type NoteRecoverySteps,
   type RecoverNotesOptions,
 } from './recovery/recoverNotes.js';
-import {
-  getRawMidenClient,
-  getTransactionProver,
-  requireMidenRpcEndpoint,
-} from './raw-client.js';
+import { requireMidenRpcEndpoint } from './config.js';
 import {
   resolveProverConfig,
   type ResolvedProverConfig,
@@ -327,7 +320,6 @@ export class Multisig {
   private guardian: GuardianHttpClient;
   private readonly signer: Signer;
   private readonly midenClient: MidenClient;
-  private readonly rawClientPromise: Promise<WasmWebClient>;
   private readonly proverWorkflow: ProverWorkflow;
   private readonly rpcConfig: ResolvedRpcConfig;
   private readonly _accountId: string;
@@ -376,20 +368,15 @@ export class Multisig {
     this.midenClient = midenClient;
     this._accountId = accountId ?? (account ? accountIdToHex(account) : '');
     this.midenRpcEndpoint = requireMidenRpcEndpoint(midenRpcEndpoint);
-    this.rawClientPromise = getRawMidenClient(midenClient, this.midenRpcEndpoint);
     this.proverWorkflow = new ProverWorkflow(
       this.midenClient,
-      proverConfig ?? resolveProverConfig(undefined, getTransactionProver(midenClient)),
+      proverConfig ?? resolveProverConfig(undefined, midenClient.defaultProver),
     );
     this.rpcConfig = rpcConfig ?? resolveRpcConfig(undefined);
   }
 
   private getMidenRpcEndpoint(): string {
     return this.midenRpcEndpoint;
-  }
-
-  private async getRawClient(): Promise<WasmWebClient> {
-    return this.rawClientPromise;
   }
 
   private proposalFactory(): ProposalFactory {
@@ -428,7 +415,7 @@ export class Multisig {
   }
 
   /**
-   * Resolve the account from the web client's store, falling back to the
+   * Resolve the account from the Miden client's store, falling back to the
    * `account` snapshot when the store has no record.
    *
    * Transaction execution reads the store, and other flows (e.g. consume-notes
@@ -436,12 +423,11 @@ export class Multisig {
    * source from the store to see the same state execution will.
    */
   async getStoreAccount(): Promise<Account> {
-    const webClient = await this.getRawClient();
-    const stored = await retryRpcRead(
-      () => webClient.getAccount(AccountId.fromHex(this._accountId)),
-      this.rpcConfig,
-    );
-    return stored ?? this.account;
+    return (await this.readStoreAccount()) ?? this.account;
+  }
+
+  private readStoreAccount(): Promise<Account | null> {
+    return retryRpcRead(() => this.midenClient.accounts.get(this._accountId), this.rpcConfig);
   }
 
   /**
@@ -621,13 +607,8 @@ export class Multisig {
    */
   async syncState(): Promise<AccountState> {
     const state = await this.fetchState();
-    const accountId = AccountId.fromHex(this._accountId);
-    const webClient = await this.getRawClient();
-    const localAccount = await retryRpcRead(
-      () => webClient.getAccount(accountId),
-      this.rpcConfig,
-    );
-    let accountForConfigRefresh: Account | null = localAccount ?? null;
+    const localAccount = await this.readStoreAccount();
+    let accountForConfigRefresh: Account | null = localAccount;
 
     const guardianCommitment = normalizeHexWord(state.commitment);
     const localCommitment = localAccount
@@ -637,8 +618,8 @@ export class Multisig {
     if (!localAccount || localCommitment !== guardianCommitment) {
       const accountBytes = base64ToUint8Array(state.stateDataBase64);
       const incomingAccount = Account.deserialize(accountBytes);
-      if (await this.isSafeToOverwriteLocalState(incomingAccount, localAccount)) {
-        await webClient.newAccount(incomingAccount, true);
+      if (await this.isSafeToOverwriteLocalState(incomingAccount, localAccount ?? undefined)) {
+        await this.midenClient.accounts.insert({ account: incomingAccount, overwrite: true });
         accountForConfigRefresh = incomingAccount;
       }
     }
@@ -650,11 +631,7 @@ export class Multisig {
 
   async verifyStateCommitment(): Promise<AccountStateVerificationResult> {
     const accountId = AccountId.fromHex(this._accountId);
-    const webClient = await this.getRawClient();
-    const localAccount = await retryRpcRead(
-      () => webClient.getAccount(accountId),
-      this.rpcConfig,
-    );
+    const localAccount = await this.readStoreAccount();
 
     if (!localAccount) {
       throw new Error(
@@ -725,14 +702,10 @@ export class Multisig {
    * fail.
    */
   private async syncNetworkOnly(): Promise<Account | null> {
-    const webClient = await this.getRawClient();
-    await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
-    const account = await retryRpcRead(
-      () => webClient.getAccount(AccountId.fromHex(this._accountId)),
-      this.rpcConfig,
-    );
-    this.refreshConfigFromAccount(account ?? null);
-    return account ?? null;
+    await this.syncChain();
+    const account = await this.readStoreAccount();
+    this.refreshConfigFromAccount(account);
+    return account;
   }
 
   private refreshConfigFromAccount(account: Account | null): void {
@@ -1047,7 +1020,6 @@ export class Multisig {
     ...legacyArgs: never[]
   ): Promise<Proposal> {
     const proposalNonce = resolveProposalNonce('createAddSignerProposal', options, legacyArgs);
-    const webClient = await this.getRawClient();
     const targetThreshold = options.newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
     // What `update_signers_and_threshold` rejects on-chain, and what the auth
@@ -1061,13 +1033,13 @@ export class Multisig {
     this.warnOnOverrideDilution(targetSignerCommitments.length);
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      webClient,
+      this.midenClient,
       targetThreshold,
       targetSignerCommitments,
       this.proposalRequestOptions(options),
     );
 
-    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -1098,7 +1070,6 @@ export class Multisig {
     ...legacyArgs: never[]
   ): Promise<Proposal> {
     const proposalNonce = resolveProposalNonce('createRemoveSignerProposal', options, legacyArgs);
-    const webClient = await this.getRawClient();
     const normalizedRemove = signerToRemove.toLowerCase();
     const targetSignerCommitments = this.signerCommitments.filter(
       (c) => c.toLowerCase() !== normalizedRemove
@@ -1120,13 +1091,13 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      webClient,
+      this.midenClient,
       targetThreshold,
       targetSignerCommitments,
       this.proposalRequestOptions(options),
     );
 
-    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -1155,7 +1126,6 @@ export class Multisig {
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     const proposalNonce = resolveProposalNonce('createChangeThresholdProposal', options);
-    const webClient = await this.getRawClient();
     if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${newThreshold}. Must be between 1 and ${this.signerCommitments.length}`
@@ -1167,13 +1137,13 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
-      webClient,
+      this.midenClient,
       newThreshold,
       this.signerCommitments,
       this.proposalRequestOptions(options),
     );
 
-    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -1197,7 +1167,6 @@ export class Multisig {
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     const proposalNonce = resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
-    const webClient = await this.getRawClient();
     if (targetThreshold < 0 || targetThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${targetThreshold}. Must be between 0 and ${this.signerCommitments.length}`
@@ -1216,13 +1185,13 @@ export class Multisig {
     }
 
     const { request, salt } = await buildUpdateProcedureThresholdTransactionRequest(
-      webClient,
+      this.midenClient,
       targetProcedure,
       targetThreshold,
       this.proposalRequestOptions(options),
     );
 
-    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -1279,7 +1248,6 @@ export class Multisig {
     newGuardianPubkey: string,
     approvalExpirationDelta: number | undefined,
   ): Promise<{ summaryBase64: string; metadata: ProposalMetadata }> {
-    const webClient = await this.getRawClient();
     // What `auth_tx_guarded_multisig` asserts after a guardian rotation, checked
     // before any signature is collected.
     validateMultisigConfig({
@@ -1290,7 +1258,7 @@ export class Multisig {
     await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
 
     const { request, salt } = await buildUpdateGuardianTransactionRequest(
-      webClient,
+      this.midenClient,
       newGuardianPubkey,
       {
         accountId: this._accountId,
@@ -1299,7 +1267,7 @@ export class Multisig {
       },
     );
 
-    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -1390,16 +1358,14 @@ export class Multisig {
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     const proposalNonce = resolveProposalNonce('createConsumeNotesProposal', options);
-    const webClient = await this.getRawClient();
     if (noteIds.length === 0) {
       throw new Error('At least one note ID is required');
     }
 
     // Fetch notes locally (proposer has them per FR-012); embed for v2 verification.
-    const rawClient = await getRawMidenClient(webClient);
     const fetchedNotes: Note[] = [];
     for (const noteIdHex of noteIds) {
-      const inputNoteRecord = await rawClient.getInputNote(noteIdHex);
+      const inputNoteRecord = await this.midenClient.notes.get(noteIdHex);
       if (!inputNoteRecord) {
         throw new LegacyConsumeNotesNoteMissingError(noteIdHex);
       }
@@ -1412,12 +1378,12 @@ export class Multisig {
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
     const { request, salt } = await buildConsumeNotesTransactionRequestFromNotes(
-      webClient,
+      this.midenClient,
       fetchedNotes,
       this.proposalRequestOptions(options),
     );
 
-    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -1464,7 +1430,6 @@ export class Multisig {
     ...legacyArgs: never[]
   ): Promise<Proposal> {
     const proposalNonce = resolveProposalNonce('createP2idProposal', options, legacyArgs);
-    const webClient = await this.getRawClient();
     if (amount <= 0n) {
       throw new Error('Amount must be greater than 0');
     }
@@ -1473,7 +1438,7 @@ export class Multisig {
     // CreateP2idProposalOptions can't be silently dropped before the builder.
     const { nonce: _nonce, ...noteOptions } = options;
     const { request, salt } = await buildP2idTransactionRequest(
-      webClient,
+      this.midenClient,
       this._accountId,
       recipientId,
       faucetId,
@@ -1481,7 +1446,7 @@ export class Multisig {
       noteOptions,
     );
 
-    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -1508,49 +1473,25 @@ export class Multisig {
   /**
    * Get notes that can be consumed by this multisig account.
    *
-   * Returns a list of notes that are committed on-chain and can be consumed
-   * immediately by the multisig account.
+   * Returns the notes the Miden client's last sync screened as consumable by
+   * this account right now; block-locked notes are left out.
    */
   async getConsumableNotes(): Promise<ConsumableNote[]> {
-    const accountId = AccountId.fromHex(this._accountId);
-    const webClient = await this.getRawClient();
+    const records = await this.midenClient.notes.listAvailable({ account: this._accountId });
 
-    // Get consumable notes for this account
-    const consumableRecords = await webClient.getConsumableNotes(accountId);
-
-    // Convert to our simplified ConsumableNote type
     const notes: ConsumableNote[] = [];
-    for (const record of consumableRecords) {
-      const inputNote = record.inputNoteRecord();
-      const consumability = record.noteConsumability();
-
-      // Only include notes that can be consumed now (consumableAfterBlock is undefined/null)
-      const canConsumeNow = consumability.some(
-        (c) => c.accountId().toString().toLowerCase() === this._accountId.toLowerCase() &&
-               c.consumptionStatus().consumableAfterBlock() === undefined
-      );
-
-      if (canConsumeNow) {
-        // Miden 0.15: InputNoteRecord.id() is `NoteId | undefined`; skip id-less records.
-        const id = inputNote.id();
-        if (id === undefined) {
-          continue;
-        }
-        const noteId = id.toString();
-        const details = inputNote.details();
-        const fungibleAssets = details.assets().fungibleAssets();
-
-        // Extract assets
-        const assets: NoteAsset[] = [];
-        for (const asset of fungibleAssets) {
-          assets.push({
-            faucetId: asset.faucetId().toString(),
-            amount: asset.amount(),
-          });
-        }
-
-        notes.push({ id: noteId, assets });
+    for (const inputNote of records) {
+      // Miden 0.15: InputNoteRecord.id() is `NoteId | undefined`; skip id-less records.
+      const id = inputNote.id();
+      if (id === undefined) {
+        continue;
       }
+      const assets: NoteAsset[] = inputNote
+        .details()
+        .assets()
+        .fungibleAssets()
+        .map((asset) => ({ faucetId: asset.faucetId().toString(), amount: asset.amount() }));
+      notes.push({ id: id.toString(), assets });
     }
 
     return notes;
@@ -1574,12 +1515,11 @@ export class Multisig {
    * @returns Serialized note file bytes
    */
   async exportNoteToBytes(noteId: string): Promise<Uint8Array> {
-    const webClient = await this.getRawClient();
     const trimmedNoteId = noteId.trim();
 
-    let record;
+    let record: OutputNoteRecord | undefined;
     try {
-      record = await webClient.getOutputNote(trimmedNoteId);
+      [record] = await this.midenClient.notes.listSent({ ids: [trimmedNoteId] });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -1595,7 +1535,7 @@ export class Multisig {
     const format = record.inclusionProof()
       ? NoteExportFormat.Full
       : NoteExportFormat.Details;
-    const noteFile = await webClient.exportNoteFile(trimmedNoteId, format);
+    const noteFile = await this.midenClient.notes.export(trimmedNoteId, { format });
     return noteFile.serialize();
   }
 
@@ -1642,8 +1582,6 @@ export class Multisig {
    *   commitment for a details-only file
    */
   async importNoteFromBytes(noteBytes: Uint8Array): Promise<string> {
-    const webClient = await this.getRawClient();
-
     let noteFile: NoteFile;
     try {
       noteFile = NoteFile.deserialize(noteBytes);
@@ -1652,7 +1590,7 @@ export class Multisig {
       throw new Error(`failed to decode note file: ${detail}`);
     }
 
-    return webClient.importNoteFile(noteFile);
+    return this.midenClient.notes.import(noteFile);
   }
 
   /**
@@ -2160,10 +2098,7 @@ export class Multisig {
    * syncing first when this client is still below the block the request binds.
    */
   private async submitAtTip(request: TransactionRequest): Promise<void> {
-    const webClient = await this.getRawClient();
-    await prepareTipExecution(webClient, request, () =>
-      retryRpcRead(() => webClient.syncState(), this.rpcConfig),
-    );
+    await prepareTipExecution(this.midenClient, request, () => this.syncChain());
     await this.proverWorkflow.submit(AccountId.fromHex(this._accountId), request);
   }
 
@@ -2173,16 +2108,12 @@ export class Multisig {
    * store's sync height, which a node prunes about 50 blocks later.
    */
   private async syncChain(): Promise<void> {
-    const webClient = await this.getRawClient();
-    await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
+    await retryRpcRead(() => this.midenClient.syncChain(), this.rpcConfig);
   }
 
   /** {@link syncToBoundBlock} with this client's RPC retry policy. */
   private async syncToBoundBlock(boundBlockNum: number): Promise<void> {
-    const webClient = await this.getRawClient();
-    await syncToBoundBlock(webClient, boundBlockNum, () =>
-      retryRpcRead(() => webClient.syncState(), this.rpcConfig),
-    );
+    await syncToBoundBlock(this.midenClient, boundBlockNum, () => this.syncChain());
   }
 
   /**
@@ -2213,9 +2144,8 @@ export class Multisig {
       );
     }
 
-    const webClient = await this.getRawClient();
     const request = deserializeTransactionRequest(transactionRequestBytes);
-    const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
+    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
     const summaryBase64 = uint8ArrayToBase64(summary.serialize());
@@ -2298,8 +2228,7 @@ export class Multisig {
     } finally {
       anchor.free();
     }
-    const webClient = await this.getRawClient();
-    const derived = await executeForSummaryAtTip(webClient, this._accountId, bindingRequest);
+    const derived = await executeForSummaryAtTip(this.midenClient, this._accountId, bindingRequest);
     const derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
     if (derivedCommitmentHex !== signedCommitmentHex) {
       throw new Error(
@@ -2874,7 +2803,6 @@ export class Multisig {
       // to the block the summary binds; a cosigner that has only just loaded
       // the account has not.
       await this.syncToBoundBlock(binding.boundBlockNum);
-      const webClient = await this.getRawClient();
 
       // A consume-notes summary commits to *authenticated* consumption (see
       // ensureNotesAuthenticated), which miden-client decides from this store
@@ -2888,7 +2816,7 @@ export class Multisig {
       }
 
       const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, binding);
-      const reconstructed = await executeForSummaryAtTip(webClient, this._accountId, request);
+      const reconstructed = await executeForSummaryAtTip(this.midenClient, this._accountId, request);
       const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
 
       if (reconstructedCommitment !== txSummaryCommitment) {
@@ -2978,8 +2906,7 @@ export class Multisig {
     if (expirationBlockNum === undefined) {
       return;
     }
-    const webClient = await this.getRawClient();
-    const syncHeight = await webClient.getSyncHeight();
+    const syncHeight = await this.midenClient.getSyncHeight();
     if (syncHeight >= expirationBlockNum) {
       throw new Error(
         `Proposal ${proposalId} approval expired at block ${expirationBlockNum}; the chain is at ` +
@@ -3018,13 +2945,12 @@ export class Multisig {
     metadata: ProposalMetadata,
     requestOptions: MultisigRequestOptions,
   ): Promise<TransactionRequest> {
-    const webClient = await this.getRawClient();
     switch (metadata.proposalType) {
       case 'add_signer':
       case 'remove_signer':
       case 'change_threshold': {
         const { request } = await buildUpdateSignersTransactionRequest(
-          webClient,
+          this.midenClient,
           metadata.targetThreshold,
           metadata.targetSignerCommitments,
           requestOptions,
@@ -3033,7 +2959,7 @@ export class Multisig {
       }
       case 'switch_guardian': {
         const { request } = await buildUpdateGuardianTransactionRequest(
-          webClient,
+          this.midenClient,
           metadata.newGuardianPubkey,
           requestOptions,
         );
@@ -3041,7 +2967,7 @@ export class Multisig {
       }
       case 'update_procedure_threshold': {
         const { request } = await buildUpdateProcedureThresholdTransactionRequest(
-          webClient,
+          this.midenClient,
           metadata.targetProcedure,
           metadata.targetThreshold,
           requestOptions,
@@ -3054,7 +2980,7 @@ export class Multisig {
         if (version === CONSUME_NOTES_METADATA_VERSION_V2) {
           const decoded = decodeEmbeddedConsumeNotes(metadata);
           const { request } = await buildConsumeNotesTransactionRequestFromNotes(
-            webClient,
+            this.midenClient,
             decoded,
             requestOptions,
           );
@@ -3067,7 +2993,7 @@ export class Multisig {
             throw new UnsupportedMetadataVersionError(version);
           }
           const { request } = await buildConsumeNotesTransactionRequest(
-            webClient,
+            this.midenClient,
             metadata.noteIds,
             requestOptions,
           );
@@ -3077,7 +3003,7 @@ export class Multisig {
       }
       case 'p2id': {
         const { request } = await buildP2idTransactionRequest(
-          webClient,
+          this.midenClient,
           this._accountId,
           metadata.recipientId,
           metadata.faucetId,
