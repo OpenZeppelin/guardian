@@ -55,10 +55,11 @@ impl MidenNetworkClient {
     }
 
     /// Builds a client without contacting the network or loading TLS roots, for
-    /// unit tests that exercise the pure serialization/delta paths
-    /// (`get_state_commitment`, `validate_guardian_commitment`, `apply_delta`)
-    /// which never issue an RPC.
-    #[cfg(all(test, any(feature = "e2e", not(feature = "integration"))))]
+    /// tests that exercise the pure serialization/delta paths
+    /// (`get_state_commitment`, `validate_guardian_commitment`, `apply_delta`,
+    /// `account_nonce`) which never issue an RPC: unit tests directly, and the
+    /// integration and e2e suites through `IntegrationMockNetworkClient`.
+    #[cfg(test)]
     pub(crate) fn lazy_for_test(network: NetworkType) -> Self {
         let client = MidenRpcClient::lazy_unconnected(network.rpc_endpoint())
             .expect("lazy client construction is infallible for a valid endpoint");
