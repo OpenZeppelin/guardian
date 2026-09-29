@@ -186,6 +186,43 @@ pub enum StateVerification {
     Mismatch { on_chain: String },
 }
 
+/// What the chain itself says about an account's guardian binding, read
+/// directly from published on-chain storage rather than from a state the
+/// client supplied. Only accounts with public state expose their storage;
+/// for the rest the chain holds a bare commitment and the binding is
+/// `Opaque`. Used by the release sweep (issue #434) to recognize a
+/// guardian switch whose delta never reached this server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnChainGuardianBinding {
+    /// The account publishes its storage. `guardian_commitment` is the
+    /// guardian public key commitment it holds (`None` when the state
+    /// carries no guardian binding). The rest describes the state the
+    /// read observed, so callers can tie the binding to it:
+    /// `on_chain_commitment` and `nonce` are that state's commitment and
+    /// nonce, and `block_num` is the block the node answered at.
+    Visible {
+        on_chain_commitment: String,
+        guardian_commitment: Option<String>,
+        nonce: u64,
+        block_num: u32,
+    },
+    /// The chain does not expose this account's storage (private
+    /// account, or a network without published account state): the
+    /// guardian binding cannot be read from chain.
+    Opaque,
+}
+
+/// Outcome of [`NetworkClient::find_transaction_ending_at`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionSearch {
+    /// Block holding a committed transaction whose final state
+    /// commitment is the searched one, if the searched range has one.
+    pub found_in_block: Option<u32>,
+    /// The first block this search did not cover: a later search for the
+    /// same commitment resumes here instead of re-reading older blocks.
+    pub resume_from_block: u32,
+}
+
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
     /// Get state commitment in hex format from JSON
@@ -268,6 +305,61 @@ pub trait NetworkClient: Send + Sync {
         &self,
         state_json: &serde_json::Value,
     ) -> Result<Option<String>, String> {
+        let _ = state_json;
+        Ok(None)
+    }
+
+    /// Read the account's guardian binding from published on-chain
+    /// storage (see [`OnChainGuardianBinding`]). Returns `Err` only when
+    /// the read could not be made (RPC failure, malformed response);
+    /// an account whose storage is not published yields `Ok(Opaque)`.
+    /// The default is `Opaque` — "cannot tell" — so backends without
+    /// on-chain guardian storage never trigger a release.
+    ///
+    /// Sweep call sites must pass [`RpcReadMode::SingleAttempt`] for the
+    /// same reason as [`Self::verify_commitment`]: the pass retries
+    /// structurally on its own schedule.
+    async fn fetch_on_chain_guardian_binding(
+        &self,
+        account_id: &str,
+        read_mode: RpcReadMode,
+    ) -> Result<OnChainGuardianBinding, String> {
+        let _ = (account_id, read_mode);
+        Ok(OnChainGuardianBinding::Opaque)
+    }
+
+    /// Search the transactions committed against `account_id` from
+    /// `from_block` through the chain tip for one whose **final** state
+    /// commitment is `final_state_commitment`. Transaction headers are
+    /// public for every account, private ones included, so a hit proves
+    /// the account reached that state even after the chain moved past it.
+    /// Only the final commitment is compared: a new account's first
+    /// transaction records an empty initial commitment, not the state the
+    /// account was registered with. `Err` only when the search could not
+    /// be made. The default searches nothing, so backends without
+    /// transaction history never trigger a release.
+    ///
+    /// Sweep call sites must pass [`RpcReadMode::SingleAttempt`] for the
+    /// same reason as [`Self::verify_commitment`].
+    async fn find_transaction_ending_at(
+        &self,
+        account_id: &str,
+        final_state_commitment: &str,
+        from_block: u32,
+        read_mode: RpcReadMode,
+    ) -> Result<TransactionSearch, String> {
+        let _ = (account_id, final_state_commitment, read_mode);
+        Ok(TransactionSearch {
+            found_in_block: None,
+            resume_from_block: from_block,
+        })
+    }
+
+    /// The nonce of the account state in `state_json`, or `Ok(None)` when
+    /// the network has no such notion. The release sweep compares it with
+    /// the nonce of an on-chain read: a read older than the stored state
+    /// is stale and never evidence of a switch. The default is `Ok(None)`.
+    fn account_nonce(&self, state_json: &serde_json::Value) -> Result<Option<u64>, String> {
         let _ = state_json;
         Ok(None)
     }

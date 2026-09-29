@@ -1,7 +1,7 @@
 use crate::error::{GuardianError, Result};
-use crate::metadata::AccountMetadata;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
+use crate::metadata::{AccountMetadata, ClearTransition};
 use crate::services::{consume_auth_timestamp, validate_request_timestamp};
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -197,7 +197,6 @@ pub async fn configure_account(
     // is carried forward from `existing` so a new storage backend
     // cannot accidentally clear it (the field is only mutated by
     // `set_pause`/`clear_pause`).
-    let was_released = existing.as_ref().and_then(|m| m.released_at).is_some();
     let metadata_entry = AccountMetadata {
         account_id: params.account_id.clone(),
         auth: params.auth,
@@ -211,7 +210,7 @@ pub async fn configure_account(
         paused_at: existing.as_ref().and_then(|m| m.paused_at),
         paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
         // `set` never touches released state; the explicit
-        // `clear_released` below performs the reactivation.
+        // `clear_released_if_state` below performs the reactivation.
         released_at: existing.as_ref().and_then(|m| m.released_at),
     };
 
@@ -242,14 +241,24 @@ pub async fn configure_account(
     // the submitted state binds the account to this server again — so
     // re-onboarding is exactly the reactivation event. Pause, an
     // operator decision, stays in force across reconfiguration.
-    if was_released {
-        tracing::info!(
-            account_id = %params.account_id,
-            "Reactivating released account via /configure re-onboarding"
-        );
-        state
+    //
+    // The clear runs for every existing account, after `submit_state`,
+    // not only when `existing` showed a release: a release written
+    // between that read and the state write (the release sweep proving
+    // a switch against the previous state) would otherwise survive the
+    // re-onboarding. Both the release and this clear are conditional on
+    // the stored state, atomically, so whichever state is stored last
+    // decides: a release proved against an older state is refused or
+    // undone here, and a switch delta that replaced this state after
+    // `submit_state` keeps its release.
+    if existing.is_some() {
+        let cleared = state
             .metadata
-            .clear_released(&params.account_id)
+            .clear_released_if_state(
+                &params.account_id,
+                &account_state.commitment,
+                state.storage.as_ref(),
+            )
             .await
             .map_err(|e| {
                 tracing::error!(
@@ -259,6 +268,18 @@ pub async fn configure_account(
                 );
                 GuardianError::StorageError(format!("Failed to clear released state: {e}"))
             })?;
+        match cleared {
+            ClearTransition::Cleared => tracing::info!(
+                account_id = %params.account_id,
+                "Reactivated released account via /configure re-onboarding"
+            ),
+            ClearTransition::NotReleased => {}
+            ClearTransition::StateMoved => tracing::warn!(
+                account_id = %params.account_id,
+                "A delta replaced the re-onboarded state before its release was cleared; \
+                 the release of that later state stands"
+            ),
+        }
     }
 
     // Count only first-time creations — /configure also serves
@@ -326,6 +347,7 @@ mod tests {
             network_client: Arc::new(network_client),
             ack,
             canonicalization: None, // Optimistic mode for tests
+            release_sweep: None,
             clock: Arc::new(crate::clock::SystemClock),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -753,13 +775,70 @@ mod tests {
         assert_eq!(set_calls.len(), 1);
         assert_eq!(set_calls[0].paused_at, Some(paused_at));
         assert_eq!(set_calls[0].paused_reason.as_deref(), Some("compliance"));
-        assert!(
-            metadata_store
-                .clear_released_calls
-                .lock()
-                .unwrap()
-                .is_empty(),
-            "no release to clear when the account was not released"
+        assert_eq!(
+            metadata_store.clear_released_calls.lock().unwrap().clone(),
+            vec![(account_id_hex.to_string(), "0x5678".to_string())],
+            "reconfiguration always clears (idempotently) after its state write, \
+             conditional on the state it wrote"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_clears_a_release_written_after_its_first_read() {
+        // The release sweep released the account between this request's
+        // first metadata read (which saw it active) and its state write.
+        // The unconditional clear after the write must still undo it.
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let existing_metadata = AccountMetadata {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        };
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_commitment(Ok("0x5678".to_string()));
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(existing_metadata)))
+            .with_set(Ok(()))
+            // The store reports a release it just cleared.
+            .with_clear_released(Ok(ClearTransition::Cleared));
+
+        let state =
+            create_test_app_state(network_client, storage_backend, metadata_store.clone()).await;
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state,
+            credential,
+        };
+
+        configure_account(&state, params)
+            .await
+            .expect("Reconfiguration should succeed");
+        assert_eq!(
+            metadata_store.clear_released_calls.lock().unwrap().clone(),
+            vec![(account_id_hex.to_string(), "0x5678".to_string())]
         );
     }
 
@@ -819,7 +898,7 @@ mod tests {
         // reactivation event: released state must be explicitly cleared.
         assert_eq!(
             metadata_store.clear_released_calls.lock().unwrap().clone(),
-            vec![account_id_hex.to_string()],
+            vec![(account_id_hex.to_string(), "0x5678".to_string())],
             "re-onboarding must clear the released state"
         );
     }

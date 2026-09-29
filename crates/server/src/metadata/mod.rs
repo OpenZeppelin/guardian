@@ -212,6 +212,23 @@ pub trait MetadataStore: Send + Sync {
     /// List all account IDs that have pending candidates
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String>;
 
+    /// One page of the account ids the release sweep (issue #434) can
+    /// act on — Miden accounts that are not released and have no
+    /// candidate in flight — ordered ascending and starting strictly
+    /// after `after` (`None` = from the beginning), at most `limit` ids.
+    /// The primary-key order makes the walk a stable rotation: unlike
+    /// `updated_at`, an account's ID never moves, so a cursor never skips
+    /// or repeats an account while the fleet is written to. Filtering at
+    /// the store keeps every page slot useful (EVM rows and busy accounts
+    /// never take one). Only ids leave the store: the sweep reads each
+    /// row fresh when it visits it, so one row that fails to parse fails
+    /// that visit instead of the whole page.
+    async fn list_release_sweep_ids(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<String>, String>;
+
     /// Atomically record the last authentication timestamp for replay protection.
     ///
     /// Compare-and-swap: records `new_timestamp` only when it is strictly greater
@@ -267,19 +284,76 @@ pub trait MetadataStore: Send + Sync {
     ) -> Result<crate::services::account_status::PauseTransition, String>;
 
     /// Atomically transition an account to the released state after a
-    /// guardian switch away from this server was detected.
-    /// First-writer-wins: when the account is already released the
-    /// persisted `released_at` is left unchanged. Returns `Ok(true)`
-    /// when this call performed the transition (callers audit on this),
-    /// `Ok(false)` when the account was already released, `Err` if the
-    /// account does not exist. Like pause, released state is owned by
-    /// this method + [`Self::clear_released`]; a generic [`Self::set`]
-    /// must never change it.
-    async fn set_released(&self, account_id: &str, now: DateTime<Utc>) -> Result<bool, String>;
+    /// guardian switch away from this server was detected, **only while
+    /// the stored state is still `expected_state_commitment`**: the state
+    /// the switch evidence was proved against. The check and the write
+    /// are one critical section that serializes with
+    /// [`Self::clear_released_if_state`], so a `/configure` re-onboarding
+    /// either stores its new state first (the check fails and nothing is
+    /// written) or clears this release right after writing it.
+    /// First-writer-wins: an already released account keeps its
+    /// persisted `released_at`. `Err` if the account does not exist.
+    ///
+    /// `storage` is read only by backends whose account state lives
+    /// outside this store (the filesystem backend, which reads it while
+    /// holding its metadata lock); the Postgres backend reads the
+    /// `states` row inside its own transaction.
+    ///
+    /// Like pause, released state is owned by this method +
+    /// [`Self::clear_released_if_state`]; a generic [`Self::set`] must
+    /// never change it.
+    async fn set_released_if_state(
+        &self,
+        account_id: &str,
+        now: DateTime<Utc>,
+        expected_state_commitment: &str,
+        storage: &dyn crate::storage::StorageBackend,
+    ) -> Result<ReleaseTransition, String>;
 
-    /// Clear the released state for an account. Called only from the
-    /// `/configure` re-onboarding path, which re-validates that this
-    /// server is the account's guardian before reactivating it.
-    /// Idempotent; `Err` if the account does not exist.
-    async fn clear_released(&self, account_id: &str) -> Result<(), String>;
+    /// Clear the released state, **only while the stored state is still
+    /// `expected_state_commitment`**: the state the `/configure`
+    /// re-onboarding just wrote. The check and the write are one critical
+    /// section that serializes with [`Self::set_released_if_state`], so
+    /// whichever state is stored last decides: a release proved against
+    /// an older state is refused or undone, and a switch delta that
+    /// replaced the re-onboarded state keeps its release. `/configure`
+    /// calls it for every existing account, not only one it saw released,
+    /// because a release can land between its first read and its state
+    /// write. `Err` if the account does not exist.
+    async fn clear_released_if_state(
+        &self,
+        account_id: &str,
+        expected_state_commitment: &str,
+        storage: &dyn crate::storage::StorageBackend,
+    ) -> Result<ClearTransition, String>;
+
+    /// Number of accounts [`Self::list_release_sweep_ids`] would walk
+    /// (same filter), for pacing one release-sweep rotation.
+    async fn count_release_sweep_accounts(&self) -> Result<usize, String>;
+}
+
+/// Outcome of [`MetadataStore::clear_released_if_state`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearTransition {
+    /// This call reactivated a released account.
+    Cleared,
+    /// The account was not released; nothing was written.
+    NotReleased,
+    /// The account is released, but the stored state is no longer the
+    /// one the caller wrote (a delta replaced it meanwhile): the release
+    /// belongs to that later state and is kept.
+    StateMoved,
+}
+
+/// Outcome of [`MetadataStore::set_released_if_state`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseTransition {
+    /// This call released the account (callers audit on this).
+    Released,
+    /// The account was already released; nothing was written.
+    AlreadyReleased,
+    /// The stored state is no longer the one the switch evidence was
+    /// proved against (a `/configure` replaced it meanwhile): nothing was
+    /// written, and the evidence no longer applies.
+    StateMoved,
 }

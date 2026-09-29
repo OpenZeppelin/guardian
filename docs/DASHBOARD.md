@@ -143,7 +143,21 @@ TTL expires. The triage fields:
 `reconcile_page_size`) so operators can tell why retained rows are or
 are not being reconsidered — note that individual accounts back off as
 their recoverable rows age, so a retained row being probed less often
-than the configured interval is expected.
+than the configured interval is expected. `backend.release_sweep`
+exposes the release sweep settings (`rotation_seconds`,
+`max_rate_per_second`, `recheck_seconds`, `confirmations`, issue
+#434; `null` when the sweep is disabled). A `released_at` set by the
+sweep rather than by a canonicalized switch delta is distinguishable on
+the audit trail: the `accounts.release` row carries
+`detected_by: proposal_match` (with the `proposal_id` the chain proved
+executed, the `switch_commitment` it reached and, when the switch was
+found in the account's transaction history rather than at the chain
+head, its `switch_block_num`), `detected_by: recoverable_delta` (the
+same, with the `delta_nonce` of a switch delta canonicalization
+retained or the client abandoned) or `detected_by: chain_sweep` (with
+the on-chain / stored commitment pair) instead of `detected_by: delta`
+and the delta nonce. The sweep writes `detected_by: delta` itself only
+for a canonicalized switch delta whose own release write failed.
 
 ## Aggregate stats
 

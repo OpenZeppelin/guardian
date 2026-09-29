@@ -1047,6 +1047,21 @@ impl StorageBackend for PostgresService {
         Ok(row.into())
     }
 
+    async fn pull_state_commitment(&self, account_id: &str) -> Result<String, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        states::table
+            .filter(states::account_id.eq(account_id))
+            .select(states::commitment)
+            .first::<String>(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to pull state commitment: {e}"))
+    }
+
     async fn pull_states_batch(
         &self,
         account_ids: &[&str],
@@ -2838,6 +2853,65 @@ mod tests {
             },
             metadata: None,
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_canonical_delta_keeps_the_ack_the_release_sweep_verifies() {
+        // The release sweep proves "this server acknowledged the switch"
+        // from the stored ack signature (this backend keeps no
+        // `ack_pubkey`), so the newest canonical delta must read back with
+        // a signature that still verifies against the key that made it.
+        use diesel::sql_types::Text;
+        use guardian_shared::SignatureScheme;
+
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xack{}", chrono::Utc::now().timestamp_micros());
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        let keystore =
+            std::env::temp_dir().join(format!("guardian_pg_ack_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore).expect("keystore dir");
+        let ack = crate::ack::AckRegistry::new(keystore.clone())
+            .await
+            .expect("ack registry");
+        for nonce in 1u64..=2 {
+            let mut delta = create_test_delta(&account_id, nonce);
+            delta.delta_payload = crate::testing::helpers::create_test_delta_payload(
+                "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b",
+            );
+            delta.new_commitment = Some(format!("0xstate{nonce}"));
+            let delta = ack
+                .ack_delta(delta, &SignatureScheme::Falcon)
+                .await
+                .expect("ack signs");
+            service.submit_delta(&delta).await.expect("canonical");
+        }
+
+        let latest = service
+            .list_canonical_deltas_paged(&account_id, 1, None)
+            .await
+            .expect("latest canonical delta");
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].nonce, 2);
+        assert_eq!(latest[0].new_commitment.as_deref(), Some("0xstate2"));
+        assert!(
+            latest[0].ack_pubkey.is_empty(),
+            "this backend keeps no ack_pubkey"
+        );
+        assert!(ack.acked_with_current_key(&latest[0], &SignatureScheme::Falcon));
+        std::fs::remove_dir_all(keystore).ok();
     }
 
     fn create_test_state(account_id: &str) -> StateObject {

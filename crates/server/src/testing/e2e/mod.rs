@@ -4,6 +4,7 @@
 mod abandon_candidate;
 mod configure_account;
 mod switch_guardian_canonicalization;
+mod switch_guardian_release_sweep;
 
 use miden_protocol::crypto::SequentialCommit;
 use miden_standards::account::auth::MultisigAuthArgs;
