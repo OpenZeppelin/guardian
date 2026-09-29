@@ -54,6 +54,25 @@ describe('raw-client', () => {
     expect(mockCreateClient).not.toHaveBeenCalled();
   });
 
+  it('opens the shadow client on the parent store', async () => {
+    const rawClient = { kind: 'raw' };
+    mockCreateClient.mockResolvedValue(rawClient);
+    const client = {
+      accounts: {},
+      sync: vi.fn(),
+      defaultProver: null,
+      storeIdentifier: vi.fn(async () => 'browser-db'),
+    };
+
+    await expect(getRawMidenClient(client as any, 'http://localhost:57291')).resolves.toBe(
+      rawClient,
+    );
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
+    const args = mockCreateClient.mock.calls[0];
+    expect(args[0]).toBe('http://localhost:57291');
+    expect(args[3]).toBe('browser-db');
+  });
+
   it('returns an injected raw web client without needing an endpoint', async () => {
     const rawClient = {
       executeTransaction: vi.fn(),

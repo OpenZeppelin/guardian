@@ -1,16 +1,12 @@
-//! Typed failures for auth-arg recovery.
-//!
-//! The surface lands here deliberately ahead of the code that raises it: nothing in this
-//! change constructs these, and the proposal paths that do arrive in the PR that commits
-//! the anchored fee faucet. Landing the codes first keeps them out of that PR's diff and
-//! lets a caller pin `code` before the raiser exists — `public-api.test.ts` covers the
-//! barrel so a dropped re-export is caught either way.
+//! Typed failures a caller branches on rather than reports: each means the proposal or
+//! request itself is unusable, as against a transport or WASM failure a retry might clear.
+//! `public-api.test.ts` covers the barrel so a dropped re-export is caught.
 
 /** Stable error identifiers for auth-arg recovery failures. */
 export type AuthArgErrorCode =
-  | 'proposal_auth_arg_unresolvable'
   | 'proposal_salt_malformed'
-  | 'fee_faucet_anchor_mismatch';
+  | 'multisig_auth_args_missing'
+  | 'bound_block_not_declared';
 
 /** How much of an untrusted value an error message will quote. */
 const MAX_QUOTED_CHARS = 80;
@@ -56,11 +52,10 @@ function coerceForMessage(value: unknown): string {
  * A proposal's recorded salt is not a readable 32-byte word, so no rebuild can
  * use it.
  *
- * Coded for the same reason as {@link ProposalAuthArgUnresolvableError}, and
- * recoverable in the same one place: a `switch_guardian`'s salt is served by the
- * GUARDIAN being switched away from, which can make it unreadable as easily as
- * it can make it wrong. Treating only the latter as recoverable would leave that
- * GUARDIAN able to strand a fully signed switch.
+ * Coded because `switch_guardian` recovery acts on it rather than reporting it:
+ * the salt is served by the GUARDIAN being switched away from, which can make it
+ * unreadable, and treating that as fatal would leave that GUARDIAN able to strand
+ * a fully signed switch.
  */
 export class ProposalSaltMalformedError extends Error {
   readonly code: AuthArgErrorCode = 'proposal_salt_malformed';
@@ -90,49 +85,48 @@ export class ProposalSaltMalformedError extends Error {
 }
 
 /**
- * A proposal's signed auth arg is not the fee-conversion commitment its recorded
- * salt and anchored fee faucet derive, so no reconstruction from that salt
- * succeeds. Raised before the rebuild, so the proposal fails on the value that is
- * actually wrong rather than on an `ERR_FEE_CONVERSION_INFO_MISSING` abort at
- * proving.
- *
- * `switch_guardian` is the exception, and deliberately so: it rebuilds from the
- * summary's own auth arg, which reproduces the signed word but not the fee
- * preimage behind it, so it executes only on a zero-fee chain.
- *
- * Coded because one caller acts on it rather than reporting it:
- * `switch_guardian` recovery falls back to the summary's own auth arg when it
- * sees this or {@link ProposalSaltMalformedError}, and must not extend that
- * treatment to an unreadable anchor or a WASM failure.
+ * A request built for `accountId` came back without the multisig auth args.
+ * `feeAwareTransactionRequestBuilder` only attaches them to an account it can
+ * classify as a multisig, so this means the account is not in the client's
+ * store or its code is not the guarded-multisig component this client knows.
+ * Raised at build time: the alternative is an abort inside the auth procedure
+ * while it pipes a preimage the advice map does not hold.
  */
-export class ProposalAuthArgUnresolvableError extends Error {
-  readonly code: AuthArgErrorCode = 'proposal_auth_arg_unresolvable';
-  readonly proposalId: string;
-  readonly signedAuthArgHex: string;
-  readonly saltHex: string;
-  readonly feeFaucetIdHex: string;
+export class MultisigAuthArgsMissingError extends Error {
+  readonly code: AuthArgErrorCode = 'multisig_auth_args_missing';
+  readonly accountId: string;
 
-  constructor(details: {
-    proposalId: string;
-    signedAuthArgHex: string;
-    saltHex: string;
-    feeFaucetIdHex: string;
-  }) {
+  constructor(accountId: string) {
     super(
-      `Proposal ${quoteUntrusted(details.proposalId)} auth arg ` +
-        `${quoteUntrusted(details.signedAuthArgHex)} is not the fee-conversion commitment to ` +
-        `its metadata salt ${quoteUntrusted(details.saltHex)} under fee faucet ` +
-        `${quoteUntrusted(details.feeFaucetIdHex)}, so the signed transaction summary cannot ` +
-        `be reproduced ` +
-        'from that salt, and the proposal cannot be executed. Recreate the proposal and ' +
-        'collect signatures again, and have the original dropped server-side — while ' +
-        'GUARDIAN keeps serving it, syncing this account keeps failing on it',
+      `Account ${quoteUntrusted(accountId)} received no multisig auth args: the client does ` +
+        'not hold it as a guarded-multisig account, so a request built for it cannot be ' +
+        'authenticated. Import or create the account in this client first',
     );
-    this.name = 'ProposalAuthArgUnresolvableError';
-    this.proposalId = details.proposalId;
-    this.signedAuthArgHex = details.signedAuthArgHex;
-    this.saltHex = details.saltHex;
-    this.feeFaucetIdHex = details.feeFaucetIdHex;
+    this.name = 'MultisigAuthArgsMissingError';
+    this.accountId = accountId;
   }
 }
 
+/**
+ * A multisig request does not list the block its auth args bind among the
+ * blocks it declares through `withBlockNumbers`. A proposal executes at the
+ * chain tip, where the auth procedure can read the bound block only from the
+ * transaction's partial blockchain, so such a request fails in the VM with
+ * `failed to lookup value in Merkle store` once the chain moves past that
+ * block. `feeAwareTransactionRequestBuilder` declares it; a request whose auth
+ * args are attached by hand has to call `withBlockNumbers([boundBlockNum])`.
+ */
+export class BoundBlockNotDeclaredError extends Error {
+  readonly code: AuthArgErrorCode = 'bound_block_not_declared';
+  readonly boundBlockNum: number;
+
+  constructor(boundBlockNum: number) {
+    super(
+      `The transaction request binds block ${boundBlockNum} in its multisig auth args but does ` +
+        'not declare it, so it cannot execute at a later chain tip. Build it with ' +
+        `feeAwareTransactionRequestBuilder or add withBlockNumbers([${boundBlockNum}])`,
+    );
+    this.name = 'BoundBlockNotDeclaredError';
+    this.boundBlockNum = boundBlockNum;
+  }
+}

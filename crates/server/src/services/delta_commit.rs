@@ -272,6 +272,7 @@ mod tests {
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
             storage: storage_backend,
+            signer_commitment: String::new(),
         };
 
         let current_state = create_test_state_object();
@@ -315,6 +316,7 @@ mod tests {
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
             storage: state.storage.clone(),
+            signer_commitment: String::new(),
         };
         let current_state = create_test_state_object();
         let ctx = CommitContext {
@@ -361,6 +363,7 @@ mod tests {
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
             storage: storage_backend,
+            signer_commitment: String::new(),
         };
 
         let current_state = create_test_state_object();
@@ -406,6 +409,7 @@ mod tests {
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
             storage: storage_backend,
+            signer_commitment: String::new(),
         };
 
         let current_state = create_test_state_object();
@@ -454,6 +458,7 @@ mod tests {
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
             storage: storage_backend,
+            signer_commitment: String::new(),
         };
 
         let current_state = create_test_state_object();
@@ -495,6 +500,7 @@ mod tests {
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
             storage: storage_backend,
+            signer_commitment: String::new(),
         };
 
         let current_state = create_test_state_object();
@@ -540,6 +546,7 @@ mod tests {
         let resolved = ResolvedAccount {
             metadata: create_test_metadata(),
             storage: storage_backend,
+            signer_commitment: String::new(),
         };
 
         let current_state = create_test_state_object();

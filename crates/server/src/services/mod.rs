@@ -103,6 +103,8 @@ pub use status::{StatusResponse, build_status};
 pub struct ResolvedAccount {
     pub metadata: AccountMetadata,
     pub storage: Arc<dyn StorageBackend>,
+    /// Identity verified by the request authenticator.
+    pub signer_commitment: String,
 }
 
 impl std::fmt::Debug for ResolvedAccount {
@@ -162,7 +164,11 @@ pub async fn resolve_account(
 
     let storage = state.storage.clone();
 
-    Ok(ResolvedAccount { metadata, storage })
+    Ok(ResolvedAccount {
+        metadata,
+        storage,
+        signer_commitment,
+    })
 }
 
 pub(crate) fn validate_request_timestamp(
@@ -460,6 +466,7 @@ mod tests {
             network_client: Arc::new(network),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(clock),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

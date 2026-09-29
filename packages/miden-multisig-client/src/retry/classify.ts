@@ -15,7 +15,7 @@ type ErrorRecord = {
   message?: unknown;
 };
 
-type StructuredEvidence = 'transient' | 'permanent' | 'indeterminate';
+export type StructuredEvidence = 'transient' | 'permanent' | 'indeterminate';
 
 const TRANSIENT_GRPC = new Set([
   'cancelled',
@@ -96,7 +96,7 @@ function httpEvidence(value: unknown): StructuredEvidence | undefined {
   return TRANSIENT_HTTP.has(value) ? 'transient' : 'permanent';
 }
 
-function httpMessageEvidence(message: string): StructuredEvidence | undefined {
+export function httpMessageEvidence(message: string): StructuredEvidence | undefined {
   let hasTransient = false;
   for (const match of message.matchAll(
     /(?:\bhttp(?:\s+status)?|\bstatus)(?:\s+code)?\s*:?\s*(\d{3})\b/g,
@@ -110,7 +110,7 @@ function httpMessageEvidence(message: string): StructuredEvidence | undefined {
   return hasTransient ? 'transient' : undefined;
 }
 
-function grpcMessageEvidence(message: string): StructuredEvidence | undefined {
+export function grpcMessageEvidence(message: string): StructuredEvidence | undefined {
   const normalized = message.replaceAll(/[^a-z0-9]/g, '');
   let hasTransient = false;
   for (const { token, evidence } of GRPC_MESSAGE_TOKENS) {

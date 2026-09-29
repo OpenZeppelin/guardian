@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openzeppelin.com/guardian/qualification/run-result.schema.json",
+  "title": "Qualification run result",
+  "type": "object",
+  "required": [
+    "run_id",
+    "started_at",
+    "trigger",
+    "network",
+    "artifact_set",
+    "scenario_results",
+    "funding_summary",
+    "conclusion",
+    "qualification_claim",
+    "not_covered"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "started_at": { "type": "string", "format": "date-time" },
+    "trigger": {
+      "enum": ["schedule", "dispatch", "pull_request", "publication", "pre_release"]
+    },
+    "requested_by": { "type": "string" },
+    "network": {
+      "type": "object",
+      "required": ["name", "historical_window"],
+      "properties": {
+        "name": { "enum": ["devnet", "testnet"] },
+        "observed_protocol_version": { "type": ["string", "null"] },
+        "historical_window": { "type": "string" },
+        "fee_asset": { "type": ["string", "null"] }
+      }
+    },
+    "artifact_set": {
+      "type": "object",
+      "required": ["image_digest", "image_revision", "pairing"],
+      "properties": {
+        "image_digest": { "type": "string" },
+        "image_revision": { "type": "string" },
+        "pairing": { "enum": ["branch", "release", "published"] },
+        "sdk_versions": { "type": "object", "additionalProperties": { "type": "string" } },
+        "sdk_integrity": { "type": "object", "additionalProperties": { "type": "string" } },
+        "miden_versions": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "scenario_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scenario_id", "sdk", "runtime", "outcome", "embedded_retry", "duration"],
+        "properties": {
+          "scenario_id": { "type": "string" },
+          "sdk": { "enum": ["rust", "typescript"] },
+          "runtime": { "enum": ["native", "server-side", "browser"] },
+          "outcome": { "enum": ["passed", "failed", "skipped", "environment_blocked"] },
+          "reason": { "type": "string" },
+          "classification": { "enum": ["product", "environment", "setup"] },
+          "embedded_retry": { "type": "boolean" },
+          "duration": { "type": "string" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "outcome": { "const": "failed" } }, "required": ["outcome"] },
+            "then": { "required": ["reason", "classification"] }
+          },
+          {
+            "if": { "properties": { "outcome": { "const": "skipped" } }, "required": ["outcome"] },
+            "then": { "required": ["reason"] }
+          },
+          {
+            "if": {
+              "properties": { "outcome": { "const": "environment_blocked" } },
+              "required": ["outcome"]
+            },
+            "then": { "required": ["reason"] }
+          }
+        ]
+      }
+    },
+    "funding_summary": {
+      "type": "object",
+      "required": ["required"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "balance_at_start": { "type": "string" },
+        "spent": { "type": "string" },
+        "projected_remaining_runs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "conclusion": { "enum": ["success", "failure"] },
+    "qualification_claim": { "enum": ["full", "partial", "none"] },
+    "not_covered": { "type": "array", "items": { "type": "string" } },
+    "consumer_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["artifact", "summary", "workaround"],
+        "properties": {
+          "artifact": { "type": "string" },
+          "summary": { "type": "string" },
+          "workaround": { "type": "string" }
+        }
+      }
+    }
+  }
+}

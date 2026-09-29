@@ -9,7 +9,9 @@ use miden_client::store::{InputNoteRecord, NoteFilter as StoreNoteFilter};
 use miden_client::transaction::{NoteArgs, TransactionRequest, TransactionRequestBuilder};
 use miden_protocol::note::{Note, NoteId, NoteInclusionProof};
 use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::MultisigAuthArgs;
 
+use super::TransactionRequestBuilderExt;
 use crate::MidenSdkClient;
 use crate::error::{MultisigError, Result};
 
@@ -49,7 +51,7 @@ pub(crate) async fn fetch_notes_from_store(
 /// Spec FR-005 / FR-013 / FR-014.
 pub fn build_consume_notes_transaction_request_from_notes<I>(
     notes: Vec<Note>,
-    salt: Word,
+    auth_args: &MultisigAuthArgs,
     signature_advice: I,
 ) -> Result<TransactionRequest>
 where
@@ -64,15 +66,13 @@ where
     let note_and_args: Vec<(Note, Option<NoteArgs>)> =
         notes.into_iter().map(|n| (n, None)).collect();
 
-    let mut builder = TransactionRequestBuilder::new()
-        .input_notes(note_and_args)
-        .fee_conversion_salt(salt);
+    let mut builder = TransactionRequestBuilder::new().input_notes(note_and_args);
 
     for (key, values) in signature_advice {
         builder = builder.extend_advice_map([(key, values)]);
     }
 
-    builder.build().map_err(|e| {
+    builder.multisig_auth_args(auth_args).build().map_err(|e| {
         MultisigError::TransactionExecution(format!("failed to build transaction request: {}", e))
     })
 }
@@ -89,7 +89,7 @@ where
 pub async fn build_consume_notes_transaction_request<I>(
     client: &MidenSdkClient,
     note_ids: Vec<NoteId>,
-    salt: Word,
+    auth_args: &MultisigAuthArgs,
     signature_advice: I,
 ) -> Result<TransactionRequest>
 where
@@ -102,7 +102,7 @@ where
     }
 
     let notes = fetch_notes_from_store(client, &note_ids).await?;
-    build_consume_notes_transaction_request_from_notes(notes, salt, signature_advice)
+    build_consume_notes_transaction_request_from_notes(notes, auth_args, signature_advice)
 }
 
 /// Makes every note in `notes` an *authenticated* input note in the client's

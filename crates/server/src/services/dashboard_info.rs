@@ -96,6 +96,27 @@ pub struct DashboardCanonicalizationConfig {
     pub max_pending_candidates_per_account: u64,
 }
 
+/// Chain-driven release sweep settings (issue #434): the background
+/// task that releases accounts whose on-chain guardian key is no longer
+/// this server's even when the switch delta never reached the push
+/// path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct DashboardReleaseSweepConfig {
+    /// Target time for one full walk of the fleet; every unreleased
+    /// Miden account is visited once per rotation.
+    pub rotation_seconds: u64,
+    /// Upper bound on account visits per second, rotation and
+    /// confirmation re-checks together.
+    pub max_rate_per_second: u32,
+    /// Delay between confirmation re-checks of an account whose published
+    /// storage showed a foreign guardian key.
+    pub recheck_seconds: u64,
+    /// Observations of a foreign guardian key in published storage, each
+    /// at a strictly later block, required before releasing on that
+    /// evidence.
+    pub confirmations: u32,
+}
+
 /// Backend configuration snapshot. Stable for the lifetime of the
 /// process; lets operators distinguish a filesystem dev box from a
 /// postgres-backed prod replica without inspecting environment.
@@ -103,6 +124,8 @@ pub struct DashboardCanonicalizationConfig {
 pub struct DashboardBackendInfo {
     /// `"filesystem"` or `"postgres"` from the cargo feature flag.
     pub storage: &'static str,
+    /// Release sweep settings; `None` when the sweep is disabled.
+    pub release_sweep: Option<DashboardReleaseSweepConfig>,
     /// Acknowledgement signature schemes wired into the server's
     /// `AckRegistry`. Stable order (alphabetic) so clients can rely on
     /// the listing.
@@ -195,6 +218,14 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
                 reconcile_interval_seconds: c.reconcile_interval_seconds,
                 reconcile_page_size: c.reconcile_page_size,
                 max_pending_candidates_per_account: c.max_pending_candidates_per_account as u64,
+            }
+        }),
+        release_sweep: state.release_sweep.as_ref().filter(|c| c.enabled).map(|c| {
+            DashboardReleaseSweepConfig {
+                rotation_seconds: c.rotation_seconds,
+                max_rate_per_second: c.max_rate_per_second,
+                recheck_seconds: c.recheck_seconds,
+                confirmations: c.confirmations,
             }
         }),
     };
@@ -290,6 +321,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -360,6 +392,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

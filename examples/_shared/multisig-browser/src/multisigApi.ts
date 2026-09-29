@@ -8,6 +8,7 @@ import {
 import {
   AccountInspector,
   buildP2idTransactionRequest,
+  chainAnchorBlockNum,
   EcdsaSigner,
   FalconSigner,
   MidenWalletSigner,
@@ -380,22 +381,47 @@ export interface CustomProposalRecipe {
   faucetId: string;
   amount: string;
   saltHex: string;
+  /** The block the signed summary binds: the proposal's anchor block. */
+  boundBlockNum: number;
 }
 
-function buildRequestFromRecipe(
+/**
+ * The integration's own recipe rebuilds the exact request at execute time. The
+ * client attaches the multisig auth args, so the recipe pins everything they
+ * bind: the salt and the block, both of which the cosigners signed over.
+ */
+async function buildRequestFromRecipe(
+  midenClient: MidenClient,
+  midenRpcEndpoint: string,
   recipe: CustomProposalRecipe,
   signatureAdviceMap?: AdviceMap,
-): TransactionRequest {
-  return buildP2idTransactionRequest(
+): Promise<TransactionRequest> {
+  const { request } = await buildP2idTransactionRequest(
+    midenClient,
     recipe.senderId,
     recipe.recipientId,
     recipe.faucetId,
     BigInt(recipe.amount),
-    { salt: Word.fromHex(recipe.saltHex), signatureAdviceMap },
-  ).request;
+    {
+      salt: Word.fromHex(recipe.saltHex),
+      boundBlockNum: recipe.boundBlockNum,
+      signatureAdviceMap,
+      midenRpcEndpoint,
+    },
+  );
+  return request;
+}
+
+function proposalBoundBlockNum(proposal: Proposal): number {
+  if (!proposal.metadata.chainAnchor) {
+    throw new Error(`Proposal ${proposal.id} carries no chain anchor`);
+  }
+  return chainAnchorBlockNum(proposal.metadata.chainAnchor);
 }
 
 export async function createCustomP2idProposal(
+  midenClient: MidenClient,
+  midenRpcEndpoint: string,
   multisig: Multisig,
   recipientId: string,
   faucetId: string,
@@ -403,11 +429,13 @@ export async function createCustomP2idProposal(
   label: string,
 ): Promise<{ proposal: Proposal; proposals: Proposal[]; recipe: CustomProposalRecipe }> {
   const senderId = multisig.accountId;
-  const { request, salt } = buildP2idTransactionRequest(
+  const { request, salt } = await buildP2idTransactionRequest(
+    midenClient,
     senderId,
     recipientId,
     faucetId,
     amount,
+    { midenRpcEndpoint },
   );
 
   const created = await createProposalResult(multisig, () =>
@@ -421,19 +449,22 @@ export async function createCustomP2idProposal(
     faucetId,
     amount: amount.toString(),
     saltHex: salt.toHex(),
+    boundBlockNum: proposalBoundBlockNum(created.proposal),
   };
 
   return { ...created, recipe };
 }
 
 export async function prepareAndSubmitCustomProposal(
+  midenClient: MidenClient,
+  midenRpcEndpoint: string,
   multisig: Multisig,
   recipe: CustomProposalRecipe,
 ): Promise<void> {
-  const bindingRequestBytes = buildRequestFromRecipe(recipe).serialize();
-  const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequestBytes);
+  const bindingRequest = await buildRequestFromRecipe(midenClient, midenRpcEndpoint, recipe);
+  const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequest.serialize());
 
-  const finalRequest = buildRequestFromRecipe(recipe, advice);
+  const finalRequest = await buildRequestFromRecipe(midenClient, midenRpcEndpoint, recipe, advice);
 
   try {
     await multisig.submitTransaction(recipe.proposalId, finalRequest);

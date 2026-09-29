@@ -141,9 +141,20 @@ impl MultisigClient {
         Ok(self.account.as_ref().unwrap())
     }
 
-    /// Pulls an account from GUARDIAN and loads it locally.
+    /// Pulls an account from GUARDIAN and loads it locally, replacing whatever
+    /// the store held.
     ///
-    /// Use this when joining an existing multisig as a cosigner.
+    /// Two uses: joining an existing multisig as a cosigner, and resetting a
+    /// store known to be bad, which the demo does after a store error and a
+    /// client reinitialization.
+    ///
+    /// The overwrite is unconditional on purpose, so do not give this the nonce
+    /// reconciliation `sync_from_guardian` applies. That path protects a local
+    /// account legitimately ahead of GUARDIAN between pushing a delta and its
+    /// canonicalization. Here the caller has already decided local is worthless,
+    /// and skipping the overwrite because a corrupt record carries a higher
+    /// nonce would preserve the state this call exists to discard. Use
+    /// `sync_from_guardian` to refresh an account you intend to keep.
     pub async fn pull_account(&mut self, account_id: AccountId) -> Result<&MultisigAccount> {
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 

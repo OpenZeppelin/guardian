@@ -26,10 +26,24 @@ pub const ACCOUNTS_PAUSE: &str = "accounts.pause";
 /// `target_account_id` is set.
 pub const ACCOUNTS_UNPAUSE: &str = "accounts.unpause";
 
-/// The server detected a canonicalized guardian switch away from its
-/// own ack key and released the account (issue #305). System-initiated
-/// (`operator_identity` is `system`). `payload` carries
-/// `{ new_guardian_commitment, delta_nonce, new_commitment }`;
+/// The server detected a guardian switch away from its own ack key and
+/// released the account (issue #305). System-initiated
+/// (`operator_identity` is `system`). `payload` always carries
+/// `new_guardian_commitment` and `detected_by`, plus the observation:
+/// `detected_by: "delta"` (the switch delta committed here; the release
+/// sweep, issue #434, writes the same row when that delta's own release
+/// write failed) adds `{ delta_nonce, new_commitment }`;
+/// `detected_by: "chain_sweep"` (the sweep read the key from published
+/// on-chain storage) adds `{ on_chain_commitment, stored_commitment }`;
+/// `detected_by: "proposal_match"` (the sweep found on chain the
+/// post-state of a proposal pending here) adds `{ proposal_id,
+/// on_chain_commitment, stored_commitment, switch_commitment,
+/// switch_block_num }`; `detected_by: "recoverable_delta"` (the same for
+/// a switch delta canonicalization retained or the client abandoned)
+/// adds `{ delta_nonce, on_chain_commitment, stored_commitment,
+/// switch_commitment, switch_block_num }`. `switch_block_num` is the
+/// block of the switch transaction when the sweep found it in the
+/// account's history, `null` when the chain sat at its post-state.
 /// `target_account_id` is set.
 pub const ACCOUNTS_RELEASE: &str = "accounts.release";
 

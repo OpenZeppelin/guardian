@@ -15,6 +15,8 @@ import {
   type MidenClient,
 } from "@miden-sdk/miden-sdk";
 import { getProcedureRoot } from "../procedures.js";
+import { isPublicMidenClient, type RawClientSource } from "../raw-client.js";
+import { MAX_SIGNERS } from "./layout.js";
 import type { MultisigConfig, CreateAccountResult } from "../types.js";
 import { normalizeSignerCommitment } from "../utils/signature.js";
 
@@ -82,13 +84,13 @@ function buildGuardedMultisigComponent(
 /**
  * Creates a multisig account with GUARDIAN authentication.
  *
- * @param midenClient - Initialized MidenClient
+ * @param client - Initialized MidenClient, or the WASM client behind one
  * @param config - Multisig configuration
- * @param midenRpcEndpoint - RPC endpoint for the MidenClient's network
+ * @param midenRpcEndpoint - RPC endpoint for the client's network
  * @returns The created account and seed
  */
 export async function createMultisigAccount(
-  midenClient: MidenClient,
+  client: RawClientSource,
   config: MultisigConfig,
   midenRpcEndpoint: string,
 ): Promise<CreateAccountResult> {
@@ -115,10 +117,14 @@ export async function createMultisigAccount(
 
   const result = accountBuilder.buildWithoutSchemaCommitment();
 
-  await midenClient.accounts.insert({
-    account: result.account,
-    overwrite: false,
-  });
+  if (isPublicMidenClient(client)) {
+    await client.accounts.insert({
+      account: result.account,
+      overwrite: false,
+    });
+  } else {
+    await client.newAccount(result.account, false);
+  }
 
   return {
     account: result.account,
@@ -149,6 +155,11 @@ export function validateMultisigConfig(config: MultisigConfig): void {
     signerCommitments.add(normalizedCommitment);
   }
 
+  if (config.signerCommitments.length > MAX_SIGNERS) {
+    throw new Error(
+      `too many signers (${config.signerCommitments.length}): a multisig account holds at most ${MAX_SIGNERS}`,
+    );
+  }
   if (config.threshold > config.signerCommitments.length) {
     throw new Error(
       `threshold (${config.threshold}) cannot exceed number of signers (${config.signerCommitments.length})`,

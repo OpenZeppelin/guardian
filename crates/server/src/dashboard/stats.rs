@@ -68,7 +68,6 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use guardian_shared::FromJson;
 use metrics::{counter, gauge, histogram};
-use miden_protocol::asset::Asset;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -1145,15 +1144,15 @@ pub fn decode_vault(state_json: &serde_json::Value) -> Result<VaultSummary, Stri
     let account = miden_protocol::account::Account::from_json(state_json)?;
     let mut summary = VaultSummary::default();
     for asset in account.vault().assets() {
-        match asset {
-            Asset::Fungible(a) => {
+        match asset.as_fungible() {
+            Some(a) => {
                 let entry = summary.fungible.entry(a.faucet_id().to_hex()).or_insert(0);
                 *entry = entry.saturating_add(u64::from(a.amount()));
             }
-            Asset::NonFungible(a) => {
+            None => {
                 *summary
                     .non_fungible
-                    .entry(a.faucet_id().to_hex())
+                    .entry(asset.faucet_id().to_hex())
                     .or_insert(0) += 1;
             }
         }
@@ -1333,6 +1332,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(dashboard),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -2663,6 +2663,7 @@ mod postgres_tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::fixed("2026-09-17T12:00:00Z")),
             dashboard: Arc::new(DashboardState::for_tests_with_stats_store(
                 Vec::new(),

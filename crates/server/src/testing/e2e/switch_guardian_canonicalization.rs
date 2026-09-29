@@ -38,12 +38,13 @@ use miden_protocol::account::{Account, AccountType};
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
-use miden_standards::account::auth::AuthGuardedMultisig;
+use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::MockChainBuilder;
 use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 
+use super::MultisigAuthArgsExt;
 use crate::delta_object::DeltaObject;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
@@ -142,14 +143,13 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         .expect("library links")
         .compile_tx_script(&tx_script_code)
         .expect("tx script compiles");
-    let salt = Word::from([Felt::new_unchecked(7); 4]);
-
-    // The salt is passed through bare rather than as a fee-conversion commitment,
-    // which works only because `MockChain` defaults `verification_base_fee` to 0
-    // and `fee::pay_fee` therefore creates no note. Both SDKs commit
-    // `hash(CONVERSION_INFO || SALT)` instead, so these fixtures deliberately
-    // exercise the zero-fee path and are not representative of a real request.
-    // Canonicalization is what is under test here and only needs *a* summary.
+    // `MockChain` charges no fee and the guarded component pays none on this protocol
+    // line, so the auth args commit no conversion info. Canonicalization is what is
+    // under test here and only needs *a* summary.
+    let auth_args = MultisigAuthArgs::new(
+        mock_chain.latest_block_header().block_num(),
+        Word::from([Felt::new_unchecked(7); 4]),
+    );
 
     // No-signature execution: the TransactionSummary the wallet pushes to the
     // pre-switch guardian as the delta payload.
@@ -157,7 +157,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script.clone())
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()
         .expect("tx builds")
         .execute()
@@ -193,7 +193,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
         .tx_script(tx_script)
         .add_signature(cosigner_pubkeys[0].clone().into(), msg, sig_1)
         .add_signature(cosigner_pubkeys[1].clone().into(), msg, sig_2)
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()
         .expect("tx builds")
         .execute()

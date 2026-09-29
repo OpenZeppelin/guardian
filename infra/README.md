@@ -114,6 +114,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_db_pool_max_size = 32
 # guardian_metadata_db_pool_max_size = 32
 # guardian_canonicalization_fast_promotion_enabled = false
+# guardian_release_sweep_enabled = false         # kill switch for the chain-driven release sweep
 
 # Optional: dashboard operator Falcon public keys managed by Terraform
 # guardian_operator_public_keys = [
@@ -287,6 +288,9 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_db_pool_max_size` | `16` in dev, `32` in prod | Guardian storage DB pool size |
 | `guardian_metadata_db_pool_max_size` | matches storage by default | Guardian metadata DB pool size |
 | `guardian_canonicalization_fast_promotion_enabled` | `true` | Enables the recent-candidate promotion-only pass in the ECS task definition |
+| `guardian_release_sweep_enabled` | `true` | Runs the chain-driven release sweep; `false` is its kill switch |
+| `guardian_release_sweep_rotation_seconds` | server default (`21600`) | Target time for one release sweep walk of the fleet |
+| `guardian_release_sweep_max_rate_per_second` | server default (`5`) | Cap on release sweep account visits per second (its share of chain-node RPC capacity) |
 | `guardian_log_format` | `json` | Log format for `GUARDIAN_LOG_FORMAT` (`text`, `json`, `compact`) |
 | `log_retention_days` | `7` | CloudWatch log retention in days for the cluster and server groups (prod pins them to 365) and for the EMF metrics group |
 | `guardian_metrics_enabled` | `true` | Guardian Prometheus metrics endpoint (loopback-only inside the task) |
@@ -387,6 +391,14 @@ This Terraform stack is RDS-only. Existing stacks that still run ECS-hosted Post
 4. Restore the backup into the RDS database.
 5. Validate the public Guardian endpoints.
 6. Confirm the old Postgres ECS and Cloud Map resources are gone from AWS before considering the cutover complete.
+
+## GitHub Actions OIDC roles
+
+`oidc.tf` can manage the IAM roles behind OpenZeppelin's **AWS Deploy** GitHub
+Actions workflow. They are off by default (`github_oidc_enabled = false`) and
+are not needed for `scripts/aws-deploy.sh`. Setup, adoption of the existing
+roles, and reuse from a fork are covered in
+[`docs/runbooks/github-oidc-deploy-roles.md`](../docs/runbooks/github-oidc-deploy-roles.md).
 
 ## Storage encryption key
 

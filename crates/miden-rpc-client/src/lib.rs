@@ -6,17 +6,20 @@ use guardian_shared::retry::{
     ProductionRetryRuntime, RPC_TRANSPORT_SIGNALS, RetryPolicy, RetryRuntime, StructuredEvidence,
     connect_failure_is_permanent, grpc_code_evidence, is_transient_error_with, run_retries,
 };
-use miden_protocol::{account::AccountId, utils::serde::Serializable};
+use miden_protocol::account::AccountId;
 use tonic::{
     Request,
     transport::{Channel, ClientTlsConfig},
 };
 
+// Generated from the node's protos, which define messages this client never
+// uses (for example `asset::AssetVault` since node-proto-build 0.17.0-rc.2).
+#[allow(dead_code)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/rpc_generated.rs"));
 }
 
-pub use generated::{account, blockchain, note, primitives, rpc, transaction};
+pub use generated::{account, blockchain, note, primitives, rpc, submission, transaction};
 pub use rpc::api_client::ApiClient;
 
 #[cfg(any(test, feature = "scripted-node"))]
@@ -35,6 +38,12 @@ pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// boot fast enough for orchestrator restart loops (worst case ≈34s).
 pub const CONNECT_MAX_ATTEMPTS: u32 = 5;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Largest response the client decodes: 15% above tonic's 4 MiB default,
+/// as miden-client allows. The node fills a `SyncTransactions` page up to
+/// 4 MiB by its own size estimate, which undercounts the encoded size, so
+/// a full page can exceed the default limit and be refused every time.
+pub const MAX_RESPONSE_SIZE_BYTES: usize = 4 * 1024 * 1024 * 115 / 100;
 
 /// Failure surface of [`MidenRpcClient`]. `Call` retains the typed
 /// `tonic::Status` so transient and permanent failures stay distinguishable.
@@ -133,6 +142,16 @@ pub use guardian_shared::retry::RpcReadMode;
 /// depending on their telemetry stack.
 pub type RetryObserver = Arc<dyn Fn(&'static str) + Send + Sync>;
 
+/// Hex encoding of a node-reported word: its 32 canonical bytes,
+/// byte-identical to `Word::as_bytes()` / `Word::to_bytes()` on the
+/// protocol side, so node values compare directly against locally
+/// computed commitments and storage words. `None` unless the payload is
+/// exactly 32 bytes: proto3's default `Word` is *empty*, not the zero
+/// word, so a length check is the only way to tell them apart.
+pub fn word_to_hex(word: &primitives::Word) -> Option<String> {
+    (word.encoded.len() == 32).then(|| format!("0x{}", hex::encode(&word.encoded)))
+}
+
 /// Simple wrapper around the tonic-generated ApiClient
 pub struct MidenRpcClient {
     client: ApiClient<Channel>,
@@ -180,7 +199,7 @@ impl MidenRpcClient {
         .map_err(RpcClientError::Connect)?;
 
         Ok(Self {
-            client: ApiClient::new(channel),
+            client: ApiClient::new(channel).max_decoding_message_size(MAX_RESPONSE_SIZE_BYTES),
             settings,
             runtime,
             retry_observer: None,
@@ -199,7 +218,7 @@ impl MidenRpcClient {
             .connect_lazy();
 
         Ok(Self {
-            client: ApiClient::new(channel),
+            client: ApiClient::new(channel).max_decoding_message_size(MAX_RESPONSE_SIZE_BYTES),
             settings: RpcClientSettings::default(),
             runtime: Arc::new(ProductionRetryRuntime),
             retry_observer: None,
@@ -280,6 +299,7 @@ impl MidenRpcClient {
                 let request = rpc::BlockHeaderByNumberRequest {
                     block_num,
                     include_mmr_proof: Some(include_mmr_proof),
+                    include_protocol_config: None,
                 };
                 client
                     .get_block_header_by_number(Request::new(request))
@@ -294,17 +314,15 @@ impl MidenRpcClient {
     ///
     /// Never retried, regardless of the configured read-retry policy: a
     /// submission whose outcome is unknown could execute twice if re-sent.
+    ///
+    /// Since Miden 0.17 the node takes the canonical structured message rather
+    /// than opaque transaction bytes, so the caller assembles the submission.
     pub async fn submit_transaction(
         &mut self,
-        proven_tx_bytes: Vec<u8>,
+        submission: submission::ProvenTransactionSubmission,
     ) -> Result<(), RpcClientError> {
-        let request = transaction::ProvenTransaction {
-            transaction: proven_tx_bytes,
-            sealed_transaction_inputs: None,
-        };
-
         self.client
-            .submit_proven_tx(Request::new(request))
+            .submit_proven_tx(Request::new(submission))
             .await
             .map_err(|status| RpcClientError::Call {
                 operation: "submit_transaction",
@@ -351,8 +369,8 @@ impl MidenRpcClient {
     /// Get notes by their IDs
     pub async fn get_notes_by_id(
         &mut self,
-        note_ids: Vec<primitives::Digest>,
-    ) -> Result<note::CommittedNoteList, RpcClientError> {
+        note_ids: Vec<primitives::Word>,
+    ) -> Result<rpc::NotesByIdResponse, RpcClientError> {
         let note_ids: Vec<note::NoteId> = note_ids
             .into_iter()
             .map(|id| note::NoteId { id: Some(id) })
@@ -363,8 +381,8 @@ impl MidenRpcClient {
             "get_notes_by_id",
             RpcReadMode::Configured,
             |mut client| async move {
-                let request = note::NoteIdList {
-                    ids: note_ids.clone(),
+                let request = rpc::NotesByIdRequest {
+                    note_ids: note_ids.clone(),
                 };
                 client
                     .get_notes_by_id(Request::new(request))
@@ -385,15 +403,13 @@ impl MidenRpcClient {
         read_mode: RpcReadMode,
     ) -> Result<String, RpcClientError> {
         const OPERATION: &str = "get_account_commitment";
-        let account_id_bytes = account_id.to_bytes();
+        let proto_account_id = proto_account_id(account_id);
 
-        let account_id_bytes = &account_id_bytes;
+        let proto_account_id = &proto_account_id;
         let account_response = self
             .retry_read(OPERATION, read_mode, |mut client| async move {
                 let request = Request::new(rpc::AccountRequest {
-                    account_id: Some(account::AccountId {
-                        id: account_id_bytes.to_vec(),
-                    }),
+                    account_id: Some(*proto_account_id),
                     block_num: None,
                     details: None,
                 });
@@ -419,15 +435,110 @@ impl MidenRpcClient {
                 reason: "no commitment in witness".to_string(),
             })?;
 
-        let bytes = [
-            commitment.d0.to_le_bytes(),
-            commitment.d1.to_le_bytes(),
-            commitment.d2.to_le_bytes(),
-            commitment.d3.to_le_bytes(),
-        ]
-        .concat();
+        word_to_hex(&commitment).ok_or_else(|| RpcClientError::MalformedResponse {
+            operation: OPERATION,
+            reason: format!(
+                "commitment has {} bytes, expected the 32 bytes of a word",
+                commitment.encoded.len()
+            ),
+        })
+    }
 
-        Ok(format!("0x{}", hex::encode(bytes)))
+    /// Fetch the account witness together with the storage-map details
+    /// selected by `details`, at the chain tip. The witness carries the
+    /// on-chain state commitment observed at the same block as the
+    /// details, so callers can tie a storage read to the commitment it
+    /// belongs to. Details are only valid for public accounts; callers
+    /// decide whether to request them. Takes `&self` like
+    /// [`Self::get_account_commitment`] so concurrent callers never
+    /// serialize on this client.
+    pub async fn get_account_with_details(
+        &self,
+        account_id: &AccountId,
+        details: Option<rpc::account_request::AccountDetailRequest>,
+        read_mode: RpcReadMode,
+    ) -> Result<rpc::AccountResponse, RpcClientError> {
+        let proto_account_id = proto_account_id(account_id);
+
+        let proto_account_id = &proto_account_id;
+        let details = &details;
+        self.retry_read(
+            "get_account_with_details",
+            read_mode,
+            |mut client| async move {
+                let request = Request::new(rpc::AccountRequest {
+                    account_id: Some(*proto_account_id),
+                    block_num: None,
+                    details: details.clone(),
+                });
+                client
+                    .get_account(request)
+                    .await
+                    .map(tonic::Response::into_inner)
+            },
+        )
+        .await
+    }
+
+    /// The node's chain tip: the number of the latest block header it
+    /// serves. Takes `&self` like [`Self::get_account_commitment`].
+    pub async fn get_chain_tip(&self, read_mode: RpcReadMode) -> Result<u32, RpcClientError> {
+        const OPERATION: &str = "get_chain_tip";
+        let response = self
+            .retry_read(OPERATION, read_mode, |mut client| async move {
+                let request = rpc::BlockHeaderByNumberRequest {
+                    block_num: None,
+                    include_mmr_proof: Some(false),
+                    include_protocol_config: None,
+                };
+                client
+                    .get_block_header_by_number(Request::new(request))
+                    .await
+                    .map(tonic::Response::into_inner)
+            })
+            .await?;
+        response
+            .block_header
+            .and_then(|header| header.block_num)
+            .map(|number| number.block_num)
+            .ok_or_else(|| RpcClientError::MalformedResponse {
+                operation: OPERATION,
+                reason: "no block number in the latest block header".to_string(),
+            })
+    }
+
+    /// One page of the transactions committed against `account_id` in
+    /// `block_from..=block_to`. The node records a header for every
+    /// account, private ones included, never prunes them, and rejects a
+    /// range that ends past its tip. It caps the payload and paginates
+    /// by block: `pagination_info.block_num` is the last block the page
+    /// fully covers, so a caller continues from the next block until it
+    /// reaches `block_to`. Takes `&self` like
+    /// [`Self::get_account_commitment`].
+    pub async fn sync_transactions(
+        &self,
+        account_id: &AccountId,
+        block_from: u32,
+        block_to: u32,
+        read_mode: RpcReadMode,
+    ) -> Result<rpc::SyncTransactionsResponse, RpcClientError> {
+        let proto_account_id = proto_account_id(account_id);
+
+        let proto_account_id = &proto_account_id;
+        self.retry_read("sync_transactions", read_mode, |mut client| async move {
+            let request = rpc::SyncTransactionsRequest {
+                block_range: Some(rpc::BlockRange {
+                    block_from,
+                    block_to,
+                }),
+                account_ids: vec![*proto_account_id],
+            };
+            client
+                .sync_transactions(Request::new(request))
+                .await
+                .map(tonic::Response::into_inner)
+        })
+        .await
     }
 
     /// Fetch full account details including serialized account data
@@ -435,17 +546,15 @@ impl MidenRpcClient {
         &mut self,
         account_id: &AccountId,
     ) -> Result<rpc::AccountResponse, RpcClientError> {
-        let account_id_bytes = account_id.to_bytes();
+        let proto_account_id = proto_account_id(account_id);
 
-        let account_id_bytes = &account_id_bytes;
+        let proto_account_id = &proto_account_id;
         self.retry_read(
             "get_account_details",
             RpcReadMode::Configured,
             |mut client| async move {
                 let request = Request::new(rpc::AccountRequest {
-                    account_id: Some(account::AccountId {
-                        id: account_id_bytes.to_vec(),
-                    }),
+                    account_id: Some(*proto_account_id),
                     block_num: None,
                     details: None,
                 });
@@ -456,6 +565,21 @@ impl MidenRpcClient {
             },
         )
         .await
+    }
+}
+
+/// The canonical wire form of an account ID: a versioned pair of felts rather
+/// than the serialized bytes the pre-0.17 schema carried.
+fn proto_account_id(account_id: &AccountId) -> account::AccountId {
+    account::AccountId {
+        version: Some(account::account_id::Version::V1(account::AccountIdV1 {
+            suffix: Some(primitives::Felt {
+                value: account_id.suffix().as_canonical_u64(),
+            }),
+            prefix: Some(primitives::Felt {
+                value: account_id.prefix().as_felt().as_canonical_u64(),
+            }),
+        })),
     }
 }
 
@@ -693,7 +817,10 @@ mod tests {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
 
-        let error = client.submit_transaction(vec![0u8; 4]).await.unwrap_err();
+        let error = client
+            .submit_transaction(submission::ProvenTransactionSubmission::default())
+            .await
+            .unwrap_err();
 
         assert!(matches!(
             error,
@@ -874,5 +1001,125 @@ mod tests {
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(observed.load(Ordering::SeqCst), 0);
+    }
+
+    async fn history_client(
+        tip: u32,
+        pages: Vec<rpc::SyncTransactionsResponse>,
+    ) -> (
+        MidenRpcClient,
+        Arc<Mutex<Vec<rpc::SyncTransactionsRequest>>>,
+    ) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let node = test_node::ScriptedNode::failing(
+            0,
+            || tonic::Status::unavailable("unused"),
+            Arc::new(AtomicU32::new(0)),
+        )
+        .with_chain_tip(tip, pages, requests.clone());
+        let endpoint = test_node::serve(node).await;
+        let client = MidenRpcClient::connect_with_runtime(
+            endpoint,
+            RpcClientSettings::new(Duration::from_secs(2), RetryPolicy::new(1)),
+            Arc::new(RecordingRuntime::default()),
+        )
+        .await
+        .expect("the scripted node must accept connections");
+        (client, requests)
+    }
+
+    fn test_account_id() -> AccountId {
+        AccountId::from_hex("0xe33cde61b266e9c1753136d03a5572").expect("valid account id")
+    }
+
+    #[tokio::test]
+    async fn the_chain_tip_is_the_latest_block_header_number_over_a_real_wire() {
+        let (client, _) = history_client(548_942, vec![]).await;
+        assert_eq!(
+            client
+                .get_chain_tip(RpcReadMode::SingleAttempt)
+                .await
+                .expect("tip"),
+            548_942
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_transactions_sends_one_account_and_the_inclusive_range_over_a_real_wire() {
+        let page = rpc::SyncTransactionsResponse {
+            pagination_info: Some(rpc::PaginationInfo {
+                chain_tip: 100,
+                block_num: 60,
+            }),
+            transactions: vec![rpc::TransactionRecord {
+                block_num: 42,
+                header: Some(transaction::TransactionHeader {
+                    transaction_id: None,
+                    account_id: None,
+                    initial_state_commitment: Some(primitives::Word {
+                        encoded: vec![0; 32],
+                    }),
+                    final_state_commitment: Some(primitives::Word {
+                        encoded: vec![7; 32],
+                    }),
+                    input_notes: vec![],
+                    output_notes: vec![],
+                }),
+                output_note_proofs: vec![],
+                consumed_note_refs: vec![],
+            }],
+        };
+        let (client, requests) = history_client(100, vec![page.clone()]).await;
+        let account_id = test_account_id();
+
+        let answered = client
+            .sync_transactions(&account_id, 0, 100, RpcReadMode::SingleAttempt)
+            .await
+            .expect("page");
+        assert_eq!(answered, page);
+
+        let requests = requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].block_range,
+            Some(rpc::BlockRange {
+                block_from: 0,
+                block_to: 100
+            })
+        );
+        assert_eq!(requests[0].account_ids, vec![proto_account_id(&account_id)]);
+    }
+
+    #[tokio::test]
+    async fn a_range_past_the_tip_is_rejected_like_the_node_does() {
+        let (client, _) = history_client(100, vec![]).await;
+        let error = client
+            .sync_transactions(&test_account_id(), 0, 101, RpcReadMode::SingleAttempt)
+            .await
+            .expect_err("block_to past the tip");
+        let RpcClientError::Call { operation, status } = error else {
+            panic!("expected a call error, got {error:?}");
+        };
+        assert_eq!(operation, "sync_transactions");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn word_to_hex_requires_exactly_32_bytes() {
+        let zero = primitives::Word {
+            encoded: vec![0; 32],
+        };
+        assert_eq!(
+            word_to_hex(&zero).as_deref(),
+            Some("0x0000000000000000000000000000000000000000000000000000000000000000")
+        );
+        // proto3's default word is empty, not the zero word.
+        assert_eq!(word_to_hex(&primitives::Word::default()), None);
+        assert_eq!(
+            word_to_hex(&primitives::Word {
+                encoded: vec![1; 31]
+            }),
+            None
+        );
     }
 }

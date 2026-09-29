@@ -393,6 +393,37 @@ describe('conversion', () => {
       });
     });
 
+    it('preserves the EIP-712 approval format without changing raw signatures', () => {
+      const eip = toServerSignProposalRequest({
+        accountId: '0xaccount',
+        commitment: '0xcommit',
+        signature: {
+          scheme: 'ecdsa',
+          signature: '0xsig',
+          publicKey: '0xkey',
+          messageFormat: 'eip712',
+        },
+      });
+      expect(eip.signature).toEqual({
+        scheme: 'ecdsa',
+        signature: '0xsig',
+        public_key: '0xkey',
+        message_format: 'eip712',
+      });
+      expect(fromServerCosignerSignature({
+        signer_id: '0xsigner',
+        signature: eip.signature,
+        timestamp: '2026-01-01T00:00:00Z',
+      }).signature).toMatchObject({ messageFormat: 'eip712' });
+
+      const raw = toServerSignProposalRequest({
+        accountId: '0xaccount',
+        commitment: '0xcommit',
+        signature: { scheme: 'ecdsa', signature: '0xsig', publicKey: '0xkey' },
+      });
+      expect(raw.signature).not.toHaveProperty('message_format');
+    });
+
     it('converts ExecutionDelta', () => {
       const delta: ExecutionDelta = {
         accountId: '0xaccount',

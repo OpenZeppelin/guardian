@@ -5,7 +5,11 @@ use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::resolve_account;
 use crate::utils::normalize_commitment_hex;
-use guardian_shared::DeltaSignature;
+use guardian_shared::{DeltaSignature, EcdsaMessageFormat, FromJson};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
+use miden_protocol::transaction::TransactionSummary;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_standards::account::auth::Eip712TransactionSummary;
 
 #[derive(Debug, Clone)]
 pub struct SignDeltaProposalParams {
@@ -89,19 +93,7 @@ pub async fn sign_delta_proposal(
         }
     };
 
-    // Extract signer ID from credentials
-    let signer_commitment_hex = match &credentials {
-        Credentials::Signature { pubkey, .. } => resolved
-            .metadata
-            .auth
-            .compute_signer_commitment(pubkey)
-            .map_err(|e| {
-                GuardianError::AuthenticationFailed(format!(
-                    "invalid signer public key for {}: {}",
-                    account_id, e
-                ))
-            })?,
-    };
+    let signer_commitment_hex = resolved.signer_commitment.clone();
     tracing::Span::current().record(
         "signer_commitment",
         tracing::field::display(&signer_commitment_hex),
@@ -115,6 +107,58 @@ pub async fn sign_delta_proposal(
         return Err(GuardianError::ProposalAlreadySigned {
             signer_id: signer_commitment_hex.clone(),
         });
+    }
+
+    if let ProposalSignature::Ecdsa {
+        signature: signature_hex,
+        public_key: Some(public_key_hex),
+        message_format: EcdsaMessageFormat::Eip712,
+    } = &signature
+    {
+        let tx_summary = delta_proposal
+            .delta_payload
+            .get("tx_summary")
+            .ok_or_else(|| GuardianError::InvalidDelta("Missing transaction summary".to_string()))
+            .and_then(|value| {
+                TransactionSummary::from_json(value).map_err(GuardianError::InvalidDelta)
+            })?;
+        let summary_commitment =
+            format!("0x{}", hex::encode(tx_summary.to_commitment().as_bytes()));
+        if summary_commitment != normalized_commitment {
+            return Err(GuardianError::InvalidDelta(
+                "Proposal commitment does not match transaction summary".to_string(),
+            ));
+        }
+        let public_key_bytes = hex::decode(public_key_hex.trim_start_matches("0x"))
+            .map_err(|_| GuardianError::InvalidDelta("Invalid EIP-712 public key".to_string()))?;
+        let public_key = PublicKey::read_from_bytes(&public_key_bytes)
+            .map_err(|_| GuardianError::InvalidDelta("Invalid EIP-712 public key".to_string()))?;
+        let body_signer = format!("0x{}", hex::encode(public_key.to_commitment().to_bytes()));
+        if body_signer != signer_commitment_hex {
+            return Err(GuardianError::AuthenticationFailed(
+                "EIP-712 approval signer differs from request signer".to_string(),
+            ));
+        }
+        let signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
+            .map_err(|e| GuardianError::InvalidDelta(format!("Invalid EIP-712 signature: {e}")))?;
+        let parsed_signature = Signature::read_from_bytes(&signature_bytes)
+            .map_err(|e| GuardianError::InvalidDelta(format!("Invalid EIP-712 signature: {e}")))?;
+        let digest = tx_summary.eip712_hash().into_bytes();
+        if !public_key.verify_prehash(digest, &parsed_signature) {
+            return Err(GuardianError::InvalidDelta(
+                "EIP-712 signature does not match the proposal".to_string(),
+            ));
+        }
+    } else if matches!(
+        &signature,
+        ProposalSignature::Ecdsa {
+            message_format: EcdsaMessageFormat::Eip712,
+            ..
+        }
+    ) {
+        return Err(GuardianError::InvalidDelta(
+            "EIP-712 signature requires a public key".to_string(),
+        ));
     }
 
     // Create the proposal signature based on scheme
@@ -256,16 +300,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sign_delta_proposal_success() {
+    async fn test_sign_delta_proposal_credits_verified_falcon_signer() {
         let (state, storage, _network, metadata) = create_test_state();
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let commitment =
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
+        let (proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+        let (_signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
@@ -290,7 +334,7 @@ mod tests {
                 signature: dummy_sig.clone(),
             },
             credentials: Credentials::signature(
-                signer_pubkey.clone(),
+                proposer_pubkey,
                 signer_signature.clone(),
                 signer_timestamp,
             ),
@@ -331,7 +375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sign_delta_proposal_success_for_ecdsa() {
+    async fn test_sign_delta_proposal_credits_verified_ecdsa_signer() {
         use crate::testing::helpers::TestEcdsaSigner;
         use guardian_shared::auth_request_payload::AuthRequestPayload;
 
@@ -369,6 +413,7 @@ mod tests {
         let proposal_signature = ProposalSignature::Ecdsa {
             signature: dummy_sig.clone(),
             public_key: Some(signer.pubkey_hex.clone()),
+            message_format: EcdsaMessageFormat::Raw,
         };
         let request_body = serde_json::json!({
             "account_id": account_id.clone(),
@@ -383,7 +428,7 @@ mod tests {
             commitment: commitment.clone(),
             signature: proposal_signature,
             credentials: Credentials::signature(
-                signer.pubkey_hex.clone(),
+                proposer.pubkey_hex.clone(),
                 signer_signature,
                 signer_timestamp,
             )
@@ -403,6 +448,7 @@ mod tests {
                     ProposalSignature::Ecdsa {
                         signature,
                         public_key,
+                        ..
                     } => {
                         assert_eq!(*signature, dummy_sig);
                         assert_eq!(public_key.as_deref(), Some(signer.pubkey_hex.as_str()));
@@ -418,6 +464,111 @@ mod tests {
         let update_calls = storage.get_update_delta_proposal_calls();
         assert_eq!(update_calls.len(), 1);
         assert_eq!(update_calls[0].0, commitment);
+    }
+
+    #[tokio::test]
+    async fn test_sign_delta_proposal_with_eip712_approval_and_request_auth() {
+        use guardian_shared::auth_request_eip712::request_digest;
+        use guardian_shared::auth_request_message::AuthRequestMessage;
+        use guardian_shared::auth_request_payload::AuthRequestPayload;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
+
+        let (state, storage, _network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let key = SigningKey::new();
+        let public_key = key.public_key();
+        let public_key_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+        let signer_commitment = format!("0x{}", hex::encode(public_key.to_commitment().to_bytes()));
+        let summary_json = crate::testing::helpers::create_test_delta_payload(&account_id);
+        let summary = TransactionSummary::from_json(&summary_json).unwrap();
+        let commitment = format!("0x{}", hex::encode(summary.to_commitment().as_bytes()));
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenEcdsa {
+                cosigner_commitments: vec![signer_commitment.clone()],
+            },
+        ))));
+        let mut pending =
+            create_pending_proposal(account_id.clone(), 1, signer_commitment.clone(), vec![]);
+        pending.delta_payload["tx_summary"] = summary_json;
+        let storage = storage
+            .with_pull_delta_proposal(Ok(pending))
+            .with_update_delta_proposal(Ok(()));
+
+        let approval_signature = key.sign_prehash(summary.eip712_hash().into_bytes());
+        let mut approval_bytes = approval_signature.to_bytes();
+        approval_bytes[64] ^= 1;
+        let proposal_signature = ProposalSignature::Ecdsa {
+            signature: format!("0x{}", hex::encode(approval_bytes)),
+            public_key: Some(public_key_hex.clone()),
+            message_format: EcdsaMessageFormat::Eip712,
+        };
+        let body = serde_json::json!({
+            "account_id": account_id,
+            "commitment": commitment,
+            "signature": proposal_signature,
+        });
+        let payload = AuthRequestPayload::from_json_serializable(&body).unwrap();
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let request_hash =
+            AuthRequestMessage::from_account_id_hex(&account_id, timestamp, payload.clone())
+                .unwrap()
+                .to_word();
+        let request_signature = key.sign_prehash(request_digest(request_hash));
+        let params = SignDeltaProposalParams {
+            account_id: account_id.clone(),
+            commitment: commitment.clone(),
+            signature: proposal_signature,
+            credentials: Credentials::signature(
+                public_key_hex,
+                format!("0x{}", hex::encode(request_signature.to_bytes())),
+                timestamp,
+            )
+            .with_auth_format(crate::metadata::auth::RequestAuthFormat::Eip712)
+            .with_request_payload(payload),
+        };
+
+        let result = sign_delta_proposal(&state, params).await.unwrap();
+        assert!(matches!(result.delta.status, DeltaStatus::Pending { .. }));
+        assert_eq!(storage.get_update_delta_proposal_calls().len(), 1);
+
+        let wrong_approval = ProposalSignature::Ecdsa {
+            signature: format!("0x{}", hex::encode(key.sign_prehash([0u8; 32]).to_bytes())),
+            public_key: Some(format!("0x{}", hex::encode(public_key.to_bytes()))),
+            message_format: EcdsaMessageFormat::Eip712,
+        };
+        let wrong_body = serde_json::json!({
+            "account_id": account_id,
+            "commitment": commitment,
+            "signature": wrong_approval,
+        });
+        let wrong_payload = AuthRequestPayload::from_json_serializable(&wrong_body).unwrap();
+        let next_timestamp = timestamp + 1;
+        let next_hash = AuthRequestMessage::from_account_id_hex(
+            &account_id,
+            next_timestamp,
+            wrong_payload.clone(),
+        )
+        .unwrap()
+        .to_word();
+        let wrong_params = SignDeltaProposalParams {
+            account_id,
+            commitment,
+            signature: wrong_approval,
+            credentials: Credentials::signature(
+                format!("0x{}", hex::encode(public_key.to_bytes())),
+                format!(
+                    "0x{}",
+                    hex::encode(key.sign_prehash(request_digest(next_hash)).to_bytes())
+                ),
+                next_timestamp,
+            )
+            .with_auth_format(crate::metadata::auth::RequestAuthFormat::Eip712)
+            .with_request_payload(wrong_payload),
+        };
+        assert!(sign_delta_proposal(&state, wrong_params).await.is_err());
+        assert_eq!(storage.get_update_delta_proposal_calls().len(), 1);
     }
 
     #[tokio::test]

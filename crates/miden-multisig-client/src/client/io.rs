@@ -6,11 +6,11 @@
 //! (issue #356).
 
 use guardian_client::delta_status::Status;
-use guardian_shared::SignatureScheme;
+use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
 use miden_client::note::NoteFile;
 use miden_client::store::NoteExportType;
 use miden_protocol::note::NoteId;
-use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::utils::serde::Serializable;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
@@ -108,6 +108,15 @@ impl MultisigClient {
                     signature: sig.signature.clone(),
                     scheme,
                     public_key_hex: sig.public_key.clone(),
+                    message_format: match sig.message_format.as_str() {
+                        "eip712" => EcdsaMessageFormat::Eip712,
+                        "" | "raw" => EcdsaMessageFormat::Raw,
+                        other => {
+                            return Err(MultisigError::Signature(format!(
+                                "unknown signature format: {other}"
+                            )));
+                        }
+                    },
                 });
             }
         }
@@ -237,7 +246,7 @@ impl MultisigClient {
     /// See [`Self::import_note_from_file`] for the returned identifier
     /// semantics.
     pub async fn import_note_from_bytes(&mut self, bytes: &[u8]) -> Result<String> {
-        let note_file = NoteFile::read_from_bytes(bytes).map_err(|e| {
+        let note_file = NoteFile::try_from_bytes(bytes).map_err(|e| {
             MultisigError::InvalidConfig(format!("failed to decode note file: {}", e))
         })?;
 
@@ -327,7 +336,7 @@ mod tests {
         };
 
         let bytes = file.to_bytes();
-        let decoded = NoteFile::read_from_bytes(&bytes).unwrap();
+        let decoded = NoteFile::try_from_bytes(&bytes).unwrap();
         match decoded {
             NoteFile::ExpectedNote { sync_hint, .. } => {
                 assert_eq!(sync_hint.after_block_num(), BlockNumber::from(7u32));
@@ -335,6 +344,6 @@ mod tests {
             _ => panic!("expected details variant"),
         }
 
-        assert!(NoteFile::read_from_bytes(b"not a note file").is_err());
+        assert!(NoteFile::try_from_bytes(b"not a note file").is_err());
     }
 }

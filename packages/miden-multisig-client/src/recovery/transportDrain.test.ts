@@ -388,8 +388,10 @@ describe('drainPrivateNoteBacklog', () => {
  * `settings` API runs values through the JS<->WASM serde codec, which is NOT
  * the store's raw encoding (seeding through it corrupts the cursor), so the
  * cursor tests read/write the IndexedDB row directly. Schema coupling, kept
- * minimal: store `settings`, keyPath `key`, `value` holds the raw big-endian
- * u64 bytes — the same representation the Rust cursor test pins.
+ * minimal: store `settings`, keyPath `key`, `value` holds the cursor as
+ * miden-client serializes it. Since miden-client 0.17.0-rc.2 that is an
+ * optional (nonce, sequence) pair: a presence byte, then two little-endian
+ * u64s.
  */
 const CURSOR_KEY = 'note_transport_cursor';
 // The settings store is keyed by [scope, key] since miden-client 0.16.0-rc.4.
@@ -471,7 +473,8 @@ describe('drainPrivateNoteBacklog (wasm mock client)', () => {
 
     // Simulate a store whose cursor another account's sync already advanced
     // far past this backlog.
-    const advancedCursor = new Uint8Array(8).fill(0xff);
+    const advancedCursor = new Uint8Array(17).fill(0xff);
+    advancedCursor[0] = 1;
     await seedRawCursor(advancedCursor);
 
     const first = await drainPrivateNoteBacklog(deviceB);

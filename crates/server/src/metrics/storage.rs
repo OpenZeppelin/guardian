@@ -7,8 +7,9 @@
 //!
 //! Every trait method is forwarded explicitly, including the ones with
 //! default implementations (`pull_states_batch`,
-//! `has_pending_candidate`, `pull_canonical_deltas_after`,
-//! `pull_pending_proposals`): forwarding them preserves backend
+//! `pull_state_commitment`, `has_pending_candidate`,
+//! `pull_canonical_deltas_after`, `pull_pending_proposals`): forwarding
+//! them preserves backend
 //! overrides (e.g. the batched Postgres `pull_states_batch`), which a
 //! decorator relying on the trait defaults would silently bypass.
 
@@ -81,6 +82,14 @@ impl StorageBackend for InstrumentedStorage {
 
     async fn pull_state(&self, account_id: &str) -> Result<StateObject, String> {
         timed("pull_state", self.inner.pull_state(account_id)).await
+    }
+
+    async fn pull_state_commitment(&self, account_id: &str) -> Result<String, String> {
+        timed(
+            "pull_state_commitment",
+            self.inner.pull_state_commitment(account_id),
+        )
+        .await
     }
 
     async fn pull_states_batch(

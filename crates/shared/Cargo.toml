@@ -22,5 +22,6 @@ prost = { workspace = true }
 utoipa = { workspace = true }
 
 [dev-dependencies]
+rstest = { workspace = true }
 miden-standards = { workspace = true }
 miden-protocol = { workspace = true, features = ["testing"] }

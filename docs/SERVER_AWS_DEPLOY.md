@@ -77,8 +77,8 @@ the environment name:
 
 | Environment | Network | Stack (`STACK_NAME`) | Profile | Hostname |
 |---|---|---|---|---|
-| `devnet` | MidenDevnet | `guardian` | dev | `guardian-stg.openzeppelin.com` |
-| `testnet` | MidenTestnet | `guardian-prod` | prod | `guardian.openzeppelin.com` |
+| `devnet` | MidenDevnet | `guardian` | dev | `guardian-devnet.openzeppelin.com` |
+| `testnet` | MidenTestnet | `guardian-prod` | prod | `guardian-testnet.openzeppelin.com` |
 
 Run it from the Actions tab with:
 
@@ -127,15 +127,10 @@ One-time setup per target (infra):
 - Each environment must restrict **deployment branches** to `main`. Without
   that, anyone able to dispatch the workflow could run an edited copy of it
   from a feature branch and obtain the environment's AWS OIDC identity.
-- The OIDC role's trust policy must accept this repository's environment
-  subject claims (`repo:OpenZeppelin/guardian:environment:devnet` / `:testnet`).
-- The deploy role needs ECR push/pull on `<stack>-server`
-  (`ecr:GetAuthorizationToken`, `ecr:DescribeRepositories`,
-  `ecr:BatchCheckLayerAvailability`, `ecr:BatchGetImage`,
-  `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`,
-  `ecr:PutImage`), `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`,
-  `ecs:RegisterTaskDefinition`, `ecs:UpdateService`, and `iam:PassRole` on the
-  stack's task and task-execution roles.
+- The IAM roles the workflow assumes (bootstrap role → deploy role, scoped to
+  the deployable stacks) are managed by `infra/oidc.tf` on one stack; see the
+  [GitHub OIDC deploy roles runbook](./runbooks/github-oidc-deploy-roles.md)
+  for setup and for adding environments or stacks.
 - The ECR repository must already exist; `scripts/aws-deploy.sh build` creates
   it on a new stack.
 
@@ -163,8 +158,10 @@ set -a && source .env && set +a
 # export CPU_ARCHITECTURE=ARM64
 
 # Miden network the server runs against. The server requires this at startup;
-# the deploy script passes MidenTestnet unless you override it here.
-export GUARDIAN_NETWORK_TYPE=MidenTestnet
+# the deploy script passes MidenTestnet unless you override it here. It must
+# match the stack below: MidenDevnet for guardian-devnet, MidenTestnet for
+# guardian-testnet.
+export GUARDIAN_NETWORK_TYPE=MidenDevnet
 
 # Optional: allow dashboard operators and let Terraform create the secret
 # export GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON='["0x<alice-falcon-public-key>","0x<bob-falcon-public-key>"]'
@@ -181,9 +178,11 @@ export GUARDIAN_NETWORK_TYPE=MidenTestnet
 export DEPLOY_STAGE=dev
 # export DEPLOY_STAGE=prod
 
-# Optional: override the stack base name or public hostname
+# Stack base name and canonical public hostname. SUBDOMAIN defaults to
+# guardian, which no OZ stack uses: set guardian-devnet for the devnet stack
+# or guardian-testnet for the testnet stack.
 export STACK_NAME=guardian
-# export SUBDOMAIN=guardian-stg
+export SUBDOMAIN=guardian-devnet
 
 aws sts get-caller-identity
 ./scripts/aws-deploy.sh deploy
@@ -553,8 +552,8 @@ export TF_VAR_guardian_rate_limit_enabled=false
 
 ```bash
 ./scripts/aws-deploy.sh status
-curl https://guardian.openzeppelin.com/pubkey
-grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.openzeppelin.com:443 guardian.Guardian/GetPubkey
+curl https://guardian-testnet.openzeppelin.com/pubkey
+grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian-testnet.openzeppelin.com:443 guardian.Guardian/GetPubkey
 ```
 
 ## Metrics, Dashboard, And Alarms

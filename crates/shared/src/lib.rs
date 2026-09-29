@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod account_delta;
 pub mod auth;
+pub mod auth_request_eip712;
 pub mod auth_request_message;
 pub mod auth_request_payload;
 pub mod felt;
@@ -149,7 +150,22 @@ fn parse_ecdsa_public_key_hex(
         .map_err(|e| format!("failed to deserialize ECDSA public key: {}", e))
 }
 
-/// Signature type for delta proposals
+/// Message format used by an ECDSA approval.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EcdsaMessageFormat {
+    #[default]
+    Raw,
+    Eip712,
+}
+
+impl EcdsaMessageFormat {
+    pub const fn is_raw(&self) -> bool {
+        matches!(self, Self::Raw)
+    }
+}
+
+/// Signature type for delta proposals.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(tag = "scheme", rename_all = "snake_case")]
 pub enum ProposalSignature {
@@ -163,6 +179,8 @@ pub enum ProposalSignature {
         /// Hex-encoded ECDSA public key (required for signature preparation)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         public_key: Option<String>,
+        #[serde(default, skip_serializing_if = "EcdsaMessageFormat::is_raw")]
+        message_format: EcdsaMessageFormat,
     },
 }
 
@@ -178,6 +196,7 @@ impl ProposalSignature {
             SignatureScheme::Ecdsa => ProposalSignature::Ecdsa {
                 signature,
                 public_key,
+                message_format: EcdsaMessageFormat::Raw,
             },
         }
     }

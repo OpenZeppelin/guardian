@@ -538,6 +538,44 @@ variable "guardian_canonicalization_fast_promotion_enabled" {
   default     = true
 }
 
+variable "guardian_release_sweep_enabled" {
+  description = <<-EOT
+    Whether the chain-driven release sweep runs (GUARDIAN_RELEASE_SWEEP_ENABLED).
+    false is the kill switch: release detection then relies on the push path
+    alone.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "guardian_release_sweep_rotation_seconds" {
+  description = "Optional override for GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS, the target time for one walk of the fleet (server default 21600)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_release_sweep_rotation_seconds == null ? true : (
+      var.guardian_release_sweep_rotation_seconds >= 1 &&
+      var.guardian_release_sweep_rotation_seconds <= 2592000 &&
+      floor(var.guardian_release_sweep_rotation_seconds) == var.guardian_release_sweep_rotation_seconds
+    )
+    error_message = "guardian_release_sweep_rotation_seconds must be an integer between 1 and 2592000 when provided."
+  }
+}
+
+variable "guardian_release_sweep_max_rate_per_second" {
+  description = "Optional override for GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND, the cap on sweep account visits per second, i.e. its share of chain-node RPC capacity (server default 5)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_release_sweep_max_rate_per_second == null ? true : (
+      var.guardian_release_sweep_max_rate_per_second >= 1 &&
+      var.guardian_release_sweep_max_rate_per_second <= 1000 &&
+      floor(var.guardian_release_sweep_max_rate_per_second) == var.guardian_release_sweep_max_rate_per_second
+    )
+    error_message = "guardian_release_sweep_max_rate_per_second must be an integer between 1 and 1000 when provided."
+  }
+}
+
 variable "guardian_log_format" {
   description = "Log output format for GUARDIAN_LOG_FORMAT (text, json, compact). json enables flattened JSON for CloudWatch Logs Insights"
   type        = string
@@ -797,4 +835,55 @@ variable "server_log_group_name" {
   description = "CloudWatch log group name for the server"
   type        = string
   default     = ""
+}
+
+variable "github_oidc_enabled" {
+  description = "Manage the GitHub Actions OIDC roles used by .github/workflows/aws-deploy.yml. The roles are shared by every stack in the account, so enable this on exactly one stack"
+  type        = bool
+  default     = false
+}
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of the GitHub Actions OIDC identity provider in the root account (arn:aws:iam::<root-account>:oidc-provider/token.actions.githubusercontent.com). Required when github_oidc_enabled is true"
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_root_account_role_arn" {
+  description = "Role assumed in the root account to manage the OIDC bootstrap role. When github_oidc_enabled is true, set this or github_oidc_root_account_profile"
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_root_account_profile" {
+  description = "Named AWS CLI profile that already resolves to root-account credentials, used instead of github_oidc_root_account_role_arn when the stack credentials cannot assume a root-account role"
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_role_name" {
+  description = "Name of the OIDC bootstrap role in the root account"
+  type        = string
+  default     = "github-actions-solutions-account-guardian-oidc-role"
+}
+
+variable "github_deploy_role_name" {
+  description = "Name of the deploy role in this account that the bootstrap role chains into"
+  type        = string
+  default     = "GithubOIDCGuardianRole"
+}
+
+variable "github_oidc_subjects" {
+  description = "GitHub OIDC subject claims allowed to assume the bootstrap role, matched exactly; one per GitHub environment of the AWS Deploy workflow"
+  type        = list(string)
+  default = [
+    "repo:OpenZeppelin/guardian:environment:devnet",
+    "repo:OpenZeppelin/guardian:environment:testnet",
+  ]
+}
+
+variable "github_deploy_stack_names" {
+  description = "Stacks (stack_name values) the AWS Deploy workflow may roll out; scopes the deploy role to their ECR repositories, ECS services, task definitions, and task roles under the default resource naming"
+  type        = list(string)
+  default     = ["guardian", "guardian-prod"]
 }

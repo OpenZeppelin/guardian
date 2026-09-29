@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use guardian_client::DeltaObject;
 use guardian_shared::FromJson;
 use guardian_shared::hex::FromHex;
-use guardian_shared::{ProposalSignature, SignatureScheme};
+use guardian_shared::{EcdsaMessageFormat, ProposalSignature, SignatureScheme};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
@@ -309,6 +309,18 @@ impl TransactionType {
     pub fn requires_guardian_ack(&self) -> bool {
         !self.supports_offline_execution()
     }
+
+    /// Returns true when an exported document is enough to execute this type.
+    ///
+    /// Every modeled type is, and `Custom` is not: executing from a document
+    /// rebuilds the transaction from its type, which for a producer's own
+    /// transaction the SDK cannot do. The distinction matters before the
+    /// acknowledgement rather than after it, because obtaining one pushes the
+    /// delta: a `Custom` proposal that got that far would leave a candidate on
+    /// the account and only then fail to build.
+    pub fn executable_from_exported_document(&self) -> bool {
+        !matches!(self, Self::Custom)
+    }
 }
 
 /// Proposal type labels the SDK models natively. The producer (`propose_custom_transaction`)
@@ -370,10 +382,12 @@ pub struct ProposalMetadata {
     pub required_signatures: Option<usize>,
     pub signers: Vec<String>,
 
-    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
-    /// tx_summary was built at. Required to verify or execute the proposal:
-    /// since protocol 0.16 the signed summary binds the reference block
-    /// commitment, so it only reproduces when re-executed at that block.
+    /// Base64-serialized Miden `ChainAnchor` at the block the tx_summary binds,
+    /// the proposer's sync height when it built the request. Required, and
+    /// checked against the summary's block commitment. The proposal executes
+    /// at the chain tip rather than at the anchor; the anchor names the bound
+    /// block for a rebuild in the TypeScript SDK and for 0.18.0-rc.1 clients,
+    /// which re-execute at it.
     pub chain_anchor_b64: Option<String>,
 }
 
@@ -386,15 +400,14 @@ impl ProposalMetadata {
         self.consume_notes_metadata_version == Some(CONSUME_NOTES_METADATA_VERSION_V2)
     }
 
-    /// Decodes the proposal's chain anchor. Errors when absent: a proposal
-    /// without an anchor was created at an unknown reference block, so its
-    /// signed summary cannot be reproduced, verified, or executed.
+    /// Decodes the proposal's chain anchor. Errors when absent: every proposal
+    /// names the block its summary binds with one, so a proposal without it is
+    /// malformed and is neither verified nor executed.
     pub fn chain_anchor(&self) -> Result<miden_client::transaction::ChainAnchor> {
         let anchor_b64 = self.chain_anchor_b64.as_deref().ok_or_else(|| {
             MultisigError::InvalidConfig(
-                "proposal metadata has no chain_anchor; it was created without \
-                 chain-anchored execution and its signed summary cannot be \
-                 reproduced at the original reference block"
+                "proposal metadata has no chain_anchor, which names the block its signed \
+                 summary binds; the proposal cannot be verified or executed"
                     .to_string(),
             )
         })?;
@@ -403,16 +416,14 @@ impl ProposalMetadata {
 
     /// Converts salt hex to Word.
     ///
-    /// Errors when absent, for the same reason [`Self::chain_anchor`] does. The request
-    /// declares this salt and miden-client commits `hash(CONVERSION_INFO || SALT)` into
-    /// the auth arg from it, so a substituted zero would be committed just as happily as
-    /// the real one and reproduce a summary no cosigner signed.
+    /// Errors when absent, for the same reason [`Self::chain_anchor`] does: the salt
+    /// is bound into the auth args and the signed summary, so a substituted zero
+    /// would rebuild a request whose summary no cosigner signed.
     pub fn salt(&self) -> Result<Word> {
         let value = self.salt_hex.as_deref().ok_or_else(|| {
             MultisigError::InvalidConfig(
-                "proposal metadata has no salt; its request cannot be rebuilt because \
-                 the auth arg commits hash(CONVERSION_INFO || SALT) and is not \
-                 invertible to the salt"
+                "proposal metadata has no salt; its request cannot be rebuilt without the \
+                 salt the auth args and summary bind"
                     .to_string(),
             )
         })?;
@@ -624,6 +635,7 @@ pub struct ProposalSignatureEntry {
     pub signature_hex: String,
     pub scheme: SignatureScheme,
     pub public_key_hex: Option<String>,
+    pub message_format: EcdsaMessageFormat,
 }
 
 impl ProposalSignatureEntry {
@@ -633,6 +645,11 @@ impl ProposalSignatureEntry {
         let signature_hex = ensure_hex_prefix(&self.signature_hex);
         match self.scheme {
             SignatureScheme::Falcon => {
+                if self.message_format != EcdsaMessageFormat::Raw {
+                    return Err(MultisigError::Signature(
+                        "EIP-712 requires an ECDSA signer".to_string(),
+                    ));
+                }
                 Poseidon2FalconSignature::from_hex(&signature_hex).map_err(|e| {
                     MultisigError::Signature(format!("invalid proposal signature: {}", e))
                 })?;
@@ -699,8 +716,7 @@ pub enum ProposalVerification {
     /// The check failed. `retryable` is true when the failure came from a
     /// transient node or RPC error, so the same proposal may verify on a
     /// later attempt; false when the proposal itself cannot be reproduced
-    /// (tampered metadata, an anchor block the node has pruned) and it has
-    /// to be re-proposed.
+    /// (tampered metadata, for example) and it has to be re-proposed.
     Failed { retryable: bool, message: String },
 }
 
@@ -815,17 +831,23 @@ impl Proposal {
         let mut seen_signers = HashSet::new();
         let mut signatures = Vec::with_capacity(payload.signatures.len());
         for signature in &payload.signatures {
-            let (scheme, signature_hex, public_key_hex) = match &signature.signature {
-                ProposalSignature::Falcon { signature } => {
-                    (SignatureScheme::Falcon, signature.clone(), None)
-                }
+            let (scheme, signature_hex, public_key_hex, message_format) = match &signature.signature
+            {
+                ProposalSignature::Falcon { signature } => (
+                    SignatureScheme::Falcon,
+                    signature.clone(),
+                    None,
+                    EcdsaMessageFormat::Raw,
+                ),
                 ProposalSignature::Ecdsa {
                     signature,
                     public_key,
+                    message_format,
                 } => (
                     SignatureScheme::Ecdsa,
                     signature.clone(),
                     public_key.clone(),
+                    *message_format,
                 ),
             };
 
@@ -834,6 +856,7 @@ impl Proposal {
                 signature_hex,
                 scheme,
                 public_key_hex,
+                message_format,
             };
             entry.validate()?;
 
@@ -978,6 +1001,32 @@ fn word_to_bytes(word: &Word) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The pairing that made the bug possible: `Custom` needs an
+    /// acknowledgement like any other non-switch type, and getting one pushes
+    /// the delta, so the document guard has to come first.
+    #[test]
+    fn custom_needs_an_acknowledgement_and_cannot_execute_from_a_document() {
+        assert!(TransactionType::Custom.requires_guardian_ack());
+        assert!(!TransactionType::Custom.executable_from_exported_document());
+    }
+
+    #[test]
+    fn every_modeled_type_executes_from_a_document() {
+        for transaction_type in [
+            TransactionType::consume_notes(vec![]),
+            TransactionType::UpdateProcedureThreshold {
+                procedure: crate::procedures::ProcedureName::SendAsset,
+                new_threshold: 2,
+            },
+        ] {
+            assert!(
+                transaction_type.executable_from_exported_document(),
+                "{} should execute from a document",
+                transaction_type.type_name()
+            );
+        }
+    }
     use miden_protocol::Felt;
 
     use super::*;
@@ -1001,9 +1050,10 @@ mod tests {
             delta,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             Word::default(),
             0,
-            TransactionSummaryUserParams::new([Felt::ZERO; 7]),
+            TransactionSummaryUserParams::new([Felt::ZERO; 6]),
         )
     }
 

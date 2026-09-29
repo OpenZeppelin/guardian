@@ -15,6 +15,7 @@ mod schema;
 pub use builder::canonicalization;
 pub use builder::clock;
 pub use builder::logging;
+pub use builder::release_sweep;
 pub use builder::state;
 pub mod delta_object;
 pub mod delta_summary;

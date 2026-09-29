@@ -44,6 +44,7 @@ pub use proposals::{AbandonRequestState, AbandonStatus};
 pub use public_note_backfill::{BlockRange, PublicBackfillOptions, PublicBackfillReport};
 pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
 
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -51,6 +52,8 @@ use guardian_client::GetStateResponse;
 use miden_client::rpc::Endpoint;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
+use miden_protocol::block::BlockNumber;
+use miden_standards::account::auth::MultisigAuthArgs;
 
 use crate::MidenSdkClient;
 use crate::account::MultisigAccount;
@@ -164,6 +167,40 @@ impl MultisigClient {
             node_rpc_client,
             prover_config,
             rpc_config,
+        }
+    }
+
+    /// The multisig auth args a request this client's account executes has to
+    /// carry. Producers of custom proposals (issue #266) build them here, then
+    /// attach them with [`crate::TransactionRequestBuilderExt`]. `bound_block_num`
+    /// left out binds the store's sync height, which a fresh proposal wants:
+    /// [`sync`](Self::sync) first, then build, then
+    /// [`propose_custom_transaction`](Self::propose_custom_transaction), which
+    /// captures its anchor at that same height and does not sync again. A
+    /// rebuild passes the block its proposal's anchor names. The fee conversion
+    /// info names the fee faucet of the protocol configuration the last sync
+    /// delivered.
+    pub async fn multisig_auth_args(
+        &self,
+        salt: Word,
+        bound_block_num: Option<BlockNumber>,
+        approval_expiration_delta: Option<NonZeroU32>,
+    ) -> Result<MultisigAuthArgs> {
+        match bound_block_num {
+            Some(bound_block_num) => crate::transaction::multisig_auth_args(
+                crate::transaction::synced_fee_faucet_id(&self.miden_client).await?,
+                bound_block_num,
+                salt,
+                approval_expiration_delta,
+            ),
+            None => {
+                crate::transaction::proposer_auth_args(
+                    &self.miden_client,
+                    salt,
+                    approval_expiration_delta,
+                )
+                .await
+            }
         }
     }
 

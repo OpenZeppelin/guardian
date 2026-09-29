@@ -64,9 +64,10 @@ mod tests {
             account_delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
+            miden_protocol::block::BlockNumber::from(0),
             Word::from([ZERO; 4]),
             0,
-            TransactionSummaryUserParams::new([ZERO; 7]),
+            TransactionSummaryUserParams::new([ZERO; 6]),
         )
     }
 

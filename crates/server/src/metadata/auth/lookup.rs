@@ -1,11 +1,10 @@
 //! Authentication helpers for the `/state/lookup` endpoint.
 //!
-//! Lookup auth derives the public key directly from the signature (Falcon
-//! signatures embed the pubkey; ECDSA signatures recover it via the
-//! recovery byte). Callers therefore do not send `x-pubkey`. The service
-//! enforces proof-of-possession by requiring `commitment_of(derived_pk) ==
-//! queried_key_commitment` after cryptographic signature verification.
+//! Raw lookup derives the public key from the signature (Falcon embeds it;
+//! ECDSA recovers it). EIP-712 lookup verifies against `x-pubkey`. Both paths
+//! require the verified key's commitment to match the queried commitment.
 
+use guardian_shared::auth_request_eip712::lookup_digest;
 use guardian_shared::hex::FromHex;
 use guardian_shared::lookup_auth_message::LookupAuthMessage;
 use miden_protocol::Word;
@@ -75,9 +74,32 @@ pub fn derive_pubkey_from_lookup_signature(
     Err("signature did not parse as Falcon or ECDSA".to_string())
 }
 
+/// Verify a typed lookup signature against the public key supplied by the caller.
+pub fn verify_eip712_lookup_signature(
+    signature_hex: &str,
+    public_key_hex: &str,
+    timestamp_ms: i64,
+    key_commitment: Word,
+) -> Result<LookupPublicKey, String> {
+    let signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
+        .map_err(|e| format!("invalid EIP-712 lookup signature hex: {e}"))?;
+    let signature = EcdsaSignature::read_from_bytes(&signature_bytes)
+        .map_err(|e| format!("invalid EIP-712 lookup signature: {e}"))?;
+    let public_key_bytes = hex::decode(public_key_hex.trim_start_matches("0x"))
+        .map_err(|e| format!("invalid EIP-712 lookup public key hex: {e}"))?;
+    let public_key = EcdsaPublicKey::read_from_bytes(&public_key_bytes)
+        .map_err(|e| format!("invalid EIP-712 lookup public key: {e}"))?;
+    let lookup_hash = LookupAuthMessage::new(timestamp_ms, key_commitment).to_word();
+    if !public_key.verify_prehash(lookup_digest(lookup_hash), &signature) {
+        return Err("EIP-712 lookup signature verification failed".to_string());
+    }
+    Ok(LookupPublicKey::Ecdsa(public_key))
+}
+
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use guardian_shared::auth_request_eip712::{lookup_digest, request_digest};
     use guardian_shared::auth_request_message::AuthRequestMessage;
     use guardian_shared::auth_request_payload::AuthRequestPayload;
     use guardian_shared::hex::IntoHex;
@@ -86,6 +108,73 @@ mod tests {
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
     use miden_protocol::utils::serde::Serializable;
+
+    #[test]
+    fn eip712_lookup_binds_key_commitment_and_timestamp() {
+        let signer = EcdsaSecretKey::new();
+        let public_key = signer.public_key();
+        let public_key_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+        let commitment = public_key.to_commitment();
+        let timestamp = 1_700_000_000_000;
+        let lookup_hash = LookupAuthMessage::new(timestamp, commitment).to_word();
+        let signature = signer.sign_prehash(lookup_digest(lookup_hash));
+        let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
+
+        let verified =
+            verify_eip712_lookup_signature(&signature_hex, &public_key_hex, timestamp, commitment)
+                .unwrap();
+        assert_eq!(commitment_of(&verified), commitment_hex_word(commitment));
+        assert!(
+            verify_eip712_lookup_signature(
+                &signature_hex,
+                &public_key_hex,
+                timestamp + 1,
+                commitment,
+            )
+            .is_err()
+        );
+        assert!(
+            verify_eip712_lookup_signature(
+                &signature_hex,
+                &public_key_hex,
+                timestamp,
+                Word::default(),
+            )
+            .is_err()
+        );
+        let other_public_key = EcdsaSecretKey::new().public_key();
+        let other_public_key_hex = format!("0x{}", hex::encode(other_public_key.to_bytes()));
+        assert!(
+            verify_eip712_lookup_signature(
+                &signature_hex,
+                &other_public_key_hex,
+                timestamp,
+                commitment,
+            )
+            .is_err()
+        );
+        let request_signature = signer.sign_prehash(request_digest(lookup_hash));
+        assert!(
+            verify_eip712_lookup_signature(
+                &format!("0x{}", hex::encode(request_signature.to_bytes())),
+                &public_key_hex,
+                timestamp,
+                commitment,
+            )
+            .is_err()
+        );
+        let mut unnormalized = signature.to_bytes();
+        unnormalized[64] += 27;
+        assert!(
+            verify_eip712_lookup_signature(
+                &format!("0x{}", hex::encode(unnormalized)),
+                &public_key_hex,
+                timestamp,
+                commitment,
+            )
+            .is_err()
+        );
+    }
 
     fn commitment_hex_word(word: Word) -> String {
         format!("0x{}", hex::encode(word.as_bytes()))

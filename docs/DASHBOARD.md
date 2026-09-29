@@ -149,7 +149,21 @@ than the configured interval is expected. It also reports
 `max_pending_candidates_per_account`, the per-account candidate queue
 depth (issue #17): `has_pending_candidate` on an account means *at least
 one* candidate is queued, and `candidate` rows for one account may
-number up to this depth.
+number up to this depth. `backend.release_sweep`
+exposes the release sweep settings (`rotation_seconds`,
+`max_rate_per_second`, `recheck_seconds`, `confirmations`, issue
+#434; `null` when the sweep is disabled). A `released_at` set by the
+sweep rather than by a canonicalized switch delta is distinguishable on
+the audit trail: the `accounts.release` row carries
+`detected_by: proposal_match` (with the `proposal_id` the chain proved
+executed, the `switch_commitment` it reached and, when the switch was
+found in the account's transaction history rather than at the chain
+head, its `switch_block_num`), `detected_by: recoverable_delta` (the
+same, with the `delta_nonce` of a switch delta canonicalization
+retained or the client abandoned) or `detected_by: chain_sweep` (with
+the on-chain / stored commitment pair) instead of `detected_by: delta`
+and the delta nonce. The sweep writes `detected_by: delta` itself only
+for a canonicalized switch delta whose own release write failed.
 
 ## Aggregate stats
 

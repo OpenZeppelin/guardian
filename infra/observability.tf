@@ -31,7 +31,7 @@ locals {
   http_error_statuses = ["500", "501", "502", "503", "504"]
   grpc_error_codes    = ["internal", "unavailable", "unknown", "data_loss", "deadline_exceeded"]
 
-  # The eight Prometheus histograms. The awsemf exporter delta-converts
+  # The nine Prometheus histograms. The awsemf exporter delta-converts
   # cumulative counters but NOT histograms (their sum/count would be
   # republished as process-lifetime totals every scrape, making
   # CloudWatch Average lifetime-weighted — hours of cheap health checks
@@ -47,6 +47,7 @@ locals {
     "guardian_canonicalization_fast_run_duration_seconds",
     "guardian_canonicalization_reconcile_run_duration_seconds",
     "guardian_canonicalization_candidate_age_seconds",
+    "guardian_release_sweep_rotation_duration_seconds",
   ]
 
   http_error_rate_expression = "100 * (${join(" + ", [for s in local.http_error_statuses : "FILL(h${s}, 0)"])}) / FILL(hall, 1)"
@@ -204,6 +205,17 @@ locals {
               "^guardian_canonicalization_pass_accounts$",
             ]
             dimensions = [[]]
+          },
+          {
+            metric_name_selectors = [
+              "^guardian_release_sweep_rotations_total$",
+              "^guardian_release_sweep_accounts_total$",
+            ]
+            dimensions = [["outcome"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_release_sweep_rotation_duration_seconds$"]
+            dimensions            = [[]]
           },
           {
             metric_name_selectors = [

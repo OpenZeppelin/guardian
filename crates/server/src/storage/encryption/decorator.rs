@@ -161,6 +161,12 @@ impl StorageBackend for EncryptedStorage {
         self.decrypt_state(state)
     }
 
+    // The commitment is stored in the clear (only `state_json` is
+    // encrypted), so nothing needs decrypting.
+    async fn pull_state_commitment(&self, account_id: &str) -> Result<String, String> {
+        self.inner.pull_state_commitment(account_id).await
+    }
+
     async fn pull_states_batch(
         &self,
         account_ids: &[&str],

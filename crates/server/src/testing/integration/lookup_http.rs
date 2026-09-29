@@ -5,15 +5,14 @@
 //! commitment binding (signed key must hash to the queried commitment), and
 //! cross-domain replay isolation.
 //!
-//! Note: requests include `x-pubkey` for wire-format parity with per-account
-//! requests, but the lookup verification path ignores it — identity is
-//! sourced from the signature.
+//! Raw lookup derives identity from the signature; typed lookup verifies
+//! against `x-pubkey`.
 
 use crate::api::http::LookupResponse;
 use crate::testing::helpers::{TestEcdsaSigner, TestSigner, create_router, create_test_app_state};
 use crate::testing::integration::lookup_helpers::{
     ecdsa_account, evm_account, falcon_account, fresh_account_id_hex, now_ms, seed, sign_lookup,
-    sign_lookup_ecdsa,
+    sign_lookup_ecdsa, sign_lookup_eip712,
 };
 
 use axum::{
@@ -131,6 +130,38 @@ async fn lookup_ecdsa_happy_path() {
     let parsed = parse_lookup_response(&body);
     assert_eq!(parsed.accounts.len(), 1, "exactly one match");
     assert_eq!(parsed.accounts[0].account_id, account_id);
+}
+
+#[tokio::test]
+async fn lookup_eip712_happy_path() {
+    let state = create_test_app_state().await;
+    let signer = TestEcdsaSigner::new();
+    let account_id = fresh_account_id_hex(22);
+    seed(
+        &state,
+        ecdsa_account(&account_id, vec![signer.commitment_hex.clone()]),
+    )
+    .await;
+    let app = create_router(state);
+
+    let timestamp = now_ms();
+    let signature = sign_lookup_eip712(&signer, &signer.commitment_hex, timestamp);
+    let mut request = build_lookup_request(
+        &signer.commitment_hex,
+        &signer.pubkey_hex,
+        &signature,
+        timestamp,
+    );
+    request
+        .headers_mut()
+        .insert("x-auth-format", "eip712".parse().unwrap());
+
+    let (status, body) = send(&app, request).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(
+        parse_lookup_response(&body).accounts[0].account_id,
+        account_id
+    );
 }
 
 #[tokio::test]

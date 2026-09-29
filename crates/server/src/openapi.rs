@@ -421,6 +421,27 @@ mod tests {
     }
 
     #[test]
+    fn eip712_request_header_is_documented_on_authenticated_routes() {
+        let json = serde_json::to_value(client_openapi()).unwrap();
+        let signing_params = json["paths"]["/delta/proposal"]["put"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert!(signing_params.iter().any(|param| {
+            param["name"] == "x-auth-format"
+                && param["in"] == "header"
+                && param["required"] == false
+        }));
+        let lookup_params = json["paths"]["/state/lookup"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert!(lookup_params.iter().any(|param| {
+            param["name"] == "x-auth-format"
+                && param["in"] == "header"
+                && param["required"] == false
+        }));
+    }
+
+    #[test]
     fn per_surface_specs_are_scoped() {
         let client = serde_json::to_value(client_openapi()).unwrap();
         assert!(

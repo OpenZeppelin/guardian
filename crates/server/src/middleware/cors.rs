@@ -49,6 +49,7 @@ impl CorsConfig {
                 HeaderName::from_static("x-pubkey"),
                 HeaderName::from_static("x-signature"),
                 HeaderName::from_static("x-timestamp"),
+                HeaderName::from_static("x-auth-format"),
             ])
             .expose_headers([header::RETRY_AFTER])
             .allow_credentials(true)
@@ -146,5 +147,43 @@ mod tests {
                 "browser clients must be able to read Retry-After, got {exposed:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn explicit_origin_allows_eip712_auth_header() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::{ServiceBuilder, ServiceExt};
+
+        let service = ServiceBuilder::new()
+            .layer(
+                super::CorsConfig::new(vec![HeaderValue::from_static("https://app.example.com")])
+                    .layer(),
+            )
+            .service(tower::service_fn(|_request: Request<Body>| async {
+                Ok::<_, std::convert::Infallible>(axum::http::Response::new(Body::empty()))
+            }));
+
+        let response = service
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/proposals")
+                    .header("Origin", "https://app.example.com")
+                    .header("Access-Control-Request-Method", "POST")
+                    .header("Access-Control-Request-Headers", "x-auth-format")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let allowed = response
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert!(allowed.contains("x-auth-format"), "got {allowed:?}");
     }
 }

@@ -1,12 +1,29 @@
 export {
+  MAX_APPROVAL_EXPIRATION_DELTA,
+  buildMultisigRequest,
+  multisigRequestBuilder,
+  requestBoundBlockNum,
+  requestSaltHex,
+} from './transaction/authArgs.js';
+export {
   buildConsumeNotesTransactionRequest,
+  buildConsumeNotesTransactionRequestFromNotes,
 } from './transaction/consumeNotes.js';
 export {
+  ChainBehindBoundBlockError,
+  chainAnchorBlockNum,
   chainAnchorFromBase64,
   chainAnchorToBase64,
   executeForSummary,
   executeForSummaryAt,
-  summaryAuthArg,
+  executeForSummaryAtTip,
+  prepareTipExecution,
+  isStaleChainError,
+  requireDeclaredBoundBlock,
+  syncToBoundBlock,
+  summaryApprovalExpirationBlockNum,
+  summarySalt,
+  SummaryAnchorMismatchError,
 } from './transaction/summary.js';
 export {
   buildP2idNoteFromMetadata,

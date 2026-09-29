@@ -140,11 +140,15 @@ async fn finalization_queries(scheme: SignatureScheme, seed: u8) -> Vec<Option<S
     let (endpoint, handle) = switch_target().await;
 
     let tx_type = TransactionType::switch_guardian(endpoint, Word::from(NEW_GUARDIAN_COMMITMENT));
+    let auth_args = client
+        .multisig_auth_args(generate_salt(), None, None)
+        .await
+        .unwrap();
     let tx_request = build_final_transaction_request(
         &client.miden_client,
         &tx_type,
         &account,
-        generate_salt(),
+        &auth_args,
         Vec::new(),
         None,
         Some(&[]),
@@ -152,13 +156,12 @@ async fn finalization_queries(scheme: SignatureScheme, seed: u8) -> Vec<Option<S
     )
     .await
     .expect("switch request builds");
-    let (_summary, chain_anchor) =
-        execute_for_summary(&mut client.miden_client, account.id(), tx_request.clone())
-            .await
-            .expect("switch request executes for a summary");
+    execute_for_summary(&mut client.miden_client, account.id(), tx_request.clone())
+        .await
+        .expect("switch request executes for a summary");
 
     let _ = client
-        .finalize_transaction(account.id(), tx_request, &tx_type, chain_anchor)
+        .finalize_transaction(account.id(), tx_request, &tx_type)
         .await;
 
     handle.get_pubkey_schemes()

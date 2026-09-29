@@ -1,6 +1,5 @@
 import type {
   AccountId,
-  ChainAnchor,
   MidenClient,
   TransactionRequest,
 } from '@miden-sdk/miden-sdk';
@@ -15,15 +14,13 @@ export class ProverWorkflow {
     private readonly runtime?: RetryRuntime,
   ) {}
 
-  /** Proves, submits, and applies a request at its signed chain anchor. */
-  async submitAt(
-    accountId: AccountId,
-    request: TransactionRequest,
-    anchor: ChainAnchor,
-  ): Promise<void> {
-    const execution = await this.client.transactions.executeRequest(accountId, request, {
-      anchor,
-    });
+  /**
+   * Executes a request at the chain tip, then proves, submits, and applies it.
+   * A multisig proposal's request declares the block its summary binds, so the
+   * signed summary reproduces at the tip.
+   */
+  async submit(accountId: AccountId, request: TransactionRequest): Promise<void> {
+    const execution = await this.client.transactions.executeRequest(accountId, request);
     const proof = await proveWithRetry(execution, this.config, this.runtime);
     const submission = await proof.submit();
     await submission.apply();
