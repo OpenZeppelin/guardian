@@ -1,8 +1,11 @@
 //! HTTP integration tests for `GET /state/nonce` (issue #191): the
 //! lightweight canonical-nonce pre-check clients run before `GET /state`.
 
+use crate::network::NetworkType;
+use crate::network::miden::MidenNetworkClient;
 use crate::testing::helpers::{
-    TestSigner, create_router, create_test_app_state, load_fixture_account,
+    IntegrationMockNetworkClient, TestSigner, create_router, create_test_app_state, fixture_signer,
+    load_fixture_account,
 };
 
 use axum::{
@@ -12,20 +15,27 @@ use axum::{
 use guardian_shared::FromJson;
 use miden_protocol::account::Account;
 use serde_json::json;
+use std::sync::Arc;
 use tower::Service;
 
+/// The fixture account configured through the real Miden decoder, so the
+/// nonce the endpoint serves is read from the stored account state itself
+/// rather than from a mock.
 async fn configured_account() -> (axum::Router, TestSigner, String) {
-    let state = create_test_app_state().await;
-    let app = create_router(state.clone());
+    let mut state = create_test_app_state().await;
+    state.network_client = Arc::new(IntegrationMockNetworkClient::new(
+        MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal),
+    ));
+    let app = create_router(state);
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
-    let signer = TestSigner::new();
+    let (signer, cosigner_commitments) = fixture_signer();
 
     let configure_body = json!({
         "account_id": account_id_hex.clone(),
         "auth": {
             "MidenFalconRpo": {
-                "cosigner_commitments": [signer.commitment_hex.clone()]
+                "cosigner_commitments": cosigner_commitments
             }
         },
         "initial_state": initial_state

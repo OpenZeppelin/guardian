@@ -435,6 +435,40 @@ pub fn load_fixture_account_grpc() -> (AccountId, String, String) {
     (account_id, account_id_hex, fixture_string)
 }
 
+/// Signer 1 of the fixture account and the account's full cosigner set, in
+/// the signer map's canonical (index) order, as generated alongside
+/// `account.json` by `generate_fixtures`. Configuring the fixture account
+/// through the real extraction path (`IntegrationMockNetworkClient` over a
+/// `MidenNetworkClient`) only succeeds with this declared set, and only
+/// these keys then pass the account's cosigner check.
+pub fn fixture_signer() -> (TestSigner, Vec<String>) {
+    use miden_protocol::utils::serde::Deserializable;
+
+    let keys: serde_json::Value = serde_json::from_str(crate::testing::fixtures::KEYS_JSON)
+        .expect("Failed to parse keys.json");
+    let secret_key_bytes = hex::decode(keys["signer_1_secret_key"].as_str().expect("signer key"))
+        .expect("signer key hex");
+    let signer = TestSigner::from_secret_key(
+        SecretKey::read_from_bytes(&secret_key_bytes).expect("signer key bytes"),
+    );
+    assert_eq!(
+        signer.commitment_hex,
+        keys["signer_1_commitment"]
+            .as_str()
+            .expect("signer commitment"),
+        "keys.json signer 1 commitment must match its secret key"
+    );
+    let cosigner_commitments = (1..=3)
+        .map(|i| {
+            keys[format!("signer_{i}_commitment")]
+                .as_str()
+                .expect("signer commitment")
+                .to_string()
+        })
+        .collect();
+    (signer, cosigner_commitments)
+}
+
 pub fn get_test_account_id() -> (AccountId, String) {
     let account_id_hex = "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a";
     let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
@@ -497,7 +531,10 @@ impl Default for TestSigner {
 
 impl TestSigner {
     pub fn new() -> Self {
-        let secret_key = SecretKey::new();
+        Self::from_secret_key(SecretKey::new())
+    }
+
+    pub fn from_secret_key(secret_key: SecretKey) -> Self {
         let public_key = secret_key.public_key();
         let commitment = public_key.to_commitment();
         let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));

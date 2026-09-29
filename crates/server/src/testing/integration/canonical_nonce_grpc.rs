@@ -2,24 +2,31 @@
 
 use crate::api::grpc::guardian::guardian_server::Guardian;
 use crate::api::grpc::guardian::{ConfigureRequest, GetCanonicalNonceRequest, GetStateRequest};
+use crate::network::NetworkType;
+use crate::network::miden::MidenNetworkClient;
 use crate::testing::helpers::{
-    TestSigner, create_grpc_service, create_miden_falcon_rpo_auth, create_miden_network_config,
-    create_signed_request_with_auth, create_test_app_state,
-    load_fixture_account_grpc as load_fixture_account,
+    IntegrationMockNetworkClient, TestSigner, create_grpc_service, create_miden_falcon_rpo_auth,
+    create_miden_network_config, create_signed_request_with_auth, create_test_app_state,
+    fixture_signer, load_fixture_account_grpc as load_fixture_account,
 };
+use std::sync::Arc;
 
+/// The fixture account configured through the real Miden decoder, so the
+/// nonce the endpoint serves is read from the stored account state itself
+/// rather than from a mock.
 async fn configured_service() -> (crate::api::grpc::GuardianService, TestSigner, String) {
-    let state = create_test_app_state().await;
-    let service = create_grpc_service(state.clone());
+    let mut state = create_test_app_state().await;
+    state.network_client = Arc::new(IntegrationMockNetworkClient::new(
+        MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal),
+    ));
+    let service = create_grpc_service(state);
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
-    let signer = TestSigner::new();
+    let (signer, cosigner_commitments) = fixture_signer();
 
     let configure_req = ConfigureRequest {
         account_id: account_id_hex.clone(),
-        auth: Some(create_miden_falcon_rpo_auth(vec![
-            signer.commitment_hex.clone(),
-        ])),
+        auth: Some(create_miden_falcon_rpo_auth(cosigner_commitments)),
         network_config: Some(create_miden_network_config()),
         initial_state,
     };
