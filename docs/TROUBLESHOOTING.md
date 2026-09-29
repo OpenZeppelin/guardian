@@ -420,7 +420,8 @@ Operator checks:
   pending proposal or unpromoted delta on this server reached the chain
   (neither at the head nor in the account's transaction history), and
   the guardian key cannot be read from chain. If that account is known to have switched
-  guardians (an offline switch with no proposal here), it will not
+  guardians (an offline switch with no proposal here, or a switch delta
+  that was queued behind another candidate, issue #504), it will not
   release by itself. `own_key_mismatch` (warn) means the account is
   bound to a guardian key this server does not hold and nothing on chain
   moved it there: this server's ack key changed since the account was

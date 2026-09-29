@@ -23,7 +23,8 @@
 //!    state is ignored, and that a private account is released only
 //!    through a pending switch proposal whose post-state the chain
 //!    reached — at the head or in its transaction history, even after the
-//!    account moved on — never on an opaque read.
+//!    account moved on, and even when the candidate queue recorded it
+//!    against a stuck candidate's post-state — never on an opaque read.
 
 use std::sync::Arc;
 
@@ -35,9 +36,14 @@ use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::account::auth::AuthSecretKey;
-use miden_protocol::account::{Account, AccountType};
+use miden_protocol::account::{
+    Account, AccountDelta, AccountStoragePatch, AccountType, AccountVaultDelta,
+};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-use miden_protocol::transaction::TransactionHeader;
+use miden_protocol::transaction::{
+    InputNotes, RawOutputNotes, TransactionHeader, TransactionSummary, TransactionSummaryUserParams,
+};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
@@ -47,7 +53,8 @@ use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 
 use super::MultisigAuthArgsExt;
-use crate::delta_object::DeltaObject;
+use crate::canonicalization::CanonicalizationConfig;
+use crate::delta_object::{DeltaObject, DeltaStatus, RetainReason};
 use crate::jobs::release_sweep::run_release_sweep_now;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
@@ -88,6 +95,29 @@ fn falcon_credentials(
     let signature = key.sign(message);
     let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
     Credentials::signature(pubkey_hex.to_string(), signature_hex, timestamp)
+}
+
+/// The summary of a transaction that only bumps the nonce: an ordinary
+/// (non-switch) transaction whose delta applies to `account`.
+fn nonce_bump_summary(account: &Account) -> serde_json::Value {
+    let delta = AccountDelta::new(
+        account.id(),
+        AccountStoragePatch::default(),
+        AccountVaultDelta::default(),
+        None,
+        Felt::ONE,
+    )
+    .expect("nonce-only delta");
+    TransactionSummary::new(
+        delta,
+        InputNotes::new(Vec::new()).expect("no input notes"),
+        RawOutputNotes::new(Vec::new()).expect("no output notes"),
+        BlockNumber::from(0),
+        Word::from([Felt::new_unchecked(9); 4]),
+        0,
+        TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+    )
+    .to_json()
 }
 
 /// A guardian-bound account onboarded on this server with its pre-switch
@@ -199,6 +229,70 @@ impl UnannouncedSwitch {
         .await
         .expect("the switch proposal is accepted on the old guardian");
         proposal.commitment
+    }
+
+    /// Queue a candidate on the stored base through the push path in
+    /// candidate mode: an ordinary transaction this server acknowledged
+    /// but that never lands. Returns its nonce and post-state.
+    async fn push_stuck_candidate(&mut self) -> (u64, String) {
+        self.state.canonicalization = Some(CanonicalizationConfig::default());
+        let nonce = self.executed_account.nonce().as_canonical_u64();
+        let creds = self.credentials();
+        let pushed = push_delta(
+            &self.state,
+            PushDeltaParams {
+                delta: DeltaObject {
+                    account_id: self.account_id_hex.clone(),
+                    nonce,
+                    prev_commitment: self.pre_switch_commitment.clone(),
+                    delta_payload: nonce_bump_summary(&self.pre_switch_account),
+                    ..Default::default()
+                },
+                credentials: creds,
+            },
+        )
+        .await
+        .expect("the candidate is admitted on the stored base");
+        assert!(pushed.delta.status.is_candidate());
+        (
+            nonce,
+            pushed
+                .delta
+                .new_commitment
+                .expect("the post-state is recorded"),
+        )
+    }
+
+    /// Park a candidate the way canonicalization does once the chain has
+    /// moved off its base (`retain_candidate`, then the queue-aware flag
+    /// release). The process-now test processor never parks on
+    /// divergence, so the writes are made directly.
+    async fn park_diverged_candidate(&self, nonce: u64) {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.state
+            .storage
+            .update_candidate_status(
+                &self.account_id_hex,
+                nonce,
+                DeltaStatus::retained(now.clone(), RetainReason::Diverged),
+                None,
+            )
+            .await
+            .expect("the candidate is parked");
+        assert!(
+            !self
+                .state
+                .storage
+                .has_pending_candidate(&self.account_id_hex)
+                .await
+                .expect("queue readable"),
+            "no candidate is left queued"
+        );
+        self.state
+            .metadata
+            .clear_pending_candidate_if_none(&self.account_id_hex, &now)
+            .await
+            .expect("the pending flag is released");
     }
 
     fn release_events(&self) -> Vec<crate::audit::AuditEvent> {
@@ -754,6 +848,77 @@ async fn test_release_sweep_matches_a_pending_switch_proposal_for_a_private_acco
     assert!(
         remaining.is_empty(),
         "the switch proposal the chain proved executed is finalized"
+    );
+}
+
+#[tokio::test]
+async fn test_release_sweep_matches_a_switch_proposal_recorded_against_a_stuck_queue_tail() {
+    // A candidate is stuck in this server's queue (issue #17): acknowledged,
+    // never landed. The wallet then creates the switch proposal here. It
+    // built the switch on the stored state, but the queue records the
+    // proposal against its tail, the stuck candidate's post-state. The
+    // switch executes on chain from the stored state, and canonicalization
+    // parks the stuck candidate once the chain moved off its base. The
+    // proposal is still the evidence that releases the private account.
+    let mut fixture = unannounced_switch_for(AccountType::Private).await;
+    let (stuck_nonce, stuck_post_state) = fixture.push_stuck_candidate().await;
+    let proposal_id = fixture.push_switch_proposal().await;
+    let recorded = fixture
+        .state
+        .storage
+        .pull_pending_proposals(&fixture.account_id_hex)
+        .await
+        .expect("proposals readable");
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        recorded[0].proposal.prev_commitment, stuck_post_state,
+        "the queue records the proposal against its tail"
+    );
+
+    let executed = fixture.executed_account.clone();
+    fixture.install_chain(&executed, false);
+    fixture.park_diverged_candidate(stuck_nonce).await;
+
+    let pass = run_release_sweep_now(&fixture.state)
+        .await
+        .expect("sweep succeeds");
+    assert_eq!(pass.failed_accounts, 0);
+    assert!(
+        fixture.released_at().await.is_some(),
+        "a proposal recorded against the queue tail must still prove the switch"
+    );
+    let release_events = fixture.release_events();
+    assert_eq!(release_events.len(), 1);
+    let event = &release_events[0];
+    assert_eq!(event.payload["detected_by"], "proposal_match");
+    assert_eq!(event.payload["proposal_id"], proposal_id);
+    assert_eq!(
+        event.payload["stored_commitment"],
+        fixture.pre_switch_commitment
+    );
+    assert_eq!(
+        event.payload["switch_commitment"],
+        fixture.executed_commitment
+    );
+    assert!(
+        fixture
+            .state
+            .storage
+            .pull_pending_proposals(&fixture.account_id_hex)
+            .await
+            .expect("proposals readable")
+            .is_empty(),
+        "the switch proposal the chain proved executed is finalized"
+    );
+    let stuck = fixture
+        .state
+        .storage
+        .pull_delta(&fixture.account_id_hex, stuck_nonce)
+        .await
+        .expect("the parked row is readable");
+    assert!(
+        stuck.status.is_retained(),
+        "the parked candidate is left to the reconcile pass and its TTL"
     );
 }
 

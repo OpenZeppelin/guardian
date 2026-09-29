@@ -46,8 +46,8 @@ pub enum VisitOutcome {
     Failed,
 }
 
-/// A candidate post-state's origin: a pending proposal or an unpromoted
-/// delta, both chaining from the stored base.
+/// A candidate post-state's origin: a pending proposal, or an unpromoted
+/// delta chaining from the stored base.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SwitchSource {
     /// `storage_id` as the storage backend keys it (the filesystem
@@ -257,7 +257,7 @@ impl SweepState {
 
     /// Keep only the evidence of candidates in `current`: a proposal
     /// deleted by canonicalization or by its users, a delta that aged
-    /// out, or anything that no longer chains from the stored base leaves
+    /// out, or a delta that no longer chains from the stored base leaves
     /// the cache.
     fn retain_switches(&self, account_id: &str, current: &HashSet<String>) {
         let mut cache = locked(&self.switch_evidence);
@@ -469,8 +469,9 @@ impl ReleaseSweeper {
         }
         // A candidate in flight belongs to the push path: it either
         // canonicalizes (and the hook releases on a switch) or resolves
-        // to a state this sweep sees on a later visit. No observation
-        // is recorded either way.
+        // to a state this sweep sees on a later visit (except a switch
+        // delta parked behind another candidate, issue #504). No
+        // observation is recorded either way.
         if metadata.has_pending_candidate {
             tracing::debug!(
                 event = "release_sweep_skipped",
@@ -953,11 +954,17 @@ impl ReleaseSweeper {
         Ok(VisitOutcome::Checked)
     }
 
-    /// Candidates that chain from the stored base: every pending proposal
-    /// (whatever its label: the post-state's guardian key decides, not
-    /// the client-written type) and every unpromoted delta
-    /// canonicalization retained or the client abandoned (their proposal
-    /// is gone, but their payload is not).
+    /// Candidates to apply to the stored base: every pending proposal
+    /// and every unpromoted delta canonicalization retained or the client
+    /// abandoned (their proposal is gone, but their payload is not) that
+    /// chains from the stored base. A proposal counts whatever its label
+    /// (the post-state's guardian key decides, not the client-written
+    /// type) and whatever base it was recorded against: the candidate
+    /// queue records a proposal against its tail (issue #17), although a
+    /// cosigner that could only read the stored state built it on that
+    /// one. Either its summary applied to the stored state reproduces a
+    /// state the chain reached, or it proves nothing. A switch delta
+    /// queued behind another candidate is not matched yet (issue #504).
     async fn switch_candidates(
         &self,
         account_id: &str,
@@ -982,9 +989,6 @@ impl ReleaseSweeper {
 
         let mut candidates = Vec::new();
         for record in proposals {
-            if record.proposal.prev_commitment != stored.commitment {
-                continue;
-            }
             let Some(tx_summary) = record.proposal.delta_payload.get("tx_summary").cloned() else {
                 continue;
             };
@@ -2123,6 +2127,42 @@ mod tests {
         assert_eq!(
             h.auditor.snapshot()[0].payload["detected_by"],
             "proposal_match"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proposal_recorded_against_a_queue_tail_is_evidence() {
+        // The candidate queue (issue #17) records a proposal against its
+        // tail: this switch was proposed while a candidate that never
+        // landed was queued, so its recorded base is that candidate's
+        // post-state, although the cosigner built it on the stored state.
+        // Applied to the stored state it reproduces what the chain holds.
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_all_delta_proposals(Ok(vec![switch_proposal(
+                    ACCOUNT,
+                    "0xstuck_candidate_post_state",
+                )])),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_extract_guardian_commitment(Ok(Some(FOREIGN.into()))),
+            MockMetadataStore::new(),
+            2,
+        );
+        h.visit().await;
+        assert_eq!(released_ids(&h.metadata), vec![ACCOUNT.to_string()]);
+        let events = h.auditor.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["detected_by"], "proposal_match");
+        assert_eq!(events[0].payload["proposal_id"], PROPOSAL_ID);
+        assert_eq!(events[0].payload["stored_commitment"], STORED);
+        assert_eq!(events[0].payload["switch_commitment"], ON_CHAIN);
+        assert_eq!(
+            h.storage.get_delete_delta_proposal_calls(),
+            vec![(ACCOUNT.to_string(), PROPOSAL_ID.to_string())],
+            "the executed switch proposal is finalized"
         );
     }
 

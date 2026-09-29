@@ -552,12 +552,18 @@ so the sweep is deliberately slow and rate-bounded.
      reported as `own_key_mismatch`; when it moved on, the detectors
      below decide.
   3. **Chain moved past the stored base: candidate match.** Every
-     pending proposal (whatever its label: the post-state's guardian key
-     decides, not the client-written type) and every recoverable delta
-     (`retained`, or `discarded { client_abandoned }` within
-     `retained_ttl_seconds`) that chains from the stored base is applied
-     to the stored state (the same `apply_delta` canonicalization uses;
-     computed once per candidate and base, failures included). The
+     pending proposal and every recoverable delta (`retained`, or
+     `discarded { client_abandoned }` within `retained_ttl_seconds`)
+     that chains from the stored base is applied to the stored state
+     (the same `apply_delta` canonicalization uses; computed once per
+     candidate and base, failures included). A proposal counts whatever
+     its label (the post-state's guardian key decides, not the
+     client-written type) and whatever base it was recorded against: the
+     candidate queue records a proposal against its tail, although a
+     cosigner that could only read the stored state built it on that
+     one. A switch delta queued behind another candidate and parked with
+     it does not chain from the stored base and is not matched yet
+     (issue #504). The
      resulting commitment is looked for on chain: first at the head
      (free: the probe already read it), then — for post-states that move
      the guardian key away — in the account's transaction history
