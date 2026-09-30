@@ -54,6 +54,39 @@ account (`scripts/devnet-register-account.sh <account-id>`), sync until the
 note arrives, and consume it; see
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
 
+### "account data wasn't found" or "incomplete storage map" in a browser
+
+A browser `MidenClient` created with the default `useWorker: true` executes and
+applies transactions in a Web Worker that never sees the account state the
+multisig SDK writes with `accounts.insert` when it loads or syncs an account
+from GUARDIAN. The device's local copy of the account then breaks in one of two
+ways:
+
+- The device's first transaction after `MultisigClient.load` is submitted,
+  then fails to apply with `failed to apply transaction result: storage error:
+  account data wasn't found for account id 0x…`, whether it runs through
+  `executeProposal` or through your own submit path.
+- After a `syncState()` that imported another cosigner's change, the device's
+  next transaction applies without an error, but every later read of the
+  account fails with `failed to get account: storage error: database-related
+  non-query error: incomplete storage map for slot
+  miden::standards::auth::multisig::executed_transactions (expected root 0x…,
+  got 0x…)`. Once the page reloads, no client can open that store any more:
+  creating one fails with `Failed to initialize IdxdbStore`.
+
+Either way the transaction reached the chain and GUARDIAN canonicalizes it, so
+do not propose it again. Recover by creating the device's client with
+`useWorker: false` and calling `MultisigClient.load` again:
+
+- After the first error the store is intact, so reopen the same store.
+- After the second, open a new store (a new `storeName`). Nothing in the old
+  store can be read back through the SDK, including keys kept only in its
+  keystore: `exportStore` fails on it with the same `incomplete storage map`
+  error.
+
+The upstream bug and its status are in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
+
 ### State created on Miden 0.16 fails to load after the 0.17 upgrade
 
 The same shape as the 0.15 to 0.16 case below. A Rust SQLite store or a

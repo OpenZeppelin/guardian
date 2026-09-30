@@ -403,7 +403,6 @@ export interface CustomProposalRecipe {
  */
 async function buildRequestFromRecipe(
   midenClient: MidenClient,
-  midenRpcEndpoint: string,
   recipe: CustomProposalRecipe,
   signatureAdviceMap?: AdviceMap,
 ): Promise<TransactionRequest> {
@@ -417,7 +416,6 @@ async function buildRequestFromRecipe(
       salt: Word.fromHex(recipe.saltHex),
       boundBlockNum: recipe.boundBlockNum,
       signatureAdviceMap,
-      midenRpcEndpoint,
     },
   );
   return request;
@@ -432,7 +430,6 @@ function proposalBoundBlockNum(proposal: Proposal): number {
 
 export async function createCustomP2idProposal(
   midenClient: MidenClient,
-  midenRpcEndpoint: string,
   multisig: Multisig,
   recipientId: string,
   faucetId: string,
@@ -446,7 +443,6 @@ export async function createCustomP2idProposal(
     recipientId,
     faucetId,
     amount,
-    { midenRpcEndpoint },
   );
 
   const created = await createProposalResult(multisig, () =>
@@ -468,14 +464,13 @@ export async function createCustomP2idProposal(
 
 export async function prepareAndSubmitCustomProposal(
   midenClient: MidenClient,
-  midenRpcEndpoint: string,
   multisig: Multisig,
   recipe: CustomProposalRecipe,
 ): Promise<void> {
-  const bindingRequest = await buildRequestFromRecipe(midenClient, midenRpcEndpoint, recipe);
+  const bindingRequest = await buildRequestFromRecipe(midenClient, recipe);
   const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequest.serialize());
 
-  const finalRequest = await buildRequestFromRecipe(midenClient, midenRpcEndpoint, recipe, advice);
+  const finalRequest = await buildRequestFromRecipe(midenClient, recipe, advice);
 
   try {
     await multisig.submitTransaction(recipe.proposalId, finalRequest);

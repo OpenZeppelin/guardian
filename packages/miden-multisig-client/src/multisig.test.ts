@@ -26,6 +26,7 @@ const {
   mockImportNotesFromProposals,
   mockBackfillPublicNotesByTag,
   mockNoteDeserialize,
+  mockCreateClient,
 } = vi.hoisted(() => ({
   mockRpcGetAccountDetails: vi.fn(),
   mockAccountDeserialize: vi.fn(),
@@ -36,6 +37,9 @@ const {
   mockImportNotesFromProposals: vi.fn(),
   mockBackfillPublicNotesByTag: vi.fn(),
   mockNoteDeserialize: vi.fn(),
+  mockCreateClient: vi.fn(async () => {
+    throw new Error("opened a second WASM client over the caller's store");
+  }),
 }));
 
 vi.mock('./recovery/proposalNoteImport.js', async (importOriginal) => {
@@ -78,6 +82,10 @@ const { MOCK_CHAIN_ANCHOR_B64, MOCK_SALT_HEX, MOCK_ANCHOR_BLOCK_NUM, createMockC
 
 // Mock the Miden SDK
 vi.mock('@miden-sdk/miden-sdk', () => ({
+  // A tripwire: the SDK must never open a second client over the caller's store.
+  WasmWebClient: {
+    createClient: mockCreateClient,
+  },
   Account: {
     deserialize: mockAccountDeserialize,
   },
@@ -350,21 +358,31 @@ describe('Multisig', () => {
       serialize: () => new Uint8Array([1, 2, 3]),
     };
 
+    // The `MidenClient` surface the SDK is allowed to reach. The four
+    // pipeline stages below only back `transactions.executeRequest`'s handle.
     mockWebClient = {
       getSyncHeight: vi.fn().mockResolvedValue(0),
+      sync: vi.fn(),
+      syncChain: vi.fn(),
+      defaultProver: null,
       executeTransaction: vi.fn(),
       proveTransaction: vi.fn(),
       submitProvenTransaction: vi.fn(),
       applyTransaction: vi.fn(),
-      submitNewTransaction: vi.fn(),
-      submitNewTransactionWithProver: vi.fn(),
       transactions: {
         executeRequest: vi.fn(),
       },
-      getConsumableNotes: vi.fn().mockResolvedValue([]),
-      syncState: vi.fn(),
-      getAccount: vi.fn().mockResolvedValue(null),
-      newAccount: vi.fn(),
+      accounts: {
+        get: vi.fn().mockResolvedValue(null),
+        insert: vi.fn(),
+      },
+      notes: {
+        get: vi.fn().mockResolvedValue(null),
+        listSent: vi.fn().mockResolvedValue([]),
+        listAvailable: vi.fn().mockResolvedValue([]),
+        import: vi.fn(),
+        export: vi.fn(),
+      },
     };
     mockWebClient.transactions.executeRequest.mockImplementation(
       async (accountId: unknown, request: unknown) => {
@@ -697,7 +715,7 @@ describe('Multisig', () => {
 
     it('reads commitments from the store-backed account', async () => {
       const storeAccount = mockedAccount('0x' + 'b'.repeat(64), 1);
-      mockWebClient.getAccount.mockResolvedValueOnce(storeAccount);
+      mockWebClient.accounts.get.mockResolvedValueOnce(storeAccount);
       const expected = ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)];
       mockGetSignerCommitments.mockReturnValueOnce(expected);
 
@@ -709,7 +727,7 @@ describe('Multisig', () => {
     });
 
     it('falls back to the account snapshot when the store has no record', async () => {
-      mockWebClient.getAccount.mockResolvedValueOnce(null);
+      mockWebClient.accounts.get.mockResolvedValueOnce(null);
       mockGetSignerCommitments.mockReturnValueOnce(['0x' + '3'.repeat(64)]);
 
       const multisig = createTestMultisig(config);
@@ -719,10 +737,118 @@ describe('Multisig', () => {
     });
   });
 
+  describe('the supplied Miden client (issue #481)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it('does its store work through the supplied client and never opens another', async () => {
+      mockWebClient.storeIdentifier = vi.fn().mockResolvedValue('MidenClientDB');
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'AQID' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await multisig.syncState();
+      await multisig.getStoreAccount();
+      await multisig.getConsumableNotes();
+
+      expect(mockWebClient.accounts.get).toHaveBeenCalledWith(multisig.accountId);
+      expect(mockWebClient.accounts.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ overwrite: true }),
+      );
+      expect(mockWebClient.notes.listAvailable).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.storeIdentifier).not.toHaveBeenCalled();
+      expect(mockCreateClient).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getConsumableNotes', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    function inputNoteRecord(idHex: string | undefined, assets: Array<[string, bigint]>) {
+      return {
+        id: () => (idHex === undefined ? undefined : { toString: () => idHex }),
+        details: () => ({
+          assets: () => ({
+            fungibleAssets: () =>
+              assets.map(([faucetId, amount]) => ({
+                faucetId: () => ({ toString: () => faucetId }),
+                amount: () => amount,
+              })),
+          }),
+        }),
+      };
+    }
+
+    it("lists the notes the client screened as consumable now by this account, with their assets", async () => {
+      const noteId = '0x' + '01'.repeat(32);
+      mockWebClient.notes.listAvailable.mockResolvedValue([
+        inputNoteRecord(noteId, [
+          ['0x' + '5a'.repeat(15), 5n],
+          ['0x' + '6b'.repeat(15), 7n],
+        ]),
+      ]);
+      const multisig = createTestMultisig(config);
+
+      const notes = await multisig.getConsumableNotes();
+
+      // Block-locked and never-consumable notes are the client's call to leave out.
+      expect(mockWebClient.notes.listAvailable).toHaveBeenCalledWith({ account: multisig.accountId });
+      expect(notes).toEqual([
+        {
+          id: noteId,
+          assets: [
+            { faucetId: '0x' + '5a'.repeat(15), amount: 5n },
+            { faucetId: '0x' + '6b'.repeat(15), amount: 7n },
+          ],
+        },
+      ]);
+    });
+
+    it('skips a record that carries no note id', async () => {
+      mockWebClient.notes.listAvailable.mockResolvedValue([
+        inputNoteRecord(undefined, [['0x' + '5a'.repeat(15), 1n]]),
+        inputNoteRecord('0x' + '02'.repeat(32), []),
+      ]);
+      const multisig = createTestMultisig(config);
+
+      const notes = await multisig.getConsumableNotes();
+
+      expect(notes).toEqual([{ id: '0x' + '02'.repeat(32), assets: [] }]);
+    });
+
+    it('returns an empty list when nothing is consumable', async () => {
+      const multisig = createTestMultisig(config);
+
+      await expect(multisig.getConsumableNotes()).resolves.toEqual([]);
+    });
+
+    it('surfaces a store failure', async () => {
+      mockWebClient.notes.listAvailable.mockRejectedValue(new Error('store closed'));
+      const multisig = createTestMultisig(config);
+
+      await expect(multisig.getConsumableNotes()).rejects.toThrow('store closed');
+    });
+  });
+
   describe('getGuardianPublicKeyCommitment (issue #306)', () => {
     it('reads the guardian commitment from the store-backed account', async () => {
       const storeAccount = mockedAccount('0x' + 'b'.repeat(64), 1);
-      mockWebClient.getAccount.mockResolvedValueOnce(storeAccount);
+      mockWebClient.accounts.get.mockResolvedValueOnce(storeAccount);
       mockGetGuardianCommitment.mockReturnValueOnce('0x' + '4'.repeat(64));
 
       const multisig = createTestMultisig({
@@ -785,7 +911,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce(null);
+      mockWebClient.accounts.get.mockResolvedValueOnce(null);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -800,7 +926,13 @@ describe('Multisig', () => {
       const result = await multisig.syncState();
 
       expect(result.source).toBe('guardian');
-      expect(mockWebClient.newAccount).toHaveBeenCalledTimes(1);
+      // GUARDIAN's state lands in the caller's own client, the one that goes on
+      // to execute and apply against it.
+      expect(mockWebClient.accounts.insert).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.accounts.insert).toHaveBeenCalledWith({
+        account: mockAccountDeserialize.mock.results[0]?.value,
+        overwrite: true,
+      });
       expect(mockRpcGetAccountDetails).toHaveBeenCalledTimes(1);
       // No local account means no nonce to compare: the pre-check is skipped.
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -824,7 +956,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 0));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 0));
       mockRpcGetAccountDetails.mockResolvedValueOnce({
         commitment: () => ({
           toHex: () => '0x' + 'b'.repeat(64),
@@ -852,7 +984,7 @@ describe('Multisig', () => {
       const result = await multisig.syncState();
 
       expect(result.source).toBe('guardian');
-      expect(mockWebClient.newAccount).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.accounts.insert).toHaveBeenCalledTimes(1);
       expect(String(mockFetch.mock.calls[0][0])).toContain('/state/nonce?');
       expect(String(mockFetch.mock.calls[1][0])).toContain('/state?');
     });
@@ -874,7 +1006,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -903,7 +1035,7 @@ describe('Multisig', () => {
         '0x' + '2'.repeat(64),
       ]);
       expect(multisig.guardianCommitment).toBe('0x' + 'd'.repeat(64));
-      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+      expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
     });
 
     it('keeps the previous config when a refresh reads an incomplete signer set (issue #306 review)', async () => {
@@ -914,7 +1046,7 @@ describe('Multisig', () => {
       };
       const multisig = createTestMultisig(config, mockSigner, '0x' + 'a'.repeat(30));
 
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -959,7 +1091,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 0));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 0));
       mockRpcGetAccountDetails.mockRejectedValueOnce(
         new Error('No account header record found for given ID')
       );
@@ -984,7 +1116,7 @@ describe('Multisig', () => {
 
       await multisig.syncState();
 
-      expect(mockWebClient.newAccount).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.accounts.insert).toHaveBeenCalledTimes(1);
     });
 
     it('should throw when incoming commitment does not match on-chain commitment', async () => {
@@ -1004,7 +1136,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 0));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 0));
       mockAccountDeserialize.mockReturnValueOnce(mockedAccount('0x' + 'b'.repeat(64), 1));
       mockRpcGetAccountDetails.mockResolvedValueOnce({
         commitment: () => ({
@@ -1031,7 +1163,7 @@ describe('Multisig', () => {
       });
 
       await expect(multisig.syncState()).rejects.toThrow('Refusing to overwrite local state');
-      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+      expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
     });
 
     it('keeps local state and refreshes config from it when GUARDIAN nonce is behind local', async () => {
@@ -1052,7 +1184,7 @@ describe('Multisig', () => {
       );
 
       const localAccount = mockedAccount('0x' + 'a'.repeat(64), 3);
-      mockWebClient.getAccount.mockResolvedValueOnce(localAccount);
+      mockWebClient.accounts.get.mockResolvedValueOnce(localAccount);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -1079,7 +1211,7 @@ describe('Multisig', () => {
         localNonce: 3n,
         guardianNonce: 2n,
       });
-      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+      expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
       expect(mockRpcGetAccountDetails).not.toHaveBeenCalled();
       expect(mockAccountDeserialize).not.toHaveBeenCalled();
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -1105,7 +1237,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 2));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 2));
       mockAccountDeserialize.mockReturnValueOnce(mockedAccount('0x' + 'b'.repeat(64), 2));
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -1129,7 +1261,7 @@ describe('Multisig', () => {
       await expect(multisig.syncState()).rejects.toThrow(
         'incoming nonce 2 equals local nonce 2 but commitments differ'
       );
-      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+      expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
       // An equal nonce at a different commitment is divergence, not
       // "nothing to pull": the pre-check must hand over to the full fetch.
       expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -1156,7 +1288,7 @@ describe('Multisig', () => {
       // (candidate not canonicalized yet). Before the fix this threw and left
       // Multisig.account frozen at the pre-execute snapshot.
       const localAccount = mockedAccount('0x' + 'a'.repeat(64), 1);
-      mockWebClient.getAccount.mockResolvedValueOnce(localAccount);
+      mockWebClient.accounts.get.mockResolvedValueOnce(localAccount);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -1167,7 +1299,7 @@ describe('Multisig', () => {
       });
 
       await expect(multisig.syncState()).resolves.toMatchObject({ source: 'local' });
-      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+      expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
       expect(multisig.account).toBe(localAccount);
     });
 
@@ -1188,7 +1320,7 @@ describe('Multisig', () => {
         'https://rpc.devnet.miden.io'
       );
 
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 1));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 1));
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
@@ -1206,7 +1338,7 @@ describe('Multisig', () => {
         code: 'account_data_unavailable',
       });
       expect(mockFetch).toHaveBeenCalledTimes(1);
-      expect(mockWebClient.newAccount).not.toHaveBeenCalled();
+      expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
       expect(mockAccountDeserialize).not.toHaveBeenCalled();
     });
   });
@@ -1218,7 +1350,7 @@ describe('Multisig', () => {
         signerCommitments: ['0x' + 'a'.repeat(64)],
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
 
       const multisigWithRpc = new Multisig(
         mockAccount,
@@ -1243,7 +1375,7 @@ describe('Multisig', () => {
         signerCommitments: ['0x' + 'a'.repeat(64)],
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
-      mockWebClient.getAccount.mockResolvedValueOnce(null);
+      mockWebClient.accounts.get.mockResolvedValueOnce(null);
 
       const multisigWithRpc = new Multisig(
         mockAccount,
@@ -1266,7 +1398,7 @@ describe('Multisig', () => {
         signerCommitments: ['0x' + 'a'.repeat(64)],
         guardianCommitment: '0x' + 'c'.repeat(64),
       };
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'f'.repeat(64), 0));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'f'.repeat(64), 0));
       mockRpcGetAccountDetails.mockResolvedValueOnce({
         commitment: () => ({
           toHex: () => '0x' + 'b'.repeat(64),
@@ -2532,8 +2664,8 @@ describe('Multisig', () => {
       expect(freed).toHaveBeenCalledTimes(1);
       // The listing brought the store to the tip once, before re-executing:
       // an execution loads the fee faucet at the store's sync height.
-      expect(mockWebClient.syncState).toHaveBeenCalledTimes(1);
-      expect(mockWebClient.syncState.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(mockWebClient.syncChain).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.syncChain.mock.invocationCallOrder[0]).toBeLessThan(
         vi.mocked(executeForSummaryAtTip).mock.invocationCallOrder[0],
       );
     });
@@ -2595,7 +2727,7 @@ describe('Multisig', () => {
 
       // The node is unreachable for the pre-listing sync, and the re-execution
       // then fails on account state the node has pruned.
-      mockWebClient.syncState.mockRejectedValueOnce(new Error('node unreachable'));
+      mockWebClient.syncChain.mockRejectedValueOnce(new Error('node unreachable'));
       const pruned = new Error('failed to get foreign account inputs: block 4242 has been pruned');
       vi.mocked(executeForSummaryAtTip).mockRejectedValueOnce(pruned);
       vi.mocked(isStaleChainError).mockImplementationOnce((error) => error === pruned);
@@ -2606,7 +2738,7 @@ describe('Multisig', () => {
         status: 'failed',
         retryable: true,
       });
-      expect(mockWebClient.syncState).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.syncChain).toHaveBeenCalledTimes(1);
     });
 
     /// Issue #409, second cause: miden-client consumes a note as authenticated
@@ -3272,65 +3404,60 @@ describe('Multisig', () => {
 
     it('exports the full note with proof when the inclusion proof is known', async () => {
       const noteFile = { serialize: () => new Uint8Array([9, 9, 9]) };
-      mockWebClient.getOutputNote = vi.fn().mockResolvedValue({
-        inclusionProof: () => ({}),
-      });
-      mockWebClient.exportNoteFile = vi.fn().mockResolvedValue(noteFile);
+      mockWebClient.notes.listSent.mockResolvedValue([{ inclusionProof: () => ({}) }]);
+      mockWebClient.notes.export.mockResolvedValue(noteFile);
 
       const multisig = createTestMultisig(config);
       const bytes = await multisig.exportNoteToBytes('0x' + 'ab'.repeat(32));
 
       expect(bytes).toEqual(new Uint8Array([9, 9, 9]));
+      expect(mockWebClient.notes.listSent).toHaveBeenCalledWith({ ids: ['0x' + 'ab'.repeat(32)] });
       // NoteExportFormat.Full = 1 in the SDK mock
-      expect(mockWebClient.exportNoteFile).toHaveBeenCalledWith('0x' + 'ab'.repeat(32), 1);
+      expect(mockWebClient.notes.export).toHaveBeenCalledWith('0x' + 'ab'.repeat(32), { format: 1 });
     });
 
     it('falls back to a details-only export before the note commits on chain', async () => {
       const noteFile = { serialize: () => new Uint8Array([7]) };
-      mockWebClient.getOutputNote = vi.fn().mockResolvedValue({
-        inclusionProof: () => undefined,
-      });
-      mockWebClient.exportNoteFile = vi.fn().mockResolvedValue(noteFile);
+      mockWebClient.notes.listSent.mockResolvedValue([{ inclusionProof: () => undefined }]);
+      mockWebClient.notes.export.mockResolvedValue(noteFile);
 
       const multisig = createTestMultisig(config);
       await multisig.exportNoteToBytes(' 0x' + 'ab'.repeat(32) + ' ');
 
       // NoteExportFormat.Details = 2 in the SDK mock; the id is trimmed
-      expect(mockWebClient.exportNoteFile).toHaveBeenCalledWith('0x' + 'ab'.repeat(32), 2);
+      expect(mockWebClient.notes.export).toHaveBeenCalledWith('0x' + 'ab'.repeat(32), { format: 2 });
     });
 
     it('rejects exporting a note the local store does not know', async () => {
-      mockWebClient.getOutputNote = vi.fn().mockRejectedValue(new Error('no such note'));
-      mockWebClient.exportNoteFile = vi.fn();
+      mockWebClient.notes.listSent.mockResolvedValue([]);
 
       const multisig = createTestMultisig(config);
       await expect(multisig.exportNoteToBytes('0x' + 'ab'.repeat(32))).rejects.toThrow(
         /not found in the local store/,
       );
-      expect(mockWebClient.exportNoteFile).not.toHaveBeenCalled();
+      expect(mockWebClient.notes.export).not.toHaveBeenCalled();
     });
 
-    it('rejects exporting when the store resolves no record', async () => {
-      mockWebClient.getOutputNote = vi.fn().mockResolvedValue(undefined);
-      mockWebClient.exportNoteFile = vi.fn();
+    it('rejects exporting when the store read fails, keeping the cause', async () => {
+      mockWebClient.notes.listSent.mockRejectedValue(new Error('invalid note id'));
 
       const multisig = createTestMultisig(config);
-      await expect(multisig.exportNoteToBytes('0x' + 'ab'.repeat(32))).rejects.toThrow(
-        /not found in the local store/,
+      await expect(multisig.exportNoteToBytes('0xnot-a-note')).rejects.toThrow(
+        /not found in the local store; only notes created by this client can be exported: invalid note id/,
       );
-      expect(mockWebClient.exportNoteFile).not.toHaveBeenCalled();
+      expect(mockWebClient.notes.export).not.toHaveBeenCalled();
     });
 
     it('imports note file bytes and returns the resolved identifier', async () => {
       const decoded = { marker: 'note-file' };
       mockNoteFileDeserialize.mockReturnValue(decoded);
-      mockWebClient.importNoteFile = vi.fn().mockResolvedValue('0x' + 'cd'.repeat(32));
+      mockWebClient.notes.import.mockResolvedValue('0x' + 'cd'.repeat(32));
 
       const multisig = createTestMultisig(config);
       const noteId = await multisig.importNoteFromBytes(new Uint8Array([1, 2, 3]));
 
       expect(mockNoteFileDeserialize).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
-      expect(mockWebClient.importNoteFile).toHaveBeenCalledWith(decoded);
+      expect(mockWebClient.notes.import).toHaveBeenCalledWith(decoded);
       expect(noteId).toBe('0x' + 'cd'.repeat(32));
     });
 
@@ -3338,13 +3465,12 @@ describe('Multisig', () => {
       mockNoteFileDeserialize.mockImplementation(() => {
         throw new Error('bad bytes');
       });
-      mockWebClient.importNoteFile = vi.fn();
 
       const multisig = createTestMultisig(config);
       await expect(multisig.importNoteFromBytes(new Uint8Array([0]))).rejects.toThrow(
         /failed to decode note file: bad bytes/,
       );
-      expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
+      expect(mockWebClient.notes.import).not.toHaveBeenCalled();
     });
   });
 
@@ -3365,7 +3491,7 @@ describe('Multisig', () => {
     it('imports from a File/Blob by delegating to importNoteFromBytes', async () => {
       const decoded = { marker: 'note-file' };
       mockNoteFileDeserialize.mockReturnValue(decoded);
-      mockWebClient.importNoteFile = vi.fn().mockResolvedValue('0x' + 'cd'.repeat(32));
+      mockWebClient.notes.import.mockResolvedValue('0x' + 'cd'.repeat(32));
 
       const multisig = createTestMultisig(config);
       const noteId = await multisig.importNoteFromFile(new Blob([new Uint8Array([1, 2, 3])]));
@@ -3890,7 +4016,7 @@ describe('Multisig', () => {
         expect.objectContaining({ method: 'GET' }),
       );
       // Pre-build node sync (mirrors the Rust sync_network_only).
-      expect(mockWebClient.syncState).toHaveBeenCalled();
+      expect(mockWebClient.syncChain).toHaveBeenCalled();
 
       // Cached locally, ready at threshold 1 (proposer already signed).
       const cached = multisig.listProposals();
@@ -3912,7 +4038,7 @@ describe('Multisig', () => {
       // The synced store reports the threshold now at 2; with the stale
       // cached config (threshold 1) the proposal would flip to 'ready' on the
       // proposer's signature alone and fail only at submission.
-      mockWebClient.getAccount.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 1));
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'b'.repeat(64), 1));
       mockDetectConfig.mockReturnValueOnce({
         threshold: 2,
         numSigners: 2,
@@ -4010,7 +4136,7 @@ describe('Multisig', () => {
         // Execution succeeds with the current GUARDIAN unreachable: the
         // canonicalization push is best-effort, and registration goes to the
         // new GUARDIAN only.
-        mockWebClient.getAccount.mockResolvedValueOnce({
+        mockWebClient.accounts.get.mockResolvedValueOnce({
           serialize: () => new Uint8Array([1, 2, 3]),
         });
         await expect(proposerClient.executeProposal(readyProposal.id)).resolves.toBeUndefined();
@@ -5864,8 +5990,8 @@ describe('Multisig', () => {
       expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
       // Executed at the chain tip once synced: the store is brought to the tip
       // first, and the final request is never executed against the anchor.
-      expect(mockWebClient.syncState).toHaveBeenCalled();
-      expect(mockWebClient.syncState.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(mockWebClient.syncChain).toHaveBeenCalled();
+      expect(mockWebClient.syncChain.mock.invocationCallOrder[0]).toBeLessThan(
         mockWebClient.transactions.executeRequest.mock.invocationCallOrder[0],
       );
       expect(prepareTipExecution).toHaveBeenCalledTimes(1);
@@ -6105,7 +6231,7 @@ describe('Multisig', () => {
       vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
       mockImportNotesFromProposals.mockReset();
       mockImportNotesFromProposals.mockResolvedValue([]);
-      mockWebClient.getAccount.mockResolvedValueOnce({
+      mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
       });
       mockFetch.mockResolvedValueOnce({
@@ -6164,7 +6290,7 @@ describe('Multisig', () => {
       vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
       mockImportNotesFromProposals.mockReset();
       mockImportNotesFromProposals.mockResolvedValue([]);
-      mockWebClient.getAccount.mockResolvedValueOnce({
+      mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
       });
       mockFetch.mockResolvedValueOnce({
@@ -6324,7 +6450,7 @@ describe('Multisig', () => {
           ack_scheme: 'falcon',
         }),
       });
-      mockWebClient.getAccount.mockResolvedValueOnce({
+      mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
       });
       // The switch transaction submit — the import must precede it, because
@@ -6430,7 +6556,7 @@ describe('Multisig', () => {
         });
         // getDeltaProposal against the old GUARDIAN fails — must be swallowed.
         mockFetch.mockRejectedValueOnce(new Error('pre-switch GUARDIAN unreachable'));
-        mockWebClient.getAccount.mockResolvedValueOnce({
+        mockWebClient.accounts.get.mockResolvedValueOnce({
           serialize: () => new Uint8Array([1, 2, 3]),
         });
         mockFetch.mockResolvedValueOnce({
@@ -7046,7 +7172,7 @@ describe('Multisig', () => {
       const multisig = createTestMultisig(config);
       const noteId = '0x' + '88'.repeat(32);
       const note = { id: () => ({ toString: () => noteId }), serialize: () => new Uint8Array([9]) };
-      mockWebClient.getInputNote = vi.fn().mockResolvedValue({ toNote: () => note });
+      mockWebClient.notes.get.mockResolvedValue({ toNote: () => note });
       // The returned delta's embedded bytes decode back to the same note.
       mockNoteDeserialize.mockReturnValue(note);
 
@@ -7101,9 +7227,11 @@ describe('Multisig', () => {
       // Called before the summary; the post-push binding check of the served
       // proposal calls it again (a no-op once the notes are authenticated).
       expect(mockEnsureNotesAuthenticated).toHaveBeenCalled();
-      expect((mockEnsureNotesAuthenticated.mock.calls[0] as unknown as [unknown, unknown[]])[1]).toEqual([
-        note,
-      ]);
+      const [authenticatedOn, authenticatedNotes] = mockEnsureNotesAuthenticated.mock
+        .calls[0] as unknown as [unknown, unknown[]];
+      expect(authenticatedOn).toBe(mockWebClient);
+      expect(authenticatedNotes).toEqual([note]);
+      expect(mockWebClient.notes.get).toHaveBeenCalledWith(noteId);
       expect(order).toEqual(['authenticate', 'summary']);
     });
 

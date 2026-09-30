@@ -86,9 +86,13 @@ function currentAccountNonce(multisig: Multisig): number | null {
   }
 }
 
+/**
+ * The account's next nonce, as the Rust client and the shared smoke-web helper
+ * use: a proposal at nonce N is consumed once the account reaches N.
+ */
 function proposalNonce(multisig: Multisig): number | undefined {
   const nonce = currentAccountNonce(multisig);
-  return nonce === null ? undefined : nonce;
+  return nonce === null ? undefined : nonce + 1;
 }
 
 function filterVisibleProposals(
@@ -104,7 +108,7 @@ function filterVisibleProposals(
       return false;
     }
 
-    if (accountNonce !== null && proposal.nonce < accountNonce) {
+    if (accountNonce !== null && proposal.nonce <= accountNonce) {
       return false;
     }
 

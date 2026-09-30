@@ -223,16 +223,18 @@ describe('buildP2idTransactionRequest', () => {
     );
 
     expect(mockFeeAwareBuilder).toHaveBeenCalledTimes(1);
-    const [sender, expiration, feeSalt, boundBlockNum] = mockFeeAwareBuilder.mock.calls[0] as [
-      { hex: string },
-      unknown,
-      { toHex: () => string },
-      unknown,
+    const [sender, options] = mockFeeAwareBuilder.mock.calls[0] as [
+      string,
+      {
+        feeConversionSalt: { toHex: () => string };
+        boundBlockNum?: number;
+        approvalExpirationDelta?: number;
+      },
     ];
-    expect(sender.hex).toBe('0x7bfb0f38b0fafa103f86a805594170');
-    expect(expiration).toBeNull();
-    expect(feeSalt.toHex()).toBe(salt.toHex());
-    expect(boundBlockNum).toBe(77);
+    expect(sender).toBe('0x7bfb0f38b0fafa103f86a805594170');
+    expect(options.approvalExpirationDelta).toBeUndefined();
+    expect(options.feeConversionSalt.toHex()).toBe(salt.toHex());
+    expect(options.boundBlockNum).toBe(77);
     expect(mockExtendAdviceMap).not.toHaveBeenCalled();
     expect(mockWordFromHex).toHaveBeenCalledWith(salt.toHex());
   });

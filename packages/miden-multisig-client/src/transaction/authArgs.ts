@@ -1,7 +1,12 @@
-import type { Felt, TransactionRequest, TransactionRequestBuilder, Word } from '@miden-sdk/miden-sdk';
-import { AccountId, Word as WordType } from '@miden-sdk/miden-sdk';
+import type {
+  Felt,
+  MidenClient,
+  TransactionRequest,
+  TransactionRequestBuilder,
+  Word,
+} from '@miden-sdk/miden-sdk';
+import { Word as WordType } from '@miden-sdk/miden-sdk';
 import { MultisigAuthArgsMissingError } from '../multisig/authArgErrors.js';
-import { getRawMidenClient, isPublicMidenClient, type RawClientSource } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { randomWord } from '../utils/random.js';
 import type { MultisigRequestOptions } from './options.js';
@@ -38,28 +43,17 @@ export interface MultisigRequestDraft {
  * the hex rather than taken from the caller, and nothing frees it afterwards.
  */
 export async function multisigRequestBuilder(
-  client: RawClientSource,
+  client: MidenClient,
   options: MultisigRequestOptions,
 ): Promise<MultisigRequestDraft> {
-  const { accountId, boundBlockNum, approvalExpirationDelta, midenRpcEndpoint } = options;
+  const { accountId, boundBlockNum, approvalExpirationDelta } = options;
   assertApprovalExpirationDelta(approvalExpirationDelta);
   const saltHex = normalizeHexWord(options.salt ? options.salt.toHex() : randomWord().toHex());
-  const salt = WordType.fromHex(saltHex);
-  if (isPublicMidenClient(client)) {
-    const builder = await client.feeAwareTransactionRequestBuilder(accountId, {
-      feeConversionSalt: salt,
-      boundBlockNum,
-      approvalExpirationDelta,
-    });
-    return { builder, saltHex };
-  }
-  const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
-  const builder = await rawClient.feeAwareTransactionRequestBuilder(
-    AccountId.fromHex(accountId),
-    approvalExpirationDelta ?? null,
-    salt,
-    boundBlockNum ?? null,
-  );
+  const builder = await client.feeAwareTransactionRequestBuilder(accountId, {
+    feeConversionSalt: WordType.fromHex(saltHex),
+    boundBlockNum,
+    approvalExpirationDelta,
+  });
   return { builder, saltHex };
 }
 

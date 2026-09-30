@@ -15,6 +15,7 @@ import {
   type CommittedNote,
   Endpoint,
   type InputNoteRecord,
+  type MidenClient,
   type Note,
   type NoteInclusionProof,
   NoteScript,
@@ -32,7 +33,7 @@ import {
   type NoteImportOutcome,
   reclassifyConsumedImports,
 } from './proposalNoteImport.js';
-import { getRawMidenClient, requireMidenRpcEndpoint, type RawClientSource } from '../raw-client.js';
+import { requireMidenRpcEndpoint } from '../config.js';
 import { resolveRpcConfig, type RpcConfig } from '../rpc/config.js';
 import { isTransientRpcError } from '../rpc/errors.js';
 import { retryRpcRead } from '../rpc/retry.js';
@@ -235,12 +236,11 @@ export interface BackfillPublicNotesOptions {
  * ```
  */
 export async function backfillPublicNotesByTag(
-  midenClient: RawClientSource,
+  midenClient: MidenClient,
   options: BackfillPublicNotesOptions,
 ): Promise<PublicBackfillReport> {
   const midenRpcEndpoint = requireMidenRpcEndpoint(options.midenRpcEndpoint);
   const rpcConfig = resolveRpcConfig(options.rpc);
-  const webClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
   const rpcClient = new RpcClient(new Endpoint(midenRpcEndpoint));
   // Parse eagerly so a malformed account ID throws before any network work.
   AccountId.fromHex(options.accountId);
@@ -426,7 +426,7 @@ export async function backfillPublicNotesByTag(
 
   let existing: Map<string, InputNoteRecord>;
   try {
-    existing = await collectExistingRecords(webClient);
+    existing = await collectExistingRecords(midenClient);
   } catch (error) {
     const reason = `failed to read local store: ${errorDetail(error)}`;
     for (const candidate of pending) {
@@ -480,7 +480,7 @@ export async function backfillPublicNotesByTag(
       }
     }
     const { outcome, wasImported } = await importNoteWithProof(
-      webClient,
+      midenClient,
       'backfill',
       candidate.idHex,
       candidate.note,
@@ -496,7 +496,7 @@ export async function backfillPublicNotesByTag(
     outcomes.push(outcome);
   }
 
-  await reclassifyConsumedImports(webClient, imported, outcomes);
+  await reclassifyConsumedImports(midenClient, imported, outcomes);
 
   return buildReport();
 }
