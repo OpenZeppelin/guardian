@@ -1,12 +1,18 @@
 # Server API Contract: Guardian Prove and Commit
 
+**Last Revised**: 2026-09-30 (spec revision 11: re-verified against the Miden 0.17 release-candidate
+pins on `main`. Error vocabulary per the revision 17 change brief: `ANCHOR_EXPIRED` renamed to
+`EXPIRATION_REACHED`, foreign accounts supported, new `REQUEST_INVALID`, `CHAIN_BEHIND`,
+`INSUFFICIENT_FEE` and `SEALING_FAILED`; `NO_FINITE_EXPIRATION` renamed to
+`EXPIRATION_BEYOND_HORIZON`; failed executions gain an optional `error.meta`)
+
 Normative wire contract for the server surface added by #254. Field names and shapes
 below are normative; Rust/TS type spellings are illustrative.
 
 Route style follows the existing surface: **flat paths with query parameters, no path
 parameters** (compare `/delta/proposal/single`, `/delta/candidate/abandon` in
 `crates/server/src/builder/handle.rs:234-245`). Authentication is the existing
-per-account scheme (`x-pubkey`, `x-signature`, `x-timestamp`) — no new mechanism
+per-account scheme (`x-pubkey`, `x-signature`, `x-timestamp`), with no new mechanism
 (FR-002).
 
 Proposal creation and execution are separate operations. Creation stores the supplied
@@ -45,20 +51,20 @@ committed specs with `cargo run --features evm --bin gen-openapi -- docs` (AGENT
 
 ## Request
 
-`POST /delta/proposal/execution` — JSON body:
+`POST /delta/proposal/execution`, JSON body:
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `account_id` | string | yes | Hex account id |
 | `proposal_id` | string | yes | The proposal's commitment |
 
-`GET /delta/proposal/execution` — query parameters `account_id`, `proposal_id`, both
+`GET /delta/proposal/execution`: query parameters `account_id`, `proposal_id`, both
 required.
 
 **When the proposal exists but has never been executed**, the operation MUST return
 `404 Not Found` with code `GUARDIAN_EXECUTION_NOT_FOUND` (gRPC: `NOT_FOUND`, same code
 string). This is distinct from `GUARDIAN_PROPOSAL_NOT_FOUND`, which means the proposal itself is
-absent, and the two MUST NOT be conflated — a caller polling too eagerly needs to know that its
+absent, and the two MUST NOT be conflated: a caller polling too eagerly needs to know that its
 request has not been accepted yet, not that its proposal vanished.
 
 It is also deliberately different from `GET /delta/execution/current`, which answers
@@ -66,13 +72,13 @@ It is also deliberately different from `GET /delta/execution/current`, which ans
 *account* and "none" is a valid answer; this one asks for a *specific named execution*, and
 absence is a missing resource. Both mappings MUST be verified by parity tests (SC-039).
 
-`GET /delta/execution/current` — query parameter `account_id`, required. An execution in a
+`GET /delta/execution/current`: query parameter `account_id`, required. An execution in a
 terminal state is not "in flight" and MUST NOT be returned here; it remains readable via
 `GET /delta/proposal/execution`.
 
 The empty result is normative and MUST be identical in meaning on both transports:
 
-- **HTTP**: `200 OK` with body `{"execution": null}`. **Not** `404` — the account exists and
+- **HTTP**: `200 OK` with body `{"execution": null}`. **Not** `404`: the account exists and
   the query succeeded; "nothing in flight" is a successful answer, not a missing resource.
 - **gRPC**: a success response with the optional `execution` field absent.
 
@@ -91,9 +97,10 @@ Both operations return the same execution envelope:
 | `error` | object | no | Present iff `state` is a failed state |
 | `error.code` | string | yes when present | Stable code from the vocabulary below |
 | `error.message` | string | yes when present | Human-readable |
+| `error.meta` | object | no | Structured detail for codes that define it (`meta.bound`, `meta.reason`; see the asynchronous table). Same shape as the `meta` of a synchronous refusal |
 | `delta_nonce` | integer | no | Present from `submitted` onward; links to the candidate delta |
 | `newly_accepted` | boolean | yes | `true` when this call created the execution; `false` when it idempotently returned an already-active one. Carries the HTTP 202-vs-200 distinction over gRPC, which has no 202. On the two read operations it is always `false` |
-| `proposal_exists` | boolean | yes | Whether the proposal record still exists. A **fact**, not retry advice — see the truth table below (FR-042) |
+| `proposal_exists` | boolean | yes | Whether the proposal record still exists. A **fact**, not retry advice; see the truth table below (FR-042) |
 | `ignored_signatures` | integer | no | Count of stored signature entries excluded as invalid, duplicate, or non-cosigner (FR-006); for diagnosis only |
 | `updated_at` | RFC 3339 string | yes | |
 
@@ -108,14 +115,14 @@ MUST read the field rather than infer from transport status.
 
 ## Execution state vocabulary
 
-Serialized as `snake_case` strings. **Exactly five values** (FR-024) — a state exists only
+Serialized as `snake_case` strings. **Exactly five values** (FR-024): a state exists only
 where it changes what the caller does. Exhaustive; consumers MUST handle every value
 (`never`-based exhaustiveness in TS, full `match` in Rust).
 
 | `state` | Terminal | Delta | Caller should | Meaning (FR-026) |
 |---|---|---|---|---|
 | `pending` | no | none | wait | Accepted; not started, or finishing up |
-| `proving` | no | none | wait | Delegated to the prover — the multi-minute phase |
+| `proving` | no | none | wait | Delegated to the prover, the multi-minute phase |
 | `submitted` | no | **always exists** | wait, watch the delta, **do not retry** | Boundary crossed (FR-047): candidate and submission evidence are durable; the network send may be pending, attempted, or of unknown outcome (FR-030) |
 | `committed` | **yes** | canonical | done | Candidate canonicalized. Success |
 | `failed` | **yes** | none of its own, or a discarded one | retry **only if** `proposal_exists` | Did not take effect; see `error.code`. Post-boundary failures may have had their proposal deleted with their candidate (FR-042) |
@@ -150,11 +157,11 @@ permitted only when `state == "failed"` **and** `proposal_exists == true`.
 
 | `state` | `proposal_exists` | Retry permitted |
 |---|---|---|
-| `pending`, `proving` | `true` | no — an execution is already in flight |
-| `submitted` | `true` | **no** — expressly forbidden (FR-030) |
-| `committed` | `false` | no — it succeeded; the proposal is deleted on promotion |
+| `pending`, `proving` | `true` | no, an execution is already in flight |
+| `submitted` | `true` | **no**, expressly forbidden (FR-030) |
+| `committed` | `false` | no, it succeeded; the proposal is deleted on promotion |
 | `failed`, pre-boundary | `true` | **yes** |
-| `failed`, post-boundary, candidate discarded | `false` | no — create a **new** proposal |
+| `failed`, post-boundary, candidate discarded | `false` | no, create a **new** proposal |
 
 An earlier revision named this field `proposal_retryable`, which was wrong in two directions:
 it claimed retryable for `submitted`, where retry is forbidden, and implicitly for `committed`,
@@ -162,14 +169,14 @@ whose proposal no longer exists.
 
 **Terminal outcomes are persisted, not derived** (FR-041). Canonicalization deletes an
 unrecoverable candidate *and its proposal*, so there would be nothing left to derive from.
-The write that determines the outcome — candidate promotion or deletion — MUST atomically
+The write that determines the outcome (candidate promotion or deletion) MUST atomically
 persist the execution's terminal state and release its reservation. Pre-terminal states
 remain derived and MUST NOT be persisted, so the two representations cannot drift while both
 exist.
 
 ### Internal states are not on the wire
 
-Guardian maintains a finer-grained internal record (FR-025) — notably whether the no-retry
+Guardian maintains a finer-grained internal record (FR-025), notably whether the no-retry
 boundary was crossed, which FR-031's restart rule requires. Internal states MUST NOT appear
 on any wire surface; each maps onto exactly one reported value. Two consequences:
 
@@ -185,7 +192,7 @@ Operators who need internal granularity get it from logs and metrics.
 
 ## Error codes
 
-**Synchronous refusals** (FR-022) — returned by `POST`, no reservation or execution
+**Synchronous refusals** (FR-022): returned by `POST`, no reservation or execution
 record created:
 
 | Code | HTTP | Cause |
@@ -202,37 +209,47 @@ record created:
 
 There is deliberately **no signature-invalid error**. Invalid, duplicate, and non-cosigner
 signature entries are ignored rather than fatal (FR-006), so the only signature-related
-outcome is an insufficient *valid* set — reported synchronously as
+outcome is an insufficient *valid* set, reported synchronously as
 `GUARDIAN_PROPOSAL_NOT_READY`. The ignored count is surfaced as `ignored_signatures` for
 diagnosis. Any error code implying a fatal invalid signature would be unreachable.
 
-**Status-read errors** — returned only by `GET /delta/proposal/execution` and the matching
+**Status-read errors**: returned only by `GET /delta/proposal/execution` and the matching
 gRPC read; never by the execution `POST`:
 
 | Code | HTTP | Cause |
 |---|---|---|
 | `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but has never been executed |
 
-**Asynchronous failure causes**, surfaced in `error.code` with `state: "failed"`:
+**Asynchronous failure causes**, surfaced in `error.code` with `state: "failed"`, listed roughly in
+FR-045 step order. `SUBMISSION_REJECTED`, `CANDIDATE_DISCARDED` and `EXPIRED` are post-boundary;
+every other code is pre-boundary, so its proposal still exists and FR-042 permits a retry
+(which only helps where the cause is transient, such as `CHAIN_BEHIND` or `PROVING_FAILED`).
 
 | Code | Cause |
 |---|---|
-| `GUARDIAN_EXECUTION_BINDING_MISMATCH` | Reproduced summary ≠ signed commitment (FR-007) |
-| `GUARDIAN_EXECUTION_STATE_MISMATCH` | Account advanced past the proposal's base |
 | `GUARDIAN_EXECUTION_REQUEST_CODEC` | Envelope/checksum invalid or undeserializable (FR-014) |
-| `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` | Envelope declares an incompatible Miden line (FR-015) |
-| `GUARDIAN_EXECUTION_FOREIGN_INPUTS_UNSUPPORTED` | The transaction requires foreign-account (FPI) inputs, which v1 refuses before any execution (FR-050) |
+| `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` | Envelope declares an incompatible Miden line or an unallowlisted serializer (FR-015) |
+| `GUARDIAN_EXECUTION_REQUEST_INVALID` | After the envelope and protocol checks and before any chain read (step 2): the stored request is structurally not Guardian-executable on 0.17. `meta.reason` is one of `bound_block_not_declared` (`block_numbers()` lacks the summary's `block_number`, FR-056), `auth_args_missing` (`auth_arg` is empty, or its preimage is not in the advice map, FR-057), `approval_expiration_missing` (summary user param 0 is zero, FR-051), `input_notes_not_pinned` (consume-notes without `explicit_input_notes`, FR-056). Asynchronous rather than synchronous because decoding the request is part of reproduction, which keeps FR-009 and FR-015 intact; the reservation is released within milliseconds |
+| `GUARDIAN_EXECUTION_EXPIRATION_REACHED` | A signed or executed expiration bound is at or below the observed chain height. `meta.bound` is `approval` (the approval expiration, checked against the observed tip at step 2, or the VM abort `ERR_MULTISIG_APPROVAL_EXPIRED` during reproduction) or `transaction` (the executed transaction's expiration block, checked after execution at step 8 and before each proving retry, FR-055). Refused **before** proving or before the retry (FR-058). Distinct from the horizon check below and from the post-boundary `GUARDIAN_EXECUTION_EXPIRED` |
+| `GUARDIAN_EXECUTION_CHAIN_BEHIND` | Guardian's node is below the proposal's bound block, so the chain view at `R` cannot include it (FR-061). Transient; the caller can retry |
+| `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE` | The transaction loads a foreign account Guardian cannot supply at `R` (FR-050). `meta.reason` is `private` (a private foreign account, whose state no node serves) or `unavailable` (the node cannot serve the public account's state at `R`, for example pruned). Public foreign accounts, the fee faucet among them, are supported |
+| `GUARDIAN_EXECUTION_STATE_MISMATCH` | Account advanced past the proposal's base |
+| `GUARDIAN_EXECUTION_INSUFFICIENT_FEE` | Reproduction aborted because the account's fee-asset balance cannot pay the transaction fee |
+| `GUARDIAN_EXECUTION_BINDING_MISMATCH` | Reproduced summary ≠ signed commitment (FR-007). Also covers **fee drift** at the tip: the fee depends on `R`'s base fee and the cycle count, and its `TX_FEE` output note enters the signed summary. A fresh proposal fixes drift. The logged diagnostic compares the reproduced and signed `TX_FEE` output notes so drift can be told apart from tampering; that detail is log-only, and the wire code and `meta` do not change |
 | `GUARDIAN_EXECUTION_PROVING_FAILED` | Prover error or timeout (FR-019, FR-020) |
-| `GUARDIAN_EXECUTION_NO_FINITE_EXPIRATION` | The proven transaction's expiration block falls outside the reconciliation horizon; refused **before** submission (FR-046) |
-| `GUARDIAN_EXECUTION_ANCHOR_EXPIRED` | The executed transaction's expiration block is at or below the chain height observed before proving or before a proving retry: the proposal's anchor is stale. Distinct from the horizon check, which is measured from the reference block; refused **before** proving (FR-058, FR-055) |
+| `GUARDIAN_EXECUTION_SEALING_FAILED` | Fetching or validating the transaction encryption key, or sealing the `TransactionInputs`, failed (FR-059). Happens after proving and before the boundary, so nothing was sent |
+| `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` | The proven transaction's `expiration_block_num − R` exceeds `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS`, `R` being the attempt's reference block; refused **before** the boundary, with no waiting (FR-046). A long approval without a transaction delta can reach this until the chain is within the horizon of the approval expiration |
 | `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | The pre-submission re-check found the account moved, paused, released, or no longer guarded by this Guardian (FR-048) |
 | `GUARDIAN_EXECUTION_SUBMISSION_REJECTED` | Node definitively rejected the proven transaction |
 | `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` | Submitted, but the candidate reached `discarded`, or the account was observed superseded (FR-040) |
-| `GUARDIAN_EXECUTION_EXPIRED` | Submitted, but the chain passed the recorded expiration block with the account still at base — the transaction can never land (FR-040) |
+| `GUARDIAN_EXECUTION_EXPIRED` | Submitted, but the chain passed the recorded expiration block with the account still at base: the transaction can never land (FR-040) |
 | `GUARDIAN_EXECUTION_LEASE_EXPIRED` | Lease expired without renewal **before the no-retry boundary** (FR-028). After the boundary, expiry transfers ownership to reconciliation instead of failing, even if the network send never began |
 | `GUARDIAN_EXECUTION_ABANDONED` | Interrupted before the no-retry boundary and resolved failed on restart (FR-031) |
 
-Every code MUST be added to the TS client's error-code vocabulary in the same PR — this
+`meta.bound` and `meta.reason` are closed vocabularies: consumers MUST handle every listed
+value, and adding one is a contract change.
+
+Every code MUST be added to the TS client's error-code vocabulary in the same PR; this
 is exactly the gap that produced #353 (`candidate_landed` missing from the TS
 vocabulary).
 
@@ -240,7 +257,7 @@ vocabulary).
 
 Both transports MUST be observably equivalent (Constitution II). Every refusal maps to a
 fixed pair, and the structured code in `error.code` / the gRPC error detail is the same
-string on both sides — the transport status is a hint, the code is the contract.
+string on both sides: the transport status is a hint, the code is the contract.
 
 | Code | HTTP | gRPC |
 |---|---|---|
@@ -258,14 +275,14 @@ string on both sides — the transport status is a hint, the code is the contrac
 Additional parity requirements:
 
 - The five state values serialize to the identical `snake_case` strings on both transports.
-- `meta.blocking_proposal_id` on a conflict, and `proposal_exists` /
-  `ignored_signatures` on the envelope, MUST be present on both transports with the same
-  semantics.
+- `meta.blocking_proposal_id` on a conflict, `error.meta` (`bound`, `reason`) on a failed
+  execution, and `proposal_exists` / `ignored_signatures` on the envelope, MUST be present on
+  both transports with the same semantics.
 - The new-versus-already-active distinction MUST be carried by the `newly_accepted` field on
   both transports. HTTP additionally reflects it as 202 versus 200; gRPC has no 202, so the
   field is the contract and the status is the hint.
 - `GET /delta/execution/current` with nothing in flight MUST be a **success** with an absent
-  execution on both transports — never `NOT_FOUND` / `404`.
+  execution on both transports, never `NOT_FOUND` / `404`.
 - Parity MUST be verified by tests per case (SC-023), not by inspection.
 
 ## Proposal payload addition
@@ -278,21 +295,28 @@ pre-feature byte shape (FR-010, SC-009).
 {
   "tx_summary": { },
   "signatures": [],
-  "metadata": { "chain_anchor": "<base64 ChainAnchor, already present since 0.16>" },
+  "metadata": { "chain_anchor": "<base64 ChainAnchor at the bound block; carried for SDK compatibility, not read by Guardian execution>" },
   "transaction_request": {
     "format_version": 1,
-    "protocol_line": "0.16",
-    "serializer_id": "0.16.1",
+    "protocol_line": "0.17",
+    "serializer_id": "0.17.0-rc.4",
     "checksum": "0x…",
     "bytes": "<base64>"
   }
 }
 ```
 
+`chain_anchor` is unchanged SDK metadata: the SDKs validate it and it keeps 0.18.0-rc.1 peers
+working (`docs/MULTISIG_SDK.md`, "Tip execution and the bound block"). Guardian takes the bound
+block from the signed summary's `block_number` and executes at the tip (FR-056, FR-061); it
+neither requires nor executes against the anchor.
+
 **Why `serializer_id` exists alongside `protocol_line`.** `MAJOR.MINOR` alone treats every
-`0.16` prerelease as mutually compatible, and the 0.16 alphas changed serialization
-between prereleases; Guardian's own 0.15→0.16 work was tracked against those alpha builds before
-`main` moved to the stable 0.16.1 protocol pin. A
+`0.17` prerelease as mutually compatible, and `TransactionRequest` serialization carries no
+version tag. `miden-client` 0.17.0-rc.4 added `block_numbers` as the **first** serialized field
+(`miden-client-0.17.0-rc.4/src/transaction/request/mod.rs:447-477`; rc.3 starts with
+`input_notes`, `miden-client-0.17.0-rc.3/src/transaction/request/mod.rs:439-443`), so rc.3 and
+rc.4 bytes do not decode across each other although both declare protocol line `0.17`. A
 `protocol_line` match with a `serializer_id` mismatch MUST be refused as
 `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` unless the server's configured allowlist admits the
 declared value. Deserializing bytes written by a different serializer is the failure this
@@ -301,8 +325,8 @@ envelope exists to prevent, and the coarser field cannot detect it.
 | Field | Required | Notes |
 |---|---|---|
 | `format_version` | yes | Envelope version; integer (FR-014) |
-| `protocol_line` | yes | Miden protocol line the bytes were serialized against; refused if incompatible (FR-015) |
-| `serializer_id` | yes | Exact serialization identity — the full `miden-protocol` version **including prerelease** (e.g. `0.16.1`, or `0.16.0-alpha.4` for a prerelease writer), not just `MAJOR.MINOR` |
+| `protocol_line` | yes | Miden protocol line the bytes were serialized against (`"0.17"`); refused if incompatible (FR-015) |
+| `serializer_id` | yes | Exact serialization identity: the full version, **including prerelease**, of the `miden-client` that serialized the bytes (e.g. `0.17.0-rc.4`). For TypeScript that is the client embedded in the `@miden-sdk/miden-sdk` WASM, whose package version matches it on the pinned line. It is **not** the Guardian SDK package version and not the `miden-protocol` version |
 | `checksum` | yes | Integrity check over `bytes` before any deserialization attempt (FR-014) |
 | `bytes` | yes | Base64 serialized `TransactionRequest`; subject to FR-016 size limits |
 
@@ -327,12 +351,12 @@ changes no proposal ID (FR-012).
 | Variable | Required | Effect |
 |---|---|---|
 | `GUARDIAN_TX_PROVER_URL` | to enable | `{protocol}://{host}:{port}` of the remote prover. Unset ⇒ capability unavailable, no fallback (FR-021) |
-| `GUARDIAN_TX_PROVER_TIMEOUT_SECS` | no | Explicit prover timeout; MUST default well above the client library's 10 s (`miden-client-0.16.0/src/remote_prover/tx_prover.rs:43`) (FR-020) |
+| `GUARDIAN_TX_PROVER_TIMEOUT_SECS` | no | Explicit prover timeout; MUST default well above the client library's 10 s, which is unchanged on 0.17 (`miden-client-0.17.0-rc.4/src/remote_prover/tx_prover.rs:43`) (FR-020) |
 | `GUARDIAN_PROVING_ENABLED` | no | Operator kill-switch, independent of prover reachability |
 | `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES` | no | Per-request size cap (FR-016) |
 | `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES` | no | Per-account aggregate cap (FR-016) |
 | `GUARDIAN_EXECUTION_LEASE_SECS` | no | Reservation lease duration (FR-023, FR-028) |
 | `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` | no | How often reconciliation re-checks unresolved submissions (FR-040) |
-| `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` | no | Maximum allowed distance from the reference block to expiration; exceeding it prevents crossing the no-retry boundary (FR-046) |
+| `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` | no | Maximum allowed `proven expiration_block_num − R`, `R` being the attempt's reference block; exceeding it refuses the execution before the no-retry boundary with `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` (FR-046). The default MUST be at least 256, the built-in transaction expiration delta, so every built-in proposal passes; proposed default 512 |
 
 All MUST be documented in `docs/CONFIGURATION.md`.
