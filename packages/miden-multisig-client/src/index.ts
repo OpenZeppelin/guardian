@@ -11,7 +11,7 @@
  * } from '@openzeppelin/miden-multisig-client';
  * import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
  *
- * const midenClient = await MidenClient.createDevnet();
+ * const midenClient = await MidenClient.createDevnet({ useWorker: false });
  * const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
  *
  * // Store in miden-sdk's keystore
@@ -59,6 +59,7 @@ export { lookupAuthDigest } from './lookupAuth.js';
 export {
   Multisig,
   type AccountState,
+  type SyncStateResult,
   type CreateProposalOptions,
   type CreateSignerProposalOptions,
   type CreateP2idProposalOptions,
@@ -95,8 +96,6 @@ export {
 // hex, directly comparable to `ExportedProposal.commitment` / `Proposal.id`.
 export { computeCommitmentFromTxSummary } from './multisig/helpers.js';
 export type {
-  MidenClientMultisigRequestOptions,
-  MidenClientSignatureOptions,
   MultisigRequestOptions,
   SignatureOptions,
 } from './transaction/options.js';

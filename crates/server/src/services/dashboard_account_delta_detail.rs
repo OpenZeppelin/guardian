@@ -337,6 +337,7 @@ mod tests {
             .with_pull_state(Ok(crate::state_object::StateObject {
                 account_id: TEST_ACCOUNT_ID.to_string(),
                 commitment: prev_commitment,
+                nonce: None,
                 state_json: serde_json::json!({}),
                 created_at: "2026-05-25T08:00:00Z".into(),
                 updated_at: "2026-05-25T08:00:00Z".into(),

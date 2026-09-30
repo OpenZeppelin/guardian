@@ -202,7 +202,9 @@ impl CandidateChain {
                 let mut state_json = base_json;
                 let mut commitment = base_commitment;
                 for payload in payloads {
-                    (state_json, commitment) = client.apply_delta(&state_json, &payload)?;
+                    let applied = client.apply_delta(&state_json, &payload)?;
+                    state_json = applied.state_json;
+                    commitment = applied.commitment;
                 }
                 Ok((state_json, commitment))
             })
@@ -269,6 +271,7 @@ mod tests {
         StateObject {
             account_id: "0xacc".to_string(),
             commitment: "0xbase".to_string(),
+            nonce: None,
             state_json: serde_json::json!({"step": 0}),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),

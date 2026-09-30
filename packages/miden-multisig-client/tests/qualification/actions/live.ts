@@ -1824,7 +1824,6 @@ export async function createCustomProposal(
       session.treasuryId,
       session.faucetId,
       P2ID_AMOUNT,
-      { midenRpcEndpoint: context.live!.midenRpcEndpoint },
     );
     const bytes = request.serialize();
 

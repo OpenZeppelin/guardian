@@ -1,8 +1,8 @@
 use crate::delta_object::DeltaObject;
 use crate::metadata::MetadataStore;
 use crate::metadata::auth::{Auth, Credentials};
-use crate::network::{NetworkClient, StateVerification};
-use crate::state_object::StateObject;
+use crate::network::{AppliedState, NetworkClient, StateVerification};
+use crate::state_object::{StateHead, StateObject};
 use crate::storage::StorageBackend;
 use async_trait::async_trait;
 use guardian_shared::FromJson;
@@ -10,7 +10,7 @@ use miden_protocol::account::Account;
 use std::sync::{Arc, Mutex as StdMutex};
 
 type StdResult<T, E> = std::result::Result<T, E>;
-type ApplyDeltaResult = StdResult<(serde_json::Value, String), String>;
+type ApplyDeltaResult = StdResult<AppliedState, String>;
 type ShouldUpdateAuthResult = StdResult<Option<Auth>, String>;
 type ExtractGuardianCommitmentResult = StdResult<Option<String>, String>;
 type OnChainGuardianBindingResult = StdResult<crate::network::OnChainGuardianBinding, String>;
@@ -33,8 +33,8 @@ pub struct MockNetworkClient {
     pub verify_commitment_responses: Arc<StdMutex<Vec<StdResult<StateVerification, String>>>>,
     pub verify_commitment_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub verify_commitment_modes: Arc<StdMutex<Vec<crate::network::RpcReadMode>>>,
-    pub get_state_commitment_responses: Arc<StdMutex<Vec<StdResult<String, String>>>>,
-    pub get_state_commitment_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
+    pub get_state_head_responses: Arc<StdMutex<Vec<StdResult<StateHead, String>>>>,
+    pub get_state_head_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub validate_guardian_commitment_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
@@ -62,11 +62,8 @@ impl MockNetworkClient {
         self
     }
 
-    pub fn with_get_state_commitment(self, response: StdResult<String, String>) -> Self {
-        self.get_state_commitment_responses
-            .lock()
-            .unwrap()
-            .push(response);
+    pub fn with_get_state_head(self, response: StdResult<StateHead, String>) -> Self {
+        self.get_state_head_responses.lock().unwrap().push(response);
         self
     }
 
@@ -152,10 +149,21 @@ impl MockNetworkClient {
         self
     }
 
+    /// Queue one `apply_delta` answer as `(state_json, commitment)`, with
+    /// no nonce (like the mock's `account_nonce` default). Use
+    /// [`Self::with_applied_state`] to also return a nonce.
     pub fn with_apply_delta(
         self,
         response: StdResult<(serde_json::Value, String), String>,
     ) -> Self {
+        self.with_applied_state(response.map(|(state_json, commitment)| AppliedState {
+            state_json,
+            commitment,
+            nonce: None,
+        }))
+    }
+
+    pub fn with_applied_state(self, response: StdResult<AppliedState, String>) -> Self {
         self.apply_delta_responses.lock().unwrap().push(response);
         self
     }
@@ -176,31 +184,33 @@ impl MockNetworkClient {
         self.verify_commitment_modes.lock().unwrap().clone()
     }
 
-    pub fn get_state_commitment_calls(&self) -> Vec<(String, serde_json::Value)> {
-        self.get_state_commitment_calls.lock().unwrap().clone()
+    pub fn get_state_head_calls(&self) -> Vec<(String, serde_json::Value)> {
+        self.get_state_head_calls.lock().unwrap().clone()
     }
 }
 
 #[async_trait]
 impl NetworkClient for MockNetworkClient {
-    fn get_state_commitment(
+    fn get_state_head(
         &self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> StdResult<String, String> {
-        self.get_state_commitment_calls
+    ) -> StdResult<StateHead, String> {
+        self.get_state_head_calls
             .lock()
             .unwrap()
             .push((account_id.to_string(), state_json.clone()));
 
-        if let Some(response) = self.get_state_commitment_responses.lock().unwrap().pop() {
+        if let Some(response) = self.get_state_head_responses.lock().unwrap().pop() {
             return response;
         }
 
         let account = Account::from_json(state_json)
             .map_err(|e| format!("Failed to deserialize account: {e}"))?;
-        let commitment_hex = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
-        Ok(commitment_hex)
+        Ok(StateHead {
+            commitment: format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
+            nonce: Some(account.nonce().as_canonical_u64()),
+        })
     }
 
     async fn verify_commitment(
@@ -239,12 +249,18 @@ impl NetworkClient for MockNetworkClient {
         &self,
         _prev_state_json: &serde_json::Value,
         _delta_payload: &serde_json::Value,
-    ) -> StdResult<(serde_json::Value, String), String> {
+    ) -> StdResult<AppliedState, String> {
         self.apply_delta_responses
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Ok((serde_json::json!({}), "mock_new_commitment".to_string())))
+            .unwrap_or_else(|| {
+                Ok(AppliedState {
+                    state_json: serde_json::json!({}),
+                    commitment: "mock_new_commitment".to_string(),
+                    nonce: None,
+                })
+            })
     }
 
     fn merge_deltas(
@@ -449,6 +465,9 @@ pub struct MockStorageBackend {
     pub count_in_flight_proposals_responses: Arc<StdMutex<Vec<StdResult<u64, String>>>>,
     pub latest_activity_timestamp_responses:
         Arc<StdMutex<Vec<StdResult<Option<chrono::DateTime<chrono::Utc>>, String>>>>,
+    pub backfill_state_nonce_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
+    /// `(account_id, commitment, nonce)` per backfill.
+    pub backfill_state_nonce_calls: Arc<StdMutex<Vec<(String, String, u64)>>>,
 }
 
 impl MockStorageBackend {
@@ -556,6 +575,25 @@ impl MockStorageBackend {
 
     pub fn get_submit_state_calls(&self) -> Vec<StateObject> {
         self.submit_state_calls.lock().unwrap().clone()
+    }
+
+    /// Queue one `backfill_state_nonce` answer (LIFO). The default with an
+    /// empty queue is `Ok(true)`: the row took the nonce.
+    pub fn with_backfill_state_nonce(self, response: StdResult<bool, String>) -> Self {
+        self.backfill_state_nonce_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_backfill_state_nonce_calls(&self) -> Vec<(String, String, u64)> {
+        self.backfill_state_nonce_calls.lock().unwrap().clone()
+    }
+
+    /// Queued `pull_state` answers not consumed yet.
+    pub fn pending_pull_state_responses(&self) -> usize {
+        self.pull_state_responses.lock().unwrap().len()
     }
 
     pub fn get_submit_delta_calls(&self) -> Vec<DeltaObject> {
@@ -828,6 +866,40 @@ impl StorageBackend for MockStorageBackend {
             Some(Err(error)) => Err(error.clone()),
             None => Err("No state found".to_string()),
         }
+    }
+
+    /// The head of the state the next `pull_state` would return, without
+    /// consuming it: both reads describe the same stored state.
+    async fn pull_state_head(
+        &self,
+        _account_id: &str,
+    ) -> StdResult<crate::state_object::StateHead, String> {
+        match self.pull_state_responses.lock().unwrap().last() {
+            Some(Ok(state)) => Ok(crate::state_object::StateHead {
+                commitment: state.commitment.clone(),
+                nonce: state.nonce,
+            }),
+            Some(Err(error)) => Err(error.clone()),
+            None => Err("No state found".to_string()),
+        }
+    }
+
+    async fn backfill_state_nonce(
+        &self,
+        account_id: &str,
+        commitment: &str,
+        nonce: u64,
+    ) -> StdResult<bool, String> {
+        self.backfill_state_nonce_calls.lock().unwrap().push((
+            account_id.to_string(),
+            commitment.to_string(),
+            nonce,
+        ));
+        self.backfill_state_nonce_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(true))
     }
 
     async fn pull_delta(&self, _account_id: &str, _nonce: u64) -> StdResult<DeltaObject, String> {

@@ -145,8 +145,7 @@ impl DeltasProcessorBase {
         path: Vec<DeltaObject>,
     ) -> Result<()> {
         let account_id = current_state.account_id.clone();
-        let mut reconstructed: Vec<(DeltaObject, serde_json::Value, String)> =
-            Vec::with_capacity(path.len());
+        let mut reconstructed: Vec<(DeltaObject, AppliedState)> = Vec::with_capacity(path.len());
         let mut base_json = current_state.state_json;
         for delta in path {
             let applied = {
@@ -157,7 +156,7 @@ impl DeltasProcessorBase {
                     .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
                     .await
             };
-            let (new_state_json, recomputed_commitment) = match applied {
+            let applied = match applied {
                 Ok(applied) => applied,
                 Err(e) => {
                     tracing::info!(
@@ -174,7 +173,7 @@ impl DeltasProcessorBase {
                     return Ok(());
                 }
             };
-            if delta.new_commitment.as_deref() != Some(recomputed_commitment.as_str()) {
+            if delta.new_commitment.as_deref() != Some(applied.commitment.as_str()) {
                 tracing::info!(
                     event = "reconcile_deferred",
                     reason = "recomputed_commitment_mismatch",
@@ -188,12 +187,13 @@ impl DeltasProcessorBase {
                 );
                 return Ok(());
             }
-            base_json = new_state_json.clone();
-            reconstructed.push((delta, new_state_json, recomputed_commitment));
+            base_json = applied.state_json.clone();
+            reconstructed.push((delta, applied));
         }
-        let Some((_, _, final_commitment)) = reconstructed.last() else {
+        let Some((_, final_state)) = reconstructed.last() else {
             return Ok(());
         };
+        let final_commitment = &final_state.commitment;
         if final_commitment != on_chain {
             tracing::info!(
                 event = "reconcile_deferred",
@@ -216,7 +216,7 @@ impl DeltasProcessorBase {
             "Recoverable chain now verifies against the on-chain commitment; \
              promoting the recovered path in order"
         );
-        for (delta, new_state_json, recomputed_commitment) in reconstructed {
+        for (delta, applied) in reconstructed {
             tracing::info!(
                 event = "reconcile_promoted",
                 account_id = %account_id,
@@ -226,8 +226,7 @@ impl DeltasProcessorBase {
             );
             self.canonicalize_verified_delta(
                 delta,
-                new_state_json,
-                recomputed_commitment,
+                applied,
                 crate::metrics::labels::CandidateOutcome::Reconciled,
             )
             .await?;
@@ -606,7 +605,7 @@ impl DeltasProcessorBase {
                     .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
                     .await
             };
-            let (new_state_json, recomputed_commitment) = match applied {
+            let applied = match applied {
                 Ok(applied) => applied,
                 Err(e) => {
                     tracing::info!(
@@ -625,7 +624,7 @@ impl DeltasProcessorBase {
                     continue;
                 }
             };
-            if recomputed_commitment != on_chain {
+            if applied.commitment != on_chain {
                 tracing::info!(
                     event = "reconcile_deferred",
                     reason = "recomputed_commitment_mismatch",
@@ -653,8 +652,7 @@ impl DeltasProcessorBase {
             return self
                 .canonicalize_verified_delta(
                     delta,
-                    new_state_json,
-                    recomputed_commitment,
+                    applied,
                     crate::metrics::labels::CandidateOutcome::Reconciled,
                 )
                 .await;

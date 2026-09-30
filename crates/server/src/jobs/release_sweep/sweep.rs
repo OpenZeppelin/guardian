@@ -857,8 +857,14 @@ impl ReleaseSweeper {
         // A read of a state older than the stored one is not the chain
         // moving on: the stored state has not landed yet (for example just
         // re-onboarded after a switch to this server) or the node lags. It
-        // is never evidence, however far behind the node is.
-        if let Some(stored_nonce) = self.nonce_of(&stored.state_json).await?
+        // is never evidence, however far behind the node is. The row
+        // carries the stored state's nonce; only a row written before
+        // nonces were stored is decoded for it.
+        let stored_nonce = match stored.nonce {
+            Some(nonce) => Some(nonce),
+            None => self.nonce_of(&stored.state_json).await?,
+        };
+        if let Some(stored_nonce) = stored_nonce
             && on_chain_nonce < stored_nonce
         {
             tracing::info!(
@@ -1167,10 +1173,9 @@ impl ReleaseSweeper {
         let prev_state_json = stored.state_json.clone();
         let applied = crate::network::reconstructor()
             .run_background(move || {
-                let (post_state, post_commitment) =
-                    client.apply_delta(&prev_state_json, &tx_summary)?;
-                let guardian_commitment = client.extract_guardian_commitment(&post_state)?;
-                Ok::<_, String>((post_commitment, guardian_commitment))
+                let post = client.apply_delta(&prev_state_json, &tx_summary)?;
+                let guardian_commitment = client.extract_guardian_commitment(&post.state_json)?;
+                Ok::<_, String>((post.commitment, guardian_commitment))
             })
             .await;
         match applied {
@@ -1439,6 +1444,7 @@ mod tests {
         StateObject {
             account_id: account_id.to_string(),
             commitment: commitment.to_string(),
+            nonce: None,
             state_json: serde_json::json!({}),
             created_at: "2026-09-01T00:00:00Z".to_string(),
             updated_at: "2026-09-01T00:00:00Z".to_string(),
@@ -1957,6 +1963,30 @@ mod tests {
                 "{outcome}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_read_behind_the_stored_nonce_is_ignored_without_decoding_the_state() {
+        // The stored row carries its nonce (issue #191), so the stale-read
+        // guard reads it instead of decoding the blob. No `account_nonce`
+        // answer is queued: a decode would read the mock's `Ok(None)`, skip
+        // the guard, and release on this foreign key at confirmations 1.
+        let mut stored = stored_state(ACCOUNT, STORED);
+        stored.nonce = Some(7);
+        let h = harness(
+            MockStorageBackend::new().with_pull_state(Ok(stored)),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_fetch_on_chain_guardian_binding(Ok(visible(Some(FOREIGN), 5, 90))),
+            MockMetadataStore::new(),
+            1,
+        );
+        assert_eq!(h.visit().await, VisitOutcome::Checked);
+        assert!(
+            released_ids(&h.metadata).is_empty(),
+            "a read behind the stored state is never evidence"
+        );
+        assert_eq!(h.sweeper.sweep_state().streak(ACCOUNT), None);
     }
 
     #[tokio::test]

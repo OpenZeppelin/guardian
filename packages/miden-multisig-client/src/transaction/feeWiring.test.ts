@@ -88,15 +88,6 @@ vi.mock('@miden-sdk/miden-sdk', () => {
   };
 });
 
-vi.mock('../raw-client.js', async () => {
-  const actual = await vi.importActual<typeof import('../raw-client.js')>('../raw-client.js');
-  return {
-    ...actual,
-    compileTxScript: mockCompileTxScript,
-    getRawMidenClient: vi.fn(async (client: unknown) => client),
-  };
-});
-
 const { MultisigAuthArgsMissingError } = await import('../multisig/authArgErrors.js');
 const { buildConsumeNotesTransactionRequestFromNotes } = await import('./consumeNotes.js');
 const { buildUpdateGuardianTransactionRequest } = await import('./updateGuardian.js');
@@ -115,10 +106,24 @@ const SIGNER_COMMITMENT = '0x' + 'cd'.repeat(32);
 const ACCOUNT_ID = '0x' + '7b'.repeat(15);
 const BOUND_BLOCK = 4242;
 
-const client = { feeAwareTransactionRequestBuilder: mockFeeAwareBuilder } as never;
+const client = {
+  feeAwareTransactionRequestBuilder: mockFeeAwareBuilder,
+  compile: { txScript: mockCompileTxScript },
+} as never;
+
+interface FeeAwareOptions {
+  feeConversionSalt: { toHex: () => string };
+  boundBlockNum?: number;
+  approvalExpirationDelta?: number;
+}
+
+function feeAwareCall(): [string, FeeAwareOptions] {
+  return mockFeeAwareBuilder.mock.calls[0] as [string, FeeAwareOptions];
+}
 
 const builders: Array<{
   name: string;
+  compilesScript: boolean;
   build: (options: {
     accountId: string;
     salt: Word;
@@ -128,20 +133,24 @@ const builders: Array<{
 }> = [
   {
     name: 'buildUpdateSignersTransactionRequest',
+    compilesScript: true,
     build: (options) =>
       buildUpdateSignersTransactionRequest(client, 2, [SIGNER_COMMITMENT], options),
   },
   {
     name: 'buildUpdateProcedureThresholdTransactionRequest',
+    compilesScript: true,
     build: (options) =>
       buildUpdateProcedureThresholdTransactionRequest(client, 'update_signers', 2, options),
   },
   {
     name: 'buildUpdateGuardianTransactionRequest',
+    compilesScript: true,
     build: (options) => buildUpdateGuardianTransactionRequest(client, GUARDIAN_PUBKEY, options),
   },
   {
     name: 'buildConsumeNotesTransactionRequestFromNotes',
+    compilesScript: false,
     build: (options) =>
       buildConsumeNotesTransactionRequestFromNotes(client, [{} as Note], options),
   },
@@ -152,35 +161,40 @@ describe('multisig auth args wiring across transaction builders', () => {
     builderCalls.length = 0;
     mockFeeAwareBuilder.mockReset();
     mockFeeAwareBuilder.mockImplementation(async () => new FakeBuilder({ set: true }));
+    mockCompileTxScript.mockClear();
   });
 
-  for (const { name, build } of builders) {
+  for (const { name, compilesScript, build } of builders) {
     it(`${name} asks the client for a builder carrying the account's auth args`, async () => {
       await build({ accountId: ACCOUNT_ID, salt: SALT });
 
       expect(mockFeeAwareBuilder).toHaveBeenCalledTimes(1);
-      const [accountId, expiration, salt, boundBlockNum] = mockFeeAwareBuilder.mock.calls[0] as [
-        { hex: string },
-        unknown,
-        { toHex: () => string },
-        unknown,
-      ];
-      expect(accountId.hex).toBe(ACCOUNT_ID);
-      expect(expiration).toBeNull();
-      expect(salt.toHex()).toBe(SALT.toHex());
-      expect(boundBlockNum).toBeNull();
+      const [accountId, options] = feeAwareCall();
+      expect(accountId).toBe(ACCOUNT_ID);
+      expect(options.approvalExpirationDelta).toBeUndefined();
+      expect(options.feeConversionSalt.toHex()).toBe(SALT.toHex());
+      expect(options.boundBlockNum).toBeUndefined();
     });
 
     it(`${name} pins the bound block a rebuild names`, async () => {
       await build({ accountId: ACCOUNT_ID, salt: SALT, boundBlockNum: BOUND_BLOCK });
 
-      expect(mockFeeAwareBuilder.mock.calls[0]?.[3]).toBe(BOUND_BLOCK);
+      expect(feeAwareCall()[1].boundBlockNum).toBe(BOUND_BLOCK);
     });
 
     it(`${name} passes the approval expiration the proposer asked for`, async () => {
       await build({ accountId: ACCOUNT_ID, salt: SALT, approvalExpirationDelta: 100 });
 
-      expect(mockFeeAwareBuilder.mock.calls[0]?.[1]).toBe(100);
+      expect(feeAwareCall()[1].approvalExpirationDelta).toBe(100);
+    });
+
+    it(`${name} compiles through the supplied client only when it runs a script`, async () => {
+      await build({ accountId: ACCOUNT_ID, salt: SALT });
+
+      expect(mockCompileTxScript).toHaveBeenCalledTimes(compilesScript ? 1 : 0);
+      if (compilesScript) {
+        expect(mockCompileTxScript.mock.calls[0]?.[0]).toEqual({ code: expect.any(String) });
+      }
     });
 
     it(`${name} refuses a zero approval expiration instead of letting the kernel reject it`, async () => {

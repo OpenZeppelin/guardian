@@ -1,32 +1,15 @@
-import type {
-  MidenClient,
-  Note,
-  TransactionRequest,
-  WasmWebClient,
-  Word,
-} from '@miden-sdk/miden-sdk';
+import type { MidenClient, Note, TransactionRequest, Word } from '@miden-sdk/miden-sdk';
 import { NoteAndArgs, NoteAndArgsArray } from '@miden-sdk/miden-sdk';
 import { LegacyConsumeNotesNoteMissingError } from '../multisig/consumeNotesErrors.js';
-import { getRawMidenClient } from '../raw-client.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
-import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
+import type { MultisigRequestOptions } from './options.js';
 
 /**
  * Build a consume-notes request from loaded `Note` objects (no local-store
  * read). v2 verification path for issue #229.
  */
-export function buildConsumeNotesTransactionRequestFromNotes(
-  client: MidenClient,
-  notes: Note[],
-  options: MidenClientMultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word }>;
-export function buildConsumeNotesTransactionRequestFromNotes(
-  client: WasmWebClient,
-  notes: Note[],
-  options: MultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word }>;
 export async function buildConsumeNotesTransactionRequestFromNotes(
-  client: MidenClient | WasmWebClient,
+  client: MidenClient,
   notes: Note[],
   options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }> {
@@ -53,18 +36,8 @@ export async function buildConsumeNotesTransactionRequestFromNotes(
  * Legacy/creation adapter: fetches notes from the local store and delegates
  * to the from-notes variant. v2 verification MUST NOT call this.
  */
-export function buildConsumeNotesTransactionRequest(
-  client: MidenClient,
-  noteIds: string[],
-  options: MidenClientMultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word }>;
-export function buildConsumeNotesTransactionRequest(
-  client: WasmWebClient,
-  noteIds: string[],
-  options: MultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word }>;
 export async function buildConsumeNotesTransactionRequest(
-  client: MidenClient | WasmWebClient,
+  client: MidenClient,
   noteIds: string[],
   options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }> {
@@ -72,15 +45,14 @@ export async function buildConsumeNotesTransactionRequest(
     throw new Error('At least one note ID is required');
   }
 
-  const rawClient = await getRawMidenClient(client, options.midenRpcEndpoint);
   const notes: Note[] = [];
   for (const noteIdHex of noteIds) {
-    const inputNoteRecord = await rawClient.getInputNote(noteIdHex);
+    const inputNoteRecord = await client.notes.get(noteIdHex);
     if (!inputNoteRecord) {
       throw new LegacyConsumeNotesNoteMissingError(noteIdHex);
     }
     notes.push(inputNoteRecord.toNote());
   }
 
-  return buildConsumeNotesTransactionRequestFromNotes(rawClient, notes, options);
+  return buildConsumeNotesTransactionRequestFromNotes(client, notes, options);
 }

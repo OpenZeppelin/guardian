@@ -737,6 +737,7 @@ mod pause_tests {
                 account_id: account_id.to_string(),
                 state_json: serde_json::json!({}),
                 commitment: commitment.to_string(),
+                nonce: None,
                 created_at: "2026-09-01T00:00:00Z".to_string(),
                 updated_at: "2026-09-01T00:00:00Z".to_string(),
                 auth_scheme: String::new(),

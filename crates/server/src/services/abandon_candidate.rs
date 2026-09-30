@@ -157,13 +157,14 @@ pub async fn abandon_candidate(
         .await
         .map_err(|_| GuardianError::StateNotFound(account_id.clone()))?;
 
-    let (_, expected_commitment) = {
+    let expected_commitment = {
         let client = state.network_client.clone();
         let prev_state_json = current_state.state_json;
         let delta_payload = std::sync::Arc::new(delta.delta_payload.clone());
         crate::network::reconstructor()
             .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
             .await?
+            .commitment
     };
 
     let verify_result = state
@@ -282,6 +283,7 @@ mod tests {
         StateObject {
             account_id,
             commitment,
+            nonce: None,
             state_json: account_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),

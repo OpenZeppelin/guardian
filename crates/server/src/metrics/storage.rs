@@ -7,7 +7,7 @@
 //!
 //! Every trait method is forwarded explicitly, including the ones with
 //! default implementations (`pull_states_batch`,
-//! `pull_state_commitment`, `has_pending_candidate`,
+//! `pull_state_commitment`, `pull_state_head`, `has_pending_candidate`,
 //! `pull_canonical_deltas_after`, `pull_pending_proposals`): forwarding
 //! them preserves backend
 //! overrides (e.g. the batched Postgres `pull_states_batch`), which a
@@ -25,7 +25,7 @@ use super::names::{
     LABEL_OPERATION, LABEL_OUTCOME, STORAGE_OPERATION_DURATION_SECONDS, STORAGE_OPERATIONS_TOTAL,
 };
 use crate::delta_object::{DeltaObject, DeltaStatus};
-use crate::state_object::StateObject;
+use crate::state_object::{StateHead, StateObject};
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
@@ -88,6 +88,24 @@ impl StorageBackend for InstrumentedStorage {
         timed(
             "pull_state_commitment",
             self.inner.pull_state_commitment(account_id),
+        )
+        .await
+    }
+
+    async fn pull_state_head(&self, account_id: &str) -> Result<StateHead, String> {
+        timed("pull_state_head", self.inner.pull_state_head(account_id)).await
+    }
+
+    async fn backfill_state_nonce(
+        &self,
+        account_id: &str,
+        commitment: &str,
+        nonce: u64,
+    ) -> Result<bool, String> {
+        timed(
+            "backfill_state_nonce",
+            self.inner
+                .backfill_state_nonce(account_id, commitment, nonce),
         )
         .await
     }

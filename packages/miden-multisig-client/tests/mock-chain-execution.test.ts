@@ -1,8 +1,7 @@
 import {
-  AccountId,
   AdviceMap,
   FeltArray,
-  MockWebClient,
+  MidenClient,
   Signature,
   TransactionRequestBuilder,
   Word,
@@ -46,35 +45,29 @@ const SIGNER_COMMITMENT = '0x260a375ca01f1f05cd7bf22298b40c47290fc09f209011d3904
 const NEW_SIGNER_COMMITMENT = '0x' + '11'.repeat(31) + '00';
 const GUARDIAN_COMMITMENT = '0xc35d79423c41d46b5289aafef48be2364e9ea494c6b14d6aefad10f1a46e6d7c';
 const SALT_HEX = '0x' + '22'.repeat(32);
-const RPC = 'mock';
 
-let client: MockWebClient;
+let client: MidenClient;
 let accountId: string;
 
 beforeAll(async () => {
-  client = await MockWebClient.createClient();
-  const { account } = await createMultisigAccount(
-    client,
-    {
-      threshold: 1,
-      signerCommitments: [SIGNER_COMMITMENT],
-      guardianCommitment: GUARDIAN_COMMITMENT,
-      seed: new Uint8Array(32).fill(9),
-    },
-    RPC,
-  );
+  client = await MidenClient.createMock();
+  const { account } = await createMultisigAccount(client, {
+    threshold: 1,
+    signerCommitments: [SIGNER_COMMITMENT],
+    guardianCommitment: GUARDIAN_COMMITMENT,
+    seed: new Uint8Array(32).fill(9),
+  });
   accountId = account.id().toString();
 });
 
 afterAll(() => {
-  client?.free?.();
+  client?.terminate();
 });
 
 function buildRequest(options: { boundBlockNum?: number; approvalExpirationDelta?: number } = {}) {
   return buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT, NEW_SIGNER_COMMITMENT], {
     accountId,
     salt: Word.fromHex(SALT_HEX),
-    midenRpcEndpoint: RPC,
     ...options,
   });
 }
@@ -91,7 +84,7 @@ describe('guarded multisig auth procedure on the mock chain', () => {
       throw new Error('Could not derive ECDSA commitments');
     }
     const [rawCommitment, eip712Commitment, guardianCommitment] = commitments as string[];
-    const mockClient = await MockWebClient.createClient();
+    const mockClient = await MidenClient.createMock();
     try {
       const { account } = await createMultisigAccount(mockClient, {
         threshold: 2,
@@ -99,18 +92,17 @@ describe('guarded multisig auth procedure on the mock chain', () => {
         guardianCommitment,
         signatureScheme: 'ecdsa',
         seed: new Uint8Array(32).fill(10),
-      }, RPC);
+      });
       const id = account.id().toString();
       const requestOptions = {
         accountId: id,
         salt: Word.fromHex(SALT_HEX),
-        midenRpcEndpoint: RPC,
         signatureScheme: 'ecdsa' as const,
       };
       const unsigned = await buildUpdateSignersTransactionRequest(
         mockClient, 1, [rawCommitment, eip712Commitment], requestOptions,
       );
-      const { summary, anchor } = await executeForSummary(mockClient, id, unsigned.request, RPC);
+      const { summary, anchor } = await executeForSummary(mockClient, id, unsigned.request);
       try {
         const commitment = summary.toCommitment();
         const commitmentHex = commitment.toHex();
@@ -148,20 +140,20 @@ describe('guarded multisig auth procedure on the mock chain', () => {
             signatureAdviceMap: advice,
           },
         );
-        const result = await mockClient.executeTransaction(AccountId.fromHex(id), signed.request);
-        expect(result).toBeDefined();
+        const execution = await mockClient.transactions.executeRequest(id, signed.request);
+        expect(execution.result).toBeDefined();
       } finally {
         anchor.free();
       }
     } finally {
-      mockClient.free();
+      mockClient.terminate();
     }
   });
 
   it('accepts the auth args and binds the salt into the summary', async () => {
     const { request } = await buildRequest();
 
-    const { summary, anchor } = await executeForSummary(client, accountId, request, RPC);
+    const { summary, anchor } = await executeForSummary(client, accountId, request);
     try {
       expect(summarySalt(summary).toHex()).toBe(SALT_HEX);
       expect(summaryApprovalExpirationBlockNum(summary)).toBeUndefined();
@@ -174,10 +166,10 @@ describe('guarded multisig auth procedure on the mock chain', () => {
 
   it('lets a cosigner reproduce the commitment from the salt and the anchor block', async () => {
     const proposer = await buildRequest();
-    const { summary, anchor } = await executeForSummary(client, accountId, proposer.request, RPC);
+    const { summary, anchor } = await executeForSummary(client, accountId, proposer.request);
     try {
       const rebuilt = await buildRequest({ boundBlockNum: anchor.blockNum() });
-      const reproduced = await executeForSummaryAt(client, accountId, rebuilt.request, anchor, RPC);
+      const reproduced = await executeForSummaryAt(client, accountId, rebuilt.request, anchor);
 
       expect(reproduced.toCommitment().toHex()).toBe(summary.toCommitment().toHex());
     } finally {
@@ -196,17 +188,17 @@ describe('guarded multisig auth procedure on the mock chain', () => {
   // after the proposal was made, with no anchor involved.
   it('lets a cosigner reproduce the commitment at a later tip, without the anchor', async () => {
     const proposer = await buildRequest();
-    const { summary, anchor } = await executeForSummary(client, accountId, proposer.request, RPC);
+    const { summary, anchor } = await executeForSummary(client, accountId, proposer.request);
     const boundBlockNum = anchor.blockNum();
     anchor.free();
 
     await client.proveBlock();
     await client.proveBlock();
-    await client.syncState();
+    await client.syncChain();
     expect(await client.getSyncHeight()).toBeGreaterThan(boundBlockNum);
 
     const rebuilt = await buildRequest({ boundBlockNum });
-    const reproduced = await executeForSummaryAtTip(client, accountId, rebuilt.request, RPC);
+    const reproduced = await executeForSummaryAtTip(client, accountId, rebuilt.request);
 
     expect(reproduced.toCommitment().toHex()).toBe(summary.toCommitment().toHex());
   });
@@ -224,14 +216,14 @@ describe('guarded multisig auth procedure on the mock chain', () => {
 
     expect(undeclared.blockNumbers()).toEqual([]);
     await expect(
-      executeForSummaryAtTip(client, accountId, undeclared, RPC),
+      executeForSummaryAtTip(client, accountId, undeclared),
     ).rejects.toBeInstanceOf(BoundBlockNotDeclaredError);
   });
 
   it('binds an approval expiration the proposer asks for', async () => {
     const { request } = await buildRequest({ approvalExpirationDelta: 100 });
 
-    const { summary, anchor } = await executeForSummary(client, accountId, request, RPC);
+    const { summary, anchor } = await executeForSummary(client, accountId, request);
     try {
       expect(summaryApprovalExpirationBlockNum(summary)).toBe(anchor.blockNum() + 100);
       expect(summarySalt(summary).toHex()).toBe(SALT_HEX);
@@ -246,11 +238,11 @@ describe('guarded multisig auth procedure on the mock chain', () => {
       client,
       1,
       [SIGNER_COMMITMENT, NEW_SIGNER_COMMITMENT],
-      { accountId, salt: Word.fromHex('0x' + '33'.repeat(32)), midenRpcEndpoint: RPC },
+      { accountId, salt: Word.fromHex('0x' + '33'.repeat(32)) },
     );
 
-    const a = await executeForSummary(client, accountId, first.request, RPC);
-    const b = await executeForSummary(client, accountId, second.request, RPC);
+    const a = await executeForSummary(client, accountId, first.request);
+    const b = await executeForSummary(client, accountId, second.request);
     try {
       expect(a.summary.toCommitment().toHex()).not.toBe(b.summary.toCommitment().toHex());
     } finally {

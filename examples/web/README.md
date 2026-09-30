@@ -19,7 +19,7 @@ npm run dev
 
 ## How this demo works
 
-1) **Initialize**: create a `MidenClient` pointed at Miden devnet, sync state, and generate a Falcon signer stored in the web keystore. The app can also generate an ECDSA signer; pick ECDSA when the Guardian you register with restricts new accounts to it (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`, which the production templates set), otherwise registration fails with `signature_scheme_not_allowed`.
+1) **Initialize**: create a `MidenClient` pointed at Miden devnet with `useWorker: false`, sync state, and generate a Falcon signer stored in the web keystore. The app can also generate an ECDSA signer; pick ECDSA when the Guardian you register with restricts new accounts to it (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`, which the production templates set), otherwise registration fails with `signature_scheme_not_allowed`.
 2) **Connect to GUARDIAN**: fetch the GUARDIAN pubkey from the configured endpoint, keep it for multisig config.
 3) **Create or load multisig**:
    - Create: build a config with your signer + other commitments, use `MultisigClient.create`, then register on GUARDIAN.
@@ -28,3 +28,5 @@ npm run dev
    - Create proposals (add/remove signer, change threshold, switch GUARDIAN, consume notes, P2ID).
    - Sync proposals from GUARDIAN, sign them, and execute when ready.
 5) **Inspect account**: read state/proposals, and list consumable notes.
+
+The client runs with `useWorker: false`, so its WASM work, local proving included, runs on the page's main thread and the page stops responding while it runs. A worker-mode client breaks the multisig accounts it loads or syncs; see [`MIDEN_COMPATIBILITY.md`](../../docs/MIDEN_COMPATIBILITY.md#open-upstream-items).

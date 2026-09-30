@@ -49,7 +49,7 @@ Rust:
 
 TypeScript:
 - `packages/miden-multisig-client/src/client.ts`
-- `packages/miden-multisig-client/src/raw-client.ts`
+- `packages/miden-multisig-client/src/multisig.ts`
 - `packages/miden-multisig-client/src/multisig/proposal/*`
 - `packages/miden-multisig-client/src/proposal/*`
 - `packages/miden-multisig-client/src/transaction/*`

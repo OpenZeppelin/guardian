@@ -243,7 +243,7 @@ export default function App() {
         setDetectedConfig(config);
         setGuardianState(state);
 
-        const { proposals: synced, notes } = await syncAll(reloaded);
+        const { proposals: synced, notes } = await syncAll(reloaded, state);
         setProposals(synced);
         setConsumableNotes(notes);
         setWalletSource(nextSource);
@@ -573,7 +573,7 @@ export default function App() {
       setGuardianState(state);
       setDetectedConfig(config);
 
-      const { proposals: synced, notes } = await syncAll(multisig);
+      const { proposals: synced, notes } = await syncAll(multisig, state);
       setProposals(synced);
       setConsumableNotes(notes);
     } catch (err) {

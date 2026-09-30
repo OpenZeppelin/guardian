@@ -1,4 +1,4 @@
-import type { TransactionRequest, Word } from '@miden-sdk/miden-sdk';
+import type { MidenClient, TransactionRequest, Word } from '@miden-sdk/miden-sdk';
 import {
   AccountId,
   Felt,
@@ -16,7 +16,6 @@ import {
   Poseidon2,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
-import type { RawClientSource } from '../raw-client.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import type { SignatureOptions } from './options.js';
@@ -163,7 +162,7 @@ export function buildP2idNoteFromMetadata(
 }
 
 export async function buildP2idTransactionRequest(
-  client: RawClientSource,
+  client: MidenClient,
   senderId: string,
   recipientId: string,
   faucetId: string,
