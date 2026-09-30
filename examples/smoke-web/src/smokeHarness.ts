@@ -34,6 +34,7 @@ import {
   executeProposal as executeOnlineProposal,
   exportProposalToJson,
   fetchAccountState,
+  filterVisibleProposals,
   importProposal as importStoredProposal,
   initMultisigClient,
   initializeLocalSigners,
@@ -286,6 +287,20 @@ function normalizeAccountId(accountId: string): string {
   }
 
   return trimmed.startsWith('0x') ? trimmed : `0x${trimmed}`;
+}
+
+/**
+ * Whether `held`, GUARDIAN's state kept from an earlier refresh, is
+ * `multisig` at its local commitment. After a sync whose canonical-nonce
+ * pre-check kept the local account, that is the only case in which it still
+ * shows what GUARDIAN holds.
+ */
+function isCopyOfLocalAccount(held: AccountState, multisig: Multisig): boolean {
+  return (
+    held.accountId.toLowerCase() === multisig.accountId.toLowerCase() &&
+    normalizeCommitment(held.commitment) ===
+      normalizeCommitment(multisig.account.to_commitment().toHex())
+  );
 }
 
 function applySignatureScheme(
@@ -605,7 +620,7 @@ export function useSmokeHarness(): {
       targetMultisig: Multisig,
       targetClient?: MidenClient,
     ): Promise<{
-      state: AccountState | null;
+      state: AccountState;
       config: DetectedMultisigConfig;
       proposals: Proposal[];
       notes: ConsumableNote[];
@@ -616,21 +631,36 @@ export function useSmokeHarness(): {
       }
 
       await syncBrowserClientState(activeClient);
-      const synced = await syncAll(targetMultisig, guardianStateRef.current ?? undefined);
+      const synced = await syncAll(targetMultisig);
       // The sync leaves `Multisig.account` at the authoritative state whether
-      // it imported GUARDIAN's or kept local, so read config from there. The
-      // GUARDIAN state copy only refreshes when the sync actually fetched it.
+      // it imported GUARDIAN's or kept local, so read config from there.
       const config = AccountInspector.fromAccount(targetMultisig.account);
-      const state = synced.state ?? guardianStateRef.current;
+      let { state, proposals } = synced;
+      if (!state) {
+        // The canonical-nonce pre-check skipped the state fetch: GUARDIAN
+        // holds nothing newer than the local account. A copy kept from an
+        // earlier refresh still shows GUARDIAN's state only when it is this
+        // account at the local commitment. Otherwise it is missing (create,
+        // then register), belongs to the previously loaded account, or
+        // predates a proposal this browser executed, so fetch GUARDIAN's
+        // copy. Either way, filter the proposals against the copy reported,
+        // as `examples/web` does.
+        const held = guardianStateRef.current;
+        state =
+          held && isCopyOfLocalAccount(held, targetMultisig)
+            ? held
+            : await targetMultisig.fetchState();
+        proposals = filterVisibleProposals(targetMultisig, targetMultisig.listProposals(), state);
+      }
       setGuardianState(state);
       setDetectedConfig(config);
-      setProposals(synced.proposals);
+      setProposals(proposals);
       setConsumableNotes(synced.notes);
 
       return {
         state,
         config,
-        proposals: synced.proposals,
+        proposals,
         notes: synced.notes,
       };
     },
