@@ -423,6 +423,62 @@ Operator checks:
   `guardian_canonicalization_candidates_total` — a healthy steady state
   probes every due account and finds the chain unmoved, and counting
   that would dwarf every other outcome.
+- The release sweep (issue #434, its own task with the `release_sweep`
+  lease) emits its own stable events, with `account_id` and, where
+  applicable, `stored_commitment` / `on_chain` /
+  `new_guardian_commitment` / `candidate` / `proposal_id`:
+  - `Release sweep rotation started` (with `fleet_size`, `spacing_ms`,
+    `rotation_seconds`) and `Release sweep rotation completed` (with
+    `accounts`, `unchecked_accounts`, `duration_seconds`)
+  - `event=release_sweep_skipped reason=pending_candidate`
+  - `event=release_sweep_deferred reason=chain_at_stored_base|not_on_chain|chain_probe_unavailable|history_read_unavailable|binding_read_unavailable|storage_opaque|chain_behind_stored|no_guardian_binding|guardian_still_bound|stored_base_moved`
+  - `event=release_sweep_confirming` (with `observations` / `confirmations` / `block_num`)
+  - `event=release_sweep_own_key_mismatch` (warn, with `guardian_commitment` / `own_guardian_commitment`)
+  - `event=release_sweep_unwritten_push_release` (with `delta_nonce`)
+  - `event=release_sweep_released` (with `detected_by=proposal_match|recoverable_delta|chain_sweep|delta`)
+  - `event=release_sweep_proposal_finalized`
+  `storage_opaque` at info level is the one to watch: the chain state of
+  a **private** account differs from the stored one (usually it moved
+  past it; in optimistic mode it can also still be behind it), no
+  pending proposal or unpromoted delta on this server reached the chain
+  (neither at the head nor in the account's transaction history), and
+  the guardian key cannot be read from chain. If that account is known to have switched
+  guardians (an offline switch with no proposal here), it will not
+  release by itself. `own_key_mismatch` (warn) means the account is
+  bound to a guardian key this server does not hold and nothing on chain
+  moved it there: this server's ack key changed since the account was
+  onboarded. See the watch list below. `chain_behind_stored` means a
+  node served a state older than the one this server stores (the stored
+  state has not landed yet, or the node lags): ignored, never evidence.
+  `guardian_still_bound` means the chain moved but the account is still
+  bound here — the stored state lags the chain (see the `retained`
+  section above). `history_read_unavailable` means the transaction
+  history could not be searched: the visit falls back to the storage
+  read, and a private account is retried on its next visit.
+  `not_on_chain` (debug) means the account has no state on chain yet.
+  `stored_base_moved` means the stored state was replaced (a
+  `/configure`, or a promoted delta) before the release was written,
+  which voids the evidence; the next visit re-evaluates from the new
+  base. `release_sweep_unwritten_push_release` means a promoted
+  `switch_guardian` delta's own release write had failed; the sweep
+  writes it with the same `detected_by=delta` audit row.
+- `guardian_release_sweep_rotations_total{outcome=...}` counts walks of
+  the fleet (`completed`, or `partial` when at least one account could
+  not be checked and waits for the next rotation) and
+  `guardian_release_sweep_rotation_duration_seconds` times them;
+  `guardian_release_sweep_accounts_total{outcome=...}` counts
+  per-account findings (`released`, `confirming`, `still_bound`,
+  `own_key_mismatch`, `storage_opaque`, `no_binding`,
+  `chain_behind_stored`, `probe_failed`). Accounts at their stored base
+  — the healthy steady state — are counted only when that state's
+  guardian key is not this server's (`chain_at_stored_base` is logged at
+  debug only). A failed probe or storage read is counted as
+  `probe_failed`; so is a failed transaction-history search for a
+  private account, while for a public one the visit falls through to the
+  storage read and counts its outcome. Every sweep node call shows up in
+  `guardian_miden_rpc_requests_total` under `get_account_commitment`,
+  `get_account_with_details`, `get_chain_tip` and `sync_transactions`,
+  failed history searches included.
 - `guardian_canonicalization_commitment_mismatches_total` counting up
   means a client omitted `new_commitment` or claimed one that differs
   from the recomputed value. The full pass can promote using the value it
@@ -588,7 +644,7 @@ come from
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 (gRPC `FailedPrecondition`) | Account is paused by an operator. Response body includes the operator-supplied `paused_reason`. Unpause via `POST /dashboard/accounts/{id}/unpause` (requires `accounts:pause`). See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
-| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian (a canonicalized `switch_guardian` delta moved the guardian key away from this server) and this server released it. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
+| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or the release sweep proved the switch from chain: either a pending proposal or an unpromoted switch delta on this server whose post-state the chain reached, at the head or in the account's transaction history (`detected_by: proposal_match` / `recoverable_delta`, any account) or, for a public account, a foreign guardian key read from the account's published on-chain storage (`detected_by: chain_sweep`). A canonicalized switch delta whose own release write failed is released by the sweep with the same `detected_by: delta` row. The `accounts.release` audit row says which. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
 
 ### Validation
 
@@ -677,7 +733,8 @@ network network=MidenTestnet rpc_endpoint="https://rpc.testnet.miden.io"
 storage backend storage=Postgres
 ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecdsa_commitment=0x…
 dashboard operators=0 cursor_secret="ephemeral"
-canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10
+canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10 retained_ttl_seconds=86400 reconcile_interval_seconds=60
+release sweep rotation_seconds=21600 max_rate_per_second=5 page_size=100 recheck_seconds=60 confirmations=2
 listeners http=3000 grpc=50051
 compiled features features=["postgres"]
 =========================================
@@ -725,6 +782,31 @@ ECS Exec requires the task role's `ssmmessages:*` actions
 - **`authentication_failed` rate** — sudden spike usually means a client
   clock drift event or an attacker probing.
 - **ACK pubkey on `GET /pubkey`** — should not change unless you rotated.
+- **`guardian_release_sweep_accounts_total{outcome="own_key_mismatch"}`
+  above zero** — accounts are bound to an ack key this server does not
+  hold: its ack secret changed (check `GUARDIAN_ACK_SECRET_PROVIDER` and
+  the secret it points to; left unset outside prod, it generates new
+  keys on every boot). The sweep releases none of these accounts, but
+  none of them can transact through this server until the previous key
+  is restored.
+- **`guardian_release_sweep_accounts_total{outcome="storage_opaque"}`
+  growing** — private accounts whose chain state moved past the stored
+  one with no pending proposal or unpromoted delta explaining it; the
+  sweep cannot verify their guardian binding, so switched ones stay
+  active here until the wallet re-onboards. There is no manual release;
+  pausing the account is the operator's lever for refusing its
+  mutations meanwhile.
+- **`guardian_release_sweep_accounts_total{outcome="chain_behind_stored"}`
+  growing** — the configured node keeps serving states older than this
+  server's: it is lagging, which also delays canonicalization. Expected
+  in optimistic mode and briefly after a re-onboarding, while the stored
+  state has not landed on chain yet.
+- **`guardian_release_sweep_rotations_total` not advancing** for twice
+  `GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS` — no replica holds the
+  `release_sweep` lease, or the walk keeps failing (see the rotation
+  log lines). A rotation always ends slightly after the window, and a
+  fleet too large for it at `GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND`
+  takes longer, so alert on a multiple of the window, not the window.
 
 There are no Terraform-managed dashboards or alarms yet — building these
 out remains an open production-hardening item.

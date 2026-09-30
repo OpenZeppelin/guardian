@@ -269,13 +269,16 @@ none and behavior is unchanged.
 
 - Confidentiality boundary: only the payload JSON is encrypted — the account
   `state_json`, delta `delta_payload`, and proposal `delta_payload`. Routing and
-  index columns (`account_id`, `nonce`, `status`, proposal `commitment`) stay
-  **plaintext** by design: they are needed for lookups and some are bound as AEAD
-  additional authenticated data (authenticated, not hidden). "Encrypted at rest"
-  here means payload confidentiality, not metadata confidentiality — anyone with
-  database read access still sees which accounts exist, their nonce/commitment
-  lineage, and proposal status. Use disk/database-level encryption if the index
-  metadata itself is sensitive in your threat model.
+  index columns (`account_id`, `nonce`, `status`, state and proposal
+  `commitment`) stay **plaintext** by design: they are needed for lookups and
+  some are bound as AEAD additional authenticated data (authenticated, not
+  hidden). That includes the stored state's `nonce`, kept next to its
+  `commitment` so the canonical-nonce pre-check never decrypts the state; it
+  reveals the account's transaction count. "Encrypted at rest" here means
+  payload confidentiality, not metadata confidentiality — anyone with database
+  read access still sees which accounts exist, their nonce/commitment lineage,
+  and proposal status. Use disk/database-level encryption if the index metadata
+  itself is sensitive in your threat model.
 
 - Production key source: the key document
   `{ "active": "k1", "keys": { "k1": "<base64 32 bytes>" } }`, held either in

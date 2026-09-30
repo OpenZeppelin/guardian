@@ -309,6 +309,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -336,6 +337,7 @@ mod tests {
             .with_pull_state(Ok(crate::state_object::StateObject {
                 account_id: TEST_ACCOUNT_ID.to_string(),
                 commitment: prev_commitment,
+                nonce: None,
                 state_json: serde_json::json!({}),
                 created_at: "2026-05-25T08:00:00Z".into(),
                 updated_at: "2026-05-25T08:00:00Z".into(),
@@ -615,6 +617,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

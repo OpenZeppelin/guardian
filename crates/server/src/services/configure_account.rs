@@ -1,7 +1,7 @@
 use crate::error::{GuardianError, Result};
-use crate::metadata::AccountMetadata;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
+use crate::metadata::{AccountMetadata, ClearTransition};
 use crate::services::{consume_auth_timestamp, validate_request_timestamp};
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -68,7 +68,7 @@ pub async fn configure_account(
         reject_disallowed_scheme(state, scheme)?;
     }
 
-    let (commitment, signer_commitment) = {
+    let (head, signer_commitment) = {
         let client = &state.network_client;
         let expected_guardian_commitment = state.ack.commitment(&scheme);
 
@@ -147,11 +147,12 @@ pub async fn configure_account(
                 GuardianError::AuthenticationFailed(format!("Signature verification failed: {e}"))
             })?;
 
-        // calculates the commitment of the account state.
-        let commitment = client
-            .get_state_commitment(&params.account_id, &params.initial_state)
+        // Commitment and nonce of the account state, from one decode; both
+        // are stored with the state.
+        let head = client
+            .get_state_head(&params.account_id, &params.initial_state)
             .map_err(GuardianError::NetworkError)?;
-        (commitment, signer_commitment)
+        (head, signer_commitment)
     };
 
     if existing.is_some() {
@@ -172,7 +173,8 @@ pub async fn configure_account(
     let account_state = StateObject {
         account_id: params.account_id.clone(),
         state_json: params.initial_state,
-        commitment,
+        commitment: head.commitment,
+        nonce: head.nonce,
         created_at: created_at.clone(),
         updated_at: now.clone(),
         auth_scheme: scheme.to_string(),
@@ -197,7 +199,6 @@ pub async fn configure_account(
     // is carried forward from `existing` so a new storage backend
     // cannot accidentally clear it (the field is only mutated by
     // `set_pause`/`clear_pause`).
-    let was_released = existing.as_ref().and_then(|m| m.released_at).is_some();
     let metadata_entry = AccountMetadata {
         account_id: params.account_id.clone(),
         auth: params.auth,
@@ -211,7 +212,7 @@ pub async fn configure_account(
         paused_at: existing.as_ref().and_then(|m| m.paused_at),
         paused_reason: existing.as_ref().and_then(|m| m.paused_reason.clone()),
         // `set` never touches released state; the explicit
-        // `clear_released` below performs the reactivation.
+        // `clear_released_if_state` below performs the reactivation.
         released_at: existing.as_ref().and_then(|m| m.released_at),
     };
 
@@ -242,14 +243,24 @@ pub async fn configure_account(
     // the submitted state binds the account to this server again — so
     // re-onboarding is exactly the reactivation event. Pause, an
     // operator decision, stays in force across reconfiguration.
-    if was_released {
-        tracing::info!(
-            account_id = %params.account_id,
-            "Reactivating released account via /configure re-onboarding"
-        );
-        state
+    //
+    // The clear runs for every existing account, after `submit_state`,
+    // not only when `existing` showed a release: a release written
+    // between that read and the state write (the release sweep proving
+    // a switch against the previous state) would otherwise survive the
+    // re-onboarding. Both the release and this clear are conditional on
+    // the stored state, atomically, so whichever state is stored last
+    // decides: a release proved against an older state is refused or
+    // undone here, and a switch delta that replaced this state after
+    // `submit_state` keeps its release.
+    if existing.is_some() {
+        let cleared = state
             .metadata
-            .clear_released(&params.account_id)
+            .clear_released_if_state(
+                &params.account_id,
+                &account_state.commitment,
+                state.storage.as_ref(),
+            )
             .await
             .map_err(|e| {
                 tracing::error!(
@@ -259,6 +270,18 @@ pub async fn configure_account(
                 );
                 GuardianError::StorageError(format!("Failed to clear released state: {e}"))
             })?;
+        match cleared {
+            ClearTransition::Cleared => tracing::info!(
+                account_id = %params.account_id,
+                "Reactivated released account via /configure re-onboarding"
+            ),
+            ClearTransition::NotReleased => {}
+            ClearTransition::StateMoved => tracing::warn!(
+                account_id = %params.account_id,
+                "A delta replaced the re-onboarded state before its release was cleared; \
+                 the release of that later state stands"
+            ),
+        }
     }
 
     // Count only first-time creations — /configure also serves
@@ -301,9 +324,18 @@ fn reject_disallowed_scheme(state: &AppState, scheme: SignatureScheme) -> Result
 mod tests {
     use super::*;
     use crate::ack::AckRegistry;
+    use crate::state_object::StateHead;
     use crate::storage::StorageBackend;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
+
+    /// The head the mock network client reports for the configured state.
+    fn head(commitment: &str, nonce: u64) -> StateHead {
+        StateHead {
+            commitment: commitment.to_string(),
+            nonce: Some(nonce),
+        }
+    }
 
     async fn create_test_app_state(
         network_client: MockNetworkClient,
@@ -326,6 +358,7 @@ mod tests {
             network_client: Arc::new(network_client),
             ack,
             canonicalization: None, // Optimistic mode for tests
+            release_sweep: None,
             clock: Arc::new(crate::clock::SystemClock),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -351,9 +384,10 @@ mod tests {
             .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
                 cosigner_commitments: configured_commitments.clone(),
             })))
-            .with_get_state_commitment(Ok("0x1234".to_string()));
+            .with_get_state_head(Ok(head("0x1234", 3)));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let observed_storage = storage_backend.clone();
 
         let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
         let observed_metadata = metadata_store.clone();
@@ -381,6 +415,11 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         assert_eq!(result.account_id, account_id_hex);
+        // The state is stored with the head the network client decoded.
+        let stored = observed_storage.get_submit_state_calls();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].commitment, "0x1234");
+        assert_eq!(stored[0].nonce, Some(3));
         let ack_pubkey = result.ack_pubkey;
         let ack_commitment = result.ack_commitment;
         assert!(!ack_pubkey.is_empty(), "ack_pubkey should not be empty");
@@ -468,7 +507,7 @@ mod tests {
         };
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(existing_metadata)))
@@ -535,7 +574,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x1234".to_string()));
+            .with_get_state_head(Ok(head("0x1234", 3)));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
 
@@ -606,7 +645,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
 
@@ -664,7 +703,7 @@ mod tests {
         let state = create_test_app_state(
             MockNetworkClient::new()
                 .with_validate_credential(Ok(()))
-                .with_get_state_commitment(Ok("0x1234".into())),
+                .with_get_state_head(Ok(head("0x1234", 3))),
             MockStorageBackend::new(),
             metadata,
         )
@@ -723,7 +762,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(existing_metadata)))
@@ -753,13 +792,70 @@ mod tests {
         assert_eq!(set_calls.len(), 1);
         assert_eq!(set_calls[0].paused_at, Some(paused_at));
         assert_eq!(set_calls[0].paused_reason.as_deref(), Some("compliance"));
-        assert!(
-            metadata_store
-                .clear_released_calls
-                .lock()
-                .unwrap()
-                .is_empty(),
-            "no release to clear when the account was not released"
+        assert_eq!(
+            metadata_store.clear_released_calls.lock().unwrap().clone(),
+            vec![(account_id_hex.to_string(), "0x5678".to_string())],
+            "reconfiguration always clears (idempotently) after its state write, \
+             conditional on the state it wrote"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_configure_account_clears_a_release_written_after_its_first_read() {
+        // The release sweep released the account between this request's
+        // first metadata read (which saw it active) and its state write.
+        // The unconditional clear after the write must still undo it.
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let existing_metadata = AccountMetadata {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        };
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_head(Ok(head("0x5678", 3)));
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(existing_metadata)))
+            .with_set(Ok(()))
+            // The store reports a release it just cleared.
+            .with_clear_released(Ok(ClearTransition::Cleared));
+
+        let state =
+            create_test_app_state(network_client, storage_backend, metadata_store.clone()).await;
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+        let credential = Credentials::signature(pubkey_hex, signature_hex, timestamp);
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state,
+            credential,
+        };
+
+        configure_account(&state, params)
+            .await
+            .expect("Reconfiguration should succeed");
+        assert_eq!(
+            metadata_store.clear_released_calls.lock().unwrap().clone(),
+            vec![(account_id_hex.to_string(), "0x5678".to_string())]
         );
     }
 
@@ -789,7 +885,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(existing_metadata)))
@@ -819,7 +915,7 @@ mod tests {
         // reactivation event: released state must be explicitly cleared.
         assert_eq!(
             metadata_store.clear_released_calls.lock().unwrap().clone(),
-            vec![account_id_hex.to_string()],
+            vec![(account_id_hex.to_string(), "0x5678".to_string())],
             "re-onboarding must clear the released state"
         );
     }
@@ -850,7 +946,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(existing_metadata)))
@@ -895,7 +991,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Err("Network connection failed".to_string()));
+            .with_get_state_head(Err("Network connection failed".to_string()));
 
         let storage_backend = MockStorageBackend::new();
         let metadata_store = MockMetadataStore::new().with_get(Ok(None));
@@ -1210,7 +1306,7 @@ mod tests {
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
             .with_should_update_auth(Ok(None))
-            .with_get_state_commitment(Ok("0x1234".to_string()));
+            .with_get_state_head(Ok(head("0x1234", 3)));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));

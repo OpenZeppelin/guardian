@@ -1530,13 +1530,128 @@
     },
     {
       "type": "row",
-      "title": "Delta & proposal lifecycle",
+      "title": "Release sweep",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 91
+      },
+      "panels": [],
+      "id": 48
+    },
+    {
+      "type": "timeseries",
+      "title": "Rotations by outcome",
+      "description": "Walks of the fleet per hour: completed, or partial when some accounts could not be checked (they wait for the next rotation). A rotation takes a little over GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS (6 h by default), longer for a fleet too large for it at the rate cap; none for twice that means no replica holds the release_sweep lease.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 92
+      },
+      "id": 49,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (outcome) (increase(guardian_release_sweep_rotations_total{instance=~\"$instance\"}[1h]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Account findings by outcome",
+      "description": "Per-account release sweep findings per hour. released is a switch the push path never recorded; own_key_mismatch above zero means this server's ack key changed (accounts bound to a key it no longer holds); storage_opaque counts private accounts whose chain state moved with nothing on this server explaining it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 92
+      },
+      "id": 50,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (outcome) (increase(guardian_release_sweep_accounts_total{instance=~\"$instance\"}[1h]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Delta & proposal lifecycle",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 100
       },
       "panels": [],
       "id": 32
@@ -1553,7 +1668,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 92
+        "y": 101
       },
       "id": 33,
       "fieldConfig": {
@@ -1604,7 +1719,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 92
+        "y": 101
       },
       "id": 34,
       "fieldConfig": {
@@ -1655,7 +1770,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 100
+        "y": 109
       },
       "id": 35,
       "fieldConfig": {
@@ -1706,7 +1821,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 100
+        "y": 109
       },
       "id": 36,
       "fieldConfig": {
@@ -1753,7 +1868,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 108
+        "y": 117
       },
       "panels": [],
       "id": 37
@@ -1770,7 +1885,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 109
+        "y": 118
       },
       "id": 38,
       "fieldConfig": {
@@ -1821,7 +1936,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 109
+        "y": 118
       },
       "id": 39,
       "fieldConfig": {
@@ -1868,7 +1983,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 117
+        "y": 126
       },
       "panels": [],
       "id": 40
@@ -1885,7 +2000,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 118
+        "y": 127
       },
       "id": 41,
       "fieldConfig": {
@@ -1954,7 +2069,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 118
+        "y": 127
       },
       "id": 42,
       "fieldConfig": {
@@ -2005,7 +2120,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 126
+        "y": 135
       },
       "id": 43,
       "fieldConfig": {
@@ -2052,7 +2167,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 134
+        "y": 143
       },
       "panels": [],
       "id": 44
@@ -2069,7 +2184,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 135
+        "y": 144
       },
       "id": 45,
       "fieldConfig": {
@@ -2120,7 +2235,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 135
+        "y": 144
       },
       "id": 46,
       "fieldConfig": {
@@ -2171,7 +2286,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 135
+        "y": 144
       },
       "id": 47,
       "fieldConfig": {

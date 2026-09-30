@@ -32,9 +32,23 @@ use prost::Message;
 pub use crate::api::grpc::guardian::*;
 pub use tonic::{Request, metadata::MetadataValue};
 
+/// Committed transactions per account as `(block, initial, final)` state
+/// commitments.
+type TransactionLog = HashMap<String, Vec<(u32, String, String)>>;
+
 pub struct IntegrationMockNetworkClient {
     miden_client: crate::network::miden::MidenNetworkClient,
     initial_commitments: std::sync::Mutex<HashMap<String, String>>,
+    /// Published on-chain state per account, as the release sweep's
+    /// storage read would see it (issue #434): the account JSON whose
+    /// guardian slot is inspected with the real inspector. Absent =
+    /// the account does not publish its storage (`Opaque`).
+    published_states: std::sync::Mutex<HashMap<String, serde_json::Value>>,
+    /// Committed transactions per account as `(block, initial, final)`
+    /// state commitments, as `SyncTransactions` would list them.
+    transactions: std::sync::Mutex<TransactionLog>,
+    /// The chain tip every read answers at; `advance_chain` moves it.
+    chain_tip: std::sync::atomic::AtomicU32,
 }
 
 impl IntegrationMockNetworkClient {
@@ -42,7 +56,35 @@ impl IntegrationMockNetworkClient {
         Self {
             miden_client,
             initial_commitments: std::sync::Mutex::new(HashMap::new()),
+            published_states: std::sync::Mutex::new(HashMap::new()),
+            transactions: std::sync::Mutex::new(HashMap::new()),
+            chain_tip: std::sync::atomic::AtomicU32::new(1),
         }
+    }
+
+    /// Record a transaction the chain committed against `account_id` in
+    /// `block`, moving the tip up to it if needed.
+    pub fn register_transaction(
+        &mut self,
+        account_id: String,
+        block: u32,
+        initial_state_commitment: String,
+        final_state_commitment: String,
+    ) {
+        self.chain_tip
+            .fetch_max(block, std::sync::atomic::Ordering::SeqCst);
+        self.transactions
+            .lock()
+            .expect("transactions lock")
+            .entry(account_id)
+            .or_default()
+            .push((block, initial_state_commitment, final_state_commitment));
+    }
+
+    /// Produce one more (empty) block.
+    pub fn advance_chain(&self) {
+        self.chain_tip
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn register_account(&mut self, account_id: String, commitment: String) {
@@ -51,15 +93,26 @@ impl IntegrationMockNetworkClient {
             .expect("commitments lock")
             .insert(account_id, commitment);
     }
+
+    /// Register the account state the chain publishes for `account_id`.
+    /// `fetch_on_chain_guardian_binding` then reports the registered
+    /// commitment together with the guardian key this state carries,
+    /// mirroring a public account whose storage the node serves.
+    pub fn publish_state(&mut self, account_id: String, state_json: serde_json::Value) {
+        self.published_states
+            .lock()
+            .expect("published states lock")
+            .insert(account_id, state_json);
+    }
 }
 
 #[async_trait]
 impl NetworkClient for IntegrationMockNetworkClient {
-    fn get_state_commitment(
+    fn get_state_head(
         &self,
         _account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<String, String> {
+    ) -> Result<crate::state_object::StateHead, String> {
         use miden_protocol::account::Account;
 
         let account = Account::from_json(state_json)
@@ -68,7 +121,10 @@ impl NetworkClient for IntegrationMockNetworkClient {
         let local_commitment = account.to_commitment();
         let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
-        Ok(local_commitment_hex)
+        Ok(crate::state_object::StateHead {
+            commitment: local_commitment_hex,
+            nonce: Some(account.nonce().as_canonical_u64()),
+        })
     }
 
     async fn verify_commitment(
@@ -105,7 +161,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &self,
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
-    ) -> Result<(serde_json::Value, String), String> {
+    ) -> Result<crate::network::AppliedState, String> {
         self.miden_client
             .apply_delta(prev_state_json, delta_payload)
     }
@@ -156,6 +212,70 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.extract_guardian_commitment(state_json)
     }
 
+    async fn fetch_on_chain_guardian_binding(
+        &self,
+        account_id: &str,
+        _read_mode: crate::network::RpcReadMode,
+    ) -> Result<crate::network::OnChainGuardianBinding, String> {
+        let published = self
+            .published_states
+            .lock()
+            .expect("published states lock")
+            .get(account_id)
+            .cloned();
+        let Some(state_json) = published else {
+            return Ok(crate::network::OnChainGuardianBinding::Opaque);
+        };
+        let on_chain_commitment = self
+            .initial_commitments
+            .lock()
+            .expect("commitments lock")
+            .get(account_id)
+            .cloned()
+            .ok_or_else(|| format!("no registered on-chain commitment for {account_id}"))?;
+        let guardian_commitment = self.miden_client.extract_guardian_commitment(&state_json)?;
+        let nonce = self
+            .miden_client
+            .account_nonce(&state_json)?
+            .ok_or_else(|| "published state carries no nonce".to_string())?;
+        Ok(crate::network::OnChainGuardianBinding::Visible {
+            on_chain_commitment,
+            guardian_commitment,
+            nonce,
+            block_num: self.chain_tip.load(std::sync::atomic::Ordering::SeqCst),
+        })
+    }
+
+    async fn find_transaction_ending_at(
+        &self,
+        account_id: &str,
+        final_state_commitment: &str,
+        from_block: u32,
+        _read_mode: crate::network::RpcReadMode,
+    ) -> Result<crate::network::TransactionSearch, String> {
+        let tip = self.chain_tip.load(std::sync::atomic::Ordering::SeqCst);
+        let found_in_block = self
+            .transactions
+            .lock()
+            .expect("transactions lock")
+            .get(account_id)
+            .and_then(|transactions| {
+                transactions
+                    .iter()
+                    .filter(|(block, _, _)| (from_block..=tip).contains(block))
+                    .find(|(_, _, final_commitment)| final_commitment == final_state_commitment)
+                    .map(|(block, _, _)| *block)
+            });
+        Ok(crate::network::TransactionSearch {
+            found_in_block,
+            resume_from_block: tip.saturating_add(1).max(from_block),
+        })
+    }
+
+    fn account_nonce(&self, state_json: &serde_json::Value) -> Result<Option<u64>, String> {
+        self.miden_client.account_nonce(state_json)
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,
@@ -199,6 +319,7 @@ pub async fn create_test_app_state() -> AppState {
         network_client: Arc::new(mock_client),
         ack,
         canonicalization: Some(crate::canonicalization::CanonicalizationConfig::default()),
+        release_sweep: None,
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
         auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -317,6 +438,40 @@ pub fn load_fixture_account_grpc() -> (AccountId, String, String) {
     (account_id, account_id_hex, fixture_string)
 }
 
+/// Signer 1 of the fixture account and the account's full cosigner set, in
+/// the signer map's canonical (index) order, as generated alongside
+/// `account.json` by `generate_fixtures`. Configuring the fixture account
+/// through the real extraction path (`IntegrationMockNetworkClient` over a
+/// `MidenNetworkClient`) only succeeds with this declared set, and only
+/// these keys then pass the account's cosigner check.
+pub fn fixture_signer() -> (TestSigner, Vec<String>) {
+    use miden_protocol::utils::serde::Deserializable;
+
+    let keys: serde_json::Value = serde_json::from_str(crate::testing::fixtures::KEYS_JSON)
+        .expect("Failed to parse keys.json");
+    let secret_key_bytes = hex::decode(keys["signer_1_secret_key"].as_str().expect("signer key"))
+        .expect("signer key hex");
+    let signer = TestSigner::from_secret_key(
+        SecretKey::read_from_bytes(&secret_key_bytes).expect("signer key bytes"),
+    );
+    assert_eq!(
+        signer.commitment_hex,
+        keys["signer_1_commitment"]
+            .as_str()
+            .expect("signer commitment"),
+        "keys.json signer 1 commitment must match its secret key"
+    );
+    let cosigner_commitments = (1..=3)
+        .map(|i| {
+            keys[format!("signer_{i}_commitment")]
+                .as_str()
+                .expect("signer commitment")
+                .to_string()
+        })
+        .collect();
+    (signer, cosigner_commitments)
+}
+
 pub fn get_test_account_id() -> (AccountId, String) {
     let account_id_hex = "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a";
     let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
@@ -379,7 +534,10 @@ impl Default for TestSigner {
 
 impl TestSigner {
     pub fn new() -> Self {
-        let secret_key = SecretKey::new();
+        Self::from_secret_key(SecretKey::new())
+    }
+
+    pub fn from_secret_key(secret_key: SecretKey) -> Self {
         let public_key = secret_key.public_key();
         let commitment = public_key.to_commitment();
         let commitment_hex = format!("0x{}", hex::encode(commitment.to_bytes()));
@@ -643,6 +801,7 @@ pub fn create_test_app_state_with_mocks(
         network_client,
         ack,
         canonicalization: None, // Use optimistic mode for unit tests
+        release_sweep: None,
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
         auditor: Arc::new(crate::audit::LogAuditor::new()),

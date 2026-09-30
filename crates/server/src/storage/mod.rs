@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::delta_object::{DeltaObject, DeltaStatus};
-use crate::state_object::StateObject;
+use crate::state_object::{StateHead, StateObject};
 
 /// Returns `true` when a backend-formatted error string represents a
 /// "row not present" outcome. Both Postgres (Diesel) and the filesystem
@@ -502,6 +502,41 @@ pub trait StorageBackend: Send + Sync {
     async fn submit_state(&self, state: &StateObject) -> Result<(), String>;
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String>;
     async fn pull_state(&self, account_id: &str) -> Result<StateObject, String>;
+    /// The commitment of the account's stored state, without its
+    /// payload. The release sweep probes the chain with it for every
+    /// account and needs the state itself only when the chain moved.
+    /// The default reads the whole state; backends that keep the
+    /// commitment apart override it.
+    async fn pull_state_commitment(&self, account_id: &str) -> Result<String, String> {
+        self.pull_state(account_id)
+            .await
+            .map(|state| state.commitment)
+    }
+
+    /// The commitment and nonce of the account's stored state, without
+    /// its payload: what the canonical-nonce pre-check (issue #191)
+    /// serves. `nonce` is `None` when the row does not know it (see
+    /// [`StateObject::nonce`]). The default reads the whole state;
+    /// backends that keep both apart override it.
+    async fn pull_state_head(&self, account_id: &str) -> Result<StateHead, String> {
+        self.pull_state(account_id).await.map(|state| StateHead {
+            commitment: state.commitment,
+            nonce: state.nonce,
+        })
+    }
+
+    /// Store `nonce` on the account's state row when the row still holds
+    /// `commitment` and carries no nonce: the one-time backfill of a row
+    /// written before the server stored nonces (see
+    /// [`StateObject::nonce`]). It never overwrites a nonce a writer set
+    /// and never attaches one to a state that has since moved on. Returns
+    /// whether it wrote.
+    async fn backfill_state_nonce(
+        &self,
+        account_id: &str,
+        commitment: &str,
+        nonce: u64,
+    ) -> Result<bool, String>;
 
     /// Batch fetch states for `account_ids` in a single round trip
     /// (Postgres: one `SELECT ... WHERE account_id = ANY($1)`;

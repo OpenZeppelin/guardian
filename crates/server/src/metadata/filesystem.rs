@@ -1,5 +1,6 @@
 use crate::metadata::{
-    AccountListCursor, AccountMetadata, Auth, LEGACY_ACCOUNT_AUTH_FLOOR, MetadataStore,
+    AccountListCursor, AccountMetadata, Auth, ClearTransition, LEGACY_ACCOUNT_AUTH_FLOOR,
+    MetadataStore, ReleaseTransition,
 };
 use crate::services::account_status::{AccountStatus, PauseTransition};
 use async_trait::async_trait;
@@ -140,6 +141,14 @@ impl FilesystemMetadataStore {
 /// signer-scoped only when the prefix before its final separator is a known
 /// account and the suffix is non-empty.
 const AUTH_STATE_KEY_SEPARATOR: char = ':';
+
+/// The rows the release sweep (issue #434) walks: unreleased Miden
+/// accounts with no candidate in flight.
+fn is_release_sweepable(metadata: &AccountMetadata) -> bool {
+    metadata.released_at.is_none()
+        && !metadata.has_pending_candidate
+        && metadata.network_config.is_miden()
+}
 
 fn auth_state_key(account_id: &str, signer_commitment: &str) -> String {
     format!("{account_id}{AUTH_STATE_KEY_SEPARATOR}{signer_commitment}")
@@ -312,8 +321,9 @@ impl MetadataStore for FilesystemMetadataStore {
         let account_id = metadata.account_id.clone();
 
         // Mirror the Postgres `set` semantics: pause and released state
-        // are owned by `set_pause` / `clear_pause` and `set_released` /
-        // `clear_released` and must not be changed by a generic metadata
+        // are owned by `set_pause` / `clear_pause` and
+        // `set_released_if_state` / `clear_released_if_state` and must not
+        // be changed by a generic metadata
         // write (e.g. reconfigure, EVM re-register).
         let mut metadata = metadata;
         {
@@ -393,6 +403,26 @@ impl MetadataStore for FilesystemMetadataStore {
             .iter()
             .filter(|(_, m)| m.has_pending_candidate)
             .map(|(k, _)| k.clone())
+            .collect())
+    }
+
+    async fn list_release_sweep_ids(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<String>, String> {
+        let cache = self.cache.read().await;
+        let mut ids: Vec<&str> = cache
+            .values()
+            .filter(|m| is_release_sweepable(m))
+            .map(|m| m.account_id.as_str())
+            .filter(|id| after.is_none_or(|after| *id > after))
+            .collect();
+        ids.sort_unstable();
+        Ok(ids
+            .into_iter()
+            .take(limit as usize)
+            .map(str::to_string)
             .collect())
     }
 
@@ -507,7 +537,18 @@ impl MetadataStore for FilesystemMetadataStore {
         Ok(transition)
     }
 
-    async fn set_released(&self, account_id: &str, now: DateTime<Utc>) -> Result<bool, String> {
+    async fn set_released_if_state(
+        &self,
+        account_id: &str,
+        now: DateTime<Utc>,
+        expected_state_commitment: &str,
+        storage: &dyn crate::storage::StorageBackend,
+    ) -> Result<ReleaseTransition, String> {
+        // The state's commitment (only: no state is decrypted under the
+        // lock) is read while the cache write lock is held, and
+        // `clear_released_if_state` takes the same lock: a `/configure` that
+        // re-onboards the account (state write, then clear) can never
+        // interleave between this check and the write below.
         let mut cache = self.cache.write().await;
         let metadata = cache
             .get_mut(account_id)
@@ -515,26 +556,53 @@ impl MetadataStore for FilesystemMetadataStore {
 
         // First-writer-wins: keep the original released_at.
         if metadata.released_at.is_some() {
-            return Ok(false);
+            return Ok(ReleaseTransition::AlreadyReleased);
+        }
+        let current = storage
+            .pull_state_commitment(account_id)
+            .await
+            .map_err(|e| format!("Failed to read the stored state: {e}"))?;
+        if current != expected_state_commitment {
+            return Ok(ReleaseTransition::StateMoved);
         }
         metadata.released_at = Some(now);
 
         self.persist(&cache).await?;
-        Ok(true)
+        Ok(ReleaseTransition::Released)
     }
 
-    async fn clear_released(&self, account_id: &str) -> Result<(), String> {
+    async fn clear_released_if_state(
+        &self,
+        account_id: &str,
+        expected_state_commitment: &str,
+        storage: &dyn crate::storage::StorageBackend,
+    ) -> Result<ClearTransition, String> {
+        // Same lock as `set_released_if_state`: the state check and the
+        // write below never interleave with a release.
         let mut cache = self.cache.write().await;
         let metadata = cache
             .get_mut(account_id)
             .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
         if metadata.released_at.is_none() {
-            return Ok(());
+            return Ok(ClearTransition::NotReleased);
+        }
+        let current = storage
+            .pull_state_commitment(account_id)
+            .await
+            .map_err(|e| format!("Failed to read the stored state: {e}"))?;
+        if current != expected_state_commitment {
+            return Ok(ClearTransition::StateMoved);
         }
         metadata.released_at = None;
 
-        self.persist(&cache).await
+        self.persist(&cache).await?;
+        Ok(ClearTransition::Cleared)
+    }
+
+    async fn count_release_sweep_accounts(&self) -> Result<usize, String> {
+        let cache = self.cache.read().await;
+        Ok(cache.values().filter(|m| is_release_sweepable(m)).count())
     }
 
     async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {
@@ -641,15 +709,65 @@ mod pause_tests {
         assert!(post.paused_reason.is_none());
     }
 
+    /// A filesystem state store holding `(account_id, commitment)` states.
+    async fn states_at(
+        entries: &[(&str, &str)],
+    ) -> (
+        crate::storage::filesystem::FilesystemService,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = crate::storage::filesystem::FilesystemService::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        for (account_id, commitment) in entries {
+            set_state(&storage, account_id, commitment).await;
+        }
+        (storage, dir)
+    }
+
+    async fn set_state(
+        storage: &crate::storage::filesystem::FilesystemService,
+        account_id: &str,
+        commitment: &str,
+    ) {
+        use crate::storage::StorageBackend;
+        storage
+            .submit_state(&crate::state_object::StateObject {
+                account_id: account_id.to_string(),
+                state_json: serde_json::json!({}),
+                commitment: commitment.to_string(),
+                nonce: None,
+                created_at: "2026-09-01T00:00:00Z".to_string(),
+                updated_at: "2026-09-01T00:00:00Z".to_string(),
+                auth_scheme: String::new(),
+            })
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
-    async fn set_released_is_first_writer_wins() {
+    async fn set_released_if_state_is_first_writer_wins() {
         let (store, _dir) = fresh_store().await;
+        let (storage, _states) = states_at(&[("acct", "0xbase")]).await;
         let first = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
         let later = Utc.with_ymd_and_hms(2026, 7, 6, 11, 0, 0).unwrap();
 
-        assert!(store.set_released("acct", first).await.unwrap());
+        assert_eq!(
+            store
+                .set_released_if_state("acct", first, "0xbase", &storage)
+                .await
+                .unwrap(),
+            ReleaseTransition::Released
+        );
         // Second release is a no-op that reports "not newly released".
-        assert!(!store.set_released("acct", later).await.unwrap());
+        assert_eq!(
+            store
+                .set_released_if_state("acct", later, "0xbase", &storage)
+                .await
+                .unwrap(),
+            ReleaseTransition::AlreadyReleased
+        );
 
         let post = store.get("acct").await.unwrap().unwrap();
         assert_eq!(
@@ -660,35 +778,228 @@ mod pause_tests {
     }
 
     #[tokio::test]
-    async fn set_released_missing_account_errors() {
+    async fn set_released_if_state_refuses_a_state_that_moved() {
+        // The evidence was proved against 0xbase, but a /configure has
+        // since stored 0xreonboarded: nothing may be written.
         let (store, _dir) = fresh_store().await;
+        let (storage, _states) = states_at(&[("acct", "0xreonboarded")]).await;
         let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
-        assert!(store.set_released("missing", ts).await.is_err());
+
+        assert_eq!(
+            store
+                .set_released_if_state("acct", ts, "0xbase", &storage)
+                .await
+                .unwrap(),
+            ReleaseTransition::StateMoved
+        );
+        assert!(
+            store
+                .get("acct")
+                .await
+                .unwrap()
+                .unwrap()
+                .released_at
+                .is_none()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_reonboarding_racing_a_release_never_ends_released() {
+        // /configure stores the new state and then clears the release;
+        // the release checks the state it was proved against inside the
+        // metadata lock. Whatever the interleaving, an account whose
+        // stored state is the re-onboarded one must end up active.
+        let store = std::sync::Arc::new(fresh_store().await);
+        for round in 0..200 {
+            let (storage, _states) = states_at(&[("acct", "0xbase")]).await;
+            let storage = std::sync::Arc::new(storage);
+            let release = {
+                let store = store.clone();
+                let storage = storage.clone();
+                tokio::spawn(async move {
+                    store
+                        .0
+                        .set_released_if_state("acct", Utc::now(), "0xbase", storage.as_ref())
+                        .await
+                        .unwrap()
+                })
+            };
+            let reonboard = {
+                let store = store.clone();
+                let storage = storage.clone();
+                tokio::spawn(async move {
+                    set_state(&storage, "acct", "0xreonboarded").await;
+                    store
+                        .0
+                        .clear_released_if_state("acct", "0xreonboarded", storage.as_ref())
+                        .await
+                        .unwrap()
+                })
+            };
+            let _ = release.await.unwrap();
+            let _ = reonboard.await.unwrap();
+            assert!(
+                store
+                    .0
+                    .get("acct")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .released_at
+                    .is_none(),
+                "round {round}: a re-onboarded account ended up released"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn clear_released_reactivates_and_is_idempotent() {
+    async fn list_release_sweep_page_walks_ids_in_order_and_skips_released() {
+        // Release sweep rotation (issue #434): pages are ordered by
+        // account_id, resume strictly after the cursor, and never
+        // include released rows.
         let (store, _dir) = fresh_store().await;
-        let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
-        store.set_released("acct", ts).await.unwrap();
+        let ts = Utc.with_ymd_and_hms(2026, 9, 22, 10, 0, 0).unwrap();
+        for id in ["acct-c", "acct-a", "acct-b", "acct-d"] {
+            let mut metadata = store.get("acct").await.unwrap().unwrap();
+            metadata.account_id = id.into();
+            store.set(metadata).await.unwrap();
+        }
+        let (storage, _states) = states_at(&[("acct-b", "0xbase")]).await;
+        store
+            .set_released_if_state("acct-b", ts, "0xbase", &storage)
+            .await
+            .unwrap();
+        // Rows the sweep cannot act on never take a page slot: a
+        // candidate in flight (the push path owns it) and EVM accounts
+        // (no on-chain guardian binding).
+        let mut busy = store.get("acct").await.unwrap().unwrap();
+        busy.account_id = "acct-ab-busy".into();
+        busy.has_pending_candidate = true;
+        store.set(busy).await.unwrap();
+        let mut evm = store.get("acct").await.unwrap().unwrap();
+        evm.account_id = "acct-ac-evm".into();
+        evm.network_config = NetworkConfig::Evm {
+            chain_id: 1,
+            account_address: "0xabc".into(),
+            multisig_validator_address: "0xdef".into(),
+        };
+        store.set(evm).await.unwrap();
 
-        store.clear_released("acct").await.unwrap();
+        let first = store.list_release_sweep_ids(None, 2).await.unwrap();
+        assert_eq!(first, vec!["acct", "acct-a"]);
+
+        let second = store
+            .list_release_sweep_ids(Some("acct-a"), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            second,
+            vec!["acct-c", "acct-d"],
+            "released, busy and EVM rows are skipped and the cursor is exclusive"
+        );
+
+        let tail = store
+            .list_release_sweep_ids(Some("acct-d"), 2)
+            .await
+            .unwrap();
+        assert!(tail.is_empty(), "past the last id the page is empty");
+
+        let everything = store.list_release_sweep_ids(None, 100).await.unwrap();
+        assert_eq!(everything, vec!["acct", "acct-a", "acct-c", "acct-d"]);
+        assert_eq!(
+            store.count_release_sweep_accounts().await.unwrap(),
+            4,
+            "the pacing count uses the page filter"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_released_if_state_missing_account_errors() {
+        let (store, _dir) = fresh_store().await;
+        let (storage, _states) = states_at(&[("missing", "0xbase")]).await;
+        let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        assert!(
+            store
+                .set_released_if_state("missing", ts, "0xbase", &storage)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .clear_released_if_state("missing", "0xbase", &storage)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_released_reactivates_reports_and_is_idempotent() {
+        let (store, _dir) = fresh_store().await;
+        let (storage, _states) = states_at(&[("acct", "0xbase")]).await;
+        let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        store
+            .set_released_if_state("acct", ts, "0xbase", &storage)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .clear_released_if_state("acct", "0xbase", &storage)
+                .await
+                .unwrap(),
+            ClearTransition::Cleared
+        );
         let post = store.get("acct").await.unwrap().unwrap();
         assert!(post.released_at.is_none());
 
         // Idempotent on an already-active account.
-        store.clear_released("acct").await.unwrap();
+        assert_eq!(
+            store
+                .clear_released_if_state("acct", "0xbase", &storage)
+                .await
+                .unwrap(),
+            ClearTransition::NotReleased
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_released_if_state_keeps_a_release_of_a_later_state() {
+        // /configure stored 0xreonboarded, then a switch delta replaced it
+        // with 0xswitched and released the account: the clear must not
+        // undo a release that belongs to the later state.
+        let (store, _dir) = fresh_store().await;
+        let (storage, _states) = states_at(&[("acct", "0xswitched")]).await;
+        let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        store
+            .set_released_if_state("acct", ts, "0xswitched", &storage)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .clear_released_if_state("acct", "0xreonboarded", &storage)
+                .await
+                .unwrap(),
+            ClearTransition::StateMoved
+        );
+        assert_eq!(
+            store.get("acct").await.unwrap().unwrap().released_at,
+            Some(ts)
+        );
     }
 
     #[tokio::test]
     async fn generic_set_preserves_released_state() {
         let (store, _dir) = fresh_store().await;
+        let (storage, _states) = states_at(&[("acct", "0xbase")]).await;
         let ts = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
-        store.set_released("acct", ts).await.unwrap();
+        store
+            .set_released_if_state("acct", ts, "0xbase", &storage)
+            .await
+            .unwrap();
 
         // A generic metadata write (reconfigure-style) that carries
         // released_at: None must NOT clear the released state — only
-        // clear_released may.
+        // clear_released_if_state may.
         let mut refreshed = store.get("acct").await.unwrap().unwrap();
         refreshed.released_at = None;
         refreshed.updated_at = "2026-07-06T12:00:00Z".into();

@@ -3635,6 +3635,104 @@
         ]
       }
     },
+    "/state/nonce": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Nonce and commitment of the latest canonical state (issue #191), read\nfrom the values stored with the state rather than from the state blob.\nA client can skip `GET /state` when `nonce` is below its local account\nnonce, or equal to it with `commitment` matching the local commitment.\nAn equal nonce at a different commitment means the account diverged, so\nthe client fetches the state.",
+        "operationId": "get_canonical_nonce",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nonce and commitment of the canonical state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanonicalNonceResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or state not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The stored state carries no nonce and cannot be decoded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
     "/status": {
       "get": {
         "tags": [
@@ -3966,6 +4064,30 @@
         "properties": {
           "success": {
             "type": "boolean"
+          }
+        }
+      },
+      "CanonicalNonceResponse": {
+        "type": "object",
+        "description": "Head of the canonical state: the nonce the account carries in that\nstate and the state's commitment.",
+        "required": [
+          "account_id",
+          "nonce",
+          "commitment"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "commitment": {
+            "type": "string",
+            "description": "Commitment of the latest canonical state."
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Account nonce of the latest canonical state.",
+            "minimum": 0
           }
         }
       },
@@ -4481,6 +4603,17 @@
               {
                 "$ref": "#/components/schemas/DashboardCanonicalizationConfig",
                 "description": "`None` when running in optimistic-commit mode; `Some(_)` when\nthe canonicalization worker is active."
+              }
+            ]
+          },
+          "release_sweep": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DashboardReleaseSweepConfig",
+                "description": "Release sweep settings; `None` when the sweep is disabled."
               }
             ]
           },
@@ -5186,6 +5319,42 @@
           "signatures_required": {
             "type": "integer",
             "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "DashboardReleaseSweepConfig": {
+        "type": "object",
+        "description": "Chain-driven release sweep settings (issue #434): the background\ntask that releases accounts whose on-chain guardian key is no longer\nthis server's even when the switch delta never reached the push\npath.",
+        "required": [
+          "rotation_seconds",
+          "max_rate_per_second",
+          "recheck_seconds",
+          "confirmations"
+        ],
+        "properties": {
+          "confirmations": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Observations of a foreign guardian key in published storage, each\nat a strictly later block, required before releasing on that\nevidence.",
+            "minimum": 0
+          },
+          "max_rate_per_second": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Upper bound on account visits per second, rotation and\nconfirmation re-checks together.",
+            "minimum": 0
+          },
+          "recheck_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Delay between confirmation re-checks of an account whose published\nstorage showed a foreign guardian key.",
+            "minimum": 0
+          },
+          "rotation_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Target time for one full walk of the fleet; every unreleased\nMiden account is visited once per rotation.",
             "minimum": 0
           }
         }

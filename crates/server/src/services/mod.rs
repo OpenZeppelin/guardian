@@ -21,6 +21,7 @@ mod dashboard_info;
 mod dashboard_pagination;
 mod dashboard_stats;
 mod delta_commit;
+mod get_canonical_nonce;
 mod get_delta;
 mod get_delta_history;
 mod get_delta_proposal;
@@ -77,6 +78,9 @@ pub use dashboard_stats::{
     DashboardFungibleTotal, DashboardLifecycleCounts, DashboardNonFungibleTotal,
     DashboardStatsRefreshResponse, DashboardStatsRefreshStatus, DashboardStatsResponse,
     get_dashboard_stats, parse_updated_since, request_dashboard_stats_refresh,
+};
+pub use get_canonical_nonce::{
+    CanonicalNonceResponse, GetCanonicalNonceParams, get_canonical_nonce,
 };
 pub use get_delta::{GetDeltaParams, GetDeltaResult, get_delta};
 pub use get_delta_history::{
@@ -465,6 +469,7 @@ mod tests {
             network_client: Arc::new(network),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(clock),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

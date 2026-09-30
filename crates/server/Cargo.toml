@@ -90,6 +90,9 @@ static_assertions = "1.1"
 tempfile = { workspace = true }
 uuid = { version = "1.0", features = ["v4"] }
 miden-standards = { workspace = true }
+# The scripted in-process node serves the release sweep's transaction
+# history search over a real gRPC transport in unit tests.
+miden-rpc-client = { path = "../miden-rpc-client", features = ["scripted-node"] }
 rcgen = "0.13"
 
 [features]

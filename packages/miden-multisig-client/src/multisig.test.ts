@@ -923,8 +923,9 @@ describe('Multisig', () => {
         }),
       });
 
-      await multisig.syncState();
+      const result = await multisig.syncState();
 
+      expect(result.source).toBe('guardian');
       // GUARDIAN's state lands in the caller's own client, the one that goes on
       // to execute and apply against it.
       expect(mockWebClient.accounts.insert).toHaveBeenCalledTimes(1);
@@ -933,6 +934,9 @@ describe('Multisig', () => {
         overwrite: true,
       });
       expect(mockRpcGetAccountDetails).toHaveBeenCalledTimes(1);
+      // No local account means no nonce to compare: the pre-check is skipped.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(String(mockFetch.mock.calls[0][0])).toContain('/state?');
     });
 
     it('should overwrite local state when incoming commitment matches on-chain commitment', async () => {
@@ -962,6 +966,14 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           account_id: multisig.accountId,
+          nonce: 1,
+          commitment: '0x' + 'b'.repeat(64),
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
           commitment: '0x' + 'b'.repeat(64),
           state_json: { data: 'AQID' },
           created_at: '2024-01-01T00:00:00Z',
@@ -969,12 +981,15 @@ describe('Multisig', () => {
         }),
       });
 
-      await multisig.syncState();
+      const result = await multisig.syncState();
 
+      expect(result.source).toBe('guardian');
       expect(mockWebClient.accounts.insert).toHaveBeenCalledTimes(1);
+      expect(String(mockFetch.mock.calls[0][0])).toContain('/state/nonce?');
+      expect(String(mockFetch.mock.calls[1][0])).toContain('/state?');
     });
 
-    it('refreshes multisig config from synced account state', async () => {
+    it('refreshes multisig config from the local account when GUARDIAN is not ahead', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -996,10 +1011,8 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           account_id: multisig.accountId,
+          nonce: 0,
           commitment: '0x' + 'b'.repeat(64),
-          state_json: { data: 'AQID' },
-          created_at: '2024-01-01T00:00:00Z',
-          updated_at: '2024-01-02T00:00:00Z',
         }),
       });
       mockDetectConfig.mockReturnValueOnce({
@@ -1011,8 +1024,11 @@ describe('Multisig', () => {
         procedureThresholds: new Map(),
       });
 
-      await multisig.syncState();
+      const result = await multisig.syncState();
 
+      expect(result).toEqual({ source: 'local', localNonce: 0n, guardianNonce: 0n });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(String(mockFetch.mock.calls[0][0])).toContain('/state/nonce?');
       expect(multisig.threshold).toBe(2);
       expect(multisig.signerCommitments).toEqual([
         '0x' + '1'.repeat(64),
@@ -1035,10 +1051,8 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           account_id: multisig.accountId,
+          nonce: 0,
           commitment: '0x' + 'b'.repeat(64),
-          state_json: { data: 'AQID' },
-          created_at: '2024-01-01T00:00:00Z',
-          updated_at: '2024-01-02T00:00:00Z',
         }),
       });
       // Storage reports 3 signers but only 1 entry was readable: adopting
@@ -1085,6 +1099,14 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           account_id: multisig.accountId,
+          nonce: 1,
+          commitment: '0x' + 'b'.repeat(64),
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
           commitment: '0x' + 'b'.repeat(64),
           state_json: { data: 'AQID' },
           created_at: '2024-01-01T00:00:00Z',
@@ -1125,6 +1147,14 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           account_id: multisig.accountId,
+          nonce: 1,
+          commitment: '0x' + 'b'.repeat(64),
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
           commitment: '0x' + 'b'.repeat(64),
           state_json: { data: 'AQID' },
           created_at: '2024-01-01T00:00:00Z',
@@ -1155,15 +1185,12 @@ describe('Multisig', () => {
 
       const localAccount = mockedAccount('0x' + 'a'.repeat(64), 3);
       mockWebClient.accounts.get.mockResolvedValueOnce(localAccount);
-      mockAccountDeserialize.mockReturnValueOnce(mockedAccount('0x' + 'b'.repeat(64), 2));
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           account_id: multisig.accountId,
+          nonce: 2,
           commitment: '0x' + 'b'.repeat(64),
-          state_json: { data: 'AQID' },
-          created_at: '2024-01-01T00:00:00Z',
-          updated_at: '2024-01-02T00:00:00Z',
         }),
       });
       mockDetectConfig.mockReturnValueOnce({
@@ -1176,11 +1203,18 @@ describe('Multisig', () => {
         procedureThresholds: new Map(),
       });
 
-      // GUARDIAN behind local (nonce 2 < 3): no throw, local kept, no overwrite,
-      // and the decision needs no on-chain round-trip.
-      await expect(multisig.syncState()).resolves.toBeDefined();
+      // GUARDIAN behind local (nonce 2 < 3): the pre-check settles it — no
+      // throw, local kept, no overwrite, no state fetch, no deserialize, and
+      // no on-chain round-trip.
+      await expect(multisig.syncState()).resolves.toEqual({
+        source: 'local',
+        localNonce: 3n,
+        guardianNonce: 2n,
+      });
       expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
       expect(mockRpcGetAccountDetails).not.toHaveBeenCalled();
+      expect(mockAccountDeserialize).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
       // Config refreshed from the authoritative local account (UI unfreezes).
       expect(multisig.account).toBe(localAccount);
       expect(multisig.threshold).toBe(2);
@@ -1209,6 +1243,14 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({
           account_id: multisig.accountId,
+          nonce: 2,
+          commitment: '0x' + 'b'.repeat(64),
+        }),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
           commitment: '0x' + 'b'.repeat(64),
           state_json: { data: 'AQID' },
           created_at: '2024-01-01T00:00:00Z',
@@ -1220,6 +1262,9 @@ describe('Multisig', () => {
         'incoming nonce 2 equals local nonce 2 but commitments differ'
       );
       expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
+      // An equal nonce at a different commitment is divergence, not
+      // "nothing to pull": the pre-check must hand over to the full fetch.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it('unfreezes Multisig.account after execute when GUARDIAN still lags by one nonce (regression, #343)', async () => {
@@ -1244,21 +1289,57 @@ describe('Multisig', () => {
       // Multisig.account frozen at the pre-execute snapshot.
       const localAccount = mockedAccount('0x' + 'a'.repeat(64), 1);
       mockWebClient.accounts.get.mockResolvedValueOnce(localAccount);
-      mockAccountDeserialize.mockReturnValueOnce(mockedAccount('0x' + 'b'.repeat(64), 0));
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           account_id: multisig.accountId,
+          nonce: 0,
           commitment: '0x' + 'b'.repeat(64),
-          state_json: { data: 'AQID' },
-          created_at: '2024-01-01T00:00:00Z',
-          updated_at: '2024-01-02T00:00:00Z',
         }),
       });
 
-      await expect(multisig.syncState()).resolves.toBeDefined();
+      await expect(multisig.syncState()).resolves.toMatchObject({ source: 'local' });
       expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
       expect(multisig.account).toBe(localAccount);
+    });
+
+    it('surfaces a failed canonical-nonce pre-check without fetching the state', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        guardian,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        'https://rpc.devnet.miden.io'
+      );
+
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount('0x' + 'a'.repeat(64), 1));
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 503,
+        statusText: 'Service Unavailable',
+        text: async () =>
+          JSON.stringify({
+            code: 'account_data_unavailable',
+            message: 'Account data unavailable',
+            meta: { retryable: true },
+          }),
+      });
+
+      await expect(multisig.syncState()).rejects.toMatchObject({
+        code: 'account_data_unavailable',
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockWebClient.accounts.insert).not.toHaveBeenCalled();
+      expect(mockAccountDeserialize).not.toHaveBeenCalled();
     });
   });
 
