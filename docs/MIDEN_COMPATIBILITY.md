@@ -104,6 +104,34 @@ protocol pins and stored data, but changes two SDK contracts and adds a server m
   is never served. Filesystem-backed deployments need no step: state files without a
   nonce are filled in the same way.
 
+**Moving past 0.18.0-rc.2: the TypeScript multisig SDK runs only on the supplied
+`MidenClient`** (issue #481) keeps the protocol pins, stored data and server, but changes
+TypeScript SDK signatures and behavior. The SDK no longer opens a second `WasmWebClient`
+on the store of the `MidenClient` it is given; every store read and write, chain sync
+and transaction execution goes through that client:
+
+- **`WasmWebClient` is no longer accepted.** `createMultisigAccount`, the
+  `build*TransactionRequest` builders and `executeForSummary` / `executeForSummaryAt` /
+  `executeForSummaryAtTip` take only a `MidenClient`. Pass the one the application
+  executes transactions with.
+- **`midenRpcEndpoint` is removed from the helpers**: the third argument of
+  `createMultisigAccount`, the last argument of `executeForSummary*`, and the field of
+  `SignatureOptions` (so of every builder's options). The `MidenClientSignatureOptions`
+  and `MidenClientMultisigRequestOptions` types are removed. Drop the argument or field:
+  execution uses the `MidenClient`'s own node. `MultisigClient` still requires
+  `midenRpcEndpoint`, now only for the SDK's direct node reads (on-chain commitments and
+  note inclusion proofs).
+- **`getConsumableNotes()` applies the web SDK's consumable-now rule**
+  (`notes.listAvailable`), so notes the account can never consume are no longer
+  returned. The Rust SDK's `list_consumable_notes` already used this rule.
+- **SDK calls run on the application's client**: they queue on its serialized call chain,
+  show up in its `observer`, and can reach its keystore callbacks. So `executeForSummary*`
+  on a transaction the client can fully authorize, such as one from a single-signature
+  account whose key is in its keystore, rejects with `TRANSACTION_ALREADY_AUTHORIZED`:
+  `transactions.preview` produces no summary for an authorized transaction.
+- **Browser clients need `useWorker: false`** until the web SDK fixes worker mode; see
+  "Web SDK worker mode" under [Open upstream items](#open-upstream-items).
+
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
 
