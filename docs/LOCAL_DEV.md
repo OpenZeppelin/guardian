@@ -27,16 +27,17 @@ Three decisions when running Guardian locally:
 - Node 24+ (bundles npm 11, which the `packages/` workspace lockfile requires) if you will run any TS examples or packages.
 - Docker if you will use `docker-compose.*.yml`.
 - A Miden node — required for almost every flow. Either point at a
-  Miden Devnet endpoint or run one locally; configure via
+  public Miden endpoint or run one locally; configure via
   `GUARDIAN_NETWORK_TYPE`. A node on a non-default host or port (for
   example a sidecar container) is reachable via
   `GUARDIAN_MIDEN_RPC_ENDPOINT` without changing the network type; see
   [CONFIGURATION.md](./CONFIGURATION.md) for that and the optional
   `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` / `GUARDIAN_MIDEN_RPC_MAX_ATTEMPTS`
-  read-retry knobs. The node's Miden line must match the workspace
-  baseline (currently the 0.16 pre-release line; devnet already runs
-  the 0.16 node) — a mismatched node is rejected at the RPC boundary
-  (see
+  read-retry knobs. The node's Miden line must match the one this
+  workspace pins; which line that is, and which public networks run it,
+  is tracked in [MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#support-matrix).
+  When no public network runs it, run a local `miden-node` from that line.
+  A mismatched node is rejected at the RPC boundary (see
   [Troubleshooting](./TROUBLESHOOTING.md#client-and-node-disagree-about-the-network-version)).
 
 ## Environment file

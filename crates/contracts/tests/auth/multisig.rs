@@ -8,23 +8,32 @@ use miden_protocol::account::{
 use miden_protocol::assembly::Package;
 use miden_protocol::asset::FungibleAsset;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
-    PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
+    PublicKey as EcdsaPublicKey, Signature as EcdsaSignature, SigningKey as EcdsaSecretKey,
 };
 use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE;
-use miden_protocol::transaction::{RawOutputNote, TransactionScript};
+use miden_protocol::transaction::{
+    RawOutputNote, TransactionScript, TransactionSummary, TransactionSummaryUserParams,
+};
+use miden_protocol::utils::hex_to_bytes;
+use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::vm::{AdviceInputs, AdviceMap};
 use miden_protocol::{Felt, Hasher, Word};
 use miden_standards::StandardsLib;
-use miden_standards::account::auth::{AuthGuardedMultisig, AuthMultisig};
+use miden_standards::account::auth::{
+    AuthGuardedMultisig, AuthMultisig, Eip712TransactionSummary, MultisigAuthArgs,
+};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::code_builder::CodeBuilder;
-use miden_testing::MockChainBuilder;
+use miden_testing::{MockChain, MockChainBuilder};
 use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rstest::rstest;
+
+use super::{MultisigAuthArgsExt, auth_args_at_tip};
 
 // Storage slot names for multisig account storage
 const THRESHOLD_CONFIG_SLOT: &str = "miden::standards::auth::multisig::threshold_config";
@@ -253,6 +262,159 @@ fn build_update_procedure_threshold_script(
 // TESTS
 // ================================================================================================
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Eip712AdviceFixture {
+    public_key: String,
+    signature: String,
+    tx_summary_hash: String,
+    public_key_commitment: String,
+    advice_key: String,
+    witness: Vec<u32>,
+}
+
+#[test]
+fn metamask_advice_fixture_matches_upstream_encoding() -> anyhow::Result<()> {
+    let fixture: Eip712AdviceFixture = serde_json::from_str(include_str!(
+        "../../../../packages/miden-multisig-client/tests/fixtures/eip712-metamask-advice.json"
+    ))?;
+    let public_key = EcdsaPublicKey::read_from_bytes(&hex_to_bytes::<33>(&fixture.public_key)?)?;
+    let signature_bytes = hex_to_bytes::<65>(&fixture.signature)?;
+    let signature = EcdsaSignature::from_sec1_bytes_and_recovery_id(
+        signature_bytes[..64].try_into()?,
+        signature_bytes[64] - 27,
+    )?;
+    let public_key_commitment =
+        Word::read_from_bytes(&hex_to_bytes::<32>(&fixture.public_key_commitment)?)?;
+    assert_eq!(public_key.to_commitment(), public_key_commitment);
+    let summary_hash = Word::read_from_bytes(&hex_to_bytes::<32>(&fixture.tx_summary_hash)?)?;
+    let raw_key = Hasher::merge(&[public_key_commitment, summary_hash]);
+    let domain = Word::new([
+        Felt::new_unchecked(u64::from_le_bytes(*b"EIP712\0\0")),
+        Felt::ZERO,
+        Felt::ZERO,
+        Felt::ZERO,
+    ]);
+    let expected_key = Hasher::merge(&[raw_key, domain]);
+    assert_eq!(
+        expected_key,
+        Word::read_from_bytes(&hex_to_bytes::<32>(&fixture.advice_key)?)?
+    );
+    let encoded = miden_core_lib::dsa::ecdsa_k256_keccak::encode_signature(&public_key, &signature);
+    assert_eq!(
+        encoded
+            .iter()
+            .map(|felt| felt.as_canonical_u64())
+            .collect::<Vec<_>>(),
+        fixture
+            .witness
+            .iter()
+            .map(|value| u64::from(*value))
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Eip712WitnessCase {
+    Valid,
+    WrongSigner,
+    WrongSummary,
+    RawKey,
+}
+
+#[rstest]
+#[case::valid(Eip712WitnessCase::Valid)]
+#[case::wrong_signer(Eip712WitnessCase::WrongSigner)]
+#[case::wrong_summary(Eip712WitnessCase::WrongSummary)]
+#[case::raw_key(Eip712WitnessCase::RawKey)]
+#[tokio::test]
+async fn guarded_multisig_executes_mixed_raw_and_eip712_approvals(
+    #[case] case: Eip712WitnessCase,
+) -> anyhow::Result<()> {
+    let (secret_keys, public_keys, authenticators, _, guardian_key, guardian_authenticator) =
+        setup_ecdsa_keys_and_authenticators_with_guardian(2, 2)?;
+    let account = create_multisig_account_with_guardian_commitments(
+        2,
+        public_keys.iter().map(|key| key.to_commitment()).collect(),
+        guardian_key.to_commitment(),
+        SignatureScheme::Ecdsa,
+    )?;
+    let mock_chain = MockChainBuilder::with_accounts([account.clone()])?.build()?;
+    let auth_args = auth_args_at_tip(&mock_chain, Word::from([Felt::new_unchecked(17); 4]));
+    let script = build_update_procedure_threshold_script_for_scheme(
+        BasicWallet::move_asset_to_note_root().into(),
+        1,
+        SignatureScheme::Ecdsa,
+    )?;
+    let builder = mock_chain
+        .build_transaction(account.id())
+        .authenticator(None)
+        .tx_script(script)
+        .multisig_auth_args(&auth_args);
+    let tx_summary = match builder.clone().build()?.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(effects) => effects,
+        error => panic!("expected unsigned transaction summary: {error:?}"),
+    };
+    let summary = tx_summary.as_ref();
+    let message = summary.to_commitment();
+    let signing_inputs = SigningInputs::TransactionSummary(tx_summary.clone());
+    let raw_signature = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &signing_inputs)
+        .await?;
+    let guardian_signature = guardian_authenticator
+        .get_signature(guardian_key.to_commitment().into(), &signing_inputs)
+        .await?;
+
+    let digest = summary.eip712_hash().into_bytes();
+    let eip712_signature = match case {
+        Eip712WitnessCase::WrongSigner => secret_keys[0].sign_prehash(digest),
+        Eip712WitnessCase::WrongSummary => {
+            let other_summary = TransactionSummary::new(
+                summary.account_delta().clone(),
+                summary.input_notes().clone(),
+                summary.output_notes().clone(),
+                summary.block_number(),
+                summary.block_commitment(),
+                summary.expiration_delta(),
+                TransactionSummaryUserParams::new(
+                    [Felt::new_unchecked(42); TransactionSummaryUserParams::NUM_ELEMENTS],
+                ),
+            );
+            secret_keys[1].sign_prehash(other_summary.eip712_hash().into_bytes())
+        }
+        _ => secret_keys[1].sign_prehash(digest),
+    };
+    let (eip712_key, witness) = summary.eip712_signature_advice(&public_keys[1], &eip712_signature);
+    let advice_key = if matches!(case, Eip712WitnessCase::RawKey) {
+        Hasher::merge(&[public_keys[1].to_commitment(), message])
+    } else {
+        eip712_key
+    };
+    let result = builder
+        .add_signature(
+            public_keys[0].to_commitment().into(),
+            message,
+            raw_signature,
+        )
+        .add_signature(
+            guardian_key.to_commitment().into(),
+            message,
+            guardian_signature,
+        )
+        .add_advice_map_entry(advice_key, witness)
+        .build()?
+        .execute()
+        .await;
+
+    if matches!(case, Eip712WitnessCase::Valid) {
+        assert!(result.is_ok(), "mixed approvals failed: {result:?}");
+    } else {
+        assert!(result.is_err(), "invalid EIP-712 witness was accepted");
+    }
+    Ok(())
+}
+
 /// Tests basic 2-of-2 multisig functionality with note creation.
 ///
 /// This test verifies that a multisig account with 2 approvers and threshold 2
@@ -301,13 +463,15 @@ async fn test_multisig_2_of_2_with_note_creation_with_guardian() -> anyhow::Resu
 
     let salt = Word::from([Felt::new_unchecked(1); 4]);
 
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
+
     // Execute transaction without signatures - should fail
     let tx_context_init = mock_chain
         .build_transaction(multisig_account.id())
         .authenticated_input_notes([input_note.id()])
         .authenticator(None)
         .expected_output_notes(vec![RawOutputNote::Full(output_note.clone())])
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?;
 
     let tx_summary = match tx_context_init.execute().await.unwrap_err() {
@@ -340,12 +504,120 @@ async fn test_multisig_2_of_2_with_note_creation_with_guardian() -> anyhow::Resu
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
         .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?
         .execute()
         .await?;
 
     multisig_account.apply_patch(tx_context_execute.account_patch())?;
+
+    Ok(())
+}
+
+/// One cosigner short of the threshold must not execute, even with GUARDIAN's
+/// signature present.
+///
+/// The clients refuse to submit below threshold, but that is a pre-flight
+/// convenience: GUARDIAN acknowledges a delta without counting cosigner
+/// signatures, so the contract is the only thing actually enforcing the quorum.
+/// This pins that, and pins the related property that GUARDIAN's signature does
+/// not substitute for a cosigner: the failing attempt carries it and still
+/// fails. The same transaction then succeeds once the missing cosigner signs,
+/// so the refusal can only be the count.
+#[tokio::test]
+async fn test_multisig_below_threshold_is_rejected_on_chain() -> anyhow::Result<()> {
+    let (
+        _secret_keys,
+        public_keys,
+        authenticators,
+        _guardian_secret_key,
+        guardian_public_key,
+        guardian_authenticator,
+    ) = setup_keys_and_authenticators_with_guardian(2, 2)?;
+
+    let multisig_account =
+        create_multisig_account_with_guardian(2, &public_keys, guardian_public_key.clone())?;
+
+    let output_note_asset = FungibleAsset::mock(0);
+    let mut mock_chain_builder =
+        MockChainBuilder::with_accounts([multisig_account.clone()]).unwrap();
+    let output_note = mock_chain_builder.add_p2id_note(
+        multisig_account.id(),
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE
+            .try_into()
+            .unwrap(),
+        &[output_note_asset],
+        NoteType::Public,
+    )?;
+    let input_note = mock_chain_builder.add_spawn_note([&output_note])?;
+    let mock_chain = mock_chain_builder.build().unwrap();
+
+    let salt = Word::from([Felt::new_unchecked(1); 4]);
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
+
+    let tx_context_init = mock_chain
+        .build_transaction(multisig_account.id())
+        .authenticated_input_notes([input_note.id()])
+        .authenticator(None)
+        .expected_output_notes(vec![RawOutputNote::Full(output_note.clone())])
+        .multisig_auth_args(&auth_args)
+        .build()?;
+
+    let tx_summary = match tx_context_init.execute().await.unwrap_err() {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+
+    let msg = tx_summary.as_ref().to_commitment();
+    let tx_summary = SigningInputs::TransactionSummary(tx_summary);
+
+    let sig_1 = authenticators[0]
+        .get_signature(public_keys[0].to_commitment().into(), &tx_summary)
+        .await?;
+    let sig_2 = authenticators[1]
+        .get_signature(public_keys[1].to_commitment().into(), &tx_summary)
+        .await?;
+    let guardian_sig = guardian_authenticator
+        .get_signature(guardian_public_key.to_commitment().into(), &tx_summary)
+        .await?;
+
+    // One of two, plus GUARDIAN. GUARDIAN is a separate authorization input and
+    // is not counted toward the quorum, so this is still one signature short.
+    let below_threshold = mock_chain
+        .build_transaction(multisig_account.id())
+        .authenticated_input_notes([input_note.id()])
+        .authenticator(None)
+        .expected_output_notes(vec![RawOutputNote::Full(output_note.clone())])
+        .add_signature(public_keys[0].clone().into(), msg, sig_1.clone())
+        .add_signature(
+            guardian_public_key.clone().into(),
+            msg,
+            guardian_sig.clone(),
+        )
+        .multisig_auth_args(&auth_args)
+        .build()?
+        .execute()
+        .await;
+
+    assert!(
+        below_threshold.is_err(),
+        "a 1-of-2 transaction carrying GUARDIAN's signature executed on chain"
+    );
+
+    // The same transaction with the missing cosigner added, so the refusal
+    // above can only have been the signature count.
+    mock_chain
+        .build_transaction(multisig_account.id())
+        .authenticated_input_notes([input_note.id()])
+        .authenticator(None)
+        .expected_output_notes(vec![RawOutputNote::Full(output_note)])
+        .add_signature(public_keys[0].clone().into(), msg, sig_1)
+        .add_signature(public_keys[1].clone().into(), msg, sig_2)
+        .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
+        .multisig_auth_args(&auth_args)
+        .build()?
+        .execute()
+        .await?;
 
     Ok(())
 }
@@ -389,6 +661,8 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
     let mock_chain = mock_chain_builder.clone().build().unwrap();
 
     let salt = Word::from([Felt::new_unchecked(3); 4]);
+
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
 
     // Setup new signers
     let mut advice_map = AdviceMap::default();
@@ -456,7 +730,7 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
         .tx_script(tx_script.clone())
         .tx_script_args(tx_script_args)
         .extend_advice_inputs(advice_inputs.clone())
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?;
 
     let tx_summary = match tx_context_init.execute().await.unwrap_err() {
@@ -488,7 +762,7 @@ async fn test_multisig_update_signers_with_guardian() -> anyhow::Result<()> {
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
         .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .extend_advice_inputs(advice_inputs)
         .build()?
         .execute()
@@ -574,6 +848,8 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
 
     let salt = Word::from([Felt::new_unchecked(3); 4]);
 
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
+
     let threshold = 1u64;
     let num_of_approvers = 1u64;
     let kept_keys = [public_keys[0].clone()];
@@ -625,7 +901,7 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
         .tx_script(tx_script.clone())
         .tx_script_args(multisig_config_hash)
         .extend_advice_inputs(advice_inputs.clone())
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?;
 
     let tx_summary = match tx_context_init.execute().await.unwrap_err() {
@@ -654,7 +930,7 @@ async fn test_multisig_remove_signer_clears_storage() -> anyhow::Result<()> {
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
         .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .extend_advice_inputs(advice_inputs)
         .build()?
         .execute()
@@ -764,6 +1040,8 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
     let mock_chain = mock_chain_builder.clone().build().unwrap();
 
     let salt = Word::from([Felt::new_unchecked(9); 4]);
+
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
     let mut advice_map = AdviceMap::default();
     let (_new_secret_keys, new_public_keys, _new_authenticators) =
         setup_keys_and_authenticators(2, 2)?;
@@ -816,7 +1094,7 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
         .tx_script(tx_script.clone())
         .tx_script_args(multisig_config_hash)
         .extend_advice_inputs(advice_inputs.clone())
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?;
 
     let tx_summary = match tx_context_init.execute().await.unwrap_err() {
@@ -841,7 +1119,7 @@ async fn test_multisig_add_signer_with_guardian_from_single_signer() -> anyhow::
         .tx_script_args(multisig_config_hash)
         .add_signature(public_keys[0].clone().into(), msg, signer_sig)
         .add_signature(guardian_public_key.clone().into(), msg, guardian_sig)
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .extend_advice_inputs(advice_inputs)
         .build()?
         .execute()
@@ -941,6 +1219,8 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
 
     let salt = Word::from([Felt::new_unchecked(3); 4]);
 
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
+
     // Setup New GUARDIAN Public Key
     let (_new_guardian_secret_key, new_guardian_public_key, _new_guardian_authenticatior) =
         setup_keys_and_authenticator_for_guardian()?;
@@ -962,7 +1242,7 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
         .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script.clone())
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?;
 
     let tx_summary = match tx_context_init.execute().await.unwrap_err() {
@@ -988,7 +1268,7 @@ async fn test_multisig_update_guardian_public_key() -> anyhow::Result<()> {
         .tx_script(tx_script)
         .add_signature(public_keys[0].clone().into(), msg, sig_1)
         .add_signature(public_keys[1].clone().into(), msg, sig_2)
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?
         .execute()
         .await
@@ -1051,13 +1331,14 @@ async fn test_multisig_update_procedure_threshold_replaces_existing_override() -
 
     let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
     let salt = Word::from([Felt::new_unchecked(5); 4]);
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
     let tx_script = build_update_procedure_threshold_script(send_asset_root, 1)?;
 
     let tx_context_init = mock_chain
         .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script.clone())
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?;
 
     let tx_summary = match tx_context_init.execute().await.unwrap_err() {
@@ -1092,7 +1373,7 @@ async fn test_multisig_update_procedure_threshold_replaces_existing_override() -
             msg,
             guardian_sig,
         )
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?
         .execute()
         .await?;
@@ -1131,6 +1412,7 @@ async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_overri
 
     let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
     let salt = Word::from([Felt::new_unchecked(7); 4]);
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
     let tx_script = build_update_procedure_threshold_script_for_scheme(
         send_asset_root,
         1,
@@ -1141,7 +1423,7 @@ async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_overri
         .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script.clone())
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?;
 
     let tx_summary = match tx_context_init.execute().await.unwrap_err() {
@@ -1176,7 +1458,7 @@ async fn test_ecdsa_multisig_update_procedure_threshold_replaces_existing_overri
             msg,
             guardian_sig,
         )
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?
         .execute()
         .await?;
@@ -1214,6 +1496,7 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
 
     let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])?.build()?;
     let salt = Word::from([Felt::new_unchecked(6); 4]);
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
 
     let new_threshold = 1u64;
     let new_num_approvers = 1u64;
@@ -1258,7 +1541,7 @@ async fn test_multisig_update_signers_rejects_unreachable_existing_proc_override
         .tx_script(tx_script)
         .tx_script_args(multisig_config_hash)
         .extend_advice_inputs(advice_inputs)
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?
         .execute()
         .await;
@@ -1297,6 +1580,8 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     let mock_chain = MockChainBuilder::new().build().unwrap();
 
     let salt = Word::from([Felt::new_unchecked(9); 4]);
+
+    let auth_args = auth_args_at_tip(&mock_chain, salt);
     let (_nsk, new_public_keys, _na) = setup_keys_and_authenticators(2, 2)?;
     let threshold = 1u64;
     let num_of_approvers = 2u64;
@@ -1342,7 +1627,7 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
         .tx_script(tx_script)
         .tx_script_args(multisig_config_hash)
         .extend_advice_inputs(advice_inputs)
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()?
         .execute()
         .await;
@@ -1358,11 +1643,12 @@ async fn repro_add_signer_fresh_undeployed_account() -> anyhow::Result<()> {
     }
 }
 
-/// A transaction summary commits to the reference block, so an otherwise
-/// identical re-execution at a later block produces a different commitment.
-/// SDKs capture a `ChainAnchor` at proposal time and re-execute against it.
+/// A multisig transaction summary commits to the block its auth args name, not
+/// the reference block, so a re-execution at a later reference block reproduces
+/// it and only auth args naming another block change it. This is why the SDKs
+/// execute a proposal at the chain tip rather than at its anchor.
 #[tokio::test]
-async fn transaction_summary_commitment_is_bound_to_the_reference_block() -> anyhow::Result<()> {
+async fn transaction_summary_binds_the_block_the_auth_args_name() -> anyhow::Result<()> {
     let (_secret_keys, public_keys, _authenticators, _, guardian_public_key, _) =
         setup_keys_and_authenticators_with_guardian(2, 2)?;
 
@@ -1373,11 +1659,18 @@ async fn transaction_summary_commitment_is_bound_to_the_reference_block() -> any
     let salt = Word::from([Felt::new_unchecked(3); 4]);
     let tx_script = build_guardian_key_rotation_script(&guardian_public_key)?;
 
-    let first = summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, salt).await?;
+    // Since Miden 0.17 the multisig binds a caller-chosen block rather than the
+    // reference block: the same auth args at a later reference block reproduce the
+    // summary, and only auth args naming another block change it.
+    let bound = auth_args_at_tip(&mock_chain, salt);
+    let first = summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, &bound).await?;
     mock_chain.prove_next_block()?;
-    let second = summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, salt).await?;
+    let second = summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, &bound).await?;
+    let rebound = auth_args_at_tip(&mock_chain, salt);
+    let third =
+        summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, &rebound).await?;
 
-    let (a, b) = (first.as_ref(), second.as_ref());
+    let (a, b, c) = (first.as_ref(), second.as_ref(), third.as_ref());
     assert_eq!(
         a.account_delta().to_commitment(),
         b.account_delta().to_commitment(),
@@ -1386,29 +1679,33 @@ async fn transaction_summary_commitment_is_bound_to_the_reference_block() -> any
     assert_eq!(
         a.user_params().as_elements(),
         b.user_params().as_elements(),
-        "the auth-arg salt must not depend on the reference block"
+        "the salt and expiration the summary binds must not depend on the reference block"
     );
-    assert_eq!(a.expiration_delta(), b.expiration_delta());
-    assert_ne!(
+    assert_eq!(
         a.block_commitment(),
         b.block_commitment(),
-        "the reference block is what changes between the two executions"
+        "the summary binds the block the auth args name, not the reference block"
     );
-    assert_ne!(
+    assert_eq!(
         a.to_commitment(),
         b.to_commitment(),
-        "so the summary commitment cosigners signed is not reproducible at a later block"
+        "so the summary commitment cosigners signed is reproducible at a later reference block"
     );
+    assert_ne!(
+        a.block_commitment(),
+        c.block_commitment(),
+        "auth args naming a later block bind that block's commitment"
+    );
+    assert_ne!(a.to_commitment(), c.to_commitment());
 
     Ok(())
 }
 
-/// A signature set collected against one reference block does not authorize
-/// execution at a later block, but does authorize execution pinned back to
-/// the block it was collected at. The summary binds the reference block, so
-/// execution must use the proposal `ChainAnchor`.
+/// A signature set collected against auth args bound to one block authorizes
+/// execution at a later reference block as long as the executor passes the same
+/// auth args; auth args rebound to the tip invalidate the collected signatures.
 #[tokio::test]
-async fn signatures_authorize_only_at_the_reference_block_they_were_collected_at()
+async fn signatures_authorize_at_later_reference_blocks_under_the_same_auth_args()
 -> anyhow::Result<()> {
     let (_secret_keys, public_keys, authenticators, _, guardian_public_key, _) =
         setup_keys_and_authenticators_with_guardian(2, 2)?;
@@ -1421,7 +1718,9 @@ async fn signatures_authorize_only_at_the_reference_block_they_were_collected_at
     let tx_script = build_guardian_key_rotation_script(&guardian_public_key)?;
 
     let proposed_at = mock_chain.latest_block_header().block_num();
-    let summary = summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, salt).await?;
+    let bound = auth_args_at_tip(&mock_chain, salt);
+    let summary =
+        summarize_unauthorized(&mock_chain, &multisig_account, &tx_script, &bound).await?;
 
     let msg = summary.as_ref().to_commitment();
     let signing_inputs = SigningInputs::TransactionSummary(summary);
@@ -1437,36 +1736,60 @@ async fn signatures_authorize_only_at_the_reference_block_they_were_collected_at
         mock_chain.prove_next_block()?;
     }
 
-    let at_tip = mock_chain
+    let rebound = auth_args_at_tip(&mock_chain, salt);
+    let at_tip_rebound = mock_chain
         .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script.clone())
         .add_signature(public_keys[0].clone().into(), msg, sig_1.clone())
         .add_signature(public_keys[1].clone().into(), msg, sig_2.clone())
-        .auth_args(salt)
+        .multisig_auth_args(&rebound)
         .build()?
         .execute()
         .await;
     assert!(
-        matches!(at_tip, Err(TransactionExecutorError::Unauthorized(_))),
-        "signatures must not authorize at a later reference block: {at_tip:?}"
+        matches!(
+            at_tip_rebound,
+            Err(TransactionExecutorError::Unauthorized(_))
+        ),
+        "signatures must not authorize auth args bound to another block: {at_tip_rebound:?}"
     );
 
     let pinned = mock_chain
         .build_transaction(multisig_account.id())
         .reference_block(proposed_at)
         .authenticator(None)
-        .tx_script(tx_script)
-        .add_signature(public_keys[0].clone().into(), msg, sig_1)
-        .add_signature(public_keys[1].clone().into(), msg, sig_2)
-        .auth_args(salt)
+        .tx_script(tx_script.clone())
+        .add_signature(public_keys[0].clone().into(), msg, sig_1.clone())
+        .add_signature(public_keys[1].clone().into(), msg, sig_2.clone())
+        .multisig_auth_args(&bound)
         .build()?
         .execute()
         .await;
     assert!(
         pinned.is_ok(),
-        "pinning the reference block must restore authorization: {:?}",
+        "executing at the bound block must be authorized: {:?}",
         pinned.err()
+    );
+
+    // Executing at the tip needs the bound block in the partial blockchain, which the
+    // auth-args helper carries: the kernel reads its commitment there, and a transaction
+    // without it aborts with a Merkle store lookup failure rather than an authorization
+    // error.
+    let at_tip = mock_chain
+        .build_transaction(multisig_account.id())
+        .authenticator(None)
+        .tx_script(tx_script)
+        .add_signature(public_keys[0].clone().into(), msg, sig_1)
+        .add_signature(public_keys[1].clone().into(), msg, sig_2)
+        .multisig_auth_args(&bound)
+        .build()?
+        .execute()
+        .await;
+    assert!(
+        at_tip.is_ok(),
+        "the same auth args must authorize at a later reference block: {:?}",
+        at_tip.err()
     );
 
     Ok(())
@@ -1487,16 +1810,16 @@ fn build_guardian_key_rotation_script(
 
 /// Runs the transaction without signatures to obtain the summary cosigners sign.
 async fn summarize_unauthorized(
-    mock_chain: &miden_testing::MockChain,
+    mock_chain: &MockChain,
     multisig_account: &Account,
     tx_script: &TransactionScript,
-    salt: Word,
+    auth_args: &MultisigAuthArgs,
 ) -> anyhow::Result<Box<miden_protocol::transaction::TransactionSummary>> {
     match mock_chain
         .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script.clone())
-        .auth_args(salt)
+        .multisig_auth_args(auth_args)
         .build()?
         .execute()
         .await

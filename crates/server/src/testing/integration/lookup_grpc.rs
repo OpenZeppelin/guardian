@@ -4,9 +4,8 @@
 //! transport parity (constitution principle II): same validation order, same
 //! status mapping, same security properties.
 //!
-//! Note: tests send `x-pubkey` via `create_request_with_auth` for wire-format
-//! parity with per-account requests, but the lookup verification path ignores
-//! it — identity is sourced from the signature.
+//! Raw lookup derives identity from the signature; typed lookup verifies
+//! against `x-pubkey`.
 
 use crate::api::grpc::guardian::guardian_server::Guardian;
 use crate::api::grpc::guardian::{AccountRef, GetAccountByKeyCommitmentRequest};
@@ -16,7 +15,7 @@ use crate::testing::helpers::{
 };
 use crate::testing::integration::lookup_helpers::{
     ecdsa_account, evm_account, falcon_account, fresh_account_id_hex, now_ms, seed, sign_lookup,
-    sign_lookup_ecdsa,
+    sign_lookup_ecdsa, sign_lookup_eip712,
 };
 
 use guardian_shared::auth_request_message::AuthRequestMessage;
@@ -86,6 +85,36 @@ async fn grpc_lookup_ecdsa_happy_path() {
         .into_inner();
 
     assert_eq!(response.accounts.len(), 1);
+    assert_eq!(response.accounts[0].account_id, account_id);
+}
+
+#[tokio::test]
+async fn grpc_lookup_eip712_happy_path() {
+    let state = create_test_app_state().await;
+    let signer = TestEcdsaSigner::new();
+    let account_id = fresh_account_id_hex(23);
+    seed(
+        &state,
+        ecdsa_account(&account_id, vec![signer.commitment_hex.clone()]),
+    )
+    .await;
+    let service = create_grpc_service(state);
+
+    let timestamp = now_ms();
+    let signature = sign_lookup_eip712(&signer, &signer.commitment_hex, timestamp);
+    let req = GetAccountByKeyCommitmentRequest {
+        key_commitment: signer.commitment_hex.clone(),
+    };
+    let mut request = create_request_with_auth(req, &signer.pubkey_hex, &signature, timestamp);
+    request
+        .metadata_mut()
+        .insert("x-auth-format", "eip712".parse().unwrap());
+
+    let response = service
+        .get_account_by_key_commitment(request)
+        .await
+        .unwrap()
+        .into_inner();
     assert_eq!(response.accounts[0].account_id, account_id);
 }
 

@@ -1,17 +1,15 @@
 import {
   type MidenClient,
   TransactionRequest,
-  TransactionRequestBuilder,
   TransactionScript,
   type WasmWebClient,
   Word,
-  Word as WordType,
 } from '@miden-sdk/miden-sdk';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
-import { randomWord } from '../utils/random.js';
 import { authSchemeId } from '../utils/signature.js';
-import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
+import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
+import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
 async function buildUpdateGuardianScript(
@@ -44,17 +42,17 @@ end
 export function buildUpdateGuardianTransactionRequest(
   client: MidenClient,
   newGuardianPubkey: string,
-  options: MidenClientSignatureOptions,
+  options: MidenClientMultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }>;
 export function buildUpdateGuardianTransactionRequest(
   client: WasmWebClient,
   newGuardianPubkey: string,
-  options?: SignatureOptions,
+  options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }>;
 export async function buildUpdateGuardianTransactionRequest(
   client: MidenClient | WasmWebClient,
   newGuardianPubkey: string,
-  options: SignatureOptions = {},
+  options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }> {
   const signatureScheme = options.signatureScheme ?? 'falcon';
   const script = await buildUpdateGuardianScript(
@@ -64,24 +62,12 @@ export async function buildUpdateGuardianTransactionRequest(
     options.midenRpcEndpoint,
   );
 
-  const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
-  const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
-
-  let txBuilder = new TransactionRequestBuilder();
-  txBuilder = txBuilder.withCustomScript(script);
-  txBuilder = txBuilder.withFeeConversionSalt(authSaltForBuilder);
-  // Borrows rather than consumes: the glue passes `__wbg_ptr` without taking it,
-  // so the handle stays ours to release once the builder has read it.
-  authSaltForBuilder.free?.();
+  const { builder, saltHex } = await multisigRequestBuilder(client, options);
+  let txBuilder = builder.withCustomScript(script);
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
-
-  return {
-    request: txBuilder.build(),
-    salt: authSaltForReturn,
-  };
+  return buildMultisigRequest(txBuilder, saltHex, options.accountId);
 }

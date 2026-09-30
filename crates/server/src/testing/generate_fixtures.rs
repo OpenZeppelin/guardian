@@ -194,9 +194,10 @@ mod fixtures {
             delta_1,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             MidenWord::from([ZERO; 4]),
             0,
-            TransactionSummaryUserParams::new([ZERO; 7]),
+            TransactionSummaryUserParams::new([ZERO; 6]),
         );
 
         let mut account_state: Account =
@@ -302,9 +303,10 @@ mod fixtures {
             delta_2,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             MidenWord::from([ZERO; 4]),
             0,
-            TransactionSummaryUserParams::new([ZERO; 7]),
+            TransactionSummaryUserParams::new([ZERO; 6]),
         );
 
         let prev_commitment_2 = current_commitment;
@@ -385,9 +387,10 @@ mod fixtures {
             delta_3,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             MidenWord::from([ZERO; 4]),
             0,
-            TransactionSummaryUserParams::new([ZERO; 7]),
+            TransactionSummaryUserParams::new([ZERO; 6]),
         );
 
         let prev_commitment_3 = current_commitment;

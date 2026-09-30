@@ -1,0 +1,884 @@
+{
+  "networks": [
+    {
+      "historical_window": "PT30M",
+      "name": "testnet",
+      "rpc_endpoint": "https://rpc.testnet.miden.io"
+    },
+    {
+      "historical_window": "PT2M30S",
+      "name": "devnet",
+      "rpc_endpoint": "https://rpc.devnet.miden.io"
+    }
+  ],
+  "scenarios": [
+    {
+      "actions": [
+        "status-identity"
+      ],
+      "core": false,
+      "id": "det-status-identity",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "n/a",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT30S",
+      "title": "Server reports the identity of the artifact under test"
+    },
+    {
+      "actions": [
+        "account-register",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "det-fixture-grpc",
+      "mode": "online",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "falcon",
+      "sdk": "rust",
+      "shape": "2-of-3",
+      "step_budget": "PT2M",
+      "title": "Fixture account registers and reads back over gRPC"
+    },
+    {
+      "actions": [
+        "account-register",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "det-fixture-http",
+      "mode": "online",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "typescript",
+      "shape": "2-of-3",
+      "step_budget": "PT2M",
+      "title": "Fixture account registers and reads back over HTTP"
+    },
+    {
+      "actions": [
+        "account-register",
+        "proposal-create"
+      ],
+      "core": false,
+      "id": "det-proposal-lifecycle",
+      "mode": "online",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "falcon",
+      "sdk": "rust",
+      "shape": "2-of-3",
+      "step_budget": "PT2M",
+      "title": "Proposal is accepted and comes back in the account's pending list"
+    },
+    {
+      "actions": [
+        "scheme-gate"
+      ],
+      "core": false,
+      "id": "det-scheme-gate",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "n/a",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "An ECDSA-only GUARDIAN refuses a Falcon registration and admits ECDSA"
+    },
+    {
+      "actions": [
+        "account-register",
+        "account-paused-refuses"
+      ],
+      "core": false,
+      "id": "det-account-paused",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "n/a",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "A paused account refuses a proposal, and pausing goes through the operator surface"
+    },
+    {
+      "actions": [
+        "error-envelope"
+      ],
+      "core": false,
+      "id": "det-error-envelope-grpc",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "n/a",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT30S",
+      "title": "Structured error envelope survives a real gRPC socket"
+    },
+    {
+      "actions": [
+        "error-envelope"
+      ],
+      "core": false,
+      "id": "det-error-envelope-http",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "n/a",
+      "sdk": "typescript",
+      "shape": "n/a",
+      "step_budget": "PT30S",
+      "title": "Structured error envelope survives a real HTTP socket"
+    },
+    {
+      "actions": [
+        "account-register",
+        "restart-durability"
+      ],
+      "core": false,
+      "id": "det-restart-durability",
+      "mode": "online",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "falcon",
+      "sdk": "rust",
+      "shape": "2-of-3",
+      "step_budget": "PT3M",
+      "title": "Account, state and proposal data survive restarting only the server"
+    },
+    {
+      "actions": [
+        "operator-session"
+      ],
+      "core": false,
+      "id": "det-operator-session",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "n/a",
+      "sdk": "typescript",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "Operator authenticates and inspects a session"
+    },
+    {
+      "actions": [
+        "operator-session",
+        "operator-accounts"
+      ],
+      "core": false,
+      "id": "det-operator-accounts",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "n/a",
+      "sdk": "typescript",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "Operator lists accounts and reads account detail"
+    },
+    {
+      "actions": [
+        "operator-session",
+        "operator-denial"
+      ],
+      "core": false,
+      "id": "det-operator-denial",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "n/a",
+      "sdk": "typescript",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "Operator lacking a permission is denied with a structured error"
+    },
+    {
+      "actions": [
+        "operator-session",
+        "operator-allowlist-reload"
+      ],
+      "core": false,
+      "id": "det-operator-allowlist-reload",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "n/a",
+      "sdk": "typescript",
+      "shape": "n/a",
+      "step_budget": "PT1M30S",
+      "title": "Allowlist change takes effect without restarting the server"
+    },
+    {
+      "actions": [
+        "operator-session",
+        "operator-logout"
+      ],
+      "core": false,
+      "id": "det-operator-logout",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "n/a",
+      "sdk": "typescript",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "Logout invalidates the session"
+    },
+    {
+      "actions": [
+        "operator-audit"
+      ],
+      "core": false,
+      "id": "det-operator-audit",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": false,
+      "runtime": null,
+      "scheme": "n/a",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "Operator activity leaves the expected audit records"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "commitment-verify"
+      ],
+      "core": true,
+      "id": "live-register-falcon-1of1",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT1M",
+      "title": "1-of-1 Falcon account is created and registered"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "commitment-verify"
+      ],
+      "core": true,
+      "id": "live-register-ecdsa-1of1",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT1M",
+      "title": "1-of-1 ECDSA account is created and registered"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-sign",
+        "proposal-execute",
+        "commitment-verify"
+      ],
+      "core": true,
+      "id": "live-execute-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT1M30S",
+      "title": "2-of-3 Falcon proposal reaches threshold and executes"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-sign",
+        "proposal-execute",
+        "commitment-verify"
+      ],
+      "core": true,
+      "id": "live-execute-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT1M30S",
+      "title": "2-of-3 ECDSA proposal reaches threshold and executes"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-sign",
+        "proposal-execute",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "live-execute-3of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "3-of-3",
+      "step_budget": "PT2M",
+      "title": "3-of-3 Falcon proposal reaches threshold and executes"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-reject-below-threshold"
+      ],
+      "core": true,
+      "id": "live-below-threshold-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT1M",
+      "title": "A proposal below threshold is not executable and stays pending"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-sign",
+        "proposal-reject-duplicate-signature"
+      ],
+      "core": false,
+      "id": "live-duplicate-signature-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT1M30S",
+      "title": "A duplicate signature is rejected and does not count toward threshold"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "account-recover-by-cosigner"
+      ],
+      "core": false,
+      "id": "live-recover-by-cosigner-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT2M",
+      "title": "An account is recovered by another cosigner's key"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "balance-assert",
+        "asset-transfer",
+        "note-consume",
+        "balance-assert"
+      ],
+      "core": false,
+      "id": "live-transfer-consume-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT3M",
+      "title": "Assets transfer and the note is consumed, asserted against balances"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-export",
+        "proposal-sign-external",
+        "proposal-import",
+        "proposal-execute",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "live-offline-export-import-2of3-ecdsa",
+      "mode": "offline",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT4M",
+      "title": "An ECDSA proposal is exported, signed off-channel, imported and executed"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-export",
+        "proposal-sign-external",
+        "proposal-import",
+        "proposal-execute",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "live-offline-export-import-2of3-falcon",
+      "mode": "offline",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT4M",
+      "title": "A proposal is exported, signed externally, imported and executed"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "guardian-switch-online",
+        "proposal-sign",
+        "proposal-execute",
+        "guardian-switch-assert"
+      ],
+      "core": false,
+      "id": "live-guardian-switch-online-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT10M",
+      "title": "GUARDIAN rotation proposed, cosigned and executed through the pending set"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "proposal-create-offline",
+        "guardian-migrate",
+        "proposal-sign-external",
+        "proposal-import",
+        "proposal-execute",
+        "guardian-switch-assert"
+      ],
+      "core": false,
+      "id": "live-guardian-migrate-offline-1of1-ecdsa",
+      "mode": "offline",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT5M",
+      "title": "Guardian migration created offline, signed, imported and executed"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "handoff-rust-to-ts",
+        "proposal-execute",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "live-handoff-rust-to-ts-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": null,
+      "scheme": "falcon",
+      "sdk": "rust",
+      "shape": "2-of-3",
+      "step_budget": "PT3M30S",
+      "title": "Rust creates a proposal, TypeScript signs it, Rust executes it"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "handoff-ts-to-rust",
+        "proposal-execute",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "live-handoff-ts-to-rust-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "typescript",
+      "shape": "2-of-3",
+      "step_budget": "PT3M30S",
+      "title": "TypeScript creates a proposal, Rust signs it, TypeScript executes it"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "signer-add",
+        "proposal-sign",
+        "proposal-execute",
+        "signer-set-assert"
+      ],
+      "core": false,
+      "id": "live-add-signer-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT8M",
+      "title": "A signer is admitted and the account reports the larger set"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "signer-remove",
+        "proposal-sign",
+        "proposal-execute",
+        "signer-removed-refused",
+        "signer-set-assert"
+      ],
+      "core": false,
+      "id": "live-remove-signer-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT8M",
+      "title": "A signer is removed and the account reports the smaller set"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "threshold-change",
+        "proposal-sign",
+        "proposal-execute",
+        "signer-set-assert"
+      ],
+      "core": false,
+      "id": "live-change-threshold-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT8M",
+      "title": "The threshold is raised and the account reports the new one"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "balance-assert",
+        "asset-transfer",
+        "proposal-create",
+        "proposal-sign",
+        "paused-refuses-execution",
+        "proposal-execute",
+        "balance-assert"
+      ],
+      "core": false,
+      "id": "live-account-paused-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "A paused account cannot execute on chain, and transacts again once unpaused"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "custom-proposal-create",
+        "custom-proposal-assert",
+        "proposal-sign",
+        "custom-proposal-prepare",
+        "abandon-and-assert-hidden"
+      ],
+      "core": false,
+      "id": "live-custom-proposal-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "A producer's own proposal type round-trips, and its abandoned delta stays hidden"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "p2ide-send",
+        "proposal-sign",
+        "proposal-execute",
+        "p2ide-timelock-assert"
+      ],
+      "core": false,
+      "id": "live-p2ide-timelock-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "A timelocked note lands but cannot be consumed before its height"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "asset-send",
+        "proposal-sign",
+        "proposal-execute",
+        "asset-send-assert"
+      ],
+      "core": false,
+      "id": "live-p2id-send-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "The multisig sends assets out and the vault reflects it"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "signer-add",
+        "proposal-sign",
+        "proposal-execute",
+        "signer-set-assert"
+      ],
+      "core": false,
+      "id": "live-add-signer-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT8M",
+      "title": "A signer is admitted on an ECDSA account and the account reports the larger set"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "signer-remove",
+        "proposal-sign",
+        "proposal-execute",
+        "signer-removed-refused",
+        "signer-set-assert"
+      ],
+      "core": false,
+      "id": "live-remove-signer-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT8M",
+      "title": "A signer is removed from an ECDSA account and the account reports the smaller set"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "procedure-threshold-set",
+        "proposal-sign",
+        "proposal-execute",
+        "threshold-change",
+        "proposal-sign",
+        "proposal-execute",
+        "procedure-threshold-assert"
+      ],
+      "core": false,
+      "id": "live-procedure-threshold-survives-change-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT12M",
+      "title": "A procedure override outlives a change to the account-wide threshold"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "threshold-change",
+        "proposal-sign",
+        "proposal-execute",
+        "signer-set-assert"
+      ],
+      "core": false,
+      "id": "live-change-threshold-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": null,
+      "scheme": "falcon",
+      "sdk": "rust",
+      "shape": "2-of-3",
+      "step_budget": "PT10M",
+      "title": "A Falcon account changes its threshold and serves the new signer set"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "procedure-threshold-set",
+        "proposal-sign",
+        "proposal-execute",
+        "procedure-threshold-assert"
+      ],
+      "core": false,
+      "id": "live-procedure-threshold-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": null,
+      "scheme": "ecdsa",
+      "sdk": "rust",
+      "shape": "2-of-3",
+      "step_budget": "PT10M",
+      "title": "An ECDSA account raises one procedure's threshold and serves the override"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "procedure-threshold-set",
+        "proposal-sign",
+        "proposal-execute",
+        "procedure-threshold-assert"
+      ],
+      "core": false,
+      "id": "live-procedure-threshold-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT8M",
+      "title": "One procedure requires every signer while the account threshold stays put"
+    }
+  ]
+}

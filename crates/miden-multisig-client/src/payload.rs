@@ -79,11 +79,11 @@ pub struct ProposalMetadataPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
 
-    /// Base64-serialized Miden `ChainAnchor` pinning the reference block the
-    /// proposal's transaction summary was built at. Since protocol 0.16 the
-    /// signed summary binds the reference block commitment, so cosigners and
-    /// the executor need this anchor to reproduce the summary the proposer
-    /// signed.
+    /// Base64-serialized Miden `ChainAnchor` at the block the proposal's
+    /// transaction summary binds. Cosigners and the executor reproduce the
+    /// summary at the chain tip, not at this anchor; it names the bound block
+    /// for a rebuild in the TypeScript SDK and for 0.18.0-rc.1 clients, which
+    /// re-execute at it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chain_anchor: Option<String>,
 }
@@ -287,8 +287,8 @@ impl ProposalPayload {
         self
     }
 
-    /// Sets the base64-serialized chain anchor pinning the proposal's
-    /// reference block.
+    /// Sets the base64-serialized chain anchor at the block the proposal's
+    /// summary binds.
     pub fn with_chain_anchor(mut self, chain_anchor_b64: String) -> Self {
         let metadata = self
             .metadata

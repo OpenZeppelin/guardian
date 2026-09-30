@@ -1137,7 +1137,14 @@ export function useSmokeHarness(): {
           throw new Error('Custom proposal label is required');
         }
 
+        const activeClient = webClientRef.current;
+        if (!activeClient) {
+          throw new Error('MidenClient is not initialized');
+        }
+
         const result = await createCustomP2idProposal(
+          activeClient,
+          sessionConfigRef.current.midenRpcEndpoint,
           currentMultisig,
           input.recipientId.trim(),
           input.faucetId.trim(),
@@ -1187,7 +1194,17 @@ export function useSmokeHarness(): {
           throw new Error('Custom proposal recipe does not belong to the loaded account');
         }
 
-        await prepareAndSubmitCustomProposal(currentMultisig, recipe);
+        const activeClient = webClientRef.current;
+        if (!activeClient) {
+          throw new Error('MidenClient is not initialized');
+        }
+
+        await prepareAndSubmitCustomProposal(
+          activeClient,
+          sessionConfigRef.current.midenRpcEndpoint,
+          currentMultisig,
+          recipe,
+        );
         customRecipesRef.current.delete(recipe.proposalId);
 
         const refreshed = await refreshMultisigState(currentMultisig);

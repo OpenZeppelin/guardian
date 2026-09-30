@@ -45,14 +45,18 @@
 - HTTP request payload digest: RPO256 over canonical JSON bytes of the request payload (`body` for `POST`/`PUT`, query object for `GET`).
 - gRPC request payload digest: RPO256 over protobuf-encoded request bytes.
 - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0, payload_hash_1, payload_hash_2, payload_hash_3])`.
+- ECDSA accounts may send `x-auth-format: eip712` with the same three required headers. The signature is over `GuardianRequest(bytes32 requestHash)` in the `EIP712Domain` `{ name: "Guardian Request", version: "1" }`; `requestHash` is the 32-byte little-endian encoding of the signed message above. An absent format header keeps the raw signature behavior. Falcon does not accept EIP-712 request auth. The existing timestamp skew and replay checks apply to both formats.
+- The typed request message displays a hash, not the decoded HTTP operation or proposal. The client must show the transaction details separately before prompting a hardware wallet.
+- EIP-712 ECDSA signatures use the Miden `r || s || v` encoding with `v` normalized to `0` or `1` before submission.
 
 ### Lookup Request Signing
 
 The `GET /state/lookup` endpoint and the matching `GetAccountByKeyCommitment` gRPC method use a dedicated, account-less signed-message format because the account ID is the very value the caller is trying to discover. The format is **domain-separated by construction** from `Miden Request Signing` above so a signature crafted for one shape cannot validate against the other in either direction.
+Raw Falcon and ECDSA signatures remain supported. ECDSA signers may instead send `x-auth-format: eip712` and sign `GuardianLookup(bytes32 lookupHash)` in the `EIP712Domain` `{ name: "Guardian Lookup", version: "1" }`, where `lookupHash` is the 32-byte little-endian encoding of the lookup message below.
 
 - Domain tag: `DOMAIN_TAG = RPO256(felts(b"guardian.lookup.v1"))` — a fixed 4-felt word, computed once and embedded in the binary. Future incompatible changes MUST bump the version segment.
 - Signed message format: `RPO256_hash([DOMAIN_TAG_w0..w3, timestamp_ms, key_commitment_w0..w3])`.
-- Authentication: proof-of-possession of the queried commitment. Identity is derived from the signature itself — Falcon signatures embed the public key, ECDSA signatures recover it via the recovery byte. The server then requires `commitment_of(derived_pk) == key_commitment` after cryptographic signature verification. `x-pubkey` is sent on the wire for parity with per-account requests but is not consulted on this path; signers that only expose the 32-byte commitment (e.g., browser Miden wallet) work because the signature is what proves possession.
+- Authentication: proof-of-possession of the queried commitment. Raw signatures derive the identity from the signature itself — Falcon embeds the public key and ECDSA recovers it. For EIP-712, the server verifies the typed digest against `x-pubkey`. Both paths require the verified public key's commitment to equal the queried commitment. Raw lookup continues to ignore `x-pubkey`.
 - Replay protection: `MAX_TIMESTAMP_SKEW_MS` skew window only. No per-commitment last-seen tracking; a replayed valid request returns the same `account_id` to a key holder who already obtained it.
 
 ### EVM Session Authentication
@@ -243,6 +247,8 @@ EVM proposal response:
 }
 ```
 
+For an EIP-712 Miden approval, the same endpoint and envelope use `"message_format": "eip712"` inside the ECDSA signature. The signed type is `MidenTransaction(bytes32 txSummaryHash)` under `{ name: "Miden Transaction", version: "1" }`. `txSummaryHash` is the transaction-summary commitment encoded as four little-endian `u64` field elements. The ECDSA signature is `r || s || v`; Guardian requires `v` as `0/1` and verifies the approval against the stored summary and the request signer. Wallets returning `27/28` must normalize it before submission. The request-auth signature remains a separate signature over `GuardianRequest`.
+
 - Miden Falcon signer IDs are signer commitments.
 - Miden ECDSA signer IDs are signer commitments.
 - EVM proposal signatures use `EvmProposalSignature` records: `{ signer, signature, signed_at }`.
@@ -328,6 +334,8 @@ component schemas.
 | dashboard | `POST /dashboard/accounts/{account_id}/pause` | session + `accounts:pause` | Pause an account |
 | dashboard | `POST /dashboard/accounts/{account_id}/unpause` | session + `accounts:pause` | Unpause an account |
 | dashboard | `GET /dashboard/info` | session + `dashboard:read` | Inventory & lifecycle summary |
+| dashboard | `GET /dashboard/stats` | session + `dashboard:read` | Account counts, Miden asset totals, and coverage in one request |
+| dashboard | `POST /dashboard/stats/refresh` | session + `stats:refresh` | Request an out-of-cycle refresh of the stats aggregate (202) |
 | dashboard | `GET /dashboard/session` | session | Session introspection |
 | dashboard | `GET /dashboard/deltas` | session + `dashboard:read` | Cross-account delta feed |
 | dashboard | `GET /dashboard/proposals` | session + `dashboard:read` | Cross-account proposal feed |
@@ -383,10 +391,41 @@ Semantics not captured by the OpenAPI shapes:
   (FR-017); the account snapshot returns `unsupported_for_network` for EVM
   accounts (no Miden vault to decode).
 - **Aggregate degradation.** On the filesystem backend, cross-account
-  aggregates (`/dashboard/info`, `/dashboard/deltas`, `/dashboard/proposals`)
-  short-circuit to `data_unavailable` (503) above the configured
-  `filesystem_aggregate_threshold` (default 1,000 accounts) rather than
-  full-scan the inventory; `total_account_count` is always returned (FR-029).
+  fan-out aggregates (`/dashboard/info` delta / proposal / activity
+  fields, `/dashboard/deltas`, `/dashboard/proposals`) short-circuit to
+  `data_unavailable` (503) or a `degraded_aggregates` marker above the
+  configured `filesystem_aggregate_threshold` (default 1,000 accounts)
+  rather than full-scan the inventory (FR-029). On `/dashboard/info` the
+  threshold is applied by the `/dashboard/stats` walk that computes those
+  fields, and the affected names surface in `degraded_aggregates`;
+  `total_account_count` and `accounts_by_auth_method` are always
+  returned once a snapshot exists.
+- **Aggregate stats (`GET /dashboard/stats`, issue #371).** Served from
+  one snapshot per fleet: the holder of the `dashboard_stats` lease walks
+  the inventory every `GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`
+  (default 300 s) and publishes to the shared store with lease-fenced,
+  atomic publication (sealed with the storage cipher when at-rest
+  encryption is configured); every replica polls and serves the same
+  `version`. A request never reads storage or decodes a vault, and
+  reports the snapshot time as `as_of` (the interval is not a bound on
+  its age). `POST /dashboard/stats/refresh` (`stats:refresh`) queues an
+  out-of-cycle walk (`202`, `queued` / `in_progress`); requests inside
+  the 60-second cooldown are `429 rate_limit_exceeded` with
+  `Retry-After`. `?updated_since=<RFC3339>` restricts the
+  **asset** aggregate to accounts whose metadata `updated_at >=
+  updated_since` (account counts are always unfiltered; blank is
+  treated as absent; any other non-RFC3339 value is `400
+  invalid_timestamp`; percent-encode a `+` offset or use `Z`). Eligibility is Miden-only. Fungible totals are
+  base-10 decimal strings summed in 128-bit; coverage satisfies
+  `covered + Σskipped == eligible`, and any skipped account (reasons
+  `state_unavailable`, `state_undecodable`) makes `complete: false` —
+  a missing or undecodable state is never reported as a zero balance.
+  Until the first refresh after startup the endpoint returns `503
+  data_unavailable` (retryable). A walk that fails at any systemic
+  storage read keeps the previous snapshot published; a single corrupt
+  row is explicit `state_undecodable` coverage. Every cross-account
+  aggregate on `/dashboard/info` reads the same snapshot (reported as
+  `aggregates_as_of`), so the two endpoints never disagree.
 - **Account detail / snapshot.** Both are decode-only views of Guardian's
   stored state at the last-canonicalized commitment — no live Miden RPC and
   no cross-account joins. `has_pending_candidate: true` means the decoded
@@ -436,6 +475,7 @@ Stable error codes include:
 - `invalid_cursor` (dashboard pagination, see feature `005-operator-dashboard-metrics`)
 - `invalid_limit`
 - `invalid_status_filter`
+- `invalid_timestamp` (`/dashboard/stats?updated_since=` is not RFC3339, issue #371)
 - `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`
 - `GUARDIAN_ACCOUNT_PAUSED`
 - `data_unavailable`
@@ -469,7 +509,7 @@ Every gRPC method is rate limited from the same store as the HTTP surface;
 see [Rate Limiting](#rate-limiting) for the keying rules and the rejection
 shape.
 
-`GetAccountByKeyCommitment` mirrors the HTTP `GET /state/lookup` route. Authentication is carried in gRPC metadata (`x-pubkey`, `x-signature`, `x-timestamp`) and signed under the **Lookup Request Signing** format. Errors propagate as `tonic::Status` via the structured `GuardianError` mapping (`InvalidInput → INVALID_ARGUMENT`, `AuthenticationFailed → UNAUTHENTICATED`, `StorageError → INTERNAL`); the response contains a `repeated AccountRef accounts` field, with empty list as the success-with-no-matches signal.
+`GetAccountByKeyCommitment` mirrors the HTTP `GET /state/lookup` route. Authentication is carried in gRPC metadata (`x-pubkey`, `x-signature`, `x-timestamp`, and optional `x-auth-format`) and signed under the **Lookup Request Signing** format. Errors propagate as `tonic::Status` via the structured `GuardianError` mapping (`InvalidInput → INVALID_ARGUMENT`, `AuthenticationFailed → UNAUTHENTICATED`, `StorageError → INTERNAL`); the response contains a `repeated AccountRef accounts` field, with empty list as the success-with-no-matches signal.
 
 ## Metrics Endpoint (Prometheus)
 
@@ -534,6 +574,9 @@ behavior.
 | `guardian_canonicalization_fast_run_duration_seconds` | histogram | — |
 | `guardian_canonicalization_reconcile_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_reconcile_run_duration_seconds` | histogram | — |
+| `guardian_release_sweep_rotations_total` | counter | `outcome` (`completed`/`partial`) |
+| `guardian_release_sweep_rotation_duration_seconds` | histogram | — |
+| `guardian_release_sweep_accounts_total` | counter | `outcome` (`released`/`confirming`/`still_bound`/`own_key_mismatch`/`storage_opaque`/`no_binding`/`chain_behind_stored`/`probe_failed`) |
 | `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |
@@ -552,13 +595,18 @@ behavior.
 | `guardian_accounts_created_total` | counter | `kind` (`miden`/`evm`) |
 | `guardian_metrics_refresh_timestamp_seconds` | gauge | — |
 | `guardian_metrics_refresh_failures_total` | counter | — |
+| `guardian_dashboard_stats_refresh_timestamp_seconds` | gauge | — |
+| `guardian_dashboard_stats_refresh_failures_total` | counter | — |
+| `guardian_dashboard_stats_refresh_duration_seconds` | histogram | — |
 | `process_*` (CPU, RSS, fds, start time) | standard | — |
 
 Durations use seconds with explicit buckets from 1ms to 10s, except
 `guardian_canonicalization_run_duration_seconds`,
-`guardian_canonicalization_fast_run_duration_seconds` and
-`guardian_canonicalization_reconcile_run_duration_seconds`, which use extended
-buckets up to 5 minutes, and
+`guardian_canonicalization_fast_run_duration_seconds`,
+`guardian_canonicalization_reconcile_run_duration_seconds` and
+`guardian_dashboard_stats_refresh_duration_seconds`, which use extended
+buckets up to 5 minutes, `guardian_release_sweep_rotation_duration_seconds`,
+which spans 1 minute to 24 hours, and
 `guardian_canonicalization_candidate_age_seconds` which spans 1 second
 to 24 hours so stuck candidates stay visible. The
 authoritative taxonomy (including help text and the enforced label

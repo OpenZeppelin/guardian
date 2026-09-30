@@ -5,20 +5,26 @@
 //! transport, status rendering, and deadline behavior — the layer where
 //! classifier drift has historically gone unnoticed.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::{blockchain, note, rpc, transaction};
+use crate::{blockchain, note, rpc, submission};
 
 /// Serves `status` and `get_limits` from a shared failure script: each call
 /// increments `calls`, burns one scripted failure while any remain, then
-/// succeeds. Every other method answers `unimplemented`.
+/// succeeds. With [`Self::with_chain_tip`] it also serves the latest block
+/// header and scripted `SyncTransactions` pages under the same script.
+/// Every other method answers `unimplemented`.
 pub struct ScriptedNode {
     failures_before_success: AtomicU32,
     calls: Arc<AtomicU32>,
     error: fn() -> tonic::Status,
     response_delay: Duration,
+    chain_tip: Option<u32>,
+    transaction_pages: Mutex<VecDeque<rpc::SyncTransactionsResponse>>,
+    transaction_requests: Arc<Mutex<Vec<rpc::SyncTransactionsRequest>>>,
 }
 
 impl ScriptedNode {
@@ -28,7 +34,26 @@ impl ScriptedNode {
             calls,
             error,
             response_delay: Duration::ZERO,
+            chain_tip: None,
+            transaction_pages: Mutex::new(VecDeque::new()),
+            transaction_requests: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Serves `tip` as the latest block header, and answers
+    /// `SyncTransactions` with `pages` in order (then empty pages), each
+    /// request recorded in `requests`. Like the real node, a range that
+    /// ends past `tip` is rejected with `invalid_argument`.
+    pub fn with_chain_tip(
+        mut self,
+        tip: u32,
+        pages: Vec<rpc::SyncTransactionsResponse>,
+        requests: Arc<Mutex<Vec<rpc::SyncTransactionsRequest>>>,
+    ) -> Self {
+        self.chain_tip = Some(tip);
+        self.transaction_pages = Mutex::new(pages.into());
+        self.transaction_requests = requests;
+        self
     }
 
     /// Delays every scripted response, so a short client deadline expires
@@ -130,10 +155,24 @@ impl rpc::api_server::Api for ScriptedNode {
         Err(tonic::Status::unimplemented("scripted node"))
     }
 
+    async fn register_account(
+        &self,
+        _: tonic::Request<rpc::RegisterAccountRequest>,
+    ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+        Err(tonic::Status::unimplemented("scripted node"))
+    }
+
+    async fn is_account_allowed(
+        &self,
+        _: tonic::Request<rpc::IsAccountAllowedRequest>,
+    ) -> std::result::Result<tonic::Response<rpc::IsAccountAllowedResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("scripted node"))
+    }
+
     async fn get_block_by_number(
         &self,
-        _: tonic::Request<blockchain::BlockRequest>,
-    ) -> std::result::Result<tonic::Response<blockchain::MaybeBlock>, tonic::Status> {
+        _: tonic::Request<rpc::BlockRequest>,
+    ) -> std::result::Result<tonic::Response<rpc::MaybeBlock>, tonic::Status> {
         Err(tonic::Status::unimplemented("scripted node"))
     }
 
@@ -141,19 +180,31 @@ impl rpc::api_server::Api for ScriptedNode {
         &self,
         _: tonic::Request<rpc::BlockHeaderByNumberRequest>,
     ) -> std::result::Result<tonic::Response<rpc::BlockHeaderByNumberResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("scripted node"))
+        let Some(tip) = self.chain_tip else {
+            return Err(tonic::Status::unimplemented("scripted node"));
+        };
+        self.scripted_failure().await?;
+        Ok(tonic::Response::new(rpc::BlockHeaderByNumberResponse {
+            block_header: Some(blockchain::BlockHeader {
+                block_num: Some(blockchain::BlockNumber { block_num: tip }),
+                ..Default::default()
+            }),
+            mmr_path: None,
+            chain_length: Some(tip + 1),
+            protocol_config: None,
+        }))
     }
 
     async fn get_notes_by_id(
         &self,
-        _: tonic::Request<note::NoteIdList>,
-    ) -> std::result::Result<tonic::Response<note::CommittedNoteList>, tonic::Status> {
+        _: tonic::Request<rpc::NotesByIdRequest>,
+    ) -> std::result::Result<tonic::Response<rpc::NotesByIdResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("scripted node"))
     }
 
     async fn get_note_script_by_root(
         &self,
-        _: tonic::Request<note::NoteScriptRoot>,
+        _: tonic::Request<rpc::NoteScriptByRootRequest>,
     ) -> std::result::Result<tonic::Response<rpc::MaybeNoteScript>, tonic::Status> {
         Err(tonic::Status::unimplemented("scripted node"))
     }
@@ -161,30 +212,57 @@ impl rpc::api_server::Api for ScriptedNode {
     async fn get_transaction_encryption_key(
         &self,
         _: tonic::Request<()>,
-    ) -> std::result::Result<tonic::Response<transaction::TransactionEncryptionKey>, tonic::Status>
+    ) -> std::result::Result<tonic::Response<submission::TransactionEncryptionKey>, tonic::Status>
     {
         Err(tonic::Status::unimplemented("scripted node"))
     }
 
     async fn submit_proven_tx(
         &self,
-        _: tonic::Request<transaction::ProvenTransaction>,
+        _: tonic::Request<submission::ProvenTransactionSubmission>,
     ) -> std::result::Result<tonic::Response<blockchain::BlockNumber>, tonic::Status> {
         Err(tonic::Status::unimplemented("scripted node"))
     }
 
     async fn submit_proven_tx_batch(
         &self,
-        _: tonic::Request<transaction::TransactionBatch>,
+        _: tonic::Request<submission::TransactionBatch>,
     ) -> std::result::Result<tonic::Response<blockchain::BlockNumber>, tonic::Status> {
         Err(tonic::Status::unimplemented("scripted node"))
     }
 
     async fn sync_transactions(
         &self,
-        _: tonic::Request<rpc::SyncTransactionsRequest>,
+        request: tonic::Request<rpc::SyncTransactionsRequest>,
     ) -> std::result::Result<tonic::Response<rpc::SyncTransactionsResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("scripted node"))
+        let Some(tip) = self.chain_tip else {
+            return Err(tonic::Status::unimplemented("scripted node"));
+        };
+        let request = request.into_inner();
+        self.transaction_requests
+            .lock()
+            .expect("request log lock")
+            .push(request.clone());
+        self.scripted_failure().await?;
+        let block_to = request.block_range.map_or(0, |range| range.block_to);
+        if block_to > tip {
+            return Err(tonic::Status::invalid_argument(format!(
+                "block_to ({block_to}) is greater than chain tip ({tip})"
+            )));
+        }
+        let page = self
+            .transaction_pages
+            .lock()
+            .expect("page script lock")
+            .pop_front()
+            .unwrap_or_else(|| rpc::SyncTransactionsResponse {
+                pagination_info: Some(rpc::PaginationInfo {
+                    chain_tip: tip,
+                    block_num: block_to,
+                }),
+                transactions: Vec::new(),
+            });
+        Ok(tonic::Response::new(page))
     }
 
     async fn sync_notes(

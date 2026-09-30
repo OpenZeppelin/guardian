@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
-    ExportedProposal, MultisigClient, P2ideHeights, ProverConfig, RpcConfig, SignatureScheme,
+    ExportedProposal, MultisigClient, MultisigClientBuilder, P2ideHeights, SignatureScheme,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteType;
 use miden_protocol::Word;
 use tempfile::TempDir;
@@ -22,6 +22,8 @@ pub struct CustomProposalRecipe {
     /// P2IDE heights (issue #366); the default => plain P2ID note.
     pub heights: P2ideHeights,
     pub salt: Word,
+    /// The block the signed summary binds: the proposal's anchor block.
+    pub bound_block_num: BlockNumber,
 }
 
 /// Simplified session state using the MultisigClient SDK.
@@ -35,9 +37,9 @@ pub struct SessionState {
     custom_recipes: HashMap<String, CustomProposalRecipe>,
     /// Signature scheme used by this demo session.
     signature_scheme: SignatureScheme,
-    /// Stored endpoints for reinitialization.
-    miden_endpoint: Option<Endpoint>,
-    guardian_endpoint: Option<String>,
+    /// Network the configured Miden endpoint belongs to, used to render account
+    /// IDs as bech32m addresses (the format faucets expect).
+    network_id: NetworkId,
 }
 
 impl SessionState {
@@ -51,41 +53,24 @@ impl SessionState {
             imported_proposal: None,
             custom_recipes: HashMap::new(),
             signature_scheme: SignatureScheme::Falcon,
-            miden_endpoint: None,
-            guardian_endpoint: None,
+            network_id: NetworkId::Devnet,
         })
     }
 
-    /// Initializes the MultisigClient with the given endpoints.
+    /// Initializes the MultisigClient from `builder`, which carries every
+    /// connection setting the prompts collected, with a fresh key for
+    /// `signature_scheme`.
     pub async fn initialize_client(
         &mut self,
-        miden_endpoint: Endpoint,
-        note_transport_url: Option<String>,
-        guardian_endpoint: &str,
+        builder: MultisigClientBuilder,
         signature_scheme: SignatureScheme,
-        prover_config: ProverConfig,
-        rpc_config: RpcConfig,
+        network_id: NetworkId,
     ) -> Result<(), String> {
-        // Store endpoints for potential reinitialization
-        self.miden_endpoint = Some(miden_endpoint.clone());
-        self.guardian_endpoint = Some(guardian_endpoint.to_string());
         self.signature_scheme = signature_scheme;
+        self.network_id = network_id;
 
-        let account_dir = self.account_directory.path().to_path_buf();
-
-        let builder = MultisigClient::builder()
-            .miden_endpoint(miden_endpoint)
-            .guardian_endpoint(guardian_endpoint)
-            .prover_config(prover_config)
-            .rpc_config(rpc_config)
-            .account_dir(account_dir);
-
-        let builder = match note_transport_url {
-            Some(url) => builder.note_transport_endpoint(url),
-            None => builder,
-        };
-
-        let mut client = match self.signature_scheme {
+        let builder = builder.account_dir(self.account_directory.path().to_path_buf());
+        let mut client = match signature_scheme {
             SignatureScheme::Falcon => builder.generate_key(),
             SignatureScheme::Ecdsa => builder.generate_ecdsa_key(),
         }
@@ -155,20 +140,8 @@ impl SessionState {
         matches!(self.signature_scheme, SignatureScheme::Ecdsa)
     }
 
-    /// Network identifier inferred from the configured Miden endpoint, used to
-    /// render account IDs as bech32m addresses (the format faucets expect).
-    /// A local node is treated as devnet.
     pub fn network_id(&self) -> NetworkId {
-        let host = self
-            .miden_endpoint
-            .as_ref()
-            .map(|endpoint| endpoint.host())
-            .unwrap_or_default();
-        if host.contains("testnet") {
-            NetworkId::Testnet
-        } else {
-            NetworkId::Devnet
-        }
+        self.network_id.clone()
     }
 
     /// Sets the imported proposal.

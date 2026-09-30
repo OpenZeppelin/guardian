@@ -9,17 +9,17 @@ use miden_client::account::Account;
 use miden_client::builder::ClientBuilder;
 use miden_client::crypto::RandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
+use miden_client::rpc::Endpoint;
 use miden_client::{Client, ClientError, Deserializable, Felt, Serializable, Word};
 use miden_client_sqlite_store::SqliteStore;
 
 use miden_protocol::account::auth::Signature as AccountSignature;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature as RawFalconSignature;
+use miden_standards::account::auth::{FeeConversionInfo, MultisigAuthArgs};
 
 use guardian_client::auth_config::AuthType;
 use guardian_client::{
-    verify_commitment_signature, AuthConfig, ClientResult, FalconKeyStore, GuardianClient,
-    MidenFalconRpoAuth,
+    verify_commitment_signature, AuthConfig, FalconKeyStore, GuardianClient, MidenFalconRpoAuth,
 };
 use guardian_shared::hex::FromHex;
 use guardian_shared::ToJson;
@@ -97,7 +97,7 @@ async fn add_account_and_sync(
 }
 
 #[tokio::main]
-async fn main() -> ClientResult<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     println!("=== GUARDIAN Multi-Client E2E Flow ===\n");
@@ -173,33 +173,6 @@ async fn main() -> ClientResult<()> {
             return Ok(());
         }
     };
-
-    // Check for kernel version mismatch between client library and node
-    use miden_client::transaction::TransactionKernel;
-    let grpc_client_check = GrpcClient::new(&miden_endpoint, 10_000);
-    if let Ok((block_header, _)) = grpc_client_check
-        .get_block_header_by_number(None, false)
-        .await
-    {
-        let node_kernel = block_header.tx_kernel_commitment();
-        let client_kernel: Word = TransactionKernel.to_commitment();
-        if node_kernel != client_kernel {
-            println!("  ✗ Kernel version mismatch!");
-            println!(
-                "    Node kernel:   0x{}",
-                hex::encode(node_kernel.as_bytes())
-            );
-            println!(
-                "    Client kernel: 0x{}",
-                hex::encode(client_kernel.as_bytes())
-            );
-            println!(
-                "    The Miden node is running a different kernel version than the client library."
-            );
-            println!("    Please ensure both use the same miden-lib version (currently: 0.14.x).");
-            return Ok(());
-        }
-    }
 
     println!();
 
@@ -335,11 +308,32 @@ async fn main() -> ClientResult<()> {
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),
         ]);
+        // Since Miden 0.17 the fee asset lives in the protocol configuration, which
+        // the client stores from each sync; the auth args name its fee faucet.
+        let header = match miden_client.get_latest_block_header().await {
+            Ok(header) => header,
+            Err(err) => {
+                println!("  ✗ Failed to read the latest block header: {}", err);
+                return Ok(());
+            }
+        };
+        let fee_faucet_id = match miden_client
+            .get_protocol_config(header.protocol_config_commitment())
+            .await
+        {
+            Ok(config) => config.fee_asset_id().faucet_id(),
+            Err(err) => {
+                println!("  ✗ No protocol configuration stored; sync first: {}", err);
+                return Ok(());
+            }
+        };
+        let auth_args = MultisigAuthArgs::new(header.block_num(), salt)
+            .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
 
         let (tx_request, _config_hash) = match multisig::build_update_signers_transaction_request(
             3,
             &signer_commitments,
-            salt,
+            &auth_args,
             vec![],
         ) {
             Ok(req) => req,
@@ -467,7 +461,7 @@ async fn main() -> ClientResult<()> {
                     match multisig::build_update_signers_transaction_request(
                         3,
                         &signer_commitments,
-                        salt,
+                        &auth_args,
                         signature_advice,
                     ) {
                         Ok(req) => req,

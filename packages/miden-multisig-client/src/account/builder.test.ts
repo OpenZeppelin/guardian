@@ -109,9 +109,27 @@ describe("createMultisigAccount", () => {
       accounts: {
         insert: vi.fn().mockResolvedValue(undefined),
       },
+      sync: {},
     };
     return { webClient };
   }
+
+  it("inserts through the WASM client's own account store when given one", async () => {
+    const rawClient = { newAccount: vi.fn().mockResolvedValue(undefined) };
+
+    await createMultisigAccount(
+      rawClient as never,
+      {
+        threshold: 1,
+        signerCommitments: ["0x" + "1".repeat(64)],
+        guardianCommitment: "0x" + "2".repeat(64),
+      },
+      "http://localhost:57291",
+    );
+
+    expect(rawClient.newAccount).toHaveBeenCalledTimes(1);
+    expect(rawClient.newAccount.mock.calls[0][1]).toBe(false);
+  });
 
   it("builds the guarded component from the upstream standard component (Falcon)", async () => {
     const { webClient } = makeClient();
@@ -200,6 +218,32 @@ describe("validateMultisigConfig", () => {
         guardianCommitment: signer,
       }),
     ).toThrow(/different from all signer commitments/);
+  });
+
+  it("rejects more signers than the on-chain approver cap (matches ApproverSet::MAX_APPROVERS)", () => {
+    const signers = Array.from({ length: 65 }, (_, i) =>
+      "0x" + i.toString(16).padStart(64, "0"),
+    );
+    expect(() =>
+      validateMultisigConfig({
+        threshold: 1,
+        signerCommitments: signers,
+        guardianCommitment: "0x" + "f".repeat(64),
+      }),
+    ).toThrow(/at most 64/);
+  });
+
+  it("accepts a signer set at the cap", () => {
+    const signers = Array.from({ length: 64 }, (_, i) =>
+      "0x" + i.toString(16).padStart(64, "0"),
+    );
+    expect(() =>
+      validateMultisigConfig({
+        threshold: 1,
+        signerCommitments: signers,
+        guardianCommitment: "0x" + "f".repeat(64),
+      }),
+    ).not.toThrow();
   });
 
   it("accepts a distinct guardian commitment", () => {

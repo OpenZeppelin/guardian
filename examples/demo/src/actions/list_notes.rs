@@ -1,5 +1,3 @@
-use miden_multisig_client::Asset;
-
 use crate::display::{print_info, print_section, print_success, print_waiting, shorten_hex};
 use crate::state::SessionState;
 
@@ -60,18 +58,18 @@ pub async fn action_list_notes(state: &mut SessionState) -> Result<(), String> {
         } else {
             println!("      Assets:");
             for asset in &note.assets {
-                match asset {
-                    Asset::Fungible(fungible) => {
+                match asset.as_fungible() {
+                    Some(fungible) => {
                         println!(
                             "        - {} tokens (faucet: {})",
                             fungible.amount(),
                             shorten_hex(&fungible.faucet_id().to_hex())
                         );
                     }
-                    Asset::NonFungible(nft) => {
+                    None => {
                         println!(
                             "        - NFT (faucet: {})",
-                            shorten_hex(&nft.faucet_id().to_hex())
+                            shorten_hex(&asset.faucet_id().to_hex())
                         );
                     }
                 }

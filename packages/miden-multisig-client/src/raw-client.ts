@@ -29,7 +29,7 @@ export function requireMidenRpcEndpoint(endpoint?: string): string {
   return requireConfigValue('midenRpcEndpoint', endpoint);
 }
 
-function isPublicMidenClient(client: RawClientSource): client is MidenClient {
+export function isPublicMidenClient(client: RawClientSource): client is MidenClient {
   return 'accounts' in client && 'sync' in client;
 }
 
@@ -47,14 +47,18 @@ export async function getRawMidenClient(
   }
 
   const endpoint = requireMidenRpcEndpoint(rpcUrl);
-  const rawClient = WasmWebClient.createClient(
-    endpoint,
-    undefined,
-    undefined,
-    await client.storeIdentifier(),
-  );
+  const rawClient = createRawClient(client, endpoint);
   rawClientCache.set(client, rawClient);
   return rawClient;
+}
+
+/**
+ * Opens the WASM client behind `client` on the same store. The protocol
+ * configuration comes from the node with every sync and is read from that
+ * shared store, so the shadow needs no fee faucet of its own.
+ */
+async function createRawClient(client: MidenClient, endpoint: string): Promise<WasmWebClient> {
+  return WasmWebClient.createClient(endpoint, undefined, undefined, await client.storeIdentifier());
 }
 
 export function getTransactionProver(client: RawClientSource): TransactionProver | null {

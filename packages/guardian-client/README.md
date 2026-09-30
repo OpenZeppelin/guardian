@@ -107,9 +107,10 @@ directly. The Guardian server exposes `GET /state/lookup` so the wallet
 can ask "which account(s) authorize this commitment?" and proceed with
 the existing recovery flow.
 
-The signer used here MUST implement `signLookupMessage`, which signs the
+The signer used here MUST implement `signLookupMessage`. Raw signers sign the
 domain-separated `LookupAuthMessage::to_word(timestampMs, keyCommitment)`
-digest. The canonical implementation lives in
+digest; EIP-712 signers sign that hash as `GuardianLookup(bytes32 lookupHash)`
+and set `requestAuthFormat` to `eip712`. The canonical hash implementation lives in
 `@openzeppelin/miden-multisig-client` (which has access to the Miden SDK's
 RPO256); this package keeps the digest computation out of its zero-dependency
 surface.

@@ -282,7 +282,7 @@ Procedure:
    ```
 4. Confirm the replacement:
    ```bash
-   curl https://guardian.openzeppelin.com/pubkey
+   curl https://guardian-testnet.openzeppelin.com/pubkey
    ```
    Should return the new key material.
 5. Securely shred `/tmp/ack-keys.json`.
@@ -313,6 +313,17 @@ Optional. Encrypts account state and delta/proposal payloads at rest (see
 in Secrets Manager (AWS) or in an owner-only file (self-managed,
 `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`); it is loaded once at startup and cached,
 and the same `{active, keys}` format is used on both.
+
+The same key seals the published `/dashboard/stats` snapshot
+(`dashboard_stats_snapshots.payload`, a copy of every account's vault
+totals refreshed on the stats cadence). Unlike states and deltas, the
+snapshot is derived data: a stored payload the cipher cannot open — a
+plaintext row from before the key was configured, an envelope under a
+retired key id, a restore under different key material — is ignored and
+rebuilt from storage by the next walk, so the "do not remove a key that
+any stored record still references" rule below does not need to account
+for this table. The cost of an unreadable snapshot is one interval of
+`503 data_unavailable` on `GET /dashboard/stats`, never a stuck fleet.
 
 ### Bootstrap (against an empty store)
 

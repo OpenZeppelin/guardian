@@ -1,44 +1,91 @@
-import { TransactionRequest, TransactionRequestBuilder, Word } from '@miden-sdk/miden-sdk';
-import { describe, expect, it } from 'vitest';
+import { MidenClient, TransactionRequest, Word } from '@miden-sdk/miden-sdk';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { createMultisigAccount } from '../src/account/builder.js';
+import {
+  buildUpdateSignersTransactionRequest,
+  requestBoundBlockNum,
+  requestSaltHex,
+} from '../src/transaction.js';
 
 /**
- * Carries the declared fee-conversion salt through a real `TransactionRequest` and
- * reads it back out of the built object, which is as close to the VM as this package
- * gets without a node.
+ * Carries the multisig auth args through a real `TransactionRequest` built against
+ * the SDK's mock chain, which is as close to the VM as this package gets without a
+ * node.
  *
- * The builder tests in `src/transaction/feeWiring.test.ts` record calls against a fake
- * builder, so they prove what arguments the builders pass and nothing about whether the
- * SDK stores them — a salt the WASM silently dropped passes there and then fails in
- * `pay_fee`, because miden-client commits no conversion info for a request that declares
- * none. That gap is the whole reason this layer exists; it replaces the equivalent
- * assertions for the auth-arg mechanism this package used to build by hand.
+ * The builder tests in `src/transaction/feeWiring.test.ts` record calls against a
+ * fake client, so they prove what the builders ask for and nothing about what the
+ * SDK attaches. A request the WASM handed back without auth args, or with a
+ * preimage the auth procedure cannot pipe, passes there and aborts in
+ * `resolve_auth_args`; this layer is where that would show.
  */
-const SALT = Word.fromHex('0x' + '11'.repeat(32));
+const SIGNER_COMMITMENT = '0x260a375ca01f1f05cd7bf22298b40c47290fc09f209011d39049b7f2ef61387b';
+const GUARDIAN_COMMITMENT = '0xc35d79423c41d46b5289aafef48be2364e9ea494c6b14d6aefad10f1a46e6d7c';
+const SALT_HEX = '0x' + '11'.repeat(32);
 
-describe('fee conversion salt survives a real TransactionRequest', () => {
-  it('stores the declared salt', () => {
-    const request = new TransactionRequestBuilder().withFeeConversionSalt(SALT).build();
+let client: MidenClient;
+let accountId: string;
 
-    expect(request.feeConversionSalt()?.toHex()).toBe(SALT.toHex());
+beforeAll(async () => {
+  client = await MidenClient.createMock();
+  const { account } = await createMultisigAccount(
+    client,
+    {
+      threshold: 1,
+      signerCommitments: [SIGNER_COMMITMENT],
+      guardianCommitment: GUARDIAN_COMMITMENT,
+      seed: new Uint8Array(32).fill(9),
+    },
+    'mock',
+  );
+  accountId = account.id().toString();
+});
+
+afterAll(async () => {
+  await client?.terminate();
+});
+
+async function buildRequest(boundBlockNum?: number): Promise<TransactionRequest> {
+  const { request } = await buildUpdateSignersTransactionRequest(
+    client,
+    1,
+    [SIGNER_COMMITMENT],
+    { accountId, salt: Word.fromHex(SALT_HEX), boundBlockNum, midenRpcEndpoint: 'mock' },
+  );
+  return request;
+}
+
+describe('multisig auth args survive a real TransactionRequest', () => {
+  it('sets the auth arg and leaves no fee conversion salt for the client to commit', async () => {
+    const request = await buildRequest();
+
+    expect(request.authArg()).toBeDefined();
+    expect(request.feeConversionSalt()).toBeUndefined();
   });
 
-  it('leaves the auth arg unset, so the client still commits the conversion info', () => {
-    // The two are mutually exclusive and each setter silently clears the other. An auth
-    // arg here would opt the request out of the client's fee machinery entirely, and the
-    // failure would surface as an abort in `pay_fee` rather than anything nearer.
-    const request = new TransactionRequestBuilder().withFeeConversionSalt(SALT).build();
+  it('binds the proposal salt and the sync height in the auth-args preimage', async () => {
+    const request = await buildRequest();
 
-    expect(request.authArg()).toBeUndefined();
+    expect(requestSaltHex(request)).toBe(SALT_HEX);
+    expect(requestBoundBlockNum(request)).toBe(await client.getSyncHeight());
   });
 
-  it('carries the salt across serialization', () => {
-    // Proposals ship serialized to co-signers, who rebuild the request on the other side.
-    // A salt lost on the wire would rebuild under the client's default and commit a
-    // different auth arg than the one the summary was signed over.
-    const request = new TransactionRequestBuilder().withFeeConversionSalt(SALT).build();
+  it('pins the bound block a rebuild names', async () => {
+    const request = await buildRequest(0);
+
+    expect(requestBoundBlockNum(request)).toBe(0);
+    expect(requestSaltHex(request)).toBe(SALT_HEX);
+  });
+
+  it('carries the auth args across serialization', async () => {
+    // Proposals ship serialized to co-signers, who execute the request on the other
+    // side. Auth args lost on the wire would abort in the auth procedure there.
+    const request = await buildRequest();
 
     const roundTripped = TransactionRequest.deserialize(request.serialize());
 
-    expect(roundTripped.feeConversionSalt()?.toHex()).toBe(SALT.toHex());
+    expect(roundTripped.authArg()?.toHex()).toBe(request.authArg()?.toHex());
+    expect(requestSaltHex(roundTripped)).toBe(SALT_HEX);
+    expect(requestBoundBlockNum(roundTripped)).toBe(requestBoundBlockNum(request));
   });
 });

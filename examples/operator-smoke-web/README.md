@@ -69,6 +69,20 @@ VITE_GUARDIAN_TARGET=https://your-guardian.example npm run dev
 5. Click `Request challenge`.
 6. Click `Login`.
 7. Use `List accounts`, `Fetch account`, `Get session`, and `Logout`.
+8. Use `Dashboard stats` / `Dashboard stats (7d)` for the one-call account and
+   asset aggregate (`GET /dashboard/stats`, issue #371). Right after Guardian
+   starts the call returns `503 data_unavailable` until the first walk is
+   published (the lease holder walks every
+   `GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`, 300 s by default; set it
+   to `5` for a quicker smoke loop). `Dashboard stats (invalid since)`
+   exercises the `400 invalid_timestamp` path. Compare `accounts.by_auth_method`
+   and `as_of` with `accounts_by_auth_method` / `aggregates_as_of` from
+   `Dashboard info` — both read the same published snapshot and must agree.
+9. `Request stats refresh` calls `POST /dashboard/stats/refresh`, which needs
+   the `stats:refresh` permission on the allowlist entry (see the profiles
+   below): expect `202` with `status: "queued"`, then `429 rate_limit_exceeded`
+   for a second request inside the 60-second cooldown, and a newer `as_of` on
+   the next `Dashboard stats` call once the walk has published.
 
 `Get session` calls `GET /dashboard/session` (feature `006-operator-authz`
 US6) and shows the operator's identity and effective permission set as
@@ -101,7 +115,7 @@ help you exercise the new authorization middleware:
   // Profile B — read + pause capable.
   {
     "public_key": "0x<hex of PAUSE_CAPABLE signer>",
-    "permissions": ["dashboard:read", "accounts:pause"]
+    "permissions": ["dashboard:read", "accounts:pause", "stats:refresh"]
   },
 
   // Profile C — explicitly denied (different from "absent").
@@ -117,7 +131,7 @@ Then exercise each profile:
 | Profile | Dashboard reads | `Get session` | Probe (`POST /dashboard/_authz_probe`)\* |
 |---------|-----------------|---------------|--------------------------|
 | A — read-only | `200` | `200`, `permissions: ["dashboard:read"]` | `403` + `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` |
-| B — pause-capable | `200` | `200`, `permissions: ["accounts:pause", "dashboard:read"]` | `204` |
+| B — pause-capable | `200` | `200`, `permissions: ["accounts:pause", "dashboard:read", "stats:refresh"]` | `204` |
 | C — explicitly denied | `403` on every read | `200`, `permissions: []` (NOT `403`) | `403` |
 
 \*The probe endpoint is gated by the `authz-test-probe` Cargo feature. Start

@@ -1,50 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  ProposalAuthArgUnresolvableError,
-  ProposalSaltMalformedError,
-} from './authArgErrors.js';
-
-/**
- * These two errors are the ones in this package a caller is expected to branch on
- * rather than report: both mean the proposal itself is dead, as against a
- * transport or WASM failure that a retry might clear. A renamed code or a dropped
- * field would silently break that branch, so the identifying surface is pinned
- * here rather than left to the call site's tests.
- */
-describe('ProposalAuthArgUnresolvableError', () => {
-  const error = new ProposalAuthArgUnresolvableError({
-    proposalId: '0xaaaa',
-    signedAuthArgHex: '0xf00d',
-    saltHex: '0xbeef',
-    feeFaucetIdHex: '0xcafe',
-  });
-
-  it('carries a stable code and name', () => {
-    expect(error.code).toBe('proposal_auth_arg_unresolvable');
-    expect(error.name).toBe('ProposalAuthArgUnresolvableError');
-    expect(error).toBeInstanceOf(Error);
-  });
-
-  it('keeps every value needed to diagnose the mismatch structured', () => {
-    expect(error.proposalId).toBe('0xaaaa');
-    expect(error.signedAuthArgHex).toBe('0xf00d');
-    expect(error.saltHex).toBe('0xbeef');
-    expect(error.feeFaucetIdHex).toBe('0xcafe');
-  });
-
-  it('names all three operands in the message', () => {
-    expect(error.message).toContain('0xf00d');
-    expect(error.message).toContain('0xbeef');
-    expect(error.message).toContain('0xcafe');
-  });
-});
+import { ProposalSaltMalformedError } from './authArgErrors.js';
 
 /** Quoted salt cap, plus room for the fixed prose and the reason. */
 const MAX_MESSAGE_OVERHEAD = 200;
 
+/**
+ * A caller is expected to branch on this error rather than report it: it means the
+ * proposal itself is dead, as against a transport or WASM failure that a retry
+ * might clear. A renamed code or a dropped field would silently break that branch,
+ * so the identifying surface is pinned here rather than left to the call site's
+ * tests.
+ */
 describe('ProposalSaltMalformedError', () => {
-  it('carries a stable code and name distinct from the unresolvable case', () => {
+  it('carries a stable code and name', () => {
     const error = new ProposalSaltMalformedError({
       proposalId: '0xaaaa',
       saltHex: '0xnope',

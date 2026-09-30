@@ -27,6 +27,7 @@ import {
   AccountId,
   AdviceMap,
   Endpoint,
+  type Felt,
   FeltArray,
   Note,
   NoteExportFormat,
@@ -43,7 +44,12 @@ import {
   chainAnchorFromBase64,
   chainAnchorToBase64,
   executeForSummary,
-  executeForSummaryAt,
+  executeForSummaryAtTip,
+  isStaleChainError,
+  prepareTipExecution,
+  syncToBoundBlock,
+  summaryApprovalExpirationBlockNum,
+  summarySalt,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -55,6 +61,8 @@ import {
   type P2ideHeightOptions,
 } from './transaction.js';
 import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
+import type { MultisigRequestOptions } from './transaction/options.js';
+import { validateMultisigConfig } from './account/builder.js';
 import { ensureNotesAuthenticated } from './transaction/noteAuthentication.js';
 import {
   CONSUME_NOTES_METADATA_VERSION_V2,
@@ -76,6 +84,7 @@ import {
 } from './utils/encoding.js';
 import {
   assertEcdsaSignatureRecoverable,
+  buildEip712SignatureAdviceEntry,
   buildSignatureAdviceEntry,
   normalizeSignerCommitment,
   signatureHexToBytes,
@@ -120,6 +129,7 @@ import {
 } from './rpc/config.js';
 import { isTransientRpcError } from './rpc/errors.js';
 import { retryRpcRead } from './rpc/retry.js';
+import { isSafeToAdoptGuardianState, readOnChainCommitment } from './state/adopt.js';
 
 /**
  * Result of fetching account state from GUARDIAN.
@@ -149,6 +159,13 @@ export interface AccountStateVerificationResult {
 export interface CreateProposalOptions {
   /** Proposal nonce; defaults to `Date.now()`. */
   nonce?: number;
+  /**
+   * Blocks after the block the proposal binds by which the transaction must be
+   * included; past that the approvers' signatures no longer authorize it. The
+   * summary binds it, so the executing party can neither shorten nor extend it.
+   * Omitted, the approval never expires (the upstream default).
+   */
+  approvalExpirationDelta?: number;
 }
 
 export interface CreateSignerProposalOptions extends CreateProposalOptions {
@@ -215,6 +232,64 @@ function resolveProposalNonce(
 }
 
 /**
+ * What a rebuild of a proposal's request pins so the signed summary
+ * reproduces: the salt, the block its anchor names, and the approval
+ * expiration the summary binds, as the delta the builders take.
+ */
+interface ProposalRequestBinding {
+  saltHex: string;
+  boundBlockNum: number;
+  approvalExpirationDelta: number | undefined;
+}
+
+function proposalRequestBinding(
+  summary: TransactionSummary,
+  anchor: ChainAnchor,
+  saltHex: string,
+): ProposalRequestBinding {
+  const boundBlockNum = anchor.blockNum();
+  return {
+    saltHex: normalizeHexWord(saltHex),
+    boundBlockNum,
+    approvalExpirationDelta: approvalExpirationDeltaOf(
+      summaryApprovalExpirationBlockNum(summary),
+      boundBlockNum,
+    ),
+  };
+}
+
+/**
+ * The approval expiration delta a rebuild has to pass: the absolute expiration
+ * block the summary binds, relative to the bound block. `undefined` for an
+ * approval that never expires.
+ */
+function approvalExpirationDeltaOf(
+  expirationBlockNum: number | undefined,
+  boundBlockNum: number,
+): number | undefined {
+  if (expirationBlockNum === undefined) {
+    return undefined;
+  }
+  const delta = expirationBlockNum - boundBlockNum;
+  if (delta < 1) {
+    throw new Error(
+      `Invalid proposal: approval expires at block ${expirationBlockNum}, at or before the ` +
+        `block ${boundBlockNum} its summary binds`,
+    );
+  }
+  return delta;
+}
+
+function summarySaltHex(summary: TransactionSummary): string {
+  const salt = summarySalt(summary);
+  try {
+    return normalizeHexWord(salt.toHex());
+  } finally {
+    salt.free?.();
+  }
+}
+
+/**
  * Deadline for `Multisig.preservePreSwitchProposalNotes`: no client in the
  * stack applies request deadlines, and a half-dead old GUARDIAN must not
  * stall the switch. Mirror of the Rust SDK's `PRE_SWITCH_IMPORT_TIMEOUT`.
@@ -234,6 +309,13 @@ const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 /** A `Word` is four field elements: 64 hex digits. Anything longer is not a salt. */
 const MAX_SALT_HEX_DIGITS = 64;
 
+/**
+ * Consecutive successful listings that must omit a guardian-known proposal
+ * not yet listed (a fresh create during read-your-writes lag, or one
+ * orphaned by a GUARDIAN repoint) before the sync prunes it.
+ */
+const UNREPORTED_LISTING_MISS_LIMIT = 2;
+
 export class Multisig {
   account: Account;
   threshold: number;
@@ -251,6 +333,24 @@ export class Multisig {
   private readonly _accountId: string;
   private readonly midenRpcEndpoint: string;
   private proposals: Map<string, Proposal> = new Map();
+  /** Ids GUARDIAN returned on the most recent sync; these prune immediately when dropped. */
+  private lastReportedProposalIds: Set<string> = new Set();
+  /**
+   * Ids GUARDIAN is known to hold: acknowledged `createProposal` pushes,
+   * acknowledged `signProposal` signatures, plus every listed id. Only these
+   * are subject to miss-based pruning; offline creations and imports GUARDIAN
+   * never received are exempt.
+   */
+  private guardianKnownProposalIds: Set<string> = new Set();
+  /**
+   * Consecutive successful listings that omitted a guardian-known proposal
+   * not yet listed; at {@link UNREPORTED_LISTING_MISS_LIMIT} it is pruned.
+   */
+  private unreportedMissCounts: Map<string, number> = new Map();
+  /** Bumped by {@link setGuardianClient}; a sync spanning a bump aborts unapplied. */
+  private syncGeneration = 0;
+  /** Pending sync shared by overlapping {@link syncProposals} callers. */
+  private syncProposalsInFlight?: Promise<Proposal[]>;
 
   constructor(
     account: Account,
@@ -438,6 +538,20 @@ export class Multisig {
     }));
   }
 
+  /**
+   * The request options every `create*Proposal` hands its builder: the account,
+   * the caller's approval expiration, and the signer's scheme.
+   */
+  private proposalRequestOptions(options: {
+    approvalExpirationDelta?: number;
+  }): Pick<MultisigRequestOptions, 'accountId' | 'approvalExpirationDelta' | 'signatureScheme'> {
+    return {
+      accountId: this._accountId,
+      approvalExpirationDelta: options.approvalExpirationDelta,
+      signatureScheme: this.signer.scheme,
+    };
+  }
+
   private warnOnOverrideDilution(newNumSigners: number): void {
     const current = this.signerCommitments.length;
     for (const { procedure, threshold } of this.overridesDilutedBySignerGrowth(newNumSigners)) {
@@ -457,11 +571,23 @@ export class Multisig {
    * survive a switch, and the notes embedded in them can only be imported
    * while the old GUARDIAN is still the current client.
    *
+   * Repointing abandons a {@link syncProposals} still in flight: it rejects
+   * without applying its listing, though its request to the old GUARDIAN is
+   * not cancelled, so callers already awaiting it see the rejection only
+   * once that response settles. The reported-id and miss-count bookkeeping
+   * is reset; the set of ids GUARDIAN is known to hold is kept on purpose,
+   * so proposals orphaned by the repoint expire through the two-miss rule
+   * instead of lingering.
+   *
    * @param guardianClient - The new GUARDIAN HTTP client
    */
   setGuardianClient(guardianClient: GuardianHttpClient): void {
     this.guardian = guardianClient;
     this.guardian.setSigner(this.signer);
+    this.syncGeneration += 1;
+    this.syncProposalsInFlight = undefined;
+    this.lastReportedProposalIds = new Set();
+    this.unreportedMissCounts = new Map();
   }
 
   /**
@@ -576,66 +702,16 @@ export class Multisig {
     incomingAccount: Account,
     localAccount?: Account,
   ): Promise<boolean> {
-    if (localAccount) {
-      const localNonce = localAccount.nonce().asInt();
-      const incomingNonce = incomingAccount.nonce().asInt();
-
-      if (incomingNonce < localNonce) {
-        return false;
-      }
-
-      if (incomingNonce === localNonce) {
-        throw new Error(
-          `Refusing to overwrite local state: incoming nonce ${incomingNonce.toString()} equals local nonce ${localNonce.toString()} but commitments differ for account ${this._accountId}`
-        );
-      }
-    }
-
-    const accountId = AccountId.fromHex(this._accountId);
-    const onChainCommitment = await this.getOnChainCommitment(accountId);
-    if (!onChainCommitment) {
-      return true;
-    }
-
-    const incomingCommitment = normalizeHexWord(incomingAccount.to_commitment().toHex());
-    if (incomingCommitment !== onChainCommitment) {
-      throw new Error(
-        `Refusing to overwrite local state: incoming commitment does not match on-chain commitment for account ${this._accountId}`
-      );
-    }
-
-    return true;
+    return isSafeToAdoptGuardianState({
+      accountId: this._accountId,
+      incomingAccount,
+      localAccount,
+      readCommitment: () => this.getOnChainCommitment(AccountId.fromHex(this._accountId)),
+    });
   }
 
   private async getOnChainCommitment(accountId: AccountId): Promise<string | null> {
-    const rpcClient = new RpcClient(new Endpoint(this.getMidenRpcEndpoint()));
-
-    try {
-      const accountDetails = await retryRpcRead(
-        () => rpcClient.getAccountDetails(accountId),
-        this.rpcConfig,
-      );
-      // If the account is not found or its commitment is zero, means that the account is not deployed yet
-      if (!accountDetails) {
-        return null;
-      }
-      const commitment = normalizeHexWord(accountDetails.commitment().toHex());
-      const zeroCommitment = `0x${'0'.repeat(64)}`;
-      if (commitment === zeroCommitment) {
-        return null;
-      }
-      return commitment;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        message.includes('null pointer passed to rust') ||
-        message.includes('No account header record found for given ID') ||
-        message.toLowerCase().includes('not found')
-      ) {
-        return null;
-      }
-      throw error;
-    }
+    return readOnChainCommitment(this.getMidenRpcEndpoint(), accountId, this.rpcConfig);
   }
 
   /**
@@ -718,23 +794,76 @@ export class Multisig {
   }
 
   /**
-   * Sync proposals from the GUARDIAN server.
+   * Sync proposals from the GUARDIAN server, reconciling the local cache to
+   * the response. GUARDIAN reports only pending proposals, so a proposal it
+   * reported on an earlier sync and now omits is pruned immediately. A
+   * proposal GUARDIAN holds but has not listed yet (a fresh `createProposal`
+   * its read-your-writes has not caught up with, or a proposal orphaned by a
+   * {@link setGuardianClient} repoint) is pruned only after
+   * {@link UNREPORTED_LISTING_MISS_LIMIT} consecutive listings omit it.
+   * Proposals GUARDIAN never received (an `importProposal`, or a
+   * `createSwitchGuardianProposalOffline`) are not pruned by listings; an
+   * import graduates to the pruned classes once GUARDIAN acknowledges it
+   * (listed, or a successful online `signProposal`).
+   * Proposals cached or replaced after the sync started are not evaluated
+   * by it.
    *
    * Every synced proposal's metadata is checked against its signed summary
    * and the outcome is recorded in {@link Proposal.verification}. One that
-   * fails is still returned, so a single stale or corrupt proposal cannot
-   * hide the others (issue #462: once the node prunes a proposal's anchor
-   * block its re-execution fails for everyone). `failed` with
-   * `retryable: true` means a transient node error, worth syncing again;
+   * fails is still cached and returned, so a single stale or corrupt
+   * proposal cannot hide the others (issue #462). Verification re-executes
+   * each proposal at the chain tip, so the Miden client is synced once first.
+   * `failed` with `retryable: true` means a transient node error or chain
+   * state this client had not caught up with, worth syncing again;
    * `retryable: false` means the proposal cannot be reproduced and must be
-   * re-proposed. `signProposal` and `executeProposal` re-verify and refuse a
-   * failed proposal. A payload that does not parse at all still rejects, so
-   * malformed GUARDIAN data is never silently dropped.
+   * re-proposed. `signProposal` and `executeProposal` re-verify and
+   * refuse a failed proposal. A failed proposal still counts as reported, so
+   * it is pruned like any other once GUARDIAN stops listing it.
+   *
+   * The response is parsed in full before the cache or the pruning state
+   * changes; a payload that does not parse at all rejects and leaves both
+   * untouched, so malformed GUARDIAN data is never silently dropped.
+   * Signatures added to a cached proposal while the sync was verifying are
+   * preserved by its apply, and a proposal executed locally in that window
+   * stays `finalized` rather than reverting to the listed pending state.
+   * Overlapping callers share the same in-flight promise. A sync that spans a {@link setGuardianClient} repoint rejects
+   * without applying its listing.
+   *
+   * Nonce-based staleness hiding is the caller's job (see the examples'
+   * `filterVisibleProposals`): callers of this shared client disagree on
+   * whether a proposal's `nonce` is the pre-execution or the next account
+   * nonce, so the Rust client's `proposal.nonce <= account.nonce()` filter
+   * cannot be applied here. This is an intentional TS/Rust surface
+   * difference.
    */
-  async syncProposals(): Promise<Proposal[]> {
+  syncProposals(): Promise<Proposal[]> {
+    if (this.syncProposalsInFlight) {
+      return this.syncProposalsInFlight;
+    }
+    const inFlight = this.reconcileProposals().finally(() => {
+      if (this.syncProposalsInFlight === inFlight) {
+        this.syncProposalsInFlight = undefined;
+      }
+    });
+    this.syncProposalsInFlight = inFlight;
+    return inFlight;
+  }
+
+  private async reconcileProposals(): Promise<Proposal[]> {
+    const generation = this.syncGeneration;
+    const candidates = new Map(this.proposals);
     const deltas = await this.guardian.getDeltaProposals(this._accountId);
     const factory = this.proposalFactory();
 
+    const reported = new Map<string, { delta: (typeof deltas)[number]; verified: Proposal }>();
+    if (deltas.length > 0) {
+      // Verification re-executes at the store's sync height; bring it to the
+      // tip once for the whole listing. Best effort: a node outage then shows
+      // up on each proposal as a retryable failure instead of failing the sync.
+      await this.syncChain().catch((error) =>
+        console.warn('Could not sync the Miden client before verifying proposals', error),
+      );
+    }
     for (const delta of deltas) {
       const proposalId = normalizeHexWord(
         computeCommitmentFromTxSummary(delta.deltaPayload.txSummary.data)
@@ -749,9 +878,59 @@ export class Multisig {
       // The outcome lands on the proposal either way; a failure is reported
       // there rather than failing the sync.
       await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
-
-      this.proposals.set(proposal.id, proposal);
+      reported.set(proposal.id, { delta, verified: proposal });
     }
+
+    if (generation !== this.syncGeneration) {
+      throw new Error(
+        'Sync aborted: the GUARDIAN client was replaced while the sync was in flight'
+      );
+    }
+
+    const applied: Proposal[] = [];
+    for (const { delta, verified } of reported.values()) {
+      const current = this.proposals.get(verified.id);
+      if (current?.status === 'finalized') {
+        applied.push(current);
+        continue;
+      }
+      applied.push(
+        current === undefined
+          ? verified
+          : {
+              ...factory.fromDelta(delta, verified.id, verified.metadata, current.signatures),
+              verification: verified.verification,
+            }
+      );
+    }
+    for (const proposal of applied) {
+      this.proposals.set(proposal.id, proposal);
+      this.guardianKnownProposalIds.add(proposal.id);
+    }
+
+    const missCounts = new Map<string, number>();
+    for (const [id, snapshot] of candidates) {
+      if (reported.has(id) || this.proposals.get(id) !== snapshot) {
+        continue;
+      }
+      if (this.lastReportedProposalIds.has(id)) {
+        this.proposals.delete(id);
+        this.guardianKnownProposalIds.delete(id);
+        continue;
+      }
+      if (!this.guardianKnownProposalIds.has(id)) {
+        continue;
+      }
+      const misses = (this.unreportedMissCounts.get(id) ?? 0) + 1;
+      if (misses >= UNREPORTED_LISTING_MISS_LIMIT) {
+        this.proposals.delete(id);
+        this.guardianKnownProposalIds.delete(id);
+      } else {
+        missCounts.set(id, misses);
+      }
+    }
+    this.unreportedMissCounts = missCounts;
+    this.lastReportedProposalIds = new Set(reported.keys());
 
     return Array.from(this.proposals.values());
   }
@@ -818,7 +997,10 @@ export class Multisig {
   }
 
   /**
-   * List all known proposals
+   * Returns the proposals cached by the most recent {@link syncProposals}
+   * call, plus any locally created or imported proposals GUARDIAN has not
+   * reported yet (see {@link syncProposals} for their retention). Not a
+   * durable history: proposals GUARDIAN no longer reports were pruned.
    */
   listProposals(): Proposal[] {
     return Array.from(this.proposals.values());
@@ -847,6 +1029,7 @@ export class Multisig {
     const proposal = this.proposalFactory().fromDelta(response.delta, response.commitment, metadata);
     await this.verifyProposalMetadataBinding(proposal);
     this.proposals.set(proposal.id, proposal);
+    this.guardianKnownProposalIds.add(proposal.id);
 
     return proposal;
   }
@@ -867,13 +1050,21 @@ export class Multisig {
     const webClient = await this.getRawClient();
     const targetThreshold = options.newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
+    // What `update_signers_and_threshold` rejects on-chain, and what the auth
+    // procedure asserts on every transaction after the update, checked before
+    // any signature is collected.
+    validateMultisigConfig({
+      threshold: targetThreshold,
+      signerCommitments: targetSignerCommitments,
+      guardianCommitment: this.guardianCommitment,
+    });
     this.warnOnOverrideDilution(targetSignerCommitments.length);
 
     const { request, salt } = await buildUpdateSignersTransactionRequest(
       webClient,
       targetThreshold,
       targetSignerCommitments,
-      { signatureScheme: this.signer.scheme },
+      this.proposalRequestOptions(options),
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -932,7 +1123,7 @@ export class Multisig {
       webClient,
       targetThreshold,
       targetSignerCommitments,
-      { signatureScheme: this.signer.scheme },
+      this.proposalRequestOptions(options),
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -979,7 +1170,7 @@ export class Multisig {
       webClient,
       newThreshold,
       this.signerCommitments,
-      { signatureScheme: this.signer.scheme },
+      this.proposalRequestOptions(options),
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1028,7 +1219,7 @@ export class Multisig {
       webClient,
       targetProcedure,
       targetThreshold,
-      { signatureScheme: this.signer.scheme },
+      this.proposalRequestOptions(options),
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1068,6 +1259,7 @@ export class Multisig {
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
       newGuardianPubkey,
+      options.approvalExpirationDelta,
     );
 
     // SwitchGuardian is a regular delta proposal; push it to GUARDIAN so
@@ -1085,14 +1277,26 @@ export class Multisig {
   private async buildSwitchGuardianSummary(
     newGuardianEndpoint: string,
     newGuardianPubkey: string,
+    approvalExpirationDelta: number | undefined,
   ): Promise<{ summaryBase64: string; metadata: ProposalMetadata }> {
     const webClient = await this.getRawClient();
+    // What `auth_tx_guarded_multisig` asserts after a guardian rotation, checked
+    // before any signature is collected.
+    validateMultisigConfig({
+      threshold: this.threshold,
+      signerCommitments: [...this.signerCommitments],
+      guardianCommitment: newGuardianPubkey,
+    });
     await this.verifyGuardianEndpointCommitment(newGuardianEndpoint, newGuardianPubkey);
 
     const { request, salt } = await buildUpdateGuardianTransactionRequest(
       webClient,
       newGuardianPubkey,
-      { signatureScheme: this.signer.scheme },
+      {
+        accountId: this._accountId,
+        approvalExpirationDelta,
+        signatureScheme: this.signer.scheme,
+      },
     );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
@@ -1155,6 +1359,7 @@ export class Multisig {
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
       newGuardianPubkey,
+      options.approvalExpirationDelta,
     );
 
     const exported: ExportedProposal = {
@@ -1206,7 +1411,11 @@ export class Multisig {
     await this.ensureNotesAuthenticated(fetchedNotes);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
-    const { request, salt } = buildConsumeNotesTransactionRequestFromNotes(fetchedNotes);
+    const { request, salt } = await buildConsumeNotesTransactionRequestFromNotes(
+      webClient,
+      fetchedNotes,
+      this.proposalRequestOptions(options),
+    );
 
     const { summary, anchor } = await executeForSummary(webClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
@@ -1263,7 +1472,8 @@ export class Multisig {
     // Forward everything but the nonce, so a note option added to
     // CreateP2idProposalOptions can't be silently dropped before the builder.
     const { nonce: _nonce, ...noteOptions } = options;
-    const { request, salt } = buildP2idTransactionRequest(
+    const { request, salt } = await buildP2idTransactionRequest(
+      webClient,
       this._accountId,
       recipientId,
       faucetId,
@@ -1774,6 +1984,8 @@ export class Multisig {
 
   async signProposal(proposalId: string): Promise<Proposal> {
     const normalizedProposalId = normalizeHexWord(proposalId);
+    // Verification re-executes the proposal at the store's sync height.
+    await this.syncChain();
     const existingProposal = await this.getProposalForSigning(proposalId, normalizedProposalId);
     if (!existingProposal) {
       throw new Error(`Proposal not found: ${proposalId}`);
@@ -1803,6 +2015,7 @@ export class Multisig {
     await this.verifyProposalMetadataBinding(signedProposal);
 
     this.proposals.set(signedProposal.id, signedProposal);
+    this.guardianKnownProposalIds.add(signedProposal.id);
 
     return signedProposal;
   }
@@ -1820,6 +2033,12 @@ export class Multisig {
     return this.proposals.get(proposalId) ?? this.proposals.get(normalizedProposalId);
   }
 
+  /**
+   * Builds the final, fully signed request for a ready proposal, for a caller
+   * that proves and submits it with its own pipeline. The request declares the
+   * block its summary binds, so execute it at the chain tip, without an
+   * anchor, on a client synced to at least that block.
+   */
   async createTransactionProposalRequest(proposalId: string): Promise<TransactionRequest> {
     const { finalRequest } = await this.prepareProposalExecution(proposalId);
     return finalRequest;
@@ -1840,16 +2059,9 @@ export class Multisig {
       await this.preservePreSwitchProposalNotes();
     }
 
-    // Execute at the proposal's anchored reference block, so the summary the
-    // cosigners signed reproduces exactly. The anchor was already checked
-    // against the summary's block commitment during binding verification.
-    const accountId = AccountId.fromHex(this._accountId);
-    const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
-    try {
-      await this.proverWorkflow.submitAt(accountId, finalRequest, anchor);
-    } finally {
-      anchor.free();
-    }
+    // Execute at the chain tip. The request declares the block the signed
+    // summary binds, so the summary the cosigners signed reproduces there.
+    await this.submitAtTip(finalRequest);
 
     if (metadata.proposalType === 'switch_guardian') {
       if (!metadata.newGuardianEndpoint || !metadata.newGuardianPubkey) {
@@ -1903,18 +2115,19 @@ export class Multisig {
       }
     }
 
-    proposal.status = 'finalized';
+    this.proposals.set(proposal.id, { ...proposal, status: 'finalized' });
   }
 
   /**
    * Submit an integration-built transaction (advice already injected). Mirrors
    * the Rust `submit_transaction`; used by the custom proposal producer flow
    * after `prepareCustomExecution` rebuilds its request with the returned advice.
-   * The transaction is executed at the proposal's anchored reference block,
-   * since the collected signatures only authorize the summary produced there.
+   * The transaction is executed at the chain tip, so the request has to declare
+   * the block its auth args bind (`feeAwareTransactionRequestBuilder` does).
    */
   async submitTransaction(proposalId: string, request: TransactionRequest): Promise<void> {
     const normalizedProposalId = normalizeHexWord(proposalId);
+    await this.syncChain();
     const delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
     const existing = this.getLocalProposal(proposalId);
     const proposal = this.proposalFactory().fromDelta(
@@ -1936,11 +2149,40 @@ export class Multisig {
           `Proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
         );
       }
-
-      await this.proverWorkflow.submitAt(AccountId.fromHex(this._accountId), request, anchor);
     } finally {
       anchor.free();
     }
+    await this.submitAtTip(request);
+  }
+
+  /**
+   * Executes `request` at the chain tip, then proves, submits and applies it,
+   * syncing first when this client is still below the block the request binds.
+   */
+  private async submitAtTip(request: TransactionRequest): Promise<void> {
+    const webClient = await this.getRawClient();
+    await prepareTipExecution(webClient, request, () =>
+      retryRpcRead(() => webClient.syncState(), this.rpcConfig),
+    );
+    await this.proverWorkflow.submit(AccountId.fromHex(this._accountId), request);
+  }
+
+  /**
+   * Brings the Miden client to the chain tip before a proposal is re-executed:
+   * an execution loads foreign accounts, the fee faucet among them, at the
+   * store's sync height, which a node prunes about 50 blocks later.
+   */
+  private async syncChain(): Promise<void> {
+    const webClient = await this.getRawClient();
+    await retryRpcRead(() => webClient.syncState(), this.rpcConfig);
+  }
+
+  /** {@link syncToBoundBlock} with this client's RPC retry policy. */
+  private async syncToBoundBlock(boundBlockNum: number): Promise<void> {
+    const webClient = await this.getRawClient();
+    await syncToBoundBlock(webClient, boundBlockNum, () =>
+      retryRpcRead(() => webClient.syncState(), this.rpcConfig),
+    );
   }
 
   /**
@@ -2004,6 +2246,8 @@ export class Multisig {
     transactionRequestBytes: Uint8Array,
   ): Promise<AdviceMap> {
     const normalizedProposalId = normalizeHexWord(proposalId);
+    // The binding probe re-executes the producer's request at the store's sync height.
+    await this.syncChain();
     const delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
     const existing = this.getLocalProposal(proposalId);
     const proposal = this.proposalFactory().fromDelta(
@@ -2038,13 +2282,11 @@ export class Multisig {
 
     const bindingRequest = deserializeTransactionRequest(transactionRequestBytes);
 
-    // Probe at the proposal's anchored reference block: the signed summary
-    // binds that block's commitment, so probing at the local sync height would
-    // never reproduce it. The anchor arrives from an untrusted party via
-    // GUARDIAN, so its block commitment is checked against the signed summary
-    // before executing against it.
+    // The anchor arrives from an untrusted party via GUARDIAN, so its block
+    // commitment is checked against the signed summary: it has to name the
+    // block the summary binds. The probe itself runs at the chain tip, where
+    // the request's declared bound block reproduces the signed summary.
     const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
-    let derivedCommitmentHex: string;
     try {
       const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
       const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
@@ -2053,17 +2295,19 @@ export class Multisig {
           `Custom proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
         );
       }
-      const webClient = await this.getRawClient();
-      const derived = await executeForSummaryAt(webClient, this._accountId, bindingRequest, anchor);
-      derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
     } finally {
       anchor.free();
     }
+    const webClient = await this.getRawClient();
+    const derived = await executeForSummaryAtTip(webClient, this._accountId, bindingRequest);
+    const derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
     if (derivedCommitmentHex !== signedCommitmentHex) {
       throw new Error(
         `Custom proposal binding mismatch: expected ${signedCommitmentHex}, got ${derivedCommitmentHex}`,
       );
     }
+
+    await this.assertApprovalNotExpired(proposalId, txSummary);
 
     return this.assembleCustomAdvice(
       proposalId,
@@ -2071,6 +2315,34 @@ export class Multisig {
       signedCommitmentHex,
       delta,
     );
+  }
+
+  private buildCosignerAdviceEntry(
+    cosignerSig: ProposalSignatureEntry,
+    signerCommitment: Word,
+    txCommitmentHex: string,
+  ): { key: Word; values: Felt[] } {
+    const approval = cosignerSig.signature;
+    const txCommitment = Word.fromHex(txCommitmentHex);
+    if (approval.scheme === 'ecdsa' && approval.messageFormat === 'eip712') {
+      if (!approval.publicKey) {
+        throw new Error(`ECDSA proposal signature for ${cosignerSig.signerId} is missing publicKey`);
+      }
+      return buildEip712SignatureAdviceEntry(
+        signerCommitment,
+        txCommitment,
+        approval.signature,
+        approval.publicKey,
+      );
+    }
+
+    const signature = Signature.deserialize(
+      signatureHexToBytes(approval.signature, approval.scheme),
+    );
+    if (approval.scheme === 'ecdsa' && approval.publicKey) {
+      assertEcdsaSignatureRecoverable(approval.signature, txCommitmentHex, approval.publicKey);
+    }
+    return buildSignatureAdviceEntry(signerCommitment, txCommitment, signature);
   }
 
   private async assembleCustomAdvice(
@@ -2109,22 +2381,8 @@ export class Multisig {
       }
 
       const signerCommitment = Word.fromHex(signerCommitmentHex);
-      const sigBytes = signatureHexToBytes(
-        cosignerSig.signature.signature,
-        cosignerSig.signature.scheme,
-      );
-      const signature = Signature.deserialize(sigBytes);
-      if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
-        assertEcdsaSignatureRecoverable(
-          cosignerSig.signature.signature,
-          normalizedTxCommitmentHex,
-          ecdsaPublicKey,
-        );
-      }
-      const { key, values } = buildSignatureAdviceEntry(
-        signerCommitment,
-        createTxCommitmentWord(),
-        signature,
+      const { key, values } = this.buildCosignerAdviceEntry(
+        cosignerSig, signerCommitment, normalizedTxCommitmentHex,
       );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
@@ -2180,15 +2438,23 @@ export class Multisig {
     return this.proposals.get(proposalId) ?? this.proposals.get(normalizedProposalId);
   }
 
-  private async prepareProposalExecution(
-    proposalId: string,
-  ): Promise<{ finalRequest: TransactionRequest; metadata: ProposalMetadata; proposal: Proposal }> {
+  /**
+   * The returned request declares the block the signed summary binds, and
+   * executes at the chain tip.
+   */
+  private async prepareProposalExecution(proposalId: string): Promise<{
+    finalRequest: TransactionRequest;
+    metadata: ProposalMetadata;
+    proposal: Proposal;
+  }> {
     const proposal = this.getLocalProposal(proposalId);
     if (!proposal) {
       throw new Error(`Proposal not found: ${proposalId}`);
     }
 
     this.proposalFactory().assertAccountId(proposal.accountId);
+    // Verification and execution run at the store's sync height.
+    await this.syncChain();
     await this.verifyProposalMetadataBinding(proposal);
 
     const metadata = proposal.metadata;
@@ -2245,6 +2511,8 @@ export class Multisig {
       );
     }
 
+    await this.assertApprovalNotExpired(proposalId, txSummary);
+
     const normalizedSignerCommitments = new Set(
       this.signerCommitments.map((commitment) => normalizeHexWord(commitment)),
     );
@@ -2278,22 +2546,8 @@ export class Multisig {
       }
 
       const signerCommitment = Word.fromHex(signerCommitmentHex);
-      const sigBytes = signatureHexToBytes(
-        cosignerSig.signature.signature,
-        cosignerSig.signature.scheme,
-      );
-      const signature = Signature.deserialize(sigBytes);
-      if (cosignerSig.signature.scheme === 'ecdsa' && ecdsaPublicKey) {
-        assertEcdsaSignatureRecoverable(
-          cosignerSig.signature.signature,
-          normalizedTxCommitmentHex,
-          ecdsaPublicKey,
-        );
-      }
-      const { key, values } = buildSignatureAdviceEntry(
-        signerCommitment,
-        createTxCommitmentWord(),
-        signature,
+      const { key, values } = this.buildCosignerAdviceEntry(
+        cosignerSig, signerCommitment, normalizedTxCommitmentHex,
       );
       const keyHex = normalizeHexWord(key.toHex());
       if (adviceMapKeys.has(keyHex)) {
@@ -2349,16 +2603,21 @@ export class Multisig {
       await this.verifyGuardianEndpointCommitment(metadata.newGuardianEndpoint, metadata.newGuardianPubkey);
     }
 
-    // The builders read `.toHex()` and allocate their own Word, so this handle stays
-    // ours; without the release it leaks once per execute.
-    const executionSalt = Word.fromHex(normalizeHexWord(saltHex));
-    let finalRequest;
+    const anchor = this.requireProposalAnchor(proposalId, metadata);
+    let binding: ProposalRequestBinding;
     try {
-      finalRequest = await this.buildTransactionRequestFromMetadata(metadata, executionSalt, adviceMap);
+      binding = proposalRequestBinding(txSummary, anchor, saltHex);
     } finally {
-      executionSalt.free?.();
+      anchor.free();
     }
-
+    // A switch_guardian proposal is verified without a rebuild, so this may be
+    // the first time this client needs the chain at the bound block.
+    await this.syncToBoundBlock(binding.boundBlockNum);
+    const finalRequest = await this.buildTransactionRequestFromMetadata(
+      metadata,
+      binding,
+      adviceMap,
+    );
     return { finalRequest, metadata, proposal };
   }
 
@@ -2382,6 +2641,8 @@ export class Multisig {
             signatureHex: s.signature.signature,
             scheme: s.signature.scheme,
             publicKey: s.signature.scheme === 'ecdsa' ? s.signature.publicKey : undefined,
+            ...(s.signature.scheme === 'ecdsa' && s.signature.messageFormat
+              ? { messageFormat: s.signature.messageFormat } : {}),
             timestamp: s.timestamp,
           }))
         : [];
@@ -2418,6 +2679,8 @@ export class Multisig {
         signatureHex: s.signature.signature,
         scheme: s.signature.scheme,
         publicKey: s.signature.scheme === 'ecdsa' ? s.signature.publicKey : undefined,
+        ...(s.signature.scheme === 'ecdsa' && s.signature.messageFormat
+          ? { messageFormat: s.signature.messageFormat } : {}),
         timestamp: s.timestamp,
       })),
       metadata: proposal.metadata,
@@ -2440,6 +2703,10 @@ export class Multisig {
 
     const proposal = this.proposalFactory().fromExported(exported);
 
+    // Verification re-executes every built-in type at the store's sync height.
+    if (proposal.metadata.proposalType !== 'custom') {
+      await this.syncChain();
+    }
     await this.verifyProposalMetadataBinding(proposal);
     this.proposals.set(proposal.id, proposal);
 
@@ -2480,6 +2747,10 @@ export class Multisig {
       throw new Error('You have already signed this proposal');
     }
 
+    // Verification re-executes every built-in type at the store's sync height.
+    if (proposal.metadata?.proposalType !== 'custom') {
+      await this.syncChain();
+    }
     const commitmentToSign = await this.verifyProposalMetadataBinding(proposal);
 
     // Sign the commitment
@@ -2499,14 +2770,17 @@ export class Multisig {
       this.signerCommitments,
       localSignatureContext,
     ).entries();
-    proposal.signatures = canonicalizedSignatures;
-
-    // Update status
     const proposalType = proposal.metadata?.proposalType;
     const signaturesRequired = proposalType
       ? this.getEffectiveThreshold(proposalType)
       : this.threshold;
-    proposal.status = proposal.signatures.length >= signaturesRequired ? 'ready' : 'pending';
+    // A fresh object rather than an in-place write: a sync that snapshotted
+    // the cache before this signature tells the two apart by identity.
+    this.proposals.set(proposal.id, {
+      ...proposal,
+      signatures: canonicalizedSignatures,
+      status: canonicalizedSignatures.length >= signaturesRequired ? 'ready' : 'pending',
+    });
 
     // Return updated JSON
     return this.exportProposalToJson(proposal.id);
@@ -2540,7 +2814,7 @@ export class Multisig {
     } catch (error) {
       proposal.verification = {
         status: 'failed',
-        retryable: isTransientRpcError(error),
+        retryable: isTransientRpcError(error) || isStaleChainError(error),
         message: error instanceof Error ? error.message : String(error),
       };
       throw error;
@@ -2552,10 +2826,11 @@ export class Multisig {
 
     const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
 
-    // The anchor arrives from an untrusted party via GUARDIAN, so check its
-    // block commitment against the one bound into the signed summary before
-    // anything executes against it. `ChainAnchor.deserialize` already enforced
-    // internal header/chain consistency.
+    // The anchor arrives from an untrusted party via GUARDIAN, so check that it
+    // names the block the signed summary binds: the rebuild below binds the
+    // block it names. Nothing executes against it; the rebuild runs at the
+    // chain tip. `ChainAnchor.deserialize` already enforced internal
+    // header/chain consistency.
     const anchor = this.requireProposalAnchor(proposal.id, proposal.metadata);
     try {
       const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
@@ -2573,15 +2848,33 @@ export class Multisig {
         return txSummaryCommitment;
       }
 
+      // The salt check needs no re-execution, so it runs for every built-in
+      // type, switch_guardian included (as in the Rust SDK): a mismatched salt
+      // would otherwise collect signatures and only fail in the VM.
+      const binding = proposalRequestBinding(
+        summary,
+        anchor,
+        this.requireProposalSaltHex(proposal.id, proposal.metadata),
+      );
+      if (summarySaltHex(summary) !== binding.saltHex) {
+        throw new Error(
+          `Invalid proposal: metadata salt does not match the salt bound into the tx_summary for ${proposal.id}`,
+        );
+      }
+
       if (proposal.metadata.proposalType === 'switch_guardian') {
-        // Re-execution would mutate the WASM account twice. The proposal ID and
-        // guardian endpoint commitment provide the binding checks for this type.
+        // Re-execution would mutate the WASM account twice. The proposal ID,
+        // the salt above and the guardian endpoint commitment provide the
+        // binding checks for this type.
         return txSummaryCommitment;
       }
 
-      const salt = Word.fromHex(
-        normalizeHexWord(this.requireProposalSaltHex(proposal.id, proposal.metadata)),
-      );
+      // The rebuild reads the chain's fee faucet from the synced protocol
+      // configuration and executes at the tip, so the store has to have synced
+      // to the block the summary binds; a cosigner that has only just loaded
+      // the account has not.
+      await this.syncToBoundBlock(binding.boundBlockNum);
+      const webClient = await this.getRawClient();
 
       // A consume-notes summary commits to *authenticated* consumption (see
       // ensureNotesAuthenticated), which miden-client decides from this store
@@ -2594,9 +2887,8 @@ export class Multisig {
         await this.ensureNotesAuthenticated(decodeEmbeddedConsumeNotes(proposal.metadata));
       }
 
-      const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, salt);
-      const webClient = await this.getRawClient();
-      const reconstructed = await executeForSummaryAt(webClient, this._accountId, request, anchor);
+      const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, binding);
+      const reconstructed = await executeForSummaryAtTip(webClient, this._accountId, request);
       const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
 
       if (reconstructedCommitment !== txSummaryCommitment) {
@@ -2610,33 +2902,22 @@ export class Multisig {
   }
 
   /**
-   * Decodes a proposal's chain anchor. Throws when absent: a proposal without
-   * an anchor was created at an unknown reference block, so its signed summary
-   * cannot be reproduced, verified, or executed. The caller owns the returned
-   * anchor and must `free()` it once done.
-   */
-  /**
    * Reads a proposal's salt. Throws when absent, because there is nothing to fall
    * back to.
    *
-   * The request declares this salt through `withFeeConversionSalt`, and miden-client
-   * commits `hash(CONVERSION_INFO || SALT)` into the auth arg from it. The summary
-   * therefore carries the COMMITMENT, and a commitment is not invertible to the salt
-   * it was built from -- so `summaryAuthArg(summary)` cannot stand in here. It used
-   * to: before the request declared a salt the auth arg WAS the bare salt, which is
-   * why the fallback this replaces was correct when it was written.
-   *
-   * A declared salt also bypasses miden-client's zero-fee early return, so this holds
-   * on a chain that charges nothing exactly as on one that charges.
+   * The salt goes into the request's multisig auth args and the summary binds it in
+   * its user params, so `summarySalt(summary)` reads the value the cosigners signed
+   * over. It is not a substitute for this field: a request has to be rebuilt before
+   * any summary exists, and a proposal GUARDIAN serves may pair a summary with
+   * metadata that names another salt, which the binding check reports by name.
    */
   private requireProposalSaltHex(proposalId: string, metadata: ProposalMetadata): string {
     const saltHex: unknown = metadata.saltHex;
 
     if (saltHex === undefined || saltHex === null || saltHex === '') {
       throw new Error(
-        `Proposal ${proposalId} has no salt; its request cannot be rebuilt because ` +
-          'the auth arg commits hash(CONVERSION_INFO || SALT) and is not invertible ' +
-          'to the salt',
+        `Proposal ${proposalId} has no salt; its request cannot be rebuilt without the ` +
+          'salt its auth args and signed summary bind',
       );
     }
 
@@ -2668,24 +2949,76 @@ export class Multisig {
     return saltHex;
   }
 
+  /**
+   * Decodes a proposal's chain anchor, which names the block its signed summary
+   * binds. Throws when absent: every proposal carries one, so a proposal
+   * without it is malformed and is neither verified nor executed. The caller
+   * owns the returned anchor and must `free()` it once done.
+   */
   private requireProposalAnchor(proposalId: string, metadata: ProposalMetadata): ChainAnchor {
     if (!metadata.chainAnchor) {
       throw new Error(
-        `Proposal ${proposalId} has no chain anchor; it was created without ` +
-          'chain-anchored execution and its signed summary cannot be reproduced ' +
-          'at the original reference block',
+        `Proposal ${proposalId} has no chain anchor, which names the block its signed ` +
+          'summary binds; it cannot be verified or executed',
       );
     }
     return chainAnchorFromBase64(metadata.chainAnchor);
   }
 
+  /**
+   * An expired approval aborts in the auth procedure only at execution.
+   * The summary carries the deadline, so callers check it against the sync
+   * height before assembling advice or requesting the GUARDIAN ack.
+   */
+  private async assertApprovalNotExpired(
+    proposalId: string,
+    summary: TransactionSummary,
+  ): Promise<void> {
+    const expirationBlockNum = summaryApprovalExpirationBlockNum(summary);
+    if (expirationBlockNum === undefined) {
+      return;
+    }
+    const webClient = await this.getRawClient();
+    const syncHeight = await webClient.getSyncHeight();
+    if (syncHeight >= expirationBlockNum) {
+      throw new Error(
+        `Proposal ${proposalId} approval expired at block ${expirationBlockNum}; the chain is at ` +
+          `block ${syncHeight}, so the collected signatures no longer authorize it`,
+      );
+    }
+  }
+
+  /**
+   * Rebuilds a proposal's request from its metadata under `binding`, so the
+   * summary it produces is the one the cosigners signed.
+   */
   private async buildTransactionRequestFromMetadata(
     metadata: ProposalMetadata,
-    salt: Word,
+    binding: ProposalRequestBinding,
     signatureAdviceMap?: AdviceMap,
   ): Promise<TransactionRequest> {
-    const webClient = await this.getRawClient();
+    // The builders read `.toHex()` and allocate their own Word, so this handle
+    // stays ours; without the release it leaks once per rebuild.
+    const salt = Word.fromHex(binding.saltHex);
+    try {
+      return await this.buildTransactionRequestWithOptions(metadata, {
+        accountId: this._accountId,
+        boundBlockNum: binding.boundBlockNum,
+        approvalExpirationDelta: binding.approvalExpirationDelta,
+        salt,
+        signatureAdviceMap,
+        signatureScheme: this.signer.scheme,
+      });
+    } finally {
+      salt.free?.();
+    }
+  }
 
+  private async buildTransactionRequestWithOptions(
+    metadata: ProposalMetadata,
+    requestOptions: MultisigRequestOptions,
+  ): Promise<TransactionRequest> {
+    const webClient = await this.getRawClient();
     switch (metadata.proposalType) {
       case 'add_signer':
       case 'remove_signer':
@@ -2694,7 +3027,7 @@ export class Multisig {
           webClient,
           metadata.targetThreshold,
           metadata.targetSignerCommitments,
-          { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
+          requestOptions,
         );
         return request;
       }
@@ -2702,7 +3035,7 @@ export class Multisig {
         const { request } = await buildUpdateGuardianTransactionRequest(
           webClient,
           metadata.newGuardianPubkey,
-          { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
+          requestOptions,
         );
         return request;
       }
@@ -2711,7 +3044,7 @@ export class Multisig {
           webClient,
           metadata.targetProcedure,
           metadata.targetThreshold,
-          { salt, signatureAdviceMap, signatureScheme: this.signer.scheme }
+          requestOptions,
         );
         return request;
       }
@@ -2720,10 +3053,11 @@ export class Multisig {
         const version = metadata.metadataVersion;
         if (version === CONSUME_NOTES_METADATA_VERSION_V2) {
           const decoded = decodeEmbeddedConsumeNotes(metadata);
-          const { request } = buildConsumeNotesTransactionRequestFromNotes(decoded, {
-            salt,
-            signatureAdviceMap,
-          });
+          const { request } = await buildConsumeNotesTransactionRequestFromNotes(
+            webClient,
+            decoded,
+            requestOptions,
+          );
           return request;
         }
         if (version === undefined || version === 1) {
@@ -2735,25 +3069,25 @@ export class Multisig {
           const { request } = await buildConsumeNotesTransactionRequest(
             webClient,
             metadata.noteIds,
-            { salt, signatureAdviceMap },
+            requestOptions,
           );
           return request;
         }
         throw new UnsupportedMetadataVersionError(version);
       }
       case 'p2id': {
-        const { request } = buildP2idTransactionRequest(
+        const { request } = await buildP2idTransactionRequest(
+          webClient,
           this._accountId,
           metadata.recipientId,
           metadata.faucetId,
           BigInt(metadata.amount),
           {
-            salt,
-            signatureAdviceMap,
+            ...requestOptions,
             noteType: parseP2idNoteType(metadata.noteType),
             reclaimHeight: metadata.reclaimHeight,
             timelockHeight: metadata.timelockHeight,
-          }
+          },
         );
         return request;
       }

@@ -122,7 +122,7 @@ resource "aws_ecs_task_definition" "server" {
           },
           {
             name  = "GUARDIAN_LOG_FORMAT"
-            value = lower(trimspace(var.guardian_log_format))
+            value = local.effective_guardian_log_format
           },
           {
             name  = "GUARDIAN_NETWORK_TYPE"
@@ -177,6 +177,10 @@ resource "aws_ecs_task_definition" "server" {
             value = tostring(var.guardian_canonicalization_fast_promotion_enabled)
           },
           {
+            name  = "GUARDIAN_RELEASE_SWEEP_ENABLED"
+            value = tostring(var.guardian_release_sweep_enabled)
+          },
+          {
             name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
             value = local.operator_public_keys_secret_arn
           },
@@ -204,6 +208,18 @@ resource "aws_ecs_task_definition" "server" {
             {
               name  = "GUARDIAN_METRICS_PATH"
               value = local.metrics_path
+            }
+          ] : [],
+          var.guardian_release_sweep_rotation_seconds != null ? [
+            {
+              name  = "GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS"
+              value = tostring(var.guardian_release_sweep_rotation_seconds)
+            }
+          ] : [],
+          var.guardian_release_sweep_max_rate_per_second != null ? [
+            {
+              name  = "GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND"
+              value = tostring(var.guardian_release_sweep_max_rate_per_second)
             }
           ] : [],
           var.guardian_cors_allowed_origins != "" ? [

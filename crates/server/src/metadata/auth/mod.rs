@@ -14,7 +14,9 @@ pub mod lookup;
 mod miden_ecdsa;
 mod miden_falcon_rpo;
 
-pub use credentials::{AuthHeader, Credentials, ExtractCredentials, MAX_TIMESTAMP_SKEW_MS};
+pub use credentials::{
+    AuthHeader, Credentials, ExtractCredentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat,
+};
 
 /// Authentication and authorization handler
 /// Defines which signature scheme to use and handles verification
@@ -170,6 +172,11 @@ impl Auth {
             Auth::MidenFalconRpo {
                 cosigner_commitments,
             } => {
+                if credentials.auth_format() != RequestAuthFormat::Raw {
+                    return Err(
+                        "EIP-712 request authentication requires an ECDSA account".to_string()
+                    );
+                }
                 let (_pubkey, signature, timestamp) =
                     credentials.as_signature().ok_or_else(|| {
                         tracing::error!(
@@ -199,14 +206,24 @@ impl Auth {
                         "MidenEcdsa requires signature credentials".to_string()
                     })?;
 
-                miden_ecdsa::verify_request_signature(
-                    account_id,
-                    timestamp,
-                    cosigner_commitments,
-                    signature,
-                    pubkey,
-                    credentials.request_payload(),
-                )
+                match credentials.auth_format() {
+                    RequestAuthFormat::Raw => miden_ecdsa::verify_request_signature(
+                        account_id,
+                        timestamp,
+                        cosigner_commitments,
+                        signature,
+                        pubkey,
+                        credentials.request_payload(),
+                    ),
+                    RequestAuthFormat::Eip712 => miden_ecdsa::verify_eip712_request_signature(
+                        account_id,
+                        timestamp,
+                        cosigner_commitments,
+                        signature,
+                        pubkey,
+                        credentials.request_payload(),
+                    ),
+                }
             }
             Auth::EvmEcdsa { .. } => {
                 let _ = credentials;
@@ -267,4 +284,20 @@ pub async fn update_credentials(
         .map_err(|e| GuardianError::StorageError(format!("Failed to update metadata: {e}")))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn falcon_rejects_eip712_request_auth() {
+        let auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec![],
+        };
+        let credentials = Credentials::signature(String::new(), String::new(), 0)
+            .with_auth_format(RequestAuthFormat::Eip712);
+
+        assert!(auth.verify("", &credentials).is_err());
+    }
 }

@@ -197,8 +197,10 @@ Before treating a deployment as production-ready:
 - On the AWS reference deployment, metrics are on by default: the endpoint
   binds loopback inside the ECS task and an ADOT sidecar exports selected
   metrics to CloudWatch dashboards and alarms — no external exposure, no
-  bearer token needed. See
-  [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms).
+  bearer token needed. ERROR-level server log lines additionally feed a
+  metric-filter alarm that does not depend on the metrics pipeline. See
+  [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms)
+  and [its log-level alarms section](./SERVER_AWS_DEPLOY.md#log-level-alarms).
 - If you scrape Prometheus yourself in a **self-managed deployment**, set
   `GUARDIAN_METRICS_ENABLED=true`, bind an explicitly routable
   `GUARDIAN_METRICS_ADDR` only if the scraper lives outside the host or task,
@@ -301,6 +303,32 @@ none and behavior is unchanged.
 
 Full configuration and a dev walkthrough are in
 [`CONFIGURATION.md`](./CONFIGURATION.md#storage-encryption-at-rest).
+
+## Upgrading to Miden 0.17
+
+> **One-time, irreversible: the first 0.17 deploy wipes all pre-0.17 Miden
+> account data. EVM accounts are unaffected.** Stored 0.16 Miden states, deltas,
+> proposals, and metadata can no longer be deserialized or recomputed, and cannot
+> be migrated. For what changed on the Miden side and why none of it survives, see
+> [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017).
+> Guardian 0.18.x is the release that adopts Miden 0.17; Guardian 0.17.x runs on
+> Miden 0.16. Whether 0.18.x is a production target yet depends on the upstream
+> items tracked in
+> [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
+
+What happens on the first 0.17 startup (Postgres backend):
+
+- The embedded reset migration
+  `2026-09-22-000001_miden_017_irreversible_reset` runs automatically via
+  `run_pending_migrations`. Its scope, locking, and preserved tables are those
+  of the 0.16 reset below; the dashboard stats snapshot is preserved as well.
+- A deployment upgrading across more than one line also runs the older resets in
+  the same startup; this one subsumes them.
+
+Operator actions are the 0.16 list below with one addition:
+
+- **Client stores must be recreated**, not just cleared: a Rust SQLite store or a
+  browser IndexedDB store created under 0.16 does not open under 0.17.
 
 ## Upgrading to Miden 0.16
 

@@ -7,8 +7,9 @@ use tower_http::cors::CorsLayer;
 
 use crate::api::dashboard::{
     challenge_operator_login, get_dashboard_info_handler, get_dashboard_session_handler,
-    get_operator_account, get_operator_account_snapshot, list_operator_accounts, logout_operator,
-    pause_account_handler, unpause_account_handler, verify_operator_login,
+    get_dashboard_stats_handler, get_operator_account, get_operator_account_snapshot,
+    list_operator_accounts, logout_operator, pause_account_handler,
+    request_dashboard_stats_refresh_handler, unpause_account_handler, verify_operator_login,
 };
 use crate::api::dashboard_feeds::{
     list_account_delta_detail_handler, list_account_deltas_handler, list_account_proposals_handler,
@@ -46,6 +47,10 @@ use crate::state::AppState;
 pub struct ServerHandle {
     pub(crate) app_state: AppState,
     pub(crate) leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
+    /// Single-owner lease for the `/dashboard/stats` refresher.
+    pub(crate) stats_leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
+    /// Single-owner lease for the chain-driven release sweep (issue #434).
+    pub(crate) release_sweep_leader: std::sync::Arc<dyn crate::coordination::LeaderElector>,
     pub(crate) startup_info: StartupInfo,
     pub(crate) cors_layer: Option<CorsLayer>,
     pub(crate) rate_limit_config: Option<RateLimitConfig>,
@@ -128,7 +133,39 @@ impl ServerHandle {
             );
         }
 
+        // Issue #434: one lease holder walks the fleet against the chain
+        // and releases accounts whose guardian switch never reached the
+        // push path.
+        match self.app_state.release_sweep.as_ref() {
+            Some(config) if config.enabled => {
+                tracing::info!(
+                    rotation_seconds = config.rotation_seconds,
+                    max_rate_per_second = config.max_rate_per_second,
+                    recheck_seconds = config.recheck_seconds,
+                    "Starting release sweep worker"
+                );
+                crate::jobs::release_sweep::start_release_sweep_worker(
+                    self.app_state.clone(),
+                    config.clone(),
+                    self.release_sweep_leader.clone(),
+                );
+            }
+            _ => {
+                tracing::info!("Release sweep disabled - switch detection relies on the push path")
+            }
+        }
+
         start_session_sweep_worker(self.app_state.clone());
+        // Issue #371: one lease holder publishes the /dashboard/stats
+        // aggregate to the shared store; every replica syncs from it.
+        tracing::info!(
+            interval_secs = self.app_state.dashboard.stats_refresh_interval().as_secs(),
+            "Starting dashboard stats refresher"
+        );
+        crate::dashboard::stats::start_stats_refresher(
+            self.app_state.clone(),
+            self.stats_leader.clone(),
+        );
 
         // One store for both transports, so HTTP and gRPC draw from a
         // single budget instead of one each.
@@ -297,6 +334,7 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
             get(list_account_proposals_handler),
         )
         .route("/info", get(get_dashboard_info_handler))
+        .route("/stats", get(get_dashboard_stats_handler))
         .route("/deltas", get(list_global_deltas_handler))
         .route("/proposals", get(list_global_proposals_handler))
         .route_layer(from_fn_with_state(dashboard_read_authz, enforce_authz))
@@ -325,6 +363,20 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
             .route_layer(from_fn_with_state(accounts_pause_authz, enforce_authz))
             .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
         dashboard_routes.merge(pause_router)
+    };
+
+    // Issue #371: operator-triggered refresh of the /dashboard/stats
+    // aggregate, gated by its own `stats:refresh` permission.
+    let dashboard_routes = {
+        let stats_refresh_authz = AuthzState::new(state.clone(), &[Permission::StatsRefresh]);
+        let refresh_router = Router::new()
+            .route(
+                "/stats/refresh",
+                post(request_dashboard_stats_refresh_handler),
+            )
+            .route_layer(from_fn_with_state(stats_refresh_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        dashboard_routes.merge(refresh_router)
     };
 
     // Feature 006-operator-authz FR-027 / FR-028: the
@@ -495,6 +547,8 @@ mod tests {
             ("POST", "/auth/verify"),
             ("POST", "/auth/logout"),
             ("GET", "/dashboard/info"),
+            ("GET", "/dashboard/stats"),
+            ("POST", "/dashboard/stats/refresh"),
             ("GET", "/dashboard/session"),
             ("GET", "/dashboard/accounts"),
             ("GET", "/dashboard/accounts/0x1"),

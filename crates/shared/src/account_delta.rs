@@ -160,6 +160,7 @@ fn vault_patch_from_delta(
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::account::delta::{AssetDelta, AssetDeltaOperation};
     use miden_protocol::account::{
         Account, AccountCode, AccountDelta, AccountId, AccountIdVersion, AccountStorage,
         AccountStoragePatch, AccountType, AccountVaultDelta, AssetCallbackFlag, StorageMapKey,
@@ -235,8 +236,9 @@ mod tests {
         );
         let removed_asset = FungibleAsset::mock(40);
         let asset_id = initial_asset.id();
-        let mut vault_delta = AccountVaultDelta::default();
-        vault_delta.remove_asset(removed_asset).unwrap();
+        let vault_delta =
+            AccountVaultDelta::new([AssetDelta::new(AssetDeltaOperation::Remove, removed_asset)])
+                .unwrap();
         let delta = AccountDelta::new(
             account_id,
             AccountStoragePatch::new(),
@@ -281,8 +283,11 @@ mod tests {
         let created_slot = StorageSlotName::new("guardian::test::first_tx").unwrap();
         let created_value = Word::from([31_u32, 32, 33, 34]);
         let updated_value = Word::from([41_u32, 42, 43, 44]);
-        let mut vault_delta = AccountVaultDelta::default();
-        vault_delta.remove_asset(FungibleAsset::mock(40)).unwrap();
+        let vault_delta = AccountVaultDelta::new([AssetDelta::new(
+            AssetDeltaOperation::Remove,
+            FungibleAsset::mock(40),
+        )])
+        .unwrap();
         let delta = AccountDelta::new(
             account_id,
             AccountStoragePatch::builder()

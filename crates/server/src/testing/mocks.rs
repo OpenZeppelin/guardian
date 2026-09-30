@@ -13,6 +13,9 @@ type StdResult<T, E> = std::result::Result<T, E>;
 type ApplyDeltaResult = StdResult<(serde_json::Value, String), String>;
 type ShouldUpdateAuthResult = StdResult<Option<Auth>, String>;
 type ExtractGuardianCommitmentResult = StdResult<Option<String>, String>;
+type OnChainGuardianBindingResult = StdResult<crate::network::OnChainGuardianBinding, String>;
+type TransactionSearchResult = StdResult<crate::network::TransactionSearch, String>;
+type AccountNonceResult = StdResult<Option<u64>, String>;
 type PullDeltasResult = StdResult<Vec<DeltaObject>, String>;
 type GetMetadataResult = StdResult<Option<crate::metadata::AccountMetadata>, String>;
 type ListResult = StdResult<Vec<String>, String>;
@@ -38,6 +41,12 @@ pub struct MockNetworkClient {
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
     pub extract_guardian_commitment_responses: Arc<StdMutex<Vec<ExtractGuardianCommitmentResult>>>,
+    pub fetch_on_chain_guardian_binding_responses: Arc<StdMutex<Vec<OnChainGuardianBindingResult>>>,
+    pub fetch_on_chain_guardian_binding_calls: Arc<StdMutex<Vec<String>>>,
+    pub find_transaction_ending_at_responses: Arc<StdMutex<Vec<TransactionSearchResult>>>,
+    /// `(account_id, final_state_commitment, from_block)` per search.
+    pub find_transaction_ending_at_calls: Arc<StdMutex<Vec<(String, String, u32)>>>,
+    pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
 }
 
 impl MockNetworkClient {
@@ -90,6 +99,56 @@ impl MockNetworkClient {
             .lock()
             .unwrap()
             .push(response);
+        self
+    }
+
+    /// Queue one `fetch_on_chain_guardian_binding` answer (LIFO like
+    /// every other queue here). The default with an empty queue is
+    /// `Ok(Opaque)`, the trait default, so the release sweep stays
+    /// inert in tests that don't opt in.
+    pub fn with_fetch_on_chain_guardian_binding(
+        self,
+        response: StdResult<crate::network::OnChainGuardianBinding, String>,
+    ) -> Self {
+        self.fetch_on_chain_guardian_binding_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_fetch_on_chain_guardian_binding_calls(&self) -> Vec<String> {
+        self.fetch_on_chain_guardian_binding_calls
+            .lock()
+            .unwrap()
+            .clone()
+    }
+
+    /// Queue one `find_transaction_ending_at` answer (LIFO). The default
+    /// with an empty queue is the trait default: nothing searched.
+    pub fn with_find_transaction_ending_at(
+        self,
+        response: StdResult<crate::network::TransactionSearch, String>,
+    ) -> Self {
+        self.find_transaction_ending_at_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_find_transaction_ending_at_calls(&self) -> Vec<(String, String, u32)> {
+        self.find_transaction_ending_at_calls
+            .lock()
+            .unwrap()
+            .clone()
+    }
+
+    /// Queue one `account_nonce` answer (LIFO). The default with an empty
+    /// queue is `Ok(None)` (no nonce notion), which disables the sweep's
+    /// stale-read guard.
+    pub fn with_account_nonce(self, response: StdResult<Option<u64>, String>) -> Self {
+        self.account_nonce_responses.lock().unwrap().push(response);
         self
     }
 
@@ -231,6 +290,52 @@ impl NetworkClient for MockNetworkClient {
         // Default `Ok(None)` ("no guardian binding visible") keeps the
         // release-on-switch hook inert in tests that don't opt in.
         self.extract_guardian_commitment_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(None))
+    }
+
+    async fn fetch_on_chain_guardian_binding(
+        &self,
+        account_id: &str,
+        _read_mode: crate::network::RpcReadMode,
+    ) -> StdResult<crate::network::OnChainGuardianBinding, String> {
+        self.fetch_on_chain_guardian_binding_calls
+            .lock()
+            .unwrap()
+            .push(account_id.to_string());
+        self.fetch_on_chain_guardian_binding_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::network::OnChainGuardianBinding::Opaque))
+    }
+
+    async fn find_transaction_ending_at(
+        &self,
+        account_id: &str,
+        final_state_commitment: &str,
+        from_block: u32,
+        _read_mode: crate::network::RpcReadMode,
+    ) -> StdResult<crate::network::TransactionSearch, String> {
+        self.find_transaction_ending_at_calls.lock().unwrap().push((
+            account_id.to_string(),
+            final_state_commitment.to_string(),
+            from_block,
+        ));
+        self.find_transaction_ending_at_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::network::TransactionSearch {
+                found_in_block: None,
+                resume_from_block: from_block,
+            }))
+    }
+
+    fn account_nonce(&self, _state_json: &serde_json::Value) -> StdResult<Option<u64>, String> {
+        self.account_nonce_responses
             .lock()
             .unwrap()
             .pop()
@@ -715,6 +820,16 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or_else(|| Err("No state found".to_string()))
     }
 
+    /// The commitment of the state the next `pull_state` would return,
+    /// without consuming it: both reads describe the same stored state.
+    async fn pull_state_commitment(&self, _account_id: &str) -> StdResult<String, String> {
+        match self.pull_state_responses.lock().unwrap().last() {
+            Some(Ok(state)) => Ok(state.commitment.clone()),
+            Some(Err(error)) => Err(error.clone()),
+            None => Err("No state found".to_string()),
+        }
+    }
+
     async fn pull_delta(&self, _account_id: &str, _nonce: u64) -> StdResult<DeltaObject, String> {
         self.pull_delta_responses
             .lock()
@@ -1073,19 +1188,34 @@ impl StorageBackend for MockStorageBackend {
 pub struct MockMetadataStore {
     pub get_responses: Arc<StdMutex<Vec<GetMetadataResult>>>,
     pub get_calls: Arc<StdMutex<Vec<String>>>,
+    /// Rows served by id for every `get`, ahead of `get_responses`.
+    pub rows_by_id:
+        Arc<StdMutex<std::collections::HashMap<String, crate::metadata::AccountMetadata>>>,
     pub set_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub set_calls: Arc<StdMutex<Vec<crate::metadata::AccountMetadata>>>,
     pub list_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub list_paged_responses:
         Arc<StdMutex<Vec<StdResult<Vec<crate::metadata::AccountMetadata>, String>>>>,
     pub list_with_pending_candidates_responses: Arc<StdMutex<Vec<ListResult>>>,
+    pub list_release_sweep_ids_responses: Arc<StdMutex<Vec<ListResult>>>,
+    pub list_release_sweep_ids_calls: Arc<StdMutex<Vec<(Option<String>, u32)>>>,
     pub update_timestamp_cas_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub update_timestamp_cas_calls: Arc<StdMutex<Vec<(String, String, i64)>>>,
     pub find_by_cosigner_commitment_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub find_by_cosigner_commitment_calls: Arc<StdMutex<Vec<String>>>,
+    /// Account ids passed to `set_released_if_state`, in call order.
     pub set_released_calls: Arc<StdMutex<Vec<String>>>,
-    pub clear_released_calls: Arc<StdMutex<Vec<String>>>,
-    pub clear_released_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    /// The expected state commitment each `set_released_if_state` call
+    /// carried, in call order.
+    pub set_released_expected_states: Arc<StdMutex<Vec<String>>>,
+    pub set_released_responses:
+        Arc<StdMutex<Vec<StdResult<crate::metadata::ReleaseTransition, String>>>>,
+    /// `(account_id, expected_state_commitment)` per
+    /// `clear_released_if_state` call.
+    pub clear_released_calls: Arc<StdMutex<Vec<(String, String)>>>,
+    pub clear_released_responses:
+        Arc<StdMutex<Vec<StdResult<crate::metadata::ClearTransition, String>>>>,
+    pub count_release_sweep_accounts_responses: Arc<StdMutex<Vec<StdResult<usize, String>>>>,
     /// Reported by [`MetadataStore::pool_status`]. Defaults to `None`;
     /// set via [`Self::with_pool_status`].
     pub pool_status: Option<crate::storage::PoolStatus>,
@@ -1101,6 +1231,15 @@ impl MockMetadataStore {
         response: StdResult<Option<crate::metadata::AccountMetadata>, String>,
     ) -> Self {
         self.get_responses.lock().unwrap().push(response);
+        self
+    }
+
+    /// Serve `metadata` for every `get` of its account id.
+    pub fn with_row(self, metadata: crate::metadata::AccountMetadata) -> Self {
+        self.rows_by_id
+            .lock()
+            .unwrap()
+            .insert(metadata.account_id.clone(), metadata);
         self
     }
 
@@ -1138,6 +1277,40 @@ impl MockMetadataStore {
         self
     }
 
+    /// Queue one `list_release_sweep_ids` answer. Responses pop LIFO like
+    /// every other queue here; an empty queue answers an empty page.
+    pub fn with_list_release_sweep_ids(self, response: StdResult<Vec<String>, String>) -> Self {
+        self.list_release_sweep_ids_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_list_release_sweep_ids_calls(&self) -> Vec<(Option<String>, u32)> {
+        self.list_release_sweep_ids_calls.lock().unwrap().clone()
+    }
+
+    /// Queue one `set_released_if_state` answer; the default with an
+    /// empty queue is `Ok(Released)`.
+    pub fn with_set_released(
+        self,
+        response: StdResult<crate::metadata::ReleaseTransition, String>,
+    ) -> Self {
+        self.set_released_responses.lock().unwrap().push(response);
+        self
+    }
+
+    /// Queue one `count_release_sweep_accounts` answer; the default with
+    /// an empty queue is `Ok(0)`.
+    pub fn with_count_release_sweep_accounts(self, response: StdResult<usize, String>) -> Self {
+        self.count_release_sweep_accounts_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
     pub fn with_update_timestamp_cas(self, response: StdResult<bool, String>) -> Self {
         self.update_timestamp_cas_responses
             .lock()
@@ -1146,7 +1319,12 @@ impl MockMetadataStore {
         self
     }
 
-    pub fn with_clear_released(self, response: StdResult<(), String>) -> Self {
+    /// Queue one `clear_released_if_state` answer; the default with an
+    /// empty queue is `Ok(NotReleased)`.
+    pub fn with_clear_released(
+        self,
+        response: StdResult<crate::metadata::ClearTransition, String>,
+    ) -> Self {
         self.clear_released_responses.lock().unwrap().push(response);
         self
     }
@@ -1193,6 +1371,9 @@ impl MetadataStore for MockMetadataStore {
         account_id: &str,
     ) -> StdResult<Option<crate::metadata::AccountMetadata>, String> {
         self.get_calls.lock().unwrap().push(account_id.to_string());
+        if let Some(row) = self.rows_by_id.lock().unwrap().get(account_id) {
+            return Ok(Some(row.clone()));
+        }
         let mut responses = self.get_responses.lock().unwrap();
         // Return cloned last response if multiple calls expected, otherwise pop
         if responses.len() > 1 {
@@ -1236,6 +1417,22 @@ impl MetadataStore for MockMetadataStore {
             .unwrap()
             .pop()
             .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    async fn list_release_sweep_ids(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> StdResult<Vec<String>, String> {
+        self.list_release_sweep_ids_calls
+            .lock()
+            .unwrap()
+            .push((after.map(str::to_string), limit));
+        self.list_release_sweep_ids_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(Vec::new()))
     }
 
     async fn update_last_auth_timestamp_cas(
@@ -1297,27 +1494,50 @@ impl MetadataStore for MockMetadataStore {
         })
     }
 
-    async fn set_released(
+    async fn set_released_if_state(
         &self,
         account_id: &str,
         _now: chrono::DateTime<chrono::Utc>,
-    ) -> StdResult<bool, String> {
+        expected_state_commitment: &str,
+        _storage: &dyn crate::storage::StorageBackend,
+    ) -> StdResult<crate::metadata::ReleaseTransition, String> {
         self.set_released_calls
             .lock()
             .unwrap()
             .push(account_id.to_string());
-        Ok(true)
-    }
-
-    async fn clear_released(&self, account_id: &str) -> StdResult<(), String> {
-        self.clear_released_calls
+        self.set_released_expected_states
             .lock()
             .unwrap()
-            .push(account_id.to_string());
+            .push(expected_state_commitment.to_string());
+        self.set_released_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::metadata::ReleaseTransition::Released))
+    }
+
+    async fn clear_released_if_state(
+        &self,
+        account_id: &str,
+        expected_state_commitment: &str,
+        _storage: &dyn crate::storage::StorageBackend,
+    ) -> StdResult<crate::metadata::ClearTransition, String> {
+        self.clear_released_calls.lock().unwrap().push((
+            account_id.to_string(),
+            expected_state_commitment.to_string(),
+        ));
         self.clear_released_responses
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or(Ok(()))
+            .unwrap_or(Ok(crate::metadata::ClearTransition::NotReleased))
+    }
+
+    async fn count_release_sweep_accounts(&self) -> StdResult<usize, String> {
+        self.count_release_sweep_accounts_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(0))
     }
 }

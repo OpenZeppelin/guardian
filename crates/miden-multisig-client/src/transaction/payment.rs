@@ -10,9 +10,11 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::note::NoteType;
 use miden_protocol::{Felt, Word};
+use miden_standards::account::auth::MultisigAuthArgs;
 use miden_standards::note::{P2idNote, P2ideNote};
 use miden_standards::tx_script::SendNotesTransactionScript;
 
+use super::TransactionRequestBuilderExt;
 use crate::error::{MultisigError, Result};
 use crate::proposal::P2ideHeights;
 
@@ -21,21 +23,21 @@ use crate::proposal::P2ideHeights;
 /// Creates a pay-to-id note of the given `note_type` and builds a transaction
 /// request to send it. When `heights` carries a reclaim and/or timelock
 /// constraint, a P2IDE note is created instead of a plain P2ID note (issue
-/// #366); the note's serial number is drawn from the same salt-seeded rng
-/// either way, so cosigners rebuild the identical note.
+/// #366); the note's serial number is drawn from an rng seeded with the auth
+/// args' salt either way, so cosigners rebuild the identical note.
 pub fn build_p2id_transaction_request<I>(
     sender_account: &Account,
     recipient: AccountId,
     assets: Vec<Asset>,
     note_type: NoteType,
     heights: P2ideHeights,
-    salt: Word,
+    auth_args: &MultisigAuthArgs,
     signature_advice: I,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let mut rng = RandomCoin::new(salt);
+    let mut rng = RandomCoin::new(auth_args.salt());
 
     let note: miden_protocol::note::Note = if heights.is_p2ide() {
         P2ideNote::builder()
@@ -83,7 +85,7 @@ where
         .script_arg(send_notes_script.tx_script_args())
         .expected_output_recipients(vec![note.recipient().clone()])
         .extend_advice_map(signature_advice)
-        .fee_conversion_salt(salt)
+        .multisig_auth_args(auth_args)
         .build()?;
 
     Ok(request)
@@ -155,7 +157,7 @@ mod tests {
             vec![asset],
             NoteType::Public,
             P2ideHeights::default(),
-            Word::from([1u32, 2, 3, 4]),
+            &MultisigAuthArgs::new(BlockNumber::from(0), Word::from([1u32, 2, 3, 4])),
             std::iter::empty::<(Word, Vec<Felt>)>(),
         )
         .unwrap();
@@ -215,7 +217,7 @@ mod tests {
                 vec![asset],
                 note_type,
                 P2ideHeights::default(),
-                salt,
+                &MultisigAuthArgs::new(BlockNumber::from(0), salt),
                 std::iter::empty::<(Word, Vec<Felt>)>(),
             )
             .unwrap()
@@ -286,7 +288,7 @@ mod tests {
                 vec![asset],
                 NoteType::Public,
                 heights,
-                salt,
+                &MultisigAuthArgs::new(BlockNumber::from(0), salt),
                 std::iter::empty::<(Word, Vec<Felt>)>(),
             )
             .unwrap()

@@ -11,9 +11,13 @@
 export const DASHBOARD_READ = 'dashboard:read' as const;
 export const ACCOUNTS_PAUSE = 'accounts:pause' as const;
 export const POLICIES_WRITE = 'policies:write' as const;
+/** May request an out-of-cycle refresh of the `/dashboard/stats`
+ * aggregate (`POST /dashboard/stats/refresh`, issue #371). */
+export const STATS_REFRESH = 'stats:refresh' as const;
 
 /** Union of v1 permission strings, useful for typed UI checks. */
 export type OperatorPermission =
   | typeof DASHBOARD_READ
   | typeof ACCOUNTS_PAUSE
-  | typeof POLICIES_WRITE;
+  | typeof POLICIES_WRITE
+  | typeof STATS_REFRESH;

@@ -5,12 +5,18 @@ export function toGuardianSignature(
   scheme: SignatureScheme,
   signatureHex: string,
   publicKey?: string,
+  messageFormat?: 'eip712',
 ): ProposalSignature {
   if (scheme === 'ecdsa') {
     if (!publicKey) {
       throw new Error('ECDSA signature requires publicKey');
     }
-    return { scheme: 'ecdsa', signature: signatureHex, publicKey };
+    return {
+      scheme: 'ecdsa',
+      signature: signatureHex,
+      publicKey,
+      ...(messageFormat ? { messageFormat } : {}),
+    };
   }
   return { scheme: 'falcon', signature: signatureHex };
 }
@@ -20,5 +26,5 @@ export async function buildGuardianSignatureFromSigner(
   commitment: string,
 ): Promise<ProposalSignature> {
   const signatureHex = await signer.signCommitment(commitment);
-  return toGuardianSignature(signer.scheme, signatureHex, signer.publicKey);
+  return toGuardianSignature(signer.scheme, signatureHex, signer.publicKey, signer.proposalMessageFormat);
 }

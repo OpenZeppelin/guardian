@@ -292,6 +292,7 @@ async fn test_grpc_sign_delta_proposal_not_found() {
             scheme: "falcon".to_string(),
             signature: dummy_sig,
             public_key: None,
+            message_format: String::new(),
         }),
     };
 

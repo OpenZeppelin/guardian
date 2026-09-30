@@ -10,13 +10,14 @@ use super::allowlist::{
 };
 use super::config::DashboardConfig;
 use super::cursor::CursorSecret;
+use super::stats::DashboardStatsCache;
 use super::types::{
     AuthenticatedOperator, IssuedOperatorSession, OperatorChallenge, OperatorChallengePayload,
 };
 use super::util::{cookie_date, correlation_id, random_hex, rate_limit_error};
 use crate::coordination::{
-    ChallengePayload, ChallengeStore, InMemoryChallengeStore, InMemorySessionStore, SessionStore,
-    SessionSubject, StoredChallenge, StoredSession,
+    ChallengePayload, ChallengeStore, InMemoryChallengeStore, InMemorySessionStore,
+    InMemoryStatsStore, SessionStore, SessionSubject, StatsStore, StoredChallenge, StoredSession,
 };
 use crate::error::{GuardianError, Result};
 use crate::middleware::rate_limit::RateLimitStore;
@@ -34,6 +35,13 @@ pub struct DashboardState {
     cursor_secret: CursorSecret,
     cursor_secret_configured: bool,
     started_at: DateTime<Utc>,
+    /// This replica's loaded copy of the published `/dashboard/stats`
+    /// aggregate (issue #371); also backs `/dashboard/info`.
+    stats: Arc<DashboardStatsCache>,
+    /// Shared publication store the refresher publishes to and every
+    /// replica syncs from (Postgres on shared deployments, in-memory
+    /// on the filesystem backend).
+    stats_store: Arc<dyn StatsStore>,
 }
 
 impl std::fmt::Debug for DashboardState {
@@ -42,6 +50,7 @@ impl std::fmt::Debug for DashboardState {
             .field("config", &self.config)
             .field("cursor_secret_configured", &self.cursor_secret_configured)
             .field("started_at", &self.started_at)
+            .field("stats", &self.stats)
             .finish_non_exhaustive()
     }
 }
@@ -54,6 +63,7 @@ impl DashboardState {
             network_type,
             Arc::new(InMemorySessionStore::new()),
             Arc::new(InMemoryChallengeStore::new()),
+            Arc::new(InMemoryStatsStore::new()),
         )
         .await
     }
@@ -66,6 +76,7 @@ impl DashboardState {
         network_type: NetworkType,
         session_store: Arc<dyn SessionStore>,
         challenge_store: Arc<dyn ChallengeStore>,
+        stats_store: Arc<dyn StatsStore>,
     ) -> std::result::Result<Self, String> {
         let config = DashboardConfig::from_env_for_network(network_type)?;
         let allowlist_source = AllowlistSource::from_env().await?;
@@ -76,6 +87,7 @@ impl DashboardState {
             config,
             session_store,
             challenge_store,
+            stats_store,
         )
     }
 
@@ -95,6 +107,7 @@ impl DashboardState {
             DashboardConfig::for_tests(),
             Arc::new(InMemorySessionStore::new()),
             Arc::new(InMemoryChallengeStore::new()),
+            Arc::new(InMemoryStatsStore::new()),
         )
         .expect("dashboard test configuration should be valid")
     }
@@ -115,6 +128,34 @@ impl DashboardState {
             DashboardConfig::for_tests(),
             Arc::new(InMemorySessionStore::new()),
             Arc::new(InMemoryChallengeStore::new()),
+            Arc::new(InMemoryStatsStore::new()),
+        )
+        .expect("dashboard test configuration should be valid")
+    }
+
+    /// Test-only constructor sharing an explicit stats store, so two
+    /// `DashboardState`s can stand in for two replicas of one fleet.
+    #[cfg(test)]
+    pub fn for_tests_with_stats_store(
+        entries: Vec<(String, String)>,
+        stats_store: Arc<dyn StatsStore>,
+    ) -> Self {
+        let inputs = entries
+            .into_iter()
+            .map(|(operator_id, commitment)| OperatorAllowlistEntryInput {
+                operator_id,
+                commitment,
+            })
+            .collect();
+        let allowlist = OperatorAllowlist::from_entries(inputs)
+            .expect("dashboard test configuration should be valid");
+        Self::from_allowlist_source(
+            AllowlistSource::Static,
+            allowlist,
+            DashboardConfig::for_tests(),
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(InMemoryChallengeStore::new()),
+            stats_store,
         )
         .expect("dashboard test configuration should be valid")
     }
@@ -404,6 +445,7 @@ impl DashboardState {
         mut config: DashboardConfig,
         session_store: Arc<dyn SessionStore>,
         challenge_store: Arc<dyn ChallengeStore>,
+        stats_store: Arc<dyn StatsStore>,
     ) -> std::result::Result<Self, String> {
         tracing::info!(
             auth_event = "allowlist_loaded",
@@ -437,6 +479,8 @@ impl DashboardState {
             cursor_secret,
             cursor_secret_configured,
             started_at: Utc::now(),
+            stats: Arc::new(DashboardStatsCache::default()),
+            stats_store,
         })
     }
 
@@ -474,6 +518,23 @@ impl DashboardState {
     /// per FR-029.
     pub fn filesystem_aggregate_threshold(&self) -> usize {
         self.config.filesystem_aggregate_threshold()
+    }
+
+    /// This replica's loaded copy of the published `/dashboard/stats`
+    /// aggregate (issue #371).
+    pub fn stats(&self) -> &DashboardStatsCache {
+        &self.stats
+    }
+
+    /// Shared publication store for the `/dashboard/stats` aggregate.
+    pub fn stats_store(&self) -> &Arc<dyn StatsStore> {
+        &self.stats_store
+    }
+
+    /// Cadence of the background stats refresh
+    /// (`GUARDIAN_DASHBOARD_STATS_REFRESH_INTERVAL_SECS`).
+    pub fn stats_refresh_interval(&self) -> std::time::Duration {
+        self.config.stats_refresh_interval()
     }
 
     /// Deployment environment identifier surfaced on
@@ -915,6 +976,7 @@ mod tests {
             DashboardConfig::for_tests(),
             std::sync::Arc::new(crate::coordination::InMemorySessionStore::new()),
             std::sync::Arc::new(crate::coordination::InMemoryChallengeStore::new()),
+            std::sync::Arc::new(crate::coordination::InMemoryStatsStore::new()),
         );
         assert!(
             prod_result.is_ok(),
@@ -928,6 +990,7 @@ mod tests {
             DashboardConfig::for_tests(),
             std::sync::Arc::new(crate::coordination::InMemorySessionStore::new()),
             std::sync::Arc::new(crate::coordination::InMemoryChallengeStore::new()),
+            std::sync::Arc::new(crate::coordination::InMemoryStatsStore::new()),
         );
         assert!(
             non_prod_result.is_ok(),

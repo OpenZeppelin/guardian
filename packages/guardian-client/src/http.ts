@@ -541,8 +541,8 @@ export class GuardianHttpClient {
     if (!this.signer.signLookupMessage) {
       throw new Error(
         'Signer does not implement signLookupMessage. Account recovery by key requires a ' +
-          'signer that produces signatures over LookupAuthMessage::to_word; the canonical ' +
-          'helper lives in @openzeppelin/miden-multisig-client.'
+          'signer that signs the lookup hash in raw or EIP-712 format; the canonical ' +
+          'lookup-hash helper lives in @openzeppelin/miden-multisig-client.'
       );
     }
 
@@ -553,12 +553,10 @@ export class GuardianHttpClient {
       ...init,
       headers: {
         ...init.headers,
-        // Sent for API consistency with per-account requests; the server's
-        // lookup path derives the pubkey from the signature itself and
-        // ignores this header for verification.
         'x-pubkey': this.signer.publicKey,
         'x-signature': signature,
         'x-timestamp': timestamp.toString(),
+        ...(this.signer.requestAuthFormat ? { 'x-auth-format': this.signer.requestAuthFormat } : {}),
       },
     });
   }
@@ -588,6 +586,7 @@ export class GuardianHttpClient {
           'x-pubkey': this.signer.publicKey,
           'x-signature': signature,
           'x-timestamp': timestamp.toString(),
+          ...(this.signer.requestAuthFormat ? { 'x-auth-format': this.signer.requestAuthFormat } : {}),
         },
       });
     } catch (err) {

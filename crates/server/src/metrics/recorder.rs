@@ -39,6 +39,12 @@ const CANDIDATE_AGE_BUCKETS: &[f64] = &[
     1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0, 14400.0, 86400.0,
 ];
 
+/// One rotation of the release sweep spans minutes to a day, so its
+/// histogram gets buckets from one minute up to 24 hours.
+const RELEASE_SWEEP_ROTATION_BUCKETS: &[f64] = &[
+    60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0, 14400.0, 21600.0, 43200.0, 86400.0,
+];
+
 /// Build an uninstalled recorder. The caller decides whether to
 /// install it globally (production) or scope it locally (tests).
 pub fn build_recorder() -> PrometheusRecorder {
@@ -66,10 +72,22 @@ pub fn build_recorder() -> PrometheusRecorder {
         )
         .expect("static reconcile canonicalization buckets are non-empty")
         .set_buckets_for_metric(
+            Matcher::Full(names::RELEASE_SWEEP_ROTATION_DURATION_SECONDS.to_string()),
+            RELEASE_SWEEP_ROTATION_BUCKETS,
+        )
+        .expect("static release sweep rotation buckets are non-empty")
+        .set_buckets_for_metric(
             Matcher::Full(names::CANONICALIZATION_CANDIDATE_AGE_SECONDS.to_string()),
             CANDIDATE_AGE_BUCKETS,
         )
         .expect("static age buckets are non-empty")
+        // A stats refresh walks the whole inventory, so it is scaled
+        // like a canonicalization run, not like a request.
+        .set_buckets_for_metric(
+            Matcher::Full(names::DASHBOARD_STATS_REFRESH_DURATION_SECONDS.to_string()),
+            CANONICALIZATION_RUN_BUCKETS,
+        )
+        .expect("static stats refresh buckets are non-empty")
         .build_recorder()
 }
 

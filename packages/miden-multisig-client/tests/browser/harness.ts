@@ -27,11 +27,9 @@ function report(message: string): void {
 }
 
 async function run(): Promise<void> {
-  const client = await MidenClient.create({
-    rpcUrl: 'https://rpc.testnet.miden.io',
-    storeName: `determinism-${Math.random().toString(36).slice(2)}`,
-    autoSync: false,
-  });
+  // A mock chain: account construction and script compilation need no node, and a
+  // node on another protocol line would reject the client before serving anything.
+  const client = await MidenClient.createMock();
 
   const seed = new Uint8Array(32);
   seed.fill(9);
@@ -44,8 +42,9 @@ async function run(): Promise<void> {
       guardianCommitment: GUARDIAN_COMMITMENT,
       seed,
     },
-    'https://rpc.testnet.miden.io',
+    'mock',
   );
+  const accountId = account.id().toString();
 
   const code = account.code();
   const hasProcedure: Record<string, boolean> = {};
@@ -53,14 +52,16 @@ async function run(): Promise<void> {
     hasProcedure[name] = code.hasProcedure(Word.fromHex(root));
   }
 
-  // Compile every config script against the real WASM assembler.
-  const rpcOptions = { midenRpcEndpoint: 'https://rpc.testnet.miden.io' };
+  // Compile every config script against the real WASM assembler; each builder
+  // also refuses a request the client did not attach the multisig auth args to,
+  // so a compiled script here means the account was classified as a multisig.
+  const requestOptions = { accountId, midenRpcEndpoint: 'mock' };
   const configScriptsCompiled: Record<string, boolean> = {};
-  await buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT], rpcOptions);
+  await buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT], requestOptions);
   configScriptsCompiled.updateSigners = true;
-  await buildUpdateProcedureThresholdTransactionRequest(client, 'send_asset', 2, rpcOptions);
+  await buildUpdateProcedureThresholdTransactionRequest(client, 'send_asset', 2, requestOptions);
   configScriptsCompiled.updateProcedureThreshold = true;
-  await buildUpdateGuardianTransactionRequest(client, GUARDIAN_COMMITMENT, rpcOptions);
+  await buildUpdateGuardianTransactionRequest(client, GUARDIAN_COMMITMENT, requestOptions);
   configScriptsCompiled.updateGuardian = true;
 
   window.__result = {

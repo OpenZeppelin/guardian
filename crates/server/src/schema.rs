@@ -156,6 +156,34 @@ diesel::table! {
 }
 
 diesel::table! {
+    /// Representation of the `dashboard_stats_snapshots` table: the current
+    /// published `/dashboard/stats` aggregate (issue #371). Only the latest
+    /// version is retained; publication is fenced by `worker_leases`.
+    dashboard_stats_snapshots (version) {
+        version -> Int8,
+        fence_token -> Int8,
+        holder_id -> Text,
+        as_of -> Timestamptz,
+        published_at -> Timestamptz,
+        payload -> Jsonb,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `dashboard_stats_control` singleton row:
+    /// operator-triggered refresh requests, in-progress marker, cooldown.
+    dashboard_stats_control (id) {
+        id -> Bool,
+        last_published_at -> Nullable<Timestamptz>,
+        refresh_requested_at -> Nullable<Timestamptz>,
+        refresh_requested_by -> Nullable<Text>,
+        refresh_started_at -> Nullable<Timestamptz>,
+        refresh_started_by -> Nullable<Text>,
+        last_operator_request_at -> Nullable<Timestamptz>,
+    }
+}
+
+diesel::table! {
     /// Representation of the `worker_leases` table.
     ///
     /// Single-owner background-worker coordination for horizontal scaling

@@ -705,10 +705,11 @@ mod tests {
             delta,
             miden_protocol::transaction::InputNotes::new(Vec::new()).unwrap(),
             miden_protocol::transaction::RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             Word::default(),
             0,
             miden_protocol::transaction::TransactionSummaryUserParams::new(
-                [miden_protocol::Felt::ZERO; 7],
+                [miden_protocol::Felt::ZERO; 6],
             ),
         );
         Proposal {

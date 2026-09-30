@@ -4,8 +4,8 @@ Which Miden protocol line each Guardian release targets, what changed between
 lines, and what each upgrade does to stored data.
 
 > Guardian's own version and Miden's are **not** aligned. Guardian 0.16.x runs on
-> Miden 0.15; Miden 0.16 arrives in Guardian 0.17.x. Read the matrix rather than
-> matching the numbers.
+> Miden 0.15; Miden 0.16 arrives in Guardian 0.17.x; Miden 0.17 arrives in
+> Guardian 0.18.x. Read the matrix rather than matching the numbers.
 
 This page is the single source of truth for those facts. Procedures live
 elsewhere and link here:
@@ -20,6 +20,8 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.18.0-rc.2 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.4` | `0.17.0-rc.4` (exact) |
+| 0.18.0-rc.1 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.3` | `0.17.0-rc.3` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
 | 0.15.x | 0.15 | `0.15.x` | `0.15.0` | `^0.15.0` |
@@ -27,14 +29,27 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
+0.18.x tracks the Miden 0.17 release candidates. `@miden-sdk/miden-sdk` 0.17.0-rc.4
+embeds `miden-client` 0.17.0-rc.4 and `miden-protocol` / `miden-standards` 0.17.0-rc.7,
+which is why the Rust pins are rc.7 for the protocol crates and rc.4 for the client
+crates. It is not a production target until Miden 0.17.0 is stable and devnet and
+testnet run it. The 0.18 release candidates are published to npm under the `rc`
+dist-tag, so `npm install` without an explicit version still resolves the 0.17.x
+line (Miden 0.16).
+
 0.17.0 builds on the stable Miden 0.16 release. `@miden-sdk/miden-sdk` 0.16.0 embeds
 `miden-client` 0.16.0 and `miden-protocol` / `miden-standards` 0.16.1, which is why the
 Rust pins are 0.16.1 for the protocol crates and 0.16.0 for the client crates.
 
-Pins are exact on the 0.16 line, and the Rust and npm pins must move together: nothing
+Pins are exact on both lines, and the Rust and npm pins must move together: nothing
 at build time verifies that the npm SDK's embedded `miden-standards` matches the Rust
 pin, so the CI parity gates are what catch drift. See
 [`MULTISIG_SDK.md`](./MULTISIG_SDK.md#contract-version-pinning).
+
+**Upgrading from 0.17.0 (Miden 0.16) to 0.18.x (Miden 0.17)** is a protocol-line change.
+Stored Miden account data is reset by the embedded migration listed below, accounts
+must be recreated, and both the Rust SQLite store and the browser IndexedDB store
+must be recreated: a store created under 0.16 does not open under 0.17.
 
 **Upgrading from 0.16.x (Miden 0.15) to 0.17.0 (Miden 0.16)** is a protocol-line change:
 the guarded-multisig auth component now pays the transaction fee and transaction summaries
@@ -53,26 +68,142 @@ Execute or cancel every pending proposal on the rc version, have GUARDIAN drop a
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
 
+**Moving from 0.18.0-rc.1 to 0.18.0-rc.2** (the `miden-client` 0.17.0-rc.4 pin) keeps the protocol
+pin (0.17.0-rc.7), so procedure roots, accounts and stored data are unchanged.
+`miden-client` / `@miden-sdk/miden-sdk` 0.17.0-rc.4 always serialize a
+`TransactionRequest`'s declared block numbers, so request bytes written by 0.17.0-rc.3 or
+earlier do not deserialize under rc.4, and the reverse. A GUARDIAN proposal carries no
+serialized request, but a custom-proposal producer passes one to
+`propose_custom_transaction` / `createCustomProposal` and
+`prepare_custom_execution` / `prepareCustomExecution`, so it must serialize the request
+with a client on the same pin as the SDK. Proposals now execute at the chain tip (see
+[`MULTISIG_SDK.md`](./MULTISIG_SDK.md#tip-execution-and-the-bound-block)). A proposal
+still pending from 0.18.0-rc.1 carries the chain anchor a rebuild reads its bound block
+from, so it verifies and executes the same way. A 0.18.0-rc.1 client still re-executes at
+the anchor and cannot verify a proposal older than the node's account history (about 50
+blocks on devnet).
+
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
 
 ## Data resets
 
-Guardian has twice been unable to migrate stored account data across a Miden
-line. Both resets are embedded migrations that run automatically at server
-startup, both are irreversible, and both scope the purge to Miden rows using
+Guardian has three times been unable to migrate stored account data across a Miden
+line. Each reset is an embedded migration that runs automatically at server
+startup, each is irreversible, and each scopes the purge to Miden rows using
 `account_metadata.network_config->>'kind'` so EVM accounts survive.
 
 | Migration | Introduced in | Deletes | Preserves |
 |---|---|---|---|
+| `2026-09-22-000001_miden_017_irreversible_reset` | Guardian 0.18.x | Miden rows in `delta_proposals`, `deltas`, `states`, `account_metadata`; `account_auth_state` by cascade | EVM rows, `admin_actions`, `auth_sessions`, `auth_challenges`, `storage_encryption_marker`, `worker_leases`, dashboard stats snapshot, keystore |
 | `2026-08-24-000001_miden_016_irreversible_reset` | Guardian 0.17.x | Miden rows in `delta_proposals`, `deltas`, `states`, `account_metadata`; `account_auth_state` by cascade | EVM rows, `admin_actions`, `auth_sessions`, `auth_challenges`, `storage_encryption_marker`, `worker_leases`, keystore |
 | `2026-06-14-000001_v015_account_id_cutover` | Guardian 0.15.x | pre-0.15 (v0 account ID) Miden rows in the same four tables | EVM rows, `admin_actions` |
 
-Both are Postgres-only. Filesystem-backed deployments reset by starting from
+All three are Postgres-only. Filesystem-backed deployments reset by starting from
 empty storage and metadata directories, preserving the keystore directory.
 
-A deployment upgrading across more than one line runs both migrations in the same
-startup; the newer reset subsumes the older one.
+A deployment upgrading across more than one line runs every pending reset in the
+same startup; the newer reset subsumes the older ones.
+
+## Guardian 0.18.x on Miden 0.17
+
+Nothing stored under Miden 0.16 survives:
+
+- **Serialized accounts, headers, and asset ids carry a version.** `Account`
+  decoding rejects the 0.16 encoding (`account version is 241 but only version 1
+  is supported`).
+- **Account code procedures are ordered with the authentication procedure
+  first**, so the code commitment of an account built from the same components
+  changes.
+- **Delta and storage-patch commitments are versioned**, and their domain
+  separators moved into the hasher capacity word, so a stored delta no longer
+  recomputes to the commitment it was signed under.
+- **The transaction summary is versioned.** It binds a caller-chosen block and
+  carries six user params instead of seven: the approval-expiration block (zero
+  when the approval never expires), a zero, then the four salt felts. Stored
+  summaries cannot be deserialized or re-verified.
+- **The multisig auth argument is the commitment to a three-word preimage**:
+  `[bound_block, approval_expiration, 0, 0]`, the salt, and the native 1/1 fee
+  conversion info. Both SDKs set that preimage on the request. Rust builds
+  `MultisigAuthArgs`; TypeScript starts from `feeAwareTransactionRequestBuilder`.
+  A 0.16 request that only declared `fee_conversion_salt` is one word short and
+  aborts in the auth procedure.
+- **The guarded-multisig auth procedure pays the transaction fee** (since
+  `miden-standards` 0.17.0-rc.7). It creates the `TX_FEE` note from the
+  account's vault before the transaction summary is built, so the fee note is
+  covered by the approver and GUARDIAN signatures. Every transaction therefore
+  needs a balance in the chain's native fee asset, including the first one
+  that deploys the account. A node rejects a transaction without a canonical
+  `TX_FEE` note, and an account created by a build pinned to an earlier release
+  candidate never creates one, so it cannot transact and must be recreated.
+- **The fee asset left the block header.** It lives in the chain's protocol
+  configuration, which the client receives from the node with each sync and
+  stores per header. The auth args name the fee faucet of the configuration at
+  the client's sync height, the one an execution at the tip loads, read from
+  that store.
+- **P2ID note storage is four felts** (target account, then a two-felt salt that
+  defaults to zero) and **P2IDE storage is six** (reclaimer, target, reclaim
+  height, timelock height). The script roots moved with the layouts.
+- **Execution proofs use format 2** (VM 0.33). A 0.16 proof is rejected.
+
+### Open upstream items
+
+The facts below change independently of this repository. This list is the one
+place that tracks them; other documents point here rather than restating them.
+Last checked 2026-09-28.
+
+- **Public networks.** Devnet runs node 0.17.0-rc.2, and this build's protocol
+  configuration for devnet's fee asset hashes to the commitment in devnet's
+  block headers, so the transaction kernels match. A guarded 2-of-2 multisig
+  from this build ran two proposals there end to end, a first consume-notes
+  transaction and a P2ID send. Each was verified, signed and executed at the tip
+  more than 70 blocks after the block it binds, once devnet already answered
+  `block N has been pruned` for that block's account state. Devnet keeps about
+  50 blocks of account history, and its fee faucet's account ID enables asset
+  callbacks, so every fee payment loads the faucet as a foreign account.
+  Devnet has no faucet front end: an account is funded by calling the node's
+  `RegisterAccount` RPC, which pays it a small public P2ID note in the fee asset
+  (`scripts/devnet-register-account.sh`). `miden-client`'s `register_account`
+  does not send the request on devnet, because devnet enforces no allowlist and
+  reports every account as already allowed. Testnet runs Miden 0.16, so
+  on testnet the examples need a local `miden-node` from the pinned line until
+  it upgrades.
+- **miden-client fee path.** miden-client (still in 0.17.0-rc.4) commits the
+  two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
+  SDKs set the three-word auth arg themselves (rationale in the multisig
+  client's `transaction/auth_args.rs`). When the client builds
+  `MultisigAuthArgs` itself: the helper can delegate to it; nothing stored or
+  signed changes.
+- **Pins.** The workspace pins protocol 0.17.0-rc.7 and client 0.17.0-rc.4 (see
+  the matrix). The protocol pin follows the client and web SDK releases, not the
+  protocol tags, because both SDKs must embed the same kernel. Moving to stable
+  re-pins, regenerates roots, fixtures and the cross-SDK determinism vectors,
+  and is the point at which 0.18.0 is released.
+
+Data effect: full reset, see above. Client stores are recreated, not migrated.
+Operator steps: [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017).
+
+### Before bumping the Miden pin
+
+A deployed Miden account is immutable and its procedure roots fix at creation, so
+moving the contract pin strands every account created under the previous one,
+including each network's qualification treasury. Nothing catches this
+automatically: the qualification suite deliberately carries no long-lived
+account, because GUARDIAN holds the only full copy of a private account and the
+suite's stack is torn down with every run (see "Current limits" in
+[QUALIFICATION.md](./QUALIFICATION.md)).
+
+So a pin bump owes these by hand, in this order:
+
+1. Qualify an account created **before** the bump against a server built
+   **after** it, and confirm it fails loudly rather than silently misbehaving.
+   A run whose accounts are all created after the bump proves nothing about it.
+2. Recreate each network's treasury with `treasury-new`, fund it, and record the
+   new key. The old treasury is stranded like any other account.
+3. Note the bump in the support matrix above, with whether existing accounts
+   survive.
+
+Step 1 is the one most easily skipped, because every other signal stays green.
 
 ## Guardian 0.17.x on Miden 0.16
 

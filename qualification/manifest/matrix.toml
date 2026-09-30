@@ -1,0 +1,78 @@
+# Coverage matrix. `unavailable` is reserved for a limitation believed to be
+# structural; a network that is merely down stays available and reports
+# environment-blocked at run time, so recovery needs no edit here.
+
+[[network]]
+name = "testnet"
+rpc_endpoint = "https://rpc.testnet.miden.io"
+historical_window = "30m"
+
+[[network]]
+name = "devnet"
+rpc_endpoint = "https://rpc.devnet.miden.io"
+historical_window = "150s"
+
+[[pair]]
+network = "testnet"
+sdk = "rust"
+availability = "available"
+
+[[pair]]
+network = "testnet"
+sdk = "typescript"
+availability = "available"
+
+# Devnet serves historical account state for roughly fifty blocks. Flows whose
+# step budget exceeds that window cannot be required here; they still run
+# opportunistically and report environment-blocked when the anchor is pruned.
+[[pair]]
+network = "devnet"
+sdk = "rust"
+availability = "available"
+excluded_scenarios = [
+  "live-transfer-consume-1of1-ecdsa",
+  "live-offline-export-import-2of3-falcon",
+  "live-offline-export-import-2of3-ecdsa",
+  "live-guardian-migrate-offline-1of1-ecdsa",
+  "live-handoff-rust-to-ts-2of3-falcon",
+  "live-add-signer-2of3-falcon",
+  "live-add-signer-2of3-ecdsa",
+  "live-remove-signer-2of3-falcon",
+  "live-remove-signer-2of3-ecdsa",
+  "live-change-threshold-2of3-ecdsa",
+  "live-p2id-send-1of1-ecdsa",
+  "live-procedure-threshold-2of3-falcon",
+  "live-procedure-threshold-survives-change-2of3-falcon",
+  "live-guardian-switch-online-2of3-falcon",
+  "live-account-paused-1of1-ecdsa",
+  "live-custom-proposal-1of1-ecdsa",
+  "live-p2ide-timelock-1of1-ecdsa",
+  "live-change-threshold-2of3-falcon",
+  "live-procedure-threshold-2of3-ecdsa",
+]
+
+[[pair]]
+network = "devnet"
+sdk = "typescript"
+availability = "available"
+excluded_scenarios = [
+  "live-transfer-consume-1of1-ecdsa",
+  "live-offline-export-import-2of3-falcon",
+  "live-offline-export-import-2of3-ecdsa",
+  "live-guardian-migrate-offline-1of1-ecdsa",
+  "live-handoff-ts-to-rust-2of3-ecdsa",
+  "live-add-signer-2of3-falcon",
+  "live-add-signer-2of3-ecdsa",
+  "live-remove-signer-2of3-falcon",
+  "live-remove-signer-2of3-ecdsa",
+  "live-change-threshold-2of3-ecdsa",
+  "live-p2id-send-1of1-ecdsa",
+  "live-procedure-threshold-2of3-falcon",
+  "live-procedure-threshold-survives-change-2of3-falcon",
+  "live-guardian-switch-online-2of3-falcon",
+  "live-account-paused-1of1-ecdsa",
+  "live-custom-proposal-1of1-ecdsa",
+  "live-p2ide-timelock-1of1-ecdsa",
+  "live-change-threshold-2of3-falcon",
+  "live-procedure-threshold-2of3-ecdsa",
+]

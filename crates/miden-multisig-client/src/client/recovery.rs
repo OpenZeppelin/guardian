@@ -178,9 +178,11 @@ impl MultisigClient {
             }
             Err(err) => {
                 let (status, retryable) = classify_drain_failure(&err);
-                // `Unavailable` promises "nothing was imported"; a connection
-                // lost mid-drain after partial progress is an interrupted
-                // drain, so report it as a retryable failure instead.
+                // `Unavailable` promises "nothing was imported". Each transport
+                // sync imports atomically once its fetch succeeded, so partial
+                // progress only arises across the passes above: a pass that
+                // imported followed by one that failed is an interrupted drain,
+                // reported as a retryable failure instead.
                 let status = if imported > 0 && status == TransportRecoveryStatus::Unavailable {
                     TransportRecoveryStatus::Failed
                 } else {
@@ -657,26 +659,15 @@ mod tests {
             }
             Ok(self.inner.fetch_notes(tags, cursor))
         }
-
-        async fn stream_notes(
-            &self,
-            _tag: NoteTag,
-            _cursor: miden_client::note_transport::NoteTransportCursor,
-        ) -> std::result::Result<
-            Box<dyn miden_client::note_transport::NoteStream>,
-            NoteTransportError,
-        > {
-            Ok(Box::new(
-                miden_client::testing::note_transport::DummyNoteStream {},
-            ))
-        }
     }
 
-    /// A connection lost mid-drain after partial progress must not report
-    /// `Unavailable` ("nothing was imported"): it is an interrupted,
-    /// retryable drain and the partial count is kept.
+    /// A connection lost mid-drain imports nothing: since miden-client 0.17 a
+    /// transport sync fetches every page first and imports only once the whole
+    /// fetch succeeded, so the first page is not kept when the second fails.
+    /// The drain is reported `Unavailable` and retryable; the transport cursor
+    /// is left where it was, so the retry requests the same pages again.
     #[tokio::test]
-    async fn interrupted_drain_with_partial_progress_reports_a_retryable_failure() {
+    async fn interrupted_drain_imports_nothing_and_is_retryable() {
         let dir = tempfile::tempdir().unwrap();
         // Cap each response at one note so the two-note backlog needs two
         // fetches; the transport dies after the first.
@@ -696,9 +687,9 @@ mod tests {
 
         let report = client.drain_private_note_backlog().await.unwrap();
 
-        assert_eq!(report.status, TransportRecoveryStatus::Failed);
+        assert_eq!(report.status, TransportRecoveryStatus::Unavailable);
         assert!(report.retryable);
-        assert_eq!(report.imported, 1);
+        assert_eq!(report.imported, 0);
         assert!(report.reason.unwrap().contains("connection dropped"));
     }
 

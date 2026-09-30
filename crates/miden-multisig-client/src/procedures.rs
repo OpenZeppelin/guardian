@@ -15,8 +15,9 @@ use miden_protocol::Word;
 /// Neither builder compiles the MASM itself any more. Doing so linked the standards package
 /// dynamically while upstream's component manifest links it statically, and the two hash
 /// differently for `auth_tx` — the sole export that calls `miden::standards::fee`. An account
-/// carrying the dynamic root cannot be classified by `AccountComponentInterface`, so the client
-/// attaches no fee conversion info and the transaction fails on a fee-charging chain.
+/// carrying that root fails the pinned-contract check. The request builders do not ask
+/// miden-client to invent the fee commitment: they set the three-word multisig auth args
+/// themselves.
 ///
 /// The wallet roots come from `BasicWallet` and are unaffected. Neither source has a standalone
 /// `verify_guardian` procedure; guardian verification is internal to `auth_tx_guarded_multisig`.
@@ -37,22 +38,22 @@ impl ProcedureName {
     pub fn root(&self) -> Word {
         match self {
             ProcedureName::UpdateSigners => procedure_root_word(
-                "0xa261cfd3c8791ac5abe1e78e14eade2f20789d73ab1c23c430418de59bc3380e",
+                "0xe39b380d435dd42206fd625fcddfd26a379a2312cfef0271e9b5f18cbdec67e5",
             ),
             ProcedureName::UpdateProcedureThreshold => procedure_root_word(
-                "0x97587c61d49313b1d5a3c8b7437e0080e67ed9bd9d3e7206bcae562f934ccd03",
+                "0x5de3563f30c5dd130da49c8fdd86d867fed6dbbd928363021c53ef99d8034bac",
             ),
             ProcedureName::AuthTx => procedure_root_word(
-                "0x43fb07d62ed26993b7b13c7b411db62c5b5acffa2813e989608c41a72d7185ec",
+                "0xf988ff88c7a9c2104d77862d580239ec40e060a9b4d2d96028135abeb8cc58bc",
             ),
             ProcedureName::UpdateGuardian => procedure_root_word(
-                "0x0a614ff7c81a561cbd2a4c2d9482031a7a841ca5de33349daed23a9d871b3675",
+                "0x93dedb135fd5bb7112c07aacf4a5680ddc76e45ecf043bfc42ea735b6d971911",
             ),
             ProcedureName::SendAsset => procedure_root_word(
-                "0x595bc83258726a66bd904912cfd5186c07cbd902dfbc115b7d6bc8105efc57e3",
+                "0x936e9920bffd7f458cc9ba2c4bbcc018fc4d3561511d79635955129268039dd7",
             ),
             ProcedureName::ReceiveAsset => procedure_root_word(
-                "0x34a56dd18f6fe5aab63198b9dcfc6467e793ebabb37d56b994b902504635da13",
+                "0xd7416b798a70aabbca510c3cd0f48ba35473b5d76dc302375157c6f563fffc15",
             ),
         }
     }
@@ -246,18 +247,14 @@ mod tests {
         );
     }
 
-    /// The salt path's single point of failure.
+    /// Classification is the rest of the root pin.
     ///
-    /// The request builders declare only a `fee_conversion_salt` and leave miden-client to
-    /// commit the conversion info. The client does that only for an account it can classify:
-    /// `AuthGuardedMultisig` maps to `FeeAuth::CallerChosenSalt`, while an account it cannot
-    /// place is `FeeAuth::Ignored`, and `Ignored` plus a declared salt is a hard
-    /// `FeeConversionInfoUnsupported` — every guarded transaction on a fee-charging chain
-    /// fails, not just the fee.
-    ///
-    /// Pinning `auth_tx` alone does not cover this: `extract_component` matches only when
-    /// EVERY one of the component's roots is present, so a standards bump that changes any
-    /// other export silently drops the classification while the root test above stays green.
+    /// The request builders set the three-word multisig auth args themselves. They no longer
+    /// declare a `fee_conversion_salt` and wait for miden-client to commit conversion info.
+    /// `AccountComponentInterface::from_procedures` still has to see `AuthGuardedMultisig`,
+    /// because that match requires every export of the component. A standards bump that
+    /// changes any root other than `auth_tx` drops the classification while the root test
+    /// above stays green.
     #[test]
     fn rust_built_accounts_classify_as_guarded_multisig() {
         use miden_confidential_contracts::multisig_guardian::{

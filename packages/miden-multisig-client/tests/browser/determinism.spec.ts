@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 // Pinned by the corresponding Rust cross-SDK parity test.
-const EXPECTED_ID = '0xff5d71f7ac2107011b27a8df4ddbe0';
+const EXPECTED_ID = '0x5ca4f74a7aa342c124cb4493ac905e';
 const EXPECTED_COMMITMENT =
-  '0x45ad4dcf0c19662fd1f8f1647159ab4b4a0e80b1d3068d16c6092211a492e6c8';
+  '0xf3fe926f69a8a80bb32e9daedb1095b34988d43559f0d8521727378fc170f7b5';
 // Rust account storage commitment: seven slots without a schema-commitment slot.
 const EXPECTED_STORAGE_COMMITMENT =
   '0xa5b24ee9ed2f2d73b8590851401bc20ed8bd0d588965a881e16ffecff8012c4f';
@@ -49,7 +49,9 @@ test('TS account reproduces the Rust storage layout and override-target procedur
     expect(hasProcedure?.[name], `missing override-target procedure: ${name}`).toBe(true);
   }
 
-  // Config scripts must compile against the SDK's real WASM assembler.
+  // Config scripts must compile against the SDK's real WASM assembler, and the
+  // client must classify the TS-built account as a guarded multisig: each builder
+  // throws when the request it built carries no multisig auth args.
   const configScriptsCompiled = result?.configScriptsCompiled as
     | Record<string, boolean>
     | undefined;

@@ -158,9 +158,10 @@ fn tx_summary_json(delta: AccountDelta) -> serde_json::Value {
         delta,
         InputNotes::new(Vec::new()).expect("input notes"),
         RawOutputNotes::new(Vec::new()).expect("output notes"),
+        miden_protocol::block::BlockNumber::from(0),
         MidenWord::from([ZERO; 4]),
         0,
-        TransactionSummaryUserParams::new([ZERO; 7]),
+        TransactionSummaryUserParams::new([ZERO; 6]),
     )
     .to_json()
 }

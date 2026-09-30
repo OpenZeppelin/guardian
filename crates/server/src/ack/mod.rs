@@ -96,6 +96,17 @@ impl AckRegistry {
         }
     }
 
+    /// Whether `delta` carries an ack this server signed with the key it
+    /// holds now for `scheme` (checked against the signature itself, which
+    /// every storage backend keeps). Tells a delta this server acknowledged
+    /// apart from a change of this server's own key.
+    pub fn acked_with_current_key(&self, delta: &DeltaObject, scheme: &SignatureScheme) -> bool {
+        match scheme {
+            SignatureScheme::Falcon => self.falcon.signed_ack(delta),
+            SignatureScheme::Ecdsa => self.ecdsa.signed_ack(delta),
+        }
+    }
+
     async fn from_provider<P: AckSecretProvider + ?Sized>(
         keystore_path: PathBuf,
         ecdsa_backend: EcdsaBackendKind,
@@ -109,6 +120,22 @@ impl AckRegistry {
             account_schemes: AllowedAccountSchemes::ALL,
         })
     }
+}
+
+/// The message a delta's ack signs: its transaction summary's commitment.
+pub(crate) fn ack_message(delta: &DeltaObject) -> Option<miden_protocol::Word> {
+    use guardian_shared::FromJson;
+    miden_protocol::transaction::TransactionSummary::from_json(&delta.delta_payload)
+        .ok()
+        .map(|summary| summary.to_commitment())
+}
+
+/// A hex-encoded ack signature (as stored in `ack_sig`), if it decodes.
+pub(crate) fn decode_ack_signature<S: miden_protocol::utils::serde::Deserializable>(
+    ack_sig: &str,
+) -> Option<S> {
+    let bytes = hex::decode(ack_sig.trim_start_matches("0x")).ok()?;
+    S::read_from_bytes(&bytes).ok()
 }
 
 async fn build_falcon_signer<P: AckSecretProvider + ?Sized>(
@@ -324,6 +351,74 @@ mod tests {
             ecdsa_secret.to_bytes()
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_ack_is_recognised_only_under_the_key_that_signed_it() {
+        use crate::delta_object::{DeltaObject, DeltaStatus};
+        use crate::testing::helpers::create_test_delta_payload;
+
+        async fn registry(tag: &str) -> (AckRegistry, PathBuf) {
+            let dir = temp_keystore(tag);
+            let provider =
+                CountingProvider::new(Some(FalconSecretKey::new()), Some(EcdsaSecretKey::new()));
+            let registry = AckRegistry::from_provider(
+                dir.clone(),
+                EcdsaBackendKind::InMemory,
+                Some(&provider),
+            )
+            .await
+            .unwrap();
+            (registry, dir)
+        }
+        fn delta(account_id: &str) -> DeltaObject {
+            DeltaObject {
+                account_id: account_id.to_string(),
+                nonce: 1,
+                prev_commitment: "0xprev".to_string(),
+                new_commitment: None,
+                delta_payload: create_test_delta_payload(account_id),
+                ack_sig: String::new(),
+                ack_pubkey: String::new(),
+                ack_scheme: String::new(),
+                status: DeltaStatus::canonical("2026-09-28T00:00:00Z".to_string()),
+                metadata: None,
+            }
+        }
+        const ACCOUNT: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+
+        let (current, current_dir) = registry("current").await;
+        let (previous, previous_dir) = registry("previous").await;
+        for scheme in [SignatureScheme::Falcon, SignatureScheme::Ecdsa] {
+            let acked = current.ack_delta(delta(ACCOUNT), &scheme).await.unwrap();
+            assert!(current.acked_with_current_key(&acked, &scheme));
+
+            let by_previous = previous.ack_delta(delta(ACCOUNT), &scheme).await.unwrap();
+            assert!(
+                !current.acked_with_current_key(&by_previous, &scheme),
+                "an ack made with a key this server no longer holds"
+            );
+            assert!(
+                !current.acked_with_current_key(&delta(ACCOUNT), &scheme),
+                "an unsigned delta"
+            );
+            // (Every empty delta has the same commitment, so the other
+            // summary is a real one.)
+            let mut other_summary = acked.clone();
+            other_summary.delta_payload =
+                crate::testing::helpers::load_fixture_delta(1)["delta_payload"].clone();
+            assert!(
+                !current.acked_with_current_key(&other_summary, &scheme),
+                "a signature over another summary"
+            );
+        }
+        let falcon_ack = current
+            .ack_delta(delta(ACCOUNT), &SignatureScheme::Falcon)
+            .await
+            .unwrap();
+        assert!(!current.acked_with_current_key(&falcon_ack, &SignatureScheme::Ecdsa));
+        std::fs::remove_dir_all(current_dir).ok();
+        std::fs::remove_dir_all(previous_dir).ok();
     }
 
     #[tokio::test]

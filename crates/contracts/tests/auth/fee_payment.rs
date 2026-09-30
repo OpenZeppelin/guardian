@@ -1,37 +1,39 @@
-//! Execution coverage for the guarded-multisig fee path on a fee-charging chain.
+//! Execution coverage for the guarded-multisig auth args on a fee-charging chain.
 //!
-//! Since protocol 0.16 `AuthGuardedMultisig` calls `fee::pay_fee` before the transaction summary
-//! is built, so the auth arg must be the commitment `hash(CONVERSION_INFO || SALT)` and the advice
-//! map must carry its preimage under that key. Every other mock chain in this repository is built
-//! with the default `verification_base_fee` of 0, where the computed fee is zero, no fee note is
-//! created and `pay_fee` accepts the empty conversion info — so nothing else reaches this code.
+//! Since protocol 0.17 the multisig auth components read their auth arg as the commitment to a
+//! three-word preimage held in the advice map: the bound block and approval expiration, the salt,
+//! and the fee conversion info. `resolve_auth_args` pipes that preimage unconditionally, whatever
+//! the chain charges. Every other mock chain in this repository is built with the default
+//! `verification_base_fee` of 0, so a non-zero fee reaches the auth procedure nowhere else.
 //! These cases are its only coverage outside a manual localnet run.
 //!
 //! [`reversed_advice_preimage_is_rejected`] pins the advice layout against the MASM implementation.
-//! The TypeScript SDK constructs this value itself, while `miden-client` uses
-//! `commit_fee_conversion_info` for Rust requests.
+//! Both SDKs build the preimage from `MultisigAuthArgs` rather than through `miden-client`'s own
+//! fee path (the multisig client's `transaction/auth_args.rs` explains why).
 
 use guardian_shared::SignatureScheme;
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
+use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId, AccountType, auth::AuthSecretKey};
 use miden_protocol::asset::{Asset, FungibleAsset};
+use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::{PublicKey, SecretKey};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_FEE_FAUCET, ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
 };
 use miden_protocol::transaction::{ExecutedTransaction, RawOutputNote};
-use miden_protocol::vm::AdviceInputs;
-use miden_protocol::{Felt, Word};
-use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
+use miden_standards::account::auth::{FeeConversionInfo, MultisigAuthArgs};
 use miden_standards::note::TxFeeNote;
-use miden_testing::MockChainBuilder;
+use miden_testing::{MockChainBuilder, MockTransactionBuilder};
 use miden_tx::TransactionExecutorError;
 use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+
+use super::MultisigAuthArgsExt;
 
 const NUM_APPROVERS: usize = 2;
 const VERIFICATION_BASE_FEE: u32 = 500;
@@ -87,22 +89,46 @@ fn fee_faucet_id() -> anyhow::Result<AccountId> {
     Ok(ACCOUNT_ID_FEE_FAUCET.try_into()?)
 }
 
-/// The auth arg and advice preimage a typed create path commits for `salt`.
-fn native_commitment(salt: Word) -> anyhow::Result<(Word, Vec<Felt>)> {
-    Ok(commit_fee_conversion_info(
-        FeeConversionInfo::one_to_one(fee_faucet_id()?),
-        salt,
-    ))
+/// How the transaction under test carries its multisig auth args.
+#[derive(Clone, Copy)]
+enum AuthArgsShape {
+    /// The three-word preimage a typed create path commits, in the advice map.
+    Committed,
+    /// The preimage with its words in reverse order, so the commitment does not open to it.
+    Reversed,
+    /// The commitment alone, with no preimage in the advice map.
+    Bare,
+}
+
+impl AuthArgsShape {
+    fn attach<'a>(
+        self,
+        transaction: MockTransactionBuilder<'a>,
+        auth_args: &MultisigAuthArgs,
+    ) -> MockTransactionBuilder<'a> {
+        let commitment = auth_args.to_commitment();
+        match self {
+            Self::Committed => transaction.multisig_auth_args(auth_args),
+            Self::Reversed => {
+                let preimage = auth_args.to_elements();
+                transaction.auth_args(commitment).add_advice_map_entry(
+                    commitment,
+                    [&preimage[8..], &preimage[4..8], &preimage[..4]].concat(),
+                )
+            }
+            Self::Bare => transaction.auth_args(commitment),
+        }
+    }
 }
 
 /// Runs the whole proposal flow — unsigned execution for the summary, approver and guardian
 /// signatures, then signed execution — against a chain that charges a fee.
 ///
-/// `advice_value` is passed through verbatim rather than derived, so a case can supply a preimage
-/// the commitment does not open to, or none at all.
+/// The auth args bind the reference block and commit the native 1/1 fee conversion info,
+/// which is what a typed create path produces; `shape` decides what the advice map holds.
 async fn execute_fee_paying_transaction(
-    auth_args: Word,
-    advice_value: Option<Vec<Felt>>,
+    salt: Word,
+    shape: AuthArgsShape,
     with_user_output_note: bool,
 ) -> anyhow::Result<Result<ExecutedTransaction, TransactionExecutorError>> {
     let fixture = guarded_fixture()?;
@@ -138,26 +164,26 @@ async fn execute_fee_paying_transaction(
 
     let chain = builder.build()?;
 
+    let auth_args = MultisigAuthArgs::new(chain.latest_block_header().block_num(), salt)
+        .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id()?));
+
     let mut input_notes = vec![funding_note.id()];
     if let Some(spawn_note) = spawn_note.as_ref() {
         input_notes.push(spawn_note.id());
     }
 
     let build_transaction = || {
-        let mut transaction = chain
-            .build_transaction(fixture.account.id())
-            .authenticated_input_notes(input_notes.clone())
-            .authenticator(None)
-            .auth_args(auth_args);
-        if let Some(advice_value) = advice_value.clone() {
-            transaction = transaction.extend_advice_inputs(
-                AdviceInputs::default().with_map([(auth_args, advice_value)]),
-            );
+        let transaction = shape.attach(
+            chain
+                .build_transaction(fixture.account.id())
+                .authenticated_input_notes(input_notes.clone())
+                .authenticator(None),
+            &auth_args,
+        );
+        match user_output_note.clone() {
+            Some(note) => transaction.expected_output_note(RawOutputNote::Full(note)),
+            None => transaction,
         }
-        if let Some(note) = user_output_note.clone() {
-            transaction = transaction.expected_output_note(RawOutputNote::Full(note));
-        }
-        transaction
     };
 
     let summary = match build_transaction().build()?.execute().await {
@@ -202,7 +228,7 @@ fn fee_note_amount(executed: &ExecutedTransaction) -> anyhow::Result<u64> {
             .iter()
             .next()
             .expect("fee note carries an asset");
-        let Asset::Fungible(fee_asset) = asset else {
+        let Some(fee_asset) = asset.as_fungible() else {
             anyhow::bail!("the fee note's asset must be fungible");
         };
         anyhow::ensure!(fee_asset.faucet_id() == fee_faucet_id()?);
@@ -211,25 +237,14 @@ fn fee_note_amount(executed: &ExecutedTransaction) -> anyhow::Result<u64> {
     anyhow::bail!("no TX_FEE note was created")
 }
 
-/// The auth arg and advice preimage a typed create path commits are accepted by the auth
-/// procedure at a non-zero verification base fee, and the fee is actually paid.
-///
-/// Also pins the preimage layout the TypeScript SDK reproduces by hand in
-/// `insertFeeConversionInfo`: the advice value is SALT ++ CONVERSION_INFO, the reverse of the
-/// commitment's operand order.
+/// The auth args a typed create path commits are accepted by the auth procedure at a non-zero
+/// verification base fee, and the fee is actually paid: a node rejects a transaction without a
+/// canonical TX_FEE note, and the mock chain does not enforce that, so this test does.
 #[tokio::test]
 async fn committed_conversion_info_pays_the_fee() -> anyhow::Result<()> {
     let salt = Word::from([11u32, 22, 33, 44]);
-    let (auth_args, advice_value) = native_commitment(salt)?;
 
-    let conversion_info = FeeConversionInfo::one_to_one(fee_faucet_id()?).to_word();
-    assert_eq!(
-        advice_value,
-        [salt.as_elements(), conversion_info.as_elements()].concat(),
-        "load_conversion_info pops the salt first, so the preimage is SALT ++ CONVERSION_INFO"
-    );
-
-    let executed = execute_fee_paying_transaction(auth_args, Some(advice_value), false)
+    let executed = execute_fee_paying_transaction(salt, AuthArgsShape::Committed, false)
         .await?
         .map_err(|error| anyhow::anyhow!("execution must succeed, got: {error}"))?;
 
@@ -248,9 +263,8 @@ async fn committed_conversion_info_pays_the_fee() -> anyhow::Result<()> {
 #[tokio::test]
 async fn committed_conversion_info_pays_the_fee_alongside_a_user_note() -> anyhow::Result<()> {
     let salt = Word::from([1u32, 2, 3, 4]);
-    let (auth_args, advice_value) = native_commitment(salt)?;
 
-    let executed = execute_fee_paying_transaction(auth_args, Some(advice_value), true)
+    let executed = execute_fee_paying_transaction(salt, AuthArgsShape::Committed, true)
         .await?
         .map_err(|error| anyhow::anyhow!("execution must succeed, got: {error}"))?;
 
@@ -263,46 +277,55 @@ async fn committed_conversion_info_pays_the_fee_alongside_a_user_note() -> anyho
     Ok(())
 }
 
-/// Swapping the halves of the advice preimage must abort.
+/// The committed auth args pass `resolve_auth_args` and the whole signed flow on a fee-charging
+/// chain, so the shape both SDKs build is the one the auth procedure accepts.
+#[tokio::test]
+async fn committed_auth_args_are_accepted_on_a_fee_charging_chain() -> anyhow::Result<()> {
+    let salt = Word::from([11u32, 22, 33, 44]);
+
+    execute_fee_paying_transaction(salt, AuthArgsShape::Committed, false)
+        .await?
+        .map_err(|error| anyhow::anyhow!("execution must succeed, got: {error}"))?;
+
+    Ok(())
+}
+
+/// A preimage whose words are out of order does not open the commitment and must abort.
 ///
-/// The TypeScript SDK builds this preimage by hand, while Rust delegates it to `miden-client`.
-/// Executing the MASM checks the layout against the kernel instead of relying only on cross-SDK
-/// vectors.
+/// The TypeScript SDK builds this preimage by hand and the Rust SDK builds it from
+/// `MultisigAuthArgs`. Executing the MASM checks the layout against the kernel instead of relying
+/// only on cross-SDK vectors.
 #[tokio::test]
 async fn reversed_advice_preimage_is_rejected() -> anyhow::Result<()> {
     let salt = Word::from([11u32, 22, 33, 44]);
-    let (auth_args, advice_value) = native_commitment(salt)?;
-    let reversed = [&advice_value[4..], &advice_value[..4]].concat();
 
-    let error = execute_fee_paying_transaction(auth_args, Some(reversed), false)
+    let error = execute_fee_paying_transaction(salt, AuthArgsShape::Reversed, false)
         .await?
         .expect_err("a preimage that does not open the commitment must abort");
 
     assert!(
-        error
-            .to_string()
-            .contains("does not match the commitment provided via the auth args"),
-        "expected the commitment mismatch abort, got: {error}"
+        !matches!(error, TransactionExecutorError::Unauthorized(_)),
+        "the abort must come from resolving the auth args, not from missing signatures: {error}"
     );
 
     Ok(())
 }
 
-/// A bare salt with no advice entry aborts once the computed fee is non-zero, which is the
-/// pre-0.16 convention meeting a fee-charging chain.
+/// A bare auth arg with no advice entry aborts before any signature is checked: since 0.17 the
+/// multisig pipes the preimage unconditionally, whatever the chain charges.
 #[tokio::test]
-async fn bare_auth_arg_is_rejected_when_the_fee_is_non_zero() -> anyhow::Result<()> {
+async fn bare_auth_arg_is_rejected() -> anyhow::Result<()> {
     let salt = Word::from([11u32, 22, 33, 44]);
 
-    let error = execute_fee_paying_transaction(salt, None, false)
+    let error = execute_fee_paying_transaction(salt, AuthArgsShape::Bare, false)
         .await?
-        .expect_err("a bare auth arg must abort on a fee-charging chain");
+        .expect_err("a bare auth arg must abort");
 
     assert!(
         error
             .to_string()
-            .contains("paying a non-zero fee requires conversion info committed via the auth args"),
-        "expected ERR_FEE_CONVERSION_INFO_MISSING, got: {error}"
+            .contains("the advice map holds no preimage for the multisig auth args"),
+        "expected ERR_AUTH_ARGS_PREIMAGE_MISSING, got: {error}"
     );
 
     Ok(())
