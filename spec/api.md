@@ -56,7 +56,7 @@ Raw Falcon and ECDSA signatures remain supported. ECDSA signers may instead send
 
 - Domain tag: `DOMAIN_TAG = RPO256(felts(b"guardian.lookup.v1"))` — a fixed 4-felt word, computed once and embedded in the binary. Future incompatible changes MUST bump the version segment.
 - Signed message format: `RPO256_hash([DOMAIN_TAG_w0..w3, timestamp_ms, key_commitment_w0..w3])`.
-- Authentication: proof-of-possession of the queried commitment. Raw signatures derive the identity from the signature itself — Falcon embeds the public key and ECDSA recovers it. A raw signature must be exactly 1524 bytes (Falcon) or 65 bytes (ECDSA `r || s || v`); any other length is rejected. For EIP-712, the server verifies the typed digest against `x-pubkey`. Both paths require the verified public key's commitment to equal the queried commitment. Raw lookup continues to ignore `x-pubkey`.
+- Authentication: proof-of-possession of the queried commitment. Raw signatures derive the identity from the signature itself — Falcon embeds the public key and ECDSA recovers it. A raw signature must be exactly 1524 bytes (Falcon) or 65 bytes (ECDSA `r || s || v`), and an EIP-712 signature exactly 65 bytes; any other length is rejected. For EIP-712, the server verifies the typed digest against `x-pubkey`. Both paths require the verified public key's commitment to equal the queried commitment. Raw lookup continues to ignore `x-pubkey`.
 - Replay protection: `MAX_TIMESTAMP_SKEW_MS` skew window only. No per-commitment last-seen tracking; a replayed valid request returns the same `account_id` to a key holder who already obtained it.
 
 ### EVM Session Authentication

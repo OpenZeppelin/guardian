@@ -90,6 +90,12 @@ pub fn verify_eip712_lookup_signature(
 ) -> Result<LookupPublicKey, String> {
     let signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
         .map_err(|e| format!("invalid EIP-712 lookup signature hex: {e}"))?;
+    if signature_bytes.len() != ECDSA_SIGNATURE_LEN {
+        return Err(format!(
+            "invalid EIP-712 lookup signature: expected {ECDSA_SIGNATURE_LEN} bytes, got {}",
+            signature_bytes.len()
+        ));
+    }
     let signature = EcdsaSignature::read_from_bytes(&signature_bytes)
         .map_err(|e| format!("invalid EIP-712 lookup signature: {e}"))?;
     let public_key_bytes = hex::decode(public_key_hex.trim_start_matches("0x"))
@@ -181,6 +187,37 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn eip712_lookup_rejects_wrong_length() {
+        let signer = EcdsaSecretKey::new();
+        let public_key = signer.public_key();
+        let public_key_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+        let commitment = public_key.to_commitment();
+        let timestamp = 1_700_000_000_000;
+        let lookup_hash = LookupAuthMessage::new(timestamp, commitment).to_word();
+        let signature = signer.sign_prehash(lookup_digest(lookup_hash)).to_bytes();
+
+        let mut with_trailing_byte = signature.clone();
+        with_trailing_byte.push(0);
+        let err = verify_eip712_lookup_signature(
+            &format!("0x{}", hex::encode(with_trailing_byte)),
+            &public_key_hex,
+            timestamp,
+            commitment,
+        )
+        .expect_err("EIP-712 signature with a trailing byte must be rejected");
+        assert!(err.contains("expected 65 bytes, got 66"), "{err}");
+
+        let err = verify_eip712_lookup_signature(
+            &format!("0x{}", hex::encode(&signature[..64])),
+            &public_key_hex,
+            timestamp,
+            commitment,
+        )
+        .expect_err("truncated EIP-712 signature must be rejected");
+        assert!(err.contains("expected 65 bytes, got 64"), "{err}");
     }
 
     fn commitment_hex_word(word: Word) -> String {
