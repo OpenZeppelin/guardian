@@ -151,9 +151,9 @@ export interface AccountState {
  * `'guardian'`: GUARDIAN's canonical nonce was above the local nonce (or the
  * local store had no account, or the same nonce carried a different
  * commitment), so the state was fetched and reconciled; `state` is what
- * GUARDIAN served. `'local'`: GUARDIAN's canonical nonce was not above the
- * local nonce at a matching commitment, so the state fetch was skipped and
- * the local account stands.
+ * GUARDIAN served. `'local'`: GUARDIAN's canonical nonce was below the local
+ * nonce, or equal to it at the same commitment, so the state fetch was
+ * skipped and the local account stands.
  */
 export type SyncStateResult =
   | { source: 'guardian'; state: AccountState }

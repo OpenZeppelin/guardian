@@ -331,7 +331,7 @@ impl MultisigClient {
     /// same nonce at the same commitment) there is nothing to pull, so the
     /// full state fetch is skipped. Otherwise — including the same nonce at a
     /// different commitment, which is divergence rather than staleness — the
-    /// state is fetched and reconciled as before.
+    /// full sync below runs as it did before the pre-check.
     async fn sync_from_guardian_internal(&mut self) -> Result<bool> {
         let account = self.require_account()?;
         let account_id = account.id();

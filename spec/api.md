@@ -385,12 +385,17 @@ Semantics not captured by the OpenAPI shapes:
   like the other Miden delta APIs.
 - **`GET /state/nonce`.** The head of the canonical state without the
   state blob: the account nonce carried by the state GUARDIAN currently
-  holds as canonical, plus that state's commitment (issue #191). SDK
-  `sync` calls it before `GET /state` and skips the full fetch when the
-  reported nonce is not above the local account nonce; a higher nonce
-  falls through to the unchanged full sync. Read-only: served while the
-  account is paused. A canonical state that no longer decodes to an
-  account is `account_data_unavailable` (503) rather than a nonce of 0.
+  holds as canonical, plus that state's commitment (issue #191). Both are
+  stored with the state when it is written, so the server answers without
+  loading, decrypting, or decoding the blob. SDK `sync` calls it before
+  `GET /state` and skips the full fetch only when the reported nonce is
+  below the local account nonce, or equal to it with the same commitment.
+  An equal nonce at a different commitment is divergence and a higher
+  nonce means GUARDIAN is ahead; both fall through to the unchanged full
+  sync. Read-only: served while the account is paused. A state stored
+  before the server kept nonces is decoded on its first read and its
+  nonce stored; if that state no longer decodes to an account, the call
+  is `account_data_unavailable` (503) rather than a nonce of 0.
   EVM-configured accounts are rejected with `unsupported_for_network`.
 - **`/state/lookup`.** An empty `accounts` list is a successful response,
   not a 404 — distinguishing "no account" from "wrong key" would leak

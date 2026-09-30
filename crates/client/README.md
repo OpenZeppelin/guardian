@@ -46,13 +46,18 @@ let delta = client.get_delta(&account_id, nonce).await?;
 ### Canonical Nonce
 
 Nonce and commitment of the latest canonical state, without the state blob
-(issue #191). It is the cheap pre-check the multisig SDK's `sync` runs before
-`get_state`: a local account whose nonce is at or above the returned nonce is
-not behind Guardian, so the full state fetch can be skipped.
+(issue #191); the server answers from the nonce and commitment it stores with
+the state. The multisig SDK's `sync` runs this check before `get_state`. The
+full state fetch can be skipped when Guardian's nonce is below the local
+account's nonce, or equal to it with the same commitment. An equal nonce at a
+different commitment means the local account has diverged from Guardian, so
+fetch the state in that case too.
 
 ```rust
 let head = client.get_canonical_nonce(&account_id).await?;
-if head.nonce > local_nonce {
+let in_sync = head.nonce < local_nonce
+    || (head.nonce == local_nonce && head.commitment == local_commitment);
+if !in_sync {
     let state = client.get_state(&account_id).await?;
     // reconcile the local store with `state`
 }

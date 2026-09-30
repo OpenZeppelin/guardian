@@ -357,8 +357,10 @@ impl GuardianClient {
     /// Retrieves the nonce and commitment of the latest canonical state
     /// without the state blob. Mirror of HTTP `GET /state/nonce`.
     ///
-    /// A client whose local account nonce is at or above the returned nonce
-    /// is not behind GUARDIAN and can skip [`Self::get_state`] (issue #191).
+    /// A client can skip [`Self::get_state`] when the returned nonce is below
+    /// its local account nonce, or equal to it with the same commitment
+    /// (issue #191). An equal nonce at a different commitment means the local
+    /// account diverged from GUARDIAN, so it fetches the state.
     pub async fn get_canonical_nonce(
         &mut self,
         account_id: &AccountId,

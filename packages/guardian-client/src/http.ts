@@ -299,8 +299,10 @@ export class GuardianHttpClient {
 
   /**
    * Nonce and commitment of the latest canonical state, without the state
-   * blob (`GET /state/nonce`). A local account whose nonce is at or above
-   * the returned nonce is not behind GUARDIAN and can skip `getState`.
+   * blob (`GET /state/nonce`). A client can skip `getState` when the
+   * returned nonce is below its local account nonce, or equal to it with
+   * the same commitment; an equal nonce at a different commitment means the
+   * local account diverged from GUARDIAN, so it fetches the state.
    */
   async getCanonicalNonce(accountId: string): Promise<CanonicalNonce> {
     const requestQuery = { account_id: accountId };

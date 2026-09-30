@@ -48,9 +48,11 @@ service Guardian {
   // newest-first by nonce with decoded input/output note summaries.
   rpc GetDeltaHistory(GetDeltaHistoryRequest) returns (GetDeltaHistoryResponse);
 
-  // Nonce and commitment of the latest canonical state (issue #191): a
-  // lightweight pre-check so a client whose local account is not behind
-  // can skip the full GetState fetch.
+  // Nonce and commitment of the latest canonical state (issue #191), served
+  // from the values stored with the state, without the state blob. A client
+  // can skip the full GetState fetch when the nonce is below its local
+  // nonce, or equal to it with the commitment matching its local commitment.
+  // An equal nonce at a different commitment is divergence: fetch the state.
   rpc GetCanonicalNonce(GetCanonicalNonceRequest) returns (GetCanonicalNonceResponse);
 }
 

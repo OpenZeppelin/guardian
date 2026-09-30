@@ -1128,7 +1128,7 @@ one implicitly.
 | `threshold` | Get current threshold |
 | `signerCommitments` | Get list of signer commitments |
 | `fetchState()` | Fetch latest state from GUARDIAN |
-| `syncState()` | Reconcile the local store with GUARDIAN; pre-checks GUARDIAN's canonical nonce (`getCanonicalNonce`) and skips the state fetch when GUARDIAN is not ahead. Returns `{ source: 'guardian', state }` or `{ source: 'local', localNonce, guardianNonce }` |
+| `syncState()` | Reconcile the local store with GUARDIAN; pre-checks GUARDIAN's canonical nonce (`getCanonicalNonce`) and skips the state fetch when that nonce is below the local nonce, or equal to it at the same commitment. Returns `{ source: 'guardian', state }` or `{ source: 'local', localNonce, guardianNonce }` |
 | `registerOnGuardian()` | Register new account with GUARDIAN |
 | `syncProposals()` | Sync proposals from GUARDIAN, pruning ones it no longer reports (TS-only cache reconciliation; the Rust `list_proposals` builds a fresh list per call and has no cache to prune) |
 | `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
@@ -1254,8 +1254,9 @@ println!("Signers: {:?}", account.cosigner_commitments_hex());
 let account = client.pull_account(account_id).await?;
 
 // Sync with the Miden network, then with GUARDIAN. The GUARDIAN step
-// asks for the canonical nonce first and only fetches the full state
-// when GUARDIAN is ahead of the local account.
+// asks for the canonical nonce first and fetches the full state only
+// when GUARDIAN is ahead of the local account or has diverged from it
+// (same nonce, different commitment).
 client.sync().await?;
 
 // Inspect account
