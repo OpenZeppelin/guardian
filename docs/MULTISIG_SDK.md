@@ -47,8 +47,8 @@ Create a 1-of-3 multisig account, propose a transfer, collect signatures, and ex
 import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
 
-// 1. Setup clients
-const midenClient = await MidenClient.createDevnet();
+// 1. Setup clients (for useWorker, see "Installation & Setup" below)
+const midenClient = await MidenClient.createDevnet({ useWorker: false });
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
 const signer = new FalconSigner(secretKey);
 const client = new MultisigClient(midenClient, {
@@ -261,6 +261,7 @@ import { MultisigClient } from '@openzeppelin/miden-multisig-client';
 const midenClient = await MidenClient.create({
   rpcUrl: 'https://my-node.internal:57291',
   noteTransportUrl: 'https://my-transport.internal',
+  useWorker: false,
 });
 
 const client = new MultisigClient(midenClient, {
@@ -578,7 +579,7 @@ import {
 } from '@openzeppelin/miden-multisig-client';
 
 // Initialize Miden client (connects to Miden node)
-const midenClient = await MidenClient.createDevnet();
+const midenClient = await MidenClient.createDevnet({ useWorker: false });
 
 // Create signer from secret key
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
@@ -597,6 +598,17 @@ transactions with: miden-client keeps account state in memory per client, and a
 second live client writing the same store can persist a storage root computed
 from state it never saw. `midenRpcEndpoint` serves only the SDK's direct node
 reads (on-chain commitments and note inclusion proofs).
+
+In a browser, create that client with `useWorker: false`, which runs its WASM
+work on the page's main thread. In the default worker mode, transactions
+execute and apply in a Web Worker that never sees the account state the SDK
+writes with `accounts.insert`, so a device's local copy of the account breaks
+after `MultisigClient.load` or a `syncState()` import. The symptoms and
+recovery are in
+[TROUBLESHOOTING.md](./TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser),
+the upstream status in
+[MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#open-upstream-items). Node.js
+clients have no worker and are unaffected.
 
 ### Creating Accounts
 

@@ -150,7 +150,7 @@ Nothing stored under Miden 0.16 survives:
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-09-28.
+Last checked 2026-09-30.
 
 - **Public networks.** Devnet runs node 0.17.0-rc.2, and this build's protocol
   configuration for devnet's fee asset hashes to the commitment in devnet's
@@ -174,6 +174,21 @@ Last checked 2026-09-28.
   client's `transaction/auth_args.rs`). When the client builds
   `MultisigAuthArgs` itself: the helper can delegate to it; nothing stored or
   signed changes.
+- **Web SDK worker mode.** A browser `MidenClient` created with the default
+  `useWorker: true` is two WASM instances, each with its own in-memory copy of
+  the account's storage trees: `accounts.insert` runs on the page, while
+  transactions execute and apply in a Web Worker. The multisig SDK writes the
+  state it loads or syncs from GUARDIAN with `accounts.insert`, so the worker
+  cannot apply a device's first transaction after `MultisigClient.load`, and it
+  applies the first one after a `syncState()` import on stale trees, saving a
+  storage root that leaves the import out. The transactions still reach the
+  chain; only the device's store breaks. Tracked as
+  [0xMiden/web-sdk#441](https://github.com/0xMiden/web-sdk/issues/441), open in
+  web SDK 0.17.0-rc.4. Until it is fixed, browser clients pass
+  `useWorker: false`, as `examples/web` and `examples/smoke-web` do; symptoms
+  and recovery are in
+  [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
+  When the web SDK fixes it: remove that guidance (`git grep useWorker`).
 - **Pins.** The workspace pins protocol 0.17.0-rc.7 and client 0.17.0-rc.4 (see
   the matrix). The protocol pin follows the client and web SDK releases, not the
   protocol tags, because both SDKs must embed the same kernel. Moving to stable

@@ -74,13 +74,18 @@ export interface RecoveredAccount {
 /**
  * Client for creating and loading multisig accounts.
  *
+ * In a browser, create the injected `MidenClient` with `useWorker: false` until
+ * https://github.com/0xMiden/web-sdk/issues/441 is fixed: a worker-mode client
+ * applies transactions in a Web Worker that never sees the account state this
+ * SDK writes.
+ *
  * @example
  * ```typescript
  * import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
  * import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
  *
  * // Initialize
- * const midenClient = await MidenClient.createDevnet();
+ * const midenClient = await MidenClient.createDevnet({ useWorker: false });
  * const secretKey = AuthSecretKey.rpoFalconWithRNG(seed);
  * const signer = new FalconSigner(secretKey);
  *

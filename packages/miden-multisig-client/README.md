@@ -53,7 +53,7 @@ breaking changes per line, and what each upgrade does to stored data:
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
 import { AuthSecretKey, MidenClient } from '@miden-sdk/miden-sdk';
 
-const midenClient = await MidenClient.createDevnet();
+const midenClient = await MidenClient.createDevnet({ useWorker: false });
 
 // Create a signer from your secret key
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
@@ -83,6 +83,16 @@ memory per client, so two live clients writing one store can leave either of
 them persisting a storage root computed from state it never saw.
 `midenRpcEndpoint` serves only the SDK's direct node reads (on-chain
 commitments and note inclusion proofs).
+
+In a browser, create that client with `useWorker: false`, which runs its WASM
+work on the page's main thread. In the default worker mode, transactions
+execute and apply in a Web Worker that never sees the account state this SDK
+writes with `accounts.insert`, so a device's local copy of the account breaks
+after `MultisigClient.load` or a `syncState()` import
+([0xMiden/web-sdk#441](https://github.com/0xMiden/web-sdk/issues/441)). The
+symptoms and recovery are in
+[TROUBLESHOOTING.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
+Node.js has no worker and is unaffected.
 
 For an ECDSA cosigner using an EIP-1193 wallet (including Ledger), call
 `Eip712Signer.connect(provider)` once to select the Ethereum address and
@@ -154,6 +164,7 @@ explicitly.
 const midenClient = await MidenClient.create({
   rpcUrl: 'https://my-node.internal:57291',
   noteTransportUrl: 'https://my-transport.internal',
+  useWorker: false,
 });
 
 const client = new MultisigClient(midenClient, {

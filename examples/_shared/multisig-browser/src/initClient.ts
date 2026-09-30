@@ -56,6 +56,12 @@ function prefersLocalProver(): boolean {
   return prover?.trim().toLowerCase() === 'local';
 }
 
+/**
+ * Creates the Miden client with `useWorker: false`: in worker mode, transactions
+ * execute and apply in a Web Worker that never sees the account state the
+ * multisig SDK loads or syncs from GUARDIAN
+ * (https://github.com/0xMiden/web-sdk/issues/441).
+ */
 export async function createMidenClient(
   rpcUrl: string,
   storeName = 'MidenClientDB',
@@ -70,9 +76,10 @@ export async function createMidenClient(
         proverUrl: 'local',
         storeName,
         autoSync: true,
+        useWorker: false,
       });
     }
-    return MidenClient.createDevnet({ rpcUrl, storeName });
+    return MidenClient.createDevnet({ rpcUrl, storeName, useWorker: false });
   }
 
   if (normalizedRpcUrl === 'testnet' || normalizedRpcUrl === 'https://rpc.testnet.miden.io') {
@@ -83,9 +90,10 @@ export async function createMidenClient(
         proverUrl: 'local',
         storeName,
         autoSync: true,
+        useWorker: false,
       });
     }
-    return MidenClient.createTestnet({ rpcUrl, storeName });
+    return MidenClient.createTestnet({ rpcUrl, storeName, useWorker: false });
   }
 
   return MidenClient.create({
@@ -98,6 +106,7 @@ export async function createMidenClient(
         : undefined,
     storeName,
     autoSync: true,
+    useWorker: false,
   });
 }
 
