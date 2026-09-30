@@ -108,11 +108,11 @@ impl IntegrationMockNetworkClient {
 
 #[async_trait]
 impl NetworkClient for IntegrationMockNetworkClient {
-    fn get_state_commitment(
+    fn get_state_head(
         &self,
         _account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<String, String> {
+    ) -> Result<crate::state_object::StateHead, String> {
         use miden_protocol::account::Account;
 
         let account = Account::from_json(state_json)
@@ -121,7 +121,10 @@ impl NetworkClient for IntegrationMockNetworkClient {
         let local_commitment = account.to_commitment();
         let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
-        Ok(local_commitment_hex)
+        Ok(crate::state_object::StateHead {
+            commitment: local_commitment_hex,
+            nonce: Some(account.nonce().as_canonical_u64()),
+        })
     }
 
     async fn verify_commitment(
@@ -158,7 +161,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &self,
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
-    ) -> Result<(serde_json::Value, String), String> {
+    ) -> Result<crate::network::AppliedState, String> {
         self.miden_client
             .apply_delta(prev_state_json, delta_payload)
     }

@@ -1308,7 +1308,7 @@
         "tags": [
           "client"
         ],
-        "summary": "Nonce and commitment of the latest canonical state (issue #191). A\nclient whose local account nonce is at or above `nonce` is not behind\nGUARDIAN and can skip `GET /state`.",
+        "summary": "Nonce and commitment of the latest canonical state (issue #191), read\nfrom the values stored with the state rather than from the state blob.\nA client can skip `GET /state` when `nonce` is below its local account\nnonce, or equal to it with `commitment` matching the local commitment.\nAn equal nonce at a different commitment means the account diverged, so\nthe client fetches the state.",
         "operationId": "get_canonical_nonce",
         "parameters": [
           {
@@ -1371,8 +1371,18 @@
               }
             }
           },
+          "500": {
+            "description": "Storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "Canonical state cannot be decoded",
+            "description": "The stored state carries no nonce and cannot be decoded",
             "content": {
               "application/json": {
                 "schema": {

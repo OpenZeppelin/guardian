@@ -439,7 +439,7 @@ impl DeltasProcessorBase {
                     .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
                     .await
             };
-            let (new_state_json, recomputed_commitment) = match applied {
+            let applied = match applied {
                 Ok(applied) => applied,
                 Err(e) => {
                     tracing::info!(
@@ -458,7 +458,7 @@ impl DeltasProcessorBase {
                     continue;
                 }
             };
-            if recomputed_commitment != on_chain {
+            if applied.commitment != on_chain {
                 tracing::info!(
                     event = "reconcile_deferred",
                     reason = "recomputed_commitment_mismatch",
@@ -486,8 +486,7 @@ impl DeltasProcessorBase {
             return self
                 .canonicalize_verified_delta(
                     delta,
-                    new_state_json,
-                    recomputed_commitment,
+                    applied,
                     crate::metrics::labels::CandidateOutcome::Reconciled,
                 )
                 .await;

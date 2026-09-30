@@ -76,7 +76,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         });
     }
 
-    let (new_state_json, new_commitment) = {
+    let applied = {
         let client = state.network_client.clone();
         let prev_commitment = current_state.commitment.clone();
         let prev_state_json = current_state.state_json.clone();
@@ -107,7 +107,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     );
 
     let mut result_delta = params.delta.clone();
-    result_delta.new_commitment = Some(new_commitment.clone());
+    result_delta.new_commitment = Some(applied.commitment.clone());
     result_delta.metadata = derived_metadata;
     let scheme = resolved.metadata.auth.scheme();
     result_delta = state.ack.ack_delta(result_delta, &scheme).await?;
@@ -129,8 +129,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
                 now,
             },
             &mut result_delta,
-            new_state_json,
-            &new_commitment,
+            applied,
         )
         .await?;
     // Caveat: `lookup_matching_proposal_payload` swallows storage
@@ -317,6 +316,7 @@ mod tests {
             account_id: account_id.clone(),
             state_json: serde_json::json!({}),
             commitment: prev_commitment.clone(),
+            nonce: None,
             created_at: "2026-05-25T08:00:00Z".into(),
             updated_at: "2026-05-25T08:00:00Z".into(),
             auth_scheme: String::new(),
@@ -435,6 +435,7 @@ mod tests {
             account_id: account_id.clone(),
             state_json: serde_json::json!({}),
             commitment: prev_commitment.clone(),
+            nonce: None,
             created_at: "2026-05-25T08:00:00Z".into(),
             updated_at: "2026-05-25T08:00:00Z".into(),
             auth_scheme: String::new(),

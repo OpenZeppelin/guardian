@@ -726,6 +726,7 @@ mod tests {
         StateObject {
             account_id,
             commitment,
+            nonce: None,
             state_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),

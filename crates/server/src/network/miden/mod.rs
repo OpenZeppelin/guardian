@@ -5,9 +5,10 @@ use crate::network::miden::account_inspector::{
     MidenAccountInspector, guardian_public_key_slot_name,
 };
 use crate::network::{
-    MidenRpcSettings, NetworkClient, NetworkType, OnChainGuardianBinding, RpcReadMode,
-    StateVerification, TransactionSearch,
+    AppliedState, MidenRpcSettings, NetworkClient, NetworkType, OnChainGuardianBinding,
+    RpcReadMode, StateVerification, TransactionSearch,
 };
+use crate::state_object::StateHead;
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
 use std::collections::BTreeMap;
@@ -56,7 +57,7 @@ impl MidenNetworkClient {
 
     /// Builds a client without contacting the network or loading TLS roots, for
     /// tests that exercise the pure serialization/delta paths
-    /// (`get_state_commitment`, `validate_guardian_commitment`, `apply_delta`,
+    /// (`get_state_head`, `validate_guardian_commitment`, `apply_delta`,
     /// `account_nonce`) which never issue an RPC: unit tests directly, and the
     /// integration and e2e suites through `IntegrationMockNetworkClient`.
     #[cfg(test)]
@@ -291,16 +292,16 @@ impl MidenNetworkClient {
 
 #[async_trait]
 impl NetworkClient for MidenNetworkClient {
-    fn get_state_commitment(
+    fn get_state_head(
         &self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<String, String> {
+    ) -> Result<StateHead, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
             tracing::error!(
                 account_id = %account_id,
                 error = %e,
-                "Invalid Miden account ID format in get_state_commitment"
+                "Invalid Miden account ID format in get_state_head"
             );
             format!("Invalid Miden account ID format: {e}")
         })?;
@@ -309,7 +310,10 @@ impl NetworkClient for MidenNetworkClient {
         let local_commitment = account.to_commitment();
         let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
 
-        Ok(local_commitment_hex)
+        Ok(StateHead {
+            commitment: local_commitment_hex,
+            nonce: Some(account.nonce().as_canonical_u64()),
+        })
     }
 
     async fn verify_commitment(
@@ -406,7 +410,7 @@ impl NetworkClient for MidenNetworkClient {
         &self,
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
-    ) -> Result<(serde_json::Value, String), String> {
+    ) -> Result<AppliedState, String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let account_delta = tx_summary.account_delta();
 
@@ -476,10 +480,11 @@ impl NetworkClient for MidenNetworkClient {
             account
         };
 
-        let new_commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
-        let new_state_json = account.to_json();
-
-        Ok((new_state_json, new_commitment))
+        Ok(AppliedState {
+            commitment: format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
+            nonce: Some(account.nonce().as_canonical_u64()),
+            state_json: account.to_json(),
+        })
     }
 
     fn merge_deltas(
@@ -1661,14 +1666,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_state_commitment_invalid_state_json() {
+    async fn test_get_state_head_invalid_state_json() {
         let network = NetworkType::MidenTestnet;
         let client = MidenNetworkClient::lazy_for_test(network);
 
         let account_id_hex = "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a";
         let state_json = serde_json::json!({"balance": 0});
 
-        let result = client.get_state_commitment(account_id_hex, &state_json);
+        let result = client.get_state_head(account_id_hex, &state_json);
         assert!(
             result.is_err(),
             "Should fail with invalid state JSON format"
@@ -1680,14 +1685,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_state_commitment_invalid_format() {
+    async fn test_get_state_head_invalid_format() {
         let network = NetworkType::MidenTestnet;
         let client = MidenNetworkClient::lazy_for_test(network);
 
         let invalid_account_id = "not_a_valid_hex";
         let state_json = serde_json::json!({"balance": 0});
 
-        let result = client.get_state_commitment(invalid_account_id, &state_json);
+        let result = client.get_state_head(invalid_account_id, &state_json);
         assert!(result.is_err(), "Should fail with invalid account ID");
         assert!(
             result
@@ -1783,17 +1788,17 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .expect("new_commitment field missing");
 
-        let (new_state_json, new_commitment) = client
+        let applied = client
             .apply_delta(&account_json, delta_payload)
             .expect("apply_delta should succeed");
 
         assert_eq!(
-            new_commitment, expected_commitment,
+            applied.commitment, expected_commitment,
             "Commitment after apply_delta should match expected"
         );
 
         assert!(
-            new_state_json.get("data").is_some(),
+            applied.state_json.get("data").is_some(),
             "New state should have data field"
         );
     }
@@ -1818,16 +1823,75 @@ mod tests {
             .expect("account_nonce should succeed on the fixture")
             .expect("a Miden account always carries a nonce");
 
-        let (after_json, _) = client
+        let applied = client
             .apply_delta(&account_json, delta_payload)
             .expect("apply_delta should succeed");
         let after = client
-            .account_nonce(&after_json)
+            .account_nonce(&applied.state_json)
             .expect("account_nonce should succeed after apply_delta")
             .expect("a Miden account always carries a nonce");
         assert!(
             after > before,
             "applying a delta must advance the nonce ({before} -> {after})"
+        );
+    }
+
+    /// The nonce stored with a state (issue #191) comes from the head the
+    /// write path already decoded: `get_state_head` on configure and
+    /// `apply_delta` on the optimistic commit and canonicalization. It
+    /// must equal the nonce a later decode of the stored blob reads, or
+    /// the canonical-nonce pre-check would serve a different nonce than
+    /// `GET /state` holds.
+    #[tokio::test]
+    async fn stored_heads_carry_the_decoded_nonce() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse account fixture");
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::DELTA_1_JSON)
+                .expect("Failed to parse delta fixture");
+        let delta_payload = delta_fixture
+            .get("delta_payload")
+            .expect("delta_payload field missing");
+        let account_id = Account::from_json(&account_json)
+            .expect("fixture account")
+            .id()
+            .to_hex();
+
+        // Configure: the head of the submitted initial state.
+        let configured = client
+            .get_state_head(&account_id, &account_json)
+            .expect("get_state_head should succeed on the fixture");
+        assert_eq!(
+            configured.nonce,
+            client.account_nonce(&account_json).unwrap(),
+            "configure stores the nonce a decode of the configured state reads"
+        );
+        assert!(configured.nonce.is_some(), "a Miden head carries a nonce");
+
+        // Optimistic commit and canonicalization: the state apply_delta built.
+        let applied = client
+            .apply_delta(&account_json, delta_payload)
+            .expect("apply_delta should succeed");
+        assert_eq!(
+            applied.nonce,
+            client.account_nonce(&applied.state_json).unwrap(),
+            "apply_delta returns the nonce a decode of the new state reads"
+        );
+        assert_eq!(
+            client
+                .get_state_head(&account_id, &applied.state_json)
+                .expect("the applied state decodes"),
+            StateHead {
+                commitment: applied.commitment.clone(),
+                nonce: applied.nonce,
+            },
+            "apply_delta's commitment and nonce describe the state it returns"
+        );
+        assert!(
+            applied.nonce > configured.nonce,
+            "the applied state is past the configured one"
         );
     }
 
@@ -1889,25 +1953,33 @@ mod tests {
         // component, so the empty prev state exercises exactly that fallback.
         let empty_prev_state = serde_json::json!({});
 
-        let (new_state_json, new_commitment) = client
+        let applied = client
             .apply_delta(&empty_prev_state, &delta_payload)
             .expect("apply_delta with full state should succeed");
 
         // The new state should have a data field
         assert!(
-            new_state_json.get("data").is_some(),
+            applied.state_json.get("data").is_some(),
             "New state from full delta should have data field"
         );
 
         // Commitment should be a valid hex string
         assert!(
-            new_commitment.starts_with("0x"),
+            applied.commitment.starts_with("0x"),
             "Commitment should be hex format"
         );
         assert_eq!(
-            new_commitment.len(),
+            applied.commitment.len(),
             66,
             "Commitment should be 32 bytes (64 hex chars + 0x prefix)"
+        );
+
+        // A new account's first state carries the delta's final nonce, and
+        // it is the nonce a decode of that state reads.
+        assert_eq!(applied.nonce, Some(1));
+        assert_eq!(
+            client.account_nonce(&applied.state_json).unwrap(),
+            applied.nonce
         );
     }
 }

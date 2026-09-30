@@ -365,9 +365,12 @@ pub async fn get_state(
     Ok(Json(response.state))
 }
 
-/// Nonce and commitment of the latest canonical state (issue #191). A
-/// client whose local account nonce is at or above `nonce` is not behind
-/// GUARDIAN and can skip `GET /state`.
+/// Nonce and commitment of the latest canonical state (issue #191), read
+/// from the values stored with the state rather than from the state blob.
+/// A client can skip `GET /state` when `nonce` is below its local account
+/// nonce, or equal to it with `commitment` matching the local commitment.
+/// An equal nonce at a different commitment means the account diverged, so
+/// the client fetches the state.
 #[utoipa::path(
     get,
     path = "/state/nonce",
@@ -378,7 +381,8 @@ pub async fn get_state(
         (status = 200, description = "Nonce and commitment of the canonical state", body = CanonicalNonceResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Account or state not found", body = crate::openapi::ApiErrorResponse),
-        (status = 503, description = "Canonical state cannot be decoded", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "The stored state carries no nonce and cannot be decoded", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn get_canonical_nonce(
@@ -878,6 +882,7 @@ mod tests {
         StateObject {
             account_id,
             commitment,
+            nonce: None,
             state_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
@@ -1525,7 +1530,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_canonical_nonce_success() {
-        let (state, storage, network, metadata) = create_test_state();
+        let (state, storage, _network, metadata) = create_test_state();
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
         let signer = TestSigner::new();
         let commitment = signer.commitment_hex.clone();
@@ -1534,12 +1539,15 @@ mod tests {
             account_id.clone(),
             vec![commitment],
         ))));
-        let _storage = storage.with_pull_state(Ok(create_state_object(
+        // Served from the stored head: no `account_nonce` answer is queued,
+        // so a decode would read the mock's `Ok(None)` and fail.
+        let mut stored = create_state_object(
             account_id.clone(),
             "0x123".to_string(),
             serde_json::json!({ "data": "opaque" }),
-        )));
-        let _network = network.with_account_nonce(Ok(Some(42)));
+        );
+        stored.nonce = Some(42);
+        let _storage = storage.with_pull_state(Ok(stored));
 
         let query = StateQuery {
             account_id: account_id.clone(),

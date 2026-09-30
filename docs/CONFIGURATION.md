@@ -153,7 +153,8 @@ Application-layer encryption of the sensitive stored payloads (account state,
 delta and proposal payloads). It is **opt-in by key-source presence** — configure
 a key and the server encrypts; configure none and it stores plaintext exactly as
 before. Routing/index fields (account id, nonce, commitments, status, timestamps)
-always stay plaintext.
+always stay plaintext, including each stored state's nonce, which reveals the
+account's transaction count.
 
 **Which variable do I set?** Choose **one key source**: the direct key for
 local work, the key-document file for self-managed deployments without Secrets
