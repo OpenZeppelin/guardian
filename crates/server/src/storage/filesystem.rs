@@ -23,6 +23,32 @@ pub struct FilesystemService {
     /// lock. The backend is single-process, so an in-process mutex is
     /// sufficient.
     delta_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Serializes state-file writes against the nonce backfill's
+    /// read-check-write (`backfill_state_nonce`), which rewrites the whole
+    /// file: without it, a backfill that read a state just before a
+    /// concurrent write could put that older state back. Taken inside
+    /// `delta_write_lock` where both are held, never the other way round.
+    state_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+}
+
+/// On-disk form of a state file: the state plus its nonce, which
+/// [`StateObject`] keeps out of its own serialization (that is the
+/// `GET /state` response body). A file written before the server stored
+/// nonces has no `nonce` key and reads back as unknown.
+#[derive(serde::Serialize)]
+struct StateFileRef<'a> {
+    #[serde(flatten)]
+    state: &'a StateObject,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonce: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct StateFile {
+    #[serde(flatten)]
+    state: StateObject,
+    #[serde(default)]
+    nonce: Option<u64>,
 }
 
 impl FilesystemService {
@@ -36,7 +62,20 @@ impl FilesystemService {
         Ok(Self {
             app_path,
             delta_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            state_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         })
+    }
+
+    /// Serialize and write a state file WITHOUT taking `state_write_lock`.
+    async fn write_state_holding_lock(&self, state: &StateObject) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(&StateFileRef {
+            state,
+            nonce: state.nonce,
+        })
+        .map_err(|e| format!("Failed to serialize state: {e}"))?;
+
+        self.write(&self.get_state_path(&state.account_id), &content)
+            .await
     }
 
     /// Atomically write a file
@@ -405,12 +444,8 @@ impl StorageBackend for FilesystemService {
     }
 
     async fn submit_state(&self, state: &StateObject) -> Result<(), String> {
-        let content = serde_json::to_string_pretty(state)
-            .map_err(|e| format!("Failed to serialize state: {e}"))?;
-
-        let app_path = self.get_state_path(&state.account_id);
-
-        self.write(&app_path, &content).await
+        let _guard = self.state_write_lock.lock().await;
+        self.write_state_holding_lock(state).await
     }
 
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String> {
@@ -425,10 +460,34 @@ impl StorageBackend for FilesystemService {
             .await
             .map_err(|e| format!("Failed to read state file: {e}"))?;
 
-        let state: StateObject = serde_json::from_str(&content)
+        let file: StateFile = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to deserialize state: {e}"))?;
 
-        Ok(state)
+        Ok(StateObject {
+            nonce: file.nonce,
+            ..file.state
+        })
+    }
+
+    async fn backfill_state_nonce(
+        &self,
+        account_id: &str,
+        commitment: &str,
+        nonce: u64,
+    ) -> Result<bool, String> {
+        let _guard = self.state_write_lock.lock().await;
+        let mut state = match self.pull_state(account_id).await {
+            Ok(state) => state,
+            // Like the Postgres UPDATE that matches no row.
+            Err(e) if crate::storage::is_storage_not_found(&e) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if state.commitment != commitment || state.nonce.is_some() {
+            return Ok(false);
+        }
+        state.nonce = Some(nonce);
+        self.write_state_holding_lock(&state).await?;
+        Ok(true)
     }
 
     async fn pull_delta(&self, account_id: &str, nonce: u64) -> Result<DeltaObject, String> {
@@ -1371,6 +1430,7 @@ mod tests {
         StateObject {
             account_id: account_id.to_string(),
             commitment: "0x789".to_string(),
+            nonce: None,
             state_json: serde_json::json!({"test": "state"}),
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
@@ -1947,6 +2007,148 @@ mod tests {
         assert_eq!(pulled_state.state_json, state.state_json);
 
         // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn state_nonce_is_stored_in_the_file_but_not_in_the_state_body() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut state = create_test_state(account_id);
+        state.nonce = Some(5);
+
+        storage.submit_state(&state).await.expect("submit state");
+
+        assert_eq!(
+            storage.pull_state(account_id).await.expect("pull").nonce,
+            Some(5)
+        );
+        assert_eq!(
+            storage.pull_state_head(account_id).await.expect("head"),
+            crate::state_object::StateHead {
+                commitment: "0x789".to_string(),
+                nonce: Some(5),
+            }
+        );
+        // Stored next to the commitment in the file...
+        let file: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(temp_dir.join(account_id).join("state.json"))
+                .await
+                .expect("state file"),
+        )
+        .expect("state file is JSON");
+        assert_eq!(file["nonce"], 5);
+        assert_eq!(file["commitment"], "0x789");
+        // ...but not in the object's own serialization, the `GET /state` body.
+        let body = serde_json::to_value(&state).expect("serializes");
+        assert!(body.get("nonce").is_none(), "got {body}");
+
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn a_state_file_without_a_nonce_is_backfilled_only_at_its_own_commitment() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        // A state file as the previous server version wrote it: no nonce.
+        let legacy = serde_json::json!({
+            "account_id": account_id,
+            "state_json": { "test": "state" },
+            "commitment": "0xlegacy",
+            "created_at": "2024-11-14T12:00:00Z",
+            "updated_at": "2024-11-14T12:00:00Z",
+            "auth_scheme": "falcon",
+        });
+        tokio::fs::create_dir_all(temp_dir.join(account_id))
+            .await
+            .expect("account dir");
+        tokio::fs::write(
+            temp_dir.join(account_id).join("state.json"),
+            serde_json::to_string_pretty(&legacy).unwrap(),
+        )
+        .await
+        .expect("legacy state file");
+        let head = |nonce| crate::state_object::StateHead {
+            commitment: "0xlegacy".to_string(),
+            nonce,
+        };
+
+        assert_eq!(
+            storage.pull_state_head(account_id).await.unwrap(),
+            head(None)
+        );
+
+        // A different commitment is a state the decode did not read.
+        assert!(
+            !storage
+                .backfill_state_nonce(account_id, "0xother", 7)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            storage.pull_state_head(account_id).await.unwrap(),
+            head(None)
+        );
+
+        assert!(
+            storage
+                .backfill_state_nonce(account_id, "0xlegacy", 7)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            storage.pull_state_head(account_id).await.unwrap(),
+            head(Some(7))
+        );
+        let backfilled = storage.pull_state(account_id).await.unwrap();
+        assert_eq!(backfilled.state_json, legacy["state_json"]);
+        assert_eq!(backfilled.auth_scheme, "falcon");
+
+        // A stored nonce is never overwritten.
+        assert!(
+            !storage
+                .backfill_state_nonce(account_id, "0xlegacy", 9)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            storage.pull_state_head(account_id).await.unwrap(),
+            head(Some(7))
+        );
+
+        // A later write carries its own nonce; a stale backfill misses it.
+        let mut next = create_test_state(account_id);
+        next.commitment = "0xnext".to_string();
+        next.nonce = Some(8);
+        storage.submit_state(&next).await.unwrap();
+        assert!(
+            !storage
+                .backfill_state_nonce(account_id, "0xlegacy", 7)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            storage.pull_state_head(account_id).await.unwrap().nonce,
+            Some(8)
+        );
+
+        // A missing account: the head read is not-found, the backfill a no-op.
+        let missing = "0x1111111111111101111111111111111";
+        let err = storage.pull_state_head(missing).await.unwrap_err();
+        assert!(crate::storage::is_storage_not_found(&err), "got {err}");
+        assert!(
+            !storage
+                .backfill_state_nonce(missing, "0xlegacy", 7)
+                .await
+                .unwrap()
+        );
+
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 

@@ -6,7 +6,7 @@ use crate::coordination::{AlwaysLeader, CANONICALIZATION_LEASE, LeaderElector, L
 use crate::delta_object::{DeltaObject, DeltaStatus, RetainReason};
 use crate::error::{GuardianError, Result};
 use crate::metadata::AccountMetadata;
-use crate::network::StateVerification;
+use crate::network::{AppliedState, StateVerification};
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use crate::storage::{
@@ -668,7 +668,7 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to get current state: {e}"))
             })?;
 
-        let (new_state_json, recomputed_commitment) = {
+        let applied = {
             let client = self.state.network_client.clone();
             let prev_state_json = current_state.state_json;
             let delta_payload = Arc::new(delta.delta_payload.clone());
@@ -676,6 +676,7 @@ impl DeltasProcessorBase {
                 .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
                 .await?
         };
+        let recomputed_commitment = applied.commitment.clone();
 
         let verify_result = self
             .state
@@ -710,8 +711,7 @@ impl DeltasProcessorBase {
                 }
                 self.canonicalize_verified_delta(
                     delta,
-                    new_state_json,
-                    recomputed_commitment,
+                    applied,
                     crate::metrics::labels::CandidateOutcome::Canonicalized,
                 )
                 .await
@@ -808,7 +808,7 @@ impl DeltasProcessorBase {
             .map_err(|error| {
                 GuardianError::StorageError(format!("Failed to get current state: {error}"))
             })?;
-        let (new_state_json, recomputed_commitment) = {
+        let applied = {
             let client = self.state.network_client.clone();
             let prev_state_json = current_state.state_json;
             let delta_payload = Arc::new(delta.delta_payload.clone());
@@ -816,8 +816,9 @@ impl DeltasProcessorBase {
                 .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
                 .await?
         };
+        let recomputed_commitment = &applied.commitment;
 
-        if recomputed_commitment != claimed_commitment {
+        if *recomputed_commitment != claimed_commitment {
             tracing::warn!(
                 account_id = %delta.account_id,
                 nonce = delta.nonce,
@@ -832,8 +833,7 @@ impl DeltasProcessorBase {
 
         self.canonicalize_verified_delta(
             delta,
-            new_state_json,
-            recomputed_commitment,
+            applied,
             crate::metrics::labels::CandidateOutcome::Canonicalized,
         )
         .await
@@ -1439,11 +1439,13 @@ impl DeltasProcessorBase {
         Ok(CanonicalWrite::Applied)
     }
 
+    /// Promote `delta` to canonical with the state `applied` carries: the
+    /// state its reconstruction produced, whose commitment the caller just
+    /// verified against the chain.
     async fn canonicalize_verified_delta(
         &self,
         delta: DeltaObject,
-        new_state_json: serde_json::Value,
-        verified_commitment: String,
+        applied: AppliedState,
         success_outcome: crate::metrics::labels::CandidateOutcome,
     ) -> Result<()> {
         tracing::info!(
@@ -1473,8 +1475,9 @@ impl DeltasProcessorBase {
 
         let updated_state = StateObject {
             account_id: delta.account_id.clone(),
-            state_json: new_state_json.clone(),
-            commitment: verified_commitment,
+            state_json: applied.state_json,
+            commitment: applied.commitment,
+            nonce: applied.nonce,
             created_at: current_state.created_at.clone(),
             updated_at: now.clone(),
             auth_scheme: String::new(),
@@ -1483,7 +1486,7 @@ impl DeltasProcessorBase {
         let new_auth = {
             let client = &self.state.network_client;
             client
-                .should_update_auth(&new_state_json, &account_metadata.auth)
+                .should_update_auth(&updated_state.state_json, &account_metadata.auth)
                 .await
                 .map_err(|e| {
                     GuardianError::StorageError(format!("Failed to check auth update: {e}"))
@@ -1594,7 +1597,7 @@ impl DeltasProcessorBase {
         crate::services::release_on_switch::release_if_guardian_switched(
             &self.state,
             &account_metadata,
-            &new_state_json,
+            &updated_state.state_json,
             delta.nonce,
             &updated_state.commitment,
         )
@@ -1774,6 +1777,7 @@ mod tests {
         StateObject {
             account_id: account_id.to_string(),
             commitment: "prev_commitment".to_string(),
+            nonce: None,
             state_json: serde_json::json!({"balance": 100}),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
@@ -2112,11 +2116,11 @@ mod tests {
 
     #[async_trait]
     impl crate::network::NetworkClient for CancelOnVerifyNetwork {
-        fn get_state_commitment(
+        fn get_state_head(
             &self,
             _account_id: &str,
             _state_json: &serde_json::Value,
-        ) -> std::result::Result<String, String> {
+        ) -> std::result::Result<crate::state_object::StateHead, String> {
             unreachable!()
         }
 
@@ -2145,7 +2149,7 @@ mod tests {
             &self,
             _prev_state_json: &serde_json::Value,
             _delta_payload: &serde_json::Value,
-        ) -> std::result::Result<(serde_json::Value, String), String> {
+        ) -> std::result::Result<AppliedState, String> {
             unreachable!()
         }
 

@@ -200,6 +200,7 @@ impl Modify for CommonResponsesAddon {
         crate::api::http::get_delta_since,
         crate::api::http::get_delta_history,
         crate::api::http::get_state,
+        crate::api::http::get_canonical_nonce,
         crate::api::http::lookup,
         crate::api::http::get_pubkey,
         crate::api::http::status,

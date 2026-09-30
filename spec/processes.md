@@ -2,9 +2,10 @@
 
 ## Services overview
 
-- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and initial state. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. EVM accounts are not configured through this service.
-- **push_delta**: verifies a Miden delta against the current state, computes the new commitment, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
+- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. EVM accounts are not configured through this service.
+- **push_delta**: verifies a Miden delta against the current state, computes the new state's commitment and account nonce, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
+- **get_canonical_nonce**: authenticates and returns the account nonce and commitment stored with the latest persisted account state, without loading the state blob, so a client can skip `get_state` when that nonce is below its local nonce, or equal to it at the same commitment (issue #191). A state stored before nonces were kept is decoded once, and its nonce is backfilled onto the row only while the row still holds that state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
 - **get_delta_since**: authenticates, fetches deltas after a given nonce (excluding discarded), merges their payloads via the network client, and returns a single merged delta snapshot.
 - **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against state and deriving IDs through the Miden network client.
@@ -31,11 +32,11 @@ sequenceDiagram
   S->>N: should_update_auth(initial_state)\n(extract signer map)
   S->>S: reject unless auth.cosigner_commitments == extracted signer map\n(exact set and order)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
-  S->>N: get_state_commitment(account_id, initial_state)
+  S->>N: get_state_head(account_id, initial_state)\n(commitment, nonce)
   alt existing account
     S->>M: update last_auth_timestamp (verified signer, CAS)
   end
-  S->>ST: submit_state(state_json, commitment)
+  S->>ST: submit_state(state_json, commitment, nonce)
   S->>M: set(account_id, auth, network_config, timestamps)
   alt first-time account
     Note over S,M: metadata must exist first because replay state references it by FK
@@ -66,7 +67,7 @@ sequenceDiagram
       S-->>C: 409 ConflictPendingDelta
     else no pending candidate
       S->>N: verify_delta(prev_commitment, prev_state, payload)
-      S->>N: apply_delta(prev_state, payload)\n(new_state_json, new_commitment)
+      S->>N: apply_delta(prev_state, payload)\n(new_state_json, new_commitment, new_nonce)
       S->>S: ack_delta(delta.new_commitment) -> ack_sig
       alt canonicalization enabled
         S->>ST: submit_delta(candidate)
@@ -93,6 +94,29 @@ sequenceDiagram
   S->>M: update last_auth_timestamp (per signer, CAS)
   S->>ST: pull_state(account_id)
   S-->>C: 200 {state}
+```
+
+#### get_canonical_nonce
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant S as Server
+  participant M as Metadata
+  participant ST as Storage
+  participant N as Network Client
+  C->>S: GET /state/nonce?account_id=... {credentials}
+  S->>M: get(account_id) & verify(credentials, timestamp, request_payload_digest)
+  S->>M: update last_auth_timestamp (per signer, CAS)
+  S->>ST: pull_state_head(account_id)\n(commitment, stored nonce)
+  alt nonce stored with the state
+    S-->>C: 200 {account_id, nonce, commitment}
+  else state stored before nonces were kept
+    S->>ST: pull_state(account_id)
+    S->>N: account_nonce(state_json)
+    S->>ST: backfill_state_nonce(account_id, commitment, nonce)\n(only while the row still holds this commitment)
+    S-->>C: 200 {account_id, nonce, commitment}
+  end
 ```
 
 #### get_delta
@@ -398,7 +422,7 @@ sequenceDiagram
       W->>N: verify_commitment(account_id, stored new_commitment)
       alt claim matches on-chain
         W->>ST: pull_state(account_id)
-        W->>N: apply_delta(prev_state, delta)\n(new_state, recomputed_commitment)
+        W->>N: apply_delta(prev_state, delta)\n(new_state, recomputed_commitment, nonce)
         alt recomputed commitment equals stored claim
           W->>N: should_update_auth(new_state)
           W->>ST: promote_candidate(new_state, canonical delta, new_auth?)\n(lease-fenced write)
@@ -410,7 +434,7 @@ sequenceDiagram
       end
     else full pass
       W->>ST: pull_state(account_id)
-      W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment)
+      W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment, nonce)
       W->>N: verify_commitment(account_id, expected_commitment)
       alt on-chain matches expected commitment
         W->>N: should_update_auth(new_state)\n(maybe new cosigner keys)

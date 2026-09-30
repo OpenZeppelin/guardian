@@ -313,6 +313,7 @@ component schemas.
 | client | `GET /delta/since` | signed headers | Merged delta since a nonce |
 | client | `GET /delta/history` | signed headers | Paginated canonical delta history with decoded note summaries |
 | client | `GET /state` | signed headers | Latest canonical state |
+| client | `GET /state/nonce` | signed headers | Nonce and commitment of the latest canonical state (sync pre-check) |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
 | client | `GET /pubkey` | public | ACK public key / commitment |
 | client | `GET /status` | public | Server liveness, version, environment, uptime |
@@ -382,6 +383,20 @@ Semantics not captured by the OpenAPI shapes:
   transactions the account executed elsewhere is not visible to it.
   EVM-configured accounts are rejected with `unsupported_for_network`,
   like the other Miden delta APIs.
+- **`GET /state/nonce`.** The head of the canonical state without the
+  state blob: the account nonce carried by the state GUARDIAN currently
+  holds as canonical, plus that state's commitment (issue #191). Both are
+  stored with the state when it is written, so the server answers without
+  loading, decrypting, or decoding the blob. SDK `sync` calls it before
+  `GET /state` and skips the full fetch only when the reported nonce is
+  below the local account nonce, or equal to it with the same commitment.
+  An equal nonce at a different commitment is divergence and a higher
+  nonce means GUARDIAN is ahead; both fall through to the unchanged full
+  sync. Read-only: served while the account is paused. A state stored
+  before the server kept nonces is decoded on its first read and its
+  nonce stored; if that state no longer decodes to an account, the call
+  is `account_data_unavailable` (503) rather than a nonce of 0.
+  EVM-configured accounts are rejected with `unsupported_for_network`.
 - **`/state/lookup`.** An empty `accounts` list is a successful response,
   not a 404 — distinguishing "no account" from "wrong key" would leak
   account presence to non-key-holders. Authentication is proof-of-possession
@@ -504,6 +519,7 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
 - `GetDeltaHistory(GetDeltaHistoryRequest) -> GetDeltaHistoryResponse`
+- `GetCanonicalNonce(GetCanonicalNonceRequest) -> GetCanonicalNonceResponse`
 
 Every gRPC method is rate limited from the same store as the HTTP surface;
 see [Rate Limiting](#rate-limiting) for the keying rules and the rejection

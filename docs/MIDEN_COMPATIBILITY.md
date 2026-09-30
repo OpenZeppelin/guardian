@@ -83,6 +83,27 @@ from, so it verifies and executes the same way. A 0.18.0-rc.1 client still re-ex
 the anchor and cannot verify a proposal older than the node's account history (about 50
 blocks on devnet).
 
+**Moving past 0.18.0-rc.2: the canonical-nonce sync pre-check** (issue #191) keeps the
+protocol pins and stored data, but changes two SDK contracts and adds a server migration:
+
+- **Deploy the server first.** Both multisig SDKs ask GUARDIAN for the canonical nonce
+  (`GET /state/nonce`, gRPC `GetCanonicalNonce`) before fetching the state: Rust `sync()`
+  and `sync_from_guardian()`, TypeScript `syncState()`. A failed pre-check is a sync
+  error, not a fallback to the full fetch, so these SDKs fail every sync against a server
+  that does not serve the endpoint.
+- **`Multisig.syncState()` returns `SyncStateResult` instead of `AccountState`**:
+  `{ source: 'guardian', state }` when it fetched and reconciled GUARDIAN's state, or
+  `{ source: 'local', localNonce, guardianNonce }` when GUARDIAN had nothing newer.
+  Callers that used the returned state read `state` after checking `source`, or call
+  `fetchState()` when they need GUARDIAN's copy either way.
+- **Server migration `2026-09-30-000001_state_nonce`** adds a nullable `nonce` column next
+  to `commitment` in `states`, which the endpoint reads instead of decoding the stored
+  account. It is additive, not a reset. A row written before it gets its nonce on its
+  first canonical-nonce read. During a rolling deploy, a trigger clears the nonce of any
+  row a replica still on the previous version moves to a new commitment, so a stale nonce
+  is never served. Filesystem-backed deployments need no step: state files without a
+  nonce are filled in the same way.
+
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
 
