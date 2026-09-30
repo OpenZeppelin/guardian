@@ -16,6 +16,9 @@ use miden_protocol::crypto::dsa::falcon512_poseidon2::{
 };
 use miden_protocol::utils::serde::Deserializable;
 
+/// Serialized ECDSA secp256k1 signature length: `r (32) || s (32) || v (1)`.
+const ECDSA_SIGNATURE_LEN: usize = 65;
+
 /// A public key derived from a lookup signature.
 #[derive(Debug)]
 pub enum LookupPublicKey {
@@ -37,10 +40,12 @@ pub fn commitment_of(pk: &LookupPublicKey) -> String {
 /// cryptographically against the lookup digest, all in one step.
 ///
 /// Falcon signatures embed the public key; ECDSA signatures recover it via
-/// the recovery byte. Try Falcon first because its signature blob is large
-/// and unambiguous (~700 bytes); ECDSA secp256k1 signatures are 65 bytes
-/// with the recovery byte. If the bytes neither parse as a Falcon signature
-/// nor recover an ECDSA pubkey, the request is rejected.
+/// the recovery byte. Try Falcon first (exactly 1524 bytes, enforced by
+/// `FromHex`); otherwise take the ECDSA path only for exactly 65 bytes
+/// (`r || s || v`), because `read_from_bytes` ignores trailing bytes and would
+/// read the prefix of an unparseable Falcon blob as ECDSA. If the bytes
+/// neither parse as a Falcon signature nor recover an ECDSA pubkey, the
+/// request is rejected.
 ///
 /// Caller is still responsible for the commitment-equality check
 /// (`commitment_of(returned_pk) == queried_key_commitment`) — that's where
@@ -62,7 +67,9 @@ pub fn derive_pubkey_from_lookup_signature(
 
     let bytes = hex::decode(signature_hex.trim_start_matches("0x"))
         .map_err(|e| format!("invalid signature hex: {e}"))?;
-    if let Ok(signature) = EcdsaSignature::read_from_bytes(&bytes) {
+    if bytes.len() == ECDSA_SIGNATURE_LEN
+        && let Ok(signature) = EcdsaSignature::read_from_bytes(&bytes)
+    {
         let recovered = EcdsaPublicKey::recover_from(digest, &signature)
             .map_err(|_| "ECDSA signature recovery failed".to_string())?;
         if recovered.verify(digest, &signature) {
@@ -106,7 +113,7 @@ mod tests {
     use miden_protocol::Word;
     use miden_protocol::account::AccountId;
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
-    use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
+    use miden_protocol::crypto::dsa::falcon512_poseidon2::{PK_LEN, SecretKey as FalconSecretKey};
     use miden_protocol::utils::serde::Serializable;
 
     #[test]
@@ -232,6 +239,48 @@ mod tests {
             err.contains("Falcon") || err.contains("did not parse"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn derive_pubkey_unparseable_falcon_is_not_read_as_ecdsa() {
+        // A Falcon blob whose embedded key fails to parse must not fall back
+        // to ECDSA, even when its first 65 bytes form a valid ECDSA encoding.
+        let secret = FalconSecretKey::new();
+        let kc = secret.public_key().to_commitment();
+        let ts = 1_700_000_000_000i64;
+
+        let digest = LookupAuthMessage::new(ts, kc).to_word();
+        let mut bytes = secret.sign(digest).to_bytes();
+        // Keep the key's header byte; set every 14-bit coefficient to 0x3fff (>= q).
+        let key_coefficients = bytes.len() - PK_LEN + 1;
+        bytes[key_coefficients..].fill(0xff);
+        // Byte 64 is the ECDSA recovery id; 0 makes the 65-byte prefix valid ECDSA.
+        bytes[64] = 0;
+        assert!(FalconSignature::read_from_bytes(&bytes).is_err());
+        assert!(EcdsaSignature::read_from_bytes(&bytes).is_ok());
+
+        let err =
+            derive_pubkey_from_lookup_signature(&format!("0x{}", hex::encode(&bytes)), ts, kc)
+                .expect_err("unparseable Falcon signature must be rejected");
+        assert!(err.contains("did not parse"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn derive_pubkey_ecdsa_rejects_wrong_length() {
+        let secret = EcdsaSecretKey::new();
+        let kc = secret.public_key().to_commitment();
+        let ts = 1_700_000_000_000i64;
+        let sig = ecdsa_lookup_signature(&secret, ts, kc);
+
+        let with_trailing_byte = format!("{sig}00");
+        let err = derive_pubkey_from_lookup_signature(&with_trailing_byte, ts, kc)
+            .expect_err("ECDSA signature with a trailing byte must be rejected");
+        assert!(err.contains("did not parse"), "unexpected error: {err}");
+
+        let truncated = &sig[..sig.len() - 2];
+        let err = derive_pubkey_from_lookup_signature(truncated, ts, kc)
+            .expect_err("truncated ECDSA signature must be rejected");
+        assert!(err.contains("did not parse"), "unexpected error: {err}");
     }
 
     #[test]
