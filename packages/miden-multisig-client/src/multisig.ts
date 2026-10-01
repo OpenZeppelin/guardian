@@ -445,6 +445,30 @@ export class Multisig {
   }
 
   /**
+   * Refuses to execute a proposal GUARDIAN pinned to a state other than the
+   * one this client holds. The transaction executes on this client's own
+   * record of the account while the execution push names the pinned base,
+   * so the two have to be the same state. A proposal pinned to a state the
+   * account has since left was made for that state, and its transaction
+   * would otherwise run again on the current one. One pinned to a state this
+   * client does not hold (a server that queues chained candidates pins a
+   * proposal to the newest queued candidate's post-state) would be admitted
+   * behind that candidate while the transaction itself lands on the older
+   * state, leaving GUARDIAN behind the chain.
+   */
+  private async assertExecutesOnPinnedBase(proposalId: string, pinnedBase: string): Promise<void> {
+    const account = await this.getStoreAccount();
+    const local = normalizeHexWord(account.to_commitment().toHex());
+    const pinned = normalizeHexWord(pinnedBase);
+    if (local !== pinned) {
+      throw new Error(
+        `Proposal ${proposalId} was made for account state ${pinned}, but this client's account is at ${local}: ` +
+          'sync the account (syncState) and retry, or create a new proposal if the account has moved past that state',
+      );
+    }
+  }
+
+  /**
    * Read the current ordered signer public-key commitments from account
    * storage (store-backed state, falling back to the snapshot).
    *
@@ -2260,6 +2284,7 @@ export class Multisig {
         `Proposal is not ready for execution: have ${signaturesForExecution.length} of ${effectiveThreshold} required signatures.`,
       );
     }
+    await this.assertExecutesOnPinnedBase(proposalId, delta.prevCommitment);
 
     const txSummary = TransactionSummary.deserialize(
       base64ToUint8Array(delta.deltaPayload.txSummary.data),
@@ -2474,6 +2499,7 @@ export class Multisig {
       txSummaryBase64 = proposal.txSummary;
     } else {
       delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
+      await this.assertExecutesOnPinnedBase(proposalId, delta.prevCommitment);
       txSummaryBase64 = delta.deltaPayload.txSummary.data;
     }
 

@@ -259,6 +259,18 @@ vi.stubGlobal('fetch', mockFetch);
 
 const MIDEN_RPC_ENDPOINT = 'https://rpc.devnet.miden.io';
 
+// The commitment of the default account snapshot: the state an execution
+// runs on when the store holds no newer record, and the base the fixtures
+// have GUARDIAN pin proposals to.
+const LOCAL_ACCOUNT_COMMITMENT = '0x' + 'b'.repeat(64);
+
+/** The execution pushes (`POST /delta`) the client made. */
+function executionPushes(): any[] {
+  return mockFetch.mock.calls
+    .filter(([url]) => String(url).endsWith('/delta'))
+    .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+}
+
 function mockedAccount(commitmentHex: string, nonce = 0): any {
   return {
     commitment: () => ({
@@ -356,6 +368,7 @@ describe('Multisig', () => {
         suffix: () => ({ asInt: () => BigInt(2) }),
       }),
       serialize: () => new Uint8Array([1, 2, 3]),
+      to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
     };
 
     // The `MidenClient` surface the SDK is allowed to reach. The four
@@ -5882,6 +5895,68 @@ describe('Multisig', () => {
       );
     });
 
+    it('should refuse a proposal pinned to a state this client does not hold, before pushing anything', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+
+      // GUARDIAN pinned the proposal to a state this client has not reached:
+      // a server queueing chained candidates pins it to the newest queued
+      // candidate's post-state.
+      const pinnedBase = '0x' + 'e'.repeat(64);
+      const readyDelta = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: pinnedBase,
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+            salt: MOCK_SALT_HEX,
+            description: '',
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [
+            {
+              signer_id: '0x' + 'a'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ proposals: [readyDelta] }),
+      });
+      await multisig.syncProposals();
+
+      // executeProposal: getDeltaProposal, and nothing after it
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => readyDelta,
+      });
+
+      await expect(multisig.executeProposal('0x' + 'c'.repeat(64))).rejects.toThrow(
+        `was made for account state ${pinnedBase}, but this client's account is at ${LOCAL_ACCOUNT_COMMITMENT}`,
+      );
+      expect(executionPushes()).toEqual([]);
+      expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
+    });
+
     it('should encode ECDSA proposal and ack signatures with scheme-aware advice', async () => {
       const { buildSignatureAdviceEntry, signatureHexToBytes } = await import('./utils/signature.js');
       vi.mocked(signatureHexToBytes).mockClear();
@@ -5999,6 +6074,11 @@ describe('Multisig', () => {
         mockWebClient.transactions.executeRequest.mock.invocationCallOrder[0],
       );
       expect(mockWebClient.transactions.executeRequest.mock.calls[0]).toHaveLength(2);
+      // The push names the base GUARDIAN pinned the proposal to, which is the
+      // state this client executes on.
+      expect(executionPushes().map((push) => push.prev_commitment)).toEqual([
+        LOCAL_ACCOUNT_COMMITMENT,
+      ]);
 
       expect(vi.mocked(signatureHexToBytes)).toHaveBeenNthCalledWith(
         1,
@@ -6988,6 +7068,32 @@ describe('Multisig', () => {
       await expect(
         multisig.prepareCustomExecution('0x' + 'c'.repeat(64), requestBytes),
       ).rejects.toThrow('GUARDIAN did not return acknowledgment signature');
+    });
+
+    it('refuses a proposal pinned to a state the account has left, before pushing anything', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      // The store has moved past the state GUARDIAN pinned the proposal to:
+      // the transaction would run again on the newer state.
+      const storeCommitment = '0x' + '8'.repeat(64);
+      mockWebClient.accounts.get.mockResolvedValue(mockedAccount(storeCommitment, 1));
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => customDelta('b2agg', [falconSig('0x' + 'a'.repeat(64))]),
+      });
+
+      await expect(
+        multisig.prepareCustomExecution('0x' + 'c'.repeat(64), requestBytes),
+      ).rejects.toThrow(
+        `was made for account state ${LOCAL_ACCOUNT_COMMITMENT}, but this client's account is at ${storeCommitment}`,
+      );
+      expect(executionPushes()).toEqual([]);
+      expect(executeForSummaryAtTip).not.toHaveBeenCalled();
     });
   });
 

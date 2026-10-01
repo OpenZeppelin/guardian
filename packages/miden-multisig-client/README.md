@@ -480,6 +480,12 @@ if (proposal.status === 'ready') {
 }
 ```
 
+GUARDIAN pins every proposal to the account state its transaction must execute
+on. Execution (and `createTransactionProposalRequest` and
+`prepareCustomExecution`) refuses a proposal pinned to a state other than the one
+this client holds: sync with `syncState()` and retry, or create a new proposal if
+the account has moved past that state.
+
 ### Export Proposal for Offline Signing
 
 ```typescript
