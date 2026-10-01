@@ -533,7 +533,12 @@ This is an admission/execution policy, not a universal property of signed summar
   custom, the effective threshold is the account default. Guardian's separate
   acknowledgment MUST NOT count toward this cosigner threshold. Mapping this model to
   the upstream wallet's general 2-of-3 quorum is an open integration question; v1 does
-  not change the account authorization contract.
+  not change the account authorization contract. This check is a synchronous first pass: the
+  account enforces the highest threshold over every procedure the transaction calls, which
+  only execution reveals. A signed execution that the account rejects as unauthorized MUST
+  fail before proving with `GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES`, leaving the proposal
+  executable once more cosigners sign (added 2026-10-01; it had surfaced as a binding
+  mismatch).
 - **FR-006**: Before any proving or network submission, Guardian MUST cryptographically
   verify each collected cosigner signature against the signed summary commitment and confirm
   its signing key belongs to the account's registered cosigner set. It MUST then **select the

@@ -887,3 +887,78 @@ variable "github_deploy_stack_names" {
   type        = list(string)
   default     = ["guardian", "guardian-prod"]
 }
+
+variable "guardian_tx_prover_url" {
+  description = "Remote transaction prover URL (GUARDIAN_TX_PROVER_URL). When set, Terraform creates a Secrets Manager secret holding it, since the URL can carry credentials. Setting a prover is what turns Guardian execution on. Empty leaves execution off unless guardian_tx_prover_url_secret_arn is set."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "guardian_tx_prover_url_secret_arn" {
+  description = "Secrets Manager secret ARN holding the remote transaction prover URL, used instead of guardian_tx_prover_url"
+  type        = string
+  default     = ""
+}
+
+variable "guardian_proving_enabled" {
+  description = "Optional override for GUARDIAN_PROVING_ENABLED. false is the kill switch: execution requests are refused while executions already in flight are still settled. Unset leaves the server default (on whenever a prover is configured)."
+  type        = bool
+  default     = null
+}
+
+variable "guardian_tx_prover_timeout_secs" {
+  description = "Optional override for GUARDIAN_TX_PROVER_TIMEOUT_SECS, the per-proof prover deadline (server default 300)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_tx_prover_timeout_secs == null ? true : (
+      var.guardian_tx_prover_timeout_secs >= 1 &&
+      var.guardian_tx_prover_timeout_secs <= 3600 &&
+      floor(var.guardian_tx_prover_timeout_secs) == var.guardian_tx_prover_timeout_secs
+    )
+    error_message = "guardian_tx_prover_timeout_secs must be a whole number between 1 and 3600."
+  }
+}
+
+variable "guardian_execution_lease_secs" {
+  description = "Optional override for GUARDIAN_EXECUTION_LEASE_SECS, the execution lease length (server default 120, at most 3600)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_execution_lease_secs == null ? true : (
+      var.guardian_execution_lease_secs >= 1 &&
+      var.guardian_execution_lease_secs <= 3600 &&
+      floor(var.guardian_execution_lease_secs) == var.guardian_execution_lease_secs
+    )
+    error_message = "guardian_execution_lease_secs must be a whole number between 1 and 3600."
+  }
+}
+
+variable "guardian_execution_reconcile_interval_secs" {
+  description = "Optional override for GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS (server default 30); the server requires it below the execution lease"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_execution_reconcile_interval_secs == null ? true : (
+      var.guardian_execution_reconcile_interval_secs >= 1 &&
+      var.guardian_execution_reconcile_interval_secs <= 3599 &&
+      floor(var.guardian_execution_reconcile_interval_secs) == var.guardian_execution_reconcile_interval_secs
+    )
+    error_message = "guardian_execution_reconcile_interval_secs must be a whole number between 1 and 3599."
+  }
+}
+
+variable "guardian_execution_expiration_horizon_blocks" {
+  description = "Optional override for GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS (server default 512, at least 256)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_execution_expiration_horizon_blocks == null ? true : (
+      var.guardian_execution_expiration_horizon_blocks >= 256 &&
+      var.guardian_execution_expiration_horizon_blocks <= 65535 &&
+      floor(var.guardian_execution_expiration_horizon_blocks) == var.guardian_execution_expiration_horizon_blocks
+    )
+    error_message = "guardian_execution_expiration_horizon_blocks must be a whole number between 256 and 65535."
+  }
+}

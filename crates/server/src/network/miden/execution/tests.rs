@@ -1024,6 +1024,23 @@ mod executor {
     }
 
     #[tokio::test]
+    async fn signatures_below_the_enforced_threshold_are_insufficient_not_a_mismatch() {
+        let proposal = proposal(true).await;
+        let mut attempt = proposal
+            .executor()
+            .prepare(proposal.input(&[0]))
+            .await
+            .unwrap();
+        let failure = attempt.execute(None).await.unwrap_err();
+        assert_eq!(failure.code, ExecutionFailureCode::InsufficientSignatures);
+        assert!(
+            failure.message.contains("1 valid signatures"),
+            "{}",
+            failure.message
+        );
+    }
+
+    #[tokio::test]
     async fn a_node_behind_the_bound_block_is_chain_behind() {
         let mut proposal = proposal(true).await;
         let mut chain = MockChainBuilder::with_accounts([proposal.account.clone()])

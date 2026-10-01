@@ -415,7 +415,7 @@ become the only trusted ones.
 The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so image pushes always produce a real ECS task-definition revision instead of relying on tag reuse.
 It also keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default.
 
-AWS deployments must include the `postgres` server feature. The script defaults `GUARDIAN_SERVER_FEATURES` to `postgres`; add `evm` only when deploying the optional EVM API surface. Guardian execution is always built in and stays off until `GUARDIAN_TX_PROVER_URL` is set.
+AWS deployments must include the `postgres` server feature. The script defaults `GUARDIAN_SERVER_FEATURES` to `postgres`; add `evm` only when deploying the optional EVM API surface. Guardian execution is always built in and stays off until `GUARDIAN_TX_PROVER_URL` is set. To turn it on, pass `GUARDIAN_TX_PROVER_URL` to the script (or `guardian_tx_prover_url` to Terraform): the stack stores it in a `<stack-name>/server/tx-prover-url` Secrets Manager secret, because the URL can carry credentials, grants the task role read access, and injects it as a container secret. Point at an existing secret with `GUARDIAN_TX_PROVER_URL_SECRET_ARN` instead. `GUARDIAN_PROVING_ENABLED=false` is the kill switch. The lease, reconcile interval, prover timeout and expiration horizon take `TF_VAR_guardian_*` overrides (see `infra/README.md`).
 
 ### Reviewable Build, Plan, Apply
 
@@ -950,6 +950,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `operator_public_keys_secret_name` | Terraform-managed operator public keys secret name, when created |
 | `guardian_evm_allowed_chain_ids_secret_arn` | Secrets Manager ARN used for EVM allowed chain IDs |
 | `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
+| `guardian_tx_prover_url_secret_arn` | Secrets Manager ARN the server reads its prover URL from; empty when execution is not configured |
 | `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
 | `guardian_allowed_account_schemes` | Signature schemes new accounts may register with (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`); empty keeps every scheme |

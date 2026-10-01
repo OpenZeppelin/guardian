@@ -249,6 +249,13 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_evm_allowed_chain_ids_secret_arn` | `""` | Existing EVM allowed chain IDs secret ARN; takes precedence over the managed value |
 | `guardian_evm_rpc_urls` | `""` | EVM `chain_id=url` entries used to create a stack-scoped RPC URLs secret |
 | `guardian_evm_rpc_urls_secret_arn` | `""` | Existing EVM RPC URLs secret ARN; takes precedence over the managed value |
+| `guardian_tx_prover_url` | `""` | Remote transaction prover URL; creates a stack-scoped secret (it can carry credentials) and turns Guardian execution on |
+| `guardian_tx_prover_url_secret_arn` | `""` | Existing prover URL secret ARN; takes precedence over the managed value |
+| `guardian_proving_enabled` | `null` | Overrides `GUARDIAN_PROVING_ENABLED`; `false` refuses execution requests while executions in flight still settle |
+| `guardian_tx_prover_timeout_secs` | `null` | Overrides `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (server default 300) |
+| `guardian_execution_lease_secs` | `null` | Overrides `GUARDIAN_EXECUTION_LEASE_SECS` (server default 120, at most 3600) |
+| `guardian_execution_reconcile_interval_secs` | `null` | Overrides `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` (server default 30; must stay below the lease) |
+| `guardian_execution_expiration_horizon_blocks` | `null` | Overrides `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` (server default 512, at least 256) |
 | `guardian_evm_entrypoint_address` | `""` | Shared EVM EntryPoint address injected into the server task |
 | `guardian_cors_allowed_origins` | `""` | Comma-separated explicit HTTP origins allowed by credentialed CORS |
 | `guardian_allowed_account_schemes` | `""` (every scheme) | Comma-separated signature schemes new accounts may register with (`falcon`, `ecdsa`); the production checklist recommends `ecdsa`. Existing accounts unaffected |
@@ -326,6 +333,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `operator_public_keys_secret_name` | Terraform-managed operator public keys secret name, when created |
 | `guardian_evm_allowed_chain_ids_secret_arn` | Secrets Manager ARN used for EVM allowed chain IDs |
 | `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
+| `guardian_tx_prover_url_secret_arn` | Secrets Manager ARN the server reads its prover URL from; empty when execution is not configured |
 | `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
 | `guardian_allowed_account_schemes` | Signature schemes new accounts may register with (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`) |

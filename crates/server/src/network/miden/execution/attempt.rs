@@ -552,6 +552,7 @@ impl ExecutionAttempt for MidenAttempt {
         self.store.begin_execution();
         let executor: TransactionExecutor<'_, '_, _, UnreachableAuth> =
             TransactionExecutor::new(&self.store);
+        let signatures = self.signature_advice.len();
         let executed = executor
             .execute_transaction(
                 self.account.id(),
@@ -560,7 +561,17 @@ impl ExecutionAttempt for MidenAttempt {
                 inputs.tx_args,
             )
             .await
-            .map_err(|error| execution_failure(&self.store, &error))?;
+            .map_err(|error| match error {
+                TransactionExecutorError::Unauthorized(_) => ExecutionFailure::new(
+                    ExecutionFailureCode::InsufficientSignatures,
+                    format!(
+                        "the {signatures} valid signatures do not meet the threshold of every \
+                         procedure this transaction calls; collect more and request execution \
+                         again"
+                    ),
+                ),
+                error => execution_failure(&self.store, &error),
+            })?;
 
         if executed.input_notes().commitment() != self.summary.input_notes().commitment()
             || executed.output_notes().commitment() != self.summary.output_notes().commitment()

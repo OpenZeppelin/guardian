@@ -255,6 +255,36 @@ resource "aws_ecs_task_definition" "server" {
               name  = "GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID"
               value = local.storage_encryption_secret_name
             }
+          ] : [],
+          var.guardian_proving_enabled != null ? [
+            {
+              name  = "GUARDIAN_PROVING_ENABLED"
+              value = tostring(var.guardian_proving_enabled)
+            }
+          ] : [],
+          var.guardian_tx_prover_timeout_secs != null ? [
+            {
+              name  = "GUARDIAN_TX_PROVER_TIMEOUT_SECS"
+              value = tostring(var.guardian_tx_prover_timeout_secs)
+            }
+          ] : [],
+          var.guardian_execution_lease_secs != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_LEASE_SECS"
+              value = tostring(var.guardian_execution_lease_secs)
+            }
+          ] : [],
+          var.guardian_execution_reconcile_interval_secs != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS"
+              value = tostring(var.guardian_execution_reconcile_interval_secs)
+            }
+          ] : [],
+          var.guardian_execution_expiration_horizon_blocks != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS"
+              value = tostring(var.guardian_execution_expiration_horizon_blocks)
+            }
           ] : []
         )
 
@@ -274,6 +304,12 @@ resource "aws_ecs_task_definition" "server" {
             {
               name      = "GUARDIAN_EVM_RPC_URLS"
               valueFrom = local.evm_rpc_urls_secret_arn
+            }
+          ] : [],
+          local.tx_prover_url_secret_arn != "" ? [
+            {
+              name      = "GUARDIAN_TX_PROVER_URL"
+              valueFrom = local.tx_prover_url_secret_arn
             }
           ] : [],
           local.is_prod ? [
@@ -396,6 +432,7 @@ resource "aws_ecs_service" "server" {
     aws_secretsmanager_secret_version.database_url,
     aws_secretsmanager_secret_version.evm_allowed_chain_ids,
     aws_secretsmanager_secret_version.evm_rpc_urls,
+    aws_secretsmanager_secret_version.tx_prover_url,
     aws_secretsmanager_secret_version.operator_public_keys
   ]
 }

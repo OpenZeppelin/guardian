@@ -335,6 +335,7 @@ mod tests {
             ExecutionFailureCode::ForeignAccountUnavailable(
                 ForeignAccountUnavailableReason::Private,
             ),
+            ExecutionFailureCode::InsufficientSignatures,
             ExecutionFailureCode::SealingFailed,
             ExecutionFailureCode::Abandoned,
         ];

@@ -39,3 +39,17 @@ resource "aws_secretsmanager_secret_version" "evm_rpc_urls" {
   secret_id     = aws_secretsmanager_secret.evm_rpc_urls[0].id
   secret_string = var.guardian_evm_rpc_urls
 }
+
+resource "aws_secretsmanager_secret" "tx_prover_url" {
+  count = local.managed_tx_prover_url_secret_enabled ? 1 : 0
+
+  name                    = local.tx_prover_url_secret_name
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "tx_prover_url" {
+  count = local.managed_tx_prover_url_secret_enabled ? 1 : 0
+
+  secret_id     = aws_secretsmanager_secret.tx_prover_url[0].id
+  secret_string = var.guardian_tx_prover_url
+}

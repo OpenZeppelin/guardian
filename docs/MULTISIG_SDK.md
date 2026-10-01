@@ -594,6 +594,11 @@ What the mode changes, identically in both SDKs:
   horizon.
 - **The low-level `createProposal(nonce, txSummaryBase64, metadata)`** (TypeScript) carries no
   request, so it refuses on a Guardian-executable client.
+- **Thresholds.** Guardian accepts a request once the valid signatures meet the threshold of the
+  procedure the proposal type implies. The account enforces the highest threshold among every
+  procedure the transaction calls; when that is higher, the execution fails with
+  `GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` before anything is proved, and the proposal can be
+  executed once more cosigners sign.
 - **Invalid signatures.** Guardian executes with the valid signatures it holds and ignores
   invalid, duplicate or revoked-signer ones, as long as the valid ones meet the threshold; the
   ignored count is reported with the execution. Local execution passes every collected signature

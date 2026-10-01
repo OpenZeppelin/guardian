@@ -524,6 +524,13 @@ once come back synchronously and create nothing.
   against itself: an MMR path or delta, a header, or a `ProtocolConfig` that differs from the
   reference header. This is a node problem, not a proposal one (it used to surface as
   `BINDING_MISMATCH`). Point Guardian at a healthy node, then retry.
+- **`GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` although the request was accepted.** Guardian
+  accepts a request once the valid signatures meet the threshold of the procedure the proposal's
+  type implies. The account itself requires the highest threshold among every procedure the
+  transaction calls, falling back to the account default for a procedure without an override.
+  A consume-notes proposal on an account with `receive_asset` lowered to 1, whose note also calls
+  another account procedure, therefore needs the default threshold. Nothing was proved or sent
+  and the proposal is untouched: collect the missing signatures and request execution again.
 - **`GUARDIAN_EXECUTION_INSUFFICIENT_FEE`.** The account cannot pay the fee at the block Guardian
   executes against. The fee is recomputed there, so an account funded to the cent when the
   proposal was created can fall short. On devnet there is no faucet UI:
@@ -695,6 +702,7 @@ Causes of a `failed` execution, in `error.code`:
 | `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE` | `reason`: `private` or `unavailable` | Only for `unavailable`. |
 | `GUARDIAN_EXECUTION_CHAIN_BEHIND`, `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, `GUARDIAN_EXECUTION_CHAIN_INCONSISTENT`, `GUARDIAN_EXECUTION_PROVING_FAILED`, `GUARDIAN_EXECUTION_SEALING_FAILED`, `GUARDIAN_EXECUTION_LEASE_EXPIRED`, `GUARDIAN_EXECUTION_ABANDONED` | none | Yes; the proposal is untouched. |
 | `GUARDIAN_EXECUTION_BINDING_MISMATCH`, `GUARDIAN_EXECUTION_STATE_MISMATCH`, `GUARDIAN_EXECUTION_REQUEST_CODEC`, `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`, `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`, `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON`, `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | none | Not until the cause is fixed. |
+| `GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` | none | Yes, once more cosigners have signed; the proposal is untouched. |
 | `GUARDIAN_EXECUTION_SUBMISSION_REJECTED`, `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`, `GUARDIAN_EXECUTION_EXPIRED` | none | No; the transaction was sent, and the proposal is gone (`proposal_exists: false`). |
 
 ### Validation

@@ -98,6 +98,9 @@ pub enum ExecutionFailureCode {
     NodeUnavailable,
     ForeignAccountUnavailable(ForeignAccountUnavailableReason),
     InsufficientFee,
+    /// The signatures met Guardian's check of the proposal's type but not the threshold the
+    /// account enforces over every procedure the transaction calls.
+    InsufficientSignatures,
     ProvingFailed,
     SealingFailed,
     ExpirationBeyondHorizon,
@@ -135,6 +138,9 @@ impl ExecutionFailureCode {
                 "GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE"
             }
             ExecutionFailureCode::InsufficientFee => "GUARDIAN_EXECUTION_INSUFFICIENT_FEE",
+            ExecutionFailureCode::InsufficientSignatures => {
+                "GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES"
+            }
             ExecutionFailureCode::ProvingFailed => "GUARDIAN_EXECUTION_PROVING_FAILED",
             ExecutionFailureCode::SealingFailed => "GUARDIAN_EXECUTION_SEALING_FAILED",
             ExecutionFailureCode::ExpirationBeyondHorizon => {
@@ -169,6 +175,7 @@ impl ExecutionFailureCode {
             | ExecutionFailureCode::ChainInconsistent
             | ExecutionFailureCode::NodeUnavailable
             | ExecutionFailureCode::InsufficientFee
+            | ExecutionFailureCode::InsufficientSignatures
             | ExecutionFailureCode::ProvingFailed
             | ExecutionFailureCode::SealingFailed
             | ExecutionFailureCode::ExpirationBeyondHorizon
@@ -212,6 +219,9 @@ impl ExecutionFailureCode {
                 )
             }
             "GUARDIAN_EXECUTION_INSUFFICIENT_FEE" => ExecutionFailureCode::InsufficientFee,
+            "GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES" => {
+                ExecutionFailureCode::InsufficientSignatures
+            }
             "GUARDIAN_EXECUTION_PROVING_FAILED" => ExecutionFailureCode::ProvingFailed,
             "GUARDIAN_EXECUTION_SEALING_FAILED" => ExecutionFailureCode::SealingFailed,
             "GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON" => {
