@@ -158,6 +158,8 @@ impl ExecutionAttempt for FakeAttempt {
         self.script.execute.clone()?;
         Ok(ExecutedTransactionInfo {
             final_account_commitment: NEW_COMMITMENT.to_string(),
+            reference_block: 100,
+            expiration_block: self.script.expiration_block,
         })
     }
 

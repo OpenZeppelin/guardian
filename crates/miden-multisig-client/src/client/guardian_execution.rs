@@ -9,6 +9,12 @@ fn refusal(error: ClientError) -> MultisigError {
     match error.guardian_code() {
         Some(code) => MultisigError::GuardianExecutionRefused {
             message: error.user_message().unwrap_or_else(|| error.to_string()),
+            retryable: error.is_retryable(),
+            blocking_proposal_id: error.guardian_meta().and_then(|meta| {
+                meta.get("blocking_proposal_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            }),
             code,
         },
         None => MultisigError::from(error),
@@ -50,5 +56,58 @@ impl MultisigClient {
             .get_current_execution(&account_id)
             .await
             .map_err(refusal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refused(details: serde_json::Value) -> MultisigError {
+        refusal(ClientError::from(tonic::Status::with_details(
+            tonic::Code::Aborted,
+            "refused",
+            details.to_string().into_bytes().into(),
+        )))
+    }
+
+    #[test]
+    fn a_conflict_keeps_the_blocking_proposal_and_the_retry_hint() {
+        let error = refused(serde_json::json!({
+            "code": "GUARDIAN_EXECUTION_CONFLICT",
+            "message": "another proposal is executing",
+            "meta": { "retryable": false, "blocking_proposal_id": "0xabc" }
+        }));
+        let MultisigError::GuardianExecutionRefused {
+            code,
+            retryable,
+            blocking_proposal_id,
+            ..
+        } = error
+        else {
+            panic!("expected a refusal, got {error:?}");
+        };
+        assert_eq!(code, "GUARDIAN_EXECUTION_CONFLICT");
+        assert!(!retryable);
+        assert_eq!(blocking_proposal_id.as_deref(), Some("0xabc"));
+    }
+
+    #[test]
+    fn a_busy_refusal_is_retryable_and_names_no_proposal() {
+        let error = refused(serde_json::json!({
+            "code": "GUARDIAN_EXECUTION_BUSY",
+            "message": "the account is busy",
+            "meta": { "retryable": true }
+        }));
+        let MultisigError::GuardianExecutionRefused {
+            retryable,
+            blocking_proposal_id,
+            ..
+        } = error
+        else {
+            panic!("expected a refusal, got {error:?}");
+        };
+        assert!(retryable);
+        assert_eq!(blocking_proposal_id, None);
     }
 }

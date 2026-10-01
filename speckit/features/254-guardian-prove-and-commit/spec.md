@@ -1017,10 +1017,14 @@ This is an admission/execution policy, not a universal property of signed summar
     under FR-039 while the account is still at base; the transaction can never land; settle
     `failed`. FR-046 guarantees that bound is finite and within the horizon. A transaction
     expiring at block `X` can still be included in block `X` and in no later block
-    (`miden-protocol-0.17.0-rc.7/src/block/proposed_block.rs:679`), so the height MUST be read
-    **before** the account: the account read then reflects block `X`, and an account still at
-    its base was not included. (Revised 2026-10-01 from "strictly past", which read the account
-    first and only narrowed the race between the two reads.)
+    (`miden-protocol-0.17.0-rc.7/src/block/proposed_block.rs:679`). The height and the account
+    state MUST come from one observation: the account read reports the block it was taken at
+    (`AccountResponse.block_num`), so a node behind a load balancer cannot pair a fresh tip with
+    a stale account. An account observed at any other commitment settles as superseded only when
+    that observation is at or after the block the transaction executed against, where the base
+    was on chain; an older one is a lagging node. Reconciliation runs whenever canonicalization
+    does, with or without an executor, so switching execution off settles what is in flight.
+    (Revised 2026-10-01 from "strictly past" with a separate tip read.)
   Guardian MUST NOT settle on elapsed wall-clock time alone. Expiration is the only finite
   chain-height bound, which is why FR-039 requires recording it. If chain observation is
   unavailable, Guardian MUST retain the reservation, keep reporting `submitted`, and retry

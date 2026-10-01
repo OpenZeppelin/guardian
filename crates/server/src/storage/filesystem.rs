@@ -757,7 +757,17 @@ impl StorageBackend for FilesystemService {
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String> {
-        // For filesystem, update is the same as submit
+        // Like the Postgres `UPDATE`, a proposal that is gone stays gone: a signature racing the
+        // execution that consumed or discarded the proposal must not write it back. The lock is
+        // the one execution resolution deletes proposals under.
+        let _guard = self.delta_write_lock.lock().await;
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
+        if !fs::try_exists(&path)
+            .await
+            .map_err(|e| format!("Failed to check proposal file: {e}"))?
+        {
+            return Ok(());
+        }
         self.submit_delta_proposal(commitment, proposal).await
     }
 
@@ -1071,6 +1081,9 @@ impl StorageBackend for FilesystemService {
             &reservation.account_id,
             &reservation.fence,
         )?;
+        if reservation.lease_expires_at <= reservation.now {
+            return Ok(ReservationWrite::StaleLease);
+        }
         let _guard = self.delta_write_lock.lock().await;
         let mut records = self.read_executions(&reservation.account_id).await?;
         if let Some(active) = records.iter().find(|record| record.reservation.is_active()) {
@@ -1222,6 +1235,13 @@ impl StorageBackend for FilesystemService {
         let current_state = self.pull_state(&account_id).await?;
         if current_state.commitment != admission.delta.prev_commitment {
             return Ok(AdmissionWrite::StaleBase);
+        }
+        let account = metadata
+            .get(&account_id)
+            .await?
+            .ok_or_else(|| format!("account metadata for {account_id} disappeared"))?;
+        if account.paused_at.is_some() || account.released_at.is_some() {
+            return Ok(AdmissionWrite::AccountInactive);
         }
         if self.has_pending_candidate(&account_id).await? {
             return Ok(AdmissionWrite::CandidateExists);
@@ -2724,6 +2744,35 @@ mod tests {
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn updating_a_deleted_proposal_does_not_bring_it_back() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let service = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let proposal = create_test_delta(account_id, 1);
+        let commitment = "0xabc123";
+        service
+            .submit_delta_proposal(commitment, &proposal)
+            .await
+            .unwrap();
+        service
+            .delete_delta_proposal(account_id, commitment)
+            .await
+            .unwrap();
+        service
+            .update_delta_proposal(commitment, &proposal)
+            .await
+            .unwrap();
+        assert!(
+            service
+                .pull_delta_proposal(account_id, commitment)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

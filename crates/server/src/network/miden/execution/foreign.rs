@@ -55,6 +55,11 @@ impl ForeignAccounts {
         self.failure.lock().expect("foreign failure lock").clone()
     }
 
+    /// Forgets the recorded failure, so the next execution reports only its own.
+    pub fn clear_failure(&self) {
+        *self.failure.lock().expect("foreign failure lock") = None;
+    }
+
     /// The account's inputs at the reference block, fetched on first use.
     pub async fn inputs(
         &self,
@@ -127,7 +132,7 @@ impl ForeignAccounts {
             return Ok(inputs.clone());
         }
 
-        let (served_at, proof) = self
+        let (served_at, mut proof) = self
             .rpc
             .get_account(
                 account_id,
@@ -143,6 +148,16 @@ impl ForeignAccounts {
                 "node served the account at block {served_at} instead of {}",
                 self.reference_block
             )));
+        }
+        if let Some(details) = proof.details_mut() {
+            self.rpc
+                .resolve_oversize_vault(account_id, served_at, details)
+                .await
+                .map_err(|e| unavailable(e.to_string()))?;
+            self.rpc
+                .resolve_oversize_storage_maps(account_id, served_at, details)
+                .await
+                .map_err(|e| unavailable(e.to_string()))?;
         }
         let (witness, details) = proof.into_parts();
         let details =

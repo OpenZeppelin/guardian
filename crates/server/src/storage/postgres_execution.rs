@@ -8,8 +8,8 @@ use super::{
     derive_status_columns, lease_fence_is_current, lock_account_metadata,
 };
 use crate::schema::{
-    delta_proposals, deltas, execution_outcomes, execution_reservations, execution_submissions,
-    states,
+    account_metadata, delta_proposals, deltas, execution_outcomes, execution_reservations,
+    execution_submissions, states,
 };
 use crate::storage::{
     AdmissionWrite, CandidateAdmission, ClaimWrite, ExecutionFailure, ExecutionOutcome,
@@ -605,6 +605,15 @@ impl PostgresService {
                     .await?;
                 if current_commitment != delta.prev_commitment {
                     return Ok(AdmissionWrite::StaleBase);
+                }
+                let (paused_at, released_at): (Option<DateTime<Utc>>, Option<DateTime<Utc>>) =
+                    account_metadata::table
+                        .filter(account_metadata::account_id.eq(&delta.account_id))
+                        .select((account_metadata::paused_at, account_metadata::released_at))
+                        .first(conn)
+                        .await?;
+                if paused_at.is_some() || released_at.is_some() {
+                    return Ok(AdmissionWrite::AccountInactive);
                 }
                 let candidate_exists: bool = diesel::select(diesel::dsl::exists(
                     deltas::table

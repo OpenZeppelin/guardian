@@ -322,13 +322,23 @@ impl ProposalExecutor for MidenExecutor {
                 ),
                 super::request::RequestInputsError::Malformed(message) => codec(message),
             })?;
-        let mut tracked: BTreeSet<BlockNumber> = request.block_numbers().clone();
-        tracked.extend(
-            unsigned
-                .input_notes
-                .iter()
-                .filter_map(|note| note.location().map(|location| location.block_num())),
-        );
+        let bound = summary.block_number();
+        let mut tracked = BTreeSet::from([bound]);
+        for block in unsigned
+            .input_notes
+            .iter()
+            .filter_map(|note| note.location().map(|location| location.block_num()))
+        {
+            if block > bound {
+                return Err(ExecutionFailure::new(
+                    ExecutionFailureCode::BindingMismatch,
+                    format!(
+                        "a pinned note claims inclusion at block {block}, after block {bound} the summary binds"
+                    ),
+                ));
+            }
+            tracked.insert(block);
+        }
         let assembly = std::time::Instant::now();
         let view = build_chain_view(self.rpc.as_ref(), &tracked)
             .await
@@ -539,6 +549,7 @@ impl ExecutionAttempt for MidenAttempt {
                 ExecutionFailure::new(ExecutionFailureCode::RequestCodec, e.to_string())
             })?;
         let reference = self.store.chain().reference_block();
+        self.store.begin_execution();
         let executor: TransactionExecutor<'_, '_, _, UnreachableAuth> =
             TransactionExecutor::new(&self.store);
         let executed = executor
@@ -561,11 +572,13 @@ impl ExecutionAttempt for MidenAttempt {
         }
         self.ensure_not_expired(executed.expiration_block_num())
             .await?;
-        let final_account_commitment = executed.final_account().to_commitment().into_hex();
+        let info = ExecutedTransactionInfo {
+            final_account_commitment: executed.final_account().to_commitment().into_hex(),
+            reference_block: self.reference_block(),
+            expiration_block: executed.expiration_block_num().as_u32(),
+        };
         self.executed = Some(executed);
-        Ok(ExecutedTransactionInfo {
-            final_account_commitment,
-        })
+        Ok(info)
     }
 
     async fn prove(&mut self) -> Result<ProvenTransactionInfo, ExecutionFailure> {

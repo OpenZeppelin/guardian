@@ -171,12 +171,18 @@ pub async fn request_execution(
         ignored_signatures: selection.ignored,
         now,
     };
-    let attempt = match state
+    let written = state
         .storage
         .create_execution_reservation(reservation)
-        .await
-        .map_err(GuardianError::StorageError)?
-    {
+        .await;
+    let written = match written {
+        Ok(written) => written,
+        Err(error) => {
+            release_quietly(elector.as_ref(), lease).await;
+            return Err(GuardianError::StorageError(error));
+        }
+    };
+    let attempt = match written {
         ReservationWrite::Created { attempt } => attempt,
         ReservationWrite::AlreadyReserved {
             proposal_id: blocking,
@@ -210,19 +216,9 @@ pub async fn request_execution(
         }
     };
 
-    let record = state
-        .storage
-        .load_active_execution(&account_id)
-        .await
-        .map_err(GuardianError::StorageError)?
-        .ok_or_else(|| {
-            GuardianError::StorageError("the new reservation is not readable".to_string())
-        })?;
-    let envelope = ExecutionEnvelope::from_record(&record, true, true);
-
     let job = ExecutionJob {
-        account_id,
-        proposal_id,
+        account_id: account_id.clone(),
+        proposal_id: proposal_id.clone(),
         attempt,
         nonce: proposal.nonce,
         base_commitment: proposal.prev_commitment,
@@ -236,7 +232,15 @@ pub async fn request_execution(
     let worker_state = state.clone();
     tokio::spawn(async move { run_execution(&worker_state, job).await });
 
-    Ok(envelope)
+    let record = state
+        .storage
+        .load_latest_execution(&account_id, &proposal_id)
+        .await
+        .map_err(GuardianError::StorageError)?
+        .ok_or_else(|| {
+            GuardianError::StorageError("the new reservation is not readable".to_string())
+        })?;
+    Ok(ExecutionEnvelope::from_record(&record, true, true))
 }
 
 /// The answer for a request that lost the race for the account's lease: the winner's execution

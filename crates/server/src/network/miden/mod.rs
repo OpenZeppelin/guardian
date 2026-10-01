@@ -6,8 +6,8 @@ use crate::network::miden::account_inspector::{
     MidenAccountInspector, guardian_public_key_slot_name,
 };
 use crate::network::{
-    MidenRpcSettings, NetworkClient, NetworkType, OnChainGuardianBinding, RpcReadMode,
-    StateVerification, TransactionSearch,
+    MidenRpcSettings, NetworkClient, NetworkType, ObservedState, OnChainGuardianBinding,
+    RpcReadMode, StateVerification, TransactionSearch,
 };
 use async_trait::async_trait;
 use guardian_shared::{FromJson, ToJson};
@@ -318,6 +318,17 @@ impl NetworkClient for MidenNetworkClient {
         expected_commitment: &str,
         read_mode: RpcReadMode,
     ) -> Result<StateVerification, String> {
+        self.observe_commitment(account_id, expected_commitment, read_mode)
+            .await
+            .map(|observed| observed.verification)
+    }
+
+    async fn observe_commitment(
+        &self,
+        account_id: &str,
+        expected_commitment: &str,
+        read_mode: RpcReadMode,
+    ) -> Result<ObservedState, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
             tracing::error!(
                 account_id = %account_id,
@@ -333,7 +344,7 @@ impl NetworkClient for MidenNetworkClient {
         let rpc_started = std::time::Instant::now();
         let rpc_result = self
             .client
-            .get_account_commitment(&account_id, read_mode)
+            .get_observed_account_commitment(&account_id, read_mode)
             .await;
         metrics::counter!(
             crate::metrics::names::MIDEN_RPC_REQUESTS_TOTAL,
@@ -348,7 +359,7 @@ impl NetworkClient for MidenNetworkClient {
         )
         .record(rpc_started.elapsed().as_secs_f64());
 
-        let on_chain_commitment = rpc_result.map_err(|e| {
+        let (on_chain_commitment, block) = rpc_result.map_err(|e| {
             tracing::error!(
                 account_id = %account_id.to_hex(),
                 error = %e,
@@ -358,7 +369,10 @@ impl NetworkClient for MidenNetworkClient {
         })?;
 
         if Self::is_empty_word_digest(&on_chain_commitment) {
-            return Ok(StateVerification::Absent);
+            return Ok(ObservedState {
+                verification: StateVerification::Absent,
+                block,
+            });
         }
 
         if expected_commitment != on_chain_commitment {
@@ -368,12 +382,18 @@ impl NetworkClient for MidenNetworkClient {
                 on_chain = %on_chain_commitment,
                 "Commitment mismatch during state verification"
             );
-            return Ok(StateVerification::Mismatch {
-                on_chain: on_chain_commitment,
+            return Ok(ObservedState {
+                verification: StateVerification::Mismatch {
+                    on_chain: on_chain_commitment,
+                },
+                block,
             });
         }
 
-        Ok(StateVerification::Match)
+        Ok(ObservedState {
+            verification: StateVerification::Match,
+            block,
+        })
     }
 
     fn verify_delta(

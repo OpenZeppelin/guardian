@@ -72,6 +72,12 @@ impl ExecutionDataStore {
         self.foreign.failure()
     }
 
+    /// Starts a new execution's record of foreign-account failures. The loaded accounts are
+    /// kept: they are pinned to the same reference block.
+    pub fn begin_execution(&self) {
+        self.foreign.clear_failure();
+    }
+
     fn is_own(&self, account_id: AccountId) -> bool {
         account_id == self.account.id()
     }

@@ -1007,6 +1007,23 @@ mod executor {
     }
 
     #[tokio::test]
+    async fn blocks_the_request_declares_beyond_the_signed_ones_are_not_fetched() {
+        let proposal = proposal(true).await;
+        let request = proposal
+            .signed_request()
+            .auth_arg(proposal.auth_commitment)
+            .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())])
+            .block_numbers([BlockNumber::from(BOUND), BlockNumber::from(u32::MAX)]);
+        assert!(
+            proposal
+                .executor()
+                .prepare(proposal.with_request(request, &[0, 1]))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn a_node_behind_the_bound_block_is_chain_behind() {
         let mut proposal = proposal(true).await;
         let mut chain = MockChainBuilder::with_accounts([proposal.account.clone()])

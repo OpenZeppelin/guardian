@@ -26,6 +26,10 @@ pub const DEFAULT_EXECUTION_EXPIRATION_HORIZON_BLOCKS: u32 = 512;
 /// transaction expiration, so a horizon below it would refuse all of them.
 pub const MIN_EXECUTION_EXPIRATION_HORIZON_BLOCKS: u32 = 256;
 
+/// The longest execution lease accepted. A worker that stops renewing holds the account until
+/// its lease lapses, so a very long lease turns one crash into a long outage for the account.
+pub const MAX_EXECUTION_LEASE_SECS: u32 = 3600;
+
 /// The remote prover Guardian delegates proof generation to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProverConfig {
@@ -127,10 +131,16 @@ impl ExecutionConfig {
             ENV_TX_PROVER_TIMEOUT_SECS,
             DEFAULT_TX_PROVER_TIMEOUT_SECS,
         )?;
-        let prover = non_blank(lookup(ENV_TX_PROVER_URL)?).map(|url| ProverConfig {
-            url: CredentialUrl::new(url),
-            timeout: Duration::from_secs(u64::from(timeout)),
-        });
+        let prover = match non_blank(lookup(ENV_TX_PROVER_URL)?) {
+            Some(url) => {
+                ensure_prover_url(&url)?;
+                Some(ProverConfig {
+                    url: CredentialUrl::new(url),
+                    timeout: Duration::from_secs(u64::from(timeout)),
+                })
+            }
+            None => None,
+        };
         let proving_enabled = match non_blank(lookup(ENV_PROVING_ENABLED)?) {
             Some(value) => value.trim().parse::<bool>().map_err(|_| {
                 format!("{ENV_PROVING_ENABLED} must be 'true' or 'false', got '{value}'")
@@ -149,6 +159,28 @@ impl ExecutionConfig {
                  expiration, got {expiration_horizon_blocks}"
             ));
         }
+        let lease_secs = positive_u32(
+            &lookup,
+            ENV_EXECUTION_LEASE_SECS,
+            DEFAULT_EXECUTION_LEASE_SECS,
+        )?;
+        if lease_secs > MAX_EXECUTION_LEASE_SECS {
+            return Err(format!(
+                "{ENV_EXECUTION_LEASE_SECS} must be at most {MAX_EXECUTION_LEASE_SECS}, got {lease_secs}"
+            ));
+        }
+        let reconcile_secs = positive_u32(
+            &lookup,
+            ENV_EXECUTION_RECONCILE_INTERVAL_SECS,
+            DEFAULT_EXECUTION_RECONCILE_INTERVAL_SECS,
+        )?;
+        if reconcile_secs >= lease_secs {
+            return Err(format!(
+                "{ENV_EXECUTION_RECONCILE_INTERVAL_SECS} ({reconcile_secs}) must be below \
+                 {ENV_EXECUTION_LEASE_SECS} ({lease_secs}), or an abandoned attempt outlives \
+                 several leases before it is noticed"
+            ));
+        }
         Ok(Self {
             prover,
             proving_enabled,
@@ -162,16 +194,8 @@ impl ExecutionConfig {
                 ENV_MAX_ACCOUNT_REQUEST_BYTES,
                 DEFAULT_MAX_ACCOUNT_REQUEST_BYTES,
             )?,
-            lease: Duration::from_secs(u64::from(positive_u32(
-                &lookup,
-                ENV_EXECUTION_LEASE_SECS,
-                DEFAULT_EXECUTION_LEASE_SECS,
-            )?)),
-            reconcile_interval: Duration::from_secs(u64::from(positive_u32(
-                &lookup,
-                ENV_EXECUTION_RECONCILE_INTERVAL_SECS,
-                DEFAULT_EXECUTION_RECONCILE_INTERVAL_SECS,
-            )?)),
+            lease: Duration::from_secs(u64::from(lease_secs)),
+            reconcile_interval: Duration::from_secs(u64::from(reconcile_secs)),
             expiration_horizon_blocks,
         })
     }
@@ -184,6 +208,18 @@ impl ExecutionConfig {
         self.prover
             .as_ref()
             .ok_or(ExecutionUnavailable::ProverNotConfigured)
+    }
+}
+
+/// Refuses a prover URL the prover client could not connect to. The message never repeats the
+/// URL, which can carry credentials.
+fn ensure_prover_url(url: &str) -> Result<(), String> {
+    match url::Url::parse(url.trim()) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") && parsed.has_host() => Ok(()),
+        Ok(_) => Err(format!(
+            "{ENV_TX_PROVER_URL} must be an http or https URL with a host"
+        )),
+        Err(error) => Err(format!("{ENV_TX_PROVER_URL} is not a valid URL: {error}")),
     }
 }
 
@@ -239,6 +275,31 @@ mod tests {
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
         ExecutionConfig::from_lookup(|key| Ok(vars.get(key).cloned()))
+    }
+
+    #[test]
+    fn a_malformed_prover_url_is_refused_without_echoing_it() {
+        for url in ["not a url", "ftp://prover:secret@host", "https://"] {
+            let error = config_from(&[(ENV_TX_PROVER_URL, url)]).unwrap_err();
+            assert!(error.contains(ENV_TX_PROVER_URL), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+        }
+        assert!(
+            config_from(&[(ENV_TX_PROVER_URL, "https://user:pw@prover.example:50051")]).is_ok()
+        );
+    }
+
+    #[test]
+    fn the_lease_is_bounded_and_outlasts_the_reconcile_interval() {
+        assert!(config_from(&[(ENV_EXECUTION_LEASE_SECS, "3601")]).is_err());
+        assert!(config_from(&[(ENV_EXECUTION_LEASE_SECS, "3600")]).is_ok());
+        assert!(
+            config_from(&[
+                (ENV_EXECUTION_LEASE_SECS, "30"),
+                (ENV_EXECUTION_RECONCILE_INTERVAL_SECS, "30"),
+            ])
+            .is_err()
+        );
     }
 
     #[test]

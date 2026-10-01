@@ -154,9 +154,18 @@ Within the line, `TransactionRequest` serialization carries no version tag and p
 clients have changed it, so the SDK that created a proposal and the server should run the same
 `miden-client`. A request from a different client either fails to decode
 (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or reproduces a transaction other than the signed one
-(`GUARDIAN_EXECUTION_BINDING_MISMATCH`); either way nothing is submitted. The capability is
-qualified on devnet (`live-guardian-execute-2of3-{falcon,ecdsa}`); treat it as production-ready
-only once the line moves to stable 0.17 pins.
+(`GUARDIAN_EXECUTION_BINDING_MISMATCH`); either way nothing is submitted. The live
+scenarios (`live-guardian-execute-*`) have been run by hand on devnet; the qualification matrix
+requires them on testnet and excludes them from devnet runs, whose step budget they exceed. Treat
+the capability as production-ready only once the line moves to stable 0.17 pins.
+
+Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators upgrading:
+
+- `ProposalPayload` has a new public field, `transaction_request`, so a struct literal must set
+  it (`None` for a self-executed proposal) or start from `ProposalPayload::new` and
+  `with_transaction_request`.
+- `MultisigError` has a new variant, `GuardianExecutionRefused { code, message, retryable,
+  blocking_proposal_id }`, so an exhaustive `match` on the error needs an arm for it.
 
 ### Open upstream items
 

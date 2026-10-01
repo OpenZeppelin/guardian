@@ -139,11 +139,15 @@ impl LeaderElector for InMemoryLeaseElector {
             .leases
             .lock()
             .expect("execution lease registry poisoned");
+        // Reservations outlive the process but this registry does not, so tokens are seeded
+        // from the clock: a restarted process still issues tokens above every one it issued
+        // before, which a claim on a reservation left by the stopped process requires.
+        let seeded = now.timestamp_micros();
         let fence_token = match leases.get(&self.name) {
             Some(held) if held.holder_id == self.holder_id => held.fence_token,
             Some(held) if now < held.expires_at => return Ok(None),
-            Some(held) => held.fence_token + 1,
-            None => 0,
+            Some(held) => (held.fence_token + 1).max(seeded),
+            None => seeded,
         };
         let expires_at = deadline_after(now, ttl);
         leases.insert(

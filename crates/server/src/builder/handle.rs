@@ -134,15 +134,9 @@ impl ServerHandle {
             );
         }
 
-        if let (Some(_), Some(executor)) = (
-            self.app_state.canonicalization.as_ref(),
-            self.app_state.execution.executor.clone(),
-        ) {
+        if self.app_state.canonicalization.is_some() {
             tracing::info!("Starting execution reconciler");
-            crate::jobs::execution_reconcile::start_execution_reconciler(
-                self.app_state.clone(),
-                executor,
-            );
+            crate::jobs::execution_reconcile::start_execution_reconciler(self.app_state.clone());
         }
 
         // Issue #434: one lease holder walks the fleet against the chain

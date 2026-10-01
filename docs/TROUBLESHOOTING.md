@@ -505,12 +505,13 @@ once come back synchronously and create nothing.
   or canonicalization off. `GET /status` reports the same reason under `execution.reason`
   without needing the logs. A warning that "a prover is configured but Guardian execution is not
   offered" means `GUARDIAN_PROVING_ENABLED=false` is switching it off.
-- **Intermittent `GUARDIAN_EXECUTION_PROVING_FAILED` whose message ends in "failed to prove
-  transaction".** Usually the prover deadline. The client library's own default is 10 s, far below
-  a real proof; Guardian passes `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (default 300) instead, so check
-  it has not been lowered. Transport failures (connection errors, i/o timeouts, deadline exceeded)
-  are retried with backoff under the held reservation, so they do not surface as
-  `PROVING_FAILED`. If the prover stays unreachable until the transaction's expiration, the
+- **`GUARDIAN_EXECUTION_PROVING_FAILED`, with a message starting "the prover refused the
+  transaction".** The prover answered with a permanent error, such as an invalid argument, and the
+  message carries its whole cause chain. Transport failures and transient gRPC codes
+  (unavailable, deadline exceeded, connection errors, i/o timeouts) never produce this code: they
+  are retried with backoff under the held reservation. A deadline that keeps firing usually means
+  `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (default 300) was lowered below a real proof; the client
+  library's own 10 s default is far too short, which is why Guardian always sets its own. If the prover stays unreachable until the transaction's expiration, the
   attempt fails with `GUARDIAN_EXECUTION_EXPIRATION_REACHED` (`meta.bound: "transaction"`),
   and the message carries the last prover error's whole cause chain. `guardian_execution_prover_retries_total` counts
   the retries.

@@ -338,6 +338,28 @@ async fn only_the_owner_crosses_the_boundary(h: &Harness) {
     );
 }
 
+async fn a_lapsed_lease_cannot_reserve(h: &Harness, short_ttl: Duration, wait: Duration) {
+    let fence = h.lease("worker-a", short_ttl).await;
+    let mut reservation = h.new_reservation(&proposal_commitment(1), &fence);
+    reservation.lease_expires_at = Utc::now() + chrono::Duration::from_std(short_ttl).unwrap();
+    tokio::time::sleep(wait).await;
+    reservation.now = Utc::now();
+    assert_eq!(
+        h.storage
+            .create_execution_reservation(reservation)
+            .await
+            .unwrap(),
+        ReservationWrite::StaleLease
+    );
+    assert!(
+        h.storage
+            .load_active_execution(&h.account_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 async fn admission_refuses_a_moved_base(h: &Harness) {
     let proposal = proposal_commitment(1);
     let owner = h.lease("worker-a", Duration::from_secs(60)).await;
@@ -350,6 +372,27 @@ async fn admission_refuses_a_moved_base(h: &Harness) {
             .await
             .unwrap(),
         AdmissionWrite::StaleBase
+    );
+    assert!(h.delta_at(1).await.is_none());
+}
+
+async fn admission_refuses_an_account_paused_after_the_reservation(h: &Harness) {
+    let proposal = proposal_commitment(1);
+    let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+    let attempt = h.reserve(&proposal, &owner).await;
+    h.metadata
+        .set_pause(&h.account_id, Utc::now(), "incident")
+        .await
+        .unwrap();
+    assert_eq!(
+        h.storage
+            .admit_execution_candidate(
+                h.metadata.as_ref(),
+                h.admission(&proposal, attempt, &owner, 1)
+            )
+            .await
+            .unwrap(),
+        AdmissionWrite::AccountInactive
     );
     assert!(h.delta_at(1).await.is_none());
 }
@@ -1146,6 +1189,7 @@ mod filesystem {
         reservation_is_refused_while_a_client_candidate_exists,
         only_the_owner_crosses_the_boundary,
         admission_refuses_a_moved_base,
+        admission_refuses_an_account_paused_after_the_reservation,
         a_client_candidate_is_refused_while_reserved,
         a_client_candidate_is_refused_while_guardian_holds_its_own,
         a_pre_boundary_failure_releases_with_its_outcome,
@@ -1166,6 +1210,16 @@ mod filesystem {
             &Harness::filesystem().await,
             Duration::ZERO,
             Duration::ZERO,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_lapsed_lease_cannot_reserve() {
+        super::a_lapsed_lease_cannot_reserve(
+            &Harness::filesystem().await,
+            Duration::ZERO,
+            Duration::from_millis(5),
         )
         .await;
     }
@@ -1398,7 +1452,7 @@ mod filesystem {
         let proposal = proposal_commitment(1);
         let owner = h.lease("worker-a", Duration::from_secs(60)).await;
         let mut reservation = h.new_reservation(&proposal, &owner);
-        reservation.lease_expires_at = Utc::now() - chrono::Duration::seconds(1);
+        reservation.lease_expires_at = Utc::now() + chrono::Duration::milliseconds(20);
         let ReservationWrite::Created { attempt } = h
             .storage
             .create_execution_reservation(reservation)
@@ -1407,6 +1461,7 @@ mod filesystem {
         else {
             panic!("reservation");
         };
+        tokio::time::sleep(Duration::from_millis(40)).await;
         assert_eq!(
             h.storage
                 .admit_execution_candidate(
@@ -1486,6 +1541,7 @@ mod postgres {
         reservation_is_refused_while_a_client_candidate_exists,
         only_the_owner_crosses_the_boundary,
         admission_refuses_a_moved_base,
+        admission_refuses_an_account_paused_after_the_reservation,
         a_client_candidate_is_refused_while_reserved,
         a_client_candidate_is_refused_while_guardian_holds_its_own,
         a_pre_boundary_failure_releases_with_its_outcome,
@@ -1504,6 +1560,17 @@ mod postgres {
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn ownership_transfers_by_compare_and_set() {
         super::ownership_transfers_by_compare_and_set(
+            &pg_harness().await.harness,
+            Duration::from_secs(1),
+            Duration::from_millis(1_200),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_lapsed_lease_cannot_reserve() {
+        super::a_lapsed_lease_cannot_reserve(
             &pg_harness().await.harness,
             Duration::from_secs(1),
             Duration::from_millis(1_200),

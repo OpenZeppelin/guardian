@@ -76,7 +76,7 @@ diesel_migrations = { version = "2.2", optional = true }
 # off at run time until a prover is configured.
 miden-client = { workspace = true, features = ["tonic"] }
 miden-tx = { workspace = true }
-miden-processor = { version = "0.33" }
+miden-processor = { workspace = true }
 
 # Optional dependencies for e2e tests
 miden-confidential-contracts = { path = "../contracts", optional = true }

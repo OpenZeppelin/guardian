@@ -47,6 +47,8 @@ pub struct MockNetworkClient {
     /// `(account_id, final_state_commitment, from_block)` per search.
     pub find_transaction_ending_at_calls: Arc<StdMutex<Vec<(String, String, u32)>>>,
     pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
+    /// The block every observed commitment reports it was read at.
+    pub observed_block: Arc<StdMutex<u32>>,
 }
 
 impl MockNetworkClient {
@@ -220,6 +222,21 @@ impl NetworkClient for MockNetworkClient {
             .unwrap()
             .pop()
             .unwrap_or(Ok(StateVerification::Match))
+    }
+
+    async fn observe_commitment(
+        &self,
+        account_id: &str,
+        expected_commitment: &str,
+        read_mode: crate::network::RpcReadMode,
+    ) -> StdResult<crate::network::ObservedState, String> {
+        let verification = self
+            .verify_commitment(account_id, expected_commitment, read_mode)
+            .await?;
+        Ok(crate::network::ObservedState {
+            verification,
+            block: *self.observed_block.lock().unwrap(),
+        })
     }
 
     fn verify_delta(

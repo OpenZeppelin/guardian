@@ -9,8 +9,8 @@ use chrono::Utc;
 use guardian_shared::SignatureScheme;
 
 use super::executor::{
-    ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor, ProvenTransactionInfo,
-    SubmissionOutcome,
+    ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
+    ProvenTransactionInfo, SubmissionOutcome,
 };
 use crate::coordination::{LeaderElector, Lease, lease_deadline, release_quietly};
 use crate::delta_object::{DeltaObject, DeltaStatus};
@@ -58,6 +58,9 @@ struct Heartbeat {
     task: tokio::task::JoinHandle<()>,
 }
 
+/// How soon a heartbeat retries a renewal that failed for a transient reason.
+const HEARTBEAT_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl Heartbeat {
     fn start(state: &AppState, job: &ExecutionJob) -> Self {
         let phase = Arc::new(Mutex::new(ExecutionPhase::Accepted));
@@ -70,22 +73,42 @@ impl Heartbeat {
         let account_id = job.account_id.clone();
         let current = phase.clone();
         let task = tokio::spawn(async move {
+            let mut held_until = lease.expires_at;
+            let mut wait = interval;
             loop {
-                tokio::time::sleep(interval).await;
+                tokio::time::sleep(wait).await;
+                let renewing_until = lease_deadline(ttl);
                 match elector.renew(&lease, ttl).await {
-                    Ok(true) => {}
-                    Ok(false) | Err(_) => {
+                    Ok(true) => held_until = renewing_until,
+                    Ok(false) => {
                         tracing::warn!(%account_id, "execution lease lost; the attempt will stop before its next write");
+                        return;
+                    }
+                    Err(error) if Utc::now() < held_until => {
+                        tracing::warn!(%account_id, %error, "could not renew the execution lease; retrying while it is still held");
+                        wait = HEARTBEAT_RETRY.min(interval);
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%account_id, %error, "the execution lease lapsed while it could not be renewed");
                         return;
                     }
                 }
                 let phase = *current.lock().expect("phase lock");
                 let expires = lease_deadline(ttl);
-                if let Err(error) = storage
+                match storage
                     .renew_execution_reservation(&account_id, &fence, expires, phase)
                     .await
                 {
-                    tracing::warn!(%account_id, %error, "failed to renew the execution reservation");
+                    Ok(ReservationUpdate::Applied) => wait = interval,
+                    Ok(ReservationUpdate::StaleLease | ReservationUpdate::NotActive) => {
+                        tracing::warn!(%account_id, "the execution reservation is no longer this attempt's; the attempt will stop before its next write");
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%account_id, %error, "failed to renew the execution reservation; retrying while the lease is held");
+                        wait = HEARTBEAT_RETRY.min(interval);
+                    }
                 }
             }
         });
@@ -185,6 +208,7 @@ async fn run_to_boundary(
         )
         .into());
     }
+    ensure_within_horizon(state, &executed)?;
     heartbeat
         .advance(state, job, ExecutionPhase::Executed)
         .await;
@@ -194,7 +218,6 @@ async fn run_to_boundary(
     heartbeat.advance(state, job, ExecutionPhase::Proved).await;
     attempt.seal().await?;
     ensure_admissible(state, job).await?;
-    ensure_within_horizon(state, &proven)?;
     ensure_unexpired(job, &proven).await?;
 
     cross_boundary(state, job, acknowledged, &proven).await?;
@@ -267,10 +290,12 @@ async fn ensure_admissible(state: &AppState, job: &ExecutionJob) -> Result<(), S
     Ok(())
 }
 
-fn ensure_within_horizon(state: &AppState, proven: &ProvenTransactionInfo) -> Result<(), Stop> {
-    let distance = proven
+/// Checked as soon as execution fixes the expiration, so a transaction this server could not
+/// resolve is refused before any proving is spent on it.
+fn ensure_within_horizon(state: &AppState, executed: &ExecutedTransactionInfo) -> Result<(), Stop> {
+    let distance = executed
         .expiration_block
-        .saturating_sub(proven.reference_block);
+        .saturating_sub(executed.reference_block);
     if distance > state.execution.config.expiration_horizon_blocks {
         return Err(ExecutionFailure::new(
             ExecutionFailureCode::ExpirationBeyondHorizon,
@@ -344,6 +369,11 @@ async fn cross_boundary(
         AdmissionWrite::StaleBase => Err(ExecutionFailure::new(
             ExecutionFailureCode::AccountInadmissible,
             "the account moved before the boundary commit",
+        )
+        .into()),
+        AdmissionWrite::AccountInactive => Err(ExecutionFailure::new(
+            ExecutionFailureCode::AccountInadmissible,
+            "the account was paused or released before the boundary commit",
         )
         .into()),
         AdmissionWrite::CandidateExists | AdmissionWrite::NonceOccupied => {

@@ -402,6 +402,18 @@ impl MidenRpcClient {
         account_id: &AccountId,
         read_mode: RpcReadMode,
     ) -> Result<String, RpcClientError> {
+        self.get_observed_account_commitment(account_id, read_mode)
+            .await
+            .map(|(commitment, _)| commitment)
+    }
+
+    /// [`Self::get_account_commitment`] with the block the node read it at, both from one
+    /// response, so the commitment is the account's state as of that block.
+    pub async fn get_observed_account_commitment(
+        &self,
+        account_id: &AccountId,
+        read_mode: RpcReadMode,
+    ) -> Result<(String, u32), RpcClientError> {
         const OPERATION: &str = "get_account_commitment";
         let proto_account_id = proto_account_id(account_id);
 
@@ -435,13 +447,22 @@ impl MidenRpcClient {
                 reason: "no commitment in witness".to_string(),
             })?;
 
-        word_to_hex(&commitment).ok_or_else(|| RpcClientError::MalformedResponse {
-            operation: OPERATION,
-            reason: format!(
-                "commitment has {} bytes, expected the 32 bytes of a word",
-                commitment.encoded.len()
-            ),
-        })
+        let observed_at = account_response
+            .block_num
+            .map(|number| number.block_num)
+            .ok_or_else(|| RpcClientError::MalformedResponse {
+                operation: OPERATION,
+                reason: "no block number in account response".to_string(),
+            })?;
+        let commitment =
+            word_to_hex(&commitment).ok_or_else(|| RpcClientError::MalformedResponse {
+                operation: OPERATION,
+                reason: format!(
+                    "commitment has {} bytes, expected the 32 bytes of a word",
+                    commitment.encoded.len()
+                ),
+            })?;
+        Ok((commitment, observed_at))
     }
 
     /// Fetch the account witness together with the storage-map details

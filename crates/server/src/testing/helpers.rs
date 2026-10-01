@@ -144,6 +144,21 @@ impl NetworkClient for IntegrationMockNetworkClient {
         Ok(StateVerification::Match)
     }
 
+    async fn observe_commitment(
+        &self,
+        account_id: &str,
+        expected_commitment: &str,
+        read_mode: crate::network::RpcReadMode,
+    ) -> Result<crate::network::ObservedState, String> {
+        let verification = self
+            .verify_commitment(account_id, expected_commitment, read_mode)
+            .await?;
+        Ok(crate::network::ObservedState {
+            verification,
+            block: 0,
+        })
+    }
+
     fn verify_delta(
         &self,
         prev_proof: &str,

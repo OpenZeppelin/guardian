@@ -29,9 +29,16 @@ pub enum MultisigError {
     GuardianServer(String),
 
     /// GUARDIAN refused a Guardian-execution request with a stable code, such as
-    /// `GUARDIAN_PROPOSAL_NOT_READY` or `GUARDIAN_EXECUTION_CONFLICT`.
+    /// `GUARDIAN_PROPOSAL_NOT_READY` or `GUARDIAN_EXECUTION_CONFLICT`. `retryable` is the
+    /// server's `meta.retryable`; `blocking_proposal_id` names the proposal whose execution holds
+    /// the account, on a conflict.
     #[error("GUARDIAN refused execution ({code}): {message}")]
-    GuardianExecutionRefused { code: String, message: String },
+    GuardianExecutionRefused {
+        code: String,
+        message: String,
+        retryable: bool,
+        blocking_proposal_id: Option<String>,
+    },
 
     /// Miden client error.
     #[error("miden client error: {0}")]

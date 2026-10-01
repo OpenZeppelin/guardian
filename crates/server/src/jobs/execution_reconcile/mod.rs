@@ -3,13 +3,10 @@
 //! only from what the chain shows, never from elapsed time. `committed` is never written here:
 //! promotion writes it.
 
-use std::sync::Arc;
-
 use chrono::Utc;
 
 use crate::coordination::{LeaderElector, Lease, lease_deadline, release_quietly};
 use crate::network::{RpcReadMode, StateVerification};
-use crate::services::execute_proposal::ProposalExecutor;
 use crate::state::AppState;
 use crate::storage::{
     ClaimWrite, ExecutionFailure, ExecutionFailureCode, ExecutionPhase, ExecutionRecord,
@@ -54,9 +51,11 @@ impl Reconciled {
     }
 }
 
-pub fn start_execution_reconciler(state: AppState, executor: Arc<dyn ProposalExecutor>) {
+/// Runs whenever canonicalization does, whether or not this server offers execution: switching
+/// execution off must not strand the accounts whose executions are already in flight.
+pub fn start_execution_reconciler(state: AppState) {
     tokio::spawn(async move {
-        let reconciler = Reconciler::new(&state, executor);
+        let reconciler = Reconciler::new(&state);
         let mut kind = PassKind::Startup;
         loop {
             if let Err(error) = reconciler.pass(&state, kind).await {
@@ -70,16 +69,14 @@ pub fn start_execution_reconciler(state: AppState, executor: Arc<dyn ProposalExe
 
 pub struct Reconciler {
     holder_id: String,
-    executor: Arc<dyn ProposalExecutor>,
     /// When the current run of passes that could not observe the chain began.
     outage_since: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl Reconciler {
-    pub fn new(state: &AppState, executor: Arc<dyn ProposalExecutor>) -> Self {
+    pub fn new(state: &AppState) -> Self {
         Self {
             holder_id: format!("{}:reconcile", state.execution.replica_id),
-            executor,
             outage_since: std::sync::Mutex::new(None),
         }
     }
@@ -103,9 +100,8 @@ impl Reconciler {
                 })
                 .fold(0.0, f64::max),
         );
-        let tip = tokio::sync::OnceCell::new();
         for record in records {
-            let outcome = self.reconcile(state, &record, kind, &tip).await;
+            let outcome = self.reconcile(state, &record, kind).await;
             metrics::counter!(
                 crate::metrics::names::EXECUTION_RECONCILE_OUTCOMES_TOTAL,
                 crate::metrics::names::LABEL_OUTCOME => outcome.label()
@@ -136,17 +132,18 @@ impl Reconciler {
         crate::metrics::execution::record_observation_outage(seconds);
     }
 
-    /// `tip` is the chain tip for this pass, read once and only if a record needs it.
     async fn reconcile(
         &self,
         state: &AppState,
         record: &ExecutionRecord,
         kind: PassKind,
-        tip: &tokio::sync::OnceCell<u32>,
     ) -> Reconciled {
         let reservation = &record.reservation;
         let ours = reservation.fence.holder_id == self.holder_id;
-        if !ours && reservation.lease_expires_at > Utc::now() {
+        // Process-local leases do not survive a restart, so on the first pass every reservation
+        // they still name belongs to the process that stopped, however long its lease had left.
+        let holder_restarted = kind == PassKind::Startup && !state.execution.leases.is_shared();
+        if !ours && !holder_restarted && reservation.lease_expires_at > Utc::now() {
             return Reconciled::Owned;
         }
         let elector = state
@@ -182,7 +179,7 @@ impl Reconciler {
             };
         };
 
-        let settled = match self.observe(state, evidence, tip).await {
+        let settled = match self.observe(state, evidence).await {
             Ok(settled) => settled,
             Err(error) => {
                 tracing::warn!(
@@ -265,29 +262,25 @@ impl Reconciler {
         }
     }
 
-    /// The tip is read before the account: a commitment read after it reflects every block up to
-    /// it, so an account still at its base once the tip reaches the expiration block was not
-    /// included and can no longer be. Read the other way round, a block landing between the two
-    /// reads could hold the transaction while the account read predates it.
+    /// The verdict comes from one account read and the block the node read it at. A transaction
+    /// expiring at block `X` can be included in block `X` and no later, so an account still at
+    /// its base as of `X` was not included and can no longer be. The base was on chain at the
+    /// block the transaction executed against, so a read from before that block is a lagging
+    /// node, not evidence the account moved.
     async fn observe(
         &self,
         state: &AppState,
         evidence: &SubmissionEvidence,
-        tip: &tokio::sync::OnceCell<u32>,
     ) -> Result<Observed, String> {
-        let tip_before = tip
-            .get_or_try_init(|| self.executor.chain_tip())
-            .await
-            .copied();
-        let verification = state
+        let observed = state
             .network_client
-            .verify_commitment(
+            .observe_commitment(
                 &evidence.account_id,
                 &evidence.expected_commitment,
                 RpcReadMode::SingleAttempt,
             )
             .await?;
-        let at_base = match verification {
+        let at_base = match observed.verification {
             StateVerification::Match => return Ok(Observed::AtExpected),
             StateVerification::Absent => true,
             StateVerification::Mismatch { on_chain } => {
@@ -295,19 +288,23 @@ impl Reconciler {
             }
         };
         if !at_base {
+            if observed.block < evidence.reference_block {
+                return Ok(Observed::Pending);
+            }
             return Ok(Observed::Settles(
                 ExecutionFailureCode::CandidateDiscarded,
-                "the account moved to a state that is neither the base nor the submitted one"
-                    .to_string(),
+                format!(
+                    "as of block {}, the account is at a state that is neither the base nor the submitted one",
+                    observed.block
+                ),
             ));
         }
-        let tip = tip_before?;
-        if tip >= evidence.expiration_block {
+        if observed.block >= evidence.expiration_block {
             return Ok(Observed::Settles(
                 ExecutionFailureCode::Expired,
                 format!(
-                    "the chain is at block {tip}, at or past the transaction's expiration at {}, with the account still at its base",
-                    evidence.expiration_block
+                    "as of block {}, at or past the transaction's expiration at {}, the account is still at its base",
+                    observed.block, evidence.expiration_block
                 ),
             ));
         }

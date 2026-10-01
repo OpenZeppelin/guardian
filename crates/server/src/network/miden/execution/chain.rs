@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use futures::{StreamExt, TryStreamExt};
 use miden_client::rpc::domain::sync::SyncTarget;
 use miden_client::rpc::{NodeRpcClient, RpcError};
 use miden_protocol::Word;
@@ -70,6 +71,9 @@ pub enum ChainViewError {
     Rpc(#[from] RpcError),
 }
 
+/// How many tracked block headers a chain view fetches at once.
+const MAX_CONCURRENT_HEADER_FETCHES: usize = 8;
+
 /// Builds the chain view at the node's committed tip, tracking `tracked` blocks.
 pub async fn build_chain_view(
     rpc: &dyn NodeRpcClient,
@@ -115,18 +119,16 @@ pub async fn build_chain_view(
     }
 
     let mut headers = BTreeMap::new();
-    let fetched = futures::future::try_join_all(
-        tracked
-            .iter()
-            .copied()
-            .filter(|block| *block < reference)
+    let fetched: Vec<_> =
+        futures::stream::iter(tracked.iter().copied().filter(|block| *block < reference))
             .map(|block| async move {
                 rpc.get_block_header_with_proof(block)
                     .await
                     .map(|(header, proof)| (block, header, proof))
-            }),
-    )
-    .await?;
+            })
+            .buffered(MAX_CONCURRENT_HEADER_FETCHES)
+            .try_collect()
+            .await?;
     for (block, header, proof) in fetched {
         if header.block_num() != block {
             return Err(ChainViewError::Inconsistent(format!(

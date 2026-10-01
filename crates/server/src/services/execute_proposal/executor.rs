@@ -46,6 +46,8 @@ pub struct GuardianAck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutedTransactionInfo {
     pub final_account_commitment: String,
+    pub reference_block: u32,
+    pub expiration_block: u32,
 }
 
 /// The proven transaction's facts the boundary commit records.

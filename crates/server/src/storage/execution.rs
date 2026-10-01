@@ -278,6 +278,8 @@ pub enum AdmissionWrite {
     /// The stored state no longer sits at the candidate's base commitment.
     StaleBase,
     StaleLease,
+    /// The account was paused or released, read under the same lock as the write.
+    AccountInactive,
 }
 
 /// Outcome of a terminal execution write.
