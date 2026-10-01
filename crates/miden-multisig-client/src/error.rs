@@ -28,6 +28,11 @@ pub enum MultisigError {
     #[error("GUARDIAN server error: {0}")]
     GuardianServer(String),
 
+    /// GUARDIAN refused a Guardian-execution request with a stable code, such as
+    /// `GUARDIAN_PROPOSAL_NOT_READY` or `GUARDIAN_EXECUTION_CONFLICT`.
+    #[error("GUARDIAN refused execution ({code}): {message}")]
+    GuardianExecutionRefused { code: String, message: String },
+
     /// Miden client error.
     #[error("miden client error: {0}")]
     MidenClient(String),

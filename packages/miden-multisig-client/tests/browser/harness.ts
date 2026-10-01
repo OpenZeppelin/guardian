@@ -8,6 +8,13 @@ import {
   createMultisigAccount,
 } from '../../dist/index.js';
 import { PROCEDURE_ROOTS } from '../../dist/procedures.js';
+import { buildUpdateSignersScript } from '../../dist/transaction/updateSigners.js';
+import { buildUpdateProcedureThresholdScript } from '../../dist/transaction/updateProcedureThreshold.js';
+import { buildUpdateGuardianScript } from '../../dist/transaction/updateGuardian.js';
+import {
+  GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA,
+  GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
+} from '../../dist/transaction/expiration.js';
 
 const SIGNER_COMMITMENT =
   '0x260a375ca01f1f05cd7bf22298b40c47290fc09f209011d39049b7f2ef61387b';
@@ -64,7 +71,39 @@ async function run(): Promise<void> {
   await buildUpdateGuardianTransactionRequest(client, GUARDIAN_COMMITMENT, requestOptions);
   configScriptsCompiled.updateGuardian = true;
 
+  // Guardian-executable parity with the Rust SDK's
+  // `guardian_executable_vectors_the_typescript_sdk_must_reproduce`.
+  const guardianExecutable = {
+    ...requestOptions,
+    salt: Word.fromHex('0x0101010101010101020202020202020203030303030303030404040404040404'),
+    boundBlockNum: 1,
+    approvalExpirationDelta: GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA,
+    transactionExpirationDelta: GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
+  };
+  const { request } = await buildUpdateSignersTransactionRequest(
+    client,
+    1,
+    [SIGNER_COMMITMENT],
+    guardianExecutable,
+  );
+  const delta = GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA;
+  const guardianExecutableVectors = {
+    authArg: request.authArg()?.toHex(),
+    updateSigners: (await buildUpdateSignersScript(client, 'mock', delta)).root().toHex(),
+    updateProcedureThreshold: (
+      await buildUpdateProcedureThresholdScript(client, 'send_asset', 2, 'mock', delta)
+    )
+      .root()
+      .toHex(),
+    updateGuardian: (
+      await buildUpdateGuardianScript(client, GUARDIAN_COMMITMENT, 'falcon', 'mock', delta)
+    )
+      .root()
+      .toHex(),
+  };
+
   window.__result = {
+    guardianExecutableVectors,
     id: account.id().toString(),
     commitment: account.to_commitment().toHex(),
     codeCommitment: account.code().commitment().toHex(),

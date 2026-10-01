@@ -5,7 +5,9 @@ import type {
   WasmWebClient,
   Word,
 } from '@miden-sdk/miden-sdk';
-import { NoteAndArgs, NoteAndArgsArray } from '@miden-sdk/miden-sdk';
+import { InputNote, NoteAndArgs, NoteAndArgsArray } from '@miden-sdk/miden-sdk';
+import { ConsumeNoteNotAuthenticatedError } from '../multisig/consumeNotesErrors.js';
+import { normalizeHexWord } from '../utils/encoding.js';
 import { LegacyConsumeNotesNoteMissingError } from '../multisig/consumeNotesErrors.js';
 import { getRawMidenClient } from '../raw-client.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
@@ -41,6 +43,9 @@ export async function buildConsumeNotesTransactionRequestFromNotes(
 
   const { builder, saltHex } = await multisigRequestBuilder(client, options);
   let txBuilder = builder.withInputNotes(noteAndArgsArray);
+  if (options.transactionExpirationDelta) {
+    txBuilder = txBuilder.withExpirationDelta(options.transactionExpirationDelta);
+  }
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
@@ -83,4 +88,40 @@ export async function buildConsumeNotesTransactionRequest(
   }
 
   return buildConsumeNotesTransactionRequestFromNotes(rawClient, notes, options);
+}
+
+/**
+ * A consume-notes request whose notes are pinned as authenticated, with their inclusion proofs,
+ * so any party executes it in the same mode without consulting its own store. This is the
+ * request a Guardian-executable proposal stores; authenticate the notes first.
+ */
+export async function buildPinnedConsumeNotesTransactionRequest(
+  client: WasmWebClient,
+  notes: Note[],
+  options: MultisigRequestOptions,
+): Promise<{ request: TransactionRequest; salt: Word }> {
+  if (notes.length === 0) {
+    throw new Error('At least one note is required');
+  }
+  const { builder, saltHex } = await multisigRequestBuilder(client, options);
+  let txBuilder = builder;
+  for (const note of notes) {
+    const noteId = normalizeHexWord(note.id().toString());
+    const record = await client.getInputNote(noteId);
+    const proof = record?.inclusionProof();
+    if (!proof) {
+      throw new ConsumeNoteNotAuthenticatedError(
+        noteId,
+        'the local store holds no inclusion proof to pin it with',
+      );
+    }
+    txBuilder = txBuilder.withExplicitInputNote(InputNote.authenticated(note, proof), null);
+  }
+  if (options.transactionExpirationDelta) {
+    txBuilder = txBuilder.withExpirationDelta(options.transactionExpirationDelta);
+  }
+  if (options.signatureAdviceMap) {
+    txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
+  }
+  return buildMultisigRequest(txBuilder, saltHex, options.accountId);
 }

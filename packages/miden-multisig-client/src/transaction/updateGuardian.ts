@@ -9,14 +9,16 @@ import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { authSchemeId } from '../utils/signature.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
+import { expirationInstructions } from './expiration.js';
 import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
-async function buildUpdateGuardianScript(
+export async function buildUpdateGuardianScript(
   client: MidenClient | WasmWebClient,
   newGuardianPubkey: string,
   signatureScheme: SignatureScheme,
-  midenRpcEndpoint?: string,
+  midenRpcEndpoint: string | undefined,
+  transactionExpirationDelta: number | undefined,
 ): Promise<TransactionScript> {
   // A word literal preserves the key's element order on the operand stack.
   const keyLiteral = normalizeHexWord(newGuardianPubkey);
@@ -28,7 +30,7 @@ use miden::standards::auth::guardian
 
 @transaction_script
 pub proc main
-    push.${keyLiteral}
+    ${expirationInstructions(transactionExpirationDelta)}push.${keyLiteral}
     push.${schemeId}
     call.guardian::update_guardian_public_key
     drop
@@ -60,6 +62,7 @@ export async function buildUpdateGuardianTransactionRequest(
     newGuardianPubkey,
     signatureScheme,
     options.midenRpcEndpoint,
+    options.transactionExpirationDelta,
   );
 
   const { builder, saltHex } = await multisigRequestBuilder(client, options);

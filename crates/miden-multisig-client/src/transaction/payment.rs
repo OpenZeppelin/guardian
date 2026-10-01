@@ -13,6 +13,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::MultisigAuthArgs;
 use miden_standards::note::{P2idNote, P2ideNote};
 use miden_standards::tx_script::SendNotesTransactionScript;
+use std::num::NonZeroU16;
 
 use super::TransactionRequestBuilderExt;
 use crate::error::{MultisigError, Result};
@@ -33,6 +34,36 @@ pub fn build_p2id_transaction_request<I>(
     heights: P2ideHeights,
     auth_args: &MultisigAuthArgs,
     signature_advice: I,
+) -> Result<TransactionRequest>
+where
+    I: IntoIterator<Item = (Word, Vec<Felt>)>,
+{
+    build_p2id_transaction_request_with_expiration(
+        sender_account,
+        recipient,
+        assets,
+        note_type,
+        heights,
+        auth_args,
+        signature_advice,
+        None,
+    )
+}
+
+/// [`build_p2id_transaction_request`] with the transaction expiration its send script applies.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the note, its constraints and the proposal's binding are each part of the request"
+)]
+pub fn build_p2id_transaction_request_with_expiration<I>(
+    sender_account: &Account,
+    recipient: AccountId,
+    assets: Vec<Asset>,
+    note_type: NoteType,
+    heights: P2ideHeights,
+    auth_args: &MultisigAuthArgs,
+    signature_advice: I,
+    expiration_delta: Option<NonZeroU16>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -75,10 +106,16 @@ where
         MultisigError::TransactionExecution(format!("failed to build account interface: {}", e))
     })?;
 
-    let send_notes_script = SendNotesTransactionScript::new(&interface, &[note.clone().into()])
-        .map_err(|e| {
-            MultisigError::TransactionExecution(format!("failed to build P2ID send script: {}", e))
-        })?;
+    let output_notes = [note.clone().into()];
+    let send_notes_script = match expiration_delta {
+        Some(delta) => {
+            SendNotesTransactionScript::with_expiration_delta(&interface, &output_notes, delta)
+        }
+        None => SendNotesTransactionScript::new(&interface, &output_notes),
+    }
+    .map_err(|e| {
+        MultisigError::TransactionExecution(format!("failed to build P2ID send script: {}", e))
+    })?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(send_notes_script.tx_script().clone())

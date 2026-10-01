@@ -111,6 +111,29 @@ export {
   normalizeGuardianErrorCode,
 } from '@openzeppelin/guardian-client';
 export type { GuardianErrorCode } from '@openzeppelin/guardian-client';
+export {
+  EXECUTION_FAILURE_CODES,
+  EXECUTION_STATES,
+  EXPIRATION_BOUNDS,
+  FOREIGN_ACCOUNT_UNAVAILABLE_REASONS,
+  REQUEST_INVALID_REASONS,
+} from '@openzeppelin/guardian-client';
+export type {
+  ExecutionFailure,
+  ExecutionFailureCode,
+  ExecutionState,
+  ExpirationBound,
+  ForeignAccountUnavailableReason,
+  ProposalExecution,
+  RequestInvalidReason,
+  TransactionRequestEnvelope,
+} from '@openzeppelin/guardian-client';
+export {
+  GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA,
+  GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
+  REQUEST_SERIALIZER_ID,
+} from './transaction/expiration.js';
+export type { ProposalExecutionMode } from './transaction/expiration.js';
 export type {
   HistoryDecodeSection,
   HistoryDecodeWarning,

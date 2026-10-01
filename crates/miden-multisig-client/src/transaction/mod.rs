@@ -4,6 +4,7 @@ mod auth_args;
 mod builder;
 mod configuration;
 mod consume;
+mod expiration;
 mod guardian;
 mod payment;
 
@@ -16,12 +17,19 @@ pub use builder::{ProposalBuilder, ProposalOptions};
 pub use configuration::{
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
 };
-pub(crate) use consume::ensure_notes_authenticated;
-pub use consume::{
-    build_consume_notes_transaction_request, build_consume_notes_transaction_request_from_notes,
+pub use consume::build_consume_notes_transaction_request_from_notes;
+#[cfg(feature = "legacy-consume-notes")]
+pub(crate) use consume::fetch_notes_from_store;
+pub(crate) use consume::{
+    build_pinned_consume_notes_transaction_request, ensure_notes_authenticated,
+};
+pub(crate) use expiration::expiration_instructions;
+pub use expiration::{
+    GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA, GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
+    ProposalExecutionMode, REQUEST_SERIALIZER_ID, summary_expiration_delta,
 };
 pub use guardian::build_update_guardian_transaction_request;
-pub use payment::build_p2id_transaction_request;
+pub use payment::{build_p2id_transaction_request, build_p2id_transaction_request_with_expiration};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;

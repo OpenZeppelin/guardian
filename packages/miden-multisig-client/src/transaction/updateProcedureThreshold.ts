@@ -13,6 +13,7 @@ import { getProcedureRoot, type ProcedureName } from '../procedures.js';
 import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
+import { expirationInstructions } from './expiration.js';
 import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
 
 function buildProcedureThresholdFelts(procedure: ProcedureName, threshold: number): Felt[] {
@@ -37,11 +38,12 @@ function buildProcedureThresholdConfigHash(procedure: ProcedureName, threshold: 
   );
 }
 
-async function buildUpdateProcedureThresholdScript(
+export async function buildUpdateProcedureThresholdScript(
   client: MidenClient | WasmWebClient,
   procedure: ProcedureName,
   threshold: number,
-  midenRpcEndpoint?: string,
+  midenRpcEndpoint: string | undefined,
+  transactionExpirationDelta: number | undefined,
 ): Promise<TransactionScript> {
   const procedureRoot = normalizeHexWord(getProcedureRoot(procedure));
 
@@ -50,7 +52,7 @@ use miden::standards::auth::multisig
 
 @transaction_script
 pub proc main
-    push.${procedureRoot}
+    ${expirationInstructions(transactionExpirationDelta)}push.${procedureRoot}
     push.${threshold}
     call.multisig::set_procedure_threshold
     dropw
@@ -86,6 +88,7 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
     procedure,
     threshold,
     options.midenRpcEndpoint,
+    options.transactionExpirationDelta,
   );
   const { builder, saltHex } = await multisigRequestBuilder(client, options);
   let txBuilder = builder.withCustomScript(script);

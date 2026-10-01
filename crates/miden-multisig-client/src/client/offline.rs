@@ -29,6 +29,9 @@ impl MultisigClient {
     ///
     /// The proposer's signature is automatically included in the exported proposal.
     ///
+    /// The proposal is always self-executed, whatever this client's execution mode: it never
+    /// reaches GUARDIAN, so it carries no stored request and neither Guardian-executable bound.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -80,6 +83,7 @@ impl MultisigClient {
             self.key_manager.scheme(),
             &auth_args,
             std::iter::empty(),
+            None,
         )?;
 
         let (tx_summary, chain_anchor) =
@@ -319,6 +323,7 @@ impl MultisigClient {
             None,
             None,
             self.key_manager.scheme(),
+            crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
 

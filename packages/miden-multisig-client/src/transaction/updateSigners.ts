@@ -14,6 +14,7 @@ import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { authSchemeId } from '../utils/signature.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
+import { expirationInstructions } from './expiration.js';
 import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
@@ -56,16 +57,17 @@ export function buildMultisigConfigAdvice(
   return { configHash, payload };
 }
 
-async function buildUpdateSignersScript(
+export async function buildUpdateSignersScript(
   client: MidenClient | WasmWebClient,
-  midenRpcEndpoint?: string,
+  midenRpcEndpoint: string | undefined,
+  transactionExpirationDelta: number | undefined,
 ): Promise<TransactionScript> {
   const scriptSource = `
 use miden::standards::auth::multisig
 
 @transaction_script
 pub proc main
-    call.multisig::update_signers_and_threshold
+    ${expirationInstructions(transactionExpirationDelta)}call.multisig::update_signers_and_threshold
 end
   `;
 
@@ -112,7 +114,11 @@ export async function buildUpdateSignersTransactionRequest(
   const advice = new AdviceMap();
   advice.insert(configHashForAdvice, payload);
 
-  const script = await buildUpdateSignersScript(client, options.midenRpcEndpoint);
+  const script = await buildUpdateSignersScript(
+    client,
+    options.midenRpcEndpoint,
+    options.transactionExpirationDelta,
+  );
 
   const { builder, saltHex } = await multisigRequestBuilder(client, options);
   let txBuilder = builder
