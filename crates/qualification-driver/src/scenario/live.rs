@@ -2553,13 +2553,16 @@ fn commitment_hex(word: Word) -> String {
 /// still in the node's mempool. At the default depth of one, GUARDIAN refuses
 /// the second proposal outright.
 ///
-/// Whether a transfer was admitted behind a still-queued predecessor is timing:
-/// a chain that confirms each transaction before the next is proposed leaves
-/// nothing queued. So it is observed rather than forced. The predecessor still
-/// being a candidate after the next proposal was accepted proves it was one
-/// when that proposal was admitted, and a run that never saw it is
-/// environment-blocked rather than passed, because it would not have exercised
-/// the queue at all.
+/// Whether a transfer's delta was admitted behind a still-queued predecessor is
+/// timing: a chain that confirms each transaction before the next is executed
+/// leaves nothing queued. So it is observed rather than forced, on GUARDIAN's
+/// own clock: the time a delta was admitted, read right after its execution,
+/// against the time its predecessor became canonical (the stack runs a single
+/// queue server, so both are stamped by one clock). A proposal accepted
+/// behind a queued predecessor is not enough, because the predecessor can
+/// settle before that proposal's delta is pushed. A run that never saw a delta
+/// admitted behind a queued predecessor is environment-blocked rather than
+/// passed, because it would not have exercised the queue at all.
 pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
     let mut guard = runner.session.lock().await;
     let Some(session) = guard.as_mut() else {
@@ -2569,6 +2572,15 @@ pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
         return ActionOutcome::failed_setup(
             "the account was never funded, so it holds nothing to send",
         );
+    };
+    let account_id = session.account_id;
+    let mut reader = match delta_reader(session).await {
+        Ok(reader) => reader,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "connecting to GUARDIAN to read the transfers' deltas failed: {error}"
+            ));
+        }
     };
     let client = &mut session.clients[0];
 
@@ -2587,9 +2599,10 @@ pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
         ));
     }
 
-    // (proposal id, nonce, the post-state its execution produced)
-    let mut executed: Vec<(String, u64, String)> = Vec::with_capacity(CHAINED_TRANSFERS);
-    let mut admitted_behind_a_candidate = 0usize;
+    // (proposal id, nonce, the post-state its execution produced, when
+    // GUARDIAN admitted its delta)
+    let mut executed: Vec<(String, u64, String, Option<GuardianTime>)> =
+        Vec::with_capacity(CHAINED_TRANSFERS);
     for index in 1..=CHAINED_TRANSFERS {
         // Not `propose_when_settled`: waiting for the predecessor is exactly
         // what this scenario must not do, so a refusal here is the failure.
@@ -2613,21 +2626,15 @@ pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
                 ));
             }
         };
-        if let Some((_, previous, _)) = executed.last() {
-            if proposal.nonce != previous + 1 {
-                return ActionOutcome::failed_product(format!(
-                    "transfer {index} was proposed at nonce {}, not {} after its predecessor: the \
-                     client did not build on the state its last transfer produced",
-                    proposal.nonce,
-                    previous + 1
-                ));
-            }
-            if matches!(
-                client.abandon_status(*previous).await,
-                Ok(AbandonStatus::Waiting)
-            ) {
-                admitted_behind_a_candidate += 1;
-            }
+        if let Some((_, previous, _, _)) = executed.last()
+            && proposal.nonce != previous + 1
+        {
+            return ActionOutcome::failed_product(format!(
+                "transfer {index} was proposed at nonce {}, not {} after its predecessor: the \
+                 client did not build on the state its last transfer produced",
+                proposal.nonce,
+                previous + 1
+            ));
         }
         if let Err(error) = client.execute_proposal(&proposal.id).await {
             return ActionOutcome::failed_product(format!(
@@ -2638,13 +2645,31 @@ pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
         let Some(post_state) = client.account().map(|account| account.commitment()) else {
             return ActionOutcome::failed_setup("the client holds no account to read");
         };
-        executed.push((proposal.id, proposal.nonce, commitment_hex(post_state)));
+        // Read before the worker can promote the delta, which replaces its
+        // admission time with the time it became canonical.
+        let admitted_at =
+            match candidate_admitted_at(&mut reader, &account_id, proposal.nonce).await {
+                Ok(admitted_at) => admitted_at,
+                Err(error) => {
+                    return ActionOutcome::failed_product(format!(
+                        "reading transfer {index}'s delta (nonce {}) right after its execution \
+                         failed: {error}",
+                        proposal.nonce
+                    ));
+                }
+            };
+        executed.push((
+            proposal.id,
+            proposal.nonce,
+            commitment_hex(post_state),
+            admitted_at,
+        ));
     }
 
     // The head of the chain is confirmed the way every other scenario
     // confirms an execution: the chain holds its post-state, and GUARDIAN's
     // canonical history carries it at its nonce.
-    let Some((last_id, last_nonce, _)) = executed.last().cloned() else {
+    let Some((last_id, last_nonce, _, _)) = executed.last().cloned() else {
         return ActionOutcome::failed_setup("no transfer was executed");
     };
     match wait_for_execution(client, &last_id, Binding::Nonce(last_nonce)).await {
@@ -2664,7 +2689,9 @@ pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
 
     // Every transfer before it is canonical too, at its own nonce, carrying the
     // post-state its execution produced, and promoted no later than the one
-    // after it: GUARDIAN walked the chain in nonce order.
+    // after it: GUARDIAN walked the chain in nonce order. A transfer whose
+    // delta was admitted before its predecessor became canonical was queued
+    // behind it.
     let history = match client.delta_history(Some(20), None).await {
         Ok(page) => page.entries,
         Err(error) => {
@@ -2674,7 +2701,8 @@ pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
         }
     };
     let mut promoted_at: Option<String> = None;
-    for (index, (_, nonce, post_state)) in executed.iter().enumerate() {
+    let mut admitted_behind_a_candidate = 0usize;
+    for (index, (_, nonce, post_state, admitted_at)) in executed.iter().enumerate() {
         let Some(entry) = history.iter().find(|entry| entry.nonce == *nonce) else {
             return ActionOutcome::failed_product(format!(
                 "transfer {} (nonce {nonce}) is not canonical although the chain moved past it",
@@ -2703,6 +2731,12 @@ pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
                 entry.timestamp
             ));
         }
+        if let (Some(admitted), Some(previous)) =
+            (admitted_at, promoted_at.as_deref().and_then(guardian_time))
+            && *admitted < previous
+        {
+            admitted_behind_a_candidate += 1;
+        }
         promoted_at = Some(entry.timestamp.clone());
     }
 
@@ -2715,12 +2749,66 @@ pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
     if admitted_behind_a_candidate == 0 {
         return ActionOutcome::EnvironmentBlocked {
             reason: format!(
-                "each of the {CHAINED_TRANSFERS} transfers settled before the next was proposed, \
-                 so none was admitted behind a queued candidate and the queue was never exercised"
+                "each of the {CHAINED_TRANSFERS} transfers' predecessors became canonical before \
+                 its delta was admitted (or the admission was never observed), so no delta was \
+                 queued behind a candidate and the queue was never exercised"
             ),
         };
     }
     ActionOutcome::Passed
+}
+
+/// A GUARDIAN timestamp: RFC 3339, from the server's clock.
+type GuardianTime = chrono::DateTime<chrono::FixedOffset>;
+
+fn guardian_time(timestamp: &str) -> Option<GuardianTime> {
+    chrono::DateTime::parse_from_rfc3339(timestamp).ok()
+}
+
+/// Reads deltas straight from the account's GUARDIAN, signing as its first
+/// cosigner. The SDK reports where a delta is in the abandon lifecycle, not
+/// when GUARDIAN admitted it, and that time is what tells a delta queued
+/// behind a candidate from one admitted on an empty queue.
+async fn delta_reader(session: &LiveSession) -> anyhow::Result<guardian_client::GuardianClient> {
+    let signer: std::sync::Arc<dyn guardian_client::Signer> = match session.signers.signers.first()
+    {
+        Some(RunSigner::Falcon(key)) => {
+            std::sync::Arc::new(guardian_client::FalconKeyStore::new(key.clone()))
+        }
+        Some(RunSigner::Ecdsa(key)) => {
+            std::sync::Arc::new(guardian_client::EcdsaKeyStore::new(key.clone()))
+        }
+        None => return Err(anyhow!("the account has no cosigner to read GUARDIAN as")),
+    };
+    Ok(
+        guardian_client::GuardianClient::connect(session.guardian_endpoint.clone())
+            .await?
+            .with_signer(signer),
+    )
+}
+
+/// When GUARDIAN admitted the delta at `nonce`: `None` once it is no longer a
+/// candidate, because the worker promoted it first, which is no evidence
+/// either way. The delta was just admitted, so a read that fails, or finds no
+/// delta there, is an error rather than missing evidence.
+async fn candidate_admitted_at(
+    reader: &mut guardian_client::GuardianClient,
+    account_id: &AccountId,
+    nonce: u64,
+) -> anyhow::Result<Option<GuardianTime>> {
+    use guardian_client::delta_status::Status;
+    let response = reader.get_delta(account_id, nonce).await?;
+    let status = response
+        .delta
+        .and_then(|delta| delta.status)
+        .and_then(|status| status.status)
+        .ok_or_else(|| anyhow!("GUARDIAN returned no delta status at nonce {nonce}"))?;
+    match status {
+        Status::CandidateAt(timestamp) => guardian_time(&timestamp)
+            .map(Some)
+            .ok_or_else(|| anyhow!("GUARDIAN reported an unreadable admission time {timestamp}")),
+        _ => Ok(None),
+    }
 }
 
 /// While a stranded head holds the queue, a proposal built on the canonical

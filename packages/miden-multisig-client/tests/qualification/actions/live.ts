@@ -84,6 +84,7 @@ export async function createAccount(
 
     sessions.set(scenarioId, {
       cosigners,
+      guardianEndpoint: context.live!.guardianEndpoint,
       threshold: parsed.threshold,
       scheme,
       multisig,
@@ -1382,8 +1383,10 @@ export async function addSigner(context: ActionContext, scenarioId: string): Pro
   if (missing) return missing;
 
   try {
+    // The incoming signer talks to the GUARDIAN the account is registered
+    // with, which is not the main one for the candidate-queue scenarios.
     const [incoming] = await buildCosigners(
-      context.live!,
+      { ...context.live!, guardianEndpoint: session.guardianEndpoint },
       1,
       session.scheme,
       `${scenarioId}-incoming-${Date.now()}`,
@@ -2379,12 +2382,16 @@ const CHAINED_TRANSFERS = 3;
  * still in the node's mempool. At the default depth of one, GUARDIAN refuses
  * the second proposal outright.
  *
- * Whether a transfer was admitted behind a still-queued predecessor is timing,
- * so it is observed rather than forced: the predecessor still being a candidate
- * after the next proposal was accepted proves it was one when that proposal was
- * admitted. A run that never saw it is environment-blocked rather than passed,
- * because it would not have exercised the queue at all. Mirrors
- * `send_chained_transfers` in the Rust driver.
+ * Whether a transfer's delta was admitted behind a still-queued predecessor is
+ * timing, so it is observed rather than forced, on GUARDIAN's own clock: the
+ * time a delta was admitted, read right after its execution, against the time
+ * its predecessor became canonical (the stack runs a single queue server, so
+ * both are stamped by one clock). A proposal accepted behind a queued
+ * predecessor is not enough, because the predecessor can settle before that
+ * proposal's delta is pushed. A run that never saw a delta admitted behind a
+ * queued predecessor is environment-blocked rather than passed, because it
+ * would not have exercised the queue at all. Mirrors `send_chained_transfers`
+ * in the Rust driver.
  */
 export async function sendChainedTransfers(
   _context: ActionContext,
@@ -2413,8 +2420,7 @@ export async function sendChainedTransfers(
     return { kind: 'failed', classification: 'product', reason: `syncing before the transfers failed: ${String(error)}` };
   }
 
-  const executed: { id: string; nonce: number; postState: string }[] = [];
-  let admittedBehindACandidate = 0;
+  const executed: { id: string; nonce: number; postState: string; admittedAt?: number }[] = [];
   for (let index = 1; index <= CHAINED_TRANSFERS; index += 1) {
     // Not `proposeWhenSettled`: waiting for the predecessor is exactly what this
     // scenario must not do, so a refusal here is the failure.
@@ -2431,21 +2437,12 @@ export async function sendChainedTransfers(
       };
     }
     const previous = executed[executed.length - 1];
-    if (previous) {
-      if (proposal.nonce !== previous.nonce + 1) {
-        return {
-          kind: 'failed',
-          classification: 'product',
-          reason: `transfer ${index} was proposed at nonce ${proposal.nonce}, not ${previous.nonce + 1} after its predecessor: the client did not build on the state its last transfer produced`,
-        };
-      }
-      try {
-        if ((await session.multisig.abandonStatus(previous.nonce)) === 'waiting') {
-          admittedBehindACandidate += 1;
-        }
-      } catch {
-        // Evidence only: an unreadable status proves nothing either way.
-      }
+    if (previous && proposal.nonce !== previous.nonce + 1) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `transfer ${index} was proposed at nonce ${proposal.nonce}, not ${previous.nonce + 1} after its predecessor: the client did not build on the state its last transfer produced`,
+      };
     }
     try {
       // This client does not sign its own proposal at creation.
@@ -2462,6 +2459,17 @@ export async function sendChainedTransfers(
         kind: 'failed',
         classification: 'product',
         reason: `executing transfer ${index} of ${CHAINED_TRANSFERS} (nonce ${proposal.nonce}) failed: ${String(error)}`,
+      };
+    }
+    // Read before the worker can promote the delta, which replaces its
+    // admission time with the time it became canonical.
+    try {
+      executed[executed.length - 1].admittedAt = await candidateAdmittedAt(session, proposal.nonce);
+    } catch (error) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `reading transfer ${index}'s delta (nonce ${proposal.nonce}) right after its execution failed: ${String(error)}`,
       };
     }
   }
@@ -2484,7 +2492,9 @@ export async function sendChainedTransfers(
 
   // Every transfer before it is canonical too, at its own nonce, carrying the
   // post-state its execution produced, and promoted no later than the one after
-  // it: GUARDIAN walked the chain in nonce order.
+  // it: GUARDIAN walked the chain in nonce order. A transfer whose delta was
+  // admitted before its predecessor became canonical was queued behind it.
+  let admittedBehindACandidate = 0;
   try {
     const history = await session.multisig.deltaHistory({ limit: 20 });
     let promotedAt: string | undefined;
@@ -2511,6 +2521,13 @@ export async function sendChainedTransfers(
           reason: `transfer ${position + 1} (nonce ${transfer.nonce}) was promoted at ${entry.timestamp}, before its predecessor at ${promotedAt}`,
         };
       }
+      if (
+        promotedAt !== undefined &&
+        transfer.admittedAt !== undefined &&
+        transfer.admittedAt < Date.parse(promotedAt)
+      ) {
+        admittedBehindACandidate += 1;
+      }
       promotedAt = entry.timestamp;
     }
     await session.multisig.verifyStateCommitment();
@@ -2525,24 +2542,55 @@ export async function sendChainedTransfers(
   if (admittedBehindACandidate === 0) {
     return {
       kind: 'environment_blocked',
-      reason: `each of the ${CHAINED_TRANSFERS} transfers settled before the next was proposed, so none was admitted behind a queued candidate and the queue was never exercised`,
+      reason: `each of the ${CHAINED_TRANSFERS} transfers' predecessors became canonical before its delta was admitted (or the admission was never observed), so no delta was queued behind a candidate and the queue was never exercised`,
     };
   }
   return { kind: 'passed' };
 }
 
 /**
+ * When GUARDIAN admitted the delta at `nonce`, read as the first cosigner (the
+ * SDK reports where a delta is in the abandon lifecycle, not when it was
+ * admitted). Undefined once it is no longer a candidate, because the worker
+ * promoted it first, which is no evidence either way. The delta was just
+ * admitted, so a read that fails is a failure, not missing evidence.
+ */
+async function candidateAdmittedAt(session: LiveSession, nonce: number): Promise<number | undefined> {
+  const delta = await session.cosigners[0].multisigClient.guardianClient.getDelta(session.accountId!, nonce);
+  if (delta.status.status !== 'candidate') return undefined;
+  const admittedAt = Date.parse(delta.status.timestamp);
+  if (Number.isNaN(admittedAt)) {
+    throw new Error(`GUARDIAN reported an unreadable admission time ${delta.status.timestamp}`);
+  }
+  return admittedAt;
+}
+
+/** Whether `error` is GUARDIAN refusing with `conflict_pending_delta`. */
+function isPendingDeltaConflict(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === 'conflict_pending_delta';
+}
+
+/**
  * While a stranded head holds the queue, a proposal built on the canonical
- * state is refused at once.
+ * state is refused at once, and one that gets past that refusal still cannot
+ * be executed behind the head.
  *
  * The head is the producer's prepared but never submitted transaction (the
  * `custom-proposal-prepare` step): acknowledged, so queued, and never going to
  * land. The account's local state never included it, so the next proposal is
- * built on the canonical state and labelled with the account's next nonce,
- * which the head already holds. Its delta could never be admitted, and on a
- * queue with room it would otherwise have been stored for cosigners to sign,
- * pinned behind the head. Mirrors `assert_stranded_head_blocks_proposal` in the
- * Rust driver.
+ * built on the canonical state. Labelled with the account's next nonce, as the
+ * Rust leg's proposals are, it is refused: here the head carries this SDK's
+ * timestamp label, which that nonce is below, where on the Rust leg the head
+ * already holds it. Its delta could never be admitted, and on a queue with room
+ * it would otherwise have been stored for cosigners to sign, pinned behind the
+ * head. Mirrors `assert_stranded_head_blocks_proposal` in the Rust driver.
+ *
+ * This leg then proposes with the SDK's default timestamp label, which clears
+ * the nonce check, so the proposal is accepted and signed, pinned to the head's
+ * post-state. This client never held that state, so the SDK refuses to execute
+ * the proposal and nothing reaches GUARDIAN or the chain. An SDK that pushed the
+ * pinned base regardless (0.18.0-rc.2 and earlier) had the execution admitted
+ * behind the head while the transaction itself landed on the head's base.
  */
 export async function assertStrandedHeadBlocksProposal(
   _context: ActionContext,
@@ -2584,13 +2632,75 @@ export async function assertStrandedHeadBlocksProposal(
       reason: `a proposal at nonce ${proposal.nonce} was accepted while the stranded head holds nonce ${head}; its delta could never be admitted`,
     };
   } catch (error) {
-    if (String(error).includes('already a pending change')) return { kind: 'passed' };
+    if (!isPendingDeltaConflict(error)) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the proposal behind the stranded head was refused, but not as a pending conflict: ${String(error)}`,
+      };
+    }
+  }
+
+  let timestamped;
+  let base: string;
+  try {
+    base = normalizeWord((await session.multisig.getStoreAccount()).to_commitment().toHex());
+    timestamped = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT);
+    await session.multisig.signProposal(timestamped.id);
+  } catch (error) {
     return {
       kind: 'failed',
       classification: 'product',
-      reason: `the proposal behind the stranded head was refused, but not as a pending conflict: ${String(error)}`,
+      reason: `a proposal labelled with the SDK's default timestamp, which clears the nonce check, was not accepted and signed behind the stranded head while the queue has room: ${String(error)}`,
     };
   }
+  try {
+    await session.multisig.executeProposal(timestamped.id);
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the timestamp-labelled proposal (nonce ${timestamped.nonce}) behind the stranded head was executed, although it is pinned to the head's post-state and this client holds ${base}`,
+    };
+  } catch (error) {
+    if (!String(error).includes('was made for account state')) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `executing the timestamp-labelled proposal behind the stranded head failed, but not because it is pinned to a state this client does not hold: ${String(error)}`,
+      };
+    }
+  }
+  // Refused before the push: GUARDIAN holds nothing at the proposal's nonce,
+  // and the account did not move.
+  try {
+    await session.cosigners[0].multisigClient.guardianClient.getDelta(session.accountId!, timestamped.nonce);
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `GUARDIAN holds a delta at nonce ${timestamped.nonce}, although its execution was refused before anything was pushed`,
+    };
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code !== 'delta_not_found') {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `reading GUARDIAN at nonce ${timestamped.nonce} failed: ${String(error)}`,
+      };
+    }
+  }
+  try {
+    const after = normalizeWord((await session.multisig.getStoreAccount()).to_commitment().toHex());
+    if (after !== base) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the refused execution still moved the local account from ${base} to ${after}`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `reading the account back failed: ${String(error)}` };
+  }
+  return { kind: 'passed' };
 }
 
 /**

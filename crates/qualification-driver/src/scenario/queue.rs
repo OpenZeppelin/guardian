@@ -4,12 +4,15 @@
 //! in a database of its own.
 //!
 //! The deterministic chain is a stub, so nothing queued here ever
-//! canonicalizes: candidates stay queued for the whole run, which is what lets
-//! the admission rules be observed one at a time. It is also why these actions
-//! read the queue before they write to it. Every Rust scenario runs again after
-//! the main server restarts, and an upgrade run starts this server on a fresh
-//! database, so an action finds either nothing queued yet or exactly what an
-//! earlier pass left, and both have to come out the same.
+//! canonicalizes: a candidate stays queued until the worker gives up on it,
+//! once the submission grace period and the retry budget have run out (about
+//! eighteen minutes as the server ships), and parks it as retained along with
+//! its successors. That is what lets the admission rules be observed one at a
+//! time, and why these actions read the queue before they write to it. Every
+//! Rust scenario runs again after the main server restarts, and an upgrade run
+//! starts this server on a fresh database, so an action finds nothing queued
+//! yet, exactly what an earlier pass left, or that parked as retained, which a
+//! fresh push supersedes; all three have to come out the same.
 
 use std::sync::Arc;
 
@@ -100,19 +103,20 @@ async fn status_at(server: &mut QueueServer, nonce: u64) -> Result<Option<Status
 }
 
 /// Makes sure `delta` is queued, pushing it when nothing is stored at its nonce
-/// yet. Anything other than a queued candidate there means the server lost or
-/// resolved a candidate the stub chain can never confirm.
+/// yet or the worker parked an earlier pass's copy as retained: a fresh
+/// candidate supersedes a retained row. Anything else there means the server
+/// lost or resolved a candidate the stub chain can never confirm.
 async fn ensure_queued(
     server: &mut QueueServer,
     delta: &ChainedDelta,
 ) -> Result<(), ActionOutcome> {
     match status_at(server, delta.nonce).await? {
         Some(Status::CandidateAt(_)) => return Ok(()),
-        None => {}
+        None | Some(Status::RetainedAt(_)) => {}
         Some(other) => {
             return Err(ActionOutcome::failed_product(format!(
-                "nonce {} holds {other:?} rather than a queued candidate; the stub chain confirms \
-                 nothing, so it can only have left the queue through a defect",
+                "nonce {} holds {other:?} rather than a queued or retained candidate; the stub \
+                 chain confirms nothing, so it can only have left the queue through a defect",
                 delta.nonce
             )));
         }
@@ -208,11 +212,12 @@ pub async fn assert_cosigner_proposal_refused(runner: &Runner) -> ActionOutcome 
     if let Err(outcome) = ensure_queued(&mut server, first).await {
         return outcome;
     }
-    // A later pass finds the queue already full. The nonce rule is still
+    // A later pass can find the queue already full. The nonce rule is still
     // checked, but cannot be told apart from the full queue there, so the
-    // accepted proposal beside it is only expected while there is room.
+    // accepted proposal beside it is only expected while there is room: when
+    // nothing is queued at the next nonce, including a copy the worker parked.
     let room = match status_at(&mut server, second.nonce).await {
-        Ok(status) => status.is_none(),
+        Ok(status) => !matches!(status, Some(Status::CandidateAt(_))),
         Err(outcome) => return outcome,
     };
 

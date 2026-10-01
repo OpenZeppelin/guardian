@@ -694,17 +694,23 @@ neither ever builds on a state the chain did not accept, and a submitted head
 cannot be made to fail on demand. The orphan sweep is covered by the server's
 end-to-end tests over the real delta path instead
 (`abandoned_head_orphans_its_successor_and_the_chain_reconciles`). The
-deterministic chain cannot help either: the stub answers no chain call, so no
-queued candidate ever resolves there.
+deterministic chain cannot help either: the stub answers no chain call, so a
+queued head leaves the queue only by timing out, once the submission grace
+period and the retry budget run out (about eighteen minutes as the server
+ships), far beyond any step budget.
 
 **Proposal nonces in the TypeScript SDK.** The SDK labels a proposal with
 `Date.now()` unless the caller passes a nonce, while the Rust SDK and the shared
 browser helpers use the account's next nonce. GUARDIAN refuses a proposal whose
 nonce does not exceed the newest queued candidate's, which is what stops a
 cosigner on the canonical state from proposing something doomed behind another
-device's candidate, and a timestamp always exceeds it. The candidate-queue
-scenarios pass the account's next nonce on the TypeScript leg, as integrations
-do; one relying on the default is not covered by that refusal.
+device's candidate, and a timestamp clears that check. Such a proposal is caught
+at execution instead, after it has been signed: the SDK refuses to execute a
+proposal pinned to a state its client does not hold, before anything reaches
+GUARDIAN. The candidate-queue scenarios pass the account's next nonce on the
+TypeScript leg, as integrations do, and the stranded-head scenario's TypeScript
+leg also tries to execute a timestamp-labelled proposal behind the head to show
+that refusal and that GUARDIAN holds nothing at its nonce.
 
 **Deterministic multisig coverage stops at submission.** GUARDIAN's request path
 never calls the chain, so the proposal API is testable without one and
