@@ -14,6 +14,22 @@ pub fn execution_lease_name(account_id: &str) -> String {
     format!("execution:{account_id}")
 }
 
+/// Refuses an execution write fenced by any lease other than the account's execution lease.
+pub(crate) fn ensure_execution_lease(
+    account_id: &str,
+    fence: &super::LeaseFence,
+) -> Result<(), String> {
+    let expected = execution_lease_name(account_id);
+    if fence.lease_name == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "execution writes must be fenced by lease '{expected}', got '{}'",
+            fence.lease_name
+        ))
+    }
+}
+
 /// Internal progress of one execution attempt. Never on the wire; each phase
 /// maps onto exactly one reported state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +136,15 @@ pub struct SubmissionEvidence {
 pub struct ExecutionFailure {
     pub code: ExecutionFailureCode,
     pub message: String,
+}
+
+impl ExecutionFailure {
+    pub fn new(code: ExecutionFailureCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 impl Serialize for ExecutionFailure {

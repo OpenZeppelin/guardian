@@ -14,6 +14,10 @@ pub const ENVELOPE_FORMAT_VERSION: u32 = 1;
 /// The Miden protocol line requests are serialized for and executed on, as `MAJOR.MINOR`.
 pub const PROTOCOL_LINE: &str = "0.17";
 
+/// The `miden-client` version the SDKs serialize stored requests with and the server decodes
+/// them with, since request serialization carries no version tag of its own.
+pub const REQUEST_SERIALIZER_ID: &str = "0.17.0-rc.4";
+
 /// A serialized `TransactionRequest` stored with a Guardian-executable
 /// proposal. `serializer_id` names the `miden-client` version that wrote the
 /// bytes, because request serialization carries no version tag of its own.
@@ -93,15 +97,7 @@ impl TransactionRequestEnvelope {
         &self,
         admits_serializer: impl Fn(&str) -> bool,
     ) -> Result<Vec<u8>, EnvelopeRejection> {
-        let bytes = self.decoded_bytes()?;
-        if checksum_of(&bytes) != self.checksum {
-            return Err(EnvelopeRejection::ChecksumMismatch);
-        }
-        if self.format_version != ENVELOPE_FORMAT_VERSION {
-            return Err(EnvelopeRejection::UnsupportedFormat {
-                format_version: self.format_version,
-            });
-        }
+        let bytes = self.intact_bytes()?;
         if self.protocol_line != PROTOCOL_LINE {
             return Err(EnvelopeRejection::ProtocolLineMismatch {
                 declared: self.protocol_line.clone(),
@@ -119,7 +115,15 @@ impl TransactionRequestEnvelope {
     /// for size limits counted over decoded bytes rather than their base64 form. The protocol
     /// line and serializer are left to execution, which is where they must match.
     pub fn stored_len(&self) -> Result<usize, EnvelopeRejection> {
-        let bytes = self.decoded_bytes()?;
+        self.intact_bytes().map(|bytes| bytes.len())
+    }
+
+    /// The decoded bytes, once they match their checksum and the envelope is in a format this
+    /// reader understands.
+    fn intact_bytes(&self) -> Result<Vec<u8>, EnvelopeRejection> {
+        let bytes = BASE64
+            .decode(&self.bytes)
+            .map_err(|_| EnvelopeRejection::MalformedBytes)?;
         if checksum_of(&bytes) != self.checksum {
             return Err(EnvelopeRejection::ChecksumMismatch);
         }
@@ -128,13 +132,7 @@ impl TransactionRequestEnvelope {
                 format_version: self.format_version,
             });
         }
-        Ok(bytes.len())
-    }
-
-    fn decoded_bytes(&self) -> Result<Vec<u8>, EnvelopeRejection> {
-        BASE64
-            .decode(&self.bytes)
-            .map_err(|_| EnvelopeRejection::MalformedBytes)
+        Ok(bytes)
     }
 }
 
@@ -146,7 +144,35 @@ fn checksum_of(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    const PINNED_MIDEN_CLIENT_VERSION: &str = "0.17.0-rc.4";
+    const PINNED_MIDEN_CLIENT_VERSION: &str = REQUEST_SERIALIZER_ID;
+
+    /// The version Cargo.lock pins for the package `name`.
+    fn locked_version(name: &str) -> String {
+        include_str!("../../../Cargo.lock")
+            .split("[[package]]")
+            .find(|entry| entry.contains(&format!("\nname = \"{name}\"\n")))
+            .and_then(|entry| {
+                entry
+                    .lines()
+                    .find_map(|line| line.strip_prefix("version = \""))
+                    .map(|version| version.trim_end_matches('"').to_string())
+            })
+            .unwrap_or_else(|| panic!("{name} is in Cargo.lock"))
+    }
+
+    #[test]
+    fn the_serializer_id_is_the_locked_miden_client_version() {
+        assert_eq!(REQUEST_SERIALIZER_ID, locked_version("miden-client"));
+    }
+
+    #[test]
+    fn the_protocol_line_matches_the_locked_protocol_crate() {
+        let version = locked_version("miden-protocol");
+        assert!(
+            version.starts_with(&format!("{PROTOCOL_LINE}.")),
+            "protocol line {PROTOCOL_LINE} does not match miden-protocol {version}"
+        );
+    }
 
     fn admits(serializer_id: &str) -> bool {
         serializer_id == PINNED_MIDEN_CLIENT_VERSION

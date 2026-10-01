@@ -5,15 +5,15 @@ use chrono::Utc;
 use super::executor::{ExecutionInput, ProposalExecutor};
 use super::worker::{ExecutionJob, run_execution};
 use crate::config::execution::ExecutionConfig;
-use crate::coordination::{ExecutionLeases, InMemoryExecutionLeases, LeaderElector};
+use crate::coordination::{ExecutionLeases, InMemoryExecutionLeases, release_quietly};
 use crate::delta_object::DeltaStatus;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
-use crate::services::execution_status::{ExecutionEnvelope, proposal_exists};
+use crate::services::execution_status::ExecutionEnvelope;
 use crate::services::resolve_account;
 use crate::state::AppState;
-use crate::storage::{LeaseFence, NewExecutionReservation, ReservationWrite};
+use crate::storage::{ExecutionRecord, LeaseFence, NewExecutionReservation, ReservationWrite};
 
 /// Everything the server needs to offer Guardian execution.
 #[derive(Clone)]
@@ -105,12 +105,7 @@ pub async fn request_execution(
         .await
         .map_err(GuardianError::StorageError)?
     {
-        if active.reservation.proposal_id == proposal_id {
-            return Ok(ExecutionEnvelope::from_record(&active, true, false));
-        }
-        return Err(GuardianError::ExecutionConflict {
-            blocking_proposal_id: active.reservation.proposal_id,
-        });
+        return answer_active(active, &proposal_id);
     }
     if proposal.delta_payload.get("transaction_request").is_none() {
         return Err(GuardianError::ProposalMissingTransactionRequest);
@@ -131,8 +126,8 @@ pub async fn request_execution(
         .map_err(|_| GuardianError::StateNotFound(account_id.clone()))?;
     let input = ExecutionInput {
         account_id: account_id.clone(),
-        state_json: current_state.state_json.clone(),
-        proposal_payload: proposal.delta_payload.clone(),
+        state_json: current_state.state_json,
+        proposal_payload: proposal.delta_payload,
         cosigner_signatures: cosigner_sigs.clone(),
     };
     let selection = executor.select_signatures(&input)?;
@@ -153,11 +148,7 @@ pub async fn request_execution(
     else {
         return already_executing(state, &account_id, proposal_id).await;
     };
-    let fence = LeaseFence {
-        lease_name: lease.name.clone(),
-        holder_id: lease.holder_id.clone(),
-        fence_token: lease.fence_token,
-    };
+    let fence = LeaseFence::from(&lease);
     let now = Utc::now();
     let reservation = NewExecutionReservation {
         account_id: account_id.clone(),
@@ -214,18 +205,14 @@ pub async fn request_execution(
         .ok_or_else(|| {
             GuardianError::StorageError("the new reservation is not readable".to_string())
         })?;
-    let envelope = ExecutionEnvelope::from_record(
-        &record,
-        proposal_exists(state, &account_id, &proposal_id).await?,
-        true,
-    );
+    let envelope = ExecutionEnvelope::from_record(&record, true, true);
 
     let job = ExecutionJob {
         account_id,
         proposal_id,
         attempt,
         nonce: proposal.nonce,
-        base_commitment: proposal.prev_commitment.clone(),
+        base_commitment: proposal.prev_commitment,
         scheme: resolved.metadata.auth.scheme(),
         input,
         fence,
@@ -252,18 +239,18 @@ async fn already_executing(
         .await
         .map_err(GuardianError::StorageError)?
     {
-        Some(active) if active.reservation.proposal_id == proposal_id => {
-            Ok(ExecutionEnvelope::from_record(&active, true, false))
-        }
-        Some(active) => Err(GuardianError::ExecutionConflict {
-            blocking_proposal_id: active.reservation.proposal_id,
-        }),
+        Some(active) => answer_active(active, &proposal_id),
         None => Err(GuardianError::ExecutionBusy),
     }
 }
 
-async fn release_quietly(elector: &dyn LeaderElector, lease: crate::coordination::Lease) {
-    if let Err(error) = elector.release(lease).await {
-        tracing::warn!(%error, "failed to release an unused execution lease; it expires on its own");
+/// An account already reserved: this proposal's execution when it is the one running, a
+/// conflict naming the blocker otherwise.
+fn answer_active(active: ExecutionRecord, proposal_id: &str) -> Result<ExecutionEnvelope> {
+    if active.reservation.proposal_id == proposal_id {
+        return Ok(ExecutionEnvelope::from_record(&active, true, false));
     }
+    Err(GuardianError::ExecutionConflict {
+        blocking_proposal_id: active.reservation.proposal_id,
+    })
 }

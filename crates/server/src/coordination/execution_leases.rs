@@ -9,6 +9,28 @@ use crate::coordination::leader::{LeaderElector, Lease};
 use crate::error::Result;
 use crate::storage::execution_lease_name;
 
+/// When a lease taken now for `ttl` runs out.
+pub fn lease_deadline(ttl: Duration) -> DateTime<Utc> {
+    Utc::now() + chrono::Duration::from_std(ttl).unwrap_or_default()
+}
+
+/// Releases `lease`. A failed release is harmless: the lease expires on its own.
+pub async fn release_quietly(elector: &dyn LeaderElector, lease: Lease) {
+    if let Err(error) = elector.release(lease).await {
+        tracing::debug!(%error, "execution lease release failed; it expires on its own");
+    }
+}
+
+impl From<&Lease> for crate::storage::LeaseFence {
+    fn from(lease: &Lease) -> Self {
+        Self {
+            lease_name: lease.name.clone(),
+            holder_id: lease.holder_id.clone(),
+            fence_token: lease.fence_token,
+        }
+    }
+}
+
 /// Hands out the account-scoped lease that fences one Guardian execution.
 /// Each execution task acquires under its own holder id, so ownership can
 /// transfer between tasks of one replica as well as across replicas.

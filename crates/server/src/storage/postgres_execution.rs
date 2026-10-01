@@ -15,7 +15,7 @@ use crate::storage::{
     AdmissionWrite, CandidateAdmission, ClaimWrite, ExecutionFailure, ExecutionOutcome,
     ExecutionPhase, ExecutionRecord, ExecutionReservation, ExecutionResolution, ExecutionTerminal,
     LeaseFence, NewExecutionReservation, ReservationUpdate, ReservationWrite, ResolveWrite,
-    SubmissionEvidence, execution_lease_name,
+    SubmissionEvidence,
 };
 
 #[derive(Queryable, Selectable)]
@@ -173,18 +173,6 @@ fn to_u64(value: i64, field: &str) -> Result<u64, String> {
 
 fn to_i32(value: u32, field: &str) -> Result<i32, String> {
     i32::try_from(value).map_err(|_| format!("execution {field} {value} does not fit the store"))
-}
-
-fn ensure_execution_lease(account_id: &str, fence: &LeaseFence) -> Result<(), String> {
-    let expected = execution_lease_name(account_id);
-    if fence.lease_name == expected {
-        Ok(())
-    } else {
-        Err(format!(
-            "execution writes must be fenced by lease '{expected}', got '{}'",
-            fence.lease_name
-        ))
-    }
 }
 
 type TxResult<T> = Result<T, diesel::result::Error>;
@@ -399,7 +387,10 @@ impl PostgresService {
         &self,
         reservation: NewExecutionReservation,
     ) -> Result<ReservationWrite, String> {
-        ensure_execution_lease(&reservation.account_id, &reservation.fence)?;
+        crate::storage::execution::ensure_execution_lease(
+            &reservation.account_id,
+            &reservation.fence,
+        )?;
         let ignored_signatures = to_i32(reservation.ignored_signatures, "ignored_signatures")?;
         let mut conn = self.connection().await?;
         conn.transaction::<ReservationWrite, diesel::result::Error, _>(|conn| {
@@ -500,7 +491,7 @@ impl PostgresService {
         claimant: &LeaseFence,
         lease_expires_at: DateTime<Utc>,
     ) -> Result<ClaimWrite, String> {
-        ensure_execution_lease(account_id, claimant)?;
+        crate::storage::execution::ensure_execution_lease(account_id, claimant)?;
         let account_id = account_id.to_string();
         let expected = expected.clone();
         let claimant = claimant.clone();

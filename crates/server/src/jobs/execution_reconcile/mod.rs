@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use crate::coordination::{LeaderElector, Lease};
+use crate::coordination::{LeaderElector, Lease, lease_deadline, release_quietly};
 use crate::network::{RpcReadMode, StateVerification};
 use crate::services::execute_proposal::ProposalExecutor;
 use crate::state::AppState;
@@ -103,8 +103,9 @@ impl Reconciler {
                 })
                 .fold(0.0, f64::max),
         );
+        let tip = tokio::sync::OnceCell::new();
         for record in records {
-            let outcome = self.reconcile(state, &record, kind).await;
+            let outcome = self.reconcile(state, &record, kind, &tip).await;
             metrics::counter!(
                 crate::metrics::names::EXECUTION_RECONCILE_OUTCOMES_TOTAL,
                 crate::metrics::names::LABEL_OUTCOME => outcome.label()
@@ -135,11 +136,13 @@ impl Reconciler {
         crate::metrics::execution::record_observation_outage(seconds);
     }
 
+    /// `tip` is the chain tip for this pass, read once and only if a record needs it.
     async fn reconcile(
         &self,
         state: &AppState,
         record: &ExecutionRecord,
         kind: PassKind,
+        tip: &tokio::sync::OnceCell<u32>,
     ) -> Reconciled {
         let reservation = &record.reservation;
         let ours = reservation.fence.holder_id == self.holder_id;
@@ -153,7 +156,7 @@ impl Reconciler {
         let Some(lease) = self.take_ownership(state, record, elector.as_ref()).await else {
             return Reconciled::Owned;
         };
-        let fence = fence_of(&lease);
+        let fence = LeaseFence::from(&lease);
 
         let Some(evidence) = &record.evidence else {
             let code = match kind {
@@ -169,7 +172,7 @@ impl Reconciler {
                 .storage
                 .fail_execution(resolution(record, &fence, failure))
                 .await;
-            release(elector.as_ref(), lease).await;
+            release_quietly(elector.as_ref(), lease).await;
             return match written {
                 Ok(ResolveWrite::Resolved) => {
                     crate::metrics::execution::record_outcome(Some(&code));
@@ -179,7 +182,7 @@ impl Reconciler {
             };
         };
 
-        let settled = match self.observe(state, evidence).await {
+        let settled = match self.observe(state, evidence, tip).await {
             Ok(settled) => settled,
             Err(error) => {
                 tracing::warn!(
@@ -210,7 +213,7 @@ impl Reconciler {
                 {
                     Ok(ResolveWrite::Resolved) => {
                         crate::metrics::execution::record_outcome(Some(&code));
-                        release(elector.as_ref(), lease).await;
+                        release_quietly(elector.as_ref(), lease).await;
                         Reconciled::Resolved(code)
                     }
                     Ok(other) => {
@@ -239,7 +242,7 @@ impl Reconciler {
             .await
             .ok()
             .flatten()?;
-        let fence = fence_of(&lease);
+        let fence = LeaseFence::from(&lease);
         if record.reservation.fence == fence {
             return Some(lease);
         }
@@ -256,7 +259,7 @@ impl Reconciler {
             Ok(ClaimWrite::Claimed) => Some(lease),
             Ok(ClaimWrite::ClaimSuperseded | ClaimWrite::StaleLease | ClaimWrite::NotActive)
             | Err(_) => {
-                release(elector, lease).await;
+                release_quietly(elector, lease).await;
                 None
             }
         }
@@ -266,6 +269,7 @@ impl Reconciler {
         &self,
         state: &AppState,
         evidence: &SubmissionEvidence,
+        tip: &tokio::sync::OnceCell<u32>,
     ) -> Result<Observed, String> {
         let verification = state
             .network_client
@@ -289,7 +293,7 @@ impl Reconciler {
                     .to_string(),
             ));
         }
-        let tip = self.executor.chain_tip().await?;
+        let tip = *tip.get_or_try_init(|| self.executor.chain_tip()).await?;
         if tip > evidence.expiration_block {
             return Ok(Observed::Settles(
                 ExecutionFailureCode::Expired,
@@ -303,8 +307,7 @@ impl Reconciler {
     }
 
     async fn hold(&self, state: &AppState, record: &ExecutionRecord, fence: &LeaseFence) {
-        let expires = Utc::now()
-            + chrono::Duration::from_std(state.execution.config.lease).unwrap_or_default();
+        let expires = lease_deadline(state.execution.config.lease);
         if let Err(error) = state
             .storage
             .renew_execution_reservation(
@@ -326,14 +329,6 @@ enum Observed {
     Settles(ExecutionFailureCode, String),
 }
 
-fn fence_of(lease: &Lease) -> LeaseFence {
-    LeaseFence {
-        lease_name: lease.name.clone(),
-        holder_id: lease.holder_id.clone(),
-        fence_token: lease.fence_token,
-    }
-}
-
 fn resolution(
     record: &ExecutionRecord,
     fence: &LeaseFence,
@@ -346,12 +341,6 @@ fn resolution(
         fence: fence.clone(),
         failure,
         now: Utc::now(),
-    }
-}
-
-async fn release(elector: &dyn LeaderElector, lease: Lease) {
-    if let Err(error) = elector.release(lease).await {
-        tracing::debug!(%error, "reconciler lease release failed; it expires on its own");
     }
 }
 

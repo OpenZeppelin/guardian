@@ -12,12 +12,10 @@ mod store;
 mod threshold;
 
 pub use attempt::MidenExecutor;
-pub use chain::{ChainView, ChainViewError, blocks_to_track, build_chain_view};
+pub use chain::{ChainViewError, build_chain_view};
 pub use foreign::{ForeignAccountUnavailable, ForeignAccounts};
-pub use request::{ExecutionInputs, RequestInputsError, StoredRequest, approval_expiration_block};
-pub use sealing::{SealingFailed, seal_for_submission};
+pub use request::StoredRequest;
 pub use store::ExecutionDataStore;
-pub use threshold::{InvokedProcedure, effective_threshold};
 
 #[cfg(all(test, feature = "e2e"))]
 mod tests;

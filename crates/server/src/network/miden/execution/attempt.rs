@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use guardian_shared::hex::{FromHex, IntoHex};
 use guardian_shared::retry::{RPC_TRANSPORT_SIGNALS, StructuredEvidence, is_transient_error_with};
 use guardian_shared::{FromJson, SignatureScheme, ToJson};
 use miden_client::rpc::NodeRpcClient;
@@ -47,13 +48,6 @@ use crate::storage::{ExecutionFailure, ExecutionFailureCode};
 const PROVER_BACKOFF_START: Duration = Duration::from_secs(1);
 const PROVER_BACKOFF_CAP: Duration = Duration::from_secs(30);
 
-fn failure(code: ExecutionFailureCode, message: impl Into<String>) -> ExecutionFailure {
-    ExecutionFailure {
-        code,
-        message: message.into(),
-    }
-}
-
 /// Executes Guardian-executable proposals against a Miden node and remote prover.
 pub struct MidenExecutor {
     rpc: Arc<dyn NodeRpcClient>,
@@ -82,20 +76,19 @@ struct SelectedSignatures {
     advice: Vec<(Word, Vec<Felt>)>,
 }
 
-fn select(input: &ExecutionInput) -> Result<SelectedSignatures, GuardianError> {
-    let account = Account::from_json(&input.state_json).map_err(GuardianError::InvalidDelta)?;
-    let summary = summary_of(&input.proposal_payload).map_err(GuardianError::InvalidDelta)?;
-    let inspector = MidenAccountInspector::new(&account);
+fn select(
+    input: &ExecutionInput,
+    account: &Account,
+    summary: &TransactionSummary,
+) -> SelectedSignatures {
+    let inspector = MidenAccountInspector::new(account);
     let cosigners: BTreeSet<String> = inspector
         .extract_pubkeys()
         .into_iter()
         .map(|commitment| commitment.to_lowercase())
         .collect();
-    let required = effective_threshold(
-        &account,
-        InvokedProcedure::of_proposal_type(proposal_type(&input.proposal_payload)),
-    )
-    .unwrap_or(usize::MAX);
+    let required = effective_threshold(account, invoked_procedure(&input.proposal_payload))
+        .unwrap_or(usize::MAX);
 
     let mut seen = BTreeSet::new();
     let mut advice = Vec::new();
@@ -107,7 +100,7 @@ fn select(input: &ExecutionInput) -> Result<SelectedSignatures, GuardianError> {
         } else if !seen.insert(signer.clone()) {
             Err("a duplicate of an earlier signature from the same cosigner")
         } else {
-            verified_advice(signature, &signer, &summary)
+            verified_advice(signature, &signer, summary)
                 .ok_or("not a valid signature over the signed summary")
         };
         match entry {
@@ -123,14 +116,14 @@ fn select(input: &ExecutionInput) -> Result<SelectedSignatures, GuardianError> {
             }
         }
     }
-    Ok(SelectedSignatures {
+    SelectedSignatures {
         selection: SignatureSelection {
             required,
             valid: advice.len(),
             ignored,
         },
         advice,
-    })
+    }
 }
 
 /// The advice entry for `signature` when it is `signer`'s valid signature over `summary`. An
@@ -141,7 +134,7 @@ fn verified_advice(
     signer: &str,
     summary: &TransactionSummary,
 ) -> Option<(Word, Vec<Felt>)> {
-    let commitment = word_from_hex(signer)?;
+    let commitment = <Word as FromHex>::from_hex(signer).ok()?;
     let message = summary.to_commitment();
     match &signature.signature {
         guardian_shared::ProposalSignature::Falcon { signature } => {
@@ -193,11 +186,6 @@ fn verified_advice(
     }
 }
 
-fn word_from_hex(hex_str: &str) -> Option<Word> {
-    let bytes = hex::decode(hex_str.trim_start_matches("0x")).ok()?;
-    Word::read_from_bytes(&bytes).ok()
-}
-
 fn summary_of(payload: &serde_json::Value) -> Result<TransactionSummary, String> {
     let tx_summary = payload
         .get("tx_summary")
@@ -205,15 +193,13 @@ fn summary_of(payload: &serde_json::Value) -> Result<TransactionSummary, String>
     TransactionSummary::from_json(tx_summary)
 }
 
-fn proposal_type(payload: &serde_json::Value) -> Option<&str> {
-    payload
-        .get("metadata")
-        .and_then(|metadata| metadata.get("proposal_type"))
-        .and_then(serde_json::Value::as_str)
-}
-
-fn requires_guardian_ack(payload: &serde_json::Value) -> bool {
-    proposal_type(payload) != Some("switch_guardian")
+fn invoked_procedure(payload: &serde_json::Value) -> InvokedProcedure {
+    InvokedProcedure::of_proposal_type(
+        payload
+            .get("metadata")
+            .and_then(|metadata| metadata.get("proposal_type"))
+            .and_then(serde_json::Value::as_str),
+    )
 }
 
 /// A node that has not reached a needed block is behind; one that cannot be read is
@@ -225,7 +211,7 @@ fn chain_view_failure(error: ChainViewError) -> ExecutionFailure {
         ChainViewError::Rpc(_) => ExecutionFailureCode::NodeUnavailable,
         ChainViewError::Inconsistent(_) => ExecutionFailureCode::ChainInconsistent,
     };
-    failure(code, error.to_string())
+    ExecutionFailure::new(code, error.to_string())
 }
 
 async fn chain_tip(rpc: &dyn NodeRpcClient) -> Result<BlockNumber, ExecutionFailure> {
@@ -233,7 +219,7 @@ async fn chain_tip(rpc: &dyn NodeRpcClient) -> Result<BlockNumber, ExecutionFail
         .await
         .map(|(header, _)| header.block_num())
         .map_err(|e| {
-            failure(
+            ExecutionFailure::new(
                 ExecutionFailureCode::NodeUnavailable,
                 format!("reading the chain tip failed: {e}"),
             )
@@ -257,14 +243,7 @@ fn is_transient(error: &(dyn std::error::Error + 'static)) -> bool {
     is_transient_error_with(
         error,
         |_| StructuredEvidence::Indeterminate,
-        &[
-            RPC_TRANSPORT_SIGNALS[0],
-            RPC_TRANSPORT_SIGNALS[1],
-            "i/o timeout",
-            "deadline exceeded",
-            "timed out",
-            "unavailable",
-        ],
+        &[RPC_TRANSPORT_SIGNALS.as_slice(), &["timed out"]].concat(),
     )
 }
 
@@ -274,14 +253,17 @@ impl ProposalExecutor for MidenExecutor {
         &self,
         input: &ExecutionInput,
     ) -> Result<SignatureSelection, GuardianError> {
-        select(input).map(|selected| selected.selection)
+        let account = Account::from_json(&input.state_json).map_err(GuardianError::InvalidDelta)?;
+        let summary = summary_of(&input.proposal_payload).map_err(GuardianError::InvalidDelta)?;
+        Ok(select(input, &account, &summary).selection)
     }
 
     async fn prepare(
         &self,
         input: ExecutionInput,
     ) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure> {
-        let codec = |message: String| failure(ExecutionFailureCode::RequestCodec, message);
+        let codec =
+            |message: String| ExecutionFailure::new(ExecutionFailureCode::RequestCodec, message);
         let envelope: TransactionRequestEnvelope = input
             .proposal_payload
             .get("transaction_request")
@@ -290,33 +272,39 @@ impl ProposalExecutor for MidenExecutor {
             .and_then(|value| serde_json::from_value(value).map_err(|e| codec(e.to_string())))?;
         let bytes = envelope
             .verified_bytes(|serializer_id| self.config.admits_serializer(serializer_id))
-            .map_err(|rejection| failure(rejection.failure_code(), rejection.to_string()))?;
+            .map_err(|rejection| {
+                ExecutionFailure::new(rejection.failure_code(), rejection.to_string())
+            })?;
         let request = StoredRequest::read_from_bytes(&bytes).map_err(|e| codec(e.to_string()))?;
         let summary = summary_of(&input.proposal_payload).map_err(codec)?;
         request.check_against(&summary).map_err(|reason| {
-            failure(
+            ExecutionFailure::new(
                 ExecutionFailureCode::RequestInvalid(reason),
                 format!("stored request is not Guardian-executable: {reason:?}"),
             )
         })?;
         let account = Account::from_json(&input.state_json).map_err(codec)?;
-        let selected = select(&input).map_err(|e| codec(e.to_string()))?;
+        let selected = select(&input, &account, &summary);
 
         if self.rpc.has_genesis_commitment().is_none() {
             let (genesis, _) = self
                 .rpc
                 .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
                 .await
-                .map_err(|e| failure(ExecutionFailureCode::NodeUnavailable, e.to_string()))?;
+                .map_err(|e| {
+                    ExecutionFailure::new(ExecutionFailureCode::NodeUnavailable, e.to_string())
+                })?;
             self.rpc
                 .set_genesis_commitment(genesis.commitment())
                 .await
-                .map_err(|e| failure(ExecutionFailureCode::NodeUnavailable, e.to_string()))?;
+                .map_err(|e| {
+                    ExecutionFailure::new(ExecutionFailureCode::NodeUnavailable, e.to_string())
+                })?;
         }
         let approval_expiration = approval_expiration_block(&summary);
         let tip = chain_tip(self.rpc.as_ref()).await?;
         if u64::from(tip.as_u32()) >= approval_expiration {
-            return Err(failure(
+            return Err(ExecutionFailure::new(
                 ExecutionFailureCode::ExpirationReached(ExpirationBound::Approval),
                 format!("approval expired at block {approval_expiration}; the tip is {tip}"),
             ));
@@ -325,7 +313,7 @@ impl ProposalExecutor for MidenExecutor {
         let unsigned = request
             .execution_inputs(&account, [])
             .map_err(|e| match e {
-                super::request::RequestInputsError::Invalid(reason) => failure(
+                super::request::RequestInputsError::Invalid(reason) => ExecutionFailure::new(
                     ExecutionFailureCode::RequestInvalid(reason),
                     format!("{reason:?}"),
                 ),
@@ -368,7 +356,7 @@ impl ProposalExecutor for MidenExecutor {
             Err(TransactionExecutorError::Unauthorized(summary)) => *summary,
             Err(error) => return Err(execution_failure(&store, &error)),
             Ok(_) => {
-                return Err(failure(
+                return Err(ExecutionFailure::new(
                     ExecutionFailureCode::BindingMismatch,
                     "the stored request executed without the cosigners' signatures",
                 ));
@@ -376,7 +364,7 @@ impl ProposalExecutor for MidenExecutor {
         };
         if reproduced.to_commitment() != summary.to_commitment() {
             log_output_note_difference(&summary, &reproduced);
-            return Err(failure(
+            return Err(ExecutionFailure::new(
                 ExecutionFailureCode::BindingMismatch,
                 format!(
                     "reproduced summary {} differs from the signed {}",
@@ -394,7 +382,7 @@ impl ProposalExecutor for MidenExecutor {
             summary_payload: reproduced.to_json(),
             summary,
             signature_advice: selected.advice,
-            requires_ack: requires_guardian_ack(&input.proposal_payload),
+            requires_ack: invoked_procedure(&input.proposal_payload).requires_guardian_ack(),
             store,
             executed: None,
             proven: None,
@@ -425,21 +413,21 @@ fn execution_failure(
                 ForeignAccountUnavailableReason::Unavailable
             }
         };
-        return failure(
+        return ExecutionFailure::new(
             ExecutionFailureCode::ForeignAccountUnavailable(reason),
             format!("{unavailable:?}"),
         );
     }
     match Abort::of(error) {
-        Some(Abort::ApprovalExpired) => failure(
+        Some(Abort::ApprovalExpired) => ExecutionFailure::new(
             ExecutionFailureCode::ExpirationReached(ExpirationBound::Approval),
             "the multisig approval expired at or before the reference block",
         ),
-        Some(Abort::VaultShortfall) => failure(
+        Some(Abort::VaultShortfall) => ExecutionFailure::new(
             ExecutionFailureCode::InsufficientFee,
             "the account cannot pay the transaction fee at the reference block",
         ),
-        None => failure(
+        None => ExecutionFailure::new(
             ExecutionFailureCode::BindingMismatch,
             format!("the stored request does not execute: {error}"),
         ),
@@ -484,7 +472,7 @@ impl MidenAttempt {
     async fn ensure_not_expired(&self, expiration: BlockNumber) -> Result<(), ExecutionFailure> {
         let tip = chain_tip(self.rpc.as_ref()).await?;
         if expiration <= tip {
-            return Err(failure(
+            return Err(ExecutionFailure::new(
                 ExecutionFailureCode::ExpirationReached(ExpirationBound::Transaction),
                 format!("the transaction expires at block {expiration}; the tip is {tip}"),
             ));
@@ -520,8 +508,8 @@ impl ExecutionAttempt for MidenAttempt {
         let message = self.summary.to_commitment();
         let mut advice = self.signature_advice.clone();
         if let Some(ack) = ack {
-            let commitment = word_from_hex(&ack.commitment_hex).ok_or_else(|| {
-                failure(
+            let commitment = <Word as FromHex>::from_hex(&ack.commitment_hex).map_err(|_| {
+                ExecutionFailure::new(
                     ExecutionFailureCode::BindingMismatch,
                     "Guardian's acknowledgment commitment is not a word",
                 )
@@ -529,7 +517,7 @@ impl ExecutionAttempt for MidenAttempt {
             let signature = ack
                 .scheme
                 .parse_signature_hex(&ack.signature_hex)
-                .map_err(|e| failure(ExecutionFailureCode::BindingMismatch, e))?;
+                .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::BindingMismatch, e))?;
             let entry = ack
                 .scheme
                 .build_signature_advice_entry(
@@ -538,13 +526,15 @@ impl ExecutionAttempt for MidenAttempt {
                     &signature,
                     Some(ack.public_key_hex.as_str()),
                 )
-                .map_err(|e| failure(ExecutionFailureCode::BindingMismatch, e))?;
+                .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::BindingMismatch, e))?;
             advice.push(entry);
         }
         let inputs = self
             .request
             .execution_inputs(&self.account, advice)
-            .map_err(|e| failure(ExecutionFailureCode::RequestCodec, e.to_string()))?;
+            .map_err(|e| {
+                ExecutionFailure::new(ExecutionFailureCode::RequestCodec, e.to_string())
+            })?;
         let reference = self.store.chain().reference_block();
         let executor: TransactionExecutor<'_, '_, _, UnreachableAuth> =
             TransactionExecutor::new(&self.store);
@@ -561,17 +551,14 @@ impl ExecutionAttempt for MidenAttempt {
         if executed.input_notes().commitment() != self.summary.input_notes().commitment()
             || executed.output_notes().commitment() != self.summary.output_notes().commitment()
         {
-            return Err(failure(
+            return Err(ExecutionFailure::new(
                 ExecutionFailureCode::BindingMismatch,
                 "the executed transaction's notes differ from the signed summary",
             ));
         }
         self.ensure_not_expired(executed.expiration_block_num())
             .await?;
-        let final_account_commitment = format!(
-            "0x{}",
-            hex::encode(executed.final_account().to_commitment().as_bytes())
-        );
+        let final_account_commitment = executed.final_account().to_commitment().into_hex();
         self.executed = Some(executed);
         Ok(ExecutedTransactionInfo {
             final_account_commitment,
@@ -580,7 +567,7 @@ impl ExecutionAttempt for MidenAttempt {
 
     async fn prove(&mut self) -> Result<ProvenTransactionInfo, ExecutionFailure> {
         let expiration = self.executed().expiration_block_num();
-        let inputs: TransactionInputs = self.executed().clone().into();
+        let inputs: TransactionInputs = self.executed().tx_inputs().clone();
         let mut backoff = PROVER_BACKOFF_START;
         let proving = std::time::Instant::now();
         let record_duration = || {
@@ -620,7 +607,7 @@ impl ExecutionAttempt for MidenAttempt {
                 }
                 Err(error) => {
                     record_duration();
-                    return Err(failure(
+                    return Err(ExecutionFailure::new(
                         ExecutionFailureCode::ProvingFailed,
                         format!(
                             "the prover refused the transaction: {}",
@@ -651,7 +638,7 @@ impl ExecutionAttempt for MidenAttempt {
             self.executed().tx_inputs(),
         )
         .await
-        .map_err(|e| failure(ExecutionFailureCode::SealingFailed, e.to_string()))?;
+        .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::SealingFailed, e.to_string()))?;
         self.sealed = Some(sealed);
         Ok(())
     }

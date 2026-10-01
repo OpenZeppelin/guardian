@@ -20,7 +20,7 @@ pub const GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA: NonZeroU16 =
 
 /// The `miden-client` version whose serialization a stored request uses. Request bytes carry no
 /// version tag of their own, so the server admits them by this name.
-pub const REQUEST_SERIALIZER_ID: &str = "0.17.0-rc.4";
+pub use guardian_shared::request_envelope::REQUEST_SERIALIZER_ID;
 
 /// Whether proposals this client creates can be executed by Guardian. Set once, on the client.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -89,22 +89,6 @@ pub(crate) fn expiration_instructions(delta: Option<NonZeroU16>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_serializer_id_is_the_locked_miden_client_version() {
-        let lockfile = include_str!("../../../../Cargo.lock");
-        let version = lockfile
-            .split("[[package]]")
-            .find(|entry| entry.contains("\nname = \"miden-client\"\n"))
-            .and_then(|entry| {
-                entry
-                    .lines()
-                    .find_map(|line| line.strip_prefix("version = \""))
-                    .map(|version| version.trim_end_matches('"').to_string())
-            })
-            .expect("miden-client is in Cargo.lock");
-        assert_eq!(REQUEST_SERIALIZER_ID, version);
-    }
 
     #[test]
     fn a_self_executed_client_applies_no_bound_it_was_not_asked_for() {

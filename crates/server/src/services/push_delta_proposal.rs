@@ -7,6 +7,7 @@ use crate::services::execution_codec::TransactionRequestEnvelope;
 use crate::services::{normalize_payload, resolve_account};
 use crate::storage::{ProposalAdmission, ProposalWrite};
 use guardian_shared::{DeltaSignature, EcdsaMessageFormat};
+use serde::Deserialize;
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
 const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
@@ -24,7 +25,7 @@ fn stored_request_bytes(state: &AppState, delta_payload: &serde_json::Value) -> 
     let Some(value) = delta_payload.get("transaction_request") else {
         return Ok(0);
     };
-    let envelope: TransactionRequestEnvelope = serde_json::from_value(value.clone())
+    let envelope = TransactionRequestEnvelope::deserialize(value)
         .map_err(|e| GuardianError::InvalidDelta(format!("Invalid transaction_request: {e}")))?;
     let bytes = envelope
         .stored_len()

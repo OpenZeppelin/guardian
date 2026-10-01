@@ -17,7 +17,10 @@ fn dependencies(manifest: &str) -> Vec<String> {
         .expect("the manifest has a [dependencies] table")
         .lines()
         .skip(1)
-        .filter_map(|line| line.split_once('=').map(|(name, _)| name.trim().to_string()))
+        .filter_map(|line| {
+            line.split_once('=')
+                .map(|(name, _)| name.trim().to_string())
+        })
         .filter(|name| !name.is_empty() && !name.starts_with('#'))
         .collect()
 }

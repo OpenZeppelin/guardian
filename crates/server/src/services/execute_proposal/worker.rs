@@ -12,7 +12,7 @@ use super::executor::{
     ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor, ProvenTransactionInfo,
     SubmissionOutcome,
 };
-use crate::coordination::{LeaderElector, Lease};
+use crate::coordination::{LeaderElector, Lease, lease_deadline, release_quietly};
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::ack_delta_internal::{AcknowledgedDelta, acknowledge_delta};
@@ -51,13 +51,6 @@ impl From<ExecutionFailure> for Stop {
     }
 }
 
-fn failure(code: ExecutionFailureCode, message: impl Into<String>) -> ExecutionFailure {
-    ExecutionFailure {
-        code,
-        message: message.into(),
-    }
-}
-
 /// Keeps the worker's lease and reservation alive while it holds the attempt, and records the
 /// phase it reached.
 struct Heartbeat {
@@ -87,7 +80,7 @@ impl Heartbeat {
                     }
                 }
                 let phase = *current.lock().expect("phase lock");
-                let expires = Utc::now() + chrono::Duration::from_std(ttl).unwrap_or_default();
+                let expires = lease_deadline(ttl);
                 if let Err(error) = storage
                     .renew_execution_reservation(&account_id, &fence, expires, phase)
                     .await
@@ -101,8 +94,7 @@ impl Heartbeat {
 
     async fn advance(&self, state: &AppState, job: &ExecutionJob, phase: ExecutionPhase) {
         *self.phase.lock().expect("phase lock") = phase;
-        let expires = Utc::now()
-            + chrono::Duration::from_std(state.execution.config.lease).unwrap_or_default();
+        let expires = lease_deadline(state.execution.config.lease);
         if let Err(error) = state
             .storage
             .renew_execution_reservation(&job.account_id, &job.fence, expires, phase)
@@ -157,9 +149,9 @@ async fn run_to_boundary(
         .storage
         .pull_state(&job.account_id)
         .await
-        .map_err(|e| failure(ExecutionFailureCode::StateMismatch, e))?;
+        .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::StateMismatch, e))?;
     if current_state.commitment != job.base_commitment {
-        return Err(failure(
+        return Err(ExecutionFailure::new(
             ExecutionFailureCode::StateMismatch,
             "the account advanced past the proposal's base state",
         )
@@ -187,7 +179,7 @@ async fn run_to_boundary(
         .final_account_commitment
         .eq_ignore_ascii_case(&acknowledged.new_commitment)
     {
-        return Err(failure(
+        return Err(ExecutionFailure::new(
             ExecutionFailureCode::BindingMismatch,
             "the executed account state differs from the acknowledged one",
         )
@@ -230,7 +222,7 @@ async fn acknowledge(
     acknowledge_delta(state, &job.scheme, current_state, &delta)
         .await
         .map_err(|error| {
-            failure(
+            ExecutionFailure::new(
                 ExecutionFailureCode::BindingMismatch,
                 format!("Guardian could not acknowledge the reproduced delta: {error}"),
             )
@@ -239,8 +231,12 @@ async fn acknowledge(
 }
 
 async fn ensure_admissible(state: &AppState, job: &ExecutionJob) -> Result<(), Stop> {
-    let inadmissible =
-        |message: String| Stop::Failed(failure(ExecutionFailureCode::AccountInadmissible, message));
+    let inadmissible = |message: String| {
+        Stop::Failed(ExecutionFailure::new(
+            ExecutionFailureCode::AccountInadmissible,
+            message,
+        ))
+    };
     let current_state = state
         .storage
         .pull_state(&job.account_id)
@@ -276,7 +272,7 @@ fn ensure_within_horizon(state: &AppState, proven: &ProvenTransactionInfo) -> Re
         .expiration_block
         .saturating_sub(proven.reference_block);
     if distance > state.execution.config.expiration_horizon_blocks {
-        return Err(failure(
+        return Err(ExecutionFailure::new(
             ExecutionFailureCode::ExpirationBeyondHorizon,
             format!(
                 "the transaction expires {distance} blocks after its reference block; this \
@@ -293,13 +289,12 @@ fn ensure_within_horizon(state: &AppState, proven: &ProvenTransactionInfo) -> Re
 /// that can no longer be included is refused while its proposal can still be retried, rather
 /// than sent and settled as expired with its proposal gone.
 async fn ensure_unexpired(job: &ExecutionJob, proven: &ProvenTransactionInfo) -> Result<(), Stop> {
-    let tip = job
-        .executor
-        .chain_tip()
-        .await
-        .map_err(|message| failure(ExecutionFailureCode::NodeUnavailable, message))?;
+    let tip =
+        job.executor.chain_tip().await.map_err(|message| {
+            ExecutionFailure::new(ExecutionFailureCode::NodeUnavailable, message)
+        })?;
     if proven.expiration_block <= tip {
-        return Err(failure(
+        return Err(ExecutionFailure::new(
             ExecutionFailureCode::ExpirationReached(ExpirationBound::Transaction),
             format!(
                 "the transaction expires at block {}; the tip is {tip}",
@@ -342,20 +337,22 @@ async fn cross_boundary(
         .storage
         .admit_execution_candidate(state.metadata.as_ref(), admission)
         .await
-        .map_err(|e| failure(ExecutionFailureCode::StateMismatch, e))?;
+        .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::StateMismatch, e))?;
     match outcome {
         AdmissionWrite::Admitted => Ok(()),
         AdmissionWrite::NotAuthorized | AdmissionWrite::StaleLease => Err(Stop::OwnershipLost),
-        AdmissionWrite::StaleBase => Err(failure(
+        AdmissionWrite::StaleBase => Err(ExecutionFailure::new(
             ExecutionFailureCode::AccountInadmissible,
             "the account moved before the boundary commit",
         )
         .into()),
-        AdmissionWrite::CandidateExists | AdmissionWrite::NonceOccupied => Err(failure(
-            ExecutionFailureCode::StateMismatch,
-            "another delta took the account's next nonce",
-        )
-        .into()),
+        AdmissionWrite::CandidateExists | AdmissionWrite::NonceOccupied => {
+            Err(ExecutionFailure::new(
+                ExecutionFailureCode::StateMismatch,
+                "another delta took the account's next nonce",
+            )
+            .into())
+        }
     }
 }
 
@@ -368,8 +365,7 @@ async fn claim_send(state: &AppState, job: &ExecutionJob) -> bool {
     if !job.elector.verify_held(&job.lease).await.unwrap_or(false) {
         return false;
     }
-    let expires =
-        Utc::now() + chrono::Duration::from_std(state.execution.config.lease).unwrap_or_default();
+    let expires = lease_deadline(state.execution.config.lease);
     match state
         .storage
         .renew_execution_reservation(&job.account_id, &job.fence, expires, ExecutionPhase::Sent)
@@ -400,7 +396,7 @@ async fn submit(state: &AppState, job: &ExecutionJob, attempt: &mut dyn Executio
         SubmissionOutcome::Rejected { reason } => {
             let resolution = resolution(
                 job,
-                failure(ExecutionFailureCode::SubmissionRejected, reason),
+                ExecutionFailure::new(ExecutionFailureCode::SubmissionRejected, reason),
             );
             match state
                 .storage
@@ -441,9 +437,7 @@ async fn fail(state: &AppState, job: &ExecutionJob, failure: ExecutionFailure) {
             tracing::error!(account_id = %job.account_id, %error, "failed to record a failed execution")
         }
     }
-    if let Err(error) = job.elector.release(job.lease.clone()).await {
-        tracing::debug!(%error, "execution lease release failed; it expires on its own");
-    }
+    release_quietly(job.elector.as_ref(), job.lease.clone()).await;
 }
 
 fn resolution(job: &ExecutionJob, failure: ExecutionFailure) -> ExecutionResolution {

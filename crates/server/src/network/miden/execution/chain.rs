@@ -11,12 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use miden_client::rpc::domain::sync::SyncTarget;
 use miden_client::rpc::{NodeRpcClient, RpcError};
-use miden_client::transaction::TransactionRequest;
 use miden_protocol::Word;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPeaks, PartialMmr};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::{InputNote, InputNotes, PartialBlockchain};
+use miden_protocol::transaction::PartialBlockchain;
 
 /// Everything an attempt reads from the chain, fixed at one reference block.
 #[derive(Debug, Clone)]
@@ -71,24 +70,6 @@ pub enum ChainViewError {
     Rpc(#[from] RpcError),
 }
 
-/// The blocks a request's execution must authenticate: the blocks the request declares (its
-/// bound block among them) and the creation block of every authenticated input note.
-pub fn blocks_to_track(
-    request: &TransactionRequest,
-    input_notes: &InputNotes<InputNote>,
-) -> BTreeSet<BlockNumber> {
-    request
-        .block_numbers()
-        .iter()
-        .copied()
-        .chain(
-            input_notes
-                .iter()
-                .filter_map(|note| note.location().map(|location| location.block_num())),
-        )
-        .collect()
-}
-
 /// Builds the chain view at the node's committed tip, tracking `tracked` blocks.
 pub async fn build_chain_view(
     rpc: &dyn NodeRpcClient,
@@ -134,8 +115,19 @@ pub async fn build_chain_view(
     }
 
     let mut headers = BTreeMap::new();
-    for block in tracked.iter().copied().filter(|block| *block < reference) {
-        let (header, proof) = rpc.get_block_header_with_proof(block).await?;
+    let fetched = futures::future::try_join_all(
+        tracked
+            .iter()
+            .copied()
+            .filter(|block| *block < reference)
+            .map(|block| async move {
+                rpc.get_block_header_with_proof(block)
+                    .await
+                    .map(|(header, proof)| (block, header, proof))
+            }),
+    )
+    .await?;
+    for (block, header, proof) in fetched {
         if header.block_num() != block {
             return Err(ChainViewError::Inconsistent(format!(
                 "node answered the header request for block {block} with block {}",

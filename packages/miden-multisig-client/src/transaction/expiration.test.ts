@@ -12,25 +12,30 @@ import {
   transactionExpirationDeltaFor,
 } from './expiration.js';
 
+const here = dirname(fileURLToPath(import.meta.url));
 const rustExpiration = readFileSync(
-  join(
-    dirname(fileURLToPath(import.meta.url)),
-    '../../../../crates/miden-multisig-client/src/transaction/expiration.rs',
-  ),
+  join(here, '../../../../crates/miden-multisig-client/src/transaction/expiration.rs'),
   'utf8',
 );
+const rustEnvelope = readFileSync(join(here, '../../../../crates/shared/src/request_envelope.rs'), 'utf8');
+const packageJson = JSON.parse(readFileSync(join(here, '../../package.json'), 'utf8'));
 
 describe('parity with the Rust SDK', () => {
   it('uses the same two bounds and the same serializer id', () => {
-    const constant = (name: string) =>
-      rustExpiration.match(new RegExp(`pub const ${name}: [^=]+=\\s*(?:\\w+::new\\()?"?([0-9_.a-z-]+)`))?.[1];
+    const constantIn = (source: string, name: string) =>
+      source.match(new RegExp(`pub const ${name}: [^=]+=\\s*(?:\\w+::new\\()?"?([0-9_.a-z-]+)`))?.[1];
+    const constant = (name: string) => constantIn(rustExpiration, name);
     expect(Number(constant('GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA')?.replaceAll('_', ''))).toBe(
       GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA,
     );
     expect(Number(constant('GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA'))).toBe(
       GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
     );
-    expect(constant('REQUEST_SERIALIZER_ID')).toBe(REQUEST_SERIALIZER_ID);
+    expect(constantIn(rustEnvelope, 'REQUEST_SERIALIZER_ID')).toBe(REQUEST_SERIALIZER_ID);
+  });
+
+  it('names the pinned web SDK version as the serializer id', () => {
+    expect(packageJson.dependencies['@miden-sdk/miden-sdk']).toBe(REQUEST_SERIALIZER_ID);
   });
 });
 

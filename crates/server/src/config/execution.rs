@@ -30,7 +30,8 @@ pub const MIN_EXECUTION_EXPIRATION_HORIZON_BLOCKS: u32 = 256;
 /// The `miden-client` version the server's own request codec reads. Stored
 /// requests declare the version that serialized them, and only allowlisted
 /// versions are decoded, because request serialization carries no version tag.
-pub const PINNED_MIDEN_CLIENT_VERSION: &str = "0.17.0-rc.4";
+pub const PINNED_MIDEN_CLIENT_VERSION: &str =
+    guardian_shared::request_envelope::REQUEST_SERIALIZER_ID;
 
 /// The remote prover Guardian delegates proof generation to.
 #[derive(Clone, Debug, PartialEq)]
@@ -346,22 +347,6 @@ mod tests {
             config_from(&[(ENV_EXECUTION_SERIALIZER_ALLOWLIST, " 0.17.0-rc.4 , 0.17.0 ")]).unwrap();
         assert!(config.admits_serializer("0.17.0"));
         assert!(config_from(&[(ENV_EXECUTION_SERIALIZER_ALLOWLIST, " , ")]).is_err());
-    }
-
-    #[test]
-    fn pinned_client_version_matches_the_workspace_lockfile() {
-        let lockfile = include_str!("../../../../Cargo.lock");
-        let pinned = lockfile
-            .split("[[package]]")
-            .find(|entry| entry.contains("\nname = \"miden-client\"\n"))
-            .and_then(|entry| {
-                entry
-                    .lines()
-                    .find_map(|line| line.strip_prefix("version = \""))
-                    .map(|version| version.trim_end_matches('"').to_string())
-            })
-            .expect("miden-client is in Cargo.lock");
-        assert_eq!(pinned, PINNED_MIDEN_CLIENT_VERSION);
     }
 
     #[test]

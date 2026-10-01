@@ -60,11 +60,7 @@ pub(crate) async fn acknowledge_delta(
     acknowledged.metadata = derived_metadata;
     acknowledged = state.ack.ack_delta(acknowledged, scheme).await?;
     acknowledged.ack_pubkey = state.ack.pubkey(scheme);
-    acknowledged.ack_scheme = match scheme {
-        SignatureScheme::Falcon => "falcon",
-        SignatureScheme::Ecdsa => "ecdsa",
-    }
-    .to_string();
+    acknowledged.ack_scheme = scheme.as_str().to_string();
 
     Ok(AcknowledgedDelta {
         delta: acknowledged,

@@ -30,6 +30,12 @@ impl InvokedProcedure {
         }
     }
 
+    /// Whether the auth procedure needs GUARDIAN's acknowledgment: a guardian switch is
+    /// authorized by the cosigners alone.
+    pub fn requires_guardian_ack(self) -> bool {
+        !matches!(self, Self::UpdateGuardian)
+    }
+
     fn root(self) -> Option<Word> {
         let auth_root = |name: &str| {
             let code = AuthGuardedMultisig::code();

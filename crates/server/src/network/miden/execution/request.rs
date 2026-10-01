@@ -62,7 +62,6 @@ pub struct StoredRequest {
 pub struct ExecutionInputs {
     pub tx_args: TransactionArgs,
     pub input_notes: InputNotes<InputNote>,
-    pub note_scripts: Vec<NoteScript>,
 }
 
 /// Why a structurally valid request could not become executor inputs.
@@ -143,16 +142,9 @@ impl StoredRequest {
         tx_args.extend_merkle_store(self.merkle_store.inner_nodes());
         tx_args.extend_advice_map(extra_advice);
 
-        let note_scripts = self
-            .input_notes
-            .iter()
-            .map(|note| note.script().clone())
-            .chain(self.expected_ntx_scripts.iter().cloned())
-            .collect();
         Ok(ExecutionInputs {
             tx_args,
             input_notes,
-            note_scripts,
         })
     }
 

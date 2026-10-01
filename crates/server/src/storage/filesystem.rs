@@ -1067,7 +1067,10 @@ impl StorageBackend for FilesystemService {
         reservation: crate::storage::NewExecutionReservation,
     ) -> Result<crate::storage::ReservationWrite, String> {
         use crate::storage::ReservationWrite;
-        ensure_execution_lease(&reservation.account_id, &reservation.fence)?;
+        crate::storage::execution::ensure_execution_lease(
+            &reservation.account_id,
+            &reservation.fence,
+        )?;
         let _guard = self.delta_write_lock.lock().await;
         let mut records = self.read_executions(&reservation.account_id).await?;
         if let Some(active) = records.iter().find(|record| record.reservation.is_active()) {
@@ -1143,7 +1146,7 @@ impl StorageBackend for FilesystemService {
         lease_expires_at: DateTime<Utc>,
     ) -> Result<crate::storage::ClaimWrite, String> {
         use crate::storage::ClaimWrite;
-        ensure_execution_lease(account_id, claimant)?;
+        crate::storage::execution::ensure_execution_lease(account_id, claimant)?;
         let _guard = self.delta_write_lock.lock().await;
         let mut records = self.read_executions(account_id).await?;
         let Some(active) = records
@@ -1760,21 +1763,6 @@ impl FilesystemService {
         record.reservation.released_at = Some(now);
         record.reservation.updated_at = now;
         self.write_executions(account_id, &records).await
-    }
-}
-
-fn ensure_execution_lease(
-    account_id: &str,
-    fence: &crate::storage::LeaseFence,
-) -> Result<(), String> {
-    let expected = crate::storage::execution_lease_name(account_id);
-    if fence.lease_name == expected {
-        Ok(())
-    } else {
-        Err(format!(
-            "execution writes must be fenced by lease '{expected}', got '{}'",
-            fence.lease_name
-        ))
     }
 }
 

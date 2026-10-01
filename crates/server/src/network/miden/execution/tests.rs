@@ -1448,7 +1448,7 @@ mod threshold {
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
     use miden_standards::account::wallets::BasicWallet;
 
-    use crate::network::miden::execution::{InvokedProcedure, effective_threshold};
+    use crate::network::miden::execution::threshold::{InvokedProcedure, effective_threshold};
 
     fn auth_root(name: &str) -> Word {
         use miden_standards::account::auth::AuthGuardedMultisig;
