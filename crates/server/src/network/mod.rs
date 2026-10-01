@@ -470,6 +470,28 @@ impl RpcSettings {
         }
     }
 
+    /// The executor for Guardian execution on this network, when the configuration offers it.
+    pub(crate) fn proposal_executor(
+        &self,
+        config: &crate::config::execution::ExecutionConfig,
+    ) -> Result<
+        Option<std::sync::Arc<dyn crate::services::execute_proposal::ProposalExecutor>>,
+        String,
+    > {
+        let Ok(prover) = config.availability() else {
+            return Ok(None);
+        };
+        match self {
+            Self::Miden(settings) => crate::network::miden::execution::executor_for(
+                settings.endpoint().expose_secret(),
+                settings.timeout(),
+                prover,
+                config,
+            )
+            .map(Some),
+        }
+    }
+
     /// The endpoint with credentials stripped, for startup logging.
     pub(crate) fn sanitized_endpoint(&self) -> String {
         match self {

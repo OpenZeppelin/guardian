@@ -212,6 +212,15 @@ impl DeltasProcessorBase {
 
     /// Log a stale-candidate outcome: another owner already promoted or
     /// discarded this delta, so the write was a no-op by design.
+    fn log_protected_by_execution(delta: &DeltaObject, operation: &str) {
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            operation,
+            "Candidate belongs to an unresolved Guardian execution; leaving it to that execution"
+        );
+    }
+
     fn log_not_candidate(delta: &DeltaObject, operation: &str) {
         tracing::warn!(
             account_id = %delta.account_id,
@@ -894,6 +903,9 @@ impl DeltasProcessorBase {
         match outcome {
             CanonicalWrite::Applied => {}
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "abandon_confirm")
+            }
             CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "abandon_confirm"),
         }
 
@@ -932,6 +944,10 @@ impl DeltasProcessorBase {
         match outcome {
             CanonicalWrite::Applied => {}
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "abandon_finalize");
+                return Ok(());
+            }
             CanonicalWrite::NotCandidate => {
                 Self::log_not_candidate(&delta, "abandon_finalize");
                 return Ok(());
@@ -996,6 +1012,9 @@ impl DeltasProcessorBase {
         match outcome {
             CanonicalWrite::Applied => delta.status = new_status,
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "divergence_reset")
+            }
             CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "divergence_reset"),
         }
 
@@ -1043,6 +1062,9 @@ impl DeltasProcessorBase {
                     crate::metrics::labels::CandidateOutcome::DivergenceDeferred,
                 ),
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "divergence_increment")
+                }
                 CanonicalWrite::NotCandidate => {
                     Self::log_not_candidate(&delta, "divergence_increment")
                 }
@@ -1093,6 +1115,9 @@ impl DeltasProcessorBase {
                     record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
                 }
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "diverged_retain")
+                }
                 CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "diverged_retain"),
             }
 
@@ -1117,6 +1142,9 @@ impl DeltasProcessorBase {
                 record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
             }
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "diverged_discard")
+            }
             CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "diverged_discard"),
         }
 
@@ -1187,6 +1215,9 @@ impl DeltasProcessorBase {
                         );
                     }
                     CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                    CanonicalWrite::ProtectedByExecution => {
+                        Self::log_protected_by_execution(&delta, "retain");
+                    }
                     CanonicalWrite::NotCandidate => {
                         Self::log_not_candidate(&delta, "retain");
                     }
@@ -1211,6 +1242,9 @@ impl DeltasProcessorBase {
                     record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
                 }
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "retry_discard");
+                }
                 CanonicalWrite::NotCandidate => {
                     Self::log_not_candidate(&delta, "retry_discard");
                 }
@@ -1247,6 +1281,9 @@ impl DeltasProcessorBase {
                         .increment(1);
                 }
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "retry_increment");
+                }
                 CanonicalWrite::NotCandidate => {
                     Self::log_not_candidate(&delta, "retry_increment");
                 }
@@ -1507,6 +1544,14 @@ impl DeltasProcessorBase {
         // State, auth, delta status, and the pending-candidate flag commit
         // as one fenced storage write: a crash, outage, or lease loss can
         // never advance the state while the delta stays a candidate.
+        let executed_by_guardian = self.state.execution.executor.is_some()
+            && matches!(
+                storage_backend.load_active_execution(&delta.account_id).await,
+                Ok(Some(record)) if record
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.candidate_nonce == delta.nonce)
+            );
         let outcome = storage_backend
             .promote_candidate(
                 self.state.metadata.as_ref(),
@@ -1527,7 +1572,11 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to canonicalize delta: {e}"))
             })?;
         match outcome {
-            PromoteWrite::Applied => {}
+            PromoteWrite::Applied => {
+                if executed_by_guardian {
+                    crate::metrics::execution::record_outcome(None);
+                }
+            }
             PromoteWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
             PromoteWrite::NotCandidate => {
                 Self::log_not_candidate(&delta, "promote");

@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=GUARDIAN_GIT_SHA={git_sha}");
+    println!("cargo:rerun-if-changed=proto/guardian.proto");
     println!("cargo:rerun-if-env-changed=GUARDIAN_GIT_SHA");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/heads");

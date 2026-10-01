@@ -58,6 +58,16 @@ pub const CANONICALIZATION_RUN_DURATION_SECONDS: &str =
 pub const CANONICALIZATION_FAST_RUNS_TOTAL: &str = "guardian_canonicalization_fast_runs_total";
 pub const CANONICALIZATION_FAST_RUN_DURATION_SECONDS: &str =
     "guardian_canonicalization_fast_run_duration_seconds";
+pub const EXECUTION_RECONCILE_OUTCOMES_TOTAL: &str = "guardian_execution_reconcile_outcomes_total";
+pub const EXECUTION_OUTCOMES_TOTAL: &str = "guardian_execution_outcomes_total";
+pub const EXECUTION_CHAIN_VIEW_DURATION_SECONDS: &str =
+    "guardian_execution_chain_view_duration_seconds";
+pub const EXECUTION_PROVING_DURATION_SECONDS: &str = "guardian_execution_proving_duration_seconds";
+pub const EXECUTION_PROVER_RETRIES_TOTAL: &str = "guardian_execution_prover_retries_total";
+pub const EXECUTION_OLDEST_RESERVATION_AGE_SECONDS: &str =
+    "guardian_execution_oldest_reservation_age_seconds";
+pub const EXECUTION_OBSERVATION_OUTAGE_SECONDS: &str =
+    "guardian_execution_observation_outage_seconds";
 pub const CANONICALIZATION_RECONCILE_RUNS_TOTAL: &str =
     "guardian_canonicalization_reconcile_runs_total";
 pub const CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS: &str =
@@ -304,6 +314,48 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Duration of one recent-candidate promotion-only pass, in seconds.",
     },
     MetricDef {
+        name: EXECUTION_OUTCOMES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME, LABEL_CODE],
+        help: "Guardian executions that ended, by outcome (committed, failed) and stable failure code (none when committed).",
+    },
+    MetricDef {
+        name: EXECUTION_CHAIN_VIEW_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Time to assemble the chain view an execution reproduces against, in seconds.",
+    },
+    MetricDef {
+        name: EXECUTION_PROVING_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Time from the first proving attempt to a proof or a terminal prover failure, retries included, in seconds.",
+    },
+    MetricDef {
+        name: EXECUTION_PROVER_RETRIES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[],
+        help: "Transient prover failures Guardian retried under a held reservation.",
+    },
+    MetricDef {
+        name: EXECUTION_OLDEST_RESERVATION_AGE_SECONDS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Age of the oldest unreleased execution reservation, in seconds; zero when none is held.",
+    },
+    MetricDef {
+        name: EXECUTION_OBSERVATION_OUTAGE_SECONDS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "How long reconciliation has been unable to observe the chain for a submitted execution, in seconds; zero when it can.",
+    },
+    MetricDef {
+        name: EXECUTION_RECONCILE_OUTCOMES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Guardian executions visited by reconciliation, by outcome (owned, released, awaiting_promotion, waiting, observation_unavailable, resolved).",
+    },
+    MetricDef {
         name: CANONICALIZATION_RECONCILE_RUNS_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
@@ -525,6 +577,9 @@ const KNOWN_GRPC_METHODS: &[(&str, &str)] = &[
     ("guardian.Guardian", "GetDeltaProposal"),
     ("guardian.Guardian", "SignDeltaProposal"),
     ("guardian.Guardian", "AbandonDeltaCandidate"),
+    ("guardian.Guardian", "ExecuteDeltaProposal"),
+    ("guardian.Guardian", "GetDeltaProposalExecution"),
+    ("guardian.Guardian", "GetCurrentExecution"),
     ("guardian.Guardian", "GetAccountByKeyCommitment"),
     ("guardian.Guardian", "GetDeltaHistory"),
     // Served alongside Guardian via tonic-reflection (v1 and v1alpha).

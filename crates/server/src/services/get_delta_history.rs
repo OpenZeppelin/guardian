@@ -256,6 +256,7 @@ mod tests {
             .await
             .expect("ack");
         let state = AppState {
+            execution: Default::default(),
             storage: Arc::new(MockStorageBackend::new()),
             metadata: Arc::new(MockMetadataStore::new()),
             network_client: Arc::new(MockNetworkClient::new()),

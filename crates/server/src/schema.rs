@@ -68,6 +68,7 @@ diesel::table! {
         status -> Jsonb,
         status_kind -> Text,
         status_timestamp -> Timestamptz,
+        request_bytes -> Int8,
     }
 }
 
@@ -199,6 +200,61 @@ diesel::table! {
 }
 
 diesel::table! {
+    /// Durable per-account execution reservation for a Guardian-executed
+    /// proposal (issue #254). At most one row per account has a null
+    /// `released_at`.
+    execution_reservations (id) {
+        id -> Int8,
+        account_id -> Text,
+        proposal_id -> Text,
+        attempt -> Int4,
+        holder_id -> Text,
+        lease_name -> Text,
+        fence_token -> Int8,
+        lease_expires_at -> Timestamptz,
+        phase -> Text,
+        candidate_nonce -> Nullable<Int8>,
+        ignored_signatures -> Int4,
+        released_at -> Nullable<Timestamptz>,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    /// Submission evidence recorded before a Guardian execution sends its
+    /// transaction. Its presence is the no-retry boundary.
+    execution_submissions (id) {
+        id -> Int8,
+        account_id -> Text,
+        proposal_id -> Text,
+        attempt -> Int4,
+        candidate_nonce -> Int8,
+        transaction_id -> Text,
+        expected_commitment -> Text,
+        reference_block -> Int8,
+        expiration_block -> Int8,
+        base_commitment -> Text,
+        committed_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    /// Persisted terminal outcome of a Guardian execution attempt.
+    execution_outcomes (id) {
+        id -> Int8,
+        account_id -> Text,
+        proposal_id -> Text,
+        attempt -> Int4,
+        state -> Text,
+        error_code -> Nullable<Text>,
+        error_message -> Nullable<Text>,
+        error_meta -> Nullable<Jsonb>,
+        resolved_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     /// Single-row store-level encryption marker. Its presence indicates the
     /// store is encrypted.
     storage_encryption_marker (id) {
@@ -216,4 +272,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     delta_proposals,
     account_metadata,
     account_auth_state,
+    execution_reservations,
+    execution_submissions,
+    execution_outcomes,
 );

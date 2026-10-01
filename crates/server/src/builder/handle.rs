@@ -25,9 +25,10 @@ use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
-    abandon_candidate, configure, get_delta, get_delta_history, get_delta_proposal,
-    get_delta_proposals, get_delta_since, get_pubkey, get_state, lookup, push_delta,
-    push_delta_proposal, sign_delta_proposal, status, status_root,
+    abandon_candidate, configure, execute_delta_proposal, get_current_execution, get_delta,
+    get_delta_history, get_delta_proposal, get_delta_proposal_execution, get_delta_proposals,
+    get_delta_since, get_pubkey, get_state, lookup, push_delta, push_delta_proposal,
+    sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
 use crate::dashboard::require_dashboard_session;
@@ -130,6 +131,17 @@ impl ServerHandle {
         } else {
             tracing::info!(
                 "Running in optimistic mode - deltas accepted without on-chain verification"
+            );
+        }
+
+        if let (Some(_), Some(executor)) = (
+            self.app_state.canonicalization.as_ref(),
+            self.app_state.execution.executor.clone(),
+        ) {
+            tracing::info!("Starting execution reconciler");
+            crate::jobs::execution_reconcile::start_execution_reconciler(
+                self.app_state.clone(),
+                executor,
             );
         }
 
@@ -409,6 +421,12 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         .route("/delta/proposal/single", get(get_delta_proposal))
         .route("/delta/proposal", put(sign_delta_proposal))
         .route("/delta/candidate/abandon", post(abandon_candidate))
+        .route("/delta/proposal/execution", post(execute_delta_proposal))
+        .route(
+            "/delta/proposal/execution",
+            get(get_delta_proposal_execution),
+        )
+        .route("/delta/execution/current", get(get_current_execution))
         .route("/configure", post(configure))
         .route("/state", get(get_state))
         .route("/state/lookup", get(lookup))
@@ -538,6 +556,9 @@ mod tests {
             ("PUT", "/delta/proposal"),
             ("GET", "/delta/proposal/single"),
             ("POST", "/delta/candidate/abandon"),
+            ("POST", "/delta/proposal/execution"),
+            ("GET", "/delta/proposal/execution"),
+            ("GET", "/delta/execution/current"),
             ("POST", "/configure"),
             ("GET", "/state"),
             ("GET", "/state/lookup"),

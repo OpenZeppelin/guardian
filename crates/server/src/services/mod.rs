@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 mod abandon_candidate;
 pub mod account_status;
+pub(crate) mod ack_delta_internal;
 mod configure_account;
 mod dashboard_account_delta_detail;
 mod dashboard_account_deltas;
@@ -21,6 +22,9 @@ mod dashboard_info;
 mod dashboard_pagination;
 mod dashboard_stats;
 mod delta_commit;
+pub mod execute_proposal;
+pub mod execution_codec;
+pub mod execution_status;
 mod get_delta;
 mod get_delta_history;
 mod get_delta_proposal;
@@ -460,6 +464,7 @@ mod tests {
             .expect("Failed to create ack registry");
 
         AppState {
+            execution: Default::default(),
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(network),

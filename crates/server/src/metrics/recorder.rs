@@ -45,6 +45,12 @@ const RELEASE_SWEEP_ROTATION_BUCKETS: &[f64] = &[
     60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0, 14400.0, 21600.0, 43200.0, 86400.0,
 ];
 
+/// A proof takes seconds to tens of seconds, and retries against an unreachable prover run until
+/// the transaction expires, so proving gets buckets up to twenty minutes.
+const PROVING_BUCKETS: &[f64] = &[
+    1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0,
+];
+
 /// Build an uninstalled recorder. The caller decides whether to
 /// install it globally (production) or scope it locally (tests).
 pub fn build_recorder() -> PrometheusRecorder {
@@ -88,6 +94,11 @@ pub fn build_recorder() -> PrometheusRecorder {
             CANONICALIZATION_RUN_BUCKETS,
         )
         .expect("static stats refresh buckets are non-empty")
+        .set_buckets_for_metric(
+            Matcher::Full(names::EXECUTION_PROVING_DURATION_SECONDS.to_string()),
+            PROVING_BUCKETS,
+        )
+        .expect("static proving buckets are non-empty")
         .build_recorder()
 }
 

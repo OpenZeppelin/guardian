@@ -1,4 +1,5 @@
 pub mod account_inspector;
+pub mod execution;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{

@@ -54,6 +54,10 @@ async fn main() {
                 .with_reconcile_interval_seconds_from_env()
                 .expect("Invalid reconcile interval configuration"),
         ))
+        .with_execution(
+            server::config::execution::ExecutionConfig::from_env()
+                .expect("Invalid Guardian execution configuration"),
+        )
         .with_release_sweep(Some(
             server::release_sweep::ReleaseSweepConfig::from_env()
                 .expect("Invalid release sweep configuration"),
