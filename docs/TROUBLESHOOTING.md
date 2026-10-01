@@ -33,10 +33,17 @@ not help, because its code cannot change: recreate it with the current build
 The execute path requests the GUARDIAN acknowledgement before it submits, so a
 rejected submission leaves the delta pending on GUARDIAN as a candidate. The
 next transaction for the account builds on the state that candidate already
-claimed, so its acknowledgement is refused with `conflict_pending_delta`, and so
-is a new proposal: it carries the stuck candidate's nonce, whatever the
-account's candidate queue depth (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`).
-Release the candidate before proposing again, with `abandon_candidate(nonce)` /
+claimed, so its acknowledgement is refused with `conflict_pending_delta`. A new
+proposal is refused the same way up front: at the default queue depth of one
+because the queue is full, and at any depth when its nonce does not exceed the
+stuck candidate's, which a proposal labelled with the account's next nonce (as
+Rust SDK proposals are) never does. A TypeScript SDK proposal with its default
+timestamp nonce is accepted on a deeper queue
+(`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1), pinned to the stuck
+candidate's post-state, and the SDK refuses to execute it after it has been
+signed, since no client holds that state (0.18.0-rc.2 and earlier executed it
+anyway; see [`CONFIGURATION.md`](./CONFIGURATION.md)). Release the candidate
+before proposing again, with `abandon_candidate(nonce)` /
 `abandonCandidate(nonce)` (see [`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait
 for the submission grace period to expire.
 
@@ -436,7 +443,14 @@ Operator checks:
 - Retention and reconciliation emit stable `event` / `reason` fields for
   log-based triage (with `account_id`, `nonce`, and `age_seconds` /
   `retention_reason` / `expires_at` where applicable):
-  - `event=candidate_retained reason=retry_exhausted|diverged|orphaned`
+  - `event=candidate_retained reason=retry_exhausted|diverged|orphaned`,
+    with `account_released`: `true` when this was the account's last
+    queued candidate, so the account takes new submissions again; `false`
+    while candidates remain queued behind it (the same full pass parks
+    them as orphans, and the last one reports the release) or when
+    reading the queue or clearing the account's pending flag failed,
+    which a later pass heals.
+    `Client-abandoned candidate discarded` carries the same field.
   - `event=reconcile_deferred reason=chain_at_stored_base|chain_probe_unavailable|end_state_not_on_chain|base_no_longer_applies|recomputed_commitment_mismatch|no_matching_recoverable_delta`
   - `event=reconcile_skipped reason=obsolete_base`
   - `event=reconcile_promoted`

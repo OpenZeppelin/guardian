@@ -344,14 +344,21 @@ sequenceDiagram
   admitted: while the queue is full, or when their nonce does not exceed
   the tail's. The second case is a cosigner that synced the canonical
   state (all `/state` serves) and proposes on it while another device's
-  candidate is queued: its SDK derives the nonce from the canonical
-  account. Only viable proposals (pinned to the tail with a nonce above
-  the tail's) count toward the pending-proposal limit, which is checked
-  before the tail replay. Promotion of the oldest candidate moves the
-  canonical state *along* the chain, so the tail commitment — and every
-  proposal pinned to it — stays valid while the queue drains. A queued
-  payload that no longer replays (an upgrade changed delta application
-  while it was queued) refuses admissions with `409
+  candidate is queued, labelling the proposal with the account's next
+  nonce as the Rust SDK does. The TypeScript SDK labels proposals with a
+  timestamp by default, which clears that check, and refuses to execute a
+  proposal pinned to a state its client does not hold, so such a proposal
+  executes only from a device on the tail. The server cannot tell which
+  state a summary was built on, so it relies on the SDKs here: the Rust
+  SDK's push names the state it executed on, which the delta gate refuses
+  unless it is the tail; TypeScript SDK 0.18.0-rc.2 and earlier pushed the
+  pinned base regardless. Only viable proposals (pinned to the tail with a
+  nonce above the tail's) count toward the pending-proposal limit, which
+  is checked before the tail replay. Promotion of the oldest candidate
+  moves the canonical state *along* the chain, so the tail commitment —
+  and every proposal pinned to it — stays valid while the queue drains.
+  A queued payload that no longer replays (an upgrade changed delta
+  application while it was queued) refuses admissions with `409
   conflict_pending_delta` until the queue drains. The pending-candidate
   flag is released only once no candidate remains queued.
 - For each account with a pending candidate:

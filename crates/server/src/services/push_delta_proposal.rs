@@ -97,8 +97,15 @@ pub async fn push_delta_proposal(
     //   the promoted candidate once it drains, so its push is doomed
     //   either way. This is the cosigner that synced the canonical state
     //   (all `/state` serves) and proposes on it while another device's
-    //   candidate is queued: its SDK derives the nonce from the canonical
-    //   account, which is at or below the tail's.
+    //   candidate is queued, labelling the proposal with the account's
+    //   next nonce (the Rust SDK's convention), which is at or below the
+    //   tail's. A timestamp label (the TypeScript SDK's default) clears
+    //   this check, and nothing here can tell which state the summary was
+    //   built on; the SDKs keep such a proposal from executing anywhere
+    //   but on the tail (the TypeScript SDK refuses a proposal pinned to a
+    //   state its client does not hold, and the Rust SDK's push names the
+    //   state it executed on, which the delta gate refuses unless it is
+    //   the tail).
     let chain = CandidateChain::load_for_admission(
         resolved.storage.as_ref(),
         &account_id,
@@ -1268,7 +1275,7 @@ mod tests {
     /// the slot and collides with it once promoted — so it is refused
     /// before any cosigner signs it. This is the cosigner that synced the
     /// canonical state and proposes on it while another device's candidate
-    /// is queued (its SDK derives the nonce from the canonical account).
+    /// is queued, labelling the proposal with the account's next nonce.
     #[tokio::test]
     async fn test_push_delta_proposal_refused_at_or_below_the_tail_nonce() {
         let account_id = &fixture_account_id();
