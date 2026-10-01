@@ -1,3 +1,5 @@
+import type { TransactionRequestEnvelope } from './request-envelope.js';
+
 export interface ServerFalconSignature {
   scheme: 'falcon';
   signature: string;
@@ -135,6 +137,7 @@ export interface ServerDeltaProposalRequest {
     tx_summary: { data: string };
     signatures: Array<{ signer_id: string; signature: ServerProposalSignature }>;
     metadata?: ServerProposalMetadata;
+    transaction_request?: TransactionRequestEnvelope;
   };
 }
 

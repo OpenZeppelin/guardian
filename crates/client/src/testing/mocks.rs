@@ -1,13 +1,15 @@
 use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AccountState, ConfigureRequest,
-    ConfigureResponse, DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
-    GetAccountByKeyCommitmentResponse, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
-    GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
-    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
-    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
-    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
-    SignDeltaProposalRequest, SignDeltaProposalResponse,
+    ConfigureResponse, DeltaObject as ProtoDeltaObject, ExecuteDeltaProposalRequest,
+    ExecuteDeltaProposalResponse, ExecutionEnvelope, GetAccountByKeyCommitmentRequest,
+    GetAccountByKeyCommitmentResponse, GetCurrentExecutionRequest, GetCurrentExecutionResponse,
+    GetDeltaHistoryRequest, GetDeltaHistoryResponse, GetDeltaProposalExecutionRequest,
+    GetDeltaProposalExecutionResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
+    GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
+    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
+    GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest,
+    PushDeltaResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -77,6 +79,8 @@ impl MockGuardianHandle {
     }
 }
 
+type CurrentExecutionResult = Result<Option<ExecutionEnvelope>, Status>;
+
 #[derive(Default)]
 pub struct MockGuardianService {
     handle: MockGuardianHandle,
@@ -97,6 +101,8 @@ pub struct MockGuardianService {
         Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
     abandon_delta_candidate_response:
         Arc<StdMutex<Option<Result<AbandonDeltaCandidateResponse, Status>>>>,
+    execution_responses: Arc<StdMutex<Vec<Result<ExecutionEnvelope, Status>>>>,
+    current_execution_response: Arc<StdMutex<Option<CurrentExecutionResult>>>,
 }
 
 impl MockGuardianService {
@@ -201,6 +207,30 @@ impl MockGuardianService {
     ) -> Self {
         *self.abandon_delta_candidate_response.lock().unwrap() = Some(response);
         self
+    }
+
+    /// Queue the envelopes `ExecuteDeltaProposal` and `GetDeltaProposalExecution` answer with,
+    /// in order.
+    pub fn with_execution(self, response: Result<ExecutionEnvelope, Status>) -> Self {
+        self.execution_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_current_execution(
+        self,
+        response: Result<Option<ExecutionEnvelope>, Status>,
+    ) -> Self {
+        *self.current_execution_response.lock().unwrap() = Some(response);
+        self
+    }
+
+    fn next_execution(&self, method: &str) -> Result<Response<ExecutionEnvelope>, Status> {
+        self.record_call(method);
+        let mut responses = self.execution_responses.lock().unwrap();
+        if responses.is_empty() {
+            return Err(Status::not_found("no scripted execution"));
+        }
+        responses.remove(0).map(Response::new)
     }
 
     /// Clone the post-start control surface before moving the service into
@@ -368,6 +398,43 @@ impl Guardian for MockGuardianService {
             });
 
         response.map(Response::new)
+    }
+
+    async fn execute_delta_proposal(
+        &self,
+        _request: Request<ExecuteDeltaProposalRequest>,
+    ) -> Result<Response<ExecuteDeltaProposalResponse>, Status> {
+        self.next_execution("execute_delta_proposal")
+            .map(|envelope| {
+                Response::new(ExecuteDeltaProposalResponse {
+                    execution: Some(envelope.into_inner()),
+                })
+            })
+    }
+
+    async fn get_delta_proposal_execution(
+        &self,
+        _request: Request<GetDeltaProposalExecutionRequest>,
+    ) -> Result<Response<GetDeltaProposalExecutionResponse>, Status> {
+        self.next_execution("get_delta_proposal_execution")
+            .map(|envelope| {
+                Response::new(GetDeltaProposalExecutionResponse {
+                    execution: Some(envelope.into_inner()),
+                })
+            })
+    }
+
+    async fn get_current_execution(
+        &self,
+        _request: Request<GetCurrentExecutionRequest>,
+    ) -> Result<Response<GetCurrentExecutionResponse>, Status> {
+        self.record_call("get_current_execution");
+        self.current_execution_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or(Ok(None))
+            .map(|execution| Response::new(GetCurrentExecutionResponse { execution }))
     }
 
     async fn abandon_delta_candidate(

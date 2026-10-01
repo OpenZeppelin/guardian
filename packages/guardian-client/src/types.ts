@@ -1,3 +1,5 @@
+import type { TransactionRequestEnvelope } from './request-envelope.js';
+
 import type { RequestAuthPayload } from './auth-request.js';
 
 export interface Signer {
@@ -193,6 +195,8 @@ export interface DeltaProposalRequest {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Omit for a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
 }
 

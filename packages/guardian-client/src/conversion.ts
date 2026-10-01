@@ -257,6 +257,9 @@ export function toServerDeltaProposalRequest(req: DeltaProposalRequest): ServerD
         signature: toServerSignature(s.signature),
       })),
       metadata: req.deltaPayload.metadata ? toServerProposalMetadata(req.deltaPayload.metadata) : undefined,
+      ...(req.deltaPayload.transactionRequest
+        ? { transaction_request: req.deltaPayload.transactionRequest }
+        : {}),
     },
   };
 }

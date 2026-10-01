@@ -578,6 +578,85 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  describe('Guardian execution', () => {
+    const account = '0x' + 'a'.repeat(30);
+    const serverExecution = {
+      account_id: account,
+      proposal_id: '0xproposal',
+      state: 'pending',
+      newly_accepted: true,
+      proposal_exists: true,
+      ignored_signatures: 1,
+      updated_at: '2026-09-30T12:00:00Z',
+    };
+
+    it('requests execution with a snake_case body and maps the envelope', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => serverExecution });
+
+      const execution = await client.executeDeltaProposal(account, '0xproposal');
+
+      expect(execution).toEqual({
+        accountId: account,
+        proposalId: '0xproposal',
+        state: 'pending',
+        error: null,
+        deltaNonce: null,
+        newlyAccepted: true,
+        proposalExists: true,
+        ignoredSignatures: 1,
+        updatedAt: '2026-09-30T12:00:00Z',
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/delta/proposal/execution',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ account_id: account, proposal_id: '0xproposal' }),
+        })
+      );
+    });
+
+    it('reads an execution and the in-flight one by query', async () => {
+      client.setSigner(mockSigner);
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ ...serverExecution, state: 'submitted', delta_nonce: 3 }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ execution: null }) });
+
+      const status = await client.getDeltaProposalExecution(account, '0xproposal');
+      expect(status.state).toBe('submitted');
+      expect(status.deltaNonce).toBe(3);
+      expect(await client.getCurrentExecution(account)).toBeNull();
+
+      expect(mockFetch.mock.calls[0][0]).toBe(
+        `http://localhost:3000/delta/proposal/execution?account_id=${account}&proposal_id=0xproposal`
+      );
+      expect(mockFetch.mock.calls[1][0]).toBe(
+        `http://localhost:3000/delta/execution/current?account_id=${account}`
+      );
+    });
+
+    it('surfaces a synchronous refusal as a typed code', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_NOT_READY',
+            message: 'This transaction still needs more signatures.',
+            meta: { retryable: false },
+          }),
+      });
+
+      const error = await client.executeDeltaProposal(account, '0xproposal').catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.code).toBe('proposal_not_ready');
+      expect(error.rawCode).toBe('GUARDIAN_PROPOSAL_NOT_READY');
+    });
+  });
+
   describe('abandonCandidate', () => {
     it('should record an abandon intent and map the response to camelCase', async () => {
       client.setSigner(mockSigner);
@@ -1347,6 +1426,32 @@ describe('GuardianHttpError', () => {
       expect(e.meta?.retryable).toBe(false);
       expect(e.meta?.scheme).toBe('falcon');
       expect(e.meta?.allowedSchemes).toEqual(['ecdsa']);
+    });
+
+    it('surfaces the blocking proposal of an execution conflict as meta.blockingProposalId', async () => {
+      client.setSigner(mockSigner);
+      const blocking = '0x' + 'b'.repeat(64);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_EXECUTION_CONFLICT',
+            message: 'Another proposal is executing on this account.',
+            meta: { retryable: true, blocking_proposal_id: blocking },
+          }),
+      });
+
+      const error = await client
+        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .catch((e) => e as GuardianHttpError);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      const e = error as GuardianHttpError;
+      expect(e.code).toBe('execution_conflict');
+      expect(e.meta?.blockingProposalId).toBe(blocking);
     });
 
     it('omits meta.allowedSchemes rather than exposing a partial list when an element is malformed', async () => {

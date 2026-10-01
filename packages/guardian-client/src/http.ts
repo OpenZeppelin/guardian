@@ -23,6 +23,12 @@ import type {
   StatusResponse,
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
+import { fromServerExecution } from './execution.js';
+import type {
+  ProposalExecution,
+  ServerCurrentExecution,
+  ServerProposalExecution,
+} from './execution.js';
 import type {
   ServerAbandonCandidateRequest,
   ServerAbandonCandidateResponse,
@@ -71,6 +77,11 @@ export interface GuardianErrorMeta {
    * `code === 'signature_scheme_not_allowed'`.
    */
   allowedSchemes?: string[];
+  /**
+   * The proposal whose execution holds the account. Present only when
+   * `code === 'execution_conflict'`.
+   */
+  blockingProposalId?: string;
 }
 
 interface ParsedGuardianError {
@@ -128,6 +139,9 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
     rawMeta.allowed_schemes.every((x): x is string => typeof x === 'string')
   ) {
     meta.allowedSchemes = rawMeta.allowed_schemes;
+  }
+  if (typeof rawMeta.blocking_proposal_id === 'string') {
+    meta.blockingProposalId = rawMeta.blocking_proposal_id;
   }
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
     meta.pausedReason = rawMeta.paused_reason as string | null;
@@ -342,6 +356,41 @@ export class GuardianHttpClient {
       delta: fromServerDeltaObject(server.delta),
       commitment: server.commitment,
     };
+  }
+
+  /**
+   * Ask Guardian to prove and submit a threshold-met proposal. Resolves once the request is
+   * accepted; poll {@link getDeltaProposalExecution} for the outcome. Repeating the request while
+   * the execution runs returns it with `newlyAccepted: false`.
+   */
+  async executeDeltaProposal(accountId: string, proposalId: string): Promise<ProposalExecution> {
+    const serverRequest = { account_id: accountId, proposal_id: proposalId };
+    const response = await this.fetchAuthenticated('/delta/proposal/execution', {
+      method: 'POST',
+      body: JSON.stringify(serverRequest),
+    }, accountId, serverRequest);
+    return fromServerExecution((await response.json()) as ServerProposalExecution);
+  }
+
+  /** The latest execution attempt of a proposal. */
+  async getDeltaProposalExecution(accountId: string, proposalId: string): Promise<ProposalExecution> {
+    const requestQuery = { account_id: accountId, proposal_id: proposalId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/delta/proposal/execution?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery);
+    return fromServerExecution((await response.json()) as ServerProposalExecution);
+  }
+
+  /** The account's in-flight execution, or `null`. A finished execution is not in flight. */
+  async getCurrentExecution(accountId: string): Promise<ProposalExecution | null> {
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/delta/execution/current?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery);
+    const server = (await response.json()) as ServerCurrentExecution;
+    return server.execution === null ? null : fromServerExecution(server.execution);
   }
 
   /**
