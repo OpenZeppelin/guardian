@@ -388,8 +388,10 @@ reachable prover and confirm execution succeeds.
    regardless of prover reachability.
 3. **Given** a server whose configured prover is unreachable or fails, **When** Guardian
    execution is requested, **Then** the request is still accepted, the execution
-   ultimately reports a proving failure, the reservation is released, and the account is
-   left unlocked with the proposal still executable by other paths.
+   ultimately reports a proving failure (or, when an unreachable prover is retried until the
+   transaction's expiration, the reached transaction expiration), the reservation is
+   released, and the account is left unlocked with the proposal still executable by other
+   paths.
 
 ---
 
@@ -411,9 +413,11 @@ reachable prover and confirm execution succeeds.
   progressing.
 - **Proving exceeds the prover's configured timeout**: treated as a transient prover
   failure and retried under FR-055; it settles as a proving failure only when the failure
-  proves permanent or retrying can no longer meet the transaction's expiration. On that
-  terminal failure the reservation is released, the account unlocked, and the proposal
-  still executable.
+  proves permanent. When retrying runs until the transaction's expiration is reached, it
+  settles `GUARDIAN_EXECUTION_EXPIRATION_REACHED` with `meta.bound: "transaction"` (SC-042),
+  and the message carries the last prover error. On either terminal failure the reservation
+  is released, the account unlocked, and the proposal still executable; a new request gets a
+  fresh transaction window at the new tip.
 - **Submission returns a definite rejection** (the node rejects the proven transaction):
   reported `failed` with a submission cause. A candidate exists by construction (FR-045 step
   12); since Guardian knows nothing committed it discards its own candidate and releases the
@@ -628,7 +632,9 @@ This is an admission/execution policy, not a universal property of signed summar
   to other registered signers. Count checks and insertion MUST be atomic on both backends;
   proposals stale against the current canonical base MUST NOT consume viable count quota.
   Two proposals per proposer is a proposed default. The final configuration and allocation
-  rule are an explicit design decision required before implementation. Request-byte limits
+  rule are an explicit design decision required before implementation. **Deferred
+  2026-09-30**: the per-proposer count quota is out of scope for this feature and tracked as a
+  follow-up issue; the account-wide count cap and both request-byte limits ship. Request-byte limits
   remain independent and can still refuse admission.
 - **FR-017**: When a proposal is deleted, discarded, or superseded, its stored request
   MUST be removed on the same schedule as the proposal itself. This feature MUST NOT

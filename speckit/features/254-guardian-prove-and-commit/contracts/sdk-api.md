@@ -101,11 +101,12 @@ getDeltaProposalExecution(accountId: string, proposalId: string): Promise<Propos
 getCurrentExecution(accountId: string): Promise<ProposalExecution | null>;
 ```
 
-`server-types.ts` MUST mirror the response envelope exactly, including the optional
-`error.meta`, and every error code in `execution-api.md` MUST be added to the client's
+`execution.ts` MUST mirror the response envelope exactly (its `Server*` types, next to the strict
+`fromServerExecution` decoder that reads them), including the optional `error.meta`, and every error code in `execution-api.md` MUST be added to the client's
 error-code vocabulary in the same PR. That includes the revision 11 asynchronous codes
 `GUARDIAN_EXECUTION_REQUEST_INVALID`, `GUARDIAN_EXECUTION_EXPIRATION_REACHED`,
-`GUARDIAN_EXECUTION_CHAIN_BEHIND`, `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`,
+`GUARDIAN_EXECUTION_CHAIN_BEHIND`, `GUARDIAN_EXECUTION_CHAIN_INCONSISTENT`,
+`GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`,
 `GUARDIAN_EXECUTION_INSUFFICIENT_FEE` and `GUARDIAN_EXECUTION_SEALING_FAILED`, and the closed
 `meta.reason` / `meta.bound` value sets they carry, modeled as closed types in both languages.
 `GUARDIAN_EXECUTION_ANCHOR_EXPIRED` and `GUARDIAN_EXECUTION_FOREIGN_INPUTS_UNSUPPORTED` do not
@@ -377,3 +378,14 @@ A committed fixture set MUST pin the envelope contract so the two SDKs cannot dr
   server refuse it with `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` before deserialization.
 - An unsupported `format_version`, asserting refusal before deserialization.
 - A corrupted-checksum envelope, asserting `GUARDIAN_EXECUTION_REQUEST_CODEC`.
+
+## Offline proposals and Guardian execution
+
+Decided 2026-10-01. A proposal created offline (`create_proposal_offline`,
+`createSwitchGuardianProposalOffline`) is always self-executed, whatever the client's execution
+mode: it never reaches Guardian, so Guardian cannot execute it. Both SDKs build it without a stored
+request and without the Guardian-executable bounds, and document this on the offline methods. It is
+not refused on a Guardian-executable client, because the offline switch is the recovery path when
+the current Guardian is unreachable. Exporting a proposal that Guardian holds does not change
+Guardian's copy: the export is a self-execution and offline-signing channel, and Guardian keeps the
+stored request it was created with.

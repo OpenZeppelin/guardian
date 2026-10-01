@@ -220,6 +220,7 @@ Synchronous, none creating a reservation (FR-022):
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | Proposal was created without execution mode, see step 1 |
 | `GUARDIAN_PROPOSAL_NOT_READY` | Below the effective threshold of **valid** signatures |
 | `GUARDIAN_EXECUTION_CONFLICT` | Another execution holds the account; `meta.blocking_proposal_id` names it |
+| `GUARDIAN_EXECUTION_BUSY` | Another request is starting an execution for the account; retry shortly |
 | `GUARDIAN_CONFLICT_PENDING_DELTA` | Account already holds a pending candidate |
 
 Asynchronous and pre-boundary, reported as `state: "failed"` with the proposal kept, so a retry
@@ -230,6 +231,8 @@ is permitted (full list in `contracts/execution-api.md`):
 | `GUARDIAN_EXECUTION_REQUEST_INVALID` | The stored request is not Guardian-executable; `meta.reason` names why (`bound_block_not_declared`, `auth_args_missing`, `approval_expiration_missing`, `input_notes_not_pinned`). Re-create the proposal with a current SDK |
 | `GUARDIAN_EXECUTION_EXPIRATION_REACHED` | `meta.bound` = `approval` (the signing window passed; create a new proposal) or `transaction` (the executed transaction's expiration was reached before proving) |
 | `GUARDIAN_EXECUTION_CHAIN_BEHIND` | Guardian's node has not reached the proposal's bound block yet; retry shortly |
+| `GUARDIAN_EXECUTION_NODE_UNAVAILABLE` | Guardian could not read its node; retry shortly |
+| `GUARDIAN_EXECUTION_CHAIN_INCONSISTENT` | Guardian's node served chain data that does not verify; a server-side node problem, retry once the operator fixes it |
 | `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE` | A foreign account is private (`meta.reason` = `private`) or its state is not servable at the tip (`unavailable`) |
 | `GUARDIAN_EXECUTION_INSUFFICIENT_FEE` | The account cannot pay the fee; fund it (on devnet, `scripts/devnet-register-account.sh`) and retry |
 | `GUARDIAN_EXECUTION_BINDING_MISMATCH` | The reproduced summary differs from the signed one. At the tip this can be fee drift (the base fee changed since signing); a fresh proposal fixes it. Server logs compare the fee notes to tell drift from tampering |

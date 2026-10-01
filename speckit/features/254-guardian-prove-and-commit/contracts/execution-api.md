@@ -63,7 +63,7 @@ required.
 
 **When the proposal exists but has never been executed**, the operation MUST return
 `404 Not Found` with code `GUARDIAN_EXECUTION_NOT_FOUND` (gRPC: `NOT_FOUND`, same code
-string). This is distinct from `GUARDIAN_PROPOSAL_NOT_FOUND`, which means the proposal itself is
+string). This is distinct from `proposal_not_found`, which means the proposal itself is
 absent, and the two MUST NOT be conflated: a caller polling too eagerly needs to know that its
 request has not been accepted yet, not that its proposal vanished.
 
@@ -192,6 +192,10 @@ Operators who need internal granularity get it from logs and metrics.
 
 ## Error codes
 
+New codes are uppercase with a `GUARDIAN_` prefix. Existing codes keep their lowercase
+`snake_case` wire spelling (`proposal_not_found`); see the casing rule in `spec/api.md`
+(decided 2026-09-30).
+
 **Synchronous refusals** (FR-022): returned by `POST`, no reservation or execution
 record created:
 
@@ -201,11 +205,12 @@ record created:
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 | Proposal was created by a self-executed client, so it carries no stored transaction request (FR-010). Names the cause, so the caller learns to create the proposal with a Guardian-executable client |
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 | Below the effective threshold (FR-005) |
 | `GUARDIAN_EXECUTION_CONFLICT` | 409 | Active reservation for a different proposal (FR-008). `meta.blocking_proposal_id` MUST name the blocker (FR-036) |
-| `GUARDIAN_CONFLICT_PENDING_DELTA` | 409 | Existing; account holds a pending candidate |
+| `GUARDIAN_EXECUTION_BUSY` | 409 | Another request holds the account's execution lease but has not yet reserved the account, so there is no proposal to name. `meta.retryable` is `true`; retry shortly. Decided 2026-10-01 |
+| `conflict_pending_delta` | 409 | Existing; account holds a pending candidate |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 | Existing |
 | `GUARDIAN_ACCOUNT_RELEASED` | 409 | Existing |
-| `GUARDIAN_PROPOSAL_NOT_FOUND` | 404 | Existing; the proposal itself is absent |
-| `GUARDIAN_AUTHENTICATION_FAILED` | 401 | Existing; includes non-cosigner callers |
+| `proposal_not_found` | 404 | Existing; the proposal itself is absent |
+| `authentication_failed` | 401 | Existing; includes non-cosigner callers |
 
 There is deliberately **no signature-invalid error**. Invalid, duplicate, and non-cosigner
 signature entries are ignored rather than fatal (FR-006), so the only signature-related
@@ -230,13 +235,15 @@ every other code is pre-boundary, so its proposal still exists and FR-042 permit
 | `GUARDIAN_EXECUTION_REQUEST_CODEC` | Envelope/checksum invalid or undeserializable (FR-014) |
 | `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` | Envelope declares an incompatible Miden line or an unallowlisted serializer (FR-015) |
 | `GUARDIAN_EXECUTION_REQUEST_INVALID` | After the envelope and protocol checks and before any chain read (step 2): the stored request is structurally not Guardian-executable on 0.17. `meta.reason` is one of `bound_block_not_declared` (`block_numbers()` lacks the summary's `block_number`, FR-056), `auth_args_missing` (`auth_arg` is empty, or its preimage is not in the advice map, FR-057), `approval_expiration_missing` (summary user param 0 is zero, FR-051), `input_notes_not_pinned` (consume-notes without `explicit_input_notes`, FR-056). Asynchronous rather than synchronous because decoding the request is part of reproduction, which keeps FR-009 and FR-015 intact; the reservation is released within milliseconds |
-| `GUARDIAN_EXECUTION_EXPIRATION_REACHED` | A signed or executed expiration bound is at or below the observed chain height. `meta.bound` is `approval` (the approval expiration, checked against the observed tip at step 2, or the VM abort `ERR_MULTISIG_APPROVAL_EXPIRED` during reproduction) or `transaction` (the executed transaction's expiration block, checked after execution at step 8 and before each proving retry, FR-055). Refused **before** proving or before the retry (FR-058). Distinct from the horizon check below and from the post-boundary `GUARDIAN_EXECUTION_EXPIRED` |
+| `GUARDIAN_EXECUTION_EXPIRATION_REACHED` | A signed or executed expiration bound is at or below the observed chain height. `meta.bound` is `approval` (the approval expiration, checked against the observed tip at step 2, or the VM abort `ERR_MULTISIG_APPROVAL_EXPIRED` during reproduction) or `transaction` (the executed transaction's expiration block, checked after execution at step 8, before any proving). Refused **before** proving (FR-058). It is also checked before each proving retry: a transaction that expires while transient prover failures are being retried is `EXPIRATION_REACHED` / `transaction`, and the message carries the last prover error. Distinct from the horizon check below and from the post-boundary `GUARDIAN_EXECUTION_EXPIRED` |
 | `GUARDIAN_EXECUTION_CHAIN_BEHIND` | Guardian's node is below the proposal's bound block, so the chain view at `R` cannot include it (FR-061). Transient; the caller can retry |
+| `GUARDIAN_EXECUTION_CHAIN_INCONSISTENT` | Guardian's node served chain data that does not authenticate against itself (an MMR delta or path that does not verify, a header that does not match, a `ProtocolConfig` that differs from the reference header's). Says nothing about the proposal; the operator should check the configured node. Retryable once it is fixed (decided 2026-10-01; previously reported as `BINDING_MISMATCH`) |
+| `GUARDIAN_EXECUTION_NODE_UNAVAILABLE` | Guardian could not read its configured node (the tip, a header, or the chain view). Transient; the caller can retry (decided 2026-10-01; previously reported as `CHAIN_BEHIND`) |
 | `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE` | The transaction loads a foreign account Guardian cannot supply at `R` (FR-050). `meta.reason` is `private` (a private foreign account, whose state no node serves) or `unavailable` (the node cannot serve the public account's state at `R`, for example pruned). Public foreign accounts, the fee faucet among them, are supported |
 | `GUARDIAN_EXECUTION_STATE_MISMATCH` | Account advanced past the proposal's base |
 | `GUARDIAN_EXECUTION_INSUFFICIENT_FEE` | Reproduction aborted because the account's fee-asset balance cannot pay the transaction fee |
 | `GUARDIAN_EXECUTION_BINDING_MISMATCH` | Reproduced summary ≠ signed commitment (FR-007). Also covers **fee drift** at the tip: the fee depends on `R`'s base fee and the cycle count, and its `TX_FEE` output note enters the signed summary. A fresh proposal fixes drift. The logged diagnostic compares the reproduced and signed `TX_FEE` output notes so drift can be told apart from tampering; that detail is log-only, and the wire code and `meta` do not change |
-| `GUARDIAN_EXECUTION_PROVING_FAILED` | Prover error or timeout (FR-019, FR-020) |
+| `GUARDIAN_EXECUTION_PROVING_FAILED` | A permanent prover error (FR-019, FR-020, FR-055). Transient failures (unreachable, timed out) are retried; exhausting the transaction's expiration while retrying is `EXPIRATION_REACHED`. The message carries the prover error's full cause chain |
 | `GUARDIAN_EXECUTION_SEALING_FAILED` | Fetching or validating the transaction encryption key, or sealing the `TransactionInputs`, failed (FR-059). Happens after proving and before the boundary, so nothing was sent |
 | `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` | The proven transaction's `expiration_block_num − R` exceeds `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS`, `R` being the attempt's reference block; refused **before** the boundary, with no waiting (FR-046). A long approval without a transaction delta can reach this until the chain is within the horizon of the approval expiration |
 | `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | The pre-submission re-check found the account moved, paused, released, or no longer guarded by this Guardian (FR-048) |
@@ -265,12 +272,13 @@ string on both sides: the transport status is a hint, the code is the contract.
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 | `FAILED_PRECONDITION` |
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 | `FAILED_PRECONDITION` |
 | `GUARDIAN_EXECUTION_CONFLICT` | 409 | `ABORTED` |
-| `GUARDIAN_CONFLICT_PENDING_DELTA` | 409 | `ABORTED` |
+| `GUARDIAN_EXECUTION_BUSY` | 409 | `ABORTED` |
+| `conflict_pending_delta` | 409 | `FAILED_PRECONDITION` (existing mapping, unchanged) |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 | `FAILED_PRECONDITION` |
 | `GUARDIAN_ACCOUNT_RELEASED` | 409 | `FAILED_PRECONDITION` |
-| `GUARDIAN_PROPOSAL_NOT_FOUND` | 404 | `NOT_FOUND` |
+| `proposal_not_found` | 404 | `NOT_FOUND` |
 | `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | `NOT_FOUND` |
-| `GUARDIAN_AUTHENTICATION_FAILED` | 401 | `UNAUTHENTICATED` |
+| `authentication_failed` | 401 | `UNAUTHENTICATED` |
 
 Additional parity requirements:
 
@@ -342,7 +350,17 @@ changes no proposal ID (FR-012).
   refusal condition on an existing endpoint; it can only trigger when the feature is in
   use, so it is conditional rather than a compatibility break.
 - **`POST /delta/proposal` (push_delta_proposal)** MUST enforce the FR-016 size limits and
-  reject an oversized or malformed envelope at creation.
+  reject an oversized or malformed envelope at creation. Creation checks the envelope's body
+  (base64, checksum, `format_version`) and counts its decoded bytes; the protocol line and
+  serializer are checked at execution, where they must match. New creation refusals:
+
+  | Condition | Code | HTTP | gRPC |
+  |---|---|---|---|
+  | Decoded request over `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES` | `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` | 413 | `INVALID_ARGUMENT` |
+  | Viable proposals' request bytes plus this one over `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES` | `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED` | 409 | `FAILED_PRECONDITION` |
+  | Envelope malformed, tampered or of an unknown format | `invalid_delta` | 400 | `INVALID_ARGUMENT` |
+
+  The existing `pending_proposals_limit` is now checked atomically with insertion.
 - No change to `GET /delta/proposal`, `GET /delta/proposal/single`,
   `PUT /delta/proposal`, or `/delta/candidate/abandon` semantics.
 

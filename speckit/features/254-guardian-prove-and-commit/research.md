@@ -1081,3 +1081,25 @@ requiring input notes in the store, and that path is entirely untraced. See Gate
 - Input-note supply for `consume_notes` proposals: the v2 metadata embeds serialized notes
   in the payload, which should satisfy the store's note requirements, but this path has
   not been traced end to end.
+
+
+## Phase 2B results (2026-09-30)
+
+- **Tip reproduction [RAN].** Offline, against `MockRpcApi` over a `MockChain`: a guarded 2-of-2
+  guardian-key rotation bound to block 3 reproduces the identical `TransactionSummary`
+  commitment when executed through Guardian's `ExecutionDataStore` at a reference block more
+  than 50 blocks later, then executes there with both cosigner signatures. The same transaction
+  with the bound block left out of the tracked set fails, confirming FR-061's "the executor
+  never asks for the bound block". No fee is charged on the mock chain, so this does not cover
+  fee drift (RFC question 9).
+- **Live devnet [RAN].** Node 0.17 at block 201,010: a genesis-seeded chain view tracking a
+  block 120 back assembles in about 130 ms; the protocol configuration matches the header
+  commitment; the fee faucet named by the protocol configuration loads as a public foreign
+  account at the reference block; the transaction encryption key verifies against the
+  validators of the tip header.
+- **RPC client.** The execution path uses `miden-client`'s `NodeRpcClient` (plan Decision 6).
+  `GrpcClient` retries a submission only after `ResourceExhausted`, never after `Unavailable`.
+
+### Phase 3 result: the stored request cannot be checked byte for byte (2026-09-30)
+
+Decoding a `TransactionRequest` twice from the same bytes and re-encoding each gives two different byte strings: MAST forest deserialization is not canonical at `miden-client 0.17.0-rc.4`. A byte-exact round-trip test is therefore impossible even for miden-client's own type. Guardian's mirror decoder is held to semantic equality instead: its re-encoding, decoded by miden-client, equals miden-client's decoding of the original. The envelope checksum stays over the bytes the proposer stored, which Guardian never re-encodes.

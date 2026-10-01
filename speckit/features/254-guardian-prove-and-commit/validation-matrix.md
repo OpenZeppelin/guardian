@@ -146,7 +146,7 @@ behavior (FR-050) and private or unservable foreign state is a distinct refusal.
 | `packages/guardian-evm-client` | — | **no** (no `/evm/*` change; out of scope) |
 | `examples/demo` | Rust end-to-end Guardian execution | yes |
 | `examples/smoke-web` | TS end-to-end Guardian execution | yes |
-| `examples/execution-smoke` (**new artifact**) | Base-client-only harness: request + poll with no Miden dependency, evidencing SC-001/FR-034 | yes |
+| Base-client dependency guards (**new**) | `crates/client/tests/no_miden_client.rs` and `packages/guardian-client/src/dependencies.test.ts`: neither base client (nor `guardian-shared`) may depend on a Miden client, `miden-tx` or the multisig SDK, evidencing FR-034 | yes |
 | `docs/CONFIGURATION.md` | All eight new env vars | yes |
 | `docs/MULTISIG_SDK.md` | New SDK surface + mode semantics | yes |
 | `spec/api.md`, `spec/processes.md` | New endpoints + service description and diagram | yes |
@@ -303,7 +303,7 @@ happy-path tests:
 | Harness | Covers |
 |---|---|
 | `examples/demo` | Rust: propose as Guardian-executable → sign to threshold → request execution → observe on-chain commitment, for a built-in **and** a custom proposal type (SC-015) |
-| `examples/execution-smoke` (new) | SC-001 / FR-034: request execution and poll to `committed` using **only** `packages/guardian-client` (plus a Rust counterpart over `crates/client`) — no Miden client constructed, no node connectivity, no proving. The only artifact that can evidence the no-Miden guarantee |
+| `live-guardian-execute-base-client-2of3-ecdsa` (new) | SC-001 / FR-034: the threshold-met proposal is requested and polled to `committed` with the base clients alone (`crates/client` on the Rust leg, `packages/guardian-client` on the TypeScript leg), signed as one cosigner: no Miden client constructed for the request, no node connectivity, no proving. Paired with the base-client dependency guards, which keep that true by construction. Decided 2026-10-01 in place of a separate `examples/execution-smoke` harness |
 | `examples/smoke-web` | TS end-to-end via the multisig SDK (SC-015). MUST NOT be claimed for SC-001/FR-034 — it constructs a Miden client, so it cannot demonstrate the no-Miden guarantee |
 
 ### Parity and performance
@@ -331,7 +331,61 @@ happy-path tests:
   wallet quorum mapping open until agreed; do not infer general 2-of-3 equivalence.
 - FR-016 count quotas use authenticated proposer identity. Test atomic concurrent creates,
   stale proposals freeing viable count quota, and capacity for another signer on both
-  storage backends. Finalize count allocation/configuration before implementing these tests.
+  storage backends. Deferred 2026-09-30 with T087/T088 to a follow-up issue.
 - Execution success is `committed` in HTTP, gRPC, SDKs and storage outcomes. Delta success
   stays `canonical`; existing `candidate_landed` error codes are unchanged.
 - No v1 preparation, automatic execution, chaining or batching API is introduced.
+
+## Success criteria status (2026-09-30)
+
+Where each criterion stands against the implementation on `254-execution-impl`. **Pass** names
+the passing evidence; **Partial** names what is covered and what is not; **Gap** has no test yet.
+Test names are in `crates/server/src` unless another crate is named.
+
+| SC | Status | Evidence, and what is missing |
+|---|---|---|
+| SC-001 | Partial | Live qualification `live-guardian-execute-2of3-{falcon,ecdsa}` commits on devnet with the cosigners only signing. `live-guardian-execute-base-client-2of3-ecdsa` takes the request and the polling over the base clients alone, on both SDKs, and the base-client dependency guards keep them free of any Miden client. Missing: a live run of that scenario (it is required on testnet). |
+| SC-002 | Pass | `binding_tests::an_account_advanced_past_the_base_is_a_state_mismatch_before_any_chain_work`, `network::miden::execution::tests::executor::a_request_that_does_not_reproduce_the_signed_summary_is_a_binding_mismatch`. |
+| SC-003 | Pass | `execute_proposal::tests` refusals, `binding_tests::a_second_proposal_is_refused_while_another_holds_the_account`, `a_paused_account_is_refused_and_nothing_is_reserved`, `capability_tests`. |
+| SC-004 | Pass | `network::miden::execution::tests::threshold` (override versus default); readiness uses it in selection. |
+| SC-005 | Pass | `concurrency_tests::two_concurrent_requests_for_one_proposal_start_one_execution`, `two_replicas_sharing_storage_prove_and_submit_once` (in-process replicas over one store). A Postgres multi-process variant is not written. |
+| SC-006 | Pass | `binding_tests::every_pre_boundary_failure_is_reported_leaves_no_trace_and_can_be_retried`. |
+| SC-007 | Pass | `fault_injection_tests::a_pre_boundary_lease_that_lapses_in_steady_state_is_lease_expired`, `an_attempt_interrupted_by_a_restart_is_abandoned_and_the_proposal_stays_executable`. |
+| SC-008 | Pass | `fault_injection_tests`: committed via promotion, superseded, expired at base, and the outage test that holds then recovers. |
+| SC-009 | Pass | Rust: `a_default_client_stores_no_request_and_signs_no_extra_bound`. TypeScript: `multisig.test.ts` `stores the request and both bounds only on a guardian_executable client` (the default payload has no `transaction_request`). |
+| SC-010 | Pass | `fixtures/miden-multisig-client/request-envelope.json` declares protocol line `0.16`; `guardian_shared::request_envelope` refuses it before decoding. |
+| SC-011 | Exception | Baseline telemetry, not a gate. **Recorded for 0.17 on 2026-10-01** (devnet, six Guardian executions from a live qualification run, no prover retries): proving about 2.0 s per execution (12.2 s over six, all under 5 s); chain view about 0.16 s (0.97 s over six, all between 0.1 and 0.25 s); seeding is in-memory inside the chain view. RFC 0001 Appendix A.4, finding 5. The qualification stack saves these histograms with every run (`execution-metrics.prom`). |
+| SC-012 | Partial | Untouched paths are covered by the unchanged SDK suites (Rust 263, TS 730) and the example harnesses build: `examples/demo` compiles, `examples/smoke-web` typechecks and builds after a clean `npm ci` of it and `_shared/multisig-browser`. Missing: the interactive runs through both harnesses (T133), which need a 0.17 node (devnet, or a local node newer than the installed 0.15.1). |
+| SC-013 | Pass | TS drift guards against `guardian_shared::execution` and the Rust SDK constants (`execution.test.ts`, `error-codes.test.ts`, `transaction/expiration.test.ts`). |
+| SC-014 | Pass | `capability_tests::a_server_that_offers_no_execution_refuses_every_request_the_same_way`; qualification `det-guardian-execution-unavailable`. |
+| SC-015 | Partial | Built-in lifecycles proven by live qualification on devnet on both SDKs: consume-notes (`live-guardian-execute-2of3-{falcon,ecdsa}`), an add-signer change that GUARDIAN then authorizes (`live-guardian-execute-add-signer-2of3-falcon`), and a P2ID send executed 60 blocks after its bound block (`live-guardian-execute-p2id-late-2of3-ecdsa`), all passing Oct 1, 2026. Custom type and the example harnesses missing (T135). |
+| SC-016 | Pass | `api::execution_tests` (state strings on both transports); the envelope exposes only the five states. |
+| SC-017 | Pass | `api::execution_tests::a_conflict_names_the_blocking_proposal_on_both_transports`. |
+| SC-018 | Pass | `storage::execution_reservation_tests` (reservation versus client candidate, both orders) on filesystem and Postgres. |
+| SC-019 | Pass | `fault_injection_tests::a_worker_whose_reservation_moved_on_writes_and_sends_nothing` (before the boundary) and `a_worker_that_loses_its_lease_after_the_boundary_never_sends` (after it). |
+| SC-020 | Pass | `executor::signature_selection_counts_only_distinct_valid_cosigners`, `binding_tests` ignored-count propagation. |
+| SC-021 | Pass | `tests::a_definitely_rejected_submission_discards_the_candidate_and_the_proposal`, reconciler resolved cases (`proposal_exists: false`). |
+| SC-022 | Pass | Builder `optimistic_mode_with_execution_enabled_refuses_to_start`, `capability_tests::optimistic_mode_offers_no_execution_even_with_an_executor`. |
+| SC-023 | Pass | `api::execution_tests` per case. `GUARDIAN_AUTHENTICATION_FAILED` is covered per transport elsewhere, not in the parity module. |
+| SC-024 | Pass | `fault_injection_tests`: crash before the boundary fails and releases; crash after is only reconciled, never re-proved. |
+| SC-025 | Pass | `storage::execution_reservation_tests::promotion_commits_and_releases_the_execution`, `a_post_boundary_failure_discards_the_candidate_and_the_proposal`. |
+| SC-026 | Pass | `fault_injection_tests::a_guardian_switch_during_proving_fails_the_admissibility_recheck`. |
+| SC-027 | Pass | `fault_injection_tests::an_expiration_beyond_the_horizon_is_refused_before_the_boundary`. |
+| SC-028 | Pass | `concurrency_tests::guardian_admits_its_own_candidate_under_its_own_reservation`, `a_client_push_is_refused_while_an_execution_holds_the_account`. |
+| SC-029 | Pass | `fixtures/miden-multisig-client/request-envelope.json`, read by `guardian_shared::request_envelope` (seal plus every refusal) and by `packages/guardian-client` (identical seal). Summary-level cross-language fixtures remain under SC-033. |
+| SC-030 | Pass | The boundary writes candidate and evidence together; `an_unknown_submission_is_settled_only_by_the_chain_and_never_resent` resolves that durable state without re-sending. |
+| SC-031 | Pass | `fault_injection_tests::a_worker_that_loses_its_lease_after_the_boundary_never_sends`: the boundary commits, the pre-send check finds ownership gone, nothing is sent or written, and the candidate and evidence stay for reconciliation. |
+| SC-032 | Pass | Data-store tests load the public fee faucet at `R` and refuse a private one. A guarded multisig script that invokes a public foreign account's procedure reproduces its signed summary at a reference block 60 blocks later and executes signed (`guarded_multisig::a_script_invoking_a_public_foreign_account_reproduces_and_executes_at_the_tip`); the same flow against a node that pruned the account state at `R` reports `unavailable` for that account before proving (`a_foreign_account_whose_state_the_node_no_longer_serves_is_unavailable`). |
+| SC-033 | Pass | Rust SDK, every built-in family (update_procedure_threshold, add_signer, switch_guardian, remove_signer, change_threshold, p2id, plus pinned consume-notes): the 256 delta and bound + 28,800 approval expiration are signed, the envelope verifies, and the stored request alone reproduces the summary at the tip (`client/execution_mode_tests.rs`); ids differ by mode. Rust/TS parity at the chain-independent level: auth arg and every Guardian-owned script root under the guardian-executable delta are pinned in `transaction/expiration.rs` and reproduced by the browser spec `tests/browser/execution-parity.spec.ts`. Full summaries are chain-dependent (each mock chain has its own block commitments), so they are not compared across SDKs. |
+| SC-034 | Pass | `storage::execution_reservation_tests::executions_on_two_accounts_proceed_independently` (both backends): distinct lease names, both accounts reserved at once, a second holder on one account waits. |
+| SC-035 | Pass | `storage::execution_reservation_tests::ownership_transfers_by_compare_and_set`; reconciler claims by fence. |
+| SC-036 | Pass | Postgres: a failure injected at the outcome insert and, separately, at the reservation release of each of the three terminal operations rolls the whole transition back (reservation held, no outcome, base state, candidate and proposal intact) and a retry completes it with exactly one outcome (six `crash_injection_tests`). Filesystem: outcome and release are one file; a write failure injected at each file of each operation leaves them together or absent, and re-running completes the transition (`file_crash_tests`). This found and fixed a filesystem promotion that could hold a reservation forever after a crash between its writes. |
+| SC-037 | Pass | Rejected submission and reconciler resolutions report `proposal_exists: false`. |
+| SC-038 | Pass | `storage::execution_reservation_tests::promotion_and_resolution_racing_leave_one_terminal_outcome`, eight rounds alternating which side starts, on filesystem and Postgres. It found and fixed a filesystem defect: promotion re-created a delta that a resolution had just deleted. |
+| SC-039 | Pass | `api::execution_tests` never-executed case on both transports. |
+| SC-040 | Pass | `attempt::tests` (classification), `executor::a_prover_that_recovers_completes_the_same_attempt` (two transport failures, then a proof, same attempt), `an_unreachable_prover_is_retried_until_the_transaction_expires_then_fails`. |
+| SC-041 | Pass | `executor::a_stored_proposal_reproduces_executes_and_proves_at_the_tip` (bound block more than 50 blocks back), each `REQUEST_INVALID` reason, chain-behind; payloads carry no `chain_anchor`. |
+| SC-042 | Pass | All three placements report `GUARDIAN_EXECUTION_EXPIRATION_REACHED`: step 2 (`an_approval_expired_before_the_tip_is_refused_before_reproduction`), the auth procedure's abort (`the_auth_procedure_abort_on_an_expired_approval_is_recognised`), and the re-check before a proving retry (`an_unreachable_prover_is_retried_until_the_transaction_expiration_is_reached`, `meta.bound = transaction`). Decided 2026-09-30: retry exhaustion is an expiration, not `PROVING_FAILED`. |
+| SC-043 | Pass | Key fetch: a node that serves no encryption key fails sealing before any send (`executor::a_node_that_serves_no_encryption_key_fails_sealing_before_any_send`). Attestation: a served key with no attestation, and one attested by a validator the reference header does not name, both fail verification (`a_served_key_without_any_attestation_fails_sealing`, `a_key_attested_by_a_validator_the_chain_does_not_name_fails_sealing`). Every sealing failure maps to `SEALING_FAILED`, releases, and sends nothing (`binding_tests`). |
+| SC-044 | Pass | `ProtocolConfig` mismatch refused (Phase 2B tests); `executor::an_unpayable_fee_aborts_as_the_shortfall_guardian_reports_as_insufficient_fee` reads a real unpayable-fee abort as the shortfall Guardian reports as `INSUFFICIENT_FEE`. The fee is paid before the unsigned abort, so an unfunded account cannot even be proposed for; the case arises when the fee grows between creation and execution. |
+

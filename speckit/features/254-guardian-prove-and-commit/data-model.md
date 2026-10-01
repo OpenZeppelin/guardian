@@ -216,7 +216,7 @@ rather than derived.
 | `proposal_id` | string | yes | |
 | `attempt` | i32 | yes | Which attempt resolved; see § Attempt identity |
 | `state` | enum | yes | `committed` or `failed` only |
-| `error_code` | string | no | Required when `failed`; from the contract's vocabulary. Pre-boundary codes written by `fail_execution` include the 0.17 set: `GUARDIAN_EXECUTION_REQUEST_INVALID`, `GUARDIAN_EXECUTION_EXPIRATION_REACHED`, `GUARDIAN_EXECUTION_CHAIN_BEHIND`, `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`, `GUARDIAN_EXECUTION_SEALING_FAILED`, `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`, `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON`, `GUARDIAN_EXECUTION_BINDING_MISMATCH` |
+| `error_code` | string | no | Required when `failed`; from the contract's vocabulary. Pre-boundary codes written by `fail_execution` include the 0.17 set: `GUARDIAN_EXECUTION_REQUEST_INVALID`, `GUARDIAN_EXECUTION_EXPIRATION_REACHED`, `GUARDIAN_EXECUTION_CHAIN_BEHIND`, `GUARDIAN_EXECUTION_CHAIN_INCONSISTENT`, `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`, `GUARDIAN_EXECUTION_SEALING_FAILED`, `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`, `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON`, `GUARDIAN_EXECUTION_BINDING_MISMATCH` |
 | `error_meta` | json | no | The code's structured `meta` where it has one: `reason` (`REQUEST_INVALID`, `FOREIGN_ACCOUNT_UNAVAILABLE`) or `bound` = `approval` / `transaction` (`EXPIRATION_REACHED`) |
 | `error_message` | string | no | Human-readable |
 | `resolved_at` | timestamptz | yes | |
@@ -233,35 +233,56 @@ representations cannot both exist and drift.
 ## Storage write outcomes
 
 Exhaustive enums mirroring the existing `CanonicalWrite`
-(`storage/mod.rs:157`). No catch-all variant: a new case must force a compile
-error at every match site.
+(`storage/mod.rs`), one per operation so every match site handles only the
+outcomes that operation can produce. No catch-all variant: a new case must force a
+compile error at every match site. As implemented in `crates/server/src/storage/execution.rs`:
 
 ```rust
-pub enum ReservationWrite {
-    Created,
+pub enum ReservationWrite {          // create
+    Created { attempt: u32 },
     AlreadyReserved { holder_id: String, proposal_id: String },
     CandidateExists,
     StaleLease,
-    /// FR-052: the claim's expected holder/fence no longer matches, so ownership
-    /// was not transferred. Distinct from `StaleLease`: the *caller's expectation*
-    /// is stale, not the caller's lease.
-    ClaimSuperseded,
 }
 
-pub enum AdmissionWrite {
+pub enum ReservationUpdate {         // renew / advance phase
+    Applied,
+    StaleLease,
+    NotActive,
+}
+
+pub enum ClaimWrite {                // FR-052 ownership transfer
+    Claimed,
+    ClaimSuperseded, // the caller's expected holder/fence no longer matches
+    StaleLease,      // the claimant's own lease is not current
+    NotActive,
+}
+
+pub enum AdmissionWrite {            // the step-12 boundary commit
     Admitted,
-    NotAuthorized,   // caller is not this reservation's owner (FR-037)
+    NotAuthorized,   // caller is not this reservation's owner for this attempt (FR-037)
     CandidateExists,
+    NonceOccupied,   // a settled delta holds the candidate's nonce
+    StaleBase,       // the stored state left the candidate's base
     StaleLease,
 }
 
-pub enum ResolveWrite {
+pub enum ResolveWrite {              // fail_execution / resolve_execution
     Resolved,
-    NotAuthorized,   // caller does not own this execution
+    NotAuthorized,
     AlreadyResolved,
     StaleLease,
+    WrongSideOfBoundary, // pre-boundary write after the boundary, or the reverse
 }
 ```
+
+`CandidateSubmission` (the public `push_delta` path) gains `ExecutionReserved { proposal_id }`,
+which the service maps to `GUARDIAN_EXECUTION_CONFLICT` with `meta.blocking_proposal_id`. Both
+backends check the reservation before the pending-candidate conflict, so a client push against a
+reserved account always names the execution.
+
+There is no standalone release operation: every release is part of `fail_execution`,
+`resolve_execution` or the extended promotion, so no path can release without an outcome.
 
 `CanonicalWrite` gains one variant, `ProtectedByExecution`, returned when the canonicalization
 worker attempts to discard a candidate owned by an unresolved boundary-crossed execution. It is
@@ -401,7 +422,7 @@ observable outcomes on both.
 
 ## Migration
 
-`crates/server/migrations/2026-07-28-000001_execution_reservations/`
+`crates/server/migrations/2026-09-30-000001_execution_reservations/`
 
 ```sql
 CREATE TABLE execution_reservations (
@@ -460,7 +481,18 @@ CREATE TABLE execution_outcomes (
     resolved_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (account_id, proposal_id, attempt)
 );
+
+ALTER TABLE delta_proposals ADD COLUMN request_bytes BIGINT NOT NULL DEFAULT 0;
 ```
+
+`delta_proposals.request_bytes` is the decoded size of the proposal's stored request, computed
+by the service before the storage encryption decorator runs, so the FR-016 aggregate can be
+summed in the same transaction that checks it. The filesystem backend keeps the same numbers in
+`proposal_request_bytes.json` beside the account's proposals and counts an entry only while its
+proposal exists and is viable, pruning the rest on the next admission. Both backends check the
+viable count and the byte aggregate and insert as one step under the account lock
+(`StorageBackend::admit_delta_proposal`). A proposal and its stored request are one row (or one
+file), so FR-017 cleanup needs no separate path.
 
 The partial unique index is deliberate: FR-029 forbids two concurrent
 executions for one account across all replicas, and a database constraint holds

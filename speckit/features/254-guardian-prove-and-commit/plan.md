@@ -104,8 +104,9 @@ and batching remain future work. No v1 implementation tasks are added for those 
   `0.17.0-rc.3`, web SDK `0.17.0-rc.4`. Implementation targets these pins and devnet (testnet
   still runs 0.16). **Production is gated on stable 0.17** plus the re-pin (procedure roots,
   fixtures, determinism vectors).
-- **Proving**: `crates/server/src/network/miden/execution/` behind the `proving` Cargo feature
-  (`miden-tx`); `e2e` includes `proving` and uses the remote prover client exposed by
+- **Proving**: `crates/server/src/network/miden/execution/`, always compiled since 2026-10-01
+  (`miden-tx`; the `proving` Cargo feature was dropped, and execution is off at run time until a
+  prover is configured); `e2e` uses the remote prover client exposed by
   `miden-client` `0.17.0-rc.4`, whose default timeout is still 10 s
   (`miden-client-0.17.0-rc.4/src/remote_prover/tx_prover.rs:43`). Production proving remains
   remote. The implementation branch starts from `main` and **ports** the spike's `blockchain.rs`,
@@ -270,6 +271,20 @@ The trust root reduces to "is `R`'s header canonical": the bound block's commitm
 an MMR path under `R`'s chain commitment rather than by comparing two headers from one node.
 Which finality level `R` should be taken at (`SyncChainMmr` `FinalityLevel {COMMITTED, PROVEN}`,
 `rpc.proto:673-713`) is an upstream question (RFC Q2); v1 uses the node's committed tip.
+
+### Decision 6: the execution path reads the chain through `miden-client`'s `NodeRpcClient`
+
+Decided 2026-09-30 during Phase 2B. The 0.17 node protos are fully structured (headers carry a
+validator configuration, the protocol configuration is a nested message), and the calls the seam
+needs (genesis-seeded `sync_chain_mmr`, headers with MMR proofs, `GetAccount` at a block, the
+attested transaction encryption key, sealed submission) already exist in `miden-client`
+0.17.0-rc.4 with upstream conversions and checks: `ChainMmrInfo` verifies the returned
+`ProtocolConfig` against the header, `AttestedTransactionEncryptionKey::verify` checks the
+attestations. The server therefore depends on `miden-client` (with `tonic`), and
+`network/miden/execution/` takes an `Arc<dyn NodeRpcClient>`, so tests run against
+`miden_client::testing::mock::MockRpcApi` over a `MockChain`. Guardian's own `miden-rpc-client`
+is unchanged and keeps serving canonicalization. Workstream D0's "add the RPC client surface"
+bullets are satisfied by this decision rather than by new calls in `miden-rpc-client`.
 
 ## Constitution Check
 
@@ -622,12 +637,12 @@ walked error source chain, since the outermost `Display` hides the transport
 cause. A mis-set timeout therefore wastes prover capacity on retries rather than
 surfacing to the caller, which makes the explicit setting no less mandatory.
 
-**Deploy note: `proving` must reach the published image.** `proving` is an optional Cargo
-feature and `Dockerfile:17` sets `ARG GUARDIAN_SERVER_FEATURES=postgres`. Without adding
-`proving` there, every published-image deployment answers the execute endpoint with
-`GUARDIAN_PROVING_UNAVAILABLE` forever, with nothing in the logs suggesting a build-time
-cause. The feature list, the compose guides, and `docs/SERVER_AWS_DEPLOY.md` all need
-updating; this is the same class of trap as the storage backend being compile-time.
+**Deploy note: execution is always built in (decided 2026-10-01).** It was first an optional
+`proving` Cargo feature, which made every image built without it answer the execute endpoint
+with `GUARDIAN_PROVING_UNAVAILABLE` for a build-time reason, and kept the execution tests out of
+a default `cargo test`. The feature was dropped: execution is compiled into every binary, as it
+is into the SDKs, and stays off at run time until `GUARDIAN_TX_PROVER_URL` is set, with
+`GUARDIAN_PROVING_ENABLED=false` as the explicit off switch.
 
 ### H: Clients (FR-033, FR-009, FR-051)
 
