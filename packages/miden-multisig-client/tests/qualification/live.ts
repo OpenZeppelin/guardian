@@ -5,6 +5,7 @@ import type { Multisig } from '../../src/multisig.js';
 import { EcdsaSigner } from '../../src/signers/ecdsa.js';
 import { FalconSigner } from '../../src/signers/falcon.js';
 import type { Signer } from '../../src/types.js';
+import type { ProposalExecutionMode } from '../../src/transaction/expiration.js';
 
 export type Scheme = 'falcon' | 'ecdsa';
 export type NetworkName = 'devnet' | 'testnet';
@@ -34,6 +35,7 @@ export interface Cosigner {
   readonly secretKey: AuthSecretKey;
   readonly midenClient: MidenClient;
   readonly multisigClient: MultisigClient;
+  readonly executionMode: ProposalExecutionMode;
 }
 
 function makeSigner(scheme: Scheme): { signer: Signer; secretKey: AuthSecretKey } {
@@ -50,6 +52,7 @@ export async function buildCosigners(
   count: number,
   scheme: Scheme,
   runTag: string,
+  executionMode: ProposalExecutionMode = 'self_executed',
 ): Promise<Cosigner[]> {
   const cosigners: Cosigner[] = [];
   for (let index = 0; index < count; index += 1) {
@@ -65,9 +68,10 @@ export async function buildCosigners(
     const multisigClient = new MultisigClient(midenClient, {
       guardianEndpoint: config.guardianEndpoint,
       midenRpcEndpoint: config.midenRpcEndpoint,
+      executionMode,
     });
     const { signer, secretKey } = makeSigner(scheme);
-    cosigners.push({ signer, secretKey, midenClient, multisigClient });
+    cosigners.push({ signer, secretKey, midenClient, multisigClient, executionMode });
   }
   return cosigners;
 }

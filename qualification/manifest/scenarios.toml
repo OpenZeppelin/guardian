@@ -89,6 +89,36 @@ required = true
 core = false
 
 [[scenario]]
+id = "det-guardian-execution-unavailable"
+title = "A GUARDIAN with no prover refuses execution and records nothing"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "proposal-create", "guardian-execution-unavailable"]
+step_budget = "60s"
+required = true
+core = false
+
+# Past the capability gate, on a GUARDIAN that offers execution: a proposal with no stored request
+# and one below threshold are refused synchronously, and a threshold-met one is accepted and
+# fails before the no-retry boundary because the stack's chain RPC is a stub. The proposal
+# survives, nothing stays in flight, and a second request is accepted again.
+[[scenario]]
+id = "det-guardian-execution-refusals"
+title = "A GUARDIAN that offers execution refuses what it must and fails cleanly before the boundary"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["guardian-execution-refusals"]
+step_budget = "180s"
+required = true
+core = false
+
+[[scenario]]
 id = "det-error-envelope-grpc"
 title = "Structured error envelope survives a real gRPC socket"
 profile = "deterministic"
@@ -694,5 +724,105 @@ shape = "2-of-3"
 mode = "online"
 actions = ["account-create", "account-register", "asset-transfer", "note-consume", "procedure-threshold-set", "proposal-sign", "proposal-execute", "procedure-threshold-assert"]
 step_budget = "480s"
+required = true
+core = false
+
+# Guardian executes: the cosigners only sign, and GUARDIAN proves, submits and commits. The
+# proposal is the consume of the account's funding note, so pinned input notes and the fee
+# are exercised too. Required on testnet; devnet's pairs exclude it for its historical window.
+[[scenario]]
+id = "live-guardian-execute-2of3-falcon"
+title = "GUARDIAN proves, submits and commits a threshold-met 2-of-3 Falcon proposal"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "guardian-execute", "commitment-verify"]
+step_budget = "600s"
+required = true
+core = false
+
+[[scenario]]
+id = "live-guardian-execute-2of3-ecdsa"
+title = "GUARDIAN proves, submits and commits a threshold-met 2-of-3 ECDSA proposal"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "guardian-execute", "commitment-verify"]
+step_budget = "600s"
+required = true
+core = false
+
+# Guardian executes a signer-set change, so promotion has to move GUARDIAN's own authorization
+# list: the assertion reads the new set on chain and through the newly admitted signer.
+[[scenario]]
+id = "live-guardian-execute-add-signer-2of3-falcon"
+title = "GUARDIAN executes an add-signer proposal and then authorizes the new signer"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "signer-add", "proposal-sign", "guardian-execute", "signer-set-assert"]
+step_budget = "600s"
+required = true
+core = false
+
+# Guardian executes a P2ID send more than fifty blocks after the block its summary binds: the
+# summary is reproduced at the tip, not at the bound block, so the late execution still matches
+# what the cosigners signed.
+[[scenario]]
+id = "live-guardian-execute-p2id-late-2of3-ecdsa"
+title = "GUARDIAN executes a P2ID send long after it was proposed and the vault reflects it"
+profile = "live"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "asset-send", "proposal-sign", "chain-advance-past-bound", "guardian-execute", "asset-send-assert"]
+step_budget = "720s"
+required = true
+core = false
+
+# Guardian executes a consume-notes proposal more than fifty blocks after the block its summary
+# binds. The funding note's inclusion proof is pinned at its own, older block, so the late
+# execution has to authenticate both blocks at the tip. TypeScript only and required on testnet,
+# as the P2ID one is.
+[[scenario]]
+id = "live-guardian-execute-consume-late-2of3-falcon"
+title = "GUARDIAN executes a consume-notes proposal long after it was proposed"
+profile = "live"
+sdk = "typescript"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "chain-advance-past-bound", "guardian-execute", "commitment-verify"]
+step_budget = "720s"
+required = true
+core = false
+
+# The base client alone takes the threshold-met proposal to `committed` with authenticated
+# GUARDIAN requests: no multisig SDK, no node, no proving on the caller's side. The SDK clients only create and sign the proposal, and read the chain
+# afterwards to judge the outcome. Required on testnet; devnet's pairs exclude it for its
+# historical window.
+[[scenario]]
+id = "live-guardian-execute-base-client-2of3-ecdsa"
+title = "A base client with no Miden capability takes a threshold-met proposal to committed"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "proposal-create", "proposal-sign", "guardian-execute-base-client"]
+step_budget = "600s"
 required = true
 core = false

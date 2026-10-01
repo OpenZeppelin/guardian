@@ -39,5 +39,5 @@ qual_swap_server_image() {
   # release the third server was still running.
   docker compose -p "${project}" -f "${compose_file}" --env-file "${env_file}" \
     up -d --no-deps --force-recreate \
-    server server-migration-target server-scheme-gated >/dev/null 2>&1
+    server server-migration-target server-scheme-gated server-executing >/dev/null 2>&1
 }

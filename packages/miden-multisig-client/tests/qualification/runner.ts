@@ -1,4 +1,4 @@
-import { register, verifyCommitment } from './actions/account.js';
+import { register, verifyCommitment, assertExecutionUnavailable } from './actions/account.js';
 import * as live from './actions/live.js';
 import { assertIdentity } from './actions/identity.js';
 import {
@@ -40,6 +40,7 @@ export const HANDLERS: Readonly<Record<string, ActionHandler>> = {
   'status-identity': assertIdentity,
   'error-envelope': assertHttpEnvelope,
   'account-register': register,
+  'guardian-execution-unavailable': assertExecutionUnavailable,
   'commitment-verify': verifyCommitment,
   'operator-session': assertSession,
   'operator-accounts': assertAccounts,
@@ -60,7 +61,19 @@ async function runLiveAction(
         scenario.id,
         scenario.shape,
         scenario.scheme as 'falcon' | 'ecdsa',
+        // A scenario that hands its proposal to GUARDIAN, through the SDK or the base client
+        // alone, creates it Guardian-executable; every other scenario keeps the default.
+        // Mirrors `execution_mode_for` in the Rust driver.
+        scenario.actions.includes('guardian-execute') || scenario.actions.includes('guardian-execute-base-client')
+          ? 'guardian_executable'
+          : 'self_executed',
       );
+    case 'guardian-execute':
+      return live.guardianExecute(context, scenario.id);
+    case 'chain-advance-past-bound':
+      return live.advancePastBound(context, scenario.id);
+    case 'guardian-execute-base-client':
+      return live.guardianExecuteBaseClient(context, scenario.id);
     case 'account-register':
       return live.registerAccount(context, scenario.id);
     case 'commitment-verify':
