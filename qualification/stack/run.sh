@@ -385,14 +385,14 @@ print(sum(1 for s in scenarios if s['profile'] == 'live'))
     fi
     LEGS=$(( LIVE_COUNT * 2 ))
   fi
-  QUAL_TREASURY_REQUIRED="${QUAL_TREASURY_REQUIRED:-$(( LEGS * 400000 ))}"
+  QUAL_TREASURY_REQUIRED="${QUAL_TREASURY_REQUIRED:-$(( LEGS * 40000 ))}"
 
   echo "==> checking the treasury covers ${LEGS} scenario leg(s)"
   set +e
   "${DRIVER[@]}" treasury-check \
     --network "${NETWORK}" \
     --required "${QUAL_TREASURY_REQUIRED}" \
-    --per-run-cost 400000
+    --per-run-cost 40000
   TREASURY_EXIT=$?
   set -e
   if (( TREASURY_EXIT != 0 )); then

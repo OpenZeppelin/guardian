@@ -28,7 +28,7 @@ import { setAccountPaused } from './operator.js';
 import type { ActionContext, ActionOutcome } from '../runner.js';
 
 /** Matches the Rust driver, so the two legs fund identically. */
-const ACCOUNT_FUNDING = 200_000;
+const ACCOUNT_FUNDING = 20_000;
 const NOTE_ARRIVAL_DEADLINE_MS = 180_000;
 // Chain events usually land within a few seconds, so early polls are tight and
 // back off rather than waiting a flat interval every time.
