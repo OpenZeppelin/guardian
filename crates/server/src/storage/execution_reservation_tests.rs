@@ -646,6 +646,35 @@ async fn promotion_commits_and_releases_the_execution(h: &Harness) {
     );
 }
 
+async fn a_claimant_whose_own_lease_lapsed_cannot_claim(
+    h: &Harness,
+    short_ttl: Duration,
+    wait: Duration,
+) {
+    let proposal = proposal_commitment(1);
+    let original = h.lease("worker-a", short_ttl).await;
+    h.reserve(&proposal, &original).await;
+    tokio::time::sleep(wait).await;
+    let claimant = h.lease("reconciler", short_ttl).await;
+    let claimant_deadline = Utc::now() + chrono::Duration::from_std(short_ttl).unwrap();
+    tokio::time::sleep(wait).await;
+
+    assert_eq!(
+        h.storage
+            .claim_execution_reservation(&h.account_id, &original, &claimant, claimant_deadline)
+            .await
+            .unwrap(),
+        ClaimWrite::StaleLease
+    );
+    let active = h
+        .storage
+        .load_active_execution(&h.account_id)
+        .await
+        .unwrap()
+        .expect("still reserved");
+    assert_eq!(active.reservation.fence, original);
+}
+
 async fn ownership_transfers_by_compare_and_set(h: &Harness, short_ttl: Duration, wait: Duration) {
     let proposal = proposal_commitment(1);
     let original = h.lease("worker-a", short_ttl).await;
@@ -1141,6 +1170,16 @@ mod filesystem {
         .await;
     }
 
+    #[tokio::test]
+    async fn a_claimant_whose_own_lease_lapsed_cannot_claim() {
+        super::a_claimant_whose_own_lease_lapsed_cannot_claim(
+            &Harness::filesystem().await,
+            Duration::ZERO,
+            Duration::from_millis(5),
+        )
+        .await;
+    }
+
     /// The file a crash is injected into. Every write goes through a fixed temporary path, so a
     /// directory squatting on it fails exactly that write, whoever runs the test.
     #[derive(Debug, Clone, Copy)]
@@ -1465,6 +1504,17 @@ mod postgres {
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn ownership_transfers_by_compare_and_set() {
         super::ownership_transfers_by_compare_and_set(
+            &pg_harness().await.harness,
+            Duration::from_secs(1),
+            Duration::from_millis(1_200),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_claimant_whose_own_lease_lapsed_cannot_claim() {
+        super::a_claimant_whose_own_lease_lapsed_cannot_claim(
             &pg_harness().await.harness,
             Duration::from_secs(1),
             Duration::from_millis(1_200),

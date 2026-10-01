@@ -249,7 +249,7 @@ happy-path tests:
 | Worker paused past lease expiry, ownership transferred, then resumed **before** the boundary commit | Fenced commit fails `StaleLease`; nothing written, nothing sent (FR-038, SC-019) |
 | Worker goes stale **after** the boundary commit, then wakes | Pre-send fence re-check aborts it; writes nothing, sends nothing; reconciliation resolves the durable candidate within the horizon (FR-049, SC-031) |
 | Worker dies after prover returns, before recording | Retry proves again (accepted); still exactly one submission (FR-029, SC-005) |
-| Unknown submission, account never leaves base | Terminates only when chain passes the recorded expiration block (FR-040, SC-008) |
+| Unknown submission, account never leaves base | Terminates only when the chain reaches the recorded expiration block, read before the account (FR-040, SC-008) |
 | Unknown submission, account observed superseded | Terminates `failed` on superseded evidence (FR-040) |
 | Candidate + proposal deleted by canonicalization | Terminal outcome persisted before deletion, still readable, `proposal_exists: false` (FR-041, FR-042, SC-021) |
 | One garbage signature among enough valid ones | Ignored and recorded; execution proceeds (FR-006, SC-020) |

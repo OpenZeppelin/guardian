@@ -265,12 +265,20 @@ impl Reconciler {
         }
     }
 
+    /// The tip is read before the account: a commitment read after it reflects every block up to
+    /// it, so an account still at its base once the tip reaches the expiration block was not
+    /// included and can no longer be. Read the other way round, a block landing between the two
+    /// reads could hold the transaction while the account read predates it.
     async fn observe(
         &self,
         state: &AppState,
         evidence: &SubmissionEvidence,
         tip: &tokio::sync::OnceCell<u32>,
     ) -> Result<Observed, String> {
+        let tip_before = tip
+            .get_or_try_init(|| self.executor.chain_tip())
+            .await
+            .copied();
         let verification = state
             .network_client
             .verify_commitment(
@@ -293,12 +301,12 @@ impl Reconciler {
                     .to_string(),
             ));
         }
-        let tip = *tip.get_or_try_init(|| self.executor.chain_tip()).await?;
-        if tip > evidence.expiration_block {
+        let tip = tip_before?;
+        if tip >= evidence.expiration_block {
             return Ok(Observed::Settles(
                 ExecutionFailureCode::Expired,
                 format!(
-                    "the chain is at block {tip}, past the transaction's expiration at {}, with the account still at its base",
+                    "the chain is at block {tip}, at or past the transaction's expiration at {}, with the account still at its base",
                     evidence.expiration_block
                 ),
             ));

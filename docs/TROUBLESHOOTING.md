@@ -544,8 +544,8 @@ once come back synchronously and create nothing.
   server may not decode, or may decode to a different transaction, which execution refuses
   before proving. Run the same `miden-client` on both sides, or execute the proposal from an SDK.
 - **An execution stays `submitted`.** The send's outcome is unknown and reconciliation waits for
-  the chain: it resolves `committed` through promotion, `EXPIRED` once the chain passes the
-  transaction's expiration with the account unchanged, or `CANDIDATE_DISCARDED` when the account
+  the chain: it resolves `committed` through promotion, `EXPIRED` once the chain reaches the
+  transaction's expiration block with the account unchanged, or `CANDIDATE_DISCARDED` when the account
   moved elsewhere. It never settles by elapsed time. `guardian_execution_observation_outage_seconds`
   above zero means the chain cannot be read.
 

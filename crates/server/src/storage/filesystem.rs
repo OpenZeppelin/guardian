@@ -1158,7 +1158,7 @@ impl StorageBackend for FilesystemService {
         if active.reservation.fence != *expected {
             return Ok(ClaimWrite::ClaimSuperseded);
         }
-        if claimant.fence_token <= expected.fence_token {
+        if claimant.fence_token <= expected.fence_token || lease_expires_at <= Utc::now() {
             return Ok(ClaimWrite::StaleLease);
         }
         active.reservation.fence = claimant.clone();

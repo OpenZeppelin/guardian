@@ -453,7 +453,7 @@ reachable prover and confirm execution succeeds.
 - **Worker dies after the prover returns but before recording the proof**: the retry proves
   again. Wasted prover cost, accepted; a second submission is still prevented (FR-029).
 - **Account never leaves its base commitment after an unknown submission**: not evidence of
-  a drop. Terminates only when the chain passes the recorded expiration block (FR-040).
+  a drop. Terminates only when the chain reaches the recorded expiration block (FR-040).
 - **Candidate and proposal both deleted by canonicalization**: the execution's terminal
   outcome was persisted before deletion and remains readable, flagged as no-longer-retryable
   (FR-041, FR-042).
@@ -1009,9 +1009,14 @@ This is an admission/execution policy, not a universal property of signed summar
     transaction is observed included; settle `committed`.
   - **Superseded** — the account is observed at a commitment that is neither the base nor
     the expected result; the transaction can no longer land; settle `failed`.
-  - **Expired** — the chain height is observed strictly past the expiration block recorded
+  - **Expired** — the chain height is observed at or past the expiration block recorded
     under FR-039 while the account is still at base; the transaction can never land; settle
-    `failed`. FR-046 guarantees that bound is finite and within the horizon.
+    `failed`. FR-046 guarantees that bound is finite and within the horizon. A transaction
+    expiring at block `X` can still be included in block `X` and in no later block
+    (`miden-protocol-0.17.0-rc.7/src/block/proposed_block.rs:679`), so the height MUST be read
+    **before** the account: the account read then reflects block `X`, and an account still at
+    its base was not included. (Revised 2026-10-01 from "strictly past", which read the account
+    first and only narrowed the race between the two reads.)
   Guardian MUST NOT settle on elapsed wall-clock time alone. Expiration is the only finite
   chain-height bound, which is why FR-039 requires recording it. If chain observation is
   unavailable, Guardian MUST retain the reservation, keep reporting `submitted`, and retry

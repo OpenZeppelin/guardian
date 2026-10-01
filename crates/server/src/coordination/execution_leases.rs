@@ -11,7 +11,16 @@ use crate::storage::execution_lease_name;
 
 /// When a lease taken now for `ttl` runs out.
 pub fn lease_deadline(ttl: Duration) -> DateTime<Utc> {
-    Utc::now() + chrono::Duration::from_std(ttl).unwrap_or_default()
+    deadline_after(Utc::now(), ttl)
+}
+
+/// `start + ttl`, saturating at the latest representable instant rather than panicking or
+/// collapsing to an already expired lease.
+fn deadline_after(start: DateTime<Utc>, ttl: Duration) -> DateTime<Utc> {
+    chrono::Duration::from_std(ttl)
+        .ok()
+        .and_then(|ttl| start.checked_add_signed(ttl))
+        .unwrap_or(DateTime::<Utc>::MAX_UTC)
 }
 
 /// Releases `lease`. A failed release is harmless: the lease expires on its own.
@@ -115,10 +124,6 @@ struct InMemoryLeaseElector {
 }
 
 impl InMemoryLeaseElector {
-    fn ttl_from(now: DateTime<Utc>, ttl: Duration) -> DateTime<Utc> {
-        now + chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::MAX)
-    }
-
     fn is_current(&self, held: &HeldLease, lease: &Lease, now: DateTime<Utc>) -> bool {
         held.holder_id == lease.holder_id
             && held.fence_token == lease.fence_token
@@ -140,7 +145,7 @@ impl LeaderElector for InMemoryLeaseElector {
             Some(held) => held.fence_token + 1,
             None => 0,
         };
-        let expires_at = Self::ttl_from(now, ttl);
+        let expires_at = deadline_after(now, ttl);
         leases.insert(
             self.name.clone(),
             HeldLease {
@@ -165,7 +170,7 @@ impl LeaderElector for InMemoryLeaseElector {
             .expect("execution lease registry poisoned");
         match leases.get_mut(&lease.name) {
             Some(held) if self.is_current(held, lease, now) => {
-                held.expires_at = Self::ttl_from(now, ttl);
+                held.expires_at = deadline_after(now, ttl);
                 Ok(true)
             }
             _ => Ok(false),
@@ -204,6 +209,19 @@ impl LeaderElector for InMemoryLeaseElector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deadline_beyond_the_calendar_saturates_instead_of_panicking() {
+        assert_eq!(
+            deadline_after(Utc::now(), Duration::MAX),
+            DateTime::<Utc>::MAX_UTC
+        );
+        let start = Utc::now();
+        assert_eq!(
+            deadline_after(start, Duration::from_secs(120)),
+            start + chrono::Duration::seconds(120)
+        );
+    }
 
     #[tokio::test]
     async fn one_holder_per_account_while_the_lease_is_live() {

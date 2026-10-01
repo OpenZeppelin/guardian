@@ -219,13 +219,35 @@ async fn an_unknown_submission_is_settled_only_by_the_chain_and_never_resent() {
 }
 
 #[tokio::test]
-async fn the_expiration_block_itself_is_not_yet_past() {
+async fn the_block_before_the_expiration_still_waits() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.tip(Ok(355));
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+}
+
+#[tokio::test]
+async fn reaching_the_expiration_block_at_the_base_settles_expired() {
     let faults = Faults::submitted_and_abandoned(Script::default()).await;
     faults.tip(Ok(356));
     faults.chain_shows(Ok(StateVerification::Absent));
     assert_eq!(
         faults.reconcile(PassKind::Steady).await,
-        Reconciled::Waiting
+        Reconciled::Resolved(ExecutionFailureCode::Expired)
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_tip_does_not_hold_back_a_committed_submission() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.tip(Err("node unavailable".to_string()));
+    faults.chain_shows(Ok(StateVerification::Match));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::AwaitingPromotion
     );
 }
 

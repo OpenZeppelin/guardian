@@ -345,17 +345,17 @@ crates/server/src/
 │   ├── execution_status.rs      # NEW: reported-state derivation (FR-024/026)
 │   └── push_delta.rs            # MODIFIED: calls extraction; FR-027 refusal
 ├── jobs/execution_reconcile/    # NEW: FR-040 evidence paths, FR-031 recovery
-├── api/{http.rs,grpc.rs}        # + 2 endpoints on both transports (FR-034)
+├── api/{http.rs,grpc.rs}        # + 3 endpoints on both transports (FR-034)
 ├── config/                      # + execution capability + prover URL (FR-043)
 └── error.rs                     # + stable codes for FR-022 refusals and D3's pre-boundary codes
 
-crates/server/migrations/2026-07-28-000001_execution_reservations/
+crates/server/migrations/2026-09-30-000001_execution_reservations/
 
 crates/miden-rpc-client/         # + sync_chain_mmr (ported), include_protocol_config,
                                  #   GetAccount at block_num, GetTransactionEncryptionKey
 
-crates/guardian-client/          # Rust base client (FR-034)
-packages/guardian-client/        # TS base client (FR-034)
+crates/client/                   # Rust base client `guardian-client` (FR-034); no `miden-client` dependency, guarded by `tests/no_miden_client.rs`
+packages/guardian-client/        # TS base client (FR-034); no web SDK dependency, guarded by `src/dependencies.test.ts`
 crates/miden-multisig-client/    # Rust SDK: execution mode (FR-009), FR-051 defaults, pinned notes
 packages/miden-multisig-client/  # TS SDK: execution mode (FR-009), FR-051 defaults, bound block (N3)
 ```

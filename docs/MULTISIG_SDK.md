@@ -592,6 +592,10 @@ What the mode changes, identically in both SDKs:
   horizon.
 - **The low-level `createProposal(nonce, txSummaryBase64, metadata)`** (TypeScript) carries no
   request, so it refuses on a Guardian-executable client.
+- **Invalid signatures.** Guardian executes with the valid signatures it holds and ignores
+  invalid, duplicate or revoked-signer ones, as long as the valid ones meet the threshold; the
+  ignored count is reported with the execution. Local execution passes every collected signature
+  to the account's auth procedure, so one invalid signature makes it fail.
 
 A proposal created in either mode can still be executed locally with `execute_proposal` /
 `executeProposal`, and listing, signing, exporting and importing work the same. For a thin

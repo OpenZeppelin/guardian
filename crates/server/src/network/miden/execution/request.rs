@@ -2,10 +2,10 @@
 //!
 //! `miden-client` turns a request into executor inputs only through crate-private helpers, and
 //! keeps the pinned input notes and the expiration delta without public accessors. Guardian
-//! therefore decodes the bytes itself, in the exact layout of the `miden-client` version the
-//! server admits. The request envelope names that version and the server refuses any other
-//! before decoding, so this layout is only ever applied to bytes it was written for; a
-//! round-trip test against the pinned client guards it across pin bumps.
+//! therefore decodes the bytes itself, in the exact layout of the server's pinned `miden-client`.
+//! Bytes written by another version either fail to decode or reproduce a different summary, and
+//! execution refuses both before proving; a round-trip test against the pinned client guards the
+//! layout across pin bumps.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU16;

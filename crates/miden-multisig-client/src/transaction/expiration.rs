@@ -51,7 +51,12 @@ impl ProposalExecutionMode {
 
     /// The envelope a new proposal stores its request in, if this mode stores one.
     pub fn attachment(self, request: &TransactionRequest) -> Option<TransactionRequestEnvelope> {
-        self.attachment_of_bytes(&request.to_bytes())
+        match self {
+            ProposalExecutionMode::SelfExecuted => None,
+            ProposalExecutionMode::GuardianExecutable => {
+                self.attachment_of_bytes(&request.to_bytes())
+            }
+        }
     }
 
     /// [`Self::attachment`] for request bytes a producer serialized, stored exactly as given.

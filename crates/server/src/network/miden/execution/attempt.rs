@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use guardian_shared::hex::{FromHex, IntoHex};
-use guardian_shared::retry::{RPC_TRANSPORT_SIGNALS, StructuredEvidence, is_transient_error_with};
+use guardian_shared::retry::{
+    RPC_TRANSPORT_SIGNALS, StructuredEvidence, grpc_code_evidence, is_transient_error_with,
+};
 use guardian_shared::{FromJson, SignatureScheme, ToJson};
 use miden_client::rpc::NodeRpcClient;
 use miden_client::rpc::encryption::SealedTransactionInputs;
@@ -235,7 +237,12 @@ fn with_sources(error: &(dyn std::error::Error + 'static)) -> String {
 fn is_transient(error: &(dyn std::error::Error + 'static)) -> bool {
     is_transient_error_with(
         error,
-        |_| StructuredEvidence::Indeterminate,
+        |cause| {
+            cause
+                .downcast_ref::<tonic::Status>()
+                .map(|status| grpc_code_evidence(status.code() as i32))
+                .unwrap_or(StructuredEvidence::Indeterminate)
+        },
         &[RPC_TRANSPORT_SIGNALS.as_slice(), &["timed out"]].concat(),
     )
 }
@@ -691,6 +698,20 @@ mod tests {
         ] {
             assert!(is_transient(&wrapped(cause)), "{cause}");
         }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("failed to prove transaction")]
+    struct ProveRefused(#[source] tonic::Status);
+
+    #[test]
+    fn the_prover_status_code_decides_over_its_message() {
+        assert!(!is_transient(&ProveRefused(
+            tonic::Status::invalid_argument("inputs unavailable: request timed out upstream")
+        )));
+        assert!(is_transient(&ProveRefused(tonic::Status::unavailable(
+            "prover busy"
+        ))));
     }
 
     #[test]

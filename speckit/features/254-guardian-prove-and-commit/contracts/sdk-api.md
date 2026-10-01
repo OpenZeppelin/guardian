@@ -303,9 +303,13 @@ Two SDK obligations follow for a `GuardianExecutable` client:
 
 **Parity fix (N3).** The Rust SDK takes a rebuild's bound block from `summary.block_number()`;
 TypeScript takes it from `anchor.blockNum()` (`proposalRequestBinding`,
-`packages/miden-multisig-client/src/multisig.ts:245-259`). Both SDKs MUST take it from the signed
+`packages/miden-multisig-client/src/multisig.ts:245-259`). Both SDKs MUST bind it to the signed
 summary, as Guardian does, and treat an anchor naming a different block as a mismatch, so a TS
-proposal with an inconsistent anchor fails the same way in both SDKs and on the server.
+proposal with an inconsistent anchor fails the same way in both SDKs and on the server. The web
+SDK's summary exposes the bound block only as its header commitment, so TypeScript first
+requires the anchor's commitment to equal the summary's (`assertAnchorBindsSummary`) and then
+reads the number from the anchor; the commitment covers the block number, so that number is the
+one the summary signed.
 
 ### Size, capability and mode
 
