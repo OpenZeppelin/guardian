@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use guardian_client::ToJson;
 use miden_protocol::account::AccountStoragePatch;
 use miden_protocol::account::delta::AccountVaultDelta;
-use miden_protocol::account::{AccountDelta, AccountId};
+use miden_protocol::account::{AccountCodePatch, AccountDelta, AccountId};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::transaction::{
     InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
@@ -30,7 +30,7 @@ pub fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value>
         *account_id,
         AccountStoragePatch::default(),
         AccountVaultDelta::default(),
-        None,
+        AccountCodePatch::default(),
         Felt::new_unchecked(nonce),
     )
     .map_err(|error| anyhow!("failed to build account delta: {error}"))?;

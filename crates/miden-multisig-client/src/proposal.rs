@@ -1030,6 +1030,7 @@ mod tests {
     use miden_protocol::Felt;
 
     use super::*;
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
@@ -1041,7 +1042,7 @@ mod tests {
             account_id,
             AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::ZERO,
         )
         .expect("Valid empty delta");

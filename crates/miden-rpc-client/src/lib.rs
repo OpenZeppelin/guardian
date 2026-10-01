@@ -19,8 +19,9 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/rpc_generated.rs"));
 }
 
-pub use generated::{account, blockchain, note, primitives, rpc, submission, transaction};
-pub use rpc::api_client::ApiClient;
+pub use generated::miden::node::v1 as rpc;
+pub use generated::{account, blockchain, note, primitives, submission, transaction};
+pub use rpc::node_service_client::NodeServiceClient;
 
 #[cfg(any(test, feature = "scripted-node"))]
 pub mod test_node;
@@ -152,9 +153,9 @@ pub fn word_to_hex(word: &primitives::Word) -> Option<String> {
     (word.encoded.len() == 32).then(|| format!("0x{}", hex::encode(&word.encoded)))
 }
 
-/// Simple wrapper around the tonic-generated ApiClient
+/// Simple wrapper around the tonic-generated NodeServiceClient
 pub struct MidenRpcClient {
-    client: ApiClient<Channel>,
+    client: NodeServiceClient<Channel>,
     settings: RpcClientSettings,
     runtime: Arc<dyn RetryRuntime>,
     retry_observer: Option<RetryObserver>,
@@ -199,7 +200,8 @@ impl MidenRpcClient {
         .map_err(RpcClientError::Connect)?;
 
         Ok(Self {
-            client: ApiClient::new(channel).max_decoding_message_size(MAX_RESPONSE_SIZE_BYTES),
+            client: NodeServiceClient::new(channel)
+                .max_decoding_message_size(MAX_RESPONSE_SIZE_BYTES),
             settings,
             runtime,
             retry_observer: None,
@@ -218,7 +220,8 @@ impl MidenRpcClient {
             .connect_lazy();
 
         Ok(Self {
-            client: ApiClient::new(channel).max_decoding_message_size(MAX_RESPONSE_SIZE_BYTES),
+            client: NodeServiceClient::new(channel)
+                .max_decoding_message_size(MAX_RESPONSE_SIZE_BYTES),
             settings: RpcClientSettings::default(),
             runtime: Arc::new(ProductionRetryRuntime),
             retry_observer: None,
@@ -231,8 +234,8 @@ impl MidenRpcClient {
         self.retry_observer = Some(observer);
     }
 
-    /// Get the underlying tonic ApiClient for full access to all RPC methods:
-    pub fn client_mut(&mut self) -> &mut ApiClient<Channel> {
+    /// Get the underlying tonic NodeServiceClient for full access to all RPC methods:
+    pub fn client_mut(&mut self) -> &mut NodeServiceClient<Channel> {
         &mut self.client
     }
 
@@ -246,7 +249,7 @@ impl MidenRpcClient {
         op: F,
     ) -> Result<T, RpcClientError>
     where
-        F: Fn(ApiClient<Channel>) -> Fut,
+        F: Fn(NodeServiceClient<Channel>) -> Fut,
         Fut: Future<Output = Result<T, tonic::Status>>,
     {
         let attempts = match read_mode {
@@ -272,13 +275,13 @@ impl MidenRpcClient {
     }
 
     /// Get the status of the Miden node
-    pub async fn get_status(&mut self) -> Result<rpc::RpcStatus, RpcClientError> {
+    pub async fn get_status(&mut self) -> Result<rpc::StatusResponse, RpcClientError> {
         self.retry_read(
             "get_status",
             RpcReadMode::Configured,
             |mut client| async move {
                 client
-                    .status(Request::new(()))
+                    .status(Request::new(rpc::StatusRequest {}))
                     .await
                     .map(tonic::Response::into_inner)
             },
@@ -291,12 +294,12 @@ impl MidenRpcClient {
         &mut self,
         block_num: Option<u32>,
         include_mmr_proof: bool,
-    ) -> Result<rpc::BlockHeaderByNumberResponse, RpcClientError> {
+    ) -> Result<rpc::GetBlockHeaderByNumberResponse, RpcClientError> {
         self.retry_read(
             "get_block_header",
             RpcReadMode::Configured,
             |mut client| async move {
-                let request = rpc::BlockHeaderByNumberRequest {
+                let request = rpc::GetBlockHeaderByNumberRequest {
                     block_num,
                     include_mmr_proof: Some(include_mmr_proof),
                     include_protocol_config: None,
@@ -322,7 +325,9 @@ impl MidenRpcClient {
         submission: submission::ProvenTransactionSubmission,
     ) -> Result<(), RpcClientError> {
         self.client
-            .submit_proven_tx(Request::new(submission))
+            .submit_proven_tx(Request::new(rpc::SubmitProvenTxRequest {
+                submission: Some(submission),
+            }))
             .await
             .map_err(|status| RpcClientError::Call {
                 operation: "submit_transaction",
@@ -370,7 +375,7 @@ impl MidenRpcClient {
     pub async fn get_notes_by_id(
         &mut self,
         note_ids: Vec<primitives::Word>,
-    ) -> Result<rpc::NotesByIdResponse, RpcClientError> {
+    ) -> Result<rpc::GetNotesByIdResponse, RpcClientError> {
         let note_ids: Vec<note::NoteId> = note_ids
             .into_iter()
             .map(|id| note::NoteId { id: Some(id) })
@@ -381,7 +386,7 @@ impl MidenRpcClient {
             "get_notes_by_id",
             RpcReadMode::Configured,
             |mut client| async move {
-                let request = rpc::NotesByIdRequest {
+                let request = rpc::GetNotesByIdRequest {
                     note_ids: note_ids.clone(),
                 };
                 client
@@ -408,7 +413,7 @@ impl MidenRpcClient {
         let proto_account_id = &proto_account_id;
         let account_response = self
             .retry_read(OPERATION, read_mode, |mut client| async move {
-                let request = Request::new(rpc::AccountRequest {
+                let request = Request::new(rpc::GetAccountRequest {
                     account_id: Some(*proto_account_id),
                     block_num: None,
                     details: None,
@@ -455,9 +460,9 @@ impl MidenRpcClient {
     pub async fn get_account_with_details(
         &self,
         account_id: &AccountId,
-        details: Option<rpc::account_request::AccountDetailRequest>,
+        details: Option<rpc::get_account_request::AccountDetailRequest>,
         read_mode: RpcReadMode,
-    ) -> Result<rpc::AccountResponse, RpcClientError> {
+    ) -> Result<rpc::GetAccountResponse, RpcClientError> {
         let proto_account_id = proto_account_id(account_id);
 
         let proto_account_id = &proto_account_id;
@@ -466,7 +471,7 @@ impl MidenRpcClient {
             "get_account_with_details",
             read_mode,
             |mut client| async move {
-                let request = Request::new(rpc::AccountRequest {
+                let request = Request::new(rpc::GetAccountRequest {
                     account_id: Some(*proto_account_id),
                     block_num: None,
                     details: details.clone(),
@@ -486,7 +491,7 @@ impl MidenRpcClient {
         const OPERATION: &str = "get_chain_tip";
         let response = self
             .retry_read(OPERATION, read_mode, |mut client| async move {
-                let request = rpc::BlockHeaderByNumberRequest {
+                let request = rpc::GetBlockHeaderByNumberRequest {
                     block_num: None,
                     include_mmr_proof: Some(false),
                     include_protocol_config: None,
@@ -545,7 +550,7 @@ impl MidenRpcClient {
     pub async fn get_account_details(
         &mut self,
         account_id: &AccountId,
-    ) -> Result<rpc::AccountResponse, RpcClientError> {
+    ) -> Result<rpc::GetAccountResponse, RpcClientError> {
         let proto_account_id = proto_account_id(account_id);
 
         let proto_account_id = &proto_account_id;
@@ -553,7 +558,7 @@ impl MidenRpcClient {
             "get_account_details",
             RpcReadMode::Configured,
             |mut client| async move {
-                let request = Request::new(rpc::AccountRequest {
+                let request = Request::new(rpc::GetAccountRequest {
                     account_id: Some(*proto_account_id),
                     block_num: None,
                     details: None,
@@ -717,11 +722,11 @@ mod tests {
         code: tonic::Code,
     ) -> (
         Arc<AtomicU32>,
-        impl Fn(ApiClient<Channel>) -> ScriptedFuture,
+        impl Fn(NodeServiceClient<Channel>) -> ScriptedFuture,
     ) {
         let calls = Arc::new(AtomicU32::new(0));
         let counter = calls.clone();
-        let op = move |_client: ApiClient<Channel>| {
+        let op = move |_client: NodeServiceClient<Channel>| {
             let attempt = counter.fetch_add(1, Ordering::SeqCst);
             let fut: ScriptedFuture = Box::pin(async move {
                 if attempt < failures_before_success {

@@ -6,6 +6,7 @@ mod fixtures {
     use miden_confidential_contracts::multisig_guardian::{
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountDelta;
     use miden_protocol::account::delta::AccountVaultDelta;
     use miden_protocol::account::{
@@ -185,7 +186,7 @@ mod fixtures {
             account_id,
             storage_delta_1,
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 1");
@@ -294,7 +295,7 @@ mod fixtures {
             account_id,
             storage_delta_2,
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 2");
@@ -378,7 +379,7 @@ mod fixtures {
             account_id,
             storage_delta_3,
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 3");

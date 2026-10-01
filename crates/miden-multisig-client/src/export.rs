@@ -491,6 +491,7 @@ impl ExportedProposal {
 mod tests {
     use guardian_shared::ToJson;
     use miden_client::Serializable;
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
@@ -757,7 +758,7 @@ mod tests {
             account_id,
             AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::ZERO,
         )
         .expect("valid delta");
