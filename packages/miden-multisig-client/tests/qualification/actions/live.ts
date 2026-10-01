@@ -2323,3 +2323,361 @@ export async function assertP2ideTimelocked(
     };
   }
 }
+
+/**
+ * Creates the account against the queue server, so every later action of the
+ * scenario talks to a GUARDIAN that queues chained candidates (issue #17). The
+ * main one keeps the default of one in-flight candidate per account.
+ */
+export async function createQueuedAccount(
+  context: ActionContext,
+  scenarioId: string,
+  shape: string,
+  scheme: Scheme,
+): Promise<ActionOutcome> {
+  const missing = requireLive(context);
+  if (missing) return missing;
+  const queueEndpoint = context.live!.queueEndpoint;
+  if (!queueEndpoint) {
+    return {
+      kind: 'environment_blocked',
+      reason:
+        'QUAL_GUARDIAN_QUEUE_ENDPOINT is unset, so no queue-enabled GUARDIAN is running to qualify the candidate queue against',
+    };
+  }
+  return createAccount(
+    { ...context, live: { ...context.live!, guardianEndpoint: queueEndpoint } },
+    scenarioId,
+    shape,
+    scheme,
+  );
+}
+
+/**
+ * The account's next nonce: what the Rust SDK and the shared browser helpers
+ * (`examples/_shared/multisig-browser`) label a proposal with. This SDK's own
+ * default is a timestamp, which no admission rule can relate to the candidate
+ * queue, so the queue scenarios pass the nonce the way integrations do.
+ */
+async function nextNonce(session: LiveSession): Promise<number> {
+  const account = await session.multisig!.getStoreAccount();
+  return Number(account.nonce().asInt()) + 1;
+}
+
+/** Matches the Rust driver's chained scenario. */
+const CHAINED_TRANSFERS = 3;
+
+/**
+ * Sends {@link CHAINED_TRANSFERS} transfers from one device back to back, never
+ * waiting for one to canonicalize before proposing the next, and asserts all of
+ * them landed and were promoted in nonce order, with GUARDIAN's state agreeing
+ * with the chain at the end.
+ *
+ * This is the premise of queueing chained candidates (issue #17), and the part
+ * no mock establishes: each transaction builds on the state the one before it
+ * produced while that one is still a queued candidate on GUARDIAN, and perhaps
+ * still in the node's mempool. At the default depth of one, GUARDIAN refuses
+ * the second proposal outright.
+ *
+ * Whether a transfer was admitted behind a still-queued predecessor is timing,
+ * so it is observed rather than forced: the predecessor still being a candidate
+ * after the next proposal was accepted proves it was one when that proposal was
+ * admitted. A run that never saw it is environment-blocked rather than passed,
+ * because it would not have exercised the queue at all. Mirrors
+ * `send_chained_transfers` in the Rust driver.
+ */
+export async function sendChainedTransfers(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.faucetId || !session.treasuryId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
+  }
+
+  try {
+    await session.cosigners[0].midenClient.sync();
+    const before = await heldBalance(session);
+    const sending = P2ID_AMOUNT * BigInt(CHAINED_TRANSFERS);
+    if (before <= sending) {
+      return {
+        kind: 'failed',
+        classification: 'setup',
+        reason: `the account holds ${before}, which is not enough to send ${sending} and pay the fees`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `syncing before the transfers failed: ${String(error)}` };
+  }
+
+  const executed: { id: string; nonce: number; postState: string }[] = [];
+  let admittedBehindACandidate = 0;
+  for (let index = 1; index <= CHAINED_TRANSFERS; index += 1) {
+    // Not `proposeWhenSettled`: waiting for the predecessor is exactly what this
+    // scenario must not do, so a refusal here is the failure.
+    let proposal;
+    try {
+      proposal = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT, {
+        nonce: await nextNonce(session),
+      });
+    } catch (error) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `proposing transfer ${index} of ${CHAINED_TRANSFERS} while ${executed.length} earlier one(s) were still settling was refused: ${String(error)}`,
+      };
+    }
+    const previous = executed[executed.length - 1];
+    if (previous) {
+      if (proposal.nonce !== previous.nonce + 1) {
+        return {
+          kind: 'failed',
+          classification: 'product',
+          reason: `transfer ${index} was proposed at nonce ${proposal.nonce}, not ${previous.nonce + 1} after its predecessor: the client did not build on the state its last transfer produced`,
+        };
+      }
+      try {
+        if ((await session.multisig.abandonStatus(previous.nonce)) === 'waiting') {
+          admittedBehindACandidate += 1;
+        }
+      } catch {
+        // Evidence only: an unreadable status proves nothing either way.
+      }
+    }
+    try {
+      // This client does not sign its own proposal at creation.
+      await session.multisig.signProposal(proposal.id);
+      await session.multisig.executeProposal(proposal.id);
+      const account = await session.multisig.getStoreAccount();
+      executed.push({
+        id: proposal.id,
+        nonce: proposal.nonce,
+        postState: normalizeWord(account.to_commitment().toHex()),
+      });
+    } catch (error) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `executing transfer ${index} of ${CHAINED_TRANSFERS} (nonce ${proposal.nonce}) failed: ${String(error)}`,
+      };
+    }
+  }
+
+  // The head of the chain is confirmed the way every other scenario confirms an
+  // execution: the chain holds its post-state, and GUARDIAN's canonical history
+  // carries it at its nonce.
+  const last = executed[executed.length - 1];
+  const completion = await waitForExecution(session, last.id, { kind: 'nonce', nonce: last.nonce });
+  if (completion.kind === 'discarded') {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the last transfer (nonce ${last.nonce}) left the pending set without becoming canonical: ${completion.reason}`,
+    };
+  }
+  if (completion.kind === 'pending') {
+    return { kind: 'environment_blocked', reason: `the last transfer (nonce ${last.nonce}) was ${completion.reason}` };
+  }
+
+  // Every transfer before it is canonical too, at its own nonce, carrying the
+  // post-state its execution produced, and promoted no later than the one after
+  // it: GUARDIAN walked the chain in nonce order.
+  try {
+    const history = await session.multisig.deltaHistory({ limit: 20 });
+    let promotedAt: string | undefined;
+    for (const [position, transfer] of executed.entries()) {
+      const entry = history.entries.find((candidate) => Number(candidate.nonce) === transfer.nonce);
+      if (!entry) {
+        return {
+          kind: 'failed',
+          classification: 'product',
+          reason: `transfer ${position + 1} (nonce ${transfer.nonce}) is not canonical although the chain moved past it`,
+        };
+      }
+      if (!entry.newCommitment || normalizeWord(entry.newCommitment) !== transfer.postState) {
+        return {
+          kind: 'failed',
+          classification: 'product',
+          reason: `transfer ${position + 1} (nonce ${transfer.nonce}) is canonical with commitment ${entry.newCommitment ?? 'none'}, but its execution produced ${transfer.postState}`,
+        };
+      }
+      if (promotedAt !== undefined && entry.timestamp < promotedAt) {
+        return {
+          kind: 'failed',
+          classification: 'product',
+          reason: `transfer ${position + 1} (nonce ${transfer.nonce}) was promoted at ${entry.timestamp}, before its predecessor at ${promotedAt}`,
+        };
+      }
+      promotedAt = entry.timestamp;
+    }
+    await session.multisig.verifyStateCommitment();
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `checking the settled chain failed: ${String(error)}`,
+    };
+  }
+
+  if (admittedBehindACandidate === 0) {
+    return {
+      kind: 'environment_blocked',
+      reason: `each of the ${CHAINED_TRANSFERS} transfers settled before the next was proposed, so none was admitted behind a queued candidate and the queue was never exercised`,
+    };
+  }
+  return { kind: 'passed' };
+}
+
+/**
+ * While a stranded head holds the queue, a proposal built on the canonical
+ * state is refused at once.
+ *
+ * The head is the producer's prepared but never submitted transaction (the
+ * `custom-proposal-prepare` step): acknowledged, so queued, and never going to
+ * land. The account's local state never included it, so the next proposal is
+ * built on the canonical state and labelled with the account's next nonce,
+ * which the head already holds. Its delta could never be admitted, and on a
+ * queue with room it would otherwise have been stored for cosigners to sign,
+ * pinned behind the head. Mirrors `assert_stranded_head_blocks_proposal` in the
+ * Rust driver.
+ */
+export async function assertStrandedHeadBlocksProposal(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (session.customNonce === undefined) {
+    return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was prepared in this scenario' };
+  }
+  if (!session.faucetId || !session.treasuryId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
+  }
+  const head = session.customNonce;
+
+  try {
+    const status = await session.multisig.abandonStatus(head);
+    if (status !== 'waiting') {
+      return {
+        kind: 'failed',
+        classification: 'setup',
+        reason: `the prepared head at nonce ${head} is ${status}, not a queued candidate`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `reading the head at nonce ${head} failed: ${String(error)}` };
+  }
+
+  try {
+    const nonce = await nextNonce(session);
+    const proposal = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT, {
+      nonce,
+    });
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `a proposal at nonce ${proposal.nonce} was accepted while the stranded head holds nonce ${head}; its delta could never be admitted`,
+    };
+  } catch (error) {
+    if (String(error).includes('already a pending change')) return { kind: 'passed' };
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the proposal behind the stranded head was refused, but not as a pending conflict: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Abandons the stranded head and shows the account recovers: once the abandon
+ * resolves, a fresh transfer built on the resynced state is accepted, lands,
+ * and is promoted. Mirrors `abandon_stranded_head_and_recover` in the Rust
+ * driver.
+ */
+export async function abandonStrandedHeadAndRecover(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (session.customNonce === undefined) {
+    return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was prepared in this scenario' };
+  }
+  if (!session.faucetId || !session.treasuryId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
+  }
+  const head = session.customNonce;
+
+  try {
+    await session.multisig.abandonCandidate(head);
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `abandoning the stranded head at nonce ${head} failed: ${String(error)}`,
+    };
+  }
+  const abandonDeadline = Date.now() + ABANDON_DEADLINE_MS;
+  let wait = POLL_START_MS;
+  let state = 'never answered';
+  for (;;) {
+    try {
+      const status = await session.multisig.abandonStatus(head);
+      if (status === 'abandoned') break;
+      if (status === 'landed') {
+        return {
+          kind: 'failed',
+          classification: 'product',
+          reason: 'the stranded head canonicalized although nothing ever submitted it',
+        };
+      }
+      state = status;
+    } catch (error) {
+      state = String(error);
+    }
+    if (Date.now() >= abandonDeadline) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the abandoned head at nonce ${head} was still ${state} after ${ABANDON_DEADLINE_MS / 1000}s`,
+      };
+    }
+    wait = await backoff(wait);
+  }
+
+  let proposal;
+  try {
+    await session.cosigners[0].midenClient.sync();
+    await session.multisig.syncState();
+    proposal = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT, {
+      nonce: await nextNonce(session),
+    });
+    await session.multisig.signProposal(proposal.id);
+    await session.multisig.executeProposal(proposal.id);
+    await session.multisig.syncState();
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the account did not take a fresh transfer after the abandon resolved: ${String(error)}`,
+    };
+  }
+
+  const completion = await waitForExecution(session, proposal.id, { kind: 'nonce', nonce: proposal.nonce });
+  if (completion.kind === 'confirmed') return { kind: 'passed' };
+  if (completion.kind === 'discarded') {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the fresh transfer left the pending set without becoming canonical: ${completion.reason}`,
+    };
+  }
+  return { kind: 'environment_blocked', reason: `the fresh transfer was ${completion.reason}` };
+}

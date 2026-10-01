@@ -21,6 +21,10 @@ pub struct LiveContext {
     pub treasury_dir: std::path::PathBuf,
     /// A second GUARDIAN deployment, required only by the migration scenario.
     pub migration_endpoint: Option<String>,
+    /// A GUARDIAN with candidate queueing switched on (issue #17), required
+    /// only by the candidate-queue scenarios. The main one keeps the default
+    /// of one in-flight candidate per account.
+    pub queue_endpoint: Option<String>,
 }
 
 /// The account a scenario is working on, shared by its actions.
@@ -30,6 +34,10 @@ pub struct LiveContext {
 /// reasons no real deployment enjoys.
 pub struct LiveSession {
     pub clients: Vec<MultisigClient>,
+    /// The GUARDIAN this account is registered with: the main one, or the
+    /// queue server for the candidate-queue scenarios. A signer added later
+    /// has to talk to the same one.
+    pub guardian_endpoint: String,
     /// Retained so a cosigner's key can be handed to the other SDK. The client
     /// does not expose its key, and it should not: only this harness has a
     /// reason to move key material between processes.
@@ -73,6 +81,7 @@ fn endpoint(network: NetworkName) -> Endpoint {
 
 async fn build_cosigners(
     context: &LiveContext,
+    guardian_endpoint: &str,
     signers: &RunSigners,
     run_tag: &str,
 ) -> anyhow::Result<Vec<MultisigClient>> {
@@ -86,7 +95,7 @@ async fn build_cosigners(
 
         let builder = MultisigClient::builder()
             .miden_endpoint(endpoint(context.network))
-            .guardian_endpoint(context.guardian_endpoint.clone())
+            .guardian_endpoint(guardian_endpoint.to_string())
             .account_dir(&dir);
 
         let builder = match signer {
@@ -120,6 +129,47 @@ pub async fn create(runner: &Runner, shape: Shape, scheme: Scheme, run_tag: &str
     let Some(context) = runner.live.as_ref() else {
         return ActionOutcome::failed_setup("the live context is not configured");
     };
+    create_on(
+        runner,
+        context.guardian_endpoint.clone(),
+        shape,
+        scheme,
+        run_tag,
+    )
+    .await
+}
+
+/// [`create`] against the queue server, so every later action of the scenario
+/// talks to a GUARDIAN that queues chained candidates (issue #17).
+pub async fn create_queued(
+    runner: &Runner,
+    shape: Shape,
+    scheme: Scheme,
+    run_tag: &str,
+) -> ActionOutcome {
+    let Some(context) = runner.live.as_ref() else {
+        return ActionOutcome::failed_setup("the live context is not configured");
+    };
+    let Some(endpoint) = context.queue_endpoint.clone() else {
+        return ActionOutcome::EnvironmentBlocked {
+            reason: "QUAL_GUARDIAN_QUEUE_GRPC is unset, so no queue-enabled GUARDIAN is running \
+                     to qualify the candidate queue against"
+                .to_string(),
+        };
+    };
+    create_on(runner, endpoint, shape, scheme, run_tag).await
+}
+
+async fn create_on(
+    runner: &Runner,
+    guardian_endpoint: String,
+    shape: Shape,
+    scheme: Scheme,
+    run_tag: &str,
+) -> ActionOutcome {
+    let Some(context) = runner.live.as_ref() else {
+        return ActionOutcome::failed_setup("the live context is not configured");
+    };
     let Some((threshold, total)) = shape.threshold_and_total() else {
         return ActionOutcome::failed_setup(format!("{shape:?} is not a usable multisig shape"));
     };
@@ -129,7 +179,7 @@ pub async fn create(runner: &Runner, shape: Shape, scheme: Scheme, run_tag: &str
         ));
     };
 
-    let mut clients = match build_cosigners(context, &signers, run_tag).await {
+    let mut clients = match build_cosigners(context, &guardian_endpoint, &signers, run_tag).await {
         Ok(clients) => clients,
         Err(error) => return ActionOutcome::failed_setup(error.to_string()),
     };
@@ -152,6 +202,7 @@ pub async fn create(runner: &Runner, shape: Shape, scheme: Scheme, run_tag: &str
 
     *runner.session.lock().await = Some(LiveSession {
         clients,
+        guardian_endpoint,
         signers,
         threshold,
         scheme,
@@ -2004,11 +2055,17 @@ pub async fn add_signer(runner: &Runner, run_tag: &str) -> ActionOutcome {
     let Some(incoming_signers) = RunSigners::for_shape(1, 1, session.scheme) else {
         return ActionOutcome::failed_setup("cannot generate an incoming signer");
     };
-    let incoming =
-        match build_cosigners(context, &incoming_signers, &format!("{run_tag}-incoming")).await {
-            Ok(clients) => clients,
-            Err(error) => return ActionOutcome::failed_setup(error.to_string()),
-        };
+    let incoming = match build_cosigners(
+        context,
+        &session.guardian_endpoint,
+        &incoming_signers,
+        &format!("{run_tag}-incoming"),
+    )
+    .await
+    {
+        Ok(clients) => clients,
+        Err(error) => return ActionOutcome::failed_setup(error.to_string()),
+    };
     let commitment = incoming[0].user_commitment();
     let commitment_hex = normalize_commitments(vec![incoming[0].user_commitment_hex()])
         .pop()
@@ -2473,5 +2530,359 @@ pub async fn assert_removed_signer_refused(runner: &Runner) -> ActionOutcome {
                 ))
             }
         }
+    }
+}
+
+/// How many transfers the chained scenario sends back to back. Three makes a
+/// chain two hops deep behind its head, so the worker has to promote through a
+/// successor's post-state when blocks batch them.
+const CHAINED_TRANSFERS: usize = 3;
+
+fn commitment_hex(word: Word) -> String {
+    format!("0x{}", hex::encode(word.as_bytes()))
+}
+
+/// Sends [`CHAINED_TRANSFERS`] transfers from one device back to back, never
+/// waiting for one to canonicalize before proposing the next, and asserts all
+/// of them landed and were promoted in nonce order, with GUARDIAN's state
+/// agreeing with the chain at the end.
+///
+/// This is the premise of queueing chained candidates (issue #17), and the part
+/// no mock establishes: each transaction builds on the state the one before it
+/// produced while that one is still a queued candidate on GUARDIAN, and perhaps
+/// still in the node's mempool. At the default depth of one, GUARDIAN refuses
+/// the second proposal outright.
+///
+/// Whether a transfer was admitted behind a still-queued predecessor is timing:
+/// a chain that confirms each transaction before the next is proposed leaves
+/// nothing queued. So it is observed rather than forced. The predecessor still
+/// being a candidate after the next proposal was accepted proves it was one
+/// when that proposal was admitted, and a run that never saw it is
+/// environment-blocked rather than passed, because it would not have exercised
+/// the queue at all.
+pub async fn send_chained_transfers(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let (Some(faucet), Some(treasury)) = (session.faucet, session.treasury) else {
+        return ActionOutcome::failed_setup(
+            "the account was never funded, so it holds nothing to send",
+        );
+    };
+    let client = &mut session.clients[0];
+
+    if let Err(error) = client.sync().await {
+        return ActionOutcome::failed_product(format!(
+            "syncing before the transfers failed: {error}"
+        ));
+    }
+    let Some(before) = held_balance(client, faucet) else {
+        return ActionOutcome::failed_setup("the client holds no account to read");
+    };
+    let sending = P2ID_AMOUNT * CHAINED_TRANSFERS as u64;
+    if before <= sending {
+        return ActionOutcome::failed_setup(format!(
+            "the account holds {before}, which is not enough to send {sending} and pay the fees"
+        ));
+    }
+
+    // (proposal id, nonce, the post-state its execution produced)
+    let mut executed: Vec<(String, u64, String)> = Vec::with_capacity(CHAINED_TRANSFERS);
+    let mut admitted_behind_a_candidate = 0usize;
+    for index in 1..=CHAINED_TRANSFERS {
+        // Not `propose_when_settled`: waiting for the predecessor is exactly
+        // what this scenario must not do, so a refusal here is the failure.
+        let proposal = match client
+            .propose_transaction(
+                miden_multisig_client::TransactionType::transfer_with_note_type(
+                    treasury,
+                    faucet,
+                    P2ID_AMOUNT,
+                    miden_protocol::note::NoteType::Public,
+                ),
+            )
+            .await
+        {
+            Ok(proposal) => proposal,
+            Err(error) => {
+                return ActionOutcome::failed_product(format!(
+                    "proposing transfer {index} of {CHAINED_TRANSFERS} while {} earlier one(s) \
+                     were still settling was refused: {error}",
+                    executed.len()
+                ));
+            }
+        };
+        if let Some((_, previous, _)) = executed.last() {
+            if proposal.nonce != previous + 1 {
+                return ActionOutcome::failed_product(format!(
+                    "transfer {index} was proposed at nonce {}, not {} after its predecessor: the \
+                     client did not build on the state its last transfer produced",
+                    proposal.nonce,
+                    previous + 1
+                ));
+            }
+            if matches!(
+                client.abandon_status(*previous).await,
+                Ok(AbandonStatus::Waiting)
+            ) {
+                admitted_behind_a_candidate += 1;
+            }
+        }
+        if let Err(error) = client.execute_proposal(&proposal.id).await {
+            return ActionOutcome::failed_product(format!(
+                "executing transfer {index} of {CHAINED_TRANSFERS} (nonce {}) failed: {error}",
+                proposal.nonce
+            ));
+        }
+        let Some(post_state) = client.account().map(|account| account.commitment()) else {
+            return ActionOutcome::failed_setup("the client holds no account to read");
+        };
+        executed.push((proposal.id, proposal.nonce, commitment_hex(post_state)));
+    }
+
+    // The head of the chain is confirmed the way every other scenario
+    // confirms an execution: the chain holds its post-state, and GUARDIAN's
+    // canonical history carries it at its nonce.
+    let Some((last_id, last_nonce, _)) = executed.last().cloned() else {
+        return ActionOutcome::failed_setup("no transfer was executed");
+    };
+    match wait_for_execution(client, &last_id, Binding::Nonce(last_nonce)).await {
+        Completion::Confirmed => {}
+        Completion::Discarded(reason) => {
+            return ActionOutcome::failed_product(format!(
+                "the last transfer (nonce {last_nonce}) left the pending set without becoming \
+                 canonical: {reason}"
+            ));
+        }
+        Completion::Pending(reason) => {
+            return ActionOutcome::EnvironmentBlocked {
+                reason: format!("the last transfer (nonce {last_nonce}) was {reason}"),
+            };
+        }
+    }
+
+    // Every transfer before it is canonical too, at its own nonce, carrying the
+    // post-state its execution produced, and promoted no later than the one
+    // after it: GUARDIAN walked the chain in nonce order.
+    let history = match client.delta_history(Some(20), None).await {
+        Ok(page) => page.entries,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "reading the delta history failed: {error}"
+            ));
+        }
+    };
+    let mut promoted_at: Option<String> = None;
+    for (index, (_, nonce, post_state)) in executed.iter().enumerate() {
+        let Some(entry) = history.iter().find(|entry| entry.nonce == *nonce) else {
+            return ActionOutcome::failed_product(format!(
+                "transfer {} (nonce {nonce}) is not canonical although the chain moved past it",
+                index + 1
+            ));
+        };
+        if entry
+            .new_commitment
+            .as_deref()
+            .is_none_or(|recorded| normalize_hex(recorded) != normalize_hex(post_state))
+        {
+            return ActionOutcome::failed_product(format!(
+                "transfer {} (nonce {nonce}) is canonical with commitment {:?}, but its execution \
+                 produced {post_state}",
+                index + 1,
+                entry.new_commitment
+            ));
+        }
+        if let Some(previous) = &promoted_at
+            && entry.timestamp < *previous
+        {
+            return ActionOutcome::failed_product(format!(
+                "transfer {} (nonce {nonce}) was promoted at {}, before its predecessor at \
+                 {previous}",
+                index + 1,
+                entry.timestamp
+            ));
+        }
+        promoted_at = Some(entry.timestamp.clone());
+    }
+
+    if let Err(error) = client.verify_state_commitment().await {
+        return ActionOutcome::failed_product(format!(
+            "the account does not agree with chain after the transfers settled: {error}"
+        ));
+    }
+
+    if admitted_behind_a_candidate == 0 {
+        return ActionOutcome::EnvironmentBlocked {
+            reason: format!(
+                "each of the {CHAINED_TRANSFERS} transfers settled before the next was proposed, \
+                 so none was admitted behind a queued candidate and the queue was never exercised"
+            ),
+        };
+    }
+    ActionOutcome::Passed
+}
+
+/// While a stranded head holds the queue, a proposal built on the canonical
+/// state is refused at once.
+///
+/// The head is the producer's prepared but never submitted transaction (the
+/// `custom-proposal-prepare` step): acknowledged, so queued, and never going to
+/// land. The account's local state never included it, so the next proposal is
+/// built on the canonical state and carries the head's nonce. Its delta could
+/// never be admitted, and on a queue with room it would otherwise have been
+/// stored for cosigners to sign, pinned behind the head.
+pub async fn assert_stranded_head_blocks_proposal(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(head) = session.custom_nonce else {
+        return ActionOutcome::failed_setup("no custom proposal was prepared in this scenario");
+    };
+    let (Some(faucet), Some(treasury)) = (session.faucet, session.treasury) else {
+        return ActionOutcome::failed_setup(
+            "the account was never funded, so it holds nothing to send",
+        );
+    };
+    let client = &mut session.clients[0];
+
+    match client.abandon_status(head).await {
+        Ok(AbandonStatus::Waiting) => {}
+        Ok(other) => {
+            return ActionOutcome::failed_setup(format!(
+                "the prepared head at nonce {head} is {other:?}, not a queued candidate"
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "reading the head at nonce {head} failed: {error}"
+            ));
+        }
+    }
+
+    match client
+        .propose_transaction(
+            miden_multisig_client::TransactionType::transfer_with_note_type(
+                treasury,
+                faucet,
+                P2ID_AMOUNT,
+                miden_protocol::note::NoteType::Public,
+            ),
+        )
+        .await
+    {
+        Ok(proposal) => ActionOutcome::failed_product(format!(
+            "a proposal at nonce {} was accepted while the stranded head holds nonce {head}; its \
+             delta could never be admitted",
+            proposal.nonce
+        )),
+        Err(error) if error.to_string().contains("already a pending change") => {
+            ActionOutcome::Passed
+        }
+        Err(error) => ActionOutcome::failed_product(format!(
+            "the proposal behind the stranded head was refused, but not as a pending conflict: \
+             {error}"
+        )),
+    }
+}
+
+/// Abandons the stranded head and shows the account recovers: once the abandon
+/// resolves, a fresh transfer built on the resynced state is accepted at the
+/// head's nonce, lands, and is promoted.
+///
+/// The abandon releases the account through its designed at-base path, since
+/// nothing ever submitted the head. What this adds over the abandon scenario is
+/// the other half: the queue is usable again, and the slot the head held is
+/// taken by the fresh transaction rather than left blocked.
+pub async fn abandon_stranded_head_and_recover(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(head) = session.custom_nonce else {
+        return ActionOutcome::failed_setup("no custom proposal was prepared in this scenario");
+    };
+    let (Some(faucet), Some(treasury)) = (session.faucet, session.treasury) else {
+        return ActionOutcome::failed_setup(
+            "the account was never funded, so it holds nothing to send",
+        );
+    };
+    let client = &mut session.clients[0];
+
+    if let Err(error) = client.abandon_candidate(head).await {
+        return ActionOutcome::failed_product(format!(
+            "abandoning the stranded head at nonce {head} failed: {error}"
+        ));
+    }
+    let deadline = std::time::Instant::now() + ABANDON_DEADLINE;
+    loop {
+        let state = match client.abandon_status(head).await {
+            Ok(AbandonStatus::Abandoned) => break,
+            Ok(AbandonStatus::Landed) => {
+                return ActionOutcome::failed_product(
+                    "the stranded head canonicalized although nothing ever submitted it"
+                        .to_string(),
+                );
+            }
+            Ok(other) => format!("{other:?}"),
+            Err(error) => error.to_string(),
+        };
+        if std::time::Instant::now() >= deadline {
+            return ActionOutcome::failed_product(format!(
+                "the abandoned head at nonce {head} was still {state} after {}s",
+                ABANDON_DEADLINE.as_secs()
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+
+    if let Err(error) = client.sync().await {
+        return ActionOutcome::failed_product(format!(
+            "resyncing after the abandon failed: {error}"
+        ));
+    }
+    let proposal = match client
+        .propose_transaction(
+            miden_multisig_client::TransactionType::transfer_with_note_type(
+                treasury,
+                faucet,
+                P2ID_AMOUNT,
+                miden_protocol::note::NoteType::Public,
+            ),
+        )
+        .await
+    {
+        Ok(proposal) => proposal,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "the account did not accept a fresh proposal after the abandon resolved: {error}"
+            ));
+        }
+    };
+    if proposal.nonce != head {
+        return ActionOutcome::failed_product(format!(
+            "the fresh transfer was proposed at nonce {}, not at the abandoned head's nonce {head}",
+            proposal.nonce
+        ));
+    }
+    if let Err(error) = client.execute_proposal(&proposal.id).await {
+        return ActionOutcome::failed_product(format!(
+            "executing the fresh transfer at nonce {head} failed: {error}"
+        ));
+    }
+    if let Err(error) = client.sync().await {
+        return ActionOutcome::failed_product(format!(
+            "syncing after the fresh transfer failed: {error}"
+        ));
+    }
+    match wait_for_execution(client, &proposal.id, Binding::Nonce(head)).await {
+        Completion::Confirmed => ActionOutcome::Passed,
+        Completion::Discarded(reason) => ActionOutcome::failed_product(format!(
+            "the fresh transfer left the pending set without becoming canonical: {reason}"
+        )),
+        Completion::Pending(reason) => ActionOutcome::EnvironmentBlocked {
+            reason: format!("the fresh transfer was {reason}"),
+        },
     }
 }

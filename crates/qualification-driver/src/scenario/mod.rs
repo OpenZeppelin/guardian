@@ -2,6 +2,7 @@ pub mod account;
 pub mod error_envelope;
 pub mod identity;
 pub mod live;
+pub mod queue;
 pub mod signers;
 
 use std::time::Instant;
@@ -215,6 +216,16 @@ impl Runner {
                 Action::AccountCreate => {
                     Some(live::create(self, scenario.shape, scenario.scheme, run_tag).await)
                 }
+                Action::QueueAccountCreate => {
+                    Some(live::create_queued(self, scenario.shape, scenario.scheme, run_tag).await)
+                }
+                Action::QueueTransfersChained => Some(live::send_chained_transfers(self).await),
+                Action::QueueHeadBlocksProposal => {
+                    Some(live::assert_stranded_head_blocks_proposal(self).await)
+                }
+                Action::QueueHeadAbandonRecover => {
+                    Some(live::abandon_stranded_head_and_recover(self).await)
+                }
                 Action::AccountRegister => Some(live::register(self).await),
                 Action::CommitmentVerify => Some(live::verify_registration(self).await),
                 Action::ProposalCreate => Some(live::create_proposal(self).await),
@@ -274,6 +285,10 @@ impl Runner {
                 Action::AccountPausedRefuses => {
                     Some(account::assert_paused_account_refuses(self).await)
                 }
+                Action::QueueCosignerProposalRefused => {
+                    Some(queue::assert_cosigner_proposal_refused(self).await)
+                }
+                Action::QueueDepthLimit => Some(queue::assert_depth_limit(self).await),
                 _ => None,
             }
         };

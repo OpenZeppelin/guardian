@@ -15,6 +15,8 @@ export interface LiveConfig {
   readonly midenRpcEndpoint: string;
   /** A second GUARDIAN deployment, required only by the migration scenario. */
   readonly migrationEndpoint?: string;
+  /** A GUARDIAN that queues chained candidates, for the candidate-queue scenarios. */
+  readonly queueEndpoint?: string;
 }
 
 /**
