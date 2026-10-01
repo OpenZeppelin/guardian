@@ -489,11 +489,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl NetworkClient for SlowNetwork {
-        fn get_state_commitment(
+        fn get_state_head(
             &self,
             _: &str,
             _: &serde_json::Value,
-        ) -> std::result::Result<String, String> {
+        ) -> std::result::Result<crate::state_object::StateHead, String> {
             unimplemented!()
         }
         async fn verify_commitment(
@@ -554,7 +554,7 @@ mod tests {
             &self,
             _: &serde_json::Value,
             _: &serde_json::Value,
-        ) -> std::result::Result<(serde_json::Value, String), String> {
+        ) -> std::result::Result<crate::network::AppliedState, String> {
             unimplemented!()
         }
         fn merge_deltas(
@@ -602,6 +602,7 @@ mod tests {
         StateObject {
             account_id: "any".into(),
             commitment: "0xstored".into(),
+            nonce: None,
             state_json: serde_json::json!({}),
             created_at: "2026-09-01T00:00:00Z".into(),
             updated_at: "2026-09-01T00:00:00Z".into(),

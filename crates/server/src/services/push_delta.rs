@@ -93,8 +93,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     )
     .await?;
     let mut result_delta = acknowledged.delta;
-    let new_state_json = acknowledged.new_state_json;
-    let new_commitment = acknowledged.new_commitment;
+    let applied = acknowledged.applied;
 
     let now = state.clock.now_rfc3339();
     let commit_strategy = DeltaCommitStrategy::from_app_state(state);
@@ -107,8 +106,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
                 now,
             },
             &mut result_delta,
-            new_state_json,
-            &new_commitment,
+            applied,
         )
         .await?;
     // Caveat: `lookup_matching_proposal_payload` swallows storage
@@ -238,6 +236,7 @@ mod tests {
             account_id: account_id.clone(),
             state_json: serde_json::json!({}),
             commitment: prev_commitment.clone(),
+            nonce: None,
             created_at: "2026-05-25T08:00:00Z".into(),
             updated_at: "2026-05-25T08:00:00Z".into(),
             auth_scheme: String::new(),
@@ -356,6 +355,7 @@ mod tests {
             account_id: account_id.clone(),
             state_json: serde_json::json!({}),
             commitment: prev_commitment.clone(),
+            nonce: None,
             created_at: "2026-05-25T08:00:00Z".into(),
             updated_at: "2026-05-25T08:00:00Z".into(),
             auth_scheme: String::new(),

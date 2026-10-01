@@ -5,16 +5,14 @@ import {
   Poseidon2,
   TransactionRequest,
   TransactionScript,
-  type WasmWebClient,
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
 import { getProcedureRoot, type ProcedureName } from '../procedures.js';
-import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
 import { expirationInstructions } from './expiration.js';
-import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
+import type { MultisigRequestOptions } from './options.js';
 
 function buildProcedureThresholdFelts(procedure: ProcedureName, threshold: number): Felt[] {
   const procedureRoot = WordType.fromHex(normalizeHexWord(getProcedureRoot(procedure)));
@@ -39,10 +37,9 @@ function buildProcedureThresholdConfigHash(procedure: ProcedureName, threshold: 
 }
 
 export async function buildUpdateProcedureThresholdScript(
-  client: MidenClient | WasmWebClient,
+  client: MidenClient,
   procedure: ProcedureName,
   threshold: number,
-  midenRpcEndpoint: string | undefined,
   transactionExpirationDelta: number | undefined,
 ): Promise<TransactionScript> {
   const procedureRoot = normalizeHexWord(getProcedureRoot(procedure));
@@ -60,23 +57,11 @@ pub proc main
 end
   `;
 
-  return compileTxScript(client, scriptSource, [], midenRpcEndpoint);
+  return client.compile.txScript({ code: scriptSource });
 }
 
-export function buildUpdateProcedureThresholdTransactionRequest(
-  client: MidenClient,
-  procedure: ProcedureName,
-  threshold: number,
-  options: MidenClientMultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
-export function buildUpdateProcedureThresholdTransactionRequest(
-  client: WasmWebClient,
-  procedure: ProcedureName,
-  threshold: number,
-  options: MultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
 export async function buildUpdateProcedureThresholdTransactionRequest(
-  client: MidenClient | WasmWebClient,
+  client: MidenClient,
   procedure: ProcedureName,
   threshold: number,
   options: MultisigRequestOptions,
@@ -87,7 +72,6 @@ export async function buildUpdateProcedureThresholdTransactionRequest(
     client,
     procedure,
     threshold,
-    options.midenRpcEndpoint,
     options.transactionExpirationDelta,
   );
   const { builder, saltHex } = await multisigRequestBuilder(client, options);

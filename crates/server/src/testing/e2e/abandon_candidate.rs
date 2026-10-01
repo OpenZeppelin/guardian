@@ -205,11 +205,12 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
     // The candidate's expected post-state commitment, computed the same
     // way the server computes it (apply_delta on the initial state).
     let miden_client = MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal);
-    let (_, expected_commitment_hex) = {
+    let expected_commitment_hex = {
         use crate::network::NetworkClient;
         miden_client
             .apply_delta(&multisig_account.to_json(), &delta_payload)
             .expect("delta applies to initial state")
+            .commitment
     };
 
     let registered_commitment = if landed {

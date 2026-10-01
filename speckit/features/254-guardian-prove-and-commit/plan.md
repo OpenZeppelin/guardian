@@ -349,7 +349,7 @@ crates/server/src/
 ├── config/                      # + execution capability + prover URL (FR-043)
 └── error.rs                     # + stable codes for FR-022 refusals and D3's pre-boundary codes
 
-crates/server/migrations/2026-09-30-000001_execution_reservations/
+crates/server/migrations/2026-10-01-000001_execution_reservations/
 
 crates/miden-rpc-client/         # + sync_chain_mmr (ported), include_protocol_config,
                                  #   GetAccount at block_num, GetTransactionEncryptionKey

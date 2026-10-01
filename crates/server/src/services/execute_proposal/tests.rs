@@ -240,6 +240,7 @@ impl Fixture {
             .submit_state(&StateObject {
                 account_id: ACCOUNT.to_string(),
                 commitment: BASE.to_string(),
+                nonce: None,
                 state_json: serde_json::json!({}),
                 created_at: "2026-09-30T12:00:00Z".to_string(),
                 updated_at: "2026-09-30T12:00:00Z".to_string(),
@@ -357,6 +358,7 @@ impl Fixture {
                     state: StateObject {
                         account_id: ACCOUNT.to_string(),
                         commitment: NEW_COMMITMENT.to_string(),
+                        nonce: None,
                         state_json: serde_json::json!({}),
                         created_at: "2026-09-30T12:00:00Z".to_string(),
                         updated_at: now.clone(),

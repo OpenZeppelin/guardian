@@ -78,6 +78,7 @@ async fn an_account_advanced_past_the_base_is_a_state_mismatch_before_any_chain_
             account_id: ACCOUNT.to_string(),
             commitment: "0x4444444444444444444444444444444444444444444444444444444444444444"
                 .to_string(),
+            nonce: None,
             state_json: serde_json::json!({}),
             created_at: "2026-09-30T12:00:00Z".to_string(),
             updated_at: "2026-09-30T12:05:00Z".to_string(),

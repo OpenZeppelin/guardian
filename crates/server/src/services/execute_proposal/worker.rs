@@ -200,7 +200,7 @@ async fn run_to_boundary(
     let executed = attempt.execute(ack).await?;
     if !executed
         .final_account_commitment
-        .eq_ignore_ascii_case(&acknowledged.new_commitment)
+        .eq_ignore_ascii_case(&acknowledged.applied.commitment)
     {
         return Err(ExecutionFailure::new(
             ExecutionFailureCode::BindingMismatch,
@@ -349,7 +349,7 @@ async fn cross_boundary(
             attempt: job.attempt,
             candidate_nonce: candidate.nonce,
             transaction_id: proven.transaction_id.clone(),
-            expected_commitment: acknowledged.new_commitment,
+            expected_commitment: acknowledged.applied.commitment,
             reference_block: proven.reference_block,
             expiration_block: proven.expiration_block,
             base_commitment: job.base_commitment.clone(),

@@ -34,6 +34,7 @@ import {
   executeProposal as executeOnlineProposal,
   exportProposalToJson,
   fetchAccountState,
+  filterVisibleProposals,
   importProposal as importStoredProposal,
   initMultisigClient,
   initializeLocalSigners,
@@ -286,6 +287,20 @@ function normalizeAccountId(accountId: string): string {
   }
 
   return trimmed.startsWith('0x') ? trimmed : `0x${trimmed}`;
+}
+
+/**
+ * Whether `held`, GUARDIAN's state kept from an earlier refresh, is
+ * `multisig` at its local commitment. After a sync whose canonical-nonce
+ * pre-check kept the local account, that is the only case in which it still
+ * shows what GUARDIAN holds.
+ */
+function isCopyOfLocalAccount(held: AccountState, multisig: Multisig): boolean {
+  return (
+    held.accountId.toLowerCase() === multisig.accountId.toLowerCase() &&
+    normalizeCommitment(held.commitment) ===
+      normalizeCommitment(multisig.account.to_commitment().toHex())
+  );
 }
 
 function applySignatureScheme(
@@ -617,20 +632,39 @@ export function useSmokeHarness(): {
 
       await syncBrowserClientState(activeClient);
       const synced = await syncAll(targetMultisig);
-      const config = AccountInspector.fromBase64(synced.state.stateDataBase64);
-      setGuardianState(synced.state);
+      // The sync leaves `Multisig.account` at the authoritative state whether
+      // it imported GUARDIAN's or kept local, so read config from there.
+      const config = AccountInspector.fromAccount(targetMultisig.account);
+      let { state, proposals } = synced;
+      if (!state) {
+        // The canonical-nonce pre-check skipped the state fetch: GUARDIAN
+        // holds nothing newer than the local account. A copy kept from an
+        // earlier refresh still shows GUARDIAN's state only when it is this
+        // account at the local commitment. Otherwise it is missing (create,
+        // then register), belongs to the previously loaded account, or
+        // predates a proposal this browser executed, so fetch GUARDIAN's
+        // copy. Either way, filter the proposals against the copy reported,
+        // as `examples/web` does.
+        const held = guardianStateRef.current;
+        state =
+          held && isCopyOfLocalAccount(held, targetMultisig)
+            ? held
+            : await targetMultisig.fetchState();
+        proposals = filterVisibleProposals(targetMultisig, targetMultisig.listProposals(), state);
+      }
+      setGuardianState(state);
       setDetectedConfig(config);
-      setProposals(synced.proposals);
+      setProposals(proposals);
       setConsumableNotes(synced.notes);
 
       return {
-        state: synced.state,
+        state,
         config,
-        proposals: synced.proposals,
+        proposals,
         notes: synced.notes,
       };
     },
-    [webClientRef],
+    [guardianStateRef, webClientRef],
   );
 
   const withCommand = useCallback(
@@ -1144,7 +1178,6 @@ export function useSmokeHarness(): {
 
         const result = await createCustomP2idProposal(
           activeClient,
-          sessionConfigRef.current.midenRpcEndpoint,
           currentMultisig,
           input.recipientId.trim(),
           input.faucetId.trim(),
@@ -1199,12 +1232,7 @@ export function useSmokeHarness(): {
           throw new Error('MidenClient is not initialized');
         }
 
-        await prepareAndSubmitCustomProposal(
-          activeClient,
-          sessionConfigRef.current.midenRpcEndpoint,
-          currentMultisig,
-          recipe,
-        );
+        await prepareAndSubmitCustomProposal(activeClient, currentMultisig, recipe);
         customRecipesRef.current.delete(recipe.proposalId);
 
         const refreshed = await refreshMultisigState(currentMultisig);

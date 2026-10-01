@@ -2,22 +2,19 @@ import {
   type MidenClient,
   TransactionRequest,
   TransactionScript,
-  type WasmWebClient,
   Word,
 } from '@miden-sdk/miden-sdk';
-import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
 import { authSchemeId } from '../utils/signature.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
 import { expirationInstructions } from './expiration.js';
-import type { MidenClientMultisigRequestOptions, MultisigRequestOptions } from './options.js';
+import type { MultisigRequestOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
 export async function buildUpdateGuardianScript(
-  client: MidenClient | WasmWebClient,
+  client: MidenClient,
   newGuardianPubkey: string,
   signatureScheme: SignatureScheme,
-  midenRpcEndpoint: string | undefined,
   transactionExpirationDelta: number | undefined,
 ): Promise<TransactionScript> {
   // A word literal preserves the key's element order on the operand stack.
@@ -38,21 +35,11 @@ pub proc main
 end
   `;
 
-  return compileTxScript(client, scriptSource, [], midenRpcEndpoint);
+  return client.compile.txScript({ code: scriptSource });
 }
 
-export function buildUpdateGuardianTransactionRequest(
-  client: MidenClient,
-  newGuardianPubkey: string,
-  options: MidenClientMultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word }>;
-export function buildUpdateGuardianTransactionRequest(
-  client: WasmWebClient,
-  newGuardianPubkey: string,
-  options: MultisigRequestOptions,
-): Promise<{ request: TransactionRequest; salt: Word }>;
 export async function buildUpdateGuardianTransactionRequest(
-  client: MidenClient | WasmWebClient,
+  client: MidenClient,
   newGuardianPubkey: string,
   options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }> {
@@ -61,7 +48,6 @@ export async function buildUpdateGuardianTransactionRequest(
     client,
     newGuardianPubkey,
     signatureScheme,
-    options.midenRpcEndpoint,
     options.transactionExpirationDelta,
   );
 

@@ -12,6 +12,7 @@ diesel::table! {
         commitment -> Varchar,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        nonce -> Nullable<Int8>,
     }
 }
 

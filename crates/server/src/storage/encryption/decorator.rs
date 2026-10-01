@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use super::cipher::StorageCipher;
 use super::envelope::RecordAad;
 use crate::delta_object::{DeltaObject, DeltaStatus};
-use crate::state_object::StateObject;
+use crate::state_object::{StateHead, StateObject};
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
@@ -165,6 +165,23 @@ impl StorageBackend for EncryptedStorage {
     // encrypted), so nothing needs decrypting.
     async fn pull_state_commitment(&self, account_id: &str) -> Result<String, String> {
         self.inner.pull_state_commitment(account_id).await
+    }
+
+    // The nonce is stored in the clear next to the commitment, so the
+    // head read and the backfill both pass through without decrypting.
+    async fn pull_state_head(&self, account_id: &str) -> Result<StateHead, String> {
+        self.inner.pull_state_head(account_id).await
+    }
+
+    async fn backfill_state_nonce(
+        &self,
+        account_id: &str,
+        commitment: &str,
+        nonce: u64,
+    ) -> Result<bool, String> {
+        self.inner
+            .backfill_state_nonce(account_id, commitment, nonce)
+            .await
     }
 
     async fn pull_states_batch(
@@ -629,6 +646,57 @@ mod tests {
         assert_eq!(
             enc.pull_delta("acct1", 1).await.unwrap().delta_payload,
             json!({ "move": 7 })
+        );
+    }
+
+    #[tokio::test]
+    async fn state_head_and_nonce_backfill_never_decrypt() {
+        let (_dir, fs) = fs_backend().await;
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+
+        let mut sealed = state("acct1", "top-secret");
+        sealed.commitment = "0xabc".to_string();
+        sealed.nonce = Some(4);
+        enc.submit_state(&sealed).await.unwrap();
+
+        // The nonce is stored in the clear next to the commitment; only the
+        // payload is sealed.
+        let raw = inner.pull_state("acct1").await.unwrap();
+        assert_eq!(raw.nonce, Some(4));
+        assert!(raw.state_json.get("ct").is_some());
+
+        // A decorator holding another key cannot open the payload, yet
+        // serves the head: the head read never decrypts.
+        let other_key = EncryptedStorage::new(
+            inner.clone(),
+            Arc::new(Aes256GcmCipher::new(provider_with(9, "k1"))),
+        );
+        assert!(other_key.pull_state("acct1").await.is_err());
+        assert_eq!(
+            other_key.pull_state_head("acct1").await.unwrap(),
+            StateHead {
+                commitment: "0xabc".to_string(),
+                nonce: Some(4),
+            }
+        );
+
+        // The backfill passes through as well and leaves the payload sealed
+        // under the original key.
+        let mut unknown_nonce = state("acct2", "other-secret");
+        unknown_nonce.commitment = "0xdef".to_string();
+        enc.submit_state(&unknown_nonce).await.unwrap();
+        assert_eq!(enc.pull_state_head("acct2").await.unwrap().nonce, None);
+        assert!(
+            other_key
+                .backfill_state_nonce("acct2", "0xdef", 2)
+                .await
+                .unwrap()
+        );
+        assert_eq!(enc.pull_state_head("acct2").await.unwrap().nonce, Some(2));
+        assert_eq!(
+            enc.pull_state("acct2").await.unwrap().state_json,
+            json!({ "secret": "other-secret" })
         );
     }
 

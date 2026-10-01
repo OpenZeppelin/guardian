@@ -68,7 +68,7 @@ pub async fn configure_account(
         reject_disallowed_scheme(state, scheme)?;
     }
 
-    let (commitment, signer_commitment) = {
+    let (head, signer_commitment) = {
         let client = &state.network_client;
         let expected_guardian_commitment = state.ack.commitment(&scheme);
 
@@ -147,11 +147,12 @@ pub async fn configure_account(
                 GuardianError::AuthenticationFailed(format!("Signature verification failed: {e}"))
             })?;
 
-        // calculates the commitment of the account state.
-        let commitment = client
-            .get_state_commitment(&params.account_id, &params.initial_state)
+        // Commitment and nonce of the account state, from one decode; both
+        // are stored with the state.
+        let head = client
+            .get_state_head(&params.account_id, &params.initial_state)
             .map_err(GuardianError::NetworkError)?;
-        (commitment, signer_commitment)
+        (head, signer_commitment)
     };
 
     if existing.is_some() {
@@ -172,7 +173,8 @@ pub async fn configure_account(
     let account_state = StateObject {
         account_id: params.account_id.clone(),
         state_json: params.initial_state,
-        commitment,
+        commitment: head.commitment,
+        nonce: head.nonce,
         created_at: created_at.clone(),
         updated_at: now.clone(),
         auth_scheme: scheme.to_string(),
@@ -322,9 +324,18 @@ fn reject_disallowed_scheme(state: &AppState, scheme: SignatureScheme) -> Result
 mod tests {
     use super::*;
     use crate::ack::AckRegistry;
+    use crate::state_object::StateHead;
     use crate::storage::StorageBackend;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
+
+    /// The head the mock network client reports for the configured state.
+    fn head(commitment: &str, nonce: u64) -> StateHead {
+        StateHead {
+            commitment: commitment.to_string(),
+            nonce: Some(nonce),
+        }
+    }
 
     async fn create_test_app_state(
         network_client: MockNetworkClient,
@@ -374,9 +385,10 @@ mod tests {
             .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
                 cosigner_commitments: configured_commitments.clone(),
             })))
-            .with_get_state_commitment(Ok("0x1234".to_string()));
+            .with_get_state_head(Ok(head("0x1234", 3)));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let observed_storage = storage_backend.clone();
 
         let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
         let observed_metadata = metadata_store.clone();
@@ -404,6 +416,11 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         assert_eq!(result.account_id, account_id_hex);
+        // The state is stored with the head the network client decoded.
+        let stored = observed_storage.get_submit_state_calls();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].commitment, "0x1234");
+        assert_eq!(stored[0].nonce, Some(3));
         let ack_pubkey = result.ack_pubkey;
         let ack_commitment = result.ack_commitment;
         assert!(!ack_pubkey.is_empty(), "ack_pubkey should not be empty");
@@ -491,7 +508,7 @@ mod tests {
         };
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(existing_metadata)))
@@ -558,7 +575,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x1234".to_string()));
+            .with_get_state_head(Ok(head("0x1234", 3)));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
 
@@ -629,7 +646,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
 
@@ -687,7 +704,7 @@ mod tests {
         let state = create_test_app_state(
             MockNetworkClient::new()
                 .with_validate_credential(Ok(()))
-                .with_get_state_commitment(Ok("0x1234".into())),
+                .with_get_state_head(Ok(head("0x1234", 3))),
             MockStorageBackend::new(),
             metadata,
         )
@@ -746,7 +763,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(existing_metadata)))
@@ -810,7 +827,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(existing_metadata)))
@@ -869,7 +886,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(existing_metadata)))
@@ -930,7 +947,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Ok("0x5678".to_string()));
+            .with_get_state_head(Ok(head("0x5678", 3)));
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(existing_metadata)))
@@ -975,7 +992,7 @@ mod tests {
 
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
-            .with_get_state_commitment(Err("Network connection failed".to_string()));
+            .with_get_state_head(Err("Network connection failed".to_string()));
 
         let storage_backend = MockStorageBackend::new();
         let metadata_store = MockMetadataStore::new().with_get(Ok(None));
@@ -1290,7 +1307,7 @@ mod tests {
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
             .with_should_update_auth(Ok(None))
-            .with_get_state_commitment(Ok("0x1234".to_string()));
+            .with_get_state_head(Ok(head("0x1234", 3)));
 
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));

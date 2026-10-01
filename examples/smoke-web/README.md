@@ -12,6 +12,7 @@ This app is the browser analogue of the Rust CLI smoke surface:
 
 - Use one browser or browser profile per cosigner session.
 - Same-browser concurrent tabs are out of scope because the current browser client path does not expose safe per-session IndexedDB isolation.
+- The Miden client runs with `useWorker: false`, so its WASM work, local proving included, runs on the page's main thread and the page stops responding while it runs; a worker-mode client breaks the multisig accounts it loads or syncs (see [`MIDEN_COMPATIBILITY.md`](../../docs/MIDEN_COMPATIBILITY.md#open-upstream-items)).
 - Miden Wallet parity is reached through `window.smoke.connectMidenWallet()`; no wallet provider wraps the app, and `window.smoke` stays the primary interface.
 
 ## Setup

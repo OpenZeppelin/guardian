@@ -418,7 +418,7 @@ observable outcomes on both.
 
 ## Migration
 
-`crates/server/migrations/2026-09-30-000001_execution_reservations/`
+`crates/server/migrations/2026-10-01-000001_execution_reservations/`
 
 ```sql
 CREATE TABLE execution_reservations (

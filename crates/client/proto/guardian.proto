@@ -56,6 +56,13 @@ service Guardian {
 
   // Report the account's in-flight execution, if any.
   rpc GetCurrentExecution(GetCurrentExecutionRequest) returns (GetCurrentExecutionResponse);
+
+  // Nonce and commitment of the latest canonical state (issue #191), served
+  // from the values stored with the state, without the state blob. A client
+  // can skip the full GetState fetch when the nonce is below its local
+  // nonce, or equal to it with the commitment matching its local commitment.
+  // An equal nonce at a different commitment is divergence: fetch the state.
+  rpc GetCanonicalNonce(GetCanonicalNonceRequest) returns (GetCanonicalNonceResponse);
 }
 
 // Auth configuration - one of the auth types
@@ -205,6 +212,23 @@ message AccountState {
   string commitment = 3;
   string created_at = 4;
   string updated_at = 5;
+}
+
+// Canonical nonce request (issue #191)
+message GetCanonicalNonceRequest {
+  string account_id = 1;
+}
+
+// Nonce of the account state GUARDIAN currently holds as canonical, with
+// the commitment of that state so a client at the same nonce can also
+// detect divergence without fetching the state blob.
+message GetCanonicalNonceResponse {
+  bool success = 1;
+  string message = 2;
+  string account_id = 3;
+  uint64 nonce = 4;
+  string commitment = 5;
+  string error_code = 6;
 }
 
 // Get pubkey request

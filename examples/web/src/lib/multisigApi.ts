@@ -86,9 +86,13 @@ function currentAccountNonce(multisig: Multisig): number | null {
   }
 }
 
+/**
+ * The account's next nonce, as the Rust client and the shared smoke-web helper
+ * use: a proposal at nonce N is consumed once the account reaches N.
+ */
 function proposalNonce(multisig: Multisig): number | undefined {
   const nonce = currentAccountNonce(multisig);
-  return nonce === null ? undefined : nonce;
+  return nonce === null ? undefined : nonce + 1;
 }
 
 function filterVisibleProposals(
@@ -104,7 +108,7 @@ function filterVisibleProposals(
       return false;
     }
 
-    if (accountNonce !== null && proposal.nonce < accountNonce) {
+    if (accountNonce !== null && proposal.nonce <= accountNonce) {
       return false;
     }
 
@@ -240,7 +244,9 @@ export async function switchMultisigGuardian(
 export async function fetchAccountState(
   multisig: Multisig,
 ): Promise<{ state: AccountState; config: DetectedMultisigConfig }> {
-  const state = await multisig.syncState();
+  // An explicit fetch of GUARDIAN's copy for display and config detection;
+  // store reconciliation (with the canonical-nonce pre-check) is `syncAll`.
+  const state = await multisig.fetchState();
   const config = AccountInspector.fromBase64(state.stateDataBase64);
   return { state, config };
 }
@@ -250,9 +256,18 @@ export async function fetchAccountState(
  */
 export async function syncAll(
   multisig: Multisig,
-): Promise<{ proposals: Proposal[]; state: AccountState; notes: ConsumableNote[] }> {
-  const state = await multisig.syncState();
-  const proposals = filterVisibleProposals(multisig, await multisig.syncProposals(), state);
+  lastFetchedState?: AccountState,
+): Promise<{ proposals: Proposal[]; state: AccountState | null; notes: ConsumableNote[] }> {
+  // `state` is null when GUARDIAN reported nothing newer than the local
+  // account (the canonical-nonce pre-check skipped the state fetch); the
+  // caller's last fetched copy then keeps the proposal filter's inputs stable.
+  const synced = await multisig.syncState();
+  const state = synced.source === 'guardian' ? synced.state : null;
+  const proposals = filterVisibleProposals(
+    multisig,
+    await multisig.syncProposals(),
+    state ?? lastFetchedState,
+  );
   const notes = await multisig.getConsumableNotes();
   return { proposals, state, notes };
 }

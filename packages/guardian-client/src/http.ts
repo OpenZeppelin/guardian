@@ -21,6 +21,7 @@ import type {
   Signer,
   StateObject,
   StatusResponse,
+  CanonicalNonce,
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
 import { fromServerExecution } from './execution.js';
@@ -32,6 +33,7 @@ import type {
 import type {
   ServerAbandonCandidateRequest,
   ServerAbandonCandidateResponse,
+  ServerCanonicalNonceResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
   ServerHistoryPage,
@@ -44,6 +46,7 @@ import type {
   ServerStatusResponse,
 } from './server-types.js';
 import {
+  fromServerCanonicalNonce,
   fromServerConfigureResponse,
   fromServerDeltaObject,
   fromServerHistoryPage,
@@ -307,6 +310,23 @@ export class GuardianHttpClient {
     }, accountId, requestQuery);
     const server = (await response.json()) as ServerStateObject;
     return fromServerStateObject(server);
+  }
+
+  /**
+   * Nonce and commitment of the latest canonical state, without the state
+   * blob (`GET /state/nonce`). A client can skip `getState` when the
+   * returned nonce is below its local account nonce, or equal to it with
+   * the same commitment; an equal nonce at a different commitment means the
+   * local account diverged from GUARDIAN, so it fetches the state.
+   */
+  async getCanonicalNonce(accountId: string): Promise<CanonicalNonce> {
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/state/nonce?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery);
+    const server = (await response.json()) as ServerCanonicalNonceResponse;
+    return fromServerCanonicalNonce(server);
   }
 
   /**

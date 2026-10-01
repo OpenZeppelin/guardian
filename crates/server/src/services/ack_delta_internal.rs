@@ -5,6 +5,7 @@ use guardian_shared::SignatureScheme;
 
 use crate::delta_object::DeltaObject;
 use crate::error::Result;
+use crate::network::AppliedState;
 use crate::state::AppState;
 use crate::state_object::StateObject;
 
@@ -12,8 +13,7 @@ use crate::state_object::StateObject;
 /// committed anywhere.
 pub(crate) struct AcknowledgedDelta {
     pub delta: DeltaObject,
-    pub new_state_json: Value,
-    pub new_commitment: String,
+    pub applied: AppliedState,
     pub matched_proposal: bool,
 }
 
@@ -26,7 +26,7 @@ pub(crate) async fn acknowledge_delta(
     current_state: &StateObject,
     delta: &DeltaObject,
 ) -> Result<AcknowledgedDelta> {
-    let (new_state_json, new_commitment) = {
+    let applied = {
         let client = state.network_client.clone();
         let prev_commitment = current_state.commitment.clone();
         let prev_state_json = current_state.state_json.clone();
@@ -56,7 +56,7 @@ pub(crate) async fn acknowledge_delta(
     );
 
     let mut acknowledged = delta.clone();
-    acknowledged.new_commitment = Some(new_commitment.clone());
+    acknowledged.new_commitment = Some(applied.commitment.clone());
     acknowledged.metadata = derived_metadata;
     acknowledged = state.ack.ack_delta(acknowledged, scheme).await?;
     acknowledged.ack_pubkey = state.ack.pubkey(scheme);
@@ -64,8 +64,7 @@ pub(crate) async fn acknowledge_delta(
 
     Ok(AcknowledgedDelta {
         delta: acknowledged,
-        new_state_json,
-        new_commitment,
+        applied,
         matched_proposal: matching_proposal_payload.is_some(),
     })
 }

@@ -53,7 +53,7 @@ breaking changes per line, and what each upgrade does to stored data:
 import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
 import { AuthSecretKey, MidenClient } from '@miden-sdk/miden-sdk';
 
-const midenClient = await MidenClient.createDevnet();
+const midenClient = await MidenClient.createDevnet({ useWorker: false });
 
 // Create a signer from your secret key
 const secretKey = AuthSecretKey.rpoFalconWithRNG(undefined);
@@ -74,6 +74,25 @@ const client = new MultisigClient(midenClient, {
   },
 });
 ```
+
+The SDK does all of its local work (account reads and writes, note imports and
+exports, chain syncs, proposal previews) through the `MidenClient` you pass in,
+and never opens a second client on that client's store. Pass the client your
+application executes transactions with: miden-client keeps account state in
+memory per client, so two live clients writing one store can leave either of
+them persisting a storage root computed from state it never saw.
+`midenRpcEndpoint` serves only the SDK's direct node reads (on-chain
+commitments and note inclusion proofs).
+
+In a browser, create that client with `useWorker: false`, which runs its WASM
+work on the page's main thread. In the default worker mode, transactions
+execute and apply in a Web Worker that never sees the account state this SDK
+writes with `accounts.insert`, so a device's local copy of the account breaks
+after `MultisigClient.load` or a `syncState()` import
+([0xMiden/web-sdk#441](https://github.com/0xMiden/web-sdk/issues/441)). The
+symptoms and recovery are in
+[TROUBLESHOOTING.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
+Node.js has no worker and is unaffected.
 
 For an ECDSA cosigner using an EIP-1193 wallet (including Ledger), call
 `Eip712Signer.connect(provider)` once to select the Ethereum address and
@@ -145,6 +164,7 @@ explicitly.
 const midenClient = await MidenClient.create({
   rpcUrl: 'https://my-node.internal:57291',
   noteTransportUrl: 'https://my-transport.internal',
+  useWorker: false,
 });
 
 const client = new MultisigClient(midenClient, {
@@ -250,6 +270,28 @@ const state = await multisig.fetchState();
 console.log('Commitment:', state.commitment);
 console.log('Created:', state.createdAt);
 ```
+
+### Sync Account State
+
+`syncState()` reconciles the local store with GUARDIAN. It first asks GUARDIAN
+for the nonce and commitment of its canonical state (`getCanonicalNonce`) and
+skips the full state fetch when that nonce is not above the local account's
+(at a matching commitment when equal). The result says which side stood:
+
+```typescript
+const synced = await multisig.syncState();
+if (synced.source === 'guardian') {
+  console.log('Imported GUARDIAN state at', synced.state.commitment);
+} else {
+  console.log(`Local nonce ${synced.localNonce} is current (GUARDIAN at ${synced.guardianNonce})`);
+}
+```
+
+Either way `multisig.account` and the cached config reflect the authoritative
+account afterwards. Call `fetchState()` when you need GUARDIAN's state copy
+regardless. The pre-check needs a GUARDIAN server that serves `GET /state/nonce`
+(issue #191); against an older server `syncState()` fails rather than falling back
+to the full fetch, so deploy the server first.
 
 ### Creating Proposals
 
@@ -514,7 +556,7 @@ import { buildP2idTransactionRequest, chainAnchorBlockNum } from '@openzeppelin/
 // The builder takes the Miden client because the executing account decides
 // the auth args the request has to carry (see below).
 const { request, salt } = await buildP2idTransactionRequest(
-  midenClient, senderId, recipientId, faucetId, amount, { midenRpcEndpoint },
+  midenClient, senderId, recipientId, faucetId, amount,
 );
 const proposal = await multisig.createCustomProposal(request.serialize(), 'b2agg');
 
@@ -531,7 +573,7 @@ const advice = await multisig.prepareCustomExecution(proposal.id, request.serial
 const boundBlockNum = chainAnchorBlockNum(proposal.metadata.chainAnchor);
 const { request: finalRequest } = await buildP2idTransactionRequest(
   midenClient, senderId, recipientId, faucetId, amount,
-  { salt, boundBlockNum, signatureAdviceMap: advice, midenRpcEndpoint },
+  { salt, boundBlockNum, signatureAdviceMap: advice },
 );
 await multisig.submitTransaction(proposal.id, finalRequest);
 ```

@@ -1,12 +1,6 @@
-import type {
-  MidenClient,
-  TransactionRequest,
-  TransactionSummary,
-  WasmWebClient,
-} from '@miden-sdk/miden-sdk';
-import { AccountId, ChainAnchor, Word } from '@miden-sdk/miden-sdk';
+import type { MidenClient, TransactionRequest, TransactionSummary } from '@miden-sdk/miden-sdk';
+import { ChainAnchor, Word } from '@miden-sdk/miden-sdk';
 import { BoundBlockNotDeclaredError } from '../multisig/authArgErrors.js';
-import { getRawMidenClient } from '../raw-client.js';
 import { base64ToUint8Array, normalizeHexWord, uint8ArrayToBase64 } from '../utils/encoding.js';
 import { requestBoundBlockNum } from './authArgs.js';
 
@@ -85,29 +79,15 @@ export function isStaleChainError(error: unknown): boolean {
  * at it. A proposer builds at the sync height the anchor is captured at, and
  * the check below is what makes that hold.
  */
-export function executeForSummary(
+export async function executeForSummary(
   client: MidenClient,
   accountId: string,
   txRequest: TransactionRequest,
-  midenRpcEndpoint: string,
-): Promise<{ summary: TransactionSummary; anchor: ChainAnchor }>;
-export function executeForSummary(
-  client: WasmWebClient,
-  accountId: string,
-  txRequest: TransactionRequest,
-  midenRpcEndpoint?: string,
-): Promise<{ summary: TransactionSummary; anchor: ChainAnchor }>;
-export async function executeForSummary(
-  client: MidenClient | WasmWebClient,
-  accountId: string,
-  txRequest: TransactionRequest,
-  midenRpcEndpoint?: string,
 ): Promise<{ summary: TransactionSummary; anchor: ChainAnchor }> {
-  const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
-  const anchor = await rawClient.chainAnchorForRequest(txRequest);
+  const anchor = await client.transactions.captureAnchor(txRequest);
   let summary: TransactionSummary;
   try {
-    summary = await executeForSummaryAtTip(rawClient, accountId, txRequest);
+    summary = await executeForSummaryAtTip(client, accountId, txRequest);
   } catch (error) {
     anchor.free();
     throw error;
@@ -145,27 +125,17 @@ export async function executeForSummary(
  * @throws BoundBlockNotDeclaredError when the request binds a block in its
  *   multisig auth args without declaring it.
  */
-export function executeForSummaryAtTip(
+export async function executeForSummaryAtTip(
   client: MidenClient,
   accountId: string,
   txRequest: TransactionRequest,
-  midenRpcEndpoint: string,
-): Promise<TransactionSummary>;
-export function executeForSummaryAtTip(
-  client: WasmWebClient,
-  accountId: string,
-  txRequest: TransactionRequest,
-  midenRpcEndpoint?: string,
-): Promise<TransactionSummary>;
-export async function executeForSummaryAtTip(
-  client: MidenClient | WasmWebClient,
-  accountId: string,
-  txRequest: TransactionRequest,
-  midenRpcEndpoint?: string,
 ): Promise<TransactionSummary> {
-  const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
-  await prepareTipExecution(rawClient, txRequest);
-  return rawClient.executeForSummary(AccountId.fromHex(accountId), txRequest);
+  await prepareTipExecution(client, txRequest);
+  return client.transactions.preview({
+    operation: 'custom',
+    account: accountId,
+    request: txRequest,
+  });
 }
 
 /**
@@ -177,13 +147,13 @@ export async function executeForSummaryAtTip(
  *   multisig auth args without declaring it.
  */
 export async function prepareTipExecution(
-  client: WasmWebClient,
+  client: MidenClient,
   request: TransactionRequest,
-  syncState?: () => Promise<unknown>,
+  syncChain?: () => Promise<unknown>,
 ): Promise<void> {
   const boundBlockNum = requireDeclaredBoundBlock(request);
   if (boundBlockNum !== undefined) {
-    await syncToBoundBlock(client, boundBlockNum, syncState);
+    await syncToBoundBlock(client, boundBlockNum, syncChain);
   }
 }
 
@@ -207,8 +177,8 @@ export function requireDeclaredBoundBlock(request: TransactionRequest): number |
  * proposal binds. Execution at a tip below it fails with "requested block N is
  * after transaction reference block M", and a store that has never synced (a
  * cosigner that has only just loaded the account) holds no header to rebuild
- * the request from. `syncState` lets a caller wrap the sync in its own retry
- * policy.
+ * the request from. The sync is a chain sync; `syncChain` lets a caller wrap
+ * it in its own retry policy.
  *
  * This does not make a store that is already past the bound block current. An
  * execution loads foreign accounts, the fee faucet among them, at the store's
@@ -218,14 +188,14 @@ export function requireDeclaredBoundBlock(request: TransactionRequest): number |
  * @throws ChainBehindBoundBlockError when the node has not reached the block.
  */
 export async function syncToBoundBlock(
-  client: WasmWebClient,
+  client: MidenClient,
   blockNum: number,
-  syncState: () => Promise<unknown> = () => client.syncState(),
+  syncChain: () => Promise<unknown> = () => client.syncChain(),
 ): Promise<void> {
   if ((await client.getSyncHeight()) >= blockNum) {
     return;
   }
-  await syncState();
+  await syncChain();
   const syncHeight = await client.getSyncHeight();
   if (syncHeight < blockNum) {
     throw new ChainBehindBoundBlockError({ syncHeight, boundBlockNum: blockNum });
@@ -241,30 +211,18 @@ export async function syncToBoundBlock(
  * reproduced with {@link executeForSummaryAtTip}: re-executing it at an anchor
  * fails once the node prunes the anchor block's account state.
  */
-export function executeForSummaryAt(
+export async function executeForSummaryAt(
   client: MidenClient,
   accountId: string,
   txRequest: TransactionRequest,
   anchor: ChainAnchor,
-  midenRpcEndpoint: string,
-): Promise<TransactionSummary>;
-export function executeForSummaryAt(
-  client: WasmWebClient,
-  accountId: string,
-  txRequest: TransactionRequest,
-  anchor: ChainAnchor,
-  midenRpcEndpoint?: string,
-): Promise<TransactionSummary>;
-export async function executeForSummaryAt(
-  client: MidenClient | WasmWebClient,
-  accountId: string,
-  txRequest: TransactionRequest,
-  anchor: ChainAnchor,
-  midenRpcEndpoint?: string,
 ): Promise<TransactionSummary> {
-  const acc = AccountId.fromHex(accountId);
-  const rawClient = await getRawMidenClient(client, midenRpcEndpoint);
-  return rawClient.executeForSummaryAt(acc, txRequest, anchor);
+  return client.transactions.preview({
+    operation: 'custom',
+    account: accountId,
+    request: txRequest,
+    anchor,
+  });
 }
 
 /**

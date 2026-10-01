@@ -15,7 +15,6 @@ import {
   type MidenClient,
 } from "@miden-sdk/miden-sdk";
 import { getProcedureRoot } from "../procedures.js";
-import { isPublicMidenClient, type RawClientSource } from "../raw-client.js";
 import { MAX_SIGNERS } from "./layout.js";
 import type { MultisigConfig, CreateAccountResult } from "../types.js";
 import { normalizeSignerCommitment } from "../utils/signature.js";
@@ -84,15 +83,13 @@ function buildGuardedMultisigComponent(
 /**
  * Creates a multisig account with GUARDIAN authentication.
  *
- * @param client - Initialized MidenClient, or the WASM client behind one
+ * @param client - Initialized MidenClient
  * @param config - Multisig configuration
- * @param midenRpcEndpoint - RPC endpoint for the client's network
  * @returns The created account and seed
  */
 export async function createMultisigAccount(
-  client: RawClientSource,
+  client: MidenClient,
   config: MultisigConfig,
-  midenRpcEndpoint: string,
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
   const authComponent = buildGuardedMultisigComponent(config);
@@ -117,14 +114,10 @@ export async function createMultisigAccount(
 
   const result = accountBuilder.buildWithoutSchemaCommitment();
 
-  if (isPublicMidenClient(client)) {
-    await client.accounts.insert({
-      account: result.account,
-      overwrite: false,
-    });
-  } else {
-    await client.newAccount(result.account, false);
-  }
+  await client.accounts.insert({
+    account: result.account,
+    overwrite: false,
+  });
 
   return {
     account: result.account,

@@ -162,6 +162,20 @@ export interface StateObject {
   authScheme?: string;
 }
 
+/**
+ * Head of the latest canonical state (`GET /state/nonce`): the account
+ * nonce carried by the state GUARDIAN holds as canonical and that state's
+ * commitment, without the state blob. A client can skip `getState` when
+ * `nonce` is below its local account nonce, or equal to it with the same
+ * `commitment`; an equal nonce at a different commitment means the local
+ * account diverged from GUARDIAN, so it fetches the state.
+ */
+export interface CanonicalNonce {
+  accountId: string;
+  nonce: number;
+  commitment: string;
+}
+
 export interface ConfigureRequest {
   accountId: string;
   auth: AuthConfig;

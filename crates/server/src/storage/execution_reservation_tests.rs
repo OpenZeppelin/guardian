@@ -70,6 +70,7 @@ impl Harness {
             .submit_state(&StateObject {
                 account_id: self.account_id.clone(),
                 commitment: BASE.to_string(),
+                nonce: None,
                 state_json: serde_json::json!({ "state": "base" }),
                 created_at: "2026-09-30T12:00:00Z".to_string(),
                 updated_at: "2026-09-30T12:00:00Z".to_string(),
@@ -641,6 +642,7 @@ async fn promotion_commits_and_releases_the_execution(h: &Harness) {
         state: StateObject {
             account_id: h.account_id.clone(),
             commitment: NEXT.to_string(),
+            nonce: None,
             state_json: serde_json::json!({ "state": "next" }),
             created_at: "2026-09-30T12:00:00Z".to_string(),
             updated_at: now.to_rfc3339(),
@@ -947,6 +949,7 @@ impl Harness {
             state: StateObject {
                 account_id: self.account_id.clone(),
                 commitment: NEXT.to_string(),
+                nonce: None,
                 state_json: serde_json::json!({ "state": "next" }),
                 created_at: "2026-09-30T12:00:00Z".to_string(),
                 updated_at: now.to_rfc3339(),
@@ -1117,6 +1120,7 @@ fn promotion(h: &Harness) -> CandidatePromotion {
         state: StateObject {
             account_id: h.account_id.clone(),
             commitment: NEXT.to_string(),
+            nonce: None,
             state_json: serde_json::json!({ "state": "next" }),
             created_at: "2026-09-30T12:00:00Z".to_string(),
             updated_at: now.to_rfc3339(),
@@ -1869,6 +1873,7 @@ mod postgres {
                 state: StateObject {
                     account_id: h.account_id.clone(),
                     commitment: NEXT.to_string(),
+                    nonce: None,
                     state_json: serde_json::json!({ "state": "next" }),
                     created_at: "2026-09-30T12:00:00Z".to_string(),
                     updated_at: now.to_rfc3339(),

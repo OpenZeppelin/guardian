@@ -5,6 +5,7 @@ pub use guardian_shared::retry::RpcReadMode;
 use crate::config::positive_u32_from_env;
 use crate::error::GuardianError;
 use crate::metadata::auth::{Auth, Credentials};
+use crate::state_object::StateHead;
 use async_trait::async_trait;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -230,14 +231,29 @@ pub struct TransactionSearch {
     pub resume_from_block: u32,
 }
 
+/// The state [`NetworkClient::apply_delta`] produced: the new state blob,
+/// plus the commitment and nonce of the account it encodes, read off the
+/// account the method already holds so a caller persisting the state never
+/// decodes the blob again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppliedState {
+    pub state_json: serde_json::Value,
+    pub commitment: String,
+    /// `None` on a network without account nonces (see
+    /// [`crate::state_object::StateObject::nonce`]).
+    pub nonce: Option<u64>,
+}
+
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
-    /// Get state commitment in hex format from JSON
-    fn get_state_commitment(
+    /// Commitment (hex) and nonce of the account encoded in `state_json`,
+    /// both read from one decode. `nonce` is `None` on a network without
+    /// account nonces.
+    fn get_state_head(
         &self,
         account_id: &str,
         state_json: &serde_json::Value,
-    ) -> Result<String, String>;
+    ) -> Result<StateHead, String>;
 
     /// Compare an expected commitment against the on-chain account commitment.
     /// Returns `Err` only when the comparison could not be made.
@@ -276,7 +292,7 @@ pub trait NetworkClient: Send + Sync {
         &self,
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
-    ) -> Result<(serde_json::Value, String), String>;
+    ) -> Result<AppliedState, String>;
 
     /// Merge multiple deltas
     fn merge_deltas(
@@ -375,7 +391,9 @@ pub trait NetworkClient: Send + Sync {
     /// The nonce of the account state in `state_json`, or `Ok(None)` when
     /// the network has no such notion. The release sweep compares it with
     /// the nonce of an on-chain read: a read older than the stored state
-    /// is stale and never evidence of a switch. The default is `Ok(None)`.
+    /// is stale and never evidence of a switch. The canonical-nonce
+    /// pre-check (issue #191) decodes it for a stored state that does not
+    /// carry its nonce yet. The default is `Ok(None)`.
     fn account_nonce(&self, state_json: &serde_json::Value) -> Result<Option<u64>, String> {
         let _ = state_json;
         Ok(None)

@@ -12,7 +12,7 @@ import type { StateObject } from '@openzeppelin/guardian-client';
 import { Multisig } from './multisig.js';
 import { createMultisigAccount } from './account/index.js';
 import { AccountInspector, assertCompleteDetectedConfig } from './inspector.js';
-import { getRawMidenClient, requireConfigValue, requireMidenRpcEndpoint } from './raw-client.js';
+import { requireConfigValue, requireMidenRpcEndpoint } from './config.js';
 import type { MultisigConfig, Signer } from './types.js';
 import { isSafeToAdoptGuardianState, readOnChainCommitment } from './state/adopt.js';
 import { normalizeHexWord } from './utils/encoding.js';
@@ -49,9 +49,11 @@ export interface MultisigClientConfig {
   /** GUARDIAN server endpoint. Required — there is no default. */
   guardianEndpoint: string;
   /**
-   * Miden node RPC endpoint used for proposal execution and state
-   * commitment verification. Required — must point at the same network as
-   * the injected `MidenClient`; there is no default.
+   * Miden node RPC endpoint the SDK reads directly: on-chain commitments for
+   * state verification, and note inclusion proofs for consume-notes proposals
+   * and note recovery. Everything else, execution included, goes through the
+   * injected `MidenClient`. Required — must point at the same network as the
+   * injected `MidenClient`; there is no default.
    */
   midenRpcEndpoint: string;
   /** Multisig-owned remote prover override and proof retry policy. */
@@ -78,13 +80,18 @@ export interface RecoveredAccount {
 /**
  * Client for creating and loading multisig accounts.
  *
+ * In a browser, create the injected `MidenClient` with `useWorker: false` until
+ * https://github.com/0xMiden/web-sdk/issues/441 is fixed: a worker-mode client
+ * applies transactions in a Web Worker that never sees the account state this
+ * SDK writes.
+ *
  * @example
  * ```typescript
  * import { MultisigClient, FalconSigner } from '@openzeppelin/miden-multisig-client';
  * import { MidenClient, AuthSecretKey } from '@miden-sdk/miden-sdk';
  *
  * // Initialize
- * const midenClient = await MidenClient.createDevnet();
+ * const midenClient = await MidenClient.createDevnet({ useWorker: false });
  * const secretKey = AuthSecretKey.rpoFalconWithRNG(seed);
  * const signer = new FalconSigner(secretKey);
  *
@@ -178,11 +185,7 @@ export class MultisigClient {
   async create(config: MultisigConfig, signer: Signer): Promise<Multisig> {
     this._guardianClient.setSigner(signer);
 
-    const { account } = await createMultisigAccount(
-      this.midenClient,
-      config,
-      this.midenRpcEndpoint,
-    );
+    const { account } = await createMultisigAccount(this.midenClient, config);
     const accountId = account.id().toString();
     await bindSignerAccountKey(signer, this.midenClient, accountId);
 

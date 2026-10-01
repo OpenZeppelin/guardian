@@ -41,16 +41,12 @@ async function run(): Promise<void> {
   const seed = new Uint8Array(32);
   seed.fill(9);
 
-  const { account } = await createMultisigAccount(
-    client as never,
-    {
-      threshold: 1,
-      signerCommitments: [SIGNER_COMMITMENT],
-      guardianCommitment: GUARDIAN_COMMITMENT,
-      seed,
-    },
-    'mock',
-  );
+  const { account } = await createMultisigAccount(client as never, {
+    threshold: 1,
+    signerCommitments: [SIGNER_COMMITMENT],
+    guardianCommitment: GUARDIAN_COMMITMENT,
+    seed,
+  });
   const accountId = account.id().toString();
 
   const code = account.code();
@@ -62,7 +58,7 @@ async function run(): Promise<void> {
   // Compile every config script against the real WASM assembler; each builder
   // also refuses a request the client did not attach the multisig auth args to,
   // so a compiled script here means the account was classified as a multisig.
-  const requestOptions = { accountId, midenRpcEndpoint: 'mock' };
+  const requestOptions = { accountId };
   const configScriptsCompiled: Record<string, boolean> = {};
   await buildUpdateSignersTransactionRequest(client, 1, [SIGNER_COMMITMENT], requestOptions);
   configScriptsCompiled.updateSigners = true;
@@ -89,14 +85,14 @@ async function run(): Promise<void> {
   const delta = GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA;
   const guardianExecutableVectors = {
     authArg: request.authArg()?.toHex(),
-    updateSigners: (await buildUpdateSignersScript(client, 'mock', delta)).root().toHex(),
+    updateSigners: (await buildUpdateSignersScript(client, delta)).root().toHex(),
     updateProcedureThreshold: (
-      await buildUpdateProcedureThresholdScript(client, 'send_asset', 2, 'mock', delta)
+      await buildUpdateProcedureThresholdScript(client, 'send_asset', 2, delta)
     )
       .root()
       .toHex(),
     updateGuardian: (
-      await buildUpdateGuardianScript(client, GUARDIAN_COMMITMENT, 'falcon', 'mock', delta)
+      await buildUpdateGuardianScript(client, GUARDIAN_COMMITMENT, 'falcon', delta)
     )
       .root()
       .toHex(),

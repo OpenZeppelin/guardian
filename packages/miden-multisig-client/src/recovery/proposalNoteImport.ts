@@ -15,17 +15,16 @@ import {
   InputNote,
   type InputNoteRecord,
   InputNoteState,
+  type MidenClient,
   Note,
   type NoteAssets,
   NoteDetails,
   NoteFile,
-  NoteFilter,
-  NoteFilterTypes,
   type NoteInclusionProof,
   RpcClient,
 } from '@miden-sdk/miden-sdk';
 
-import { getRawMidenClient, requireMidenRpcEndpoint, type RawClientSource } from '../raw-client.js';
+import { requireMidenRpcEndpoint } from '../config.js';
 import { resolveRpcConfig, type RpcConfig } from '../rpc/config.js';
 import { isTransientRpcError } from '../rpc/errors.js';
 import { retryRpcRead } from '../rpc/retry.js';
@@ -176,10 +175,10 @@ function recordKeys(record: InputNoteRecord): string[] {
  * Shared by the recovery primitives (proposal import and backfill).
  */
 export async function collectExistingRecords(
-  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+  midenClient: MidenClient,
 ): Promise<Map<string, InputNoteRecord>> {
   const existing = new Map<string, InputNoteRecord>();
-  const records = await webClient.getInputNotes(new NoteFilter(NoteFilterTypes.All));
+  const records = await midenClient.notes.list();
   for (const record of records) {
     for (const key of recordKeys(record)) {
       existing.set(key, record);
@@ -196,7 +195,7 @@ export async function collectExistingRecords(
  * re-check).
  */
 export async function importNoteWithProof(
-  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+  midenClient: MidenClient,
   source: NoteImportSource,
   idHex: string,
   note: Note,
@@ -204,7 +203,7 @@ export async function importNoteWithProof(
 ): Promise<{ outcome: NoteImportOutcome; wasImported: boolean }> {
   try {
     const inputNote = InputNote.authenticated(note, proof);
-    await webClient.importNoteFile(NoteFile.fromInputNote(inputNote));
+    await midenClient.notes.import(NoteFile.fromInputNote(inputNote));
     return {
       outcome: { identifier: idHex, source, status: 'imported' },
       wasImported: true,
@@ -239,7 +238,7 @@ export async function importNoteWithProof(
  * it flags the outcome's classification as unconfirmed instead.
  */
 export async function reclassifyConsumedImports(
-  webClient: Awaited<ReturnType<typeof getRawMidenClient>>,
+  midenClient: MidenClient,
   imported: Array<{ index: number; idHex: string; detailsKey: string }>,
   outcomes: NoteImportOutcome[],
 ): Promise<void> {
@@ -247,7 +246,7 @@ export async function reclassifyConsumedImports(
     return;
   }
   try {
-    const records = await webClient.getInputNotes(new NoteFilter(NoteFilterTypes.All));
+    const records = await midenClient.notes.list();
     const byId = new Map<string, InputNoteRecord>();
     const byDetailsKey = new Map<string, InputNoteRecord>();
     for (const record of records) {
@@ -328,14 +327,13 @@ export async function reclassifyConsumedImports(
  * ```
  */
 export async function importNotesFromProposals(
-  midenClient: RawClientSource,
+  midenClient: MidenClient,
   proposals: ReadonlyArray<Pick<Proposal, 'id' | 'metadata'>>,
   options: ImportNotesFromProposalsOptions,
 ): Promise<NoteImportOutcome[]> {
   const midenRpcEndpoint = requireMidenRpcEndpoint(options.midenRpcEndpoint);
   const rpcConfig = resolveRpcConfig(options.rpc);
   throwIfCancelled(options.cancelled);
-  const webClient = await getRawMidenClient(midenClient, midenRpcEndpoint);
 
   const outcomes: NoteImportOutcome[] = [];
 
@@ -413,7 +411,7 @@ export async function importNotesFromProposals(
 
   let existing: Map<string, InputNoteRecord>;
   try {
-    existing = await collectExistingRecords(webClient);
+    existing = await collectExistingRecords(midenClient);
   } catch (error) {
     const reason = `failed to read local store: ${errorDetail(error)}`;
     for (const candidate of decoded) {
@@ -496,7 +494,7 @@ export async function importNotesFromProposals(
     const proof = proofs.get(candidate.idHex);
     if (proof) {
       const { outcome, wasImported } = await importNoteWithProof(
-        webClient,
+        midenClient,
         'proposal',
         candidate.idHex,
         candidate.note,
@@ -519,7 +517,7 @@ export async function importNotesFromProposals(
         // create a permanent user-source tag that the transport backfill
         // also re-drains, and that would outlive even a failed import.)
         const details = new NoteDetails(candidate.note.assets(), candidate.note.recipient());
-        await webClient.importNoteFile(
+        await midenClient.notes.import(
           NoteFile.fromExpectedNote(details, candidate.note.metadata().tag(), 0),
         );
         outcomes.push({
@@ -542,7 +540,7 @@ export async function importNotesFromProposals(
   }
 
   throwIfCancelled(options.cancelled);
-  await reclassifyConsumedImports(webClient, imported, outcomes);
+  await reclassifyConsumedImports(midenClient, imported, outcomes);
 
   return outcomes;
 }

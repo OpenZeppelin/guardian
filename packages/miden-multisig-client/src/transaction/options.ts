@@ -5,7 +5,6 @@ export interface SignatureOptions {
   salt?: Word;
   signatureAdviceMap?: AdviceMap;
   signatureScheme?: SignatureScheme;
-  midenRpcEndpoint?: string;
   /**
    * The block the transaction summary binds. Omitted, the store's sync height,
    * which is right for the party creating a proposal. A cosigner or executor
@@ -29,18 +28,10 @@ export interface SignatureOptions {
   transactionExpirationDelta?: number;
 }
 
-export interface MidenClientSignatureOptions extends SignatureOptions {
-  midenRpcEndpoint: string;
-}
-
 /**
  * Options for a request a multisig account executes. The account decides the
  * auth args the request has to carry, so every multisig builder needs it.
  */
 export interface MultisigRequestOptions extends SignatureOptions {
   accountId: string;
-}
-
-export interface MidenClientMultisigRequestOptions extends MultisigRequestOptions {
-  midenRpcEndpoint: string;
 }
