@@ -83,8 +83,7 @@ what data leaves the integration.
 
 Consequences:
 
-- The proposal carries a `transaction_request` envelope (protocol line `0.17`, serializer id
-  the serializing `miden-client` version, e.g. `0.17.0-rc.4`). Proposals created without this
+- The proposal carries a `transaction_request` envelope (protocol line `0.17`). Proposals created without this
   mode do **not**, and Guardian cannot execute them: it refuses with
   `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` rather than trying to rebuild the transaction
   (FR-013).

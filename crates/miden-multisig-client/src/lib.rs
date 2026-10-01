@@ -108,10 +108,10 @@ pub use rpc::{RpcConfig, RpcRetryPolicy};
 pub use transaction::{
     GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA, GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
     MAX_APPROVAL_EXPIRATION_DELTA, ProposalBuilder, ProposalExecutionMode, ProposalOptions,
-    REQUEST_SERIALIZER_ID, TransactionRequestBuilderExt, build_p2id_transaction_request,
-    deserialize_transaction_request, generate_salt, multisig_auth_args, proposal_auth_args,
-    proposer_auth_args, summary_approval_expiration_block_num, summary_expiration_delta,
-    summary_salt, synced_fee_faucet_id,
+    TransactionRequestBuilderExt, build_p2id_transaction_request, deserialize_transaction_request,
+    generate_salt, multisig_auth_args, proposal_auth_args, proposer_auth_args,
+    summary_approval_expiration_block_num, summary_expiration_delta, summary_salt,
+    synced_fee_faucet_id,
 };
 
 // Export/Import

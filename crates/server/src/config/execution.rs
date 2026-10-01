@@ -12,7 +12,6 @@ pub const ENV_EXECUTION_RECONCILE_INTERVAL_SECS: &str =
     "GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS";
 pub const ENV_EXECUTION_EXPIRATION_HORIZON_BLOCKS: &str =
     "GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS";
-pub const ENV_EXECUTION_SERIALIZER_ALLOWLIST: &str = "GUARDIAN_EXECUTION_SERIALIZER_ALLOWLIST";
 
 /// The upstream remote-prover client defaults to 10 s, below observed proving
 /// times, so Guardian always sets its own.
@@ -26,12 +25,6 @@ pub const DEFAULT_EXECUTION_EXPIRATION_HORIZON_BLOCKS: u32 = 512;
 /// Every built-in Guardian-executable proposal signs this relative
 /// transaction expiration, so a horizon below it would refuse all of them.
 pub const MIN_EXECUTION_EXPIRATION_HORIZON_BLOCKS: u32 = 256;
-
-/// The `miden-client` version the server's own request codec reads. Stored
-/// requests declare the version that serialized them, and only allowlisted
-/// versions are decoded, because request serialization carries no version tag.
-pub const PINNED_MIDEN_CLIENT_VERSION: &str =
-    guardian_shared::request_envelope::REQUEST_SERIALIZER_ID;
 
 /// The remote prover Guardian delegates proof generation to.
 #[derive(Clone, Debug, PartialEq)]
@@ -91,7 +84,6 @@ pub struct ExecutionConfig {
     pub lease: Duration,
     pub reconcile_interval: Duration,
     pub expiration_horizon_blocks: u32,
-    pub serializer_allowlist: Vec<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -106,7 +98,6 @@ impl Default for ExecutionConfig {
                 DEFAULT_EXECUTION_RECONCILE_INTERVAL_SECS,
             )),
             expiration_horizon_blocks: DEFAULT_EXECUTION_EXPIRATION_HORIZON_BLOCKS,
-            serializer_allowlist: vec![PINNED_MIDEN_CLIENT_VERSION.to_string()],
         }
     }
 }
@@ -152,10 +143,6 @@ impl ExecutionConfig {
                  expiration, got {expiration_horizon_blocks}"
             ));
         }
-        let serializer_allowlist = match non_blank(lookup(ENV_EXECUTION_SERIALIZER_ALLOWLIST)?) {
-            Some(csv) => parse_allowlist(&csv)?,
-            None => vec![PINNED_MIDEN_CLIENT_VERSION.to_string()],
-        };
         Ok(Self {
             prover,
             proving_enabled,
@@ -180,7 +167,6 @@ impl ExecutionConfig {
                 DEFAULT_EXECUTION_RECONCILE_INTERVAL_SECS,
             )?)),
             expiration_horizon_blocks,
-            serializer_allowlist,
         })
     }
 
@@ -192,12 +178,6 @@ impl ExecutionConfig {
         self.prover
             .as_ref()
             .ok_or(ExecutionUnavailable::ProverNotConfigured)
-    }
-
-    pub fn admits_serializer(&self, serializer_id: &str) -> bool {
-        self.serializer_allowlist
-            .iter()
-            .any(|allowed| allowed == serializer_id)
     }
 }
 
@@ -218,21 +198,6 @@ fn positive_u32(
         },
         None => Ok(default),
     }
-}
-
-fn parse_allowlist(csv: &str) -> Result<Vec<String>, String> {
-    let entries: Vec<String> = csv
-        .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(str::to_string)
-        .collect();
-    if entries.is_empty() {
-        return Err(format!(
-            "{ENV_EXECUTION_SERIALIZER_ALLOWLIST} must name at least one miden-client version or be unset"
-        ));
-    }
-    Ok(entries)
 }
 
 #[cfg(test)]
@@ -335,18 +300,6 @@ mod tests {
                 .unwrap_err()
                 .contains(ENV_PROVING_ENABLED)
         );
-    }
-
-    #[test]
-    fn serializer_allowlist_defaults_to_the_pinned_client_and_parses_csv() {
-        let config = config_from(&[]).unwrap();
-        assert!(config.admits_serializer(PINNED_MIDEN_CLIENT_VERSION));
-        assert!(!config.admits_serializer("0.17.0-rc.3"));
-
-        let config =
-            config_from(&[(ENV_EXECUTION_SERIALIZER_ALLOWLIST, " 0.17.0-rc.4 , 0.17.0 ")]).unwrap();
-        assert!(config.admits_serializer("0.17.0"));
-        assert!(config_from(&[(ENV_EXECUTION_SERIALIZER_ALLOWLIST, " , ")]).is_err());
     }
 
     #[test]

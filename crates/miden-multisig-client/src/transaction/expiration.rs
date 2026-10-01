@@ -18,10 +18,6 @@ pub const GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA: NonZeroU32 =
 pub const GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA: NonZeroU16 =
     NonZeroU16::new(256).expect("non-zero");
 
-/// The `miden-client` version whose serialization a stored request uses. Request bytes carry no
-/// version tag of their own, so the server admits them by this name.
-pub use guardian_shared::request_envelope::REQUEST_SERIALIZER_ID;
-
 /// Whether proposals this client creates can be executed by Guardian. Set once, on the client.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ProposalExecutionMode {
@@ -62,10 +58,9 @@ impl ProposalExecutionMode {
     pub fn attachment_of_bytes(self, request_bytes: &[u8]) -> Option<TransactionRequestEnvelope> {
         match self {
             ProposalExecutionMode::SelfExecuted => None,
-            ProposalExecutionMode::GuardianExecutable => Some(TransactionRequestEnvelope::seal(
-                request_bytes,
-                REQUEST_SERIALIZER_ID,
-            )),
+            ProposalExecutionMode::GuardianExecutable => {
+                Some(TransactionRequestEnvelope::seal(request_bytes))
+            }
         }
     }
 }

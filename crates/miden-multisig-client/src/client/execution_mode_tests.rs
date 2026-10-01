@@ -19,8 +19,8 @@ use crate::procedures::ProcedureName;
 use crate::proposal::TransactionType;
 use crate::transaction::{
     GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA, GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
-    ProposalExecutionMode, REQUEST_SERIALIZER_ID, deserialize_transaction_request,
-    execute_for_summary_at_tip, summary_approval_expiration_block_num,
+    ProposalExecutionMode, deserialize_transaction_request, execute_for_summary_at_tip,
+    summary_approval_expiration_block_num,
 };
 
 struct Proposed {
@@ -174,14 +174,11 @@ async fn a_guardian_executable_client_stores_a_request_that_reproduces_its_summa
     let envelope: TransactionRequestEnvelope =
         serde_json::from_value(proposed.payload["transaction_request"].clone()).unwrap();
     assert_eq!(envelope.protocol_line, "0.17");
-    assert_eq!(envelope.serializer_id, REQUEST_SERIALIZER_ID);
     assert!(
         envelope.checksum.starts_with("0x")
             && envelope.checksum == envelope.checksum.to_lowercase()
     );
-    let bytes = envelope
-        .verified_bytes(|serializer_id| serializer_id == REQUEST_SERIALIZER_ID)
-        .unwrap();
+    let bytes = envelope.verified_bytes().unwrap();
 
     let summary = &proposed.summary;
     assert_eq!(
@@ -265,9 +262,7 @@ async fn every_family_a_one_signer_account_can_propose_carries_both_bounds_and_r
         let envelope: TransactionRequestEnvelope =
             serde_json::from_value(proposed.payload["transaction_request"].clone())
                 .unwrap_or_else(|e| panic!("{family}: no stored request: {e}"));
-        let bytes = envelope
-            .verified_bytes(|serializer_id| serializer_id == REQUEST_SERIALIZER_ID)
-            .unwrap();
+        let bytes = envelope.verified_bytes().unwrap();
         let account_id = proposed.client.require_account().unwrap().id();
         let reproduced = execute_for_summary_at_tip(
             &mut proposed.client.miden_client,
@@ -345,9 +340,7 @@ async fn assert_guardian_executable(family: &str, proposed: &mut Proposed) {
     let envelope: TransactionRequestEnvelope =
         serde_json::from_value(proposed.payload["transaction_request"].clone())
             .unwrap_or_else(|e| panic!("{family}: no stored request: {e}"));
-    let bytes = envelope
-        .verified_bytes(|serializer_id| serializer_id == REQUEST_SERIALIZER_ID)
-        .unwrap();
+    let bytes = envelope.verified_bytes().unwrap();
     let account_id = proposed.client.require_account().unwrap().id();
     let reproduced = execute_for_summary_at_tip(
         &mut proposed.client.miden_client,
@@ -448,9 +441,7 @@ async fn pinned_consume_proposal(dir: &std::path::Path) -> PinnedProposal {
     let summary = TransactionSummary::from_json(&payload["tx_summary"]).unwrap();
     let envelope: TransactionRequestEnvelope =
         serde_json::from_value(payload["transaction_request"].clone()).unwrap();
-    let request_bytes = envelope
-        .verified_bytes(|serializer_id| serializer_id == REQUEST_SERIALIZER_ID)
-        .unwrap();
+    let request_bytes = envelope.verified_bytes().unwrap();
     PinnedProposal {
         api,
         account,

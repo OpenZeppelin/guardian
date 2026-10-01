@@ -13,8 +13,6 @@ export const PROTOCOL_LINE = '0.17';
 export interface TransactionRequestEnvelope {
   format_version: number;
   protocol_line: string;
-  /** The `miden-client` version whose serialization the bytes use. */
-  serializer_id: string;
   /** `0x`-prefixed lowercase SHA-256 of the raw bytes. */
   checksum: string;
   /** Base64 of the raw bytes. */
@@ -35,14 +33,10 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 /** Wraps freshly serialized request bytes for storage with a proposal. */
-export async function sealTransactionRequest(
-  bytes: Uint8Array,
-  serializerId: string,
-): Promise<TransactionRequestEnvelope> {
+export async function sealTransactionRequest(bytes: Uint8Array): Promise<TransactionRequestEnvelope> {
   return {
     format_version: ENVELOPE_FORMAT_VERSION,
     protocol_line: PROTOCOL_LINE,
-    serializer_id: serializerId,
     checksum: await sha256Hex(bytes),
     bytes: toBase64(bytes),
   };

@@ -6,11 +6,10 @@ import { sealTransactionRequest } from './request-envelope.js';
 
 describe('sealTransactionRequest', () => {
   it('produces the envelope the Rust SDK and the server produce for the same bytes', async () => {
-    const envelope = await sealTransactionRequest(new TextEncoder().encode('abc'), '0.17.0-rc.4');
+    const envelope = await sealTransactionRequest(new TextEncoder().encode('abc'));
     expect(envelope).toEqual({
       format_version: 1,
       protocol_line: '0.17',
-      serializer_id: '0.17.0-rc.4',
       checksum: '0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
       bytes: 'YWJj',
     });
@@ -26,6 +25,6 @@ describe('the shared envelope fixture', () => {
       ),
     );
     const bytes = Uint8Array.from(Buffer.from(fixture.bytes_hex, 'hex'));
-    expect(await sealTransactionRequest(bytes, fixture.serializer_id)).toEqual(fixture.sealed);
+    expect(await sealTransactionRequest(bytes)).toEqual(fixture.sealed);
   });
 });

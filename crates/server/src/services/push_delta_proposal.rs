@@ -614,11 +614,7 @@ mod tests {
     }
 
     fn envelope(bytes: &[u8]) -> serde_json::Value {
-        serde_json::to_value(TransactionRequestEnvelope::seal(
-            bytes,
-            crate::config::execution::PINNED_MIDEN_CLIENT_VERSION,
-        ))
-        .unwrap()
+        serde_json::to_value(TransactionRequestEnvelope::seal(bytes)).unwrap()
     }
 
     #[tokio::test]

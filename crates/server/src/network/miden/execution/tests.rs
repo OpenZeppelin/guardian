@@ -690,7 +690,6 @@ mod executor {
     use miden_standards::code_builder::CodeBuilder;
     use miden_tx::{LocalTransactionProver, TransactionExecutorError};
 
-    use crate::config::execution::{ExecutionConfig, PINNED_MIDEN_CLIENT_VERSION};
     use crate::delta_object::CosignerSignature;
     use crate::network::miden::execution::aborts::{APPROVAL_EXPIRED, Abort, VAULT_SHORTFALL};
     use crate::network::miden::execution::{MidenExecutor, StoredRequest};
@@ -809,11 +808,9 @@ mod executor {
             signers: &[usize],
         ) -> ExecutionInput {
             let mut input = self.input(signers);
-            input.proposal_payload["transaction_request"] =
-                serde_json::json!(TransactionRequestEnvelope::seal(
-                    &request.build().unwrap().to_bytes(),
-                    PINNED_MIDEN_CLIENT_VERSION
-                ));
+            input.proposal_payload["transaction_request"] = serde_json::json!(
+                TransactionRequestEnvelope::seal(&request.build().unwrap().to_bytes())
+            );
             input
         }
 
@@ -849,9 +846,7 @@ mod executor {
                     "tx_summary": self.summary.to_json(),
                     "metadata": { "proposal_type": "switch_guardian" },
                     "transaction_request": TransactionRequestEnvelope::seal(
-                        &self.request_bytes,
-                        PINNED_MIDEN_CLIENT_VERSION,
-                    ),
+                        &self.request_bytes),
                 }),
                 cosigner_signatures,
             }
@@ -861,7 +856,6 @@ mod executor {
             MidenExecutor::new(
                 self.rpc.clone(),
                 Arc::new(LocalTransactionProver::default()),
-                ExecutionConfig::default(),
             )
         }
     }
@@ -1139,11 +1133,7 @@ mod executor {
     #[tokio::test(start_paused = true)]
     async fn an_unreachable_prover_is_retried_until_the_transaction_expiration_is_reached() {
         let proposal = proposal_expiring_after(true, 80).await;
-        let executor = MidenExecutor::new(
-            proposal.rpc.clone(),
-            Arc::new(UnreachableProver),
-            ExecutionConfig::default(),
-        );
+        let executor = MidenExecutor::new(proposal.rpc.clone(), Arc::new(UnreachableProver));
         let mut attempt = executor.prepare(proposal.input(&[0, 1])).await.unwrap();
         attempt.execute(None).await.unwrap();
 
@@ -1200,11 +1190,7 @@ mod executor {
             failures: std::sync::atomic::AtomicUsize::new(2),
             local: LocalTransactionProver::default(),
         });
-        let executor = MidenExecutor::new(
-            proposal.rpc.clone(),
-            prover.clone(),
-            ExecutionConfig::default(),
-        );
+        let executor = MidenExecutor::new(proposal.rpc.clone(), prover.clone());
         let mut attempt = executor.prepare(proposal.input(&[0, 1])).await.unwrap();
         attempt.execute(None).await.unwrap();
         let proven = attempt.prove().await.unwrap();
@@ -1308,20 +1294,14 @@ mod executor {
                 "tx_summary": summary.to_json(),
                 "metadata": { "proposal_type": "switch_guardian" },
                 "transaction_request": TransactionRequestEnvelope::seal(
-                    &request_bytes,
-                    PINNED_MIDEN_CLIENT_VERSION,
-                ),
+                    &request_bytes),
             }),
             cosigner_signatures: vec![
                 signature(&cosigners[0], EcdsaMessageFormat::Raw),
                 signature(&cosigners[1], EcdsaMessageFormat::Eip712),
             ],
         };
-        let executor = MidenExecutor::new(
-            rpc,
-            Arc::new(LocalTransactionProver::default()),
-            ExecutionConfig::default(),
-        );
+        let executor = MidenExecutor::new(rpc, Arc::new(LocalTransactionProver::default()));
 
         let selection = executor.select_signatures(&input).unwrap();
         assert_eq!((selection.valid, selection.ignored), (2, 0));

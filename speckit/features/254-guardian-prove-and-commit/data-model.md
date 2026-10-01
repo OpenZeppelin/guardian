@@ -50,21 +50,17 @@ example on the 0.17 line:
 {
   "format_version": 1,
   "protocol_line": "0.17",
-  "serializer_id": "0.17.0-rc.4",
   "checksum": "0x…",
   "bytes": "<base64>"
 }
 ```
 
-- `serializer_id` names the **miden-client / web SDK version that serialized the request**
-  (full version including prerelease), not the Guardian SDK package version. TypeScript bytes
-  come from the WASM's embedded client, so a TS producer on web SDK `0.17.0-rc.4` writes
-  `0.17.0-rc.4`.
-- The identity is load-bearing on 0.17: `TransactionRequest` serialization carries no version
-  tag, and rc.4 added `block_numbers` as the **first** serialized field
+- There is no serializer identity (decided 2026-10-01: a version allowlist protects nothing the signed summary does not already protect, and it doubled the work of every `miden-client` bump). `TransactionRequest` serialization carries no
+  version tag, and rc.4 added `block_numbers` as the **first** serialized field
   (`miden-client-0.17.0-rc.4/src/transaction/request/mod.rs:447-477`; rc.3 starts with
   `input_notes`, `miden-client-0.17.0-rc.3/src/transaction/request/mod.rs:439-443`), so rc.3 and
   rc.4 bytes do not decode across each other although both declare `protocol_line` `"0.17"`.
+  Such a request fails to decode or fails the summary comparison, both before proving.
 - Nothing in the envelope is derived from the chain. The bound block, the approval expiration
   and the auth arg are all read from the decoded request and the signed summary at FR-045 step 2;
   the stored `chain_anchor` metadata is not an execution input.

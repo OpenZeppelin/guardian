@@ -5,7 +5,6 @@ import { describe, it, expect } from 'vitest';
 import {
   GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA,
   GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
-  REQUEST_SERIALIZER_ID,
   approvalExpirationDeltaFor,
   attachmentFor,
   expirationInstructions,
@@ -17,25 +16,17 @@ const rustExpiration = readFileSync(
   join(here, '../../../../crates/miden-multisig-client/src/transaction/expiration.rs'),
   'utf8',
 );
-const rustEnvelope = readFileSync(join(here, '../../../../crates/shared/src/request_envelope.rs'), 'utf8');
-const packageJson = JSON.parse(readFileSync(join(here, '../../package.json'), 'utf8'));
 
 describe('parity with the Rust SDK', () => {
-  it('uses the same two bounds and the same serializer id', () => {
-    const constantIn = (source: string, name: string) =>
-      source.match(new RegExp(`pub const ${name}: [^=]+=\\s*(?:\\w+::new\\()?"?([0-9_.a-z-]+)`))?.[1];
-    const constant = (name: string) => constantIn(rustExpiration, name);
+  it('uses the same two bounds', () => {
+    const constant = (name: string) =>
+      rustExpiration.match(new RegExp(`pub const ${name}: [^=]+=\\s*(?:\\w+::new\\()?"?([0-9_.a-z-]+)`))?.[1];
     expect(Number(constant('GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA')?.replaceAll('_', ''))).toBe(
       GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA,
     );
     expect(Number(constant('GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA'))).toBe(
       GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
     );
-    expect(constantIn(rustEnvelope, 'REQUEST_SERIALIZER_ID')).toBe(REQUEST_SERIALIZER_ID);
-  });
-
-  it('names the pinned web SDK version as the serializer id', () => {
-    expect(packageJson.dependencies['@miden-sdk/miden-sdk']).toBe(REQUEST_SERIALIZER_ID);
   });
 });
 
@@ -59,7 +50,7 @@ describe('execution modes', () => {
     expect(approvalExpirationDeltaFor('guardian_executable', 500)).toBe(500);
     expect(transactionExpirationDeltaFor('guardian_executable')).toBe(256);
     const envelope = await attachmentFor('guardian_executable', () => new TextEncoder().encode('abc'));
-    expect(envelope?.serializer_id).toBe('0.17.0-rc.4');
+    expect(envelope?.protocol_line).toBe('0.17');
     expect(envelope?.checksum).toBe('0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
   });
 

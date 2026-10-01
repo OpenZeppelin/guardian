@@ -675,9 +675,9 @@ and TypeScript and asserted by a parity test:
   `anchor.blockNum()` (`packages/miden-multisig-client/src/multisig.ts:245-259`), so a TS proposal
   with a mismatching anchor fails the same way on both SDKs. Rust already uses
   `summary.block_number()`.
-- **Envelope identity (FR-014).** `serializer_id` is the miden-client / web SDK version that
-  serialized the request (for example `0.17.0-rc.4`), not the Guardian SDK package version; the
-  TypeScript bytes come from the WASM's embedded client. `protocol_line` is `"0.17"`.
+- **Envelope identity (FR-014).** `protocol_line` is `"0.17"`. The envelope carries no
+  `serializer_id` (decided 2026-10-01: a version allowlist protects nothing the signed summary does not already protect, and it doubled the work of every `miden-client` bump): a request from another `miden-client` fails to decode or fails
+  the summary comparison, both before proving.
 
 Proposal identity under `guardian_executable` differs from `self_executed`, because both the
 256-block delta and the approval expiration are signed (SC-033).
@@ -787,8 +787,9 @@ accounts held until expiration with no resolution path.
 - **Pre-release pins.** Everything targets 0.17 release candidates; rc.3 and rc.4
   `TransactionRequest` bytes do not decode across each other (`block_numbers` became the first
   serialized field, `miden-client-0.17.0-rc.4/src/transaction/request/mod.rs:447-477` versus rc.3
-  `:439-443`), so each rc bump can silently change the envelope identity. The `serializer_id`
-  allowlist (FR-014) is what catches this; production waits for stable 0.17 and the re-pin.
+  `:439-443`), so proposals created across an rc bump may not execute on the bumped server. They
+  fail as `REQUEST_CODEC` or `BINDING_MISMATCH` before proving, and their signers can still
+  execute them; production waits for stable 0.17 and the re-pin.
 - **Sealing trust root.** Validator key attestations have no Guardian-side validation policy
   yet (RFC Q2 sibling); until one is decided, step 10 follows miden-client's own
   `submit_proven_transaction` flow (`miden-client-0.17.0-rc.4/src/transaction/mod.rs:779-845`),

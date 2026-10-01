@@ -258,7 +258,6 @@ impl Fixture {
             payload["transaction_request"] = serde_json::json!({
                 "format_version": 1,
                 "protocol_line": "0.17",
-                "serializer_id": "0.17.0-rc.4",
                 "checksum": "0x00",
                 "bytes": "",
             });

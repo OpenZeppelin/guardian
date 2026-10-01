@@ -262,7 +262,6 @@ canonicalization off refuses to start.
 | `GUARDIAN_EXECUTION_LEASE_SECS` | `120` | Execution lease length. A worker renews it every third of this; a lease that lapses before the no-retry boundary fails the attempt (`GUARDIAN_EXECUTION_LEASE_EXPIRED`), and after it hands the attempt to reconciliation. |
 | `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` | `30` | How often reconciliation looks at executions whose worker is gone. Keep it well below the lease. |
 | `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` | `512` | The furthest past its reference block a proven transaction may expire and still be submitted. At least `256`, the transaction expiration every built-in Guardian-executable proposal scripts. A custom request that scripts no expiration expires at its approval window (28,800 blocks by default) and is refused with `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` under this default: custom producers must script the 256-block delta. |
-| `GUARDIAN_EXECUTION_SERIALIZER_ALLOWLIST` | the pinned `miden-client` version (`0.17.0-rc.4`) | Comma-separated `miden-client` versions whose request serialization this server reads. Request bytes carry no version of their own, and prerelease serializations differ, so a request from any other version is refused with `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` before it is decoded. |
 
 ## Runtime — metrics (Prometheus)
 

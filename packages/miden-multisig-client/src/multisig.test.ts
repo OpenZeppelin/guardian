@@ -2992,7 +2992,6 @@ describe('Multisig', () => {
       expect(guardianExecutable.transaction_request).toMatchObject({
         format_version: 1,
         protocol_line: '0.17',
-        serializer_id: '0.17.0-rc.4',
         checksum: '0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
         bytes: 'YWJj',
       });
@@ -4462,7 +4461,6 @@ describe('Multisig', () => {
     const ENVELOPE = {
       format_version: 1,
       protocol_line: '0.17',
-      serializer_id: '0.17.0-rc.4',
       checksum: '0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
       bytes: 'YWJj',
     };

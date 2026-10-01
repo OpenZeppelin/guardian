@@ -28,7 +28,6 @@ pub fn executor_for(
     node_endpoint: &str,
     node_timeout: std::time::Duration,
     prover: &crate::config::execution::ProverConfig,
-    config: &crate::config::execution::ExecutionConfig,
 ) -> Result<std::sync::Arc<dyn crate::services::execute_proposal::ProposalExecutor>, String> {
     use miden_client::remote_prover::RemoteTransactionProver;
     use miden_client::rpc::{Endpoint, GrpcClient};
@@ -42,6 +41,5 @@ pub fn executor_for(
     Ok(std::sync::Arc::new(MidenExecutor::new(
         std::sync::Arc::new(rpc),
         std::sync::Arc::new(prover),
-        config.clone(),
     )))
 }

@@ -232,8 +232,8 @@ every other code is pre-boundary, so its proposal still exists and FR-042 permit
 
 | Code | Cause |
 |---|---|
-| `GUARDIAN_EXECUTION_REQUEST_CODEC` | Envelope/checksum invalid or undeserializable (FR-014) |
-| `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` | Envelope declares an incompatible Miden line or an unallowlisted serializer (FR-015) |
+| `GUARDIAN_EXECUTION_REQUEST_CODEC` | Envelope/checksum invalid or undeserializable, including bytes written by a different `miden-client` serialization (FR-014) |
+| `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` | Envelope declares an incompatible Miden line (FR-015) |
 | `GUARDIAN_EXECUTION_REQUEST_INVALID` | After the envelope and protocol checks and before any chain read (step 2): the stored request is structurally not Guardian-executable on 0.17. `meta.reason` is one of `bound_block_not_declared` (`block_numbers()` lacks the summary's `block_number`, FR-056), `auth_args_missing` (`auth_arg` is empty, or its preimage is not in the advice map, FR-057), `approval_expiration_missing` (summary user param 0 is zero, FR-051), `input_notes_not_pinned` (consume-notes without `explicit_input_notes`, FR-056). Asynchronous rather than synchronous because decoding the request is part of reproduction, which keeps FR-009 and FR-015 intact; the reservation is released within milliseconds |
 | `GUARDIAN_EXECUTION_EXPIRATION_REACHED` | A signed or executed expiration bound is at or below the observed chain height. `meta.bound` is `approval` (the approval expiration, checked against the observed tip at step 2, or the VM abort `ERR_MULTISIG_APPROVAL_EXPIRED` during reproduction) or `transaction` (the executed transaction's expiration block, checked after execution at step 8, before any proving). Refused **before** proving (FR-058). It is also checked before each proving retry: a transaction that expires while transient prover failures are being retried is `EXPIRATION_REACHED` / `transaction`, and the message carries the last prover error. Distinct from the horizon check below and from the post-boundary `GUARDIAN_EXECUTION_EXPIRED` |
 | `GUARDIAN_EXECUTION_CHAIN_BEHIND` | Guardian's node is below the proposal's bound block, so the chain view at `R` cannot include it (FR-061). Transient; the caller can retry |
@@ -307,7 +307,6 @@ pre-feature byte shape (FR-010, SC-009).
   "transaction_request": {
     "format_version": 1,
     "protocol_line": "0.17",
-    "serializer_id": "0.17.0-rc.4",
     "checksum": "0x…",
     "bytes": "<base64>"
   }
@@ -319,22 +318,22 @@ working (`docs/MULTISIG_SDK.md`, "Tip execution and the bound block"). Guardian 
 block from the signed summary's `block_number` and executes at the tip (FR-056, FR-061); it
 neither requires nor executes against the anchor.
 
-**Why `serializer_id` exists alongside `protocol_line`.** `MAJOR.MINOR` alone treats every
-`0.17` prerelease as mutually compatible, and `TransactionRequest` serialization carries no
-version tag. `miden-client` 0.17.0-rc.4 added `block_numbers` as the **first** serialized field
+**Why there is no serializer identity.** `MAJOR.MINOR` treats every `0.17` prerelease alike, and
+`TransactionRequest` serialization carries no version tag: `miden-client` 0.17.0-rc.4 added
+`block_numbers` as the **first** serialized field
 (`miden-client-0.17.0-rc.4/src/transaction/request/mod.rs:447-477`; rc.3 starts with
-`input_notes`, `miden-client-0.17.0-rc.3/src/transaction/request/mod.rs:439-443`), so rc.3 and
-rc.4 bytes do not decode across each other although both declare protocol line `0.17`. A
-`protocol_line` match with a `serializer_id` mismatch MUST be refused as
-`GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` unless the server's configured allowlist admits the
-declared value. Deserializing bytes written by a different serializer is the failure this
-envelope exists to prevent, and the coarser field cannot detect it.
+`input_notes`, `miden-client-0.17.0-rc.3/src/transaction/request/mod.rs:439-443`). An earlier
+revision carried a `serializer_id` checked against a server allowlist. It was dropped on
+2026-10-01 because it protected nothing the signed summary does not: bytes from a different
+serializer either fail to decode (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or decode to a transaction
+whose reproduced summary is not the signed one (`GUARDIAN_EXECUTION_BINDING_MISMATCH`), both
+before proving. The SDK that creates a proposal and the server should run the same
+`miden-client`.
 
 | Field | Required | Notes |
 |---|---|---|
 | `format_version` | yes | Envelope version; integer (FR-014) |
 | `protocol_line` | yes | Miden protocol line the bytes were serialized against (`"0.17"`); refused if incompatible (FR-015) |
-| `serializer_id` | yes | Exact serialization identity: the full version, **including prerelease**, of the `miden-client` that serialized the bytes (e.g. `0.17.0-rc.4`). For TypeScript that is the client embedded in the `@miden-sdk/miden-sdk` WASM, whose package version matches it on the pinned line. It is **not** the Guardian SDK package version and not the `miden-protocol` version |
 | `checksum` | yes | Integrity check over `bytes` before any deserialization attempt (FR-014) |
 | `bytes` | yes | Base64 serialized `TransactionRequest`; subject to FR-016 size limits |
 
@@ -351,8 +350,8 @@ changes no proposal ID (FR-012).
   use, so it is conditional rather than a compatibility break.
 - **`POST /delta/proposal` (push_delta_proposal)** MUST enforce the FR-016 size limits and
   reject an oversized or malformed envelope at creation. Creation checks the envelope's body
-  (base64, checksum, `format_version`) and counts its decoded bytes; the protocol line and
-  serializer are checked at execution, where they must match. New creation refusals:
+  (base64, checksum, `format_version`) and counts its decoded bytes; the protocol line is
+  checked at execution, where it must match. New creation refusals:
 
   | Condition | Code | HTTP | gRPC |
   |---|---|---|---|

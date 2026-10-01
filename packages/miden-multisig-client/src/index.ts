@@ -131,7 +131,6 @@ export type {
 export {
   GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA,
   GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
-  REQUEST_SERIALIZER_ID,
 } from './transaction/expiration.js';
 export type { ProposalExecutionMode } from './transaction/expiration.js';
 export type {

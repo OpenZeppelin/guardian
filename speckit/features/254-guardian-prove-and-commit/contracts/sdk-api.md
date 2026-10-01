@@ -229,8 +229,7 @@ Creation MUST:
 4. For consume-notes, pin every input note through `TransactionRequestBuilder::explicit_input_notes`
    (`miden-client-0.17.0-rc.4/src/transaction/request/builder.rs:178-190`); see below.
 5. Serialize the `TransactionRequest` it holds and wrap it in the FR-014 envelope (format
-   version, protocol line `0.17`, serializer id = the serializing `miden-client` version, e.g.
-   `0.17.0-rc.4`, checksum).
+   version, protocol line `0.17`, checksum).
 6. Attach the envelope to the proposal payload and push as normal.
 
 ### Custom producers
@@ -365,17 +364,13 @@ A committed fixture set MUST pin the envelope contract so the two SDKs cannot dr
 (mirroring `fixtures/miden-multisig-client/p2id-serial-vectors.json`):
 
 - A serialized `TransactionRequest` envelope produced by each SDK for the same
-  transaction inputs, asserting equal `format_version`, `protocol_line`, full
-  `serializer_id` (including any prerelease identifier), and `checksum`.
+  transaction inputs, asserting equal `format_version`, `protocol_line`, and `checksum`.
 - The same Guardian-executable proposal built by each SDK, asserting equal approval expiration
   (user param 0), equal transaction `expiration_delta` (256), equal declared bound block, and
   equal proposal id, and that the id differs from the `SelfExecuted` build (SC-033).
 - An envelope captured from a **different** protocol line, asserting both SDKs and the
   server refuse it with `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` and never attempt
   deserialization (SC-010).
-- An envelope from the **same** protocol line but a different, unallowlisted
-  `serializer_id` (for example rc.3 bytes against an rc.4 server), asserting both SDKs and the
-  server refuse it with `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH` before deserialization.
 - An unsupported `format_version`, asserting refusal before deserialization.
 - A corrupted-checksum envelope, asserting `GUARDIAN_EXECUTION_REQUEST_CODEC`.
 

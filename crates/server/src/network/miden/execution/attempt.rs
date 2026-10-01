@@ -33,7 +33,6 @@ use super::request::{StoredRequest, approval_expiration_block};
 use super::sealing::seal_for_submission;
 use super::store::ExecutionDataStore;
 use super::threshold::{InvokedProcedure, effective_threshold};
-use crate::config::execution::ExecutionConfig;
 use crate::delta_object::CosignerSignature;
 use crate::error::GuardianError;
 use crate::network::miden::account_inspector::MidenAccountInspector;
@@ -52,20 +51,14 @@ const PROVER_BACKOFF_CAP: Duration = Duration::from_secs(30);
 pub struct MidenExecutor {
     rpc: Arc<dyn NodeRpcClient>,
     prover: Arc<dyn TransactionProver + Send + Sync>,
-    config: ExecutionConfig,
 }
 
 impl MidenExecutor {
     pub fn new(
         rpc: Arc<dyn NodeRpcClient>,
         prover: Arc<dyn TransactionProver + Send + Sync>,
-        config: ExecutionConfig,
     ) -> Self {
-        Self {
-            rpc,
-            prover,
-            config,
-        }
+        Self { rpc, prover }
     }
 }
 
@@ -270,12 +263,15 @@ impl ProposalExecutor for MidenExecutor {
             .cloned()
             .ok_or_else(|| codec("proposal carries no transaction request".to_string()))
             .and_then(|value| serde_json::from_value(value).map_err(|e| codec(e.to_string())))?;
-        let bytes = envelope
-            .verified_bytes(|serializer_id| self.config.admits_serializer(serializer_id))
-            .map_err(|rejection| {
-                ExecutionFailure::new(rejection.failure_code(), rejection.to_string())
-            })?;
-        let request = StoredRequest::read_from_bytes(&bytes).map_err(|e| codec(e.to_string()))?;
+        let bytes = envelope.verified_bytes().map_err(|rejection| {
+            ExecutionFailure::new(rejection.failure_code(), rejection.to_string())
+        })?;
+        let request = StoredRequest::read_from_bytes(&bytes).map_err(|e| {
+            codec(format!(
+                "stored request does not decode with this server's miden-client, which may not \
+                 be the version that serialized it: {e}"
+            ))
+        })?;
         let summary = summary_of(&input.proposal_payload).map_err(codec)?;
         request.check_against(&summary).map_err(|reason| {
             ExecutionFailure::new(

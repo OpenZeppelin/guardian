@@ -264,10 +264,10 @@ guarded multisig section).
 - **[READ]** `TransactionRequest` serialization carries no version tag. rc.4 writes
   `block_numbers` as the **first** field (`miden-client-0.17.0-rc.4/src/transaction/request/mod.rs:447-477`);
   rc.3 starts with `input_notes` (`miden-client-0.17.0-rc.3/src/transaction/request/mod.rs:439-443`).
-- **[INFERRED]** rc.3 and rc.4 bytes do not decode across each other. This is the concrete
-  evidence for FR-014's serializer-identity allowlist, and `serializer_id` must name the
-  miden-client / web SDK version that serialized the request (the TypeScript bytes come from the
-  WASM's embedded client), not the Guardian SDK package version.
+- **[INFERRED]** rc.3 and rc.4 bytes do not decode across each other. This first motivated a
+  serializer-identity allowlist in FR-014, which was dropped on 2026-10-01: a mismatched request
+  fails to decode or fails the comparison against the signed summary, both before proving, so the
+  allowlist added a per-bump maintenance step without protecting anything further.
 
 ### Other re-citations
 

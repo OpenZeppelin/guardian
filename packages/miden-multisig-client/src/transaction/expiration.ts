@@ -15,12 +15,6 @@ export const GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA = 28_800;
  */
 export const GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA = 256;
 
-/**
- * The `miden-client` version the web SDK embeds, whose serialization a stored request uses.
- * Request bytes carry no version tag of their own, so the server admits them by this name.
- */
-export const REQUEST_SERIALIZER_ID = '0.17.0-rc.4';
-
 /** The approval expiration a new proposal applies: the caller's, else this mode's default. */
 export function approvalExpirationDeltaFor(
   mode: ProposalExecutionMode,
@@ -64,7 +58,7 @@ export async function attachmentFor(
     case 'self_executed':
       return undefined;
     case 'guardian_executable':
-      return sealTransactionRequest(requestBytes(), REQUEST_SERIALIZER_ID);
+      return sealTransactionRequest(requestBytes());
     default: {
       const unreachable: never = mode;
       throw new Error(`unknown execution mode ${String(unreachable)}`);

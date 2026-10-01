@@ -193,17 +193,16 @@ the serialized `TransactionRequest` Guardian executes, in an envelope:
   "transaction_request": {
     "format_version": 1,
     "protocol_line": "0.17",
-    "serializer_id": "0.17.0-rc.4",
     "checksum": "0x<lowercase sha-256 of the raw bytes>",
     "bytes": "<base64 of the raw bytes>"
   }
 }
 ```
 
-`serializer_id` is the `miden-client` version that wrote the bytes, because request
-serialization carries no version tag. Creation checks the body (base64, checksum,
-`format_version`) and the size caps; the protocol line and serializer are checked at
-execution. A self-executed proposal omits the field, so its wire shape is unchanged, and the
+Request serialization carries no `miden-client` version tag. Creation checks the body (base64,
+checksum, `format_version`) and the size caps. Execution checks the protocol line, decodes the
+bytes, and refuses a request that does not decode (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or does
+not reproduce the signed summary (`GUARDIAN_EXECUTION_BINDING_MISMATCH`). A self-executed proposal omits the field, so its wire shape is unchanged, and the
 proposal id is the summary commitment either way.
 
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.

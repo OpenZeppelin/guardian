@@ -538,6 +538,11 @@ once come back synchronously and create nothing.
   with the account delta still matching, the fee note moved: the network's fee parameters changed
   between creation and execution. The proposal cannot be executed by anyone as signed; create it
   again.
+- **`GUARDIAN_EXECUTION_REQUEST_CODEC` or `GUARDIAN_EXECUTION_BINDING_MISMATCH` after an SDK or
+  server upgrade.** Stored requests carry no `miden-client` version, and prerelease clients have
+  changed the serialization. A proposal created by an SDK on a different `miden-client` than the
+  server may not decode, or may decode to a different transaction, which execution refuses
+  before proving. Run the same `miden-client` on both sides, or execute the proposal from an SDK.
 - **An execution stays `submitted`.** The send's outcome is unknown and reconciliation waits for
   the chain: it resolves `committed` through promotion, `EXPIRED` once the chain passes the
   transaction's expiration with the account unchanged, or `CANDIDATE_DISCARDED` when the account

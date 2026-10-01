@@ -606,19 +606,19 @@ This is an admission/execution policy, not a universal property of signed summar
   - **Protocol-line grammar**: `MAJOR.MINOR` decimal, no prefix, no patch component and no
     pre-release suffix (e.g. `"0.17"`), taken from the Miden dependency line the serializing
     SDK was built against.
-  - **Serializer identity**: the exact version, **including any prerelease**, of the
-    `miden-client` (Rust) or `@miden-sdk/miden-sdk` (TypeScript, whose WASM embeds the client)
-    that serialized the bytes, e.g. `"0.17.0-rc.4"`, carried alongside the protocol line. It
-    names the Miden serializer, not the Guardian SDK package. The coarse `MAJOR.MINOR` line
-    cannot distinguish prereleases, and `TransactionRequest` serialization carries no version
-    tag of its own: `miden-client` 0.17.0-rc.4 added the declared block numbers as the first
-    serialized field, so rc.3 and rc.4 bytes do not decode under each other
-    (`miden-client-0.17.0-rc.4/src/transaction/request/mod.rs:447-477`, rc.3 `:439-443`).
-  - **Compatibility rule**: exact string equality against the server's own protocol line, and
-    the serializer identity must be admitted by the server's configured allowlist. Guardian
-    MUST NOT attempt range or ordering comparisons; a differing line or an unadmitted
-    serializer is refused (FR-015) rather than guessed at.
+  - **Compatibility rule**: exact string equality against the server's own protocol line.
+    Guardian MUST NOT attempt range or ordering comparisons; a differing line is refused
+    (FR-015) rather than guessed at.
   A committed cross-language fixture MUST pin all four so the two SDKs cannot drift.
+  The envelope carries **no serializer identity** (decided 2026-10-01: a version allowlist protects nothing the signed summary does not already protect, and it doubled the work of every `miden-client` bump). `TransactionRequest`
+  serialization has no version tag, and prereleases on one line differ (`miden-client`
+  0.17.0-rc.4 added the declared block numbers as the first serialized field,
+  `miden-client-0.17.0-rc.4/src/transaction/request/mod.rs:447-477`, rc.3 `:439-443`). A request
+  written by a different client within the line therefore either fails to decode
+  (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or decodes to a transaction whose reproduced summary
+  differs from the signed one (`GUARDIAN_EXECUTION_BINDING_MISMATCH`, FR-045 step 7), and in both
+  cases is refused before proving. An SDK and the server that executes its proposals should run
+  the same `miden-client`.
 - **FR-015**: Guardian MUST refuse to execute a stored request whose envelope declares a
   Miden protocol line incompatible with the running server, with an error distinguishable
   from a binding mismatch. It MUST NOT attempt to deserialize such a request.
@@ -1350,10 +1350,10 @@ This is an admission/execution policy, not a universal property of signed summar
   public `push_delta` remain refused — verified by explicit tests, since the naive rule
   deadlocks (FR-037, FR-044).
 - **SC-029**: The envelope is byte-reproducible across languages: both SDKs produce identical
-  `format_version`, `protocol_line`, full `serializer_id` (including prerelease), and checksum
-  values for identical inputs. Committed fixtures also prove that an unsupported format or an
-  unallowlisted serializer on the same protocol line is rejected before deserialization, using
-  SHA-256 / `0x`-hex / `MAJOR.MINOR` / exact-equality as fixed in FR-014 and FR-015.
+  `format_version`, `protocol_line`, and checksum values for identical inputs. Committed fixtures
+  also prove that an unsupported format or another protocol line is rejected before
+  deserialization, using SHA-256 / `0x`-hex / `MAJOR.MINOR` / exact-equality as fixed in FR-014
+  and FR-015.
 - **SC-030**: The candidate always exists before the transaction is sent: a crash injected
   between the FR-045 step 12 commit and the network send leaves a durable candidate and durable
   evidence, reports `submitted`, and is resolved by reconciliation without re-sending — so no

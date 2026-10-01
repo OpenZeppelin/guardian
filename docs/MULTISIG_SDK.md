@@ -580,8 +580,8 @@ What the mode changes, identically in both SDKs:
   Both are bound by the summary, so the same effects create a **different** proposal in each
   mode.
 - **The stored request.** `transaction_request` carries the serialized request in an envelope
-  whose `serializer_id` is the `miden-client` version both SDKs embed (`REQUEST_SERIALIZER_ID`,
-  currently `0.17.0-rc.4`). It does not change the proposal id.
+  tagged with the protocol line (`0.17`). The server must run the same `miden-client` as the SDK
+  that wrote it to decode it. It does not change the proposal id.
 - **Pinned consume-notes.** Every consumed note is stored with its inclusion proof, so Guardian
   consumes it in the same mode the cosigners signed, whatever its own store holds.
 - **Custom proposals.** `propose_custom_transaction` / `createCustomProposal` store the

@@ -26,7 +26,7 @@ pub(crate) use consume::{
 pub(crate) use expiration::expiration_instructions;
 pub use expiration::{
     GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA, GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
-    ProposalExecutionMode, REQUEST_SERIALIZER_ID, summary_expiration_delta,
+    ProposalExecutionMode, summary_expiration_delta,
 };
 pub use guardian::build_update_guardian_transaction_request;
 pub use payment::{build_p2id_transaction_request, build_p2id_transaction_request_with_expiration};

@@ -148,15 +148,15 @@ Nothing stored under Miden 0.16 survives:
 
 ### Guardian execution
 
-Guardian 0.18.x adds server-side execution of Guardian-executable proposals on this line. It
-reads only request bytes written by an allowlisted `miden-client` serialization: the default
-allowlist is the pinned `0.17.0-rc.4`, which both SDKs write, because prerelease
-`TransactionRequest` serializations are not compatible with each other and carry no version
-tag. Requests from any other serializer, or declaring a protocol line other than `0.17`, are
-refused before they are decoded. Widen `GUARDIAN_EXECUTION_SERIALIZER_ALLOWLIST` only for a
-version whose serialization is known to match. The capability is qualified on devnet
-(`live-guardian-execute-2of3-{falcon,ecdsa}`); treat it as production-ready only once the line
-moves to stable 0.17 pins, when the allowlist and the SDK serializer id move with it.
+Guardian 0.18.x adds server-side execution of Guardian-executable proposals on this line. A
+stored request declaring a protocol line other than `0.17` is refused before it is decoded.
+Within the line, `TransactionRequest` serialization carries no version tag and prerelease
+clients have changed it, so the SDK that created a proposal and the server should run the same
+`miden-client`. A request from a different client either fails to decode
+(`GUARDIAN_EXECUTION_REQUEST_CODEC`) or reproduces a transaction other than the signed one
+(`GUARDIAN_EXECUTION_BINDING_MISMATCH`); either way nothing is submitted. The capability is
+qualified on devnet (`live-guardian-execute-2of3-{falcon,ecdsa}`); treat it as production-ready
+only once the line moves to stable 0.17 pins.
 
 ### Open upstream items
 

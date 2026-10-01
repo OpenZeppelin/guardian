@@ -486,7 +486,6 @@ impl RpcSettings {
                 settings.endpoint().expose_secret(),
                 settings.timeout(),
                 prover,
-                config,
             )
             .map(Some),
         }

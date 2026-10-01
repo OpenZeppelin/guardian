@@ -1,12 +1,9 @@
 {
-  "description": "Transaction request envelope vectors shared by the Rust and TypeScript SDKs and the server. `bytes_hex` sealed with `serializer_id` must produce `sealed`; each case must be accepted or refused as named by a reader that admits only `admitted_serializer`.",
+  "description": "Transaction request envelope vectors shared by the Rust and TypeScript SDKs and the server. Sealing `bytes_hex` must produce `sealed`; each case must be accepted or refused as named.",
   "bytes_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
-  "serializer_id": "0.17.0-rc.4",
-  "admitted_serializer": "0.17.0-rc.4",
   "sealed": {
     "format_version": 1,
     "protocol_line": "0.17",
-    "serializer_id": "0.17.0-rc.4",
     "checksum": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
     "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
   },
@@ -16,7 +13,6 @@
       "envelope": {
         "format_version": 1,
         "protocol_line": "0.17",
-        "serializer_id": "0.17.0-rc.4",
         "checksum": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
         "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
       },
@@ -27,29 +23,16 @@
       "envelope": {
         "format_version": 1,
         "protocol_line": "0.16",
-        "serializer_id": "0.17.0-rc.4",
         "checksum": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
         "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
       },
       "expected": "protocol_line_mismatch"
     },
     {
-      "name": "an unallowlisted serializer on the same line",
-      "envelope": {
-        "format_version": 1,
-        "protocol_line": "0.17",
-        "serializer_id": "0.17.0-rc.3",
-        "checksum": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
-        "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
-      },
-      "expected": "serializer_not_admitted"
-    },
-    {
       "name": "an unsupported format",
       "envelope": {
         "format_version": 2,
         "protocol_line": "0.17",
-        "serializer_id": "0.17.0-rc.4",
         "checksum": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
         "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
       },
@@ -60,7 +43,6 @@
       "envelope": {
         "format_version": 1,
         "protocol_line": "0.17",
-        "serializer_id": "0.17.0-rc.4",
         "checksum": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
       },
