@@ -502,7 +502,8 @@ once come back synchronously and create nothing.
 
 - **Every request refused with `GUARDIAN_PROVING_UNAVAILABLE`.** The server offers no
   execution. Its startup log says why: no `GUARDIAN_TX_PROVER_URL`, `GUARDIAN_PROVING_ENABLED=false`,
-  or canonicalization off. A warning that "a prover is configured but Guardian execution is not
+  or canonicalization off. `GET /status` reports the same reason under `execution.reason`
+  without needing the logs. A warning that "a prover is configured but Guardian execution is not
   offered" means `GUARDIAN_PROVING_ENABLED=false` is switching it off.
 - **Intermittent `GUARDIAN_EXECUTION_PROVING_FAILED` whose message ends in "failed to prove
   transaction".** Usually the prover deadline. The client library's own default is 10 s, far below

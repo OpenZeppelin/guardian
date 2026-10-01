@@ -34,10 +34,13 @@ pub struct ProverConfig {
 }
 
 /// Why this server does not offer Guardian execution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ExecutionUnavailable {
     ProverNotConfigured,
     Disabled,
+    /// The server runs without canonicalization, which execution commits through.
+    CanonicalizationDisabled,
 }
 
 impl ExecutionUnavailable {
@@ -49,6 +52,9 @@ impl ExecutionUnavailable {
             }
             ExecutionUnavailable::Disabled => {
                 "GUARDIAN_PROVING_ENABLED is false, so execution is switched off"
+            }
+            ExecutionUnavailable::CanonicalizationDisabled => {
+                "canonicalization is off, and execution commits through it"
             }
         }
     }

@@ -279,6 +279,10 @@ over it. The two decide independently: the client decides what to attach, the se
 whether it offers execution. Any mismatch surfaces when execution is requested, not when a
 proposal is created.
 
+The server does report the capability for applications and operators: the public `GET /status`
+carries `execution: {enabled, reason?}`, computed by the same check the execute endpoint makes
+(added 2026-10-01). The SDKs never read it, so proposal creation still never depends on it.
+
 **Why this priority**: P2 because it protects existing behavior rather than delivering
 the new capability. It is nonetheless required for correctness: feature 008 FR-015
 established that the serialized transaction request is not persisted, and this feature

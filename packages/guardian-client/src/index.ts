@@ -16,6 +16,7 @@ export type { TransactionRequestEnvelope } from './request-envelope.js';
 export {
   EXECUTION_FAILURE_CODES,
   EXECUTION_STATES,
+  EXECUTION_UNAVAILABLE_REASONS,
   EXPIRATION_BOUNDS,
   FOREIGN_ACCOUNT_UNAVAILABLE_REASONS,
   PLAIN_EXECUTION_FAILURE_CODES,
@@ -26,11 +27,13 @@ export type {
   ExecutionFailure,
   ExecutionFailureCode,
   ExecutionState,
+  ExecutionUnavailableReason,
   ExpirationBound,
   ForeignAccountUnavailableReason,
   PlainExecutionFailureCode,
   ProposalExecution,
   RequestInvalidReason,
+  ServerExecutionCapability,
 } from './execution.js';
 
 export type {

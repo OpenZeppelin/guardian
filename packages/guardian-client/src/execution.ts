@@ -21,6 +21,16 @@ export type ExpirationBound = (typeof EXPIRATION_BOUNDS)[number];
 export const FOREIGN_ACCOUNT_UNAVAILABLE_REASONS = ['private', 'unavailable'] as const;
 export type ForeignAccountUnavailableReason = (typeof FOREIGN_ACCOUNT_UNAVAILABLE_REASONS)[number];
 
+/** Why a server does not offer Guardian execution, as `GET /status` reports it. */
+export const EXECUTION_UNAVAILABLE_REASONS = ['prover_not_configured', 'disabled', 'canonicalization_disabled'] as const;
+export type ExecutionUnavailableReason = (typeof EXECUTION_UNAVAILABLE_REASONS)[number];
+
+/**
+ * Whether the server accepts Guardian execution requests. It reflects the server's configuration,
+ * not whether its prover is reachable right now.
+ */
+export type ServerExecutionCapability = { enabled: true } | { enabled: false; reason: ExecutionUnavailableReason };
+
 /** Failure codes that carry no structured meta. */
 export const PLAIN_EXECUTION_FAILURE_CODES = [
   'GUARDIAN_EXECUTION_BINDING_MISMATCH',

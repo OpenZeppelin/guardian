@@ -100,7 +100,7 @@ pub use push_delta_proposal::{
 pub use sign_delta_proposal::{
     SignDeltaProposalParams, SignDeltaProposalResult, sign_delta_proposal,
 };
-pub use status::{StatusResponse, build_status};
+pub use status::{ExecutionStatus, StatusResponse, build_status};
 
 #[derive(Clone)]
 pub struct ResolvedAccount {

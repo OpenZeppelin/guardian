@@ -129,6 +129,7 @@ describe('GuardianHttpClient', () => {
           environment: 'devnet',
           started_at: '2026-06-17T10:00:00Z',
           uptime_seconds: 3600,
+          execution: { enabled: true },
         }),
       });
 
@@ -141,6 +142,7 @@ describe('GuardianHttpClient', () => {
         environment: 'devnet',
         startedAt: '2026-06-17T10:00:00Z',
         uptimeSeconds: 3600,
+        execution: { enabled: true },
       });
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3000/status',
@@ -151,6 +153,25 @@ describe('GuardianHttpClient', () => {
           }),
         })
       );
+    });
+
+    it('reports why the server does not offer execution', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'ok',
+          version: '0.1.0',
+          git_commit: 'abc123def456',
+          environment: 'devnet',
+          started_at: '2026-06-17T10:00:00Z',
+          uptime_seconds: 3600,
+          execution: { enabled: false, reason: 'prover_not_configured' },
+        }),
+      });
+
+      const status = await client.getStatus();
+
+      expect(status.execution).toEqual({ enabled: false, reason: 'prover_not_configured' });
     });
 
     it('should throw GuardianHttpError on non-ok response', async () => {

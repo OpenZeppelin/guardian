@@ -443,3 +443,28 @@ async fn nothing_in_flight_is_a_success_on_both_transports() {
         .unwrap();
     assert!(response.into_inner().execution.is_none());
 }
+
+#[tokio::test]
+async fn status_reports_execution_exactly_when_the_endpoint_offers_it() {
+    let mut f = Fixture::new(Script::default()).await;
+    for path in ["/status", "/"] {
+        let answer = f.http("GET", path, serde_json::json!({})).await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(
+            answer.body["execution"],
+            serde_json::json!({ "enabled": true }),
+            "{path}"
+        );
+    }
+
+    f.state.canonicalization = None;
+    let status = f.http("GET", "/status", serde_json::json!({})).await;
+    assert_eq!(
+        status.body["execution"],
+        serde_json::json!({ "enabled": false, "reason": "canonicalization_disabled" })
+    );
+    assert_eq!(
+        f.http_execute(UNKNOWN_PROPOSAL).await.body["code"],
+        "GUARDIAN_PROVING_UNAVAILABLE"
+    );
+}

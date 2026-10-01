@@ -285,6 +285,7 @@ export class GuardianHttpClient {
       environment: data.environment,
       startedAt: data.started_at,
       uptimeSeconds: data.uptime_seconds,
+      execution: data.execution,
     };
   }
 

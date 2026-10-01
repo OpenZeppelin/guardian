@@ -19,7 +19,7 @@
         "operationId": "status_root",
         "responses": {
           "200": {
-            "description": "Alias of `GET /status`: server liveness, version, and environment",
+            "description": "Alias of `GET /status`: server liveness, version, environment, and execution capability",
             "content": {
               "application/json": {
                 "schema": {
@@ -3939,11 +3939,11 @@
         "tags": [
           "client"
         ],
-        "summary": "Public, unauthenticated liveness + identity probe. Returns the\nserver's version, git commit, environment, start time, and uptime.\nConsumed by wallet clients (pre-auth health check) and the status\nhomepage. Exposes no account, operator, or auth data.",
+        "summary": "Public, unauthenticated liveness + identity probe. Returns the\nserver's version, git commit, environment, start time, uptime, and\nwhether it accepts Guardian execution requests.\nConsumed by wallet clients (pre-auth health check) and the status\nhomepage. Exposes no account, operator, or auth data.",
         "operationId": "status",
         "responses": {
           "200": {
-            "description": "Server liveness, version, and environment",
+            "description": "Server liveness, version, environment, and execution capability",
             "content": {
               "application/json": {
                 "schema": {
@@ -6332,6 +6332,38 @@
           "failed"
         ]
       },
+      "ExecutionStatus": {
+        "type": "object",
+        "description": "Whether `POST /delta/proposal/execution` is offered. It reflects configuration, the same\ncheck the endpoint makes, not whether the prover is reachable right now.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionUnavailable",
+                "description": "Why execution is off; absent when it is enabled."
+              }
+            ]
+          }
+        }
+      },
+      "ExecutionUnavailable": {
+        "type": "string",
+        "description": "Why this server does not offer Guardian execution.",
+        "enum": [
+          "prover_not_configured",
+          "disabled",
+          "canonicalization_disabled"
+        ]
+      },
       "HistoryEntry": {
         "type": "object",
         "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
@@ -7512,12 +7544,17 @@
           "git_commit",
           "environment",
           "started_at",
-          "uptime_seconds"
+          "uptime_seconds",
+          "execution"
         ],
         "properties": {
           "environment": {
             "type": "string",
             "description": "Deployment environment / network label, e.g. `\"testnet\"`. Same\nvalue surfaced on `GET /dashboard/info`."
+          },
+          "execution": {
+            "$ref": "#/components/schemas/ExecutionStatus",
+            "description": "Whether this server accepts Guardian execution requests."
           },
           "git_commit": {
             "type": "string",

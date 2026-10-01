@@ -252,6 +252,12 @@ is on. A server that is missing any of them refuses every execution request with
 but `GUARDIAN_PROVING_ENABLED=false` keeps execution off. Execution enabled with
 canonicalization off refuses to start.
 
+The public `GET /status` (and `GET /`) reports the same decision as
+`"execution": {"enabled": true}` or `"execution": {"enabled": false, "reason": "..."}`, with the
+reason one of `prover_not_configured`, `disabled` or `canonicalization_disabled`. It reflects
+configuration only: it does not show whether the prover is reachable, and it never includes the
+prover URL.
+
 | Variable | Default | Effect |
 |---|---|---|
 | `GUARDIAN_TX_PROVER_URL` | _unset_ | Remote transaction prover. Unset, the server offers no execution. The public ones are `https://tx-prover.testnet.miden.io` and `https://tx-prover.devnet.miden.io`. |

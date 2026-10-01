@@ -371,7 +371,7 @@ component schemas.
 | client | `GET /state` | signed headers | Latest canonical state |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
 | client | `GET /pubkey` | public | ACK public key / commitment |
-| client | `GET /status` | public | Server liveness, version, environment, uptime |
+| client | `GET /status` | public | Server liveness, version, environment, uptime, execution capability |
 | client | `GET /` | public | Alias of `GET /status` |
 | client | `POST /delta/proposal` | signed headers | Create a multisig proposal |
 | client | `GET /delta/proposal` | signed headers | List pending proposals |

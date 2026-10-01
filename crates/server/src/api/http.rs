@@ -424,7 +424,8 @@ pub struct PubkeyQuery {
 }
 
 /// Public, unauthenticated liveness + identity probe. Returns the
-/// server's version, git commit, environment, start time, and uptime.
+/// server's version, git commit, environment, start time, uptime, and
+/// whether it accepts Guardian execution requests.
 /// Consumed by wallet clients (pre-auth health check) and the status
 /// homepage. Exposes no account, operator, or auth data.
 #[utoipa::path(
@@ -432,7 +433,7 @@ pub struct PubkeyQuery {
     path = "/status",
     tag = "client",
     responses(
-        (status = 200, description = "Server liveness, version, and environment", body = crate::services::StatusResponse),
+        (status = 200, description = "Server liveness, version, environment, and execution capability", body = crate::services::StatusResponse),
     )
 )]
 pub async fn status(State(state): State<AppState>) -> Json<crate::services::StatusResponse> {
@@ -440,6 +441,12 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
         state.dashboard.environment(),
         state.dashboard.started_at(),
         state.clock.now(),
+        crate::services::ExecutionStatus::of(
+            state
+                .execution
+                .availability(state.canonicalization.is_some())
+                .map(|_| ()),
+        ),
     ))
 }
 
@@ -451,7 +458,7 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
     path = "/",
     tag = "client",
     responses(
-        (status = 200, description = "Alias of `GET /status`: server liveness, version, and environment", body = crate::services::StatusResponse),
+        (status = 200, description = "Alias of `GET /status`: server liveness, version, environment, and execution capability", body = crate::services::StatusResponse),
     )
 )]
 pub async fn status_root(state: State<AppState>) -> Json<crate::services::StatusResponse> {
@@ -921,6 +928,8 @@ mod tests {
         assert!(json["environment"].is_string());
         assert!(json["started_at"].is_string());
         assert!(json["uptime_seconds"].is_number());
+        assert_eq!(json["execution"]["enabled"], false);
+        assert!(json["execution"]["reason"].is_string());
         // Must not leak any dashboard/inventory fields.
         assert!(json.get("total_account_count").is_none());
         assert!(json.get("accounts_by_auth_method").is_none());

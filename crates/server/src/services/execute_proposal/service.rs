@@ -4,7 +4,7 @@ use chrono::Utc;
 
 use super::executor::{ExecutionInput, ProposalExecutor};
 use super::worker::{ExecutionJob, run_execution};
-use crate::config::execution::ExecutionConfig;
+use crate::config::execution::{ExecutionConfig, ExecutionUnavailable};
 use crate::coordination::{ExecutionLeases, InMemoryExecutionLeases, release_quietly};
 use crate::delta_object::DeltaStatus;
 use crate::error::{GuardianError, Result};
@@ -36,15 +36,28 @@ impl Default for ExecutionState {
 }
 
 impl ExecutionState {
-    /// The executor, when this server offers execution at all. The builder installs one only
-    /// when a prover is configured, proving is enabled and the build includes it.
-    fn available(&self, canonicalization_enabled: bool) -> Result<Arc<dyn ProposalExecutor>> {
+    /// The executor when this server offers execution, and otherwise why not. The builder
+    /// installs one only when a prover is configured and proving is enabled.
+    pub fn availability(
+        &self,
+        canonicalization_enabled: bool,
+    ) -> std::result::Result<Arc<dyn ProposalExecutor>, ExecutionUnavailable> {
         if !canonicalization_enabled {
-            return Err(GuardianError::ProvingUnavailable);
+            return Err(ExecutionUnavailable::CanonicalizationDisabled);
         }
-        self.executor
-            .clone()
-            .ok_or(GuardianError::ProvingUnavailable)
+        match &self.executor {
+            Some(executor) => Ok(executor.clone()),
+            None => Err(self
+                .config
+                .availability()
+                .err()
+                .unwrap_or(ExecutionUnavailable::ProverNotConfigured)),
+        }
+    }
+
+    fn available(&self, canonicalization_enabled: bool) -> Result<Arc<dyn ProposalExecutor>> {
+        self.availability(canonicalization_enabled)
+            .map_err(|_| GuardianError::ProvingUnavailable)
     }
 
     fn new_holder_id(&self) -> String {

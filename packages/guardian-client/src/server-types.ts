@@ -1,4 +1,5 @@
 import type { TransactionRequestEnvelope } from './request-envelope.js';
+import type { ServerExecutionCapability } from './execution.js';
 
 export interface ServerFalconSignature {
   scheme: 'falcon';
@@ -180,6 +181,7 @@ export interface ServerStatusResponse {
   environment: string;
   started_at: string;
   uptime_seconds: number;
+  execution: ServerExecutionCapability;
 }
 
 export interface ServerLookupAccount {

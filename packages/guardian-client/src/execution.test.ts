@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 import {
   EXECUTION_FAILURE_CODES,
   EXECUTION_STATES,
+  EXECUTION_UNAVAILABLE_REASONS,
   EXPIRATION_BOUNDS,
   FOREIGN_ACCOUNT_UNAVAILABLE_REASONS,
   REQUEST_INVALID_REASONS,
@@ -49,6 +50,16 @@ describe('drift guard against guardian_shared::execution', () => {
     expect([...FOREIGN_ACCOUNT_UNAVAILABLE_REASONS]).toEqual(
       rustVariants('ForeignAccountUnavailableReason').map(snake)
     );
+  });
+
+  it('the execution-unavailable reasons match the server enum', () => {
+    const configRs = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../../crates/server/src/config/execution.rs'),
+      'utf8'
+    );
+    const body = configRs.slice(configRs.indexOf('pub enum ExecutionUnavailable {'));
+    const variants = [...body.slice(0, body.indexOf('\n}')).matchAll(/^\s{4}([A-Z][A-Za-z]+),$/gm)].map((m) => m[1]);
+    expect([...EXECUTION_UNAVAILABLE_REASONS]).toEqual(variants.map(snake));
   });
 
   it('the failure codes match ExecutionFailureCode::as_str', () => {

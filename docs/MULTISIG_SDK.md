@@ -534,7 +534,9 @@ A client built in the **Guardian-executable** mode instead stores the proposal's
 it, so any cosigner can ask Guardian to prove, submit and commit it once it has enough
 signatures. The mode is set once, on the client; no method signature changes, and the client
 never asks the server whether it offers execution; a server without a prover refuses the
-request with `GUARDIAN_PROVING_UNAVAILABLE`.
+request with `GUARDIAN_PROVING_UNAVAILABLE`. An application that wants to know beforehand, for
+example to show or hide an "execute through Guardian" action, can read `execution` from the
+server's public `GET /status` (`getStatus()` in the TypeScript base client).
 
 ```rust
 use miden_multisig_client::{ExecutionState, MultisigClient, ProposalExecutionMode, TransactionType};
