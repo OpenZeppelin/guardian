@@ -147,9 +147,10 @@ are not being reconsidered — note that individual accounts back off as
 their recoverable rows age, so a retained row being probed less often
 than the configured interval is expected. It also reports
 `max_pending_candidates_per_account`, the per-account candidate queue
-depth (issue #17): `has_pending_candidate` on an account means *at least
-one* candidate is queued, and `candidate` rows for one account may
-number up to this depth. `backend.release_sweep`
+depth (issue #17; `1`, the default, means no queueing):
+`has_pending_candidate` on an account means *at least one* candidate is
+queued, and `candidate` rows for one account may number up to this
+depth. `backend.release_sweep`
 exposes the release sweep settings (`rotation_seconds`,
 `max_rate_per_second`, `recheck_seconds`, `confirmations`, issue
 #434; `null` when the sweep is disabled). A `released_at` set by the

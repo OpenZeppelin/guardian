@@ -396,6 +396,10 @@ pub struct MockStorageBackend {
     pub submit_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_calls: Arc<StdMutex<Vec<DeltaObject>>>,
     pub pull_state_responses: Arc<StdMutex<Vec<StdResult<StateObject, String>>>>,
+    /// The state `pull_state` last returned: what the commitment and head
+    /// reads describe once no further state is queued, since the stored
+    /// state has not moved since.
+    pub last_pulled_state: Arc<StdMutex<Option<StateObject>>>,
     pub pull_delta_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
     pub pull_deltas_after_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
     pub pull_candidate_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
@@ -473,6 +477,22 @@ pub struct MockStorageBackend {
 impl MockStorageBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The stored state as the payload-free reads (`pull_state_commitment`,
+    /// `pull_state_head`) see it, without consuming a response: the state
+    /// the next `pull_state` would return, or, once none is queued, the
+    /// one it last returned. Both describe the same stored state.
+    fn peek_stored_state(&self) -> StdResult<StateObject, String> {
+        match self.pull_state_responses.lock().unwrap().last() {
+            Some(response) => response.clone(),
+            None => self
+                .last_pulled_state
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| "No state found".to_string()),
+        }
     }
 
     pub fn with_kind(mut self, kind: crate::storage::StorageType) -> Self {
@@ -851,37 +871,35 @@ impl StorageBackend for MockStorageBackend {
     }
 
     async fn pull_state(&self, _account_id: &str) -> StdResult<StateObject, String> {
-        self.pull_state_responses
+        let response = self
+            .pull_state_responses
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("No state found".to_string()))
-    }
-
-    /// The commitment of the state the next `pull_state` would return,
-    /// without consuming it: both reads describe the same stored state.
-    async fn pull_state_commitment(&self, _account_id: &str) -> StdResult<String, String> {
-        match self.pull_state_responses.lock().unwrap().last() {
-            Some(Ok(state)) => Ok(state.commitment.clone()),
-            Some(Err(error)) => Err(error.clone()),
-            None => Err("No state found".to_string()),
+            .unwrap_or_else(|| Err("No state found".to_string()));
+        if let Ok(state) = &response {
+            *self.last_pulled_state.lock().unwrap() = Some(state.clone());
         }
+        response
     }
 
-    /// The head of the state the next `pull_state` would return, without
-    /// consuming it: both reads describe the same stored state.
+    /// The commitment of the stored state, without consuming a response:
+    /// see [`Self::peek_stored_state`].
+    async fn pull_state_commitment(&self, _account_id: &str) -> StdResult<String, String> {
+        self.peek_stored_state().map(|state| state.commitment)
+    }
+
+    /// The head of the stored state, without consuming a response: see
+    /// [`Self::peek_stored_state`].
     async fn pull_state_head(
         &self,
         _account_id: &str,
     ) -> StdResult<crate::state_object::StateHead, String> {
-        match self.pull_state_responses.lock().unwrap().last() {
-            Some(Ok(state)) => Ok(crate::state_object::StateHead {
-                commitment: state.commitment.clone(),
+        self.peek_stored_state()
+            .map(|state| crate::state_object::StateHead {
+                commitment: state.commitment,
                 nonce: state.nonce,
-            }),
-            Some(Err(error)) => Err(error.clone()),
-            None => Err("No state found".to_string()),
-        }
+            })
     }
 
     async fn backfill_state_nonce(

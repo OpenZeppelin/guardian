@@ -22,9 +22,13 @@ use serde_json::Value;
 
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
+use crate::network::ReconstructError;
 use crate::state::AppState;
 use crate::state_object::StateObject;
-use crate::storage::{ChainPosition, QueuedCandidate, StorageBackend, classify_chain_position};
+use crate::storage::{
+    ChainPosition, QueuedCandidate, StorageBackend, classify_chain_position,
+    first_unchained_candidate,
+};
 
 /// The account's configured candidate queue depth. Optimistic mode has
 /// no candidates at all, so the value is immaterial there; `1` keeps the
@@ -82,22 +86,19 @@ impl CandidateChain {
                 GuardianError::StorageError(format!("Failed to load candidate queue: {e}"))
             })?;
 
-        let mut running = stored_commitment;
-        for candidate in &candidates {
-            let chained = candidate.prev_commitment == running;
-            let Some(next) = candidate.new_commitment.as_deref().filter(|_| chained) else {
-                tracing::info!(
-                    account_id = %account_id,
-                    nonce = candidate.nonce,
-                    prev_commitment = %candidate.prev_commitment,
-                    chain_commitment = %running,
-                    "Candidate queue does not chain from the canonical state at this nonce \
-                     (a predecessor was parked or discarded and awaits the worker's sweep); \
-                     refusing the submission"
-                );
-                return Err(GuardianError::ConflictPendingDelta);
-            };
-            running = next;
+        let queue: Vec<QueuedCandidate> = candidates.iter().map(QueuedCandidate::of).collect();
+        if let Some(index) = first_unchained_candidate(stored_commitment, &queue) {
+            let candidate = &candidates[index];
+            tracing::info!(
+                account_id = %account_id,
+                nonce = candidate.nonce,
+                prev_commitment = %candidate.prev_commitment,
+                stored_commitment = %stored_commitment,
+                "Candidate queue does not chain from the canonical state at this nonce \
+                 (a predecessor was parked or discarded and awaits the worker's sweep); \
+                 refusing the submission"
+            );
+            return Err(GuardianError::ConflictPendingDelta);
         }
 
         Ok(Self { candidates })
@@ -105,27 +106,53 @@ impl CandidateChain {
 
     /// Load the chain for an admission decision. The caller's state read
     /// and the queue read are separate, so a promotion landing between
-    /// them makes a healthy chain look broken (the head has become
-    /// canonical and the stored state moved along the chain); rather
-    /// than refuse such a race, the chain is re-validated once against a
-    /// fresh state read, which then replaces `current_state` so the
-    /// caller validates against one consistent base. A chain that is
-    /// still broken against an unchanged state is refused as before.
+    /// them leaves the two disagreeing, in one of two ways:
+    ///
+    /// - candidates remain behind the promoted one: they no longer chain
+    ///   from the state read, and the chain looks broken;
+    /// - the promoted candidate was the last one: the queue is empty,
+    ///   which agrees with any state read, so the stale base goes
+    ///   unnoticed and the submission is judged against a commitment the
+    ///   account has already left.
+    ///
+    /// Rather than refuse the first or misjudge the second, the stored
+    /// commitment is read again when the verdict depends on it, and on a
+    /// change the state is re-read and replaces `current_state`, so the
+    /// caller validates against one consistent base. The empty case
+    /// matters when there is no `base` (a proposal, pinned to whatever
+    /// tail this returns) or when the submission's `base` is not the
+    /// state read (a delta that would otherwise be refused as unrelated,
+    /// with a stale commitment to resync to). A chain that is still
+    /// broken against an unchanged state is refused as before.
     pub async fn load_for_admission(
         storage: &dyn StorageBackend,
         account_id: &str,
         current_state: &mut StateObject,
+        base: Option<&str>,
     ) -> Result<Self> {
-        match Self::load(storage, account_id, &current_state.commitment).await {
-            Err(GuardianError::ConflictPendingDelta) => {}
-            outcome => return outcome,
+        let first = Self::load(storage, account_id, &current_state.commitment).await;
+        let recheck = match &first {
+            Err(GuardianError::ConflictPendingDelta) => true,
+            Ok(chain) => {
+                chain.is_empty() && base.is_none_or(|base| base != current_state.commitment)
+            }
+            Err(_) => false,
+        };
+        if !recheck {
+            return first;
+        }
+        let stored_commitment = storage
+            .pull_state_commitment(account_id)
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to re-read account state: {e}"))
+            })?;
+        if stored_commitment == current_state.commitment {
+            return first;
         }
         let fresh = storage.pull_state(account_id).await.map_err(|e| {
             GuardianError::StorageError(format!("Failed to re-read account state: {e}"))
         })?;
-        if fresh.commitment == current_state.commitment {
-            return Err(GuardianError::ConflictPendingDelta);
-        }
         tracing::debug!(
             account_id = %account_id,
             "Canonical state moved during admission; re-validating the candidate queue"
@@ -172,8 +199,15 @@ impl CandidateChain {
     /// reconstruction pool (the same CPU gate `push_delta` already
     /// takes). The replayed commitment must reproduce the stored tail
     /// commitment — the queued rows were written from exactly this
-    /// computation — so a mismatch is an internal inconsistency, never a
-    /// client error.
+    /// computation — so a payload that no longer applies, or a replay
+    /// that lands elsewhere, is an internal inconsistency, never a client
+    /// error. It can only come from a server whose delta application
+    /// changed while the candidates were queued (an upgrade); it is
+    /// logged as an error and refused as the pending conflict it is from
+    /// the client's side: nothing can be admitted behind the queue until
+    /// the worker drains it, so the client waits and retries, as for a
+    /// full queue. A replay task that never completed (panic, runtime
+    /// shutdown) stays a server fault.
     pub async fn reconstruct_tail(
         &self,
         state: &AppState,
@@ -209,19 +243,20 @@ impl CandidateChain {
                 Ok((state_json, commitment))
             })
             .await
-            .map_err(|e| {
-                // A queued payload that no longer applies is corruption
-                // of the server's own queue, not a malformed client
-                // request: surface it as a storage fault, not 400.
-                tracing::error!(
-                    account_id = %current_state.account_id,
-                    tail_nonce,
-                    error = %GuardianError::from(e),
-                    "Failed to replay the candidate queue onto the canonical state"
-                );
-                GuardianError::StorageError(
-                    "candidate queue could not be replayed onto the canonical state".to_string(),
-                )
+            .map_err(|e| match e {
+                ReconstructError::Operation(message) => {
+                    tracing::error!(
+                        account_id = %current_state.account_id,
+                        tail_nonce,
+                        error = %message,
+                        "Failed to replay the candidate queue onto the canonical state; \
+                         refusing submissions until the queue drains"
+                    );
+                    GuardianError::ConflictPendingDelta
+                }
+                // The replay never ran to completion: a server fault, not
+                // a property of the queue.
+                task => GuardianError::from(task),
             })?;
 
         if commitment != expected_commitment {
@@ -230,11 +265,10 @@ impl CandidateChain {
                 tail_nonce,
                 stored = %expected_commitment,
                 replayed = %commitment,
-                "Candidate queue replay does not reproduce the stored tail commitment"
+                "Candidate queue replay does not reproduce the stored tail commitment; \
+                 refusing submissions until the queue drains"
             );
-            return Err(GuardianError::StorageError(
-                "candidate queue replay does not match the stored tail commitment".to_string(),
-            ));
+            return Err(GuardianError::ConflictPendingDelta);
         }
 
         Ok(ChainTail {
@@ -341,7 +375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replay_that_disagrees_with_the_stored_tail_is_a_storage_fault() {
+    async fn replay_that_disagrees_with_the_stored_tail_is_a_pending_conflict() {
         let storage = MockStorageBackend::new().with_pull_candidate_deltas(Ok(vec![candidate(
             1,
             "0xbase",
@@ -361,7 +395,40 @@ mod tests {
             .reconstruct_tail(&state, &stored_state())
             .await
             .expect_err("mismatched replay is refused");
-        assert!(matches!(err, GuardianError::StorageError(_)), "{err:?}");
+        assert!(
+            matches!(err, GuardianError::ConflictPendingDelta),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn payload_that_no_longer_applies_is_a_pending_conflict() {
+        // An upgrade changed delta application while a candidate was
+        // queued: the replay fails. The client cannot fix that, so it is
+        // told to wait for the queue to drain, not handed a 500.
+        let storage = MockStorageBackend::new().with_pull_candidate_deltas(Ok(vec![candidate(
+            1,
+            "0xbase",
+            Some("0xc1"),
+        )]));
+        let chain = CandidateChain::load(&storage, "0xacc", "0xbase")
+            .await
+            .expect("queue loads");
+        let network =
+            MockNetworkClient::new().with_apply_delta(Err("unknown field `fee`".to_string()));
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage),
+            Arc::new(network),
+            Arc::new(MockMetadataStore::new()),
+        );
+        let err = chain
+            .reconstruct_tail(&state, &stored_state())
+            .await
+            .expect_err("an unreplayable queue is refused");
+        assert!(
+            matches!(err, GuardianError::ConflictPendingDelta),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
@@ -409,9 +476,10 @@ mod tests {
                 ..stored_state()
             }));
         let mut current_state = stored_state();
-        let chain = CandidateChain::load_for_admission(&storage, "0xacc", &mut current_state)
-            .await
-            .expect("the race is tolerated");
+        let chain =
+            CandidateChain::load_for_admission(&storage, "0xacc", &mut current_state, Some("0xc2"))
+                .await
+                .expect("the race is tolerated");
         assert_eq!(current_state.commitment, "0xc1");
         assert_eq!(chain.tail_commitment(&current_state.commitment), "0xc2");
 
@@ -420,13 +488,96 @@ mod tests {
             .with_pull_candidate_deltas(Ok(vec![candidate(2, "0xgone", Some("0xc2"))]))
             .with_pull_state(Ok(stored_state()));
         let mut current_state = stored_state();
-        let err = CandidateChain::load_for_admission(&storage, "0xacc", &mut current_state)
-            .await
-            .expect_err("a genuinely broken queue is refused");
+        let err =
+            CandidateChain::load_for_admission(&storage, "0xacc", &mut current_state, Some("0xc2"))
+                .await
+                .expect_err("a genuinely broken queue is refused");
         assert!(
             matches!(err, GuardianError::ConflictPendingDelta),
             "{err:?}"
         );
+        assert_eq!(current_state.commitment, "0xbase");
+    }
+
+    fn state_at(commitment: &str, step: u64) -> StateObject {
+        StateObject {
+            commitment: commitment.to_string(),
+            state_json: serde_json::json!({ "step": step }),
+            ..stored_state()
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_load_sees_the_last_candidate_promoted_between_the_two_reads() {
+        // The caller read the state at 0xbase; the worker then promoted
+        // the only queued candidate (state → 0xc1), so the queue read
+        // comes back empty. An empty queue agrees with any state read:
+        // without a second look, a delta built on 0xc1 (the real tail)
+        // would be judged against the stale 0xbase and refused as
+        // unrelated. Reads pop LIFO: the commitment re-read peeks at the
+        // fresh state, the full re-read takes it.
+        let storage = MockStorageBackend::new()
+            .with_pull_candidate_deltas(Ok(vec![]))
+            .with_pull_candidate_deltas(Ok(vec![]))
+            .with_pull_state(Ok(state_at("0xc1", 1)));
+        let mut current_state = stored_state();
+        let chain =
+            CandidateChain::load_for_admission(&storage, "0xacc", &mut current_state, Some("0xc1"))
+                .await
+                .expect("the empty queue reloads against the fresh state");
+        assert!(chain.is_empty());
+        assert_eq!(current_state.commitment, "0xc1");
+        assert_eq!(current_state.state_json, serde_json::json!({ "step": 1 }));
+        assert_eq!(
+            chain.position(&current_state.commitment, "0xc1"),
+            ChainPosition::Tail
+        );
+
+        // A proposal has no base of its own: it is pinned to the tail this
+        // returns, so the empty queue is re-checked for it too.
+        let storage = MockStorageBackend::new()
+            .with_pull_candidate_deltas(Ok(vec![]))
+            .with_pull_candidate_deltas(Ok(vec![]))
+            .with_pull_state(Ok(state_at("0xc1", 1)));
+        let mut current_state = stored_state();
+        CandidateChain::load_for_admission(&storage, "0xacc", &mut current_state, None)
+            .await
+            .expect("the empty queue reloads against the fresh state");
+        assert_eq!(current_state.commitment, "0xc1");
+    }
+
+    #[tokio::test]
+    async fn admission_load_keeps_a_settled_empty_queue_without_a_full_re_read() {
+        // The state did not move: the commitment re-read agrees, so the
+        // first verdict stands and the full state is not read again.
+        let storage = MockStorageBackend::new()
+            .with_pull_candidate_deltas(Ok(vec![]))
+            .with_pull_state(Ok(stored_state()));
+        let mut current_state = stored_state();
+        let chain = CandidateChain::load_for_admission(
+            &storage,
+            "0xacc",
+            &mut current_state,
+            Some("0xzzz"),
+        )
+        .await
+        .expect("an empty queue loads");
+        assert!(chain.is_empty());
+        assert_eq!(current_state.commitment, "0xbase");
+        assert_eq!(
+            storage.pull_state_responses.lock().unwrap().len(),
+            1,
+            "only the commitment was re-read"
+        );
+        assert_eq!(chain.position("0xbase", "0xzzz"), ChainPosition::Unrelated);
+
+        // A delta on the state read needs no second look at all: it is
+        // either right, or refused in-lock against the fresh commitment.
+        let storage = MockStorageBackend::new().with_pull_candidate_deltas(Ok(vec![]));
+        let mut current_state = stored_state();
+        CandidateChain::load_for_admission(&storage, "0xacc", &mut current_state, Some("0xbase"))
+            .await
+            .expect("no re-read is needed");
         assert_eq!(current_state.commitment, "0xbase");
     }
 

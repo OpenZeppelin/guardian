@@ -88,14 +88,22 @@ pub async fn push_delta_proposal(
 
     // Queue admission (issue #17): a proposal is pinned to the tail of
     // the account's candidate chain — the state the eventual delta must
-    // build on. While the queue is full the delta could not be admitted
-    // anyway, so the proposal is refused up front rather than after
-    // cosigners have signed it (with depth 1 this is the historical
-    // "one in-flight candidate" refusal).
+    // build on. A proposal whose delta could never be admitted there is
+    // refused up front rather than after cosigners have signed it:
+    // - while the queue is full (with depth 1 this is the historical
+    //   "one in-flight candidate" refusal);
+    // - when its nonce does not exceed the tail's. A delta with such a
+    //   nonce is refused while the queue holds the slot and collides with
+    //   the promoted candidate once it drains, so its push is doomed
+    //   either way. This is the cosigner that synced the canonical state
+    //   (all `/state` serves) and proposes on it while another device's
+    //   candidate is queued: its SDK derives the nonce from the canonical
+    //   account, which is at or below the tail's.
     let chain = CandidateChain::load_for_admission(
         resolved.storage.as_ref(),
         &account_id,
         &mut current_state,
+        None,
     )
     .await?;
     let max_pending_candidates = candidate_chain::max_pending_candidates(state);
@@ -109,7 +117,19 @@ pub async fn push_delta_proposal(
         );
         return Err(GuardianError::ConflictPendingDelta);
     }
-    let tail = chain.reconstruct_tail(state, &current_state).await?;
+    let tail_nonce = chain.tail_nonce();
+    if let Some(tail_nonce) = tail_nonce
+        && nonce <= tail_nonce
+    {
+        tracing::info!(
+            account_id = %account_id,
+            nonce,
+            tail_nonce,
+            "Proposal nonce does not extend the candidate queue; refusing as pending-delta conflict"
+        );
+        return Err(GuardianError::ConflictPendingDelta);
+    }
+    let tail_commitment = chain.tail_commitment(&current_state.commitment).to_string();
 
     let pending_proposals = resolved
         .storage
@@ -130,10 +150,17 @@ pub async fn push_delta_proposal(
     // locked out with PendingProposalsLimit (#337). Non-viable proposals
     // stay in storage and remain visible via pull_pending_proposals.
     // Viability is measured against the chain tail: that commitment is
-    // what promotion drives the canonical state towards.
+    // what promotion drives the canonical state towards, and a proposal
+    // pinned to it whose nonce does not exceed the tail's is as dead as
+    // one on a superseded commitment (see the refusal above). The limit
+    // is checked before the tail replay, which costs one delta
+    // application per queued candidate.
     let viable_pending = pending_proposals
         .iter()
-        .filter(|record| record.proposal.prev_commitment == tail.commitment)
+        .filter(|record| {
+            record.proposal.prev_commitment == tail_commitment
+                && tail_nonce.is_none_or(|tail_nonce| record.proposal.nonce > tail_nonce)
+        })
         .count();
 
     let max_pending_proposals = max_pending_proposals_per_account();
@@ -142,6 +169,8 @@ pub async fn push_delta_proposal(
             limit: max_pending_proposals,
         });
     }
+
+    let tail = chain.reconstruct_tail(state, &current_state).await?;
 
     // Extract tx_summary and signatures from delta_payload
     let tx_summary = delta_payload
@@ -1124,6 +1153,248 @@ mod tests {
         assert!(
             storage.get_submit_delta_proposal_calls().is_empty(),
             "refused before any write"
+        );
+    }
+
+    /// Issue #17 fixtures: a Falcon 1-of-1 fixture account in candidate
+    /// mode at `depth`, its canonical state at `CANONICAL`, and `queue` as
+    /// its candidate queue.
+    const CANONICAL: &str = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+
+    struct QueuedProposalSetup {
+        state: AppState,
+        storage: MockStorageBackend,
+        network: MockNetworkClient,
+        account_id: String,
+        credentials: Credentials,
+        tx_summary: serde_json::Value,
+    }
+
+    fn queued_proposal_setup(
+        depth: usize,
+        queue: Vec<DeltaObject>,
+        pending: Vec<DeltaObject>,
+    ) -> QueuedProposalSetup {
+        let (state, storage, network, metadata) = create_test_state();
+        let mut state = state;
+        state.canonicalization = Some(
+            crate::canonicalization::CanonicalizationConfig::default()
+                .with_max_pending_candidates_per_account(depth),
+        );
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let (pubkey, commitment_hex, signature, timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+        ))));
+        let storage = storage
+            .with_pull_state(Ok(create_state_object(
+                account_id.clone(),
+                CANONICAL.to_string(),
+                account_json.clone(),
+            )))
+            .with_pull_deltas_after(Ok(queue))
+            .with_pull_all_delta_proposals(Ok(pending));
+        // One replay response: the assertions below tell from it whether
+        // the tail was ever materialized.
+        let network = network
+            .with_validate_credential(Ok(()))
+            .with_apply_delta(Ok((account_json, "0xtail".to_string())));
+        QueuedProposalSetup {
+            state,
+            storage,
+            network,
+            account_id,
+            credentials: Credentials::signature(pubkey, signature, timestamp),
+            tx_summary: delta_fixture["delta_payload"].clone(),
+        }
+    }
+
+    fn fixture_account_id() -> String {
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        delta_fixture["account_id"].as_str().unwrap().to_string()
+    }
+
+    fn queued_candidate(account_id: &str, nonce: u64, prev: &str, new: &str) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce,
+            prev_commitment: prev.to_string(),
+            new_commitment: Some(new.to_string()),
+            delta_payload: serde_json::json!({}),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string()),
+            metadata: None,
+        }
+    }
+
+    fn pending_on(account_id: &str, nonce: u64, prev: &str) -> DeltaObject {
+        let mut proposal = create_pending_proposal(account_id, nonce);
+        proposal.prev_commitment = prev.to_string();
+        proposal
+    }
+
+    async fn propose(setup: &QueuedProposalSetup, nonce: u64) -> Result<PushDeltaProposalResult> {
+        push_delta_proposal(
+            &setup.state,
+            PushDeltaProposalParams {
+                account_id: setup.account_id.clone(),
+                nonce,
+                delta_payload: serde_json::json!({
+                    "tx_summary": setup.tx_summary.clone(),
+                    "signatures": [],
+                    "metadata": {
+                        "proposal_type": "custom",
+                        "description": "proposed against the queue"
+                    }
+                }),
+                credentials: setup.credentials.clone(),
+            },
+        )
+        .await
+    }
+
+    /// Issue #17: a proposal whose nonce does not exceed the queue tail's
+    /// is doomed — its delta is refused while the tail's candidate holds
+    /// the slot and collides with it once promoted — so it is refused
+    /// before any cosigner signs it. This is the cosigner that synced the
+    /// canonical state and proposes on it while another device's candidate
+    /// is queued (its SDK derives the nonce from the canonical account).
+    #[tokio::test]
+    async fn test_push_delta_proposal_refused_at_or_below_the_tail_nonce() {
+        let account_id = &fixture_account_id();
+        for nonce in [4, 5] {
+            let setup = queued_proposal_setup(
+                4,
+                vec![queued_candidate(account_id, 5, CANONICAL, "0xtail")],
+                vec![],
+            );
+            let result = propose(&setup, nonce).await;
+            assert!(
+                matches!(result, Err(GuardianError::ConflictPendingDelta)),
+                "nonce {nonce}: {result:?}"
+            );
+            assert!(
+                setup.storage.get_submit_delta_proposal_calls().is_empty(),
+                "nothing is stored for cosigners to sign"
+            );
+            assert_eq!(
+                setup.network.apply_delta_responses.lock().unwrap().len(),
+                1,
+                "refused before any replay"
+            );
+            assert!(
+                setup
+                    .storage
+                    .pull_all_delta_proposals_calls
+                    .lock()
+                    .unwrap()
+                    .is_empty(),
+                "refused before the pending set is read"
+            );
+        }
+
+        // The next nonce extends the queue and is pinned to its tail.
+        let setup = queued_proposal_setup(
+            4,
+            vec![queued_candidate(account_id, 5, CANONICAL, "0xtail")],
+            vec![],
+        );
+        let accepted = propose(&setup, 6).await.expect("nonce 6 extends the queue");
+        assert_eq!(accepted.delta.prev_commitment, "0xtail");
+    }
+
+    /// Proposals pinned to the tail at or below its nonce are as dead as
+    /// proposals on a superseded commitment: they never consume capacity.
+    #[tokio::test]
+    async fn test_push_delta_proposal_doomed_tail_proposals_do_not_consume_capacity() {
+        let account_id = &fixture_account_id();
+        let doomed = (0..20)
+            .map(|_| pending_on(account_id, 1, "0xtail"))
+            .collect();
+        let setup = queued_proposal_setup(
+            4,
+            vec![queued_candidate(account_id, 1, CANONICAL, "0xtail")],
+            doomed,
+        );
+        let accepted = propose(&setup, 2)
+            .await
+            .expect("doomed proposals leave the capacity free");
+        assert_eq!(accepted.delta.prev_commitment, "0xtail");
+    }
+
+    /// The pending-proposal limit is checked against the tail commitment
+    /// before the tail is replayed: a refused proposal costs no delta
+    /// applications.
+    #[tokio::test]
+    async fn test_push_delta_proposal_limit_is_checked_before_the_tail_replay() {
+        let account_id = &fixture_account_id();
+        let viable = (2..22)
+            .map(|nonce| pending_on(account_id, nonce, "0xtail"))
+            .collect();
+        let setup = queued_proposal_setup(
+            4,
+            vec![queued_candidate(account_id, 1, CANONICAL, "0xtail")],
+            viable,
+        );
+        let result = propose(&setup, 22).await;
+        assert!(
+            matches!(
+                result,
+                Err(GuardianError::PendingProposalsLimit { limit: 20 })
+            ),
+            "{result:?}"
+        );
+        assert_eq!(
+            setup.network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "refused before any replay"
+        );
+    }
+
+    /// The request read the state; the worker then promoted the only
+    /// queued candidate before the queue read, which came back empty. The
+    /// proposal must be pinned to the promoted state — the real tail — not
+    /// to the stale read, where it would be non-viable on arrival (and the
+    /// TypeScript SDK, which pushes the stored proposal's base, could
+    /// never push it).
+    #[tokio::test]
+    async fn test_push_delta_proposal_pinned_to_the_state_a_mid_request_promotion_reached() {
+        let setup = queued_proposal_setup(4, vec![], vec![]);
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        // Reads pop LIFO: the request's first read (queued by the setup)
+        // must be the stale one, so the promoted state goes underneath it.
+        let stale = setup
+            .storage
+            .pull_state_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("setup state");
+        {
+            let mut responses = setup.storage.pull_state_responses.lock().unwrap();
+            responses.push(Ok(create_state_object(
+                setup.account_id.clone(),
+                "0xpromoted".to_string(),
+                account_json,
+            )));
+            responses.push(stale);
+        }
+        let accepted = propose(&setup, 2)
+            .await
+            .expect("the proposal is admitted against the promoted state");
+        assert_eq!(
+            accepted.delta.prev_commitment, "0xpromoted",
+            "pinned to the state the promotion reached"
         );
     }
 

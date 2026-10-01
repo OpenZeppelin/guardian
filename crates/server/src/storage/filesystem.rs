@@ -1934,6 +1934,56 @@ mod tests {
                 .has_pending_candidate
         );
 
+        // A full queue refuses every base, an unknown one included: depth 1
+        // with a candidate in flight is the historical single-candidate gate.
+        assert_eq!(
+            storage
+                .submit_candidate(&metadata_store, &chained(4, "0xzzz", "0xc4"), now, 3)
+                .await
+                .expect("resolves"),
+            crate::storage::CandidateSubmission::Conflict
+        );
+
+        // The head is parked: the rest of the queue no longer chains from
+        // the stored state. Extending the orphaned tail is refused, or the
+        // delta would be acknowledged and then orphaned on the next pass.
+        assert_eq!(
+            storage
+                .update_candidate_status(
+                    account_id,
+                    1,
+                    DeltaStatus::retained(
+                        now.to_string(),
+                        crate::delta_object::RetainReason::RetryExhausted
+                    ),
+                    None,
+                )
+                .await
+                .expect("park resolves"),
+            crate::storage::CanonicalWrite::Applied
+        );
+        for (prev, label) in [("0xc3", "the orphaned tail"), ("0x123", "the stored base")] {
+            assert_eq!(
+                storage
+                    .submit_candidate(&metadata_store, &chained(4, prev, "0xc4"), now, 8)
+                    .await
+                    .expect("resolves"),
+                crate::storage::CandidateSubmission::Conflict,
+                "{label}"
+            );
+        }
+        assert_eq!(
+            storage
+                .pull_candidate_deltas(account_id)
+                .await
+                .expect("queue readable")
+                .iter()
+                .map(|d| d.nonce)
+                .collect::<Vec<_>>(),
+            vec![2, 3],
+            "nothing was admitted behind the orphans"
+        );
+
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 

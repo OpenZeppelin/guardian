@@ -4679,8 +4679,9 @@
           "max_pending_candidates_per_account": {
             "type": "integer",
             "format": "int64",
-            "description": "Candidate deltas one account may hold in flight at once, as a\nstrictly ordered chain (issue #17). `1` is the historical\none-in-flight-candidate behavior.",
-            "minimum": 0
+            "description": "Candidate deltas one account may hold in flight at once, as a\nstrictly ordered chain (issue #17). `1`, the default, is the\nhistorical one-in-flight-candidate behavior; deeper queues are an\noperator opt-in.",
+            "maximum": 16,
+            "minimum": 1
           },
           "max_retries": {
             "type": "integer",

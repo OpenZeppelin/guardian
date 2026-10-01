@@ -1682,20 +1682,27 @@ impl StorageBackend for PostgresService {
                 // Race-proof twin of the service-layer admission gate:
                 // two submissions that both passed the pre-commit scan
                 // serialize on the account lock, and the loser sees the
-                // winner's candidate in the queue read here. The
-                // chain-tail and depth rules (issue #17) are evaluated
-                // on the committed queue, in nonce order.
+                // winner's candidate in the queue read here. The depth,
+                // chain, and tail rules (issue #17) are evaluated on the
+                // committed queue, in nonce order.
                 let queue: Vec<crate::storage::QueuedCandidate> = deltas::table
                     .filter(deltas::account_id.eq(&delta.account_id))
                     .filter(deltas::status_kind.eq("candidate"))
                     .order(deltas::nonce.asc())
-                    .select((deltas::nonce, deltas::new_commitment))
-                    .load::<(i64, Option<String>)>(conn)
+                    .select((
+                        deltas::nonce,
+                        deltas::prev_commitment,
+                        deltas::new_commitment,
+                    ))
+                    .load::<(i64, String, Option<String>)>(conn)
                     .await?
                     .into_iter()
-                    .map(|(nonce, new_commitment)| crate::storage::QueuedCandidate {
-                        nonce: nonce as u64,
-                        new_commitment,
+                    .map(|(nonce, prev_commitment, new_commitment)| {
+                        crate::storage::QueuedCandidate {
+                            nonce: nonce as u64,
+                            prev_commitment,
+                            new_commitment,
+                        }
                     })
                     .collect();
                 if let Some(refused) = crate::storage::gate_candidate_submission(
@@ -3996,6 +4003,49 @@ mod tests {
         assert_eq!(
             queue.iter().map(|d| d.nonce).take(3).collect::<Vec<_>>(),
             vec![1, 2, 3]
+        );
+        let tail = queue.last().expect("tail").clone();
+        let tail_post_state = tail.new_commitment.clone().expect("tail post-state");
+
+        // A full queue refuses every base, an unknown one included: depth 1
+        // with a candidate in flight is the historical single-candidate gate.
+        assert_eq!(
+            submit(chained(tail.nonce + 1, "0xzzz", "0xc6"), 4).await,
+            CandidateSubmission::Conflict
+        );
+
+        // The head is parked: the rest of the queue no longer chains from
+        // the stored state, so nothing is admitted behind the orphans — a
+        // delta extending the orphaned tail would be acknowledged and then
+        // orphaned on the next pass.
+        service
+            .update_delta_status(
+                &account_id,
+                1,
+                DeltaStatus::retained(
+                    now.clone(),
+                    crate::delta_object::RetainReason::RetryExhausted,
+                ),
+            )
+            .await
+            .expect("the head is parked");
+        assert_eq!(
+            submit(chained(tail.nonce + 1, &tail_post_state, "0xc6"), 8).await,
+            CandidateSubmission::Conflict,
+            "the orphaned tail admits nothing"
+        );
+        assert_eq!(
+            submit(chained(tail.nonce + 1, &base, "0xc6"), 8).await,
+            CandidateSubmission::Conflict,
+            "the stored base admits nothing until the orphans are swept"
+        );
+        assert_eq!(
+            service
+                .pull_candidate_deltas(&account_id)
+                .await
+                .expect("queue readable")
+                .len(),
+            3
         );
         let flag = {
             let mut conn = service.pool.get().await.expect("conn");

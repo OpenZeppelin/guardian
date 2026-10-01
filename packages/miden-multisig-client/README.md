@@ -368,9 +368,10 @@ for (const p of proposals) {
 
 If an approved transaction died client-side after guardian approval, the
 candidate keeps the account locked on GUARDIAN: proposals and deltas answer
-`conflict_pending_delta` once the account's candidate queue (default depth
-4) is full or when they build on the state that candidate already claimed,
-and any candidate queued behind it can never land. Record an abandon intent
+`conflict_pending_delta` while the account's candidate queue (one candidate
+by default) is full, when they build on the state that candidate already
+claimed, or when they carry its nonce, and any candidate queued behind it
+can never land. Record an abandon intent
 and poll for the resolution:
 
 ```typescript

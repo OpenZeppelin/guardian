@@ -725,9 +725,10 @@ export interface DashboardCanonicalizationConfig {
   /** Accounts one reconcile pass visits at most (rotation cursor). */
   reconcilePageSize?: number;
   /** Candidate deltas one account may hold in flight at once, as a
-   * strictly ordered chain (issue #17). `1` is the historical
-   * one-in-flight-candidate behavior. Absent on servers predating the
-   * candidate queue, which behave as a depth of 1. */
+   * strictly ordered chain (issue #17). `1`, the server default, is the
+   * historical one-in-flight-candidate behavior; deeper queues (up to 16)
+   * are an operator opt-in. Absent on servers predating the candidate
+   * queue, which behave as a depth of 1. */
   maxPendingCandidatesPerAccount?: number;
 }
 

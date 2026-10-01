@@ -370,10 +370,11 @@ impl DeltasProcessorBase {
     /// Pages are keyed by status timestamp, so a retried candidate (whose
     /// timestamp was refreshed) can arrive on a later page than its
     /// account's earlier nonces. The per-account nonce sort below only
-    /// orders within a page; an out-of-order candidate fails the
-    /// reconstruction-equality check and defers to the full pass — fast
-    /// promotion intentionally degrades for retried candidates instead of
-    /// re-sorting across pages.
+    /// orders within a page; a candidate whose predecessor has not been
+    /// promoted yet does not chain from the stored state, so it stops at
+    /// the base check (it is never reconstructed from the wrong base) and
+    /// defers to the full pass — fast promotion intentionally degrades for
+    /// retried candidates instead of re-sorting across pages.
     async fn process_recent_page(&self, candidates: Vec<DeltaObject>) -> (usize, usize) {
         let mut candidates_by_account = BTreeMap::<String, Vec<DeltaObject>>::new();
         for candidate in candidates
@@ -620,18 +621,36 @@ impl DeltasProcessorBase {
             }
             // A candidate can only verify from the stored base. The head
             // of the queue needs no pre-read: the per-candidate path
-            // reads the state itself and parks an orphaned head there. A
-            // read failure does not stop the pass for the same reason —
-            // the per-candidate path re-reads the state and surfaces the
-            // error with proper accounting.
+            // reads the state itself and parks an orphaned head there.
+            // Every later candidate needs one, and a failed read stops
+            // the account's pass: an unreadable state says nothing about
+            // where the chain stands, and taking it for "chains from the
+            // store" would send a mid-chain candidate down the head path,
+            // whose own re-read could then succeed and park it as
+            // orphaned behind a predecessor that was merely deferred. The
+            // rest of the queue waits for the next pass, as it does behind
+            // an unreadable predecessor row.
             let stored_commitment = if index == 0 {
                 None
             } else {
                 match self.state.storage.pull_state(account_id).await {
                     Ok(current_state) => Some(current_state.commitment),
-                    Err(_) => None,
+                    Err(e) => {
+                        tracing::warn!(
+                            account_id = %account_id,
+                            nonce = delta.nonce,
+                            error = %e,
+                            "Failed to read the stored state before a queued candidate; \
+                             leaving the rest of the queue for the next pass"
+                        );
+                        first_error.get_or_insert(GuardianError::StorageError(format!(
+                            "Failed to get current state: {e}"
+                        )));
+                        break;
+                    }
                 }
             };
+            // `None` is the head, which the per-candidate path checks.
             let chains_from_store = stored_commitment
                 .as_deref()
                 .is_none_or(|stored| stored == delta.prev_commitment);
@@ -1220,14 +1239,16 @@ impl DeltasProcessorBase {
             }
         }
 
-        self.release_account_if_queue_empty(&delta.account_id, &now, "abandon")
+        let account_released = self
+            .release_account_if_queue_empty(&delta.account_id, &now, "abandon")
             .await;
 
         record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Abandoned);
         tracing::info!(
             account_id = %delta.account_id,
             nonce = delta.nonce,
-            "Client-abandoned candidate discarded; account released"
+            account_released,
+            "Client-abandoned candidate discarded"
         );
 
         Ok(())
@@ -1352,8 +1373,7 @@ impl DeltasProcessorBase {
                 prev_commitment = %delta.prev_commitment,
                 observations,
                 "Account advanced past candidate's base state on-chain; \
-                 retaining the candidate for background reconciliation \
-                 and releasing the account"
+                 retaining the candidate for background reconciliation"
             );
         } else {
             tracing::warn!(
@@ -1363,7 +1383,7 @@ impl DeltasProcessorBase {
                 prev_commitment = %delta.prev_commitment,
                 observations,
                 "Account advanced past candidate's base state on-chain; discarding \
-                 unsatisfiable candidate and releasing the account"
+                 unsatisfiable candidate"
             );
         }
         self.park_candidate(
@@ -1430,7 +1450,7 @@ impl DeltasProcessorBase {
                     max_retries = self.max_retries,
                     error = %reason,
                     "Delta verification failed after max retries; retaining \
-                     for background reconciliation and releasing the account"
+                     for background reconciliation"
                 );
             } else {
                 tracing::warn!(
@@ -1601,29 +1621,22 @@ impl DeltasProcessorBase {
         }
     }
 
-    /// Keep a retry-exhausted candidate as `retained` (issue #345) and
-    /// release the account: the status flip drops the row out of the
-    /// pending-candidate lock scan, and the conditional flag clear
-    /// re-checks the delta store so a candidate committed concurrently
-    /// is never masked. The matching proposal is deleted here: the delta
-    /// row itself carries everything reconciliation needs, and a
-    /// proposal left `pending` would be stranded the moment a
-    /// resubmission supersedes the retained row. Cleanup follows the
-    /// committed status flip — running it first would let a stale worker
-    /// delete the proposal of a same-payload resubmission that already
-    /// superseded this row (the write refusal is what reveals that). A
-    /// failed cleanup is therefore retried by the reconcile pass, which
-    /// re-attempts proposal cleanup for every retained row it visits.
     /// Release the account's pending-candidate flag once no candidate
-    /// remains queued (issue #17). Parking, discarding, or abandoning one
-    /// candidate of several must leave the account listed for the next
-    /// full pass, or its remaining candidates — orphans, by then — would
-    /// never be swept. Fencing backends make the clear itself conditional
-    /// on the candidate rows; the read here keeps single-process backends
-    /// correct too. A failed read skips the clear: a stale `true` flag
-    /// is healed by the empty-queue check on a later pass, whereas a
-    /// wrongly cleared flag would strand the queue.
-    async fn release_account_if_queue_empty(&self, account_id: &str, now: &str, after: &str) {
+    /// remains queued (issue #17), and report whether it was released.
+    /// Parking, discarding, or abandoning one candidate of several must
+    /// leave the account listed for the next full pass, or its remaining
+    /// candidates — orphans, by then — would never be swept. Fencing
+    /// backends make the clear itself conditional on the candidate rows;
+    /// the read here keeps single-process backends correct too. A failed
+    /// read skips the clear: a stale `true` flag is healed by the
+    /// empty-queue check on a later pass, whereas a wrongly cleared flag
+    /// would strand the queue.
+    async fn release_account_if_queue_empty(
+        &self,
+        account_id: &str,
+        now: &str,
+        after: &str,
+    ) -> bool {
         match self.state.storage.has_pending_candidate(account_id).await {
             Ok(false) => {}
             Ok(true) => {
@@ -1632,7 +1645,7 @@ impl DeltasProcessorBase {
                     after,
                     "Candidates remain queued; keeping the pending-candidate flag set"
                 );
-                return;
+                return false;
             }
             Err(e) => {
                 tracing::warn!(
@@ -1642,7 +1655,7 @@ impl DeltasProcessorBase {
                     "Failed to read the candidate queue before releasing the account; \
                      leaving the flag for the stale-flag heal"
                 );
-                return;
+                return false;
             }
         }
         if let Err(e) = self
@@ -1658,9 +1671,25 @@ impl DeltasProcessorBase {
                 "Failed to clear has_pending_candidate flag; \
                  the stale-flag heal clears it on a later run"
             );
+            return false;
         }
+        true
     }
 
+    /// Keep a candidate the worker has given up on (retry exhaustion,
+    /// divergence, an orphaned chain) as `retained` (issue #345) and
+    /// release the account once its queue is empty: the status flip drops
+    /// the row out of the pending-candidate lock scan, and the conditional
+    /// flag clear re-checks the delta store so a candidate committed
+    /// concurrently is never masked. The matching proposal is deleted
+    /// here: the delta row itself carries everything reconciliation needs,
+    /// and a proposal left `pending` would be stranded the moment a
+    /// resubmission supersedes the retained row. Cleanup follows the
+    /// committed status flip — running it first would let a stale worker
+    /// delete the proposal of a same-payload resubmission that already
+    /// superseded this row (the write refusal is what reveals that). A
+    /// failed cleanup is therefore retried by the reconcile pass, which
+    /// re-attempts proposal cleanup for every retained row it visits.
     async fn retain_candidate(
         &self,
         delta: &DeltaObject,
@@ -1692,6 +1721,9 @@ impl DeltasProcessorBase {
                     .and_then(|ttl| at.checked_add_signed(ttl))
             })
             .map(|at| at.to_rfc3339());
+        let account_released = self
+            .release_account_if_queue_empty(&delta.account_id, now, "retain")
+            .await;
         tracing::info!(
             event = "candidate_retained",
             reason = match reason {
@@ -1702,12 +1734,9 @@ impl DeltasProcessorBase {
             account_id = %delta.account_id,
             nonce = delta.nonce,
             expires_at = expires_at.as_deref().unwrap_or("unbounded"),
-            "Candidate parked as retained; account released, background \
-             reconciliation takes over"
+            account_released,
+            "Candidate parked as retained; background reconciliation takes over"
         );
-
-        self.release_account_if_queue_empty(&delta.account_id, now, "retain")
-            .await;
 
         let _ = self.delete_matching_proposal(delta).await;
 
@@ -4049,6 +4078,73 @@ mod tests {
         );
         assert!(storage.get_update_delta_status_calls().is_empty());
         assert!(storage.get_delete_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_state_read_before_a_successor_stops_the_pass_without_parking_it() {
+        // Nonce 1 is deferred (chain at its base, inside grace). The state
+        // read before nonce 2 fails, and the read after it would succeed:
+        // a pass that took the failure for "chains from the store" would
+        // send nonce 2 down the head path, whose own read sees the stored
+        // base, not nonce 1's post-state, and parks a healthy successor as
+        // orphaned. The pass must stop instead and report the failure.
+        let account_id = "0xtest_account";
+        let c1 = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        let c2 = chained_candidate(account_id, 2, "0xc1", "0xc2");
+        // Reads pop LIFO: nonce 1's own read, then the failed pre-read
+        // before nonce 2, then the read only the head path would take.
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![c1, c2]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Err("pool timed out".to_string()))
+                .with_pull_state(Ok(create_test_state(account_id))),
+        );
+        let network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())))
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string())))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "prev_commitment".to_string(),
+                })),
+        );
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(())),
+        );
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 5).unwrap(),
+        ));
+        let state =
+            create_test_app_state_with_clock(storage.clone(), network.clone(), metadata, clock);
+
+        let config = CanonicalizationConfig::new(10, 18).with_submission_grace_period_seconds(600);
+        let processor = DeltasProcessor::new(state, config);
+        let summary = processor
+            .process_all_accounts()
+            .await
+            .expect("the pass absorbs the account failure");
+        assert!(
+            storage.get_update_delta_status_calls().is_empty(),
+            "the successor is not parked"
+        );
+        assert!(storage.get_delete_delta_calls().is_empty());
+        assert_eq!(
+            summary.failed_accounts, 1,
+            "the unreadable state is reported"
+        );
+        assert_eq!(
+            network.get_verify_commitment_calls().len(),
+            1,
+            "only the head is observed"
+        );
+        assert_eq!(
+            network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "the successor is not reconstructed"
+        );
     }
 
     #[tokio::test]

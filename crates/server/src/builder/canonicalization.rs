@@ -18,13 +18,22 @@ pub const ENV_RECONCILE_INTERVAL_SECONDS: &str =
     "GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS";
 
 /// Environment override for
-/// [`CanonicalizationConfig::max_pending_candidates_per_account`]. `1`
-/// restores the historical one-in-flight-candidate behavior (issue #17).
+/// [`CanonicalizationConfig::max_pending_candidates_per_account`]: the
+/// opt-in to queueing chained candidates (issue #17).
 pub const ENV_MAX_PENDING_CANDIDATES_PER_ACCOUNT: &str =
     "GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT";
 
-/// Default for [`CanonicalizationConfig::max_pending_candidates_per_account`].
-pub const DEFAULT_MAX_PENDING_CANDIDATES_PER_ACCOUNT: usize = 4;
+/// Default for [`CanonicalizationConfig::max_pending_candidates_per_account`]:
+/// one in-flight candidate, the behavior before the queue existed, so an
+/// upgrade changes nothing until an operator opts in.
+pub const DEFAULT_MAX_PENDING_CANDIDATES_PER_ACCOUNT: usize = 1;
+
+/// Upper bound for [`CanonicalizationConfig::max_pending_candidates_per_account`].
+/// Every chained admission replays the queued payloads onto the canonical
+/// state, one delta application per queued candidate on the shared
+/// reconstruction pool, so the depth bounds per-request CPU. The Miden
+/// mempool itself has no per-account limit on dependent transactions.
+pub const MAX_PENDING_CANDIDATES_PER_ACCOUNT_LIMIT: usize = 16;
 
 /// Configuration for delta canonicalization behavior
 /// When Some: deltas are saved as candidates and later verified/canonicalized
@@ -113,11 +122,12 @@ pub struct CanonicalizationConfig {
     /// and carry a higher nonce, so the worker verifies and promotes
     /// them in nonce order. A submission that would exceed this depth,
     /// or that competes with a queued candidate for the same base, is
-    /// refused with `conflict_pending_delta`. `1` reproduces the
-    /// historical one-in-flight-candidate behavior. Each admitted
-    /// chained submission reconstructs the queue tail from the
-    /// canonical state (one delta application per queued candidate),
-    /// so this also bounds per-push reconstruction cost.
+    /// refused with `conflict_pending_delta`. The default, `1`, is the
+    /// historical one-in-flight-candidate behavior; deeper queues are an
+    /// opt-in, capped at [`MAX_PENDING_CANDIDATES_PER_ACCOUNT_LIMIT`].
+    /// Each admitted chained submission reconstructs the queue tail
+    /// from the canonical state (one delta application per queued
+    /// candidate), so this also bounds per-push reconstruction cost.
     pub max_pending_candidates_per_account: usize,
 }
 
@@ -365,8 +375,9 @@ impl CanonicalizationConfig {
     /// #17). `1` reproduces the historical one-in-flight behavior.
     pub fn with_max_pending_candidates_per_account(mut self, depth: usize) -> Self {
         assert!(
-            depth > 0,
-            "max_pending_candidates_per_account must be at least 1 (1 = one in-flight candidate)"
+            (1..=MAX_PENDING_CANDIDATES_PER_ACCOUNT_LIMIT).contains(&depth),
+            "max_pending_candidates_per_account must be between 1 (one in-flight candidate) \
+             and {MAX_PENDING_CANDIDATES_PER_ACCOUNT_LIMIT}"
         );
         self.max_pending_candidates_per_account = depth;
         self
@@ -387,6 +398,12 @@ impl CanonicalizationConfig {
                     .map_err(|_| format!("{var_name} must be a positive integer, got '{value}'"))?;
                 if depth == 0 {
                     return Err(format!("{var_name} must be greater than zero"));
+                }
+                if depth > MAX_PENDING_CANDIDATES_PER_ACCOUNT_LIMIT {
+                    return Err(format!(
+                        "{var_name} must be at most {MAX_PENDING_CANDIDATES_PER_ACCOUNT_LIMIT}, \
+                         got {depth}"
+                    ));
                 }
                 Ok(self.with_max_pending_candidates_per_account(depth))
             }
@@ -564,12 +581,18 @@ mod tests {
     }
 
     #[test]
-    fn max_pending_candidates_defaults_to_a_bounded_queue() {
+    fn max_pending_candidates_defaults_to_one_in_flight_candidate() {
+        // Queueing is an opt-in: an upgrade must not change admission.
         let config = CanonicalizationConfig::default();
-        assert_eq!(
-            config.max_pending_candidates_per_account,
-            DEFAULT_MAX_PENDING_CANDIDATES_PER_ACCOUNT
-        );
+        assert_eq!(config.max_pending_candidates_per_account, 1);
+        assert_eq!(DEFAULT_MAX_PENDING_CANDIDATES_PER_ACCOUNT, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_pending_candidates_per_account must be between 1")]
+    fn max_pending_candidates_builder_refuses_a_depth_past_the_cap() {
+        let _ = CanonicalizationConfig::default()
+            .with_max_pending_candidates_per_account(MAX_PENDING_CANDIDATES_PER_ACCOUNT_LIMIT + 1);
     }
 
     #[test]
@@ -588,6 +611,18 @@ mod tests {
             .max_pending_candidates_per_account_from_var(var_name)
             .expect("valid value applies");
         assert_eq!(config.max_pending_candidates_per_account, 8);
+
+        unsafe { std::env::set_var(var_name, "16") };
+        let config = CanonicalizationConfig::default()
+            .max_pending_candidates_per_account_from_var(var_name)
+            .expect("the cap itself is accepted");
+        assert_eq!(config.max_pending_candidates_per_account, 16);
+
+        unsafe { std::env::set_var(var_name, "17") };
+        let err = CanonicalizationConfig::default()
+            .max_pending_candidates_per_account_from_var(var_name)
+            .expect_err("a depth past the cap fails startup");
+        assert!(err.contains("at most 16"), "{err}");
 
         unsafe { std::env::set_var(var_name, "0") };
         assert!(

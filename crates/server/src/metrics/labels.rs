@@ -108,8 +108,9 @@ pub enum CandidateOutcome {
     /// nor its expected new commitment, but not yet on enough consecutive
     /// ticks to discard; deferred for another confirmation.
     DivergenceDeferred,
-    /// Discarded because the account advanced past the candidate's base
-    /// state on-chain, making verification permanently unsatisfiable.
+    /// Parked (retained, or discarded when retention is off) because the
+    /// account advanced past the candidate's base state on-chain, making
+    /// verification permanently unsatisfiable.
     Diverged,
     /// Parked (retained, or discarded when retention is off) because its
     /// predecessor in the candidate queue (issue #17) was parked,

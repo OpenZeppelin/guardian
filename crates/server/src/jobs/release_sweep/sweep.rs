@@ -966,9 +966,11 @@ impl ReleaseSweeper {
     /// chains from the stored base. A proposal counts whatever its label
     /// (the post-state's guardian key decides, not the client-written
     /// type) and whatever base it was recorded against: the candidate
-    /// queue records a proposal against its tail (issue #17), although a
-    /// cosigner that could only read the stored state built it on that
-    /// one. Either its summary applied to the stored state reproduces a
+    /// queue records a proposal against its tail (issue #17). One built
+    /// on the stored state behind a queued candidate is refused when its
+    /// nonce does not extend the queue, but a summary does not name its
+    /// base, so one labelled past the tail is recorded against it all the
+    /// same. Either its summary applied to the stored state reproduces a
     /// state the chain reached, or it proves nothing. A switch delta
     /// queued behind another candidate is not matched yet (issue #504).
     async fn switch_candidates(

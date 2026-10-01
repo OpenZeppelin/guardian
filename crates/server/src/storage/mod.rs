@@ -246,12 +246,14 @@ pub enum PromoteWrite {
 pub enum CandidateSubmission {
     /// The candidate row and the pending-candidate flag committed.
     Submitted,
-    /// The submission competes with a queued candidate for the same
-    /// base state, would exceed the account's candidate queue depth,
-    /// does not extend the queue in nonce order, or a delta already
-    /// occupies this nonce; nothing was written. The service layer maps
-    /// this to the same conflict rejection as its pre-commit gate — the
-    /// in-transaction recheck is what makes that gate race-proof.
+    /// The account's candidate queue is full, or no longer chains from
+    /// the stored state (an orphan awaits the worker's sweep), or the
+    /// submission competes with a queued candidate for the same base
+    /// state, does not extend the queue in nonce order, or a delta
+    /// already occupies this nonce; nothing was written. The service
+    /// layer maps this to the same conflict rejection as its pre-commit
+    /// gate — the in-transaction recheck is what makes that gate
+    /// race-proof.
     Conflict,
     /// The submission builds on a state that is neither the stored
     /// canonical state nor any queued candidate's post-state (the
@@ -262,11 +264,12 @@ pub enum CandidateSubmission {
 }
 
 /// The chain position of one queued candidate, as the submission gate
-/// needs it: its nonce and the post-state commitment the server
-/// computed at push time (issue #17).
+/// needs it: its nonce, the base it was admitted on, and the post-state
+/// commitment the server computed at push time (issue #17).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedCandidate {
     pub nonce: u64,
+    pub prev_commitment: String,
     pub new_commitment: Option<String>,
 }
 
@@ -274,9 +277,31 @@ impl QueuedCandidate {
     pub fn of(delta: &DeltaObject) -> Self {
         Self {
             nonce: delta.nonce,
+            prev_commitment: delta.prev_commitment.clone(),
             new_commitment: delta.new_commitment.clone(),
         }
     }
+}
+
+/// Index of the first queued candidate (nonce-ascending) that breaks the
+/// chain from `stored_commitment`: its base is neither the stored
+/// commitment (for the head) nor its predecessor's post-state, or it has
+/// no stored post-state to chain from. `None` when the whole queue
+/// chains. A break means a predecessor left the queue without promoting
+/// (parked, discarded, abandoned) and the worker has not yet swept its
+/// orphaned successors; nothing can be admitted behind it (issue #17).
+pub fn first_unchained_candidate(
+    stored_commitment: &str,
+    queue: &[QueuedCandidate],
+) -> Option<usize> {
+    let mut running = stored_commitment;
+    for (index, candidate) in queue.iter().enumerate() {
+        match candidate.new_commitment.as_deref() {
+            Some(next) if candidate.prev_commitment == running => running = next,
+            _ => return Some(index),
+        }
+    }
+    None
 }
 
 /// Where a submission's base commitment sits relative to an account's
@@ -331,13 +356,19 @@ pub fn classify_chain_position(
 /// on one decision. `None` means the submission may be written; `Some`
 /// is the outcome to return instead. The rules, in order:
 ///
-/// 1. The delta must build on the chain tail ([`ChainPosition::Tail`]);
+/// 1. The queue must have room: `queue.len() < max_pending_candidates`
+///    (a depth below 1 is treated as 1, so the gate can never refuse
+///    every submission). A full queue refuses every submission whatever
+///    its base, so depth 1 is exactly the historical "one in-flight
+///    candidate" refusal, which came before any base check.
+/// 2. The queue must still chain from the stored state
+///    ([`first_unchained_candidate`]): behind an orphan nothing is
+///    admitted until the worker sweeps it, or a delta extending the
+///    orphan would be acknowledged and then orphaned in turn.
+/// 3. The delta must build on the chain tail ([`ChainPosition::Tail`]);
 ///    a competing base is a `Conflict`, an unknown base a
 ///    `CommitmentMismatch` against the stored canonical commitment.
-/// 2. The queue must have room: `queue.len() < max_pending_candidates`
-///    (a depth below 1 is treated as 1, so the gate can never refuse
-///    every submission).
-/// 3. When the queue is non-empty the delta's nonce must exceed the
+/// 4. When the queue is non-empty the delta's nonce must exceed the
 ///    tail's — candidates are verified in nonce order, so a chained
 ///    delta with a lower nonce would be processed before its base.
 pub fn gate_candidate_submission(
@@ -346,6 +377,12 @@ pub fn gate_candidate_submission(
     delta: &DeltaObject,
     max_pending_candidates: usize,
 ) -> Option<CandidateSubmission> {
+    if queue.len() >= max_pending_candidates.max(1) {
+        return Some(CandidateSubmission::Conflict);
+    }
+    if first_unchained_candidate(stored_commitment, queue).is_some() {
+        return Some(CandidateSubmission::Conflict);
+    }
     match classify_chain_position(stored_commitment, queue, &delta.prev_commitment) {
         ChainPosition::Tail => {}
         ChainPosition::Competing => return Some(CandidateSubmission::Conflict),
@@ -354,9 +391,6 @@ pub fn gate_candidate_submission(
                 expected: stored_commitment.to_string(),
             });
         }
-    }
-    if queue.len() >= max_pending_candidates.max(1) {
-        return Some(CandidateSubmission::Conflict);
     }
     if let Some(tail) = queue.last()
         && delta.nonce <= tail.nonce
@@ -1042,9 +1076,10 @@ mod queue_admission_tests {
         }
     }
 
-    fn queued(nonce: u64, new_commitment: Option<&str>) -> QueuedCandidate {
+    fn queued(nonce: u64, prev: &str, new_commitment: Option<&str>) -> QueuedCandidate {
         QueuedCandidate {
             nonce,
+            prev_commitment: prev.to_string(),
             new_commitment: new_commitment.map(str::to_string),
         }
     }
@@ -1073,7 +1108,10 @@ mod queue_admission_tests {
 
     #[test]
     fn chained_submission_extends_the_tail() {
-        let queue = [queued(1, Some("0xc1")), queued(2, Some("0xc2"))];
+        let queue = [
+            queued(1, "0xbase", Some("0xc1")),
+            queued(2, "0xc1", Some("0xc2")),
+        ];
         assert_eq!(
             classify_chain_position("0xbase", &queue, "0xc2"),
             ChainPosition::Tail
@@ -1086,7 +1124,10 @@ mod queue_admission_tests {
 
     #[test]
     fn competing_bases_conflict() {
-        let queue = [queued(1, Some("0xc1")), queued(2, Some("0xc2"))];
+        let queue = [
+            queued(1, "0xbase", Some("0xc1")),
+            queued(2, "0xc1", Some("0xc2")),
+        ];
         // The canonical base is claimed by nonce 1, nonce 1's post-state
         // by nonce 2: both are competing submissions, never mismatches.
         for prev in ["0xbase", "0xc1"] {
@@ -1105,7 +1146,7 @@ mod queue_admission_tests {
 
     #[test]
     fn unknown_base_is_a_mismatch_against_the_stored_commitment() {
-        let queue = [queued(1, Some("0xc1"))];
+        let queue = [queued(1, "0xbase", Some("0xc1"))];
         assert_eq!(
             classify_chain_position("0xbase", &queue, "0xzzz"),
             ChainPosition::Unrelated
@@ -1120,7 +1161,7 @@ mod queue_admission_tests {
 
     #[test]
     fn depth_caps_the_queue_and_is_never_below_one() {
-        let queue = [queued(1, Some("0xc1"))];
+        let queue = [queued(1, "0xbase", Some("0xc1"))];
         // Depth 1 is the historical single-candidate gate: even a
         // correctly chained delta waits for the queue to drain.
         assert_eq!(
@@ -1140,7 +1181,7 @@ mod queue_admission_tests {
 
     #[test]
     fn nonce_must_exceed_the_tail() {
-        let queue = [queued(5, Some("0xc5"))];
+        let queue = [queued(5, "0xbase", Some("0xc5"))];
         for nonce in [4, 5] {
             assert_eq!(
                 gate_candidate_submission("0xbase", &queue, &delta(nonce, "0xc5"), 4),
@@ -1156,7 +1197,7 @@ mod queue_admission_tests {
 
     #[test]
     fn tail_without_a_stored_post_state_admits_nothing() {
-        let queue = [queued(1, None)];
+        let queue = [queued(1, "0xbase", None)];
         assert_eq!(
             classify_chain_position("0xbase", &queue, "0xbase"),
             ChainPosition::Competing
@@ -1165,5 +1206,71 @@ mod queue_admission_tests {
             classify_chain_position("0xbase", &queue, "0xanything"),
             ChainPosition::Unrelated
         );
+        assert_eq!(first_unchained_candidate("0xbase", &queue), Some(0));
+        for prev in ["0xbase", "0xanything"] {
+            assert_eq!(
+                gate_candidate_submission("0xbase", &queue, &delta(2, prev), 4),
+                Some(CandidateSubmission::Conflict),
+                "{prev}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_queue_refuses_every_base_before_classifying_it() {
+        // Depth 1 with a candidate in flight is the historical gate: the
+        // pending check came first, so even a delta on an unknown base
+        // was a conflict, not a commitment mismatch.
+        let queue = [queued(1, "0xbase", Some("0xc1"))];
+        for prev in ["0xc1", "0xbase", "0xzzz"] {
+            assert_eq!(
+                gate_candidate_submission("0xbase", &queue, &delta(2, prev), 1),
+                Some(CandidateSubmission::Conflict),
+                "{prev}"
+            );
+        }
+        // Any full queue behaves the same, whatever its depth.
+        let queue = [
+            queued(1, "0xbase", Some("0xc1")),
+            queued(2, "0xc1", Some("0xc2")),
+        ];
+        assert_eq!(
+            gate_candidate_submission("0xbase", &queue, &delta(3, "0xzzz"), 2),
+            Some(CandidateSubmission::Conflict)
+        );
+    }
+
+    #[test]
+    fn orphaned_queue_admits_nothing_until_it_is_swept() {
+        // Nonce 1 was parked: nonce 2 no longer chains from the stored
+        // state. A delta extending nonce 2 would be acknowledged and then
+        // orphaned on the next pass, and one on the stored base competes
+        // with the orphan's nonce — both wait for the sweep.
+        let queue = [queued(2, "0xc1", Some("0xc2"))];
+        assert_eq!(first_unchained_candidate("0xbase", &queue), Some(0));
+        for prev in ["0xc2", "0xbase"] {
+            assert_eq!(
+                gate_candidate_submission("0xbase", &queue, &delta(3, prev), 4),
+                Some(CandidateSubmission::Conflict),
+                "{prev}"
+            );
+        }
+        // A break further down the queue is caught too.
+        let queue = [
+            queued(1, "0xbase", Some("0xc1")),
+            queued(3, "0xc2", Some("0xc3")),
+        ];
+        assert_eq!(first_unchained_candidate("0xbase", &queue), Some(1));
+        assert_eq!(
+            gate_candidate_submission("0xbase", &queue, &delta(4, "0xc3"), 4),
+            Some(CandidateSubmission::Conflict)
+        );
+        // An intact queue chains end to end.
+        let queue = [
+            queued(1, "0xbase", Some("0xc1")),
+            queued(2, "0xc1", Some("0xc2")),
+        ];
+        assert_eq!(first_unchained_candidate("0xbase", &queue), None);
+        assert_eq!(first_unchained_candidate("0xbase", &[]), None);
     }
 }

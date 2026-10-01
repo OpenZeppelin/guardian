@@ -91,8 +91,10 @@ pub struct DashboardCanonicalizationConfig {
     /// Accounts one reconcile pass visits at most (rotation cursor).
     pub reconcile_page_size: u32,
     /// Candidate deltas one account may hold in flight at once, as a
-    /// strictly ordered chain (issue #17). `1` is the historical
-    /// one-in-flight-candidate behavior.
+    /// strictly ordered chain (issue #17). `1`, the default, is the
+    /// historical one-in-flight-candidate behavior; deeper queues are an
+    /// operator opt-in.
+    #[schema(minimum = 1, maximum = 16)]
     pub max_pending_candidates_per_account: u64,
 }
 
@@ -308,6 +310,22 @@ mod tests {
     };
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Arc;
+
+    #[test]
+    fn depth_schema_bounds_match_the_configuration_limits() {
+        // The schema attribute takes literals; keep them in step with the
+        // limits the configuration enforces at startup.
+        use utoipa::PartialSchema;
+        let schema = serde_json::to_value(DashboardCanonicalizationConfig::schema())
+            .expect("schema serializes");
+        let depth = &schema["properties"]["max_pending_candidates_per_account"];
+        assert_eq!(depth["minimum"].as_u64(), Some(1), "{depth}");
+        assert_eq!(
+            depth["maximum"].as_u64(),
+            Some(crate::canonicalization::MAX_PENDING_CANDIDATES_PER_ACCOUNT_LIMIT as u64),
+            "{depth}"
+        );
+    }
 
     async fn build_state(account_ids: Vec<String>, storage: MockStorageBackend) -> AppState {
         let metadata_store = MockMetadataStore::new().with_list(Ok(account_ids));
