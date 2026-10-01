@@ -185,6 +185,27 @@ Miden delta proposals use:
 
 `p2id` metadata may additionally carry `reclaim_height` and/or `timelock_height` (issue #366): absolute `u32` block heights that make the proposal create a P2IDE note instead of a plain P2ID note (`reclaim_height` lets the sender reclaim an unconsumed note from that block on; `timelock_height` blocks consumption before that block). Presence of either field selects P2IDE; both absent means plain P2ID, which keeps pre-existing proposals valid. `0` is rejected because it is the on-chain encoding for "no constraint". Like `note_type`, the heights are part of the signed metadata and a tampered value fails the tx_summary commitment check.
 
+A proposal created by a Guardian-executable client additionally carries `transaction_request`,
+the serialized `TransactionRequest` Guardian executes, in an envelope:
+
+```json
+{
+  "transaction_request": {
+    "format_version": 1,
+    "protocol_line": "0.17",
+    "serializer_id": "0.17.0-rc.4",
+    "checksum": "0x<lowercase sha-256 of the raw bytes>",
+    "bytes": "<base64 of the raw bytes>"
+  }
+}
+```
+
+`serializer_id` is the `miden-client` version that wrote the bytes, because request
+serialization carries no version tag. Creation checks the body (base64, checksum,
+`format_version`) and the size caps; the protocol line and serializer are checked at
+execution. A self-executed proposal omits the field, so its wire shape is unchanged, and the
+proposal id is the summary commitment either way.
+
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
 
 EVM proposal creation request:
@@ -256,6 +277,42 @@ For an EIP-712 Miden approval, the same endpoint and envelope use `"message_form
 - Stored EVM signers are normalized EOA addresses.
 - EVM proposal signatures are verified with `ecrecover(hash, signature)`.
 
+### ProposalExecution
+
+The envelope every execution operation returns, identical on HTTP and gRPC (where `error.meta`
+travels as `meta_json`):
+
+```json
+{
+  "account_id": "0x...",
+  "proposal_id": "0x...",
+  "state": "failed",
+  "error": { "code": "GUARDIAN_EXECUTION_EXPIRATION_REACHED", "message": "...", "meta": { "bound": "approval" } },
+  "delta_nonce": 7,
+  "newly_accepted": false,
+  "proposal_exists": true,
+  "ignored_signatures": 0,
+  "updated_at": "2026-09-30T12:00:00Z"
+}
+```
+
+- `state` is one of exactly five values: `pending`, `proving`, `submitted`, `committed`, `failed`.
+  They move forward only. `submitted` means the transaction may have been sent and is never
+  retried; it resolves only from what the chain shows.
+- `error` is present exactly when `state` is `failed`. Three codes carry `meta`:
+  `GUARDIAN_EXECUTION_REQUEST_INVALID` (`reason`: `bound_block_not_declared`, `auth_args_missing`,
+  `approval_expiration_missing`, `input_notes_not_pinned`), `GUARDIAN_EXECUTION_EXPIRATION_REACHED`
+  (`bound`: `approval`, `transaction`) and `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`
+  (`reason`: `private`, `unavailable`). The full list is in
+  [`docs/TROUBLESHOOTING.md`](../docs/TROUBLESHOOTING.md#guardian-execution).
+- `delta_nonce` is set once the execution committed to its candidate delta.
+- `newly_accepted` separates the request that started the execution from a repeat that found
+  it running (HTTP also answers 202 versus 200).
+- `proposal_exists` is a fact about storage, not retry advice: a post-submission failure deletes
+  the proposal.
+- `ignored_signatures` counts stored signatures that were invalid, duplicated or not from a
+  cosigner, which never block an otherwise ready proposal.
+
 ### DeltaProposalEnvelope
 
 ```json
@@ -322,6 +379,9 @@ component schemas.
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
 | client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
+| client | `POST /delta/proposal/execution` | signed headers | Ask Guardian to prove and submit a threshold-met proposal (202 new, 200 already running) |
+| client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when never executed) |
+| client | `GET /delta/execution/current` | signed headers | The account's in-flight execution; `{"execution": null}` when none |
 | dashboard | `GET /auth/challenge` | public | Operator login challenge |
 | dashboard | `POST /auth/verify` | public | Verify challenge, establish session |
 | dashboard | `POST /auth/logout` | session | Invalidate the operator session |
@@ -437,6 +497,11 @@ Semantics not captured by the OpenAPI shapes:
 
 ## Errors
 
+Codes come in two spellings. The lowercase `snake_case` codes below keep that spelling. The
+uppercase codes carry a `GUARDIAN_` prefix (`GUARDIAN_<AREA>_<CONDITION>`, for example
+`GUARDIAN_EXECUTION_EXPIRATION_REACHED`), and every new code uses that form. Existing codes are
+not renamed, because a code is a wire contract that clients match on.
+
 Stable error codes include:
 
 - `account_not_found`
@@ -468,6 +533,12 @@ Stable error codes include:
 - `invalid_network_config`
 - `rpc_unavailable`
 - `rpc_validation_failed`
+- Guardian execution: `GUARDIAN_PROVING_UNAVAILABLE`, `GUARDIAN_PROPOSAL_NOT_READY`,
+  `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, `GUARDIAN_EXECUTION_CONFLICT`
+  (`meta.blocking_proposal_id`), `GUARDIAN_EXECUTION_BUSY` (retryable),
+  `GUARDIAN_EXECUTION_NOT_FOUND`,
+  `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`, `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`. Their
+  HTTP and gRPC status pairs are verified by `crates/server/src/api/execution_tests.rs`.
 - `signer_not_authorized`
 - `invalid_evm_proposal`
 - `insufficient_signatures`
@@ -504,6 +575,9 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
 - `GetDeltaHistory(GetDeltaHistoryRequest) -> GetDeltaHistoryResponse`
+- `ExecuteDeltaProposal(ExecuteDeltaProposalRequest) -> ExecuteDeltaProposalResponse`
+- `GetDeltaProposalExecution(GetDeltaProposalExecutionRequest) -> GetDeltaProposalExecutionResponse`
+- `GetCurrentExecution(GetCurrentExecutionRequest) -> GetCurrentExecutionResponse`
 
 Every gRPC method is rate limited from the same store as the HTTP surface;
 see [Rate Limiting](#rate-limiting) for the keying rules and the rejection
@@ -567,6 +641,13 @@ behavior.
 | `guardian_miden_rpc_duration_seconds` | histogram | `operation` |
 | `guardian_storage_operations_total` | counter | `operation`, `outcome` |
 | `guardian_storage_operation_duration_seconds` | histogram | `operation` |
+| `guardian_execution_outcomes_total` | counter | `outcome` (`committed`/`failed`), `code` |
+| `guardian_execution_reconcile_outcomes_total` | counter | `outcome` |
+| `guardian_execution_chain_view_duration_seconds` | histogram | — |
+| `guardian_execution_proving_duration_seconds` | histogram (1 s to 20 min) | — |
+| `guardian_execution_prover_retries_total` | counter | — |
+| `guardian_execution_oldest_reservation_age_seconds` | gauge | — |
+| `guardian_execution_observation_outage_seconds` | gauge | — |
 | `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | `pool` (`storage`/`metadata`; postgres builds) |
 | `guardian_canonicalization_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |

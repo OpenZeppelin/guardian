@@ -838,6 +838,13 @@
             },
             "description": "Signature schemes this Guardian accepts for new accounts. Present\nonly for `signature_scheme_not_allowed`."
           },
+          "blocking_proposal_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The proposal whose execution holds the account. Present only for\n`GUARDIAN_EXECUTION_CONFLICT`."
+          },
           "missing_permissions": {
             "type": [
               "array",

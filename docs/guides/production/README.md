@@ -192,7 +192,7 @@ What **you** provide in `.env.aws-ecs`:
 | Variable | Notes |
 |---|---|
 | `DEPLOY_STAGE=prod`, `STACK_NAME`, `AWS_REGION`, `GUARDIAN_NETWORK_TYPE` | Stack identity and network. |
-| `GUARDIAN_SERVER_FEATURES` | `postgres`. |
+| `GUARDIAN_SERVER_FEATURES` | `postgres`. Guardian execution is always built in; it stays off until `GUARDIAN_TX_PROVER_URL` is set. |
 | `GUARDIAN_CORS_ALLOWED_ORIGINS` | Exact browser origins, comma-separated; wildcards are rejected. Unset means permissive `Any` with credentials disabled, which is not for production. |
 | `TF_VAR_guardian_ack_ecdsa_kms_key_arn` | From A1. |
 | `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` | From A1: new accounts must use the KMS-backed scheme. Terraform injects it only when set; unset keeps both schemes. |

@@ -415,7 +415,7 @@ become the only trusted ones.
 The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so image pushes always produce a real ECS task-definition revision instead of relying on tag reuse.
 It also keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default.
 
-AWS deployments must include the `postgres` server feature. The script defaults `GUARDIAN_SERVER_FEATURES` to `postgres`; set `GUARDIAN_SERVER_FEATURES=postgres,evm` only when deploying the optional EVM API surface.
+AWS deployments must include the `postgres` server feature. The script defaults `GUARDIAN_SERVER_FEATURES` to `postgres`; add `evm` only when deploying the optional EVM API surface. Guardian execution is always built in and stays off until `GUARDIAN_TX_PROVER_URL` is set.
 
 ### Reviewable Build, Plan, Apply
 

@@ -9,7 +9,8 @@ configuration, and runbook docs.
 Every production Guardian, wherever it runs, has the same shape:
 
 - The **Postgres** storage backend: `GUARDIAN_SERVER_FEATURES=postgres`, plus
-  `evm` when EVM proposal support is required. Filesystem mode is a local
+  `evm` when EVM proposal support is required. Guardian execution is always built in and
+  stays off until a prover is configured. Filesystem mode is a local
   development backend only: it has no durable admin audit table, no schema
   migrations, and cannot safely back more than one replica. The prod stage
   refuses it at startup.

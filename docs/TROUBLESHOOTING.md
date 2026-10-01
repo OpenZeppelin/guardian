@@ -493,6 +493,57 @@ EVM proposal/session operations) return `409 GUARDIAN_ACCOUNT_PAUSED`
   layer, not in the client. There is no env var or feature flag to
   disable it.
 
+### Guardian execution fails or never starts
+
+A proposal handed to Guardian (`POST /delta/proposal/execution`) reports one of five states:
+`pending`, `proving`, `submitted`, `committed`, `failed`. A `failed` execution carries a stable
+`error.code`, and `error.meta` for the three codes that have one. Refusals that can be decided at
+once come back synchronously and create nothing.
+
+- **Every request refused with `GUARDIAN_PROVING_UNAVAILABLE`.** The server offers no
+  execution. Its startup log says why: no `GUARDIAN_TX_PROVER_URL`, `GUARDIAN_PROVING_ENABLED=false`,
+  or canonicalization off. A warning that "a prover is configured but Guardian execution is not
+  offered" means `GUARDIAN_PROVING_ENABLED=false` is switching it off.
+- **Intermittent `GUARDIAN_EXECUTION_PROVING_FAILED` whose message ends in "failed to prove
+  transaction".** Usually the prover deadline. The client library's own default is 10 s, far below
+  a real proof; Guardian passes `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (default 300) instead, so check
+  it has not been lowered. Transport failures (connection errors, i/o timeouts, deadline exceeded)
+  are retried with backoff under the held reservation, so they do not surface as
+  `PROVING_FAILED`. If the prover stays unreachable until the transaction's expiration, the
+  attempt fails with `GUARDIAN_EXECUTION_EXPIRATION_REACHED` (`meta.bound: "transaction"`),
+  and the message carries the last prover error's whole cause chain. `guardian_execution_prover_retries_total` counts
+  the retries.
+- **`GUARDIAN_EXECUTION_CHAIN_BEHIND`.** The node's tip is below the block the proposal's summary
+  binds. Retrying once the node catches up works; the proposal is untouched.
+- **`GUARDIAN_EXECUTION_NODE_UNAVAILABLE`.** Guardian could not read its configured node (the tip,
+  a header, or the chain view). Check that the node at `GUARDIAN_MIDEN_RPC_ENDPOINT` answers; the proposal is
+  untouched, so a retry works once the node answers.
+- **`GUARDIAN_EXECUTION_CHAIN_INCONSISTENT`.** The node served chain data that does not verify
+  against itself: an MMR path or delta, a header, or a `ProtocolConfig` that differs from the
+  reference header. This is a node problem, not a proposal one (it used to surface as
+  `BINDING_MISMATCH`). Point Guardian at a healthy node, then retry.
+- **`GUARDIAN_EXECUTION_INSUFFICIENT_FEE`.** The account cannot pay the fee at the block Guardian
+  executes against. The fee is recomputed there, so an account funded to the cent when the
+  proposal was created can fall short. On devnet there is no faucet UI:
+  `scripts/devnet-register-account.sh` mints a funding note to the account, which then has to be
+  consumed.
+- **`GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` on a custom proposal.** The request scripts no
+  transaction expiration, so it expires at its approval window (28,800 blocks by default), past
+  the server's `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` (default 512). The producer must
+  apply `GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA` (256) in its script with
+  `exec.::miden::protocol::tx::update_expiration_block_delta`; built-in proposals already do.
+- **`GUARDIAN_EXECUTION_BINDING_MISMATCH` right after a fee or protocol change.** The stored
+  request no longer reproduces the summary the cosigners signed. When the log line "the
+  reproduced transaction differs from the signed one" lists different output notes on each side
+  with the account delta still matching, the fee note moved: the network's fee parameters changed
+  between creation and execution. The proposal cannot be executed by anyone as signed; create it
+  again.
+- **An execution stays `submitted`.** The send's outcome is unknown and reconciliation waits for
+  the chain: it resolves `committed` through promotion, `EXPIRED` once the chain passes the
+  transaction's expiration with the account unchanged, or `CANDIDATE_DISCARDED` when the account
+  moved elsewhere. It never settles by elapsed time. `guardian_execution_observation_outage_seconds`
+  above zero means the chain cannot be read.
+
 ### Rate limits triggered
 
 Over HTTP: `429` with `code: rate_limit_exceeded` and a `Retry-After`
@@ -612,6 +663,32 @@ come from
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 (gRPC `FailedPrecondition`) | Account is paused by an operator. Response body includes the operator-supplied `paused_reason`. Unpause via `POST /dashboard/accounts/{id}/unpause` (requires `accounts:pause`). See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
 | `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or the release sweep proved the switch from chain: either a pending proposal or an unpromoted switch delta on this server whose post-state the chain reached, at the head or in the account's transaction history (`detected_by: proposal_match` / `recoverable_delta`, any account) or, for a public account, a foreign guardian key read from the account's published on-chain storage (`detected_by: chain_sweep`). A canonicalized switch delta whose own release write failed is released by the sweep with the same `detected_by: delta` row. The `accounts.release` audit row says which. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
+
+### Guardian execution
+
+Synchronous refusals of `POST /delta/proposal/execution` and the proposal-creation caps:
+
+| Code | HTTP | First check |
+|---|---|---|
+| `GUARDIAN_PROVING_UNAVAILABLE` | 503 (gRPC `Unavailable`) | The server offers no execution; see its startup log. |
+| `GUARDIAN_PROPOSAL_NOT_READY` | 409 (gRPC `FailedPrecondition`) | Fewer valid cosigner signatures than the effective threshold. |
+| `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 (gRPC `FailedPrecondition`) | The proposal was created by a self-executed client; create it again from a Guardian-executable one. |
+| `GUARDIAN_EXECUTION_CONFLICT` | 409 (gRPC `Aborted`) | Another execution holds the account; `meta.blocking_proposal_id` names it. Also returned to a client `push_delta` while an execution is active. |
+| `GUARDIAN_EXECUTION_BUSY` | 409 (gRPC `Aborted`) | Another request is starting an execution for the account and has not reserved it yet. Retryable; retry shortly. |
+| `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but was never executed. `proposal_not_found` means the proposal itself is gone. |
+| `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` | 413 (gRPC `InvalidArgument`) | Stored request over `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES`. |
+| `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED` | 409 (gRPC `FailedPrecondition`) | The account's viable proposals already hold `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES`; finish or discard one. |
+
+Causes of a `failed` execution, in `error.code`:
+
+| Code | `meta` | Retry? |
+|---|---|---|
+| `GUARDIAN_EXECUTION_REQUEST_INVALID` | `reason`: `bound_block_not_declared`, `auth_args_missing`, `approval_expiration_missing`, `input_notes_not_pinned` | No; the request cannot be executed by Guardian. |
+| `GUARDIAN_EXECUTION_EXPIRATION_REACHED` | `bound`: `approval` or `transaction` | `approval`: no, the cosigners must sign a new proposal. `transaction`: yes, a new request executes at the new tip with a fresh transaction window. |
+| `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE` | `reason`: `private` or `unavailable` | Only for `unavailable`. |
+| `GUARDIAN_EXECUTION_CHAIN_BEHIND`, `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, `GUARDIAN_EXECUTION_CHAIN_INCONSISTENT`, `GUARDIAN_EXECUTION_PROVING_FAILED`, `GUARDIAN_EXECUTION_SEALING_FAILED`, `GUARDIAN_EXECUTION_LEASE_EXPIRED`, `GUARDIAN_EXECUTION_ABANDONED` | none | Yes; the proposal is untouched. |
+| `GUARDIAN_EXECUTION_BINDING_MISMATCH`, `GUARDIAN_EXECUTION_STATE_MISMATCH`, `GUARDIAN_EXECUTION_REQUEST_CODEC`, `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`, `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`, `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON`, `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | none | Not until the cause is fixed. |
+| `GUARDIAN_EXECUTION_SUBMISSION_REJECTED`, `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`, `GUARDIAN_EXECUTION_EXPIRED` | none | No; the transaction was sent, and the proposal is gone (`proposal_exists: false`). |
 
 ### Validation
 
