@@ -7,6 +7,23 @@
 export const EXECUTION_STATES = ['pending', 'proving', 'submitted', 'committed', 'failed'] as const;
 export type ExecutionState = (typeof EXECUTION_STATES)[number];
 
+/** Whether the execution has finished, one way or the other. Mirrors `ExecutionState::is_terminal`. */
+export function isTerminalExecutionState(state: ExecutionState): boolean {
+  switch (state) {
+    case 'committed':
+    case 'failed':
+      return true;
+    case 'pending':
+    case 'proving':
+    case 'submitted':
+      return false;
+    default: {
+      const unreachable: never = state;
+      throw new Error(`Unknown execution state: ${String(unreachable)}`);
+    }
+  }
+}
+
 export const REQUEST_INVALID_REASONS = [
   'bound_block_not_declared',
   'auth_args_missing',
@@ -31,6 +48,12 @@ export type ExecutionUnavailableReason = (typeof EXECUTION_UNAVAILABLE_REASONS)[
  */
 export type ServerExecutionCapability = { enabled: true } | { enabled: false; reason: ExecutionUnavailableReason };
 
+/** The capability as `GET /status` sends it, before validation. */
+export interface ServerExecutionCapabilityWire {
+  enabled: unknown;
+  reason?: unknown;
+}
+
 /** Failure codes that carry no structured meta. */
 export const PLAIN_EXECUTION_FAILURE_CODES = [
   'GUARDIAN_EXECUTION_BINDING_MISMATCH',
@@ -44,6 +67,7 @@ export const PLAIN_EXECUTION_FAILURE_CODES = [
   'GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES',
   'GUARDIAN_EXECUTION_PROVING_FAILED',
   'GUARDIAN_EXECUTION_SEALING_FAILED',
+  'GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED',
   'GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON',
   'GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE',
   'GUARDIAN_EXECUTION_SUBMISSION_REJECTED',
@@ -119,6 +143,23 @@ function member<T extends string>(values: readonly T[], value: unknown, what: st
     return value as T;
   }
   throw new Error(`Guardian returned an unknown ${what}: ${JSON.stringify(value)}`);
+}
+
+/** Decodes the `GET /status` capability, refusing a missing flag or an unknown reason. */
+export function fromServerExecutionCapability(server: ServerExecutionCapabilityWire | undefined): ServerExecutionCapability {
+  if (typeof server !== 'object' || server === null) {
+    throw new Error(`Guardian returned no execution capability: ${JSON.stringify(server)}`);
+  }
+  if (server.enabled === true) {
+    if (server.reason !== undefined) {
+      throw new Error(`Guardian returned an enabled execution capability with a reason: ${JSON.stringify(server.reason)}`);
+    }
+    return { enabled: true };
+  }
+  if (server.enabled === false) {
+    return { enabled: false, reason: member(EXECUTION_UNAVAILABLE_REASONS, server.reason, 'execution unavailable reason') };
+  }
+  throw new Error(`Guardian returned an execution capability without a boolean enabled: ${JSON.stringify(server.enabled)}`);
 }
 
 function fromServerFailure(error: ServerExecutionError): ExecutionFailure {

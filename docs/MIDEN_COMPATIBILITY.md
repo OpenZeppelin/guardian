@@ -248,8 +248,61 @@ Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators u
 - `ProposalPayload` has a new public field, `transaction_request`, so a struct literal must set
   it (`None` for a self-executed proposal) or start from `ProposalPayload::new` and
   `with_transaction_request`.
-- `MultisigError` has a new variant, `GuardianExecutionRefused { code, message, retryable,
-  blocking_proposal_id }`, so an exhaustive `match` on the error needs an arm for it.
+- `MultisigError` has two new variants, `GuardianExecutionRefused { code, message, retryable,
+  retry_after, blocking_proposal_id }` and `GuardianExecutionWaitTimedOut { proposal_id,
+  deadline, last_observed }` (from `wait_for_guardian_execution`), so an exhaustive `match` on
+  the error needs an arm for each.
+- `guardian_shared::execution::ExecutionFailureCode` includes
+  `AcknowledgementFailed` (`GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED`): Guardian could not sign
+  or record its acknowledgement, a failure on Guardian's side that leaves the proposal
+  retryable.
+
+Source-level changes in the TypeScript packages:
+
+- `GuardianErrorCode` (`@openzeppelin/guardian-client`) has new members, so an exhaustive
+  `switch` over it stops compiling until it handles them: `account_request_capacity_exceeded`,
+  `execution_busy`, `execution_conflict`, `execution_not_found`,
+  `proposal_missing_transaction_request`, `proposal_not_ready`, `proposal_request_too_large`
+  and `proving_unavailable`.
+- `StatusResponse.execution` is a new required field (`{ enabled: true }` or
+  `{ enabled: false, reason }`), so code that builds a `StatusResponse` (a mock, for example)
+  must set it.
+- `Multisig.createProposal` (`@openzeppelin/miden-multisig-client`) throws on a client created
+  with `executionMode: 'guardian_executable'`, because it takes a summary without the request
+  Guardian would execute. Use a typed `create*Proposal` method or `createCustomProposal` there.
+- The multisig execution methods (`requestGuardianExecution`, `executionStatus`,
+  `currentExecution`) throw `GuardianExecutionRefusedError`, whose `code` is the wire code (for
+  example `GUARDIAN_EXECUTION_CONFLICT`), instead of the base client's `GuardianHttpError`, which
+  stays available as `cause`. `waitForGuardianExecution` throws
+  `GuardianExecutionWaitTimeoutError` when its deadline passes.
+
+Server behavior that changes for every client:
+
+- Pushing a proposal that already exists answers with the proposal as stored, not an echo of
+  the push, and is refused as an invalid delta when its `transaction_request` differs from the
+  stored one: the stored request is the one Guardian would execute.
+
+#### Upgrading and rolling back
+
+- **Migration.** `2026-10-01-000001_execution_reservations` runs at startup. It is additive,
+  not a data reset: it creates `execution_reservations`, `execution_submissions` and
+  `execution_outcomes`, and adds `delta_proposals.request_bytes` (default `0`). Stored accounts,
+  deltas and proposals are kept.
+- **Enable in two deploys.** A replica from an earlier release still canonicalizes during a
+  rolling update, but it promotes a Guardian-executed candidate without releasing its execution
+  reservation and skips the `ProtectedByExecution` gate that stops a candidate under a live
+  execution from being discarded. Either can leave the account reserved with nothing able to
+  release it, so no further execution starts on that account. Once every replica runs this
+  release, reconciliation settles a reservation an older replica promoted, but nothing undoes a
+  candidate an older replica discarded. Finish rolling out this release with
+  `GUARDIAN_TX_PROVER_URL` unset, then set it in a second deploy once no old replica is
+  running. Proposals stored by old replicas during the overlap have `request_bytes = 0`
+  whatever request they carry, so they do not count toward `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES`.
+- **Rolling back.** Set `GUARDIAN_PROVING_ENABLED=false` first and wait until no execution is
+  active: `SELECT count(*) FROM execution_reservations WHERE released_at IS NULL` returns `0`,
+  or `guardian_execution_oldest_reservation_age_seconds` reads `0`. Reconciliation keeps
+  settling in-flight executions while execution is switched off. Only then roll back, for the same
+  reason as above: an older replica cannot release a reservation.
 
 ### Open upstream items
 

@@ -199,6 +199,31 @@ const result = await client.pushDelta({
 });
 ```
 
+### Execute a Proposal Through Guardian
+
+A proposal pushed with a `transactionRequest` (a Guardian-executable proposal) can be proved,
+submitted and committed by Guardian once it has enough signatures. Fetched proposals keep the
+stored request in `deltaPayload.transactionRequest`.
+
+```typescript
+import { isTerminalExecutionState } from '@openzeppelin/guardian-client';
+
+let execution = await client.executeDeltaProposal(accountId, proposalId);
+while (!isTerminalExecutionState(execution.state)) {
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  execution = await client.getDeltaProposalExecution(accountId, proposalId);
+}
+
+// The account's in-flight execution, or null
+const current = await client.getCurrentExecution(accountId);
+```
+
+A refusal throws a `GuardianHttpError` whose `rawCode` is the wire code (for example
+`GUARDIAN_EXECUTION_CONFLICT`, with `meta.blockingProposalId`). `getStatus()` reports in
+`execution` whether the server offers Guardian execution at all. The multisig SDK adds a
+`waitForGuardianExecution` helper with backoff, retries and a deadline; see
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution).
+
 ### Get Deltas
 
 ```typescript

@@ -2218,6 +2218,16 @@ impl StorageBackend for PostgresService {
         self.resolve_execution_tx(resolution, false).await
     }
 
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: DateTime<Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        self.settle_promoted_execution_tx(account_id, fence, now)
+            .await
+    }
+
     async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
         self.list_active_executions_tx().await
     }

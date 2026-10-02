@@ -174,6 +174,25 @@ describe('GuardianHttpClient', () => {
       expect(status.execution).toEqual({ enabled: false, reason: 'prover_not_configured' });
     });
 
+    it('refuses a status whose execution capability is missing or names an unknown reason', async () => {
+      const base = {
+        status: 'ok',
+        version: '0.1.0',
+        git_commit: 'abc123def456',
+        environment: 'devnet',
+        started_at: '2026-06-17T10:00:00Z',
+        uptime_seconds: 3600,
+      };
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => base });
+      await expect(client.getStatus()).rejects.toThrow(/no execution capability/);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ...base, execution: { enabled: false, reason: 'gone_fishing' } }),
+      });
+      await expect(client.getStatus()).rejects.toThrow(/unknown execution unavailable reason/);
+    });
+
     it('should throw GuardianHttpError on non-ok response', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
@@ -506,6 +525,30 @@ describe('GuardianHttpClient', () => {
   });
 
   describe('getDeltaProposal', () => {
+    it('keeps the stored transaction request of a Guardian-executable proposal', async () => {
+      client.setSigner(mockSigner);
+      const envelope = { format_version: 1, protocol_line: '0.17', checksum: '0x' + 'd'.repeat(64), bytes: 'AQID' };
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: { tx_summary: { data: 'base64summary' }, signatures: [], transaction_request: envelope },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+
+      const proposal = await client.getDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'e'.repeat(64));
+
+      expect(proposal.deltaPayload.transactionRequest).toEqual(envelope);
+    });
+
     it('should get a single delta proposal by commitment', async () => {
       client.setSigner(mockSigner);
 
@@ -1535,7 +1578,7 @@ describe('GuardianHttpError', () => {
           JSON.stringify({
             code: 'GUARDIAN_EXECUTION_CONFLICT',
             message: 'Another proposal is executing on this account.',
-            meta: { retryable: true, blocking_proposal_id: blocking },
+            meta: { retryable: false, blocking_proposal_id: blocking },
           }),
       });
 
@@ -1546,6 +1589,7 @@ describe('GuardianHttpError', () => {
       expect(error).toBeInstanceOf(GuardianHttpError);
       const e = error as GuardianHttpError;
       expect(e.code).toBe('execution_conflict');
+      expect(e.isRetryable()).toBe(false);
       expect(e.meta?.blockingProposalId).toBe(blocking);
     });
 

@@ -136,6 +136,8 @@ export interface DeltaObject {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Absent on a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
   ackSig?: string;
   ackPubkey?: string;

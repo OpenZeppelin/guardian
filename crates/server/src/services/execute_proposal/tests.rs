@@ -624,6 +624,57 @@ async fn a_definitely_rejected_submission_discards_the_candidate_and_the_proposa
     assert!(f.state.storage.pull_delta(ACCOUNT, 1).await.is_err());
 }
 
+async fn account_lease_is_free(f: &Fixture) -> bool {
+    let probe = f.state.execution.leases.elector(ACCOUNT, "probe");
+    for _ in 0..100 {
+        if let Some(lease) = probe
+            .try_acquire(std::time::Duration::from_secs(60))
+            .await
+            .unwrap()
+        {
+            probe.release(lease).await.unwrap();
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_rejected_submission_gives_the_account_lease_up() {
+    let f = Fixture::new(Script {
+        submission: SubmissionOutcome::Rejected {
+            reason: "stale".to_string(),
+        },
+        ..Script::default()
+    })
+    .await;
+    f.request().await.unwrap();
+    f.settle(|state| state == ExecutionState::Failed).await;
+    assert!(
+        account_lease_is_free(&f).await,
+        "the next request on the account must not be turned away as busy"
+    );
+}
+
+#[tokio::test]
+async fn a_sent_execution_gives_the_lease_up_and_a_new_request_reads_it() {
+    let f = Fixture::new(Script {
+        submission: SubmissionOutcome::Unknown {
+            reason: "timeout".to_string(),
+        },
+        ..Script::default()
+    })
+    .await;
+    f.request().await.unwrap();
+    let (submitted, _) = f.settle(is_submitted_or_terminal).await;
+    assert_eq!(submitted.state, ExecutionState::Submitted);
+    assert!(account_lease_is_free(&f).await);
+    let again = f.request().await.unwrap();
+    assert!(!again.newly_accepted);
+    assert_eq!(again.state, ExecutionState::Submitted);
+}
+
 #[tokio::test]
 async fn an_unknown_submission_outcome_stays_submitted_and_holds_the_account() {
     let f = Fixture::new(Script {

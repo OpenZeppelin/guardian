@@ -294,6 +294,16 @@ pub enum ResolveWrite {
     WrongSideOfBoundary,
 }
 
+/// Outcome of settling an execution whose candidate a promotion already made canonical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettleWrite {
+    Settled,
+    /// The account is not at the expected state, or the candidate is not canonical yet.
+    NotPromoted,
+    StaleLease,
+    NotActive,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,6 +347,7 @@ mod tests {
             ),
             ExecutionFailureCode::InsufficientSignatures,
             ExecutionFailureCode::SealingFailed,
+            ExecutionFailureCode::AcknowledgementFailed,
             ExecutionFailureCode::Abandoned,
         ];
         for code in codes {

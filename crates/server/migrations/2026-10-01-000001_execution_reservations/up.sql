@@ -62,4 +62,8 @@ CREATE TABLE execution_outcomes (
     UNIQUE (account_id, proposal_id, attempt)
 );
 
+-- Fail fast rather than queue every delta_proposals query behind this ALTER while a long
+-- transaction on a replica still running the previous version holds the table.
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE delta_proposals ADD COLUMN request_bytes BIGINT NOT NULL DEFAULT 0;

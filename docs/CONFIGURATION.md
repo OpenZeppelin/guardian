@@ -261,7 +261,7 @@ prover URL.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `GUARDIAN_TX_PROVER_URL` | _unset_ | Remote transaction prover. Unset, the server offers no execution. The public ones are `https://tx-prover.testnet.miden.io` and `https://tx-prover.devnet.miden.io`. Must be an `http` or `https` URL with a host, or the server refuses to start; the error never repeats the URL, which may carry credentials. |
+| `GUARDIAN_TX_PROVER_URL` | _unset_ | Remote transaction prover. Unset, the server offers no execution. The public ones are `https://tx-prover.testnet.miden.io` and `https://tx-prover.devnet.miden.io`. Must be an `http` or `https` URL with a host and no userinfo (`user:pass@`) or query string, or the server refuses to start, as with `GUARDIAN_MIDEN_RPC_ENDPOINT`; the error never repeats the URL. The prover must be trusted: see below. |
 | `GUARDIAN_TX_PROVER_TIMEOUT_SECS` | `300` | Per-attempt proving deadline. Set it explicitly: the underlying client's own default is 10 s, too short for a real proof. |
 | `GUARDIAN_PROVING_ENABLED` | `true` | Kill switch. `false` refuses every execution request without contacting the prover. |
 | `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES` | `262144` (256 KiB) | Largest decoded transaction request one proposal may store. Over it, creation is refused with `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`. |
@@ -269,6 +269,15 @@ prover URL.
 | `GUARDIAN_EXECUTION_LEASE_SECS` | `120` | Execution lease length. A worker renews it every third of this; a lease that lapses before the no-retry boundary fails the attempt (`GUARDIAN_EXECUTION_LEASE_EXPIRED`), and after it hands the attempt to reconciliation. At most `3600`. A renewal that fails for a transient reason is retried every second until the lease would lapse. |
 | `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` | `30` | How often reconciliation looks at executions whose worker is gone. Must be below `GUARDIAN_EXECUTION_LEASE_SECS`, or the server refuses to start. Reconciliation runs whenever canonicalization does, including with execution switched off, so turning `GUARDIAN_PROVING_ENABLED` off still settles executions already in flight. |
 | `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` | `512` | The furthest past its reference block a proven transaction may expire and still be submitted. At least `256`, the transaction expiration every built-in Guardian-executable proposal scripts. A custom request that scripts no expiration expires at its approval window (28,800 blocks by default) and is refused with `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` under this default: custom producers must script the 256-block delta. |
+
+**Prover trust.** The remote prover receives the complete transaction inputs: the account's
+state including its private storage and vault, every cosigner signature, and Guardian's own
+acknowledgement signature. Anyone operating it sees all of that and holds everything needed to
+submit the proven transaction to the node itself. Use a prover whose operator you already trust
+with that data (the public provers above are run by the Miden team), or host one yourself. Guardian verifies that the returned
+proof matches the transaction it executed before submitting it, so a faulty prover cannot make
+Guardian submit a different transaction, but this does not protect the confidentiality of the
+inputs.
 
 ## Runtime — metrics (Prometheus)
 

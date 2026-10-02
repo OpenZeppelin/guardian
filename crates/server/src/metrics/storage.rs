@@ -472,6 +472,19 @@ impl StorageBackend for InstrumentedStorage {
         timed("fail_execution", self.inner.fail_execution(resolution)).await
     }
 
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        timed(
+            "settle_promoted_execution",
+            self.inner.settle_promoted_execution(account_id, fence, now),
+        )
+        .await
+    }
+
     async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
         timed(
             "list_active_executions",

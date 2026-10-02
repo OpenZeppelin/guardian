@@ -312,6 +312,9 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `alarm_latency_threshold_seconds` | `1` | Average HTTP latency alarm threshold |
 | `alarm_cpu_threshold_percent` | `85` | ECS CPU saturation alarm threshold |
 | `alarm_memory_threshold_percent` | `90` | ECS memory saturation alarm threshold |
+| `alarm_execution_failures_threshold` | `1` | Operator-side execution failures (`PROVING_FAILED`, `NODE_UNAVAILABLE`, `CHAIN_INCONSISTENT`, `SEALING_FAILED`, `ACKNOWLEDGEMENT_FAILED`) per 5-minute period tolerated before the execution-failures alarm fires |
+| `alarm_execution_observation_outage_threshold_seconds` | `300` | Seconds without a chain observation for a submitted execution before the observation-outage alarm fires |
+| `alarm_execution_reservation_age_threshold_seconds` | `1800` | Age of the oldest active execution reservation that fires the reservation-age alarm; raise it with the lease or expiration horizon |
 | `cloudwatch_log_alarms_enabled` | `true` | ERROR log metric filter on the server log group + log-errors alarm (plus a WARN filter when the dashboard exists); requires `guardian_log_format = "json"` (plan-time check) |
 | `alarm_log_error_threshold` | `0` | ERROR log lines per 5-minute period tolerated before a period counts as breaching (two consecutive periods alarm) |
 

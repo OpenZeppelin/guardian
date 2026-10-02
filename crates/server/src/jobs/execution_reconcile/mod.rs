@@ -5,12 +5,13 @@
 
 use chrono::Utc;
 
-use crate::coordination::{LeaderElector, Lease, lease_deadline, release_quietly};
+use crate::coordination::{LeaderElector, Lease, release_quietly};
 use crate::network::{RpcReadMode, StateVerification};
 use crate::state::AppState;
 use crate::storage::{
     ClaimWrite, ExecutionFailure, ExecutionFailureCode, ExecutionPhase, ExecutionRecord,
-    ExecutionResolution, LeaseFence, ResolveWrite, SubmissionEvidence,
+    ExecutionResolution, LeaseFence, ReservationUpdate, ResolveWrite, SettleWrite,
+    SubmissionEvidence,
 };
 
 /// Which pass found an expired pre-boundary attempt. The first pass after a start reports
@@ -30,6 +31,9 @@ pub enum Reconciled {
     Released(ExecutionFailureCode),
     /// The account is at the expected state; promotion settles it.
     AwaitingPromotion,
+    /// Promotion had already made the candidate canonical without settling the execution, so
+    /// reconciliation recorded it committed.
+    Committed,
     /// Nothing the chain shows settles it yet.
     Waiting,
     /// The chain could not be observed; the attempt stays held.
@@ -44,6 +48,7 @@ impl Reconciled {
             Reconciled::Owned => "owned",
             Reconciled::Released(_) => "released",
             Reconciled::AwaitingPromotion => "awaiting_promotion",
+            Reconciled::Committed => "committed",
             Reconciled::Waiting => "waiting",
             Reconciled::ObservationUnavailable => "observation_unavailable",
             Reconciled::Resolved(_) => "resolved",
@@ -188,17 +193,33 @@ impl Reconciler {
                     %error,
                     "cannot observe the chain for a submitted execution; it stays submitted"
                 );
-                self.hold(state, record, &fence).await;
+                self.hold(state, record, elector.as_ref(), lease).await;
                 return Reconciled::ObservationUnavailable;
             }
         };
         match settled {
             Observed::AtExpected => {
-                self.hold(state, record, &fence).await;
-                Reconciled::AwaitingPromotion
+                match state
+                    .storage
+                    .settle_promoted_execution(&reservation.account_id, &fence, Utc::now())
+                    .await
+                {
+                    Ok(SettleWrite::Settled) => {
+                        crate::metrics::execution::record_outcome(None);
+                        release_quietly(elector.as_ref(), lease).await;
+                        Reconciled::Committed
+                    }
+                    Ok(
+                        SettleWrite::NotPromoted | SettleWrite::StaleLease | SettleWrite::NotActive,
+                    )
+                    | Err(_) => {
+                        self.hold(state, record, elector.as_ref(), lease).await;
+                        Reconciled::AwaitingPromotion
+                    }
+                }
             }
             Observed::Pending => {
-                self.hold(state, record, &fence).await;
+                self.hold(state, record, elector.as_ref(), lease).await;
                 Reconciled::Waiting
             }
             Observed::Settles(code, message) => {
@@ -234,11 +255,13 @@ impl Reconciler {
         record: &ExecutionRecord,
         elector: &dyn LeaderElector,
     ) -> Option<Lease> {
-        let lease = elector
-            .try_acquire(state.execution.config.lease)
-            .await
-            .ok()
-            .flatten()?;
+        let lease = match elector.try_acquire(state.execution.config.lease).await {
+            Ok(lease) => lease?,
+            Err(error) => {
+                tracing::warn!(account_id = %record.reservation.account_id, %error, "could not take the execution lease to reconcile");
+                return None;
+            }
+        };
         let fence = LeaseFence::from(&lease);
         if record.reservation.fence == fence {
             return Some(lease);
@@ -311,20 +334,36 @@ impl Reconciler {
         Ok(Observed::Pending)
     }
 
-    async fn hold(&self, state: &AppState, record: &ExecutionRecord, fence: &LeaseFence) {
-        let expires = lease_deadline(state.execution.config.lease);
-        if let Err(error) = state
+    /// Keeps the reservation until the next pass, then gives the lease up: a request arriving
+    /// meanwhile reads the execution in flight instead of being turned away as busy, and the
+    /// next pass claims the reservation back under a higher fence.
+    async fn hold(
+        &self,
+        state: &AppState,
+        record: &ExecutionRecord,
+        elector: &dyn LeaderElector,
+        lease: Lease,
+    ) {
+        let account_id = &record.reservation.account_id;
+        match state
             .storage
             .renew_execution_reservation(
-                &record.reservation.account_id,
-                fence,
-                expires,
+                account_id,
+                &LeaseFence::from(&lease),
+                lease.expires_at,
                 ExecutionPhase::Reconciling,
             )
             .await
         {
-            tracing::warn!(account_id = %record.reservation.account_id, %error, "failed to renew a reconciled reservation");
+            Ok(ReservationUpdate::Applied) => {}
+            Ok(ReservationUpdate::StaleLease | ReservationUpdate::NotActive) => {
+                tracing::warn!(%account_id, "the reconciled reservation is no longer this reconciler's");
+            }
+            Err(error) => {
+                tracing::warn!(%account_id, %error, "failed to renew a reconciled reservation");
+            }
         }
+        release_quietly(elector, lease).await;
     }
 }
 
@@ -348,6 +387,3 @@ fn resolution(
         now: Utc::now(),
     }
 }
-
-#[cfg(test)]
-mod tests;

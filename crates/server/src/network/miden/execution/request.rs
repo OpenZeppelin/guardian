@@ -3,16 +3,18 @@
 //! `miden-client` turns a request into executor inputs only through crate-private helpers, and
 //! keeps the pinned input notes and the expiration delta without public accessors. Guardian
 //! therefore decodes the bytes itself, in the exact layout of the server's pinned `miden-client`.
-//! Bytes written by another version either fail to decode or reproduce a different summary, and
-//! execution refuses both before proving; a round-trip test against the pinned client guards the
-//! layout across pin bumps.
+//! The bytes are also decoded by the pinned client itself, so its validation applies, and bytes
+//! left over after the last known field are refused rather than dropped. Bytes written by
+//! another version either fail to decode or reproduce a different summary, and execution refuses
+//! both before proving; a round-trip test that sets every field guards the layout across pin
+//! bumps.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU16;
 
-use miden_client::transaction::ForeignAccount;
+use miden_client::transaction::{ForeignAccount, TransactionRequest};
 use miden_protocol::Word;
-use miden_protocol::account::Account;
+use miden_protocol::account::{Account, AccountCodeUpgrade};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::note::{
@@ -23,7 +25,7 @@ use miden_protocol::transaction::{
     InputNote, InputNotes, TransactionArgs, TransactionScript, TransactionSummary,
 };
 use miden_protocol::utils::serde::{
-    ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable,
+    ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable, SliceReader,
 };
 use miden_protocol::vm::AdviceMap;
 use miden_standards::tx_script::{ExpirationTransactionScript, SendNotesTransactionScript};
@@ -56,6 +58,7 @@ pub struct StoredRequest {
     auth_arg: Option<Word>,
     fee_conversion_salt: Option<Word>,
     expected_ntx_scripts: Vec<NoteScript>,
+    account_code_upgrade: Option<AccountCodeUpgrade>,
 }
 
 /// What the executor runs a stored request with.
@@ -74,6 +77,19 @@ pub enum RequestInputsError {
 }
 
 impl StoredRequest {
+    /// Decodes `bytes` as the pinned client's request.
+    pub fn decode(bytes: &[u8]) -> Result<Self, DeserializationError> {
+        TransactionRequest::read_from_bytes(bytes)?;
+        let mut reader = SliceReader::new(bytes);
+        let request = Self::read_from(&mut reader)?;
+        if reader.has_more_bytes() {
+            return Err(DeserializationError::InvalidValue(
+                "the request carries fields this server's client version does not know".to_string(),
+            ));
+        }
+        Ok(request)
+    }
+
     pub fn block_numbers(&self) -> &BTreeSet<BlockNumber> {
         &self.block_numbers
     }
@@ -132,6 +148,9 @@ impl StoredRequest {
         }
         if let Some(auth_arg) = self.auth_arg {
             tx_args = tx_args.with_auth_args(auth_arg);
+        }
+        if let Some(upgrade) = &self.account_code_upgrade {
+            tx_args = tx_args.with_account_code_upgrade(upgrade.clone());
         }
         tx_args.extend_output_note_recipients(
             self.expected_output_recipients
@@ -212,6 +231,7 @@ impl Serializable for StoredRequest {
         self.auth_arg.write_into(target);
         self.fee_conversion_salt.write_into(target);
         self.expected_ntx_scripts.write_into(target);
+        self.account_code_upgrade.write_into(target);
     }
 }
 
@@ -254,6 +274,7 @@ impl Deserializable for StoredRequest {
         let auth_arg = Option::<Word>::read_from(source)?;
         let fee_conversion_salt = Option::<Word>::read_from(source)?;
         let expected_ntx_scripts = Vec::<NoteScript>::read_from(source)?;
+        let account_code_upgrade = Option::<AccountCodeUpgrade>::read_from(source)?;
         Ok(Self {
             block_numbers,
             input_notes,
@@ -271,6 +292,64 @@ impl Deserializable for StoredRequest {
             auth_arg,
             fee_conversion_salt,
             expected_ntx_scripts,
+            account_code_upgrade,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
+    use miden_protocol::Word;
+    use miden_protocol::account::{AccountBuilder, AccountType};
+    use miden_protocol::utils::serde::{Deserializable, Serializable};
+    use miden_standards::account::auth::NoAuth;
+    use miden_standards::account::wallets::BasicWallet;
+
+    use super::StoredRequest;
+
+    fn word(seed: u64) -> Word {
+        Word::from([seed, seed + 1, seed + 2, seed + 3].map(miden_protocol::Felt::new_unchecked))
+    }
+
+    fn request_with_every_scalar_field() -> TransactionRequest {
+        let code = AccountBuilder::new([0xAB; 32])
+            .account_type(AccountType::Public)
+            .with_component(BasicWallet)
+            .with_component(NoAuth)
+            .build()
+            .unwrap()
+            .code()
+            .clone();
+        TransactionRequestBuilder::new()
+            .expiration_delta(256)
+            .ignore_invalid_input_notes()
+            .script_arg(word(1))
+            .auth_arg(word(5))
+            .fee_conversion_salt(word(9))
+            .account_code_upgrade(code)
+            .build()
+            .unwrap()
+    }
+
+    /// MAST deserialization is not canonical, so the mirror is held to semantic equality under
+    /// the pinned client's own decoder.
+    #[test]
+    fn the_mirror_round_trips_every_field_the_pinned_client_writes() {
+        let request = request_with_every_scalar_field();
+        assert!(request.account_code_upgrade().is_some());
+        let bytes = request.to_bytes();
+        let mirrored = StoredRequest::decode(&bytes).unwrap();
+        assert_eq!(
+            TransactionRequest::read_from_bytes(&mirrored.to_bytes()).unwrap(),
+            TransactionRequest::read_from_bytes(&bytes).unwrap()
+        );
+    }
+
+    #[test]
+    fn bytes_after_the_last_known_field_are_refused() {
+        let mut bytes = request_with_every_scalar_field().to_bytes();
+        bytes.push(0);
+        assert!(StoredRequest::decode(&bytes).is_err());
     }
 }

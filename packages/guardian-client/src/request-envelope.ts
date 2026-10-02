@@ -41,3 +41,28 @@ export async function sealTransactionRequest(bytes: Uint8Array): Promise<Transac
     bytes: toBase64(bytes),
   };
 }
+
+function envelopeField<T>(record: Record<string, unknown>, key: keyof TransactionRequestEnvelope, accepts: (value: unknown) => value is T): T {
+  const value = record[key];
+  if (!accepts(value)) {
+    throw new Error(`Guardian returned a transaction request envelope with an invalid ${key}: ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+const isString = (value: unknown): value is string => typeof value === 'string';
+const isFormatVersion = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/** Decodes a stored envelope as the server returns it, refusing a missing or mistyped field. */
+export function decodeTransactionRequestEnvelope(value: unknown): TransactionRequestEnvelope {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Guardian returned a transaction request envelope that is not an object: ${JSON.stringify(value)}`);
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    format_version: envelopeField(record, 'format_version', isFormatVersion),
+    protocol_line: envelopeField(record, 'protocol_line', isString),
+    checksum: envelopeField(record, 'checksum', isString),
+    bytes: envelopeField(record, 'bytes', isString),
+  };
+}

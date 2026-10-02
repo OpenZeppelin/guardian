@@ -103,6 +103,9 @@ pub enum ExecutionFailureCode {
     InsufficientSignatures,
     ProvingFailed,
     SealingFailed,
+    /// Guardian could not sign or record its acknowledgement of the reproduced delta: a signer
+    /// or storage failure on Guardian's side, not a fault in the proposal.
+    AcknowledgementFailed,
     ExpirationBeyondHorizon,
     AccountInadmissible,
     SubmissionRejected,
@@ -143,6 +146,9 @@ impl ExecutionFailureCode {
             }
             ExecutionFailureCode::ProvingFailed => "GUARDIAN_EXECUTION_PROVING_FAILED",
             ExecutionFailureCode::SealingFailed => "GUARDIAN_EXECUTION_SEALING_FAILED",
+            ExecutionFailureCode::AcknowledgementFailed => {
+                "GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED"
+            }
             ExecutionFailureCode::ExpirationBeyondHorizon => {
                 "GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON"
             }
@@ -178,6 +184,7 @@ impl ExecutionFailureCode {
             | ExecutionFailureCode::InsufficientSignatures
             | ExecutionFailureCode::ProvingFailed
             | ExecutionFailureCode::SealingFailed
+            | ExecutionFailureCode::AcknowledgementFailed
             | ExecutionFailureCode::ExpirationBeyondHorizon
             | ExecutionFailureCode::AccountInadmissible
             | ExecutionFailureCode::SubmissionRejected
@@ -224,6 +231,9 @@ impl ExecutionFailureCode {
             }
             "GUARDIAN_EXECUTION_PROVING_FAILED" => ExecutionFailureCode::ProvingFailed,
             "GUARDIAN_EXECUTION_SEALING_FAILED" => ExecutionFailureCode::SealingFailed,
+            "GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED" => {
+                ExecutionFailureCode::AcknowledgementFailed
+            }
             "GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON" => {
                 ExecutionFailureCode::ExpirationBeyondHorizon
             }

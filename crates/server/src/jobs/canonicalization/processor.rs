@@ -1576,14 +1576,13 @@ impl DeltasProcessorBase {
         // State, auth, delta status, and the pending-candidate flag commit
         // as one fenced storage write: a crash, outage, or lease loss can
         // never advance the state while the delta stays a candidate.
-        let executed_by_guardian = self.state.execution.executor.is_some()
-            && matches!(
-                storage_backend.load_active_execution(&delta.account_id).await,
-                Ok(Some(record)) if record
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.candidate_nonce == delta.nonce)
-            );
+        let executed_by_guardian = matches!(
+            storage_backend.load_active_execution(&delta.account_id).await,
+            Ok(Some(record)) if record
+                .evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.candidate_nonce == delta.nonce)
+        );
         let outcome = storage_backend
             .promote_candidate(
                 self.state.metadata.as_ref(),

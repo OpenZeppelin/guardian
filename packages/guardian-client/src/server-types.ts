@@ -1,5 +1,5 @@
 import type { TransactionRequestEnvelope } from './request-envelope.js';
-import type { ServerExecutionCapability } from './execution.js';
+import type { ServerExecutionCapabilityWire } from './execution.js';
 
 export interface ServerFalconSignature {
   scheme: 'falcon';
@@ -79,6 +79,7 @@ export interface ServerDeltaObject {
     data?: string;
     signatures?: Array<{ signer_id: string; signature: ServerProposalSignature }>;
     metadata?: ServerProposalMetadata;
+    transaction_request?: TransactionRequestEnvelope;
   };
   ack_sig?: string;
   ack_pubkey?: string;
@@ -187,7 +188,7 @@ export interface ServerStatusResponse {
   environment: string;
   started_at: string;
   uptime_seconds: number;
-  execution: ServerExecutionCapability;
+  execution?: ServerExecutionCapabilityWire;
 }
 
 export interface ServerLookupAccount {

@@ -10,6 +10,8 @@ import {
   FOREIGN_ACCOUNT_UNAVAILABLE_REASONS,
   REQUEST_INVALID_REASONS,
   fromServerExecution,
+  fromServerExecutionCapability,
+  isTerminalExecutionState,
   type ServerProposalExecution,
 } from './execution.js';
 
@@ -113,5 +115,31 @@ describe('fromServerExecution', () => {
   it('maps nothing in flight and an absent nonce to null', () => {
     expect(fromServerExecution(envelope({})).deltaNonce).toBeNull();
     expect(fromServerExecution(envelope({ delta_nonce: 4 })).deltaNonce).toBe(4);
+  });
+});
+
+describe('isTerminalExecutionState', () => {
+  it('matches ExecutionState::is_terminal', () => {
+    expect(EXECUTION_STATES.filter(isTerminalExecutionState)).toEqual(['committed', 'failed']);
+  });
+});
+
+describe('fromServerExecutionCapability', () => {
+  it('decodes both shapes', () => {
+    expect(fromServerExecutionCapability({ enabled: true })).toEqual({ enabled: true });
+    expect(fromServerExecutionCapability({ enabled: false, reason: 'disabled' })).toEqual({
+      enabled: false,
+      reason: 'disabled',
+    });
+  });
+
+  it('refuses an unknown reason, a missing field and a reason on an enabled capability', () => {
+    expect(() => fromServerExecutionCapability({ enabled: false, reason: 'gone_fishing' })).toThrow(
+      /unknown execution unavailable reason/
+    );
+    expect(() => fromServerExecutionCapability({ enabled: false })).toThrow(/unknown execution unavailable reason/);
+    expect(() => fromServerExecutionCapability({ enabled: 'yes' })).toThrow(/boolean enabled/);
+    expect(() => fromServerExecutionCapability(undefined)).toThrow(/no execution capability/);
+    expect(() => fromServerExecutionCapability({ enabled: true, reason: 'disabled' })).toThrow(/with a reason/);
   });
 });

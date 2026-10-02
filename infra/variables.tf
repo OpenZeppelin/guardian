@@ -740,6 +740,39 @@ variable "alarm_memory_threshold_percent" {
   }
 }
 
+variable "alarm_execution_failures_threshold" {
+  description = "Operator-side Guardian execution failures (PROVING_FAILED, NODE_UNAVAILABLE, CHAIN_INCONSISTENT, SEALING_FAILED, ACKNOWLEDGEMENT_FAILED) per 5-minute period above which the execution-failures alarm fires. 0 fires on any such failure."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.alarm_execution_failures_threshold >= 0
+    error_message = "alarm_execution_failures_threshold must not be negative."
+  }
+}
+
+variable "alarm_execution_observation_outage_threshold_seconds" {
+  description = "Seconds Guardian may be unable to observe the chain for a submitted execution before the execution-observation-outage alarm fires"
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.alarm_execution_observation_outage_threshold_seconds > 0
+    error_message = "alarm_execution_observation_outage_threshold_seconds must be positive."
+  }
+}
+
+variable "alarm_execution_reservation_age_threshold_seconds" {
+  description = "Age in seconds of the oldest active execution reservation above which the execution-reservation-age alarm fires. The default sits above 256 blocks of block time plus the execution lease, so a normal submitted execution settles first; raise it with guardian_execution_lease_secs or guardian_execution_expiration_horizon_blocks."
+  type        = number
+  default     = 1800
+
+  validation {
+    condition     = var.alarm_execution_reservation_age_threshold_seconds > 0
+    error_message = "alarm_execution_reservation_age_threshold_seconds must be positive."
+  }
+}
+
 variable "cloudwatch_log_alarms_enabled" {
   description = <<-EOT
     Whether CloudWatch Logs metric filters count the server's ERROR (and,
@@ -889,7 +922,7 @@ variable "github_deploy_stack_names" {
 }
 
 variable "guardian_tx_prover_url" {
-  description = "Remote transaction prover URL (GUARDIAN_TX_PROVER_URL). When set, Terraform creates a Secrets Manager secret holding it, since the URL can carry credentials. Setting a prover is what turns Guardian execution on. Empty leaves execution off unless guardian_tx_prover_url_secret_arn is set."
+  description = "Remote transaction prover URL (GUARDIAN_TX_PROVER_URL). When set, Terraform creates a Secrets Manager secret holding it, since a private prover's URL can be sensitive. Setting a prover is what turns Guardian execution on. Empty leaves execution off unless guardian_tx_prover_url_secret_arn is set."
   type        = string
   default     = ""
   sensitive   = true

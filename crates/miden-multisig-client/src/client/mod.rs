@@ -41,6 +41,7 @@ pub use delta_history::{
     HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
 };
+pub use guardian_execution::ExecutionWaitOptions;
 pub use note_recovery::{
     NoteRecoveryOptions, NoteRecoveryReport, RecoveryStep, RecoveryStepProblem,
 };

@@ -1038,15 +1038,10 @@ impl StorageBackend for FilesystemService {
         let promoted_at = DateTime::parse_from_rfc3339(&promotion.now)
             .map(|at| at.with_timezone(&Utc))
             .map_err(|e| format!("Failed to parse promotion timestamp: {e}"))?;
-        // The execution's outcome and release go first, in one file: an interruption after it
-        // leaves a candidate that canonicalization promotes again, never a reservation held
-        // for a candidate that is already canonical.
-        self.commit_promoted_execution(
-            &promotion.state.account_id,
-            promotion.delta.nonce,
-            promoted_at,
-        )
-        .await?;
+        // The execution settles last, so a committed outcome never names a state that is not
+        // canonical. An interruption before the delta write leaves an execution-owned candidate
+        // that canonicalization promotes again; one after it leaves a canonical candidate under
+        // a held reservation, which reconciliation settles.
         self.submit_state(&promotion.state).await?;
         if let Some(new_auth) = promotion.new_auth {
             metadata
@@ -1057,6 +1052,12 @@ impl StorageBackend for FilesystemService {
         metadata
             .clear_pending_candidate_if_none(&promotion.state.account_id, &promotion.now)
             .await?;
+        self.commit_promoted_execution(
+            &promotion.state.account_id,
+            promotion.delta.nonce,
+            promoted_at,
+        )
+        .await?;
         Ok(crate::storage::PromoteWrite::Applied)
     }
 
@@ -1318,15 +1319,21 @@ impl StorageBackend for FilesystemService {
         }
 
         // The filesystem cannot commit several files atomically, so the evidence, written last in
-        // one file, is the commit point. A crash before it leaves a pre-boundary attempt that was
-        // never sent, whose failure removes the candidate; a crash after it has everything a
-        // boundary-crossed attempt needs.
+        // one file, is the commit point. The nonce is recorded first, so a crash before the
+        // evidence leaves a pre-boundary attempt that was never sent and whose failure removes
+        // exactly the candidate it wrote; a crash after it has everything a boundary-crossed
+        // attempt needs.
+        active.reservation.candidate_nonce = Some(admission.delta.nonce);
+        self.write_executions(&account_id, &records).await?;
+        let active = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+            .expect("the reservation found above is still active");
         self.write_delta_holding_lock(&admission.delta).await?;
         metadata
             .set_has_pending_candidate(&account_id, true, &admission.now.to_rfc3339())
             .await?;
         active.evidence = Some(admission.evidence.clone());
-        active.reservation.candidate_nonce = Some(admission.delta.nonce);
         active.reservation.phase = crate::storage::ExecutionPhase::SubmissionCommitted;
         active.reservation.updated_at = admission.now;
         self.write_executions(&account_id, &records).await?;
@@ -1389,27 +1396,85 @@ impl StorageBackend for FilesystemService {
         record.outcome = Some(failed_outcome(&resolution));
         record.reservation.released_at = Some(resolution.now);
         record.reservation.updated_at = resolution.now;
-        // A candidate here is one an admission wrote before it was interrupted short of its
-        // commit point: admission requires the account to hold none, and client deltas are
-        // refused while the reservation is active. Canonicalization clears the flag it set.
-        for candidate in self.pull_candidate_deltas(&resolution.account_id).await? {
-            self.delete_delta(&resolution.account_id, candidate.nonce)
-                .await?;
+        // A nonce without evidence is an admission interrupted short of its commit point, which
+        // may have written its candidate. Canonicalization clears the flag it set.
+        if let Some(nonce) = record.reservation.candidate_nonce {
+            match self.pull_delta(&resolution.account_id, nonce).await {
+                Ok(delta) if delta.status.is_candidate() => {
+                    self.delete_delta(&resolution.account_id, nonce).await?;
+                }
+                Ok(_) => {}
+                Err(e) if crate::storage::is_storage_not_found(&e) => {}
+                Err(e) => return Err(e),
+            }
         }
         self.write_executions(&resolution.account_id, &records)
             .await?;
         Ok(ResolveWrite::Resolved)
     }
 
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: DateTime<Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        use crate::storage::SettleWrite;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(account_id).await?;
+        let Some(active) = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+        else {
+            return Ok(SettleWrite::NotActive);
+        };
+        if !owns_live_reservation(&active.reservation, fence, now) {
+            return Ok(SettleWrite::StaleLease);
+        }
+        let Some(evidence) = active.evidence.clone() else {
+            return Ok(SettleWrite::NotPromoted);
+        };
+        let current_state = self.pull_state(account_id).await?;
+        let canonical = match self.pull_delta(account_id, evidence.candidate_nonce).await {
+            Ok(delta) => delta.status.is_canonical(),
+            Err(e) if crate::storage::is_storage_not_found(&e) => false,
+            Err(e) => return Err(e),
+        };
+        if !canonical
+            || !current_state
+                .commitment
+                .eq_ignore_ascii_case(&evidence.expected_commitment)
+        {
+            return Ok(SettleWrite::NotPromoted);
+        }
+        active.outcome = Some(crate::storage::ExecutionOutcome {
+            account_id: account_id.to_string(),
+            proposal_id: active.reservation.proposal_id.clone(),
+            attempt: active.reservation.attempt,
+            terminal: crate::storage::ExecutionTerminal::Committed,
+            resolved_at: now,
+        });
+        active.reservation.released_at = Some(now);
+        active.reservation.updated_at = now;
+        self.write_executions(account_id, &records).await?;
+        Ok(SettleWrite::Settled)
+    }
+
+    /// One account whose records cannot be read is skipped, not allowed to stop reconciliation
+    /// for every other account.
     async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
         let mut unresolved = Vec::new();
         for account_id in self.fanout_account_ids().await? {
-            unresolved.extend(
-                self.read_executions(&account_id)
-                    .await?
-                    .into_iter()
-                    .filter(|record| record.reservation.is_active()),
-            );
+            match self.read_executions(&account_id).await {
+                Ok(records) => unresolved.extend(
+                    records
+                        .into_iter()
+                        .filter(|record| record.reservation.is_active()),
+                ),
+                Err(error) => {
+                    tracing::error!(%account_id, %error, "cannot read the account's execution records; reconciliation skips it");
+                }
+            }
         }
         Ok(unresolved)
     }

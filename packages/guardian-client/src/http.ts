@@ -24,7 +24,7 @@ import type {
   CanonicalNonce,
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
-import { fromServerExecution } from './execution.js';
+import { fromServerExecution, fromServerExecutionCapability } from './execution.js';
 import type {
   ProposalExecution,
   ServerCurrentExecution,
@@ -288,7 +288,7 @@ export class GuardianHttpClient {
       environment: data.environment,
       startedAt: data.started_at,
       uptimeSeconds: data.uptime_seconds,
-      execution: data.execution,
+      execution: fromServerExecutionCapability(data.execution),
     };
   }
 

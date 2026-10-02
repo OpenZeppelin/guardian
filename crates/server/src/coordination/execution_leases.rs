@@ -142,9 +142,13 @@ impl LeaderElector for InMemoryLeaseElector {
         // Reservations outlive the process but this registry does not, so tokens are seeded
         // from the clock: a restarted process still issues tokens above every one it issued
         // before, which a claim on a reservation left by the stopped process requires.
+        // A holder whose own lease lapsed gets a new token too: the reservation it stamped
+        // lapsed with it, and only a claim under a higher token can move it again.
         let seeded = now.timestamp_micros();
         let fence_token = match leases.get(&self.name) {
-            Some(held) if held.holder_id == self.holder_id => held.fence_token,
+            Some(held) if now < held.expires_at && held.holder_id == self.holder_id => {
+                held.fence_token
+            }
             Some(held) if now < held.expires_at => return Ok(None),
             Some(held) => (held.fence_token + 1).max(seeded),
             None => seeded,
@@ -280,6 +284,30 @@ mod tests {
         assert!(!a.renew(&lease_a, Duration::from_secs(60)).await.unwrap());
         assert!(!a.verify_held(&lease_a).await.unwrap());
         assert!(b.verify_held(&lease_b).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_holder_keeps_its_fence_while_live_and_gets_a_higher_one_after_a_lapse() {
+        let leases = InMemoryExecutionLeases::new();
+        let a = leases.elector("account-1", "reconciler");
+        let live = a
+            .try_acquire(Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let again = a
+            .try_acquire(Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.fence_token, live.fence_token);
+        a.release(again.clone()).await.unwrap();
+        let after_lapse = a
+            .try_acquire(Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(after_lapse.fence_token > again.fence_token);
     }
 
     #[tokio::test]

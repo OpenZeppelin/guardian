@@ -10,6 +10,7 @@ export { RequestAuthPayload } from './auth-request.js';
 export {
   ENVELOPE_FORMAT_VERSION,
   PROTOCOL_LINE,
+  decodeTransactionRequestEnvelope,
   sealTransactionRequest,
 } from './request-envelope.js';
 export type { TransactionRequestEnvelope } from './request-envelope.js';
@@ -22,6 +23,8 @@ export {
   PLAIN_EXECUTION_FAILURE_CODES,
   REQUEST_INVALID_REASONS,
   fromServerExecution,
+  fromServerExecutionCapability,
+  isTerminalExecutionState,
 } from './execution.js';
 export type {
   ExecutionFailure,

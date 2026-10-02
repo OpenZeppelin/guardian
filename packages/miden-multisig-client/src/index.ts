@@ -116,7 +116,14 @@ export {
   EXPIRATION_BOUNDS,
   FOREIGN_ACCOUNT_UNAVAILABLE_REASONS,
   REQUEST_INVALID_REASONS,
+  isTerminalExecutionState,
 } from '@openzeppelin/guardian-client';
+export {
+  DEFAULT_EXECUTION_WAIT_OPTIONS,
+  GuardianExecutionRefusedError,
+  GuardianExecutionWaitTimeoutError,
+  type ExecutionWaitOptions,
+} from './multisig/guardianExecution.js';
 export type {
   ExecutionFailure,
   ExecutionFailureCode,

@@ -17,6 +17,12 @@ import type {
   ProposalType,
 } from './types.js';
 import { ProposalSaltMalformedError } from './multisig/authArgErrors.js';
+import {
+  ExecutionWait,
+  refusingWith,
+  startWaitRuntime,
+  type ExecutionWaitOptions,
+} from './multisig/guardianExecution.js';
 import type { ProcedureName } from './procedures.js';
 import type { MidenClient, OutputNoteRecord } from '@miden-sdk/miden-sdk';
 import {
@@ -1137,17 +1143,30 @@ export class Multisig {
    * by a `guardian_executable` client.
    */
   async requestGuardianExecution(proposalId: string): Promise<ProposalExecution> {
-    return this.guardian.executeDeltaProposal(this._accountId, proposalId);
+    return refusingWith(this.guardian.executeDeltaProposal(this._accountId, proposalId));
   }
 
   /** The latest Guardian execution of a proposal. */
   async executionStatus(proposalId: string): Promise<ProposalExecution> {
-    return this.guardian.getDeltaProposalExecution(this._accountId, proposalId);
+    return refusingWith(this.guardian.getDeltaProposalExecution(this._accountId, proposalId));
   }
 
   /** The account's in-flight Guardian execution, or `null`. */
   async currentExecution(): Promise<ProposalExecution | null> {
-    return this.guardian.getCurrentExecution(this._accountId);
+    return refusingWith(this.guardian.getCurrentExecution(this._accountId));
+  }
+
+  /**
+   * Wait for a requested Guardian execution to finish and resolve with it once `committed` or
+   * `failed`. Status reads that fail with a retryable or transport error are retried; any other
+   * error is thrown. Past `options.deadlineMs` it throws `GuardianExecutionWaitTimeoutError`.
+   * It never requests execution, so call {@link requestGuardianExecution} first.
+   */
+  async waitForGuardianExecution(proposalId: string, options: ExecutionWaitOptions = {}): Promise<ProposalExecution> {
+    return new ExecutionWait(proposalId, options).run(
+      () => this.guardian.getDeltaProposalExecution(this._accountId, proposalId),
+      startWaitRuntime(),
+    );
   }
 
   /**

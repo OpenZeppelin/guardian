@@ -65,11 +65,11 @@ pub(crate) type MidenSdkClient = Client<FilesystemKeyStore>;
 pub use builder::MultisigClientBuilder;
 pub use client::{AbandonRequestState, AbandonStatus};
 pub use client::{
-    BlockRange, ConsumableNote, HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning,
-    HistoryEntry, HistoryEntryStatus, HistoryNote, HistoryNoteAsset, HistoryNoteTag,
-    HistoryNoteVisibility, HistoryPage, MultisigClient, NoteFilter, NoteImportOutcome,
-    NoteImportSource, NoteImportStatus, NoteRecoveryOptions, NoteRecoveryReport, ProposalResult,
-    PublicBackfillOptions, PublicBackfillReport, RecoveredAccount, RecoveryStep,
+    BlockRange, ConsumableNote, ExecutionWaitOptions, HistoryAssetKind, HistoryDecodeSection,
+    HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus, HistoryNote, HistoryNoteAsset,
+    HistoryNoteTag, HistoryNoteVisibility, HistoryPage, MultisigClient, NoteFilter,
+    NoteImportOutcome, NoteImportSource, NoteImportStatus, NoteRecoveryOptions, NoteRecoveryReport,
+    ProposalResult, PublicBackfillOptions, PublicBackfillReport, RecoveredAccount, RecoveryStep,
     RecoveryStepProblem, StateVerificationResult, TransportRecoveryReport, TransportRecoveryStatus,
 };
 

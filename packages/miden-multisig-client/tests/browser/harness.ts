@@ -2,6 +2,7 @@
 import { MidenClient, Word } from '@miden-sdk/miden-sdk';
 
 import {
+  buildP2idTransactionRequest,
   buildUpdateGuardianTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateSignersTransactionRequest,
@@ -82,9 +83,21 @@ async function run(): Promise<void> {
     [SIGNER_COMMITMENT],
     guardianExecutable,
   );
+  const { request: payment } = await buildP2idTransactionRequest(
+    client,
+    accountId,
+    '0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b',
+    '0xab0000000000cd110000ac000000de',
+    1n,
+    guardianExecutable,
+  );
   const delta = GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA;
   const guardianExecutableVectors = {
     authArg: request.authArg()?.toHex(),
+    p2idRecipient: payment
+      .expectedOutputOwnNotes()
+      .map((note) => note.recipient().digest().toHex())
+      .join(''),
     updateSigners: (await buildUpdateSignersScript(client, delta)).root().toHex(),
     updateProcedureThreshold: (
       await buildUpdateProcedureThresholdScript(client, 'send_asset', 2, delta)

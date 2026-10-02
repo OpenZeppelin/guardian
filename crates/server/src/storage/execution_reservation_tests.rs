@@ -624,6 +624,84 @@ async fn canonicalization_cannot_discard_an_executing_candidate(h: &Harness) {
     );
 }
 
+/// A promotion that made the candidate canonical without settling its execution, as a replica
+/// that predates execution does, is settled by the reservation's owner and nobody else.
+async fn a_canonical_candidate_under_a_held_reservation_is_settled_by_its_owner(h: &Harness) {
+    let proposal = proposal_commitment(1);
+    let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+    let attempt = h.reserve(&proposal, &owner).await;
+    h.storage
+        .admit_execution_candidate(
+            h.metadata.as_ref(),
+            h.admission(&proposal, attempt, &owner, 1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        h.storage
+            .settle_promoted_execution(&h.account_id, &owner, Utc::now())
+            .await
+            .unwrap(),
+        crate::storage::SettleWrite::NotPromoted,
+        "a candidate not yet canonical is promotion's to settle"
+    );
+
+    let now = Utc::now();
+    h.storage
+        .submit_state(&StateObject {
+            account_id: h.account_id.clone(),
+            commitment: NEXT.to_string(),
+            nonce: None,
+            state_json: serde_json::json!({ "state": "next" }),
+            created_at: "2026-09-30T12:00:00Z".to_string(),
+            updated_at: now.to_rfc3339(),
+            auth_scheme: String::new(),
+        })
+        .await
+        .unwrap();
+    h.storage
+        .update_delta_status(&h.account_id, 1, DeltaStatus::canonical(now.to_rfc3339()))
+        .await
+        .unwrap();
+
+    let stranger = LeaseFence {
+        holder_id: "worker-b".to_string(),
+        fence_token: owner.fence_token + 1,
+        ..owner.clone()
+    };
+    assert_eq!(
+        h.storage
+            .settle_promoted_execution(&h.account_id, &stranger, Utc::now())
+            .await
+            .unwrap(),
+        crate::storage::SettleWrite::StaleLease
+    );
+    assert_eq!(
+        h.storage
+            .settle_promoted_execution(&h.account_id, &owner, Utc::now())
+            .await
+            .unwrap(),
+        crate::storage::SettleWrite::Settled
+    );
+    assert!(
+        h.storage
+            .load_active_execution(&h.account_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let latest = h
+        .storage
+        .load_latest_execution(&h.account_id, &proposal)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        latest.outcome.map(|outcome| outcome.terminal),
+        Some(ExecutionTerminal::Committed)
+    );
+}
+
 async fn promotion_commits_and_releases_the_execution(h: &Harness) {
     let proposal = proposal_commitment(1);
     let owner = h.lease("worker-a", Duration::from_secs(60)).await;
@@ -1166,11 +1244,20 @@ async fn write_terminal(
             )
             .await
             .map(|written| written == ResolveWrite::Resolved),
-        Terminal::Promotion => h
-            .storage
-            .promote_candidate(h.metadata.as_ref(), promotion(h))
-            .await
-            .map(|written| written == PromoteWrite::Applied),
+        Terminal::Promotion => {
+            match h
+                .storage
+                .promote_candidate(h.metadata.as_ref(), promotion(h))
+                .await?
+            {
+                PromoteWrite::Applied => Ok(true),
+                _ => h
+                    .storage
+                    .settle_promoted_execution(&h.account_id, owner, chrono::Utc::now())
+                    .await
+                    .map(|written| written == crate::storage::SettleWrite::Settled),
+            }
+        }
     }
 }
 
@@ -1199,6 +1286,7 @@ mod filesystem {
         a_pre_boundary_failure_releases_with_its_outcome,
         a_post_boundary_failure_discards_the_candidate_and_the_proposal,
         canonicalization_cannot_discard_an_executing_candidate,
+        a_canonical_candidate_under_a_held_reservation_is_settled_by_its_owner,
         promotion_commits_and_releases_the_execution,
         active_executions_list_every_unreleased_attempt,
         proposal_admission_counts_only_viable_request_bytes,
@@ -1359,6 +1447,101 @@ mod filesystem {
         }
     }
 
+    /// Metadata whose pending-candidate flag cannot be raised: the write an admission makes after
+    /// its candidate and before its evidence.
+    struct FlagWriteFails(Arc<dyn crate::metadata::MetadataStore>);
+
+    #[async_trait::async_trait]
+    impl crate::metadata::MetadataStore for FlagWriteFails {
+        async fn get(
+            &self,
+            account_id: &str,
+        ) -> Result<Option<crate::metadata::AccountMetadata>, String> {
+            self.0.get(account_id).await
+        }
+        async fn set(&self, metadata: crate::metadata::AccountMetadata) -> Result<(), String> {
+            if metadata.has_pending_candidate {
+                return Err("injected: the flag write crashed".to_string());
+            }
+            self.0.set(metadata).await
+        }
+        async fn list(&self) -> Result<Vec<String>, String> {
+            self.0.list().await
+        }
+        async fn list_paged(
+            &self,
+            limit: u32,
+            cursor: Option<crate::metadata::AccountListCursor>,
+            paused: Option<bool>,
+        ) -> Result<Vec<crate::metadata::AccountMetadata>, String> {
+            self.0.list_paged(limit, cursor, paused).await
+        }
+        async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String> {
+            self.0.list_with_pending_candidates().await
+        }
+        async fn list_release_sweep_ids(
+            &self,
+            after: Option<&str>,
+            limit: u32,
+        ) -> Result<Vec<String>, String> {
+            self.0.list_release_sweep_ids(after, limit).await
+        }
+        async fn update_last_auth_timestamp_cas(
+            &self,
+            account_id: &str,
+            signer_commitment: &str,
+            new_timestamp: i64,
+        ) -> Result<bool, String> {
+            self.0
+                .update_last_auth_timestamp_cas(account_id, signer_commitment, new_timestamp)
+                .await
+        }
+        async fn find_by_cosigner_commitment(
+            &self,
+            commitment: &str,
+        ) -> Result<Vec<String>, String> {
+            self.0.find_by_cosigner_commitment(commitment).await
+        }
+        async fn set_pause(
+            &self,
+            account_id: &str,
+            now: chrono::DateTime<chrono::Utc>,
+            reason: &str,
+        ) -> Result<crate::services::account_status::PauseTransition, String> {
+            self.0.set_pause(account_id, now, reason).await
+        }
+        async fn clear_pause(
+            &self,
+            account_id: &str,
+        ) -> Result<crate::services::account_status::PauseTransition, String> {
+            self.0.clear_pause(account_id).await
+        }
+        async fn set_released_if_state(
+            &self,
+            account_id: &str,
+            now: chrono::DateTime<chrono::Utc>,
+            expected_state_commitment: &str,
+            storage: &dyn crate::storage::StorageBackend,
+        ) -> Result<crate::metadata::ReleaseTransition, String> {
+            self.0
+                .set_released_if_state(account_id, now, expected_state_commitment, storage)
+                .await
+        }
+        async fn clear_released_if_state(
+            &self,
+            account_id: &str,
+            expected_state_commitment: &str,
+            storage: &dyn crate::storage::StorageBackend,
+        ) -> Result<crate::metadata::ClearTransition, String> {
+            self.0
+                .clear_released_if_state(account_id, expected_state_commitment, storage)
+                .await
+        }
+        async fn count_release_sweep_accounts(&self) -> Result<usize, String> {
+            self.0.count_release_sweep_accounts().await
+        }
+    }
+
     #[tokio::test]
     async fn an_admission_interrupted_before_its_evidence_is_an_unsent_attempt_that_fails_clean() {
         let h = Harness::filesystem().await;
@@ -1367,16 +1550,13 @@ mod filesystem {
         let owner = h.lease("worker-a", Duration::from_secs(60)).await;
         let attempt = h.reserve(&proposal, &owner).await;
 
-        let path = fault_path(&h, FileFault::ExecutionRecord);
-        std::fs::create_dir_all(path.join("squat")).unwrap();
         let crashed = h
             .storage
             .admit_execution_candidate(
-                h.metadata.as_ref(),
+                &FlagWriteFails(h.metadata.clone()),
                 h.admission(&proposal, attempt, &owner, 1),
             )
             .await;
-        std::fs::remove_dir_all(&path).unwrap();
 
         assert!(crashed.is_err(), "the injected fault surfaces");
         let interrupted = h
@@ -1551,6 +1731,7 @@ mod postgres {
         a_pre_boundary_failure_releases_with_its_outcome,
         a_post_boundary_failure_discards_the_candidate_and_the_proposal,
         canonicalization_cannot_discard_an_executing_candidate,
+        a_canonical_candidate_under_a_held_reservation_is_settled_by_its_owner,
         promotion_commits_and_releases_the_execution,
         active_executions_list_every_unreleased_attempt,
         proposal_admission_counts_only_viable_request_bytes,

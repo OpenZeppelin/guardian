@@ -865,7 +865,7 @@ mod executor {
     #[tokio::test]
     async fn the_stored_request_re_encodes_to_an_equal_upstream_request() {
         let proposal = proposal(true).await;
-        let decoded = StoredRequest::read_from_bytes(&proposal.request_bytes).unwrap();
+        let decoded = StoredRequest::decode(&proposal.request_bytes).unwrap();
         assert_eq!(
             TransactionRequest::read_from_bytes(&decoded.to_bytes()).unwrap(),
             TransactionRequest::read_from_bytes(&proposal.request_bytes).unwrap()
@@ -1110,7 +1110,7 @@ mod executor {
     #[tokio::test]
     async fn the_auth_procedure_abort_on_an_expired_approval_is_recognised() {
         let proposal = proposal_expiring_after(true, 10).await;
-        let request = StoredRequest::read_from_bytes(&proposal.request_bytes).unwrap();
+        let request = StoredRequest::decode(&proposal.request_bytes).unwrap();
         let mut chain = MockChainBuilder::with_accounts([proposal.account.clone()])
             .unwrap()
             .build()
@@ -1234,6 +1234,81 @@ mod executor {
             "both transient failures were retried"
         );
         assert!(proven.expiration_block > proven.reference_block);
+    }
+
+    /// Proves whatever it is given, and keeps a copy of the inputs.
+    struct CapturingProver {
+        captured: std::sync::Mutex<Option<miden_protocol::transaction::TransactionInputs>>,
+        local: LocalTransactionProver,
+    }
+
+    #[async_trait::async_trait]
+    impl miden_client::transaction::TransactionProver for CapturingProver {
+        async fn prove(
+            &self,
+            inputs: miden_protocol::transaction::TransactionInputs,
+        ) -> Result<miden_protocol::transaction::ProvenTransaction, miden_tx::TransactionProverError>
+        {
+            *self.captured.lock().unwrap() = Some(inputs.clone());
+            miden_client::transaction::TransactionProver::prove(&self.local, inputs).await
+        }
+    }
+
+    /// Answers every request with a valid proof of another transaction.
+    struct ForeignProver {
+        inputs: miden_protocol::transaction::TransactionInputs,
+        local: LocalTransactionProver,
+    }
+
+    #[async_trait::async_trait]
+    impl miden_client::transaction::TransactionProver for ForeignProver {
+        async fn prove(
+            &self,
+            _inputs: miden_protocol::transaction::TransactionInputs,
+        ) -> Result<miden_protocol::transaction::ProvenTransaction, miden_tx::TransactionProverError>
+        {
+            miden_client::transaction::TransactionProver::prove(&self.local, self.inputs.clone())
+                .await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_proof_of_another_transaction_is_refused_before_the_boundary() {
+        let other = proposal_expiring_after(true, 80).await;
+        let capturing = Arc::new(CapturingProver {
+            captured: std::sync::Mutex::new(None),
+            local: LocalTransactionProver::default(),
+        });
+        let mut elsewhere = MidenExecutor::new(other.rpc.clone(), capturing.clone())
+            .prepare(other.input(&[0, 1]))
+            .await
+            .unwrap();
+        elsewhere.execute(None).await.unwrap();
+        elsewhere.prove().await.unwrap();
+        let foreign = capturing.captured.lock().unwrap().take().unwrap();
+
+        let proposal = proposal(true).await;
+        let executor = MidenExecutor::new(
+            proposal.rpc.clone(),
+            Arc::new(ForeignProver {
+                inputs: foreign,
+                local: LocalTransactionProver::default(),
+            }),
+        );
+        let mut attempt = executor.prepare(proposal.input(&[0, 1])).await.unwrap();
+        attempt.execute(None).await.unwrap();
+        let failure = attempt.prove().await.unwrap_err();
+        assert_eq!(
+            failure.code,
+            ExecutionFailureCode::ProvingFailed,
+            "{}",
+            failure.message
+        );
+        assert!(
+            failure.message.contains("returned transaction"),
+            "{}",
+            failure.message
+        );
     }
 
     /// A 2-of-2 ECDSA account's rotation, approved by one raw and one EIP-712 cosigner signature,

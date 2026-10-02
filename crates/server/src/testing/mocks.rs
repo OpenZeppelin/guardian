@@ -510,6 +510,8 @@ pub struct MockStorageBackend {
     pub backfill_state_nonce_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     /// `(account_id, commitment, nonce)` per backfill.
     pub backfill_state_nonce_calls: Arc<StdMutex<Vec<(String, String, u64)>>>,
+    /// Makes `admit_delta_proposal` report the proposal as already stored.
+    pub admit_already_stored: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockStorageBackend {
@@ -647,6 +649,12 @@ impl MockStorageBackend {
             .lock()
             .unwrap()
             .push(response);
+        self
+    }
+
+    pub fn with_admit_already_stored(self) -> Self {
+        self.admit_already_stored
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self
     }
 
@@ -1139,6 +1147,12 @@ impl StorageBackend for MockStorageBackend {
         &self,
         admission: crate::storage::ProposalAdmission,
     ) -> Result<crate::storage::ProposalWrite, String> {
+        if self
+            .admit_already_stored
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(crate::storage::ProposalWrite::AlreadyStored);
+        }
         let viable = self
             .pull_pending_proposals(&admission.proposal.account_id)
             .await?
@@ -1403,6 +1417,15 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .pop()
             .unwrap_or(Ok(crate::storage::ResolveWrite::Resolved))
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        _account_id: &str,
+        _fence: &crate::storage::LeaseFence,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        Ok(crate::storage::SettleWrite::NotPromoted)
     }
 
     async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {

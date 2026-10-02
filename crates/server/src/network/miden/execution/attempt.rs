@@ -21,6 +21,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
 use miden_protocol::transaction::{
     ExecutedTransaction, ProvenTransaction, TransactionInputs, TransactionSummary,
+    TransactionVerifier,
 };
 use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
@@ -273,7 +274,7 @@ impl ProposalExecutor for MidenExecutor {
         let bytes = envelope.verified_bytes().map_err(|rejection| {
             ExecutionFailure::new(rejection.failure_code(), rejection.to_string())
         })?;
-        let request = StoredRequest::read_from_bytes(&bytes).map_err(|e| {
+        let request = StoredRequest::decode(&bytes).map_err(|e| {
             codec(format!(
                 "stored request does not decode with this server's miden-client, which may not \
                  be the version that serialized it: {e}"
@@ -493,6 +494,33 @@ impl MidenAttempt {
         Ok(())
     }
 
+    /// The prover's answer is not trusted: a proof the node would refuse, or one of another
+    /// transaction, is refused here, before the boundary, where the proposal can still be retried.
+    fn ensure_proves_the_executed_transaction(
+        &self,
+        proven: &ProvenTransaction,
+    ) -> Result<(), ExecutionFailure> {
+        let executed = self.executed();
+        let refused =
+            |message: String| ExecutionFailure::new(ExecutionFailureCode::ProvingFailed, message);
+        if proven.id() != executed.id()
+            || proven.account_id() != executed.account_id()
+            || proven.account_update().final_state_commitment()
+                != executed.final_account().to_commitment()
+        {
+            return Err(refused(format!(
+                "the prover returned transaction {} for executed transaction {}",
+                proven.id().to_hex(),
+                executed.id().to_hex()
+            )));
+        }
+        let _deferred_precompiles_settle_in_the_batch =
+            TransactionVerifier::new(miden_protocol::MIN_PROOF_SECURITY_LEVEL)
+                .verify(proven)
+                .map_err(|error| refused(format!("the returned proof does not verify: {error}")))?;
+        Ok(())
+    }
+
     fn executed(&self) -> &ExecutedTransaction {
         self.executed
             .as_ref()
@@ -644,6 +672,7 @@ impl ExecutionAttempt for MidenAttempt {
                 }
             }
         };
+        self.ensure_proves_the_executed_transaction(&proven)?;
         let info = ProvenTransactionInfo {
             transaction_id: proven.id().to_hex(),
             reference_block: self.reference_block(),
@@ -681,13 +710,26 @@ impl ExecutionAttempt for MidenAttempt {
             .expect("the attempt seals before it submits, and submits once");
         match self.rpc.submit_proven_transaction(proven, sealed).await {
             Ok(_) => SubmissionOutcome::Accepted,
-            Err(error) if error.is_indeterminate_submission() => SubmissionOutcome::Unknown {
-                reason: error.to_string(),
-            },
-            Err(error) => SubmissionOutcome::Rejected {
-                reason: error.to_string(),
-            },
+            Err(error) => classify_submission_error(&error),
         }
+    }
+}
+
+/// Past the boundary a rejection deletes the proposal, so only a node that answered and refused
+/// the transaction is a rejection. A response that failed to arrive or to decode may still have
+/// been accepted, and a node reporting the transaction as already known may hold it, so both are
+/// left for the chain to settle.
+fn classify_submission_error(error: &miden_client::rpc::RpcError) -> SubmissionOutcome {
+    use miden_client::rpc::{GrpcError, RpcError};
+    let refused = matches!(
+        error,
+        RpcError::RequestError { error_kind, .. } if !matches!(error_kind, GrpcError::AlreadyExists)
+    ) && !error.is_indeterminate_submission();
+    let reason = error.to_string();
+    if refused {
+        SubmissionOutcome::Rejected { reason }
+    } else {
+        SubmissionOutcome::Unknown { reason }
     }
 }
 
@@ -775,5 +817,46 @@ mod chain_failure_tests {
         for (error, code) in cases {
             assert_eq!(chain_view_failure(error).code, code);
         }
+    }
+}
+
+#[cfg(test)]
+mod submission_classification_tests {
+    use miden_client::rpc::{GrpcError, RpcEndpoint, RpcError};
+
+    use super::{SubmissionOutcome, classify_submission_error};
+
+    fn refused(kind: GrpcError) -> RpcError {
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::SubmitProvenTx,
+            error_kind: kind,
+            endpoint_error: None,
+            source: None,
+        }
+    }
+
+    fn is_unknown(error: RpcError) -> bool {
+        matches!(
+            classify_submission_error(&error),
+            SubmissionOutcome::Unknown { .. }
+        )
+    }
+
+    #[test]
+    fn only_a_node_that_answered_and_refused_is_a_rejection() {
+        assert!(matches!(
+            classify_submission_error(&refused(GrpcError::InvalidArgument)),
+            SubmissionOutcome::Rejected { .. }
+        ));
+        assert!(is_unknown(refused(GrpcError::Unavailable)));
+        assert!(is_unknown(refused(GrpcError::AlreadyExists)));
+        assert!(is_unknown(RpcError::ConnectionError("reset".into())));
+        assert!(is_unknown(RpcError::DeserializationError(
+            "truncated".to_string()
+        )));
+        assert!(is_unknown(RpcError::InvalidResponse("garbled".to_string())));
+        assert!(is_unknown(RpcError::ExpectedDataMissing(
+            "block".to_string()
+        )));
     }
 }

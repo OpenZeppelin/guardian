@@ -332,6 +332,62 @@ async fn an_unobservable_chain_keeps_the_execution_submitted_until_it_recovers()
 }
 
 #[tokio::test]
+async fn a_reconciler_whose_own_lease_lapsed_between_passes_still_settles() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+    tokio::time::sleep(LEASE + Duration::from_millis(100)).await;
+    faults.chain_at(400);
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Resolved(ExecutionFailureCode::Expired),
+        "a pass later than the lease must still be able to write its verdict"
+    );
+    assert!(!faults.reservation_held().await);
+}
+
+/// What a promotion that does not settle the execution leaves: a replica that predates
+/// execution, or a filesystem promotion interrupted after its delta write.
+async fn promote_without_settling(faults: &Faults) {
+    let storage = &faults.f.state.storage;
+    let mut delta = storage.pull_delta(ACCOUNT, 1).await.unwrap();
+    delta.status = crate::delta_object::DeltaStatus::canonical(Utc::now().to_rfc3339());
+    storage.submit_delta(&delta).await.unwrap();
+    let mut account = storage.pull_state(ACCOUNT).await.unwrap();
+    account.commitment = super::tests::NEW_COMMITMENT.to_string();
+    storage.submit_state(&account).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_promotion_that_left_the_execution_held_is_settled_committed() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    promote_without_settling(&faults).await;
+    faults.chain_shows(Ok(StateVerification::Match));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Committed
+    );
+    assert_eq!(faults.state().await, ExecutionState::Committed);
+    assert!(!faults.reservation_held().await);
+}
+
+#[tokio::test]
+async fn an_account_at_the_submitted_state_before_promotion_is_left_to_promotion() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_shows(Ok(StateVerification::Match));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::AwaitingPromotion,
+        "a candidate not yet canonical is promotion's to settle"
+    );
+    assert!(faults.reservation_held().await);
+}
+
+#[tokio::test]
 async fn a_reconciler_that_already_holds_the_attempt_keeps_it_across_passes() {
     let faults = Faults::submitted_and_abandoned(Script::default()).await;
     faults.chain_shows(Ok(StateVerification::Absent));
@@ -649,11 +705,25 @@ async fn a_worker_whose_reservation_moved_on_writes_and_sends_nothing() {
     );
 }
 
-/// Leases that work, except that the pre-send ownership check finds them gone: the state a
-/// worker is in when its lease lapses or is taken after the boundary commit and before the send.
-struct LostAfterBoundary(crate::coordination::InMemoryExecutionLeases);
+/// Leases that work until the boundary commit and are gone at the renewal that gates the send:
+/// the state a worker is in when its lease lapses or is taken between the commit and the send.
+struct LostAfterBoundary {
+    leases: crate::coordination::InMemoryExecutionLeases,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+}
 
-struct LostElector(Arc<dyn crate::coordination::LeaderElector>);
+struct LostElector {
+    inner: Arc<dyn crate::coordination::LeaderElector>,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+}
+
+async fn boundary_crossed(storage: &dyn crate::storage::StorageBackend) -> bool {
+    storage
+        .load_active_execution(ACCOUNT)
+        .await
+        .unwrap()
+        .is_some_and(|record| record.evidence.is_some())
+}
 
 #[async_trait::async_trait]
 impl crate::coordination::LeaderElector for LostElector {
@@ -661,23 +731,26 @@ impl crate::coordination::LeaderElector for LostElector {
         &self,
         ttl: Duration,
     ) -> crate::error::Result<Option<crate::coordination::Lease>> {
-        self.0.try_acquire(ttl).await
+        self.inner.try_acquire(ttl).await
     }
     async fn renew(
         &self,
         lease: &crate::coordination::Lease,
         ttl: Duration,
     ) -> crate::error::Result<bool> {
-        self.0.renew(lease, ttl).await
+        if boundary_crossed(self.storage.as_ref()).await {
+            return Ok(false);
+        }
+        self.inner.renew(lease, ttl).await
     }
-    async fn verify_held(&self, _lease: &crate::coordination::Lease) -> crate::error::Result<bool> {
-        Ok(false)
+    async fn verify_held(&self, lease: &crate::coordination::Lease) -> crate::error::Result<bool> {
+        self.inner.verify_held(lease).await
     }
     async fn release(&self, lease: crate::coordination::Lease) -> crate::error::Result<()> {
-        self.0.release(lease).await
+        self.inner.release(lease).await
     }
     fn supports_fencing(&self) -> bool {
-        self.0.supports_fencing()
+        self.inner.supports_fencing()
     }
 }
 
@@ -687,20 +760,24 @@ impl crate::coordination::ExecutionLeases for LostAfterBoundary {
         account_id: &str,
         holder_id: &str,
     ) -> Arc<dyn crate::coordination::LeaderElector> {
-        Arc::new(LostElector(self.0.elector(account_id, holder_id)))
+        Arc::new(LostElector {
+            inner: self.leases.elector(account_id, holder_id),
+            storage: self.storage.clone(),
+        })
     }
 
     fn is_shared(&self) -> bool {
-        self.0.is_shared()
+        self.leases.is_shared()
     }
 }
 
 #[tokio::test]
 async fn a_worker_that_loses_its_lease_after_the_boundary_never_sends() {
     let mut faults = Faults::new(Script::default()).await;
-    faults.f.state.execution.leases = Arc::new(LostAfterBoundary(
-        crate::coordination::InMemoryExecutionLeases::new(),
-    ));
+    faults.f.state.execution.leases = Arc::new(LostAfterBoundary {
+        leases: crate::coordination::InMemoryExecutionLeases::new(),
+        storage: faults.f.state.storage.clone(),
+    });
     faults.f.request().await.unwrap();
 
     let (reported, _) = faults.f.settle(is_submitted_or_terminal).await;
@@ -745,8 +822,8 @@ async fn a_worker_that_loses_its_lease_after_the_boundary_never_sends() {
     );
 }
 
-/// Leases whose ownership check passes but hands the reservation to another holder first: a
-/// takeover that lands between the worker's lease check and its send.
+/// Leases whose renewal at the send passes but hands the reservation to another holder first: a
+/// takeover that lands between the worker's lease renewal and its fenced send claim.
 struct TakenOverAtTheSend {
     leases: crate::coordination::InMemoryExecutionLeases,
     storage: Arc<dyn crate::storage::StorageBackend>,
@@ -770,9 +847,9 @@ impl crate::coordination::LeaderElector for TakingElector {
         lease: &crate::coordination::Lease,
         ttl: Duration,
     ) -> crate::error::Result<bool> {
-        self.inner.renew(lease, ttl).await
-    }
-    async fn verify_held(&self, lease: &crate::coordination::Lease) -> crate::error::Result<bool> {
+        if !boundary_crossed(self.storage.as_ref()).await {
+            return self.inner.renew(lease, ttl).await;
+        }
         let current = self
             .storage
             .load_active_execution(ACCOUNT)
@@ -797,6 +874,9 @@ impl crate::coordination::LeaderElector for TakingElector {
             .await
             .unwrap();
         assert_eq!(claimed, crate::storage::ClaimWrite::Claimed);
+        self.inner.renew(lease, ttl).await
+    }
+    async fn verify_held(&self, lease: &crate::coordination::Lease) -> crate::error::Result<bool> {
         self.inner.verify_held(lease).await
     }
     async fn release(&self, lease: crate::coordination::Lease) -> crate::error::Result<()> {

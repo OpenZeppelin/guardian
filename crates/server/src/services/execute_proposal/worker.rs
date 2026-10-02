@@ -14,6 +14,7 @@ use super::executor::{
 };
 use crate::coordination::{LeaderElector, Lease, lease_deadline, release_quietly};
 use crate::delta_object::{DeltaObject, DeltaStatus};
+use crate::error::GuardianError;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::ack_delta_internal::{AcknowledgedDelta, acknowledge_delta};
 use crate::state::AppState;
@@ -95,9 +96,8 @@ impl Heartbeat {
                     }
                 }
                 let phase = *current.lock().expect("phase lock");
-                let expires = lease_deadline(ttl);
                 match storage
-                    .renew_execution_reservation(&account_id, &fence, expires, phase)
+                    .renew_execution_reservation(&account_id, &fence, renewing_until, phase)
                     .await
                 {
                     Ok(ReservationUpdate::Applied) => wait = interval,
@@ -115,16 +115,47 @@ impl Heartbeat {
         Self { phase, task }
     }
 
-    async fn advance(&self, state: &AppState, job: &ExecutionJob, phase: ExecutionPhase) {
+    /// Records the phase under a renewed lease. The reservation's deadline only ever moves to
+    /// one the lease itself was renewed past, so storage never authorizes a lease the elector
+    /// has already lost.
+    async fn advance(
+        &self,
+        state: &AppState,
+        job: &ExecutionJob,
+        phase: ExecutionPhase,
+    ) -> Result<(), Stop> {
         *self.phase.lock().expect("phase lock") = phase;
-        let expires = lease_deadline(state.execution.config.lease);
-        if let Err(error) = state
+        let ttl = state.execution.config.lease;
+        let renewing_until = lease_deadline(ttl);
+        match job.elector.renew(&job.lease, ttl).await {
+            Ok(true) => {}
+            Ok(false) => return Err(Stop::OwnershipLost),
+            Err(error) => {
+                tracing::warn!(account_id = %job.account_id, %error, "could not renew the execution lease to record the phase; the heartbeat keeps retrying");
+                return Ok(());
+            }
+        }
+        match state
             .storage
-            .renew_execution_reservation(&job.account_id, &job.fence, expires, phase)
+            .renew_execution_reservation(&job.account_id, &job.fence, renewing_until, phase)
             .await
         {
-            tracing::warn!(account_id = %job.account_id, %error, "failed to record the execution phase");
+            Ok(ReservationUpdate::Applied) => Ok(()),
+            Ok(ReservationUpdate::StaleLease | ReservationUpdate::NotActive) => {
+                Err(Stop::OwnershipLost)
+            }
+            Err(error) => {
+                tracing::warn!(account_id = %job.account_id, %error, "failed to record the execution phase");
+                Ok(())
+            }
         }
+    }
+
+    /// Stops renewing and waits for an in-flight renewal to finish, so none can land after a
+    /// later write such as the send claim.
+    async fn stop(mut self) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
     }
 }
 
@@ -134,11 +165,15 @@ impl Drop for Heartbeat {
     }
 }
 
+/// The worker gives its lease up on every exit. After the send the reservation stays held under
+/// the worker's fence and reconciliation claims it, so a request arriving meanwhile reads the
+/// execution in flight instead of being turned away as busy.
 pub(super) async fn run_execution(state: &AppState, job: ExecutionJob) {
     let heartbeat = Heartbeat::start(state, &job);
-    match run_to_boundary(state, &job, &heartbeat).await {
+    let reached = run_to_boundary(state, &job, &heartbeat).await;
+    heartbeat.stop().await;
+    match reached {
         Ok(mut attempt) => {
-            drop(heartbeat);
             if claim_send(state, &job).await {
                 submit(state, &job, attempt.as_mut()).await;
             } else {
@@ -149,10 +184,7 @@ pub(super) async fn run_execution(state: &AppState, job: ExecutionJob) {
                 );
             }
         }
-        Err(Stop::Failed(failure)) => {
-            drop(heartbeat);
-            fail(state, &job, failure).await;
-        }
+        Err(Stop::Failed(failure)) => fail(state, &job, failure).await,
         Err(Stop::OwnershipLost) => {
             tracing::warn!(
                 account_id = %job.account_id,
@@ -161,6 +193,7 @@ pub(super) async fn run_execution(state: &AppState, job: ExecutionJob) {
             );
         }
     }
+    release_quietly(job.elector.as_ref(), job.lease.clone()).await;
 }
 
 async fn run_to_boundary(
@@ -184,12 +217,12 @@ async fn run_to_boundary(
     let mut attempt = job.executor.prepare(job.input.clone()).await?;
     heartbeat
         .advance(state, job, ExecutionPhase::Verified)
-        .await;
+        .await?;
 
     let acknowledged = acknowledge(state, job, &current_state, attempt.as_ref()).await?;
     heartbeat
         .advance(state, job, ExecutionPhase::Acknowledged)
-        .await;
+        .await?;
     let ack = attempt.requires_guardian_ack().then(|| GuardianAck {
         scheme: job.scheme,
         signature_hex: acknowledged.delta.ack_sig.clone(),
@@ -211,11 +244,15 @@ async fn run_to_boundary(
     ensure_within_horizon(state, &executed)?;
     heartbeat
         .advance(state, job, ExecutionPhase::Executed)
-        .await;
-    heartbeat.advance(state, job, ExecutionPhase::Proving).await;
+        .await?;
+    heartbeat
+        .advance(state, job, ExecutionPhase::Proving)
+        .await?;
 
     let proven = attempt.prove().await?;
-    heartbeat.advance(state, job, ExecutionPhase::Proved).await;
+    heartbeat
+        .advance(state, job, ExecutionPhase::Proved)
+        .await?;
     attempt.seal().await?;
     ensure_admissible(state, job).await?;
     ensure_unexpired(job, &proven).await?;
@@ -245,8 +282,16 @@ async fn acknowledge(
     acknowledge_delta(state, &job.scheme, current_state, &delta)
         .await
         .map_err(|error| {
+            let code = match error {
+                GuardianError::SigningError(_)
+                | GuardianError::StorageError(_)
+                | GuardianError::ConfigurationError(_) => {
+                    ExecutionFailureCode::AcknowledgementFailed
+                }
+                _ => ExecutionFailureCode::BindingMismatch,
+            };
             ExecutionFailure::new(
-                ExecutionFailureCode::BindingMismatch,
+                code,
                 format!("Guardian could not acknowledge the reproduced delta: {error}"),
             )
             .into()
@@ -392,13 +437,19 @@ async fn cross_boundary(
 /// only a worker whose fence still matches the persisted reservation sends. A storage error
 /// leaves ownership unknown, and an unsent transaction is safe where a second owner's is not.
 async fn claim_send(state: &AppState, job: &ExecutionJob) -> bool {
-    if !job.elector.verify_held(&job.lease).await.unwrap_or(false) {
+    let ttl = state.execution.config.lease;
+    let renewing_until = lease_deadline(ttl);
+    if !job.elector.renew(&job.lease, ttl).await.unwrap_or(false) {
         return false;
     }
-    let expires = lease_deadline(state.execution.config.lease);
     match state
         .storage
-        .renew_execution_reservation(&job.account_id, &job.fence, expires, ExecutionPhase::Sent)
+        .renew_execution_reservation(
+            &job.account_id,
+            &job.fence,
+            renewing_until,
+            ExecutionPhase::Sent,
+        )
         .await
     {
         Ok(ReservationUpdate::Applied) => true,
@@ -467,7 +518,6 @@ async fn fail(state: &AppState, job: &ExecutionJob, failure: ExecutionFailure) {
             tracing::error!(account_id = %job.account_id, %error, "failed to record a failed execution")
         }
     }
-    release_quietly(job.elector.as_ref(), job.lease.clone()).await;
 }
 
 fn resolution(job: &ExecutionJob, failure: ExecutionFailure) -> ExecutionResolution {

@@ -116,8 +116,9 @@ mod tests {
     }
 
     /// The vectors `packages/miden-multisig-client/tests/browser/execution-parity.spec.ts` checks
-    /// the TypeScript SDK against: the Guardian-executable auth arguments for fixed inputs and the
-    /// roots of the three Guardian-owned scripts with the transaction expiration applied.
+    /// the TypeScript SDK against: the Guardian-executable auth arguments for fixed inputs, the
+    /// recipient of the P2ID note a payment from the browser-parity account creates under them,
+    /// and the roots of the three Guardian-owned scripts with the transaction expiration applied.
     #[test]
     fn guardian_executable_vectors_the_typescript_sdk_must_reproduce() {
         use guardian_shared::SignatureScheme;
@@ -151,8 +152,47 @@ mod tests {
             Some(GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA),
         )
         .unwrap();
+        let sender = miden_confidential_contracts::multisig_guardian::MultisigGuardianBuilder::new(
+            miden_confidential_contracts::multisig_guardian::MultisigGuardianConfig::new(
+                1,
+                vec![
+                    Word::parse(
+                        "0x260a375ca01f1f05cd7bf22298b40c47290fc09f209011d39049b7f2ef61387b",
+                    )
+                    .unwrap(),
+                ],
+                guardian,
+            ),
+        )
+        .with_seed([9u8; 32])
+        .build()
+        .unwrap();
+        let payment = super::super::build_p2id_transaction_request_with_expiration(
+            &sender,
+            miden_protocol::account::AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b")
+                .unwrap(),
+            vec![
+                miden_protocol::asset::FungibleAsset::new(fee_faucet, 1)
+                    .unwrap()
+                    .into(),
+            ],
+            miden_protocol::note::NoteType::Public,
+            crate::proposal::P2ideHeights::default(),
+            &auth_args,
+            std::iter::empty(),
+            delta,
+        )
+        .unwrap();
         let vectors = [
             ("authArg", auth_args.to_commitment().to_hex()),
+            (
+                "p2idRecipient",
+                payment
+                    .expected_output_recipients()
+                    .map(|recipient| recipient.digest().to_hex())
+                    .collect::<Vec<_>>()
+                    .concat(),
+            ),
             (
                 "updateSigners",
                 build_update_signers_script(delta).unwrap().root().to_hex(),
@@ -181,6 +221,11 @@ mod tests {
                         .to_string()
                 ),
                 (
+                    "p2idRecipient",
+                    "0x841f13d50f06ba63ed713dbb9e5b3a6988ac7bf2895281e6974a6c3f86c1aa5d"
+                        .to_string()
+                ),
+                (
                     "updateSigners",
                     "0xef1d061e74fa7da827343f1f387f45e93286de76c97495ea59a643d22291be9c"
                         .to_string()
@@ -199,7 +244,7 @@ mod tests {
         );
         assert_ne!(
             build_update_signers_script(None).unwrap().root().to_hex(),
-            vectors[1].1,
+            vectors[2].1,
             "the expiration line changes the script, so the vector pins it"
         );
     }

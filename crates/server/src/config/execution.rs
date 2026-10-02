@@ -213,12 +213,25 @@ impl ExecutionConfig {
 
 /// Refuses a prover URL the prover client could not connect to. The message never repeats the
 /// URL, which can carry credentials.
+/// The prover client sends neither userinfo nor a query, so a URL carrying them would only look
+/// authenticated; access control for a private prover belongs to the network in front of it.
 fn ensure_prover_url(url: &str) -> Result<(), String> {
     match url::Url::parse(url.trim()) {
-        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") && parsed.has_host() => Ok(()),
-        Ok(_) => Err(format!(
-            "{ENV_TX_PROVER_URL} must be an http or https URL with a host"
-        )),
+        Ok(parsed) if !matches!(parsed.scheme(), "http" | "https") || !parsed.has_host() => Err(
+            format!("{ENV_TX_PROVER_URL} must be an http or https URL with a host"),
+        ),
+        Ok(parsed)
+            if !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.query().is_some()
+                || parsed.fragment().is_some() =>
+        {
+            Err(format!(
+                "{ENV_TX_PROVER_URL} must not carry credentials, a query or a fragment: the \
+                 prover client sends none of them"
+            ))
+        }
+        Ok(_) => Ok(()),
         Err(error) => Err(format!("{ENV_TX_PROVER_URL} is not a valid URL: {error}")),
     }
 }
@@ -279,14 +292,19 @@ mod tests {
 
     #[test]
     fn a_malformed_prover_url_is_refused_without_echoing_it() {
-        for url in ["not a url", "ftp://prover:secret@host", "https://"] {
+        for url in [
+            "not a url",
+            "ftp://prover:secret@host",
+            "https://",
+            "https://user:secret@prover.example:50051",
+            "https://prover.example:50051/?token=secret",
+            "https://prover.example:50051/#secret",
+        ] {
             let error = config_from(&[(ENV_TX_PROVER_URL, url)]).unwrap_err();
             assert!(error.contains(ENV_TX_PROVER_URL), "{error}");
             assert!(!error.contains("secret"), "{error}");
         }
-        assert!(
-            config_from(&[(ENV_TX_PROVER_URL, "https://user:pw@prover.example:50051")]).is_ok()
-        );
+        assert!(config_from(&[(ENV_TX_PROVER_URL, "https://prover.example:50051")]).is_ok());
     }
 
     #[test]
@@ -325,12 +343,11 @@ mod tests {
     fn prover_url_is_redacted_in_debug_output() {
         let config = config_from(&[(
             ENV_TX_PROVER_URL,
-            "https://user:secret@prover.example:50051/path?token=abc",
+            "https://prover.example:50051/private-route",
         )])
         .unwrap();
         let rendered = format!("{config:?}");
-        assert!(!rendered.contains("secret"));
-        assert!(!rendered.contains("token=abc"));
+        assert!(!rendered.contains("private-route"));
         assert!(rendered.contains("prover.example"));
     }
 

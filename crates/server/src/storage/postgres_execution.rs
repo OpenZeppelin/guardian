@@ -15,7 +15,7 @@ use crate::storage::{
     AdmissionWrite, CandidateAdmission, ClaimWrite, ExecutionFailure, ExecutionOutcome,
     ExecutionPhase, ExecutionRecord, ExecutionReservation, ExecutionResolution, ExecutionTerminal,
     LeaseFence, NewExecutionReservation, ReservationUpdate, ReservationWrite, ResolveWrite,
-    SubmissionEvidence,
+    SettleWrite, SubmissionEvidence,
 };
 
 #[derive(Queryable, Selectable)]
@@ -697,6 +697,75 @@ impl PostgresService {
         })
         .await
         .map_err(|e| format!("Failed to admit execution candidate: {e}"))
+    }
+
+    pub(super) async fn settle_promoted_execution_tx(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        now: DateTime<Utc>,
+    ) -> Result<SettleWrite, String> {
+        let account_id = account_id.to_string();
+        let fence = fence.clone();
+        let mut conn = self.connection().await?;
+        conn.transaction::<SettleWrite, diesel::result::Error, _>(|conn| {
+            async move {
+                lock_account_metadata(conn, &account_id).await?;
+                let Some(reservation) = active_reservation(conn, &account_id).await? else {
+                    return Ok(SettleWrite::NotActive);
+                };
+                if !owns_live_reservation(conn, &reservation, &fence).await? {
+                    return Ok(SettleWrite::StaleLease);
+                }
+                let Some(evidence) = attempt_evidence(
+                    conn,
+                    &account_id,
+                    &reservation.proposal_id,
+                    reservation.attempt,
+                )
+                .await?
+                else {
+                    return Ok(SettleWrite::NotPromoted);
+                };
+                let current_commitment = states::table
+                    .filter(states::account_id.eq(&account_id))
+                    .select(states::commitment)
+                    .first::<String>(conn)
+                    .await?;
+                let canonical = diesel::select(diesel::dsl::exists(
+                    deltas::table
+                        .filter(deltas::account_id.eq(&account_id))
+                        .filter(deltas::nonce.eq(evidence.candidate_nonce))
+                        .filter(deltas::status_kind.eq("canonical")),
+                ))
+                .get_result::<bool>(conn)
+                .await?;
+                if !canonical
+                    || !current_commitment.eq_ignore_ascii_case(&evidence.expected_commitment)
+                {
+                    return Ok(SettleWrite::NotPromoted);
+                }
+                insert_outcome(
+                    conn,
+                    NewOutcomeRow {
+                        account_id: &account_id,
+                        proposal_id: &reservation.proposal_id,
+                        attempt: reservation.attempt,
+                        state: "committed",
+                        error_code: None,
+                        error_message: None,
+                        error_meta: None,
+                        resolved_at: now,
+                    },
+                )
+                .await?;
+                release_reservation(conn, reservation.id, now).await?;
+                Ok(SettleWrite::Settled)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to settle a promoted execution: {e}"))
     }
 
     pub(super) async fn resolve_execution_tx(

@@ -540,7 +540,9 @@ example to show or hide an "execute through Guardian" action, can read `executio
 server's public `GET /status` (`getStatus()` in the TypeScript base client).
 
 ```rust
-use miden_multisig_client::{ExecutionState, MultisigClient, ProposalExecutionMode, TransactionType};
+use miden_multisig_client::{
+    ExecutionState, ExecutionWaitOptions, MultisigClient, ProposalExecutionMode, TransactionType,
+};
 
 let mut client = MultisigClient::builder()
     // ...endpoints and key...
@@ -549,15 +551,12 @@ let mut client = MultisigClient::builder()
     .await?;
 let proposal = client.propose_transaction(TransactionType::consume_notes(note_ids)).await?;
 // ...cosigners sign to threshold...
-let accepted = client.request_guardian_execution(&proposal.id).await?;
-loop {
-    let execution = client.execution_status(&proposal.id).await?;
-    match execution.state {
-        ExecutionState::Committed => break,
-        ExecutionState::Failed => return Err(format!("{:?}", execution.error).into()),
-        ExecutionState::Pending | ExecutionState::Proving | ExecutionState::Submitted => {}
-    }
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+client.request_guardian_execution(&proposal.id).await?;
+let execution = client
+    .wait_for_guardian_execution(&proposal.id, ExecutionWaitOptions::default())
+    .await?;
+if execution.state == ExecutionState::Failed {
+    return Err(format!("{:?}", execution.error).into());
 }
 ```
 
@@ -571,8 +570,34 @@ const multisig = await client.load(accountId, signer);
 const proposal = await multisig.createConsumeNotesProposal(noteIds);
 // ...cosigners sign to threshold...
 await multisig.requestGuardianExecution(proposal.id);
-const execution = await multisig.executionStatus(proposal.id); // poll until 'committed' or 'failed'
+const execution = await multisig.waitForGuardianExecution(proposal.id);
+if (execution.state === 'failed') {
+  throw new Error(`${execution.error?.code}: ${execution.error?.message}`);
+}
 ```
+
+`execution_status` / `executionStatus` reads the latest execution once and
+`current_execution` / `currentExecution` the account's in-flight one.
+`wait_for_guardian_execution(proposal_id, options)` / `waitForGuardianExecution(proposalId,
+options)` polls `execution_status` until the execution is `committed` or `failed` and returns
+it, with identical semantics in both SDKs:
+
+- **Backoff.** The first read is immediate. The pause between reads starts at 1 s and doubles up
+  to 10 s (`initial_backoff` and `max_backoff` in Rust's `ExecutionWaitOptions`,
+  `initialBackoffMs` and `maxBackoffMs` in TypeScript).
+- **Retried reads.** A read that fails with an error Guardian marks retryable, or with a
+  transport failure, is retried after the server's retry-after hint when it sent one, else after
+  the current backoff. A transport failure is one with no Guardian error object: in Rust a
+  connection failure or an `Unavailable` / `DeadlineExceeded` status, in TypeScript a `fetch`
+  that got no response or a 502, 503 or 504. Any other error is returned as it would be from
+  `execution_status`.
+- **Deadline.** After 15 minutes (`deadline` / `deadlineMs`) it stops with
+  `MultisigError::GuardianExecutionWaitTimedOut` (Rust) or `GuardianExecutionWaitTimeoutError`
+  (TypeScript), carrying the last execution it read, if any. The execution keeps running on
+  Guardian; waiting again picks it up.
+- **Read-only.** It never requests execution. Call `request_guardian_execution` /
+  `requestGuardianExecution` first; repeating that request while an execution runs returns it
+  with `newly_accepted: false`.
 
 What the mode changes, identically in both SDKs:
 
@@ -611,34 +636,39 @@ client with no Miden connectivity, use the base clients' `execute_delta_proposal
 `executeDeltaProposal`, `get_delta_proposal_execution` / `getDeltaProposalExecution` and
 `get_current_execution` / `getCurrentExecution`. The base clients carry no Miden dependency (a
 test in each enforces it), and the caller brings its own signer, such as a wallet, an HSM or a
-KMS:
+KMS. The base clients have no wait helper, so a thin client polls itself (and handles
+retryable read errors as it sees fit):
 
 ```ts
-import { GuardianHttpClient } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, isTerminalExecutionState } from '@openzeppelin/guardian-client';
 
 const guardian = new GuardianHttpClient(guardianUrl);
 guardian.setSigner(cosignerSigner); // any `Signer` for one of the account's cosigners
 let execution = await guardian.executeDeltaProposal(accountId, proposalId);
-while (execution.state !== 'committed' && execution.state !== 'failed') {
+while (!isTerminalExecutionState(execution.state)) {
   await new Promise((resolve) => setTimeout(resolve, 2000));
   execution = await guardian.getDeltaProposalExecution(accountId, proposalId);
 }
 ```
 
 ```rust
-use guardian_client::{ExecutionState, GuardianClient};
+use guardian_client::GuardianClient;
 
 let mut guardian = GuardianClient::connect(guardian_endpoint).await?.with_signer(cosigner_signer);
 let mut execution = guardian.execute_delta_proposal(&account_id, &proposal_id).await?;
-while !matches!(execution.state, ExecutionState::Committed | ExecutionState::Failed) {
+while !execution.state.is_terminal() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     execution = guardian.get_delta_proposal_execution(&account_id, &proposal_id).await?;
 }
 ```
 
-A failed execution carries a stable `error.code`; synchronous refusals surface in Rust as
-`MultisigError::GuardianExecutionRefused { code, message }` and in TypeScript as a
-`GuardianHttpError` whose `rawCode` is the code. See
+A failed execution carries a stable `error.code`. A refusal from the multisig SDKs' execution
+methods surfaces in Rust as `MultisigError::GuardianExecutionRefused { code, message, retryable,
+retry_after, blocking_proposal_id }` and in TypeScript as a `GuardianExecutionRefusedError` with
+the same fields (`code`, `userMessage`, `retryable`, `retryAfterSecs`, `blockingProposalId`).
+`code` is the wire string, such as `GUARDIAN_EXECUTION_CONFLICT`, in both. The base clients
+report a refusal as their usual error: `ClientError` in Rust and a `GuardianHttpError` whose
+`rawCode` is the wire string in TypeScript. See
 [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#guardian-execution) for every code.
 
 ### Side-channel (offline) workflow

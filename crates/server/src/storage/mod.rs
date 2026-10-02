@@ -9,7 +9,7 @@ pub use execution::{
     AdmissionWrite, CandidateAdmission, ClaimWrite, ExecutionFailure, ExecutionFailureCode,
     ExecutionOutcome, ExecutionPhase, ExecutionRecord, ExecutionReservation, ExecutionResolution,
     ExecutionTerminal, NewExecutionReservation, ReservationUpdate, ReservationWrite, ResolveWrite,
-    SubmissionEvidence, execution_lease_name,
+    SettleWrite, SubmissionEvidence, execution_lease_name,
 };
 
 /// Returns `true` when a backend-formatted error string represents a
@@ -896,6 +896,17 @@ pub trait StorageBackend: Send + Sync {
     /// and release the reservation as one commit.
     async fn fail_execution(&self, resolution: ExecutionResolution)
     -> Result<ResolveWrite, String>;
+
+    /// Record `committed` and release the reservation once its candidate is canonical and the
+    /// account is at the expected state, under the caller's fence. Promotion settles an execution
+    /// itself; this repairs one a promotion left held, such as an interrupted filesystem
+    /// promotion or one made by a replica that predates execution.
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<SettleWrite, String>;
 
     /// Every unreleased reservation with its evidence, for reconciliation.
     async fn list_active_executions(&self) -> Result<Vec<ExecutionRecord>, String>;
