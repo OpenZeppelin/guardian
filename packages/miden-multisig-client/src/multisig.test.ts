@@ -369,6 +369,8 @@ describe('Multisig', () => {
       }),
       serialize: () => new Uint8Array([1, 2, 3]),
       to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
+      // A fresh account: the proposal-nonce default labels with nonce 1.
+      nonce: () => ({ asInt: () => BigInt(0) }),
     };
 
     // The `MidenClient` surface the SDK is allowed to reach. The four
@@ -3784,6 +3786,99 @@ describe('Multisig', () => {
     });
   });
 
+  describe('proposal nonce default (the account nonce plus one)', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    /** The proposal pushes (`POST /delta/proposal`) the client made. */
+    function proposalPushes(): any[] {
+      return mockFetch.mock.calls
+        .filter(([url]) => String(url).endsWith('/delta/proposal'))
+        .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    }
+
+    function acceptedAt(nonce: number) {
+      return {
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: '0x' + 'a'.repeat(30),
+            nonce,
+            prev_commitment: LOCAL_ACCOUNT_COMMITMENT,
+            delta_payload: {
+              tx_summary: { data: 'AQID' },
+              signatures: [],
+              metadata: {
+                proposal_type: 'p2id',
+                chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+                salt: MOCK_SALT_HEX,
+                recipient_id: '0xrecipient',
+                faucet_id: '0xfaucet',
+                amount: '100',
+                description: '',
+              },
+            },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: '0x' + 'c'.repeat(64),
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      };
+    }
+
+    it("labels a proposal with the store account's nonce plus one", async () => {
+      const multisig = createTestMultisig(config);
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 41));
+      mockFetch.mockResolvedValueOnce(acceptedAt(42));
+
+      const proposal = await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n);
+
+      expect(proposalPushes().map((push) => push.nonce)).toEqual([42]);
+      expect(proposal.nonce).toBe(42);
+    });
+
+    it('labels from the account snapshot when the store holds no record', async () => {
+      // The snapshot is a fresh account (nonce 0): its first transaction
+      // will carry nonce 1, so that is the label.
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce(acceptedAt(1));
+
+      await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n);
+
+      expect(proposalPushes().map((push) => push.nonce)).toEqual([1]);
+    });
+
+    it('keeps an explicit nonce without reading the account', async () => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce(acceptedAt(7));
+
+      await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 7 });
+
+      expect(proposalPushes().map((push) => push.nonce)).toEqual([7]);
+      expect(mockWebClient.accounts.get).not.toHaveBeenCalled();
+    });
+
+    it('refuses to label when the next nonce does not fit a safe integer', async () => {
+      const multisig = createTestMultisig(config);
+      // 2^53 exactly: the next nonce, 2^53 + 1, is past MAX_SAFE_INTEGER.
+      mockWebClient.accounts.get.mockResolvedValueOnce(
+        mockedAccount(LOCAL_ACCOUNT_COMMITMENT, Number.MAX_SAFE_INTEGER + 1),
+      );
+
+      await expect(
+        multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n),
+      ).rejects.toThrow(/too large to label a proposal with as a number; pass options\.nonce/);
+      expect(proposalPushes()).toEqual([]);
+    });
+  });
+
   describe('createSwitchGuardianProposal', () => {
     it('should verify new endpoint commitment before creating proposal', async () => {
       vi.mocked(executeForSummary).mockResolvedValue({
@@ -3988,6 +4083,40 @@ describe('Multisig', () => {
       const second = await multisig.syncProposals();
       expect(second.map((p) => p.id)).toEqual([exported.commitment]);
       expect(multisig.listProposals().map((p) => p.id)).toEqual([exported.commitment]);
+    });
+
+    it('labels with the nonce of the account the sync refreshed, plus one', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: [mockSigner.commitment],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      stubFetchWithDeadCurrentGuardian();
+      // The node sync refreshes the account to nonce 4 before the proposal
+      // is built, so the default label is 5, not the snapshot's 1. The
+      // refresh re-detects the config from that account, so the detector
+      // must report this test's signer.
+      mockDetectConfig.mockReturnValue({
+        threshold: 1,
+        numSigners: 1,
+        signerCommitments: [mockSigner.commitment],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+      mockWebClient.accounts.get.mockResolvedValue({
+        ...mockAccount,
+        ...mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 4),
+      });
+
+      const exported = await multisig.createSwitchGuardianProposalOffline(
+        NEW_GUARDIAN_ENDPOINT,
+        newGuardianPubkey,
+      );
+
+      expect(exported.nonce).toBe(5);
+      expect(mockWebClient.syncChain).toHaveBeenCalled();
     });
 
     it('creates, signs, and caches the proposal without contacting the current GUARDIAN', async () => {
@@ -5205,10 +5334,29 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ commitment: newGuardianPubkey }),
       });
+      // The pre-switch GUARDIAN serves the proposal, pinned to the state this
+      // client holds: the pinned-base check reads it and passes.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: LOCAL_ACCOUNT_COMMITMENT,
+          delta_payload: { tx_summary: { data: 'AQID' }, signatures: [] },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
 
       await expect(multisig.createTransactionProposalRequest(proposalId)).resolves.toBe(finalRequest);
 
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      // The endpoint commitment and the served proposal: no push, no execution.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(String(mockFetch.mock.calls[1][0])).toContain('/delta/proposal');
       expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.proveTransaction).not.toHaveBeenCalled();
       expect(mockWebClient.submitProvenTransaction).not.toHaveBeenCalled();
@@ -6311,6 +6459,10 @@ describe('Multisig', () => {
       vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
       mockImportNotesFromProposals.mockReset();
       mockImportNotesFromProposals.mockResolvedValue([]);
+      // The pinned-base check reads the store account first (it holds the
+      // state the served proposal is pinned to); the post-switch refresh
+      // reads it again.
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
       mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
       });
@@ -6323,6 +6475,72 @@ describe('Multisig', () => {
       expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(1);
       expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
       expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses a switch_guardian proposal the pre-switch GUARDIAN pinned to another state', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const newGuardianPubkey = '0x' + '1'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_guardian',
+          chainAnchor: MOCK_CHAIN_ANCHOR_B64,
+          saltHex: MOCK_SALT_HEX,
+          newGuardianPubkey,
+          newGuardianEndpoint: 'http://new-guardian.com',
+          description: '',
+        },
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ commitment: newGuardianPubkey }),
+      });
+      // The pre-switch GUARDIAN serves the proposal pinned to a state this
+      // client has never held: a queue tail behind another device's
+      // candidate.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: '0x' + 'e'.repeat(64),
+          delta_payload: { tx_summary: { data: 'AQID' }, signatures: [] },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+
+      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(
+        /was made for account state 0xe+, but this client's account is at 0xb+/,
+      );
+      // Refused before anything executed or was pushed.
+      expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
+      expect(executionPushes()).toEqual([]);
+      expect(multisig.listProposals().find((p) => p.id === proposalId)?.status).toBe('ready');
     });
 
     it('should still switch GUARDIAN when the pre-switch canonicalization push fails', async () => {
@@ -6530,6 +6748,9 @@ describe('Multisig', () => {
           ack_scheme: 'falcon',
         }),
       });
+      // The pinned-base check reads the store account first; the post-switch
+      // refresh reads it again.
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
       mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
       });

@@ -164,7 +164,15 @@ export interface AccountStateVerificationResult {
  * positional `undefined` holes to reach a later option.
  */
 export interface CreateProposalOptions {
-  /** Proposal nonce; defaults to `Date.now()`. */
+  /**
+   * Proposal nonce: the account nonce the executed transaction will have.
+   * Defaults to the store account's nonce plus one, as the Rust SDK labels
+   * proposals. GUARDIAN keys the proposal and its delta by it, orders
+   * history and the candidate queue by it, and when it queues chained
+   * candidates (issue #17) records a proposal only at the queue tail's
+   * nonce plus one. Pass it only to label from another record of the
+   * account's nonce. Through 0.18.0-rc.3 the default was `Date.now()`.
+   */
   nonce?: number;
   /**
    * Blocks after the block the proposal binds by which the transaction must be
@@ -218,24 +226,22 @@ function deserializeTransactionRequest(bytes: Uint8Array): TransactionRequest {
 }
 
 /**
- * Single home for the proposal-nonce default, plus a runtime guard for
- * pre-#387 positional callers. Untyped JS passing the old `nonce` number (or
- * a legacy trailing argument) would otherwise bind it as the options bag and
- * silently fall back to every default — a public note instead of a private
- * one, or the current threshold instead of the requested one — so it must
- * fail loudly instead.
+ * Runtime guard for pre-#387 positional callers. Untyped JS passing the old
+ * `nonce` number (or a legacy trailing argument) would otherwise bind it as
+ * the options bag and silently fall back to every default — a public note
+ * instead of a private one, or the current threshold instead of the
+ * requested one — so it must fail loudly instead.
  */
-function resolveProposalNonce(
+function assertProposalOptionsBag(
   method: string,
   options: CreateProposalOptions,
   legacyArgs: readonly unknown[] = [],
-): number {
+): void {
   if (typeof options !== 'object' || options === null || legacyArgs.length > 0) {
     throw new Error(
       `${method}: positional optional parameters were replaced by a trailing options object (issue #387); pass { nonce, ... } instead`,
     );
   }
-  return options.nonce ?? Date.now();
 }
 
 /**
@@ -442,6 +448,34 @@ export class Multisig {
 
   private readStoreAccount(): Promise<Account | null> {
     return retryRpcRead(() => this.midenClient.accounts.get(this._accountId), this.rpcConfig);
+  }
+
+  /**
+   * The nonce a proposal is labelled with: `options.nonce`, or the store
+   * account's nonce plus one, the nonce the executed transaction will
+   * have. That is what the Rust SDK labels with, what the stale-proposal
+   * filters compare with the account nonce, and what GUARDIAN's candidate
+   * queue requires of a proposal built on its tail (issue #17). Through
+   * 0.18.0-rc.3 the default was `Date.now()`, a key no admission rule
+   * could relate to the account's state.
+   */
+  private async resolveProposalNonce(
+    method: string,
+    options: CreateProposalOptions,
+    legacyArgs: readonly unknown[] = [],
+  ): Promise<number> {
+    assertProposalOptionsBag(method, options, legacyArgs);
+    if (options.nonce !== undefined) {
+      return options.nonce;
+    }
+    const account = await this.getStoreAccount();
+    const next = account.nonce().asInt() + 1n;
+    if (next > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(
+        `${method}: the account nonce ${next - 1n} is too large to label a proposal with as a number; pass options.nonce`,
+      );
+    }
+    return Number(next);
   }
 
   /**
@@ -883,10 +917,11 @@ export class Multisig {
    * without applying its listing.
    *
    * Nonce-based staleness hiding is the caller's job (see the examples'
-   * `filterVisibleProposals`): callers of this shared client disagree on
-   * whether a proposal's `nonce` is the pre-execution or the next account
-   * nonce, so the Rust client's `proposal.nonce <= account.nonce()` filter
-   * cannot be applied here. This is an intentional TS/Rust surface
+   * `filterVisibleProposals`). This SDK labels a proposal with the account's
+   * next nonce by default, as the Rust SDK does, but a caller may label with
+   * its own `nonce` (and proposals made through 0.18.0-rc.3 carry a
+   * timestamp), so the Rust client's `proposal.nonce <= account.nonce()`
+   * filter is not applied here. This is an intentional TS/Rust surface
    * difference.
    */
   syncProposals(): Promise<Proposal[]> {
@@ -1099,7 +1134,7 @@ export class Multisig {
     options: CreateSignerProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
-    const proposalNonce = resolveProposalNonce('createAddSignerProposal', options, legacyArgs);
+    const proposalNonce = await this.resolveProposalNonce('createAddSignerProposal', options, legacyArgs);
     const targetThreshold = options.newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
     // What `update_signers_and_threshold` rejects on-chain, and what the auth
@@ -1149,7 +1184,7 @@ export class Multisig {
     options: CreateSignerProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
-    const proposalNonce = resolveProposalNonce('createRemoveSignerProposal', options, legacyArgs);
+    const proposalNonce = await this.resolveProposalNonce('createRemoveSignerProposal', options, legacyArgs);
     const normalizedRemove = signerToRemove.toLowerCase();
     const targetSignerCommitments = this.signerCommitments.filter(
       (c) => c.toLowerCase() !== normalizedRemove
@@ -1205,7 +1240,7 @@ export class Multisig {
     newThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = resolveProposalNonce('createChangeThresholdProposal', options);
+    const proposalNonce = await this.resolveProposalNonce('createChangeThresholdProposal', options);
     if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${newThreshold}. Must be between 1 and ${this.signerCommitments.length}`
@@ -1246,7 +1281,7 @@ export class Multisig {
     targetThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
+    const proposalNonce = await this.resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
     if (targetThreshold < 0 || targetThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${targetThreshold}. Must be between 0 and ${this.signerCommitments.length}`
@@ -1304,7 +1339,7 @@ export class Multisig {
     newGuardianPubkey: string,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = resolveProposalNonce('createSwitchGuardianProposal', options);
+    const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposal', options);
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
       newGuardianPubkey,
@@ -1395,14 +1430,16 @@ export class Multisig {
     newGuardianPubkey: string,
     options: CreateProposalOptions = {},
   ): Promise<ExportedProposal> {
-    const proposalNonce = resolveProposalNonce('createSwitchGuardianProposalOffline', options);
+    assertProposalOptionsBag('createSwitchGuardianProposalOffline', options);
 
     // Sync with the Miden node and refresh the cached account/config before
     // building (mirrors the Rust `sync_network_only`): with no GUARDIAN push
     // to reject a stale delta at creation, a summary built from stale local
     // state — or a readiness threshold read from stale config — would only
     // fail at execution, after the whole side-channel cosigning ceremony.
+    // The nonce is read after the sync for the same reason.
     await this.syncNetworkOnly();
+    const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposalOffline', options);
 
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
@@ -1437,7 +1474,7 @@ export class Multisig {
     noteIds: string[],
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = resolveProposalNonce('createConsumeNotesProposal', options);
+    const proposalNonce = await this.resolveProposalNonce('createConsumeNotesProposal', options);
     if (noteIds.length === 0) {
       throw new Error('At least one note ID is required');
     }
@@ -1509,7 +1546,7 @@ export class Multisig {
     options: CreateP2idProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
-    const proposalNonce = resolveProposalNonce('createP2idProposal', options, legacyArgs);
+    const proposalNonce = await this.resolveProposalNonce('createP2idProposal', options, legacyArgs);
     if (amount <= 0n) {
       throw new Error('Amount must be greater than 0');
     }
@@ -2068,7 +2105,8 @@ export class Multisig {
    * @param proposalId - The proposal commitment/ID
    */
   async executeProposal(proposalId: string): Promise<void> {
-    const { metadata, finalRequest, proposal } = await this.prepareProposalExecution(proposalId);
+    const { metadata, finalRequest, proposal, switchDelta } =
+      await this.prepareProposalExecution(proposalId);
 
     if (metadata.proposalType === 'switch_guardian') {
       // #417: import notes embedded in pending proposals from the old
@@ -2089,26 +2127,25 @@ export class Multisig {
       // Canonicalize the executed delta on the pre-switch GUARDIAN (clears the
       // pending proposal). Must run before `this.guardian` is repointed below.
       // Best-effort: an unreachable old GUARDIAN must not block the switch, so
-      // errors are swallowed (mirrors the Rust execute path).
-      try {
-        const normalizedProposalId = normalizeHexWord(proposal.id);
-        const switchDelta = await this.guardian.getDeltaProposal(
-          this._accountId,
-          normalizedProposalId,
-        );
-        await this.guardian.pushDelta({
-          ...switchDelta,
-          deltaPayload: switchDelta.deltaPayload.txSummary,
-        });
-      } catch (error) {
-        // Best-effort — see above — but the failure must be visible: a
-        // silently lost push leaves the pre-switch GUARDIAN serving this
-        // account (split-brain, issue #305) with nothing to diagnose by.
-        console.warn(
-          'SwitchGuardian delta push to the pre-switch GUARDIAN failed; it ' +
-            'will keep serving this account until reconciliation',
-          error,
-        );
+      // errors are swallowed (mirrors the Rust execute path). When that
+      // GUARDIAN did not serve the proposal before the switch (see
+      // `assertSwitchExecutesOnPinnedBase`) there is nothing to push back.
+      if (switchDelta) {
+        try {
+          await this.guardian.pushDelta({
+            ...switchDelta,
+            deltaPayload: switchDelta.deltaPayload.txSummary,
+          });
+        } catch (error) {
+          // Best-effort — see above — but the failure must be visible: a
+          // silently lost push leaves the pre-switch GUARDIAN serving this
+          // account (split-brain, issue #305) with nothing to diagnose by.
+          console.warn(
+            'SwitchGuardian delta push to the pre-switch GUARDIAN failed; it ' +
+              'will keep serving this account until reconciliation',
+            error,
+          );
+        }
       }
 
       try {
@@ -2208,7 +2245,7 @@ export class Multisig {
     proposalType: string,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = resolveProposalNonce('createCustomProposal', options);
+    const proposalNonce = await this.resolveProposalNonce('createCustomProposal', options);
     const label = proposalType.trim().toLowerCase();
     if (label.length === 0) {
       throw new Error('proposalType must not be empty');
@@ -2456,6 +2493,12 @@ export class Multisig {
     finalRequest: TransactionRequest;
     metadata: ProposalMetadata;
     proposal: Proposal;
+    /**
+     * A switch_guardian proposal as the pre-switch GUARDIAN serves it, when
+     * it does: its pinned base was checked, and the execute path pushes it
+     * back there after the switch.
+     */
+    switchDelta?: DeltaObject;
   }> {
     const proposal = this.getLocalProposal(proposalId);
     if (!proposal) {
@@ -2610,8 +2653,10 @@ export class Multisig {
       adviceMap.insert(ackKey, new FeltArray(ackValues));
     }
 
+    let switchDelta: DeltaObject | undefined;
     if (metadata.proposalType === 'switch_guardian') {
       await this.verifyGuardianEndpointCommitment(metadata.newGuardianEndpoint, metadata.newGuardianPubkey);
+      switchDelta = await this.assertSwitchExecutesOnPinnedBase(proposalId, normalizedProposalId);
     }
 
     const anchor = this.requireProposalAnchor(proposalId, metadata);
@@ -2629,7 +2674,41 @@ export class Multisig {
       binding,
       adviceMap,
     );
-    return { finalRequest, metadata, proposal };
+    return { finalRequest, metadata, proposal, switchDelta };
+  }
+
+  /**
+   * The pinned-base check for a switch_guardian proposal, which executes
+   * from its cached summary because the pre-switch GUARDIAN may already be
+   * gone. While that GUARDIAN still serves the proposal, the state it pinned
+   * the proposal to is checked against this client's account as for every
+   * other type, and the served delta is returned for the push that follows
+   * the switch. When it does not serve it (a proposal made offline that it
+   * never received, or a GUARDIAN that is unreachable, the case the offline
+   * path exists for) the switch proceeds without the check, as its push is
+   * best-effort for the same reason.
+   */
+  private async assertSwitchExecutesOnPinnedBase(
+    proposalId: string,
+    normalizedProposalId: string,
+  ): Promise<DeltaObject | undefined> {
+    let delta: DeltaObject;
+    try {
+      delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
+    } catch (error) {
+      // Visible for the same reason the push failure is: without the push
+      // that follows, the pre-switch GUARDIAN keeps serving this account
+      // until reconciliation (split-brain, issue #305).
+      console.warn(
+        'The pre-switch GUARDIAN does not serve this switch proposal; executing it ' +
+          'without checking the state it was pinned to, and without pushing the ' +
+          'switch delta back to it',
+        error,
+      );
+      return undefined;
+    }
+    await this.assertExecutesOnPinnedBase(proposalId, delta.prevCommitment);
+    return delta;
   }
 
   /**
