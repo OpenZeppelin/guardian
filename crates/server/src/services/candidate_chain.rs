@@ -22,8 +22,7 @@ use serde_json::Value;
 
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
-use crate::metadata::Auth;
-use crate::network::ReconstructError;
+use crate::network::{AuthBinding, ReconstructError};
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use crate::storage::{
@@ -281,87 +280,78 @@ impl CandidateChain {
 }
 
 /// Refuse to chain behind a candidate that changes who may act on the
-/// account (issue #17). Requests are authorized against the canonical
-/// metadata until a candidate promotes, so while a signer-changing
-/// candidate is queued a signer it removes can still push and propose
-/// and a signer it adds is still refused; and a successor this server
-/// acknowledges behind a queued guardian switch is signed by a key the
-/// post-switch account does not accept, so it can never land. Nothing
-/// is admitted behind such a candidate until it promotes (which syncs
-/// the cosigner set) or leaves the queue: `409 conflict_pending_delta`,
-/// as for a full queue. The replayed tail is compared with the canonical
-/// state, not with the payload's label: a direct push changes signers
-/// without any proposal type. An empty queue has nothing to compare, the
-/// tail being the canonical state itself.
+/// account (issue #17): the signer set or the guardian key its post-state
+/// binds differs from the canonical state's. Requests are authorized
+/// against the canonical metadata until a candidate promotes, so while a
+/// signer-changing candidate is queued a signer it removes can still push
+/// and propose and a signer it adds is still refused; and a successor this
+/// server acknowledges behind a queued guardian switch is signed by a key
+/// the post-switch account does not accept, so it can never land. Nothing
+/// is admitted behind such a candidate until it promotes (which syncs the
+/// cosigner set) or leaves the queue: `409 conflict_pending_delta`, as for
+/// a full queue. Judged on the replayed tail, not on a proposal label: a
+/// direct push changes signers without any proposal type. Both bindings
+/// are read in one task on the reconstruction pool, as the replay that
+/// produced the tail was. An empty queue has nothing to compare, the tail
+/// being the canonical state itself.
+///
+/// This rule is judged in the request path only, unlike the chain-position
+/// rules the storage gate re-evaluates under the account lock. That is
+/// safe: a successor can only name a tail that exists once its candidate
+/// is admitted, and a candidate admitted between this check and the lock
+/// moves the tail, so the in-lock position check refuses the successor as
+/// competing.
 pub async fn ensure_tail_keeps_auth(
     state: &AppState,
     current_state: &StateObject,
     tail: &ChainTail,
-    auth: &Auth,
 ) -> Result<()> {
     let Some(tail_nonce) = tail.nonce else {
         return Ok(());
     };
-    let client = &state.network_client;
-    // The replay just produced this state, so a read that fails is an
-    // internal fault, never a property of the submission.
-    let read_failed = |what: &str, error: String| {
-        tracing::error!(
-            account_id = %current_state.account_id,
-            tail_nonce,
-            error = %error,
-            "Failed to read the {what} of the candidate queue tail"
-        );
-        GuardianError::StorageError(format!(
-            "Failed to read the {what} of the candidate queue tail: {error}"
-        ))
-    };
-
-    let tail_auth = client
-        .should_update_auth(&tail.state_json, auth)
+    let client = state.network_client.clone();
+    let canonical_json = current_state.state_json.clone();
+    let tail_json = tail.state_json.clone();
+    let bindings: Option<(AuthBinding, AuthBinding)> = crate::network::reconstructor()
+        .run(move || {
+            let canonical = client.account_auth_binding(&canonical_json)?;
+            let tail = client.account_auth_binding(&tail_json)?;
+            Ok(canonical.zip(tail))
+        })
         .await
-        .map_err(|error| read_failed("signer set", error))?;
-    if let Some(tail_auth) = tail_auth
-        && !same_signer_set(
-            tail_auth.cosigner_commitments(),
-            auth.cosigner_commitments(),
-        )
-    {
+        .map_err(|error| match error {
+            // Both states decode for the replay that produced the tail, so
+            // a read that fails is an internal fault, never a property of
+            // the submission.
+            ReconstructError::Operation(message) => {
+                tracing::error!(
+                    account_id = %current_state.account_id,
+                    tail_nonce,
+                    error = %message,
+                    "Failed to read the auth binding of the canonical state or the queue tail"
+                );
+                GuardianError::StorageError(format!(
+                    "Failed to read the auth binding of the canonical state or the queue tail: {message}"
+                ))
+            }
+            task => GuardianError::from(task),
+        })?;
+    let Some((canonical, tail_binding)) = bindings else {
+        // A network without the notion: nothing to compare.
+        return Ok(());
+    };
+    if tail_binding != canonical {
         tracing::info!(
             account_id = %current_state.account_id,
             tail_nonce,
-            "The newest queued candidate changes the account's signer set; \
+            signers_changed = tail_binding.signers != canonical.signers,
+            guardian_changed = tail_binding.guardian != canonical.guardian,
+            "The newest queued candidate changes who may act on the account; \
              refusing to chain behind it until it promotes"
         );
         return Err(GuardianError::ConflictPendingDelta);
     }
-
-    let canonical_guardian = client
-        .extract_guardian_commitment(&current_state.state_json)
-        .map_err(|error| read_failed("guardian key", error))?;
-    let tail_guardian = client
-        .extract_guardian_commitment(&tail.state_json)
-        .map_err(|error| read_failed("guardian key", error))?;
-    if tail_guardian != canonical_guardian {
-        tracing::info!(
-            account_id = %current_state.account_id,
-            tail_nonce,
-            "The newest queued candidate changes the account's guardian; \
-             refusing to chain behind it"
-        );
-        return Err(GuardianError::ConflictPendingDelta);
-    }
     Ok(())
-}
-
-/// Whether two signer rosters authorize the same keys. Order is storage
-/// order, which a membership change re-packs, so it carries no meaning.
-fn same_signer_set(left: &[String], right: &[String]) -> bool {
-    let mut left: Vec<&str> = left.iter().map(String::as_str).collect();
-    let mut right: Vec<&str> = right.iter().map(String::as_str).collect();
-    left.sort_unstable();
-    right.sort_unstable();
-    left == right
 }
 
 #[cfg(test)]
@@ -694,10 +684,20 @@ mod tests {
         assert_eq!(max_pending_candidates(&state), 3);
     }
 
-    fn canonical_auth() -> Auth {
-        Auth::MidenFalconRpo {
-            cosigner_commitments: vec!["0xaa".to_string(), "0xbb".to_string()],
+    fn binding(signers: &[&str], guardian: Option<&str>) -> AuthBinding {
+        AuthBinding {
+            signers: signers.iter().map(|s| s.to_string()).collect(),
+            guardian: guardian.map(str::to_string),
         }
+    }
+
+    /// A network whose canonical state binds `canonical` and whose queue
+    /// tail binds `tail` (answers pop LIFO: the canonical state is read
+    /// first).
+    fn network_binding(canonical: AuthBinding, tail: AuthBinding) -> MockNetworkClient {
+        MockNetworkClient::new()
+            .with_account_auth_binding(Ok(Some(tail)))
+            .with_account_auth_binding(Ok(Some(canonical)))
     }
 
     fn queued_tail() -> ChainTail {
@@ -717,109 +717,104 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_empty_queue_has_no_tail_to_compare_with_the_canonical_auth() {
-        // The canned answer must stay unread: the tail is the canonical
+    async fn an_empty_queue_has_no_tail_to_compare_with_the_canonical_state() {
+        // The canned answers must stay unread: the tail is the canonical
         // state itself, so there is nothing to read.
-        let network =
-            MockNetworkClient::new().with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
-                cosigner_commitments: vec!["0xzz".to_string()],
-            })));
+        let network = network_binding(
+            binding(&["0xaa"], Some("0xg")),
+            binding(&["0xzz"], Some("0xg")),
+        );
         let state = app_state_with(network.clone());
         let tail = ChainTail {
             commitment: "0xbase".to_string(),
             state_json: serde_json::json!({"step": 0}),
             nonce: None,
         };
-        ensure_tail_keeps_auth(&state, &stored_state(), &tail, &canonical_auth())
+        ensure_tail_keeps_auth(&state, &stored_state(), &tail)
             .await
             .expect("nothing queued, nothing to refuse");
         assert_eq!(
-            network.should_update_auth_responses.lock().unwrap().len(),
-            1
+            network.account_auth_binding_responses.lock().unwrap().len(),
+            2
         );
     }
 
     #[tokio::test]
     async fn a_tail_that_changes_the_signer_set_is_a_pending_conflict() {
-        for roster in [
-            vec!["0xaa", "0xbb", "0xcc"], // a signer added
-            vec!["0xaa"],                 // a signer removed
-            vec!["0xaa", "0xdd"],         // a signer replaced
+        let canonical = binding(&["0xaa", "0xbb"], Some("0xg"));
+        for tail in [
+            binding(&["0xaa", "0xbb", "0xcc"], Some("0xg")), // a signer added
+            binding(&["0xaa"], Some("0xg")),                 // a signer removed
+            binding(&["0xaa", "0xdd"], Some("0xg")),         // a signer replaced
+            binding(&[], Some("0xg")),                       // the roster gone
         ] {
-            let network =
-                MockNetworkClient::new().with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
-                    cosigner_commitments: roster.iter().map(|c| c.to_string()).collect(),
-                })));
-            let state = app_state_with(network);
-            let err =
-                ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
-                    .await
-                    .expect_err("a signer change behind the tail is refused");
+            let state = app_state_with(network_binding(canonical.clone(), tail.clone()));
+            let err = ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail())
+                .await
+                .expect_err("a signer change behind the tail is refused");
             assert!(
                 matches!(err, GuardianError::ConflictPendingDelta),
-                "{roster:?}: {err:?}"
+                "{tail:?}: {err:?}"
             );
         }
     }
 
     #[tokio::test]
-    async fn a_tail_with_the_same_signers_keeps_the_auth_whatever_their_order() {
-        let network = MockNetworkClient::new()
-            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
-                cosigner_commitments: vec!["0xbb".to_string(), "0xaa".to_string()],
-            })))
-            // Both guardian reads (canonical, then tail) see the same key.
-            .with_extract_guardian_commitment(Ok(Some("0xguardian".to_string())))
-            .with_extract_guardian_commitment(Ok(Some("0xguardian".to_string())));
-        let state = app_state_with(network.clone());
-        ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
-            .await
-            .expect("a re-packed roster is the same roster");
-        assert!(
-            network
-                .extract_guardian_commitment_responses
-                .lock()
-                .unwrap()
-                .is_empty(),
-            "the guardian key of both states was compared"
-        );
-    }
-
-    #[tokio::test]
     async fn a_tail_that_changes_the_guardian_is_a_pending_conflict() {
-        // Answers pop LIFO: the canonical state is read first.
-        let network = MockNetworkClient::new()
-            .with_extract_guardian_commitment(Ok(Some("0xnew-guardian".to_string())))
-            .with_extract_guardian_commitment(Ok(Some("0xthis-server".to_string())));
-        let state = app_state_with(network);
-        let err =
-            ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
+        let canonical = binding(&["0xaa"], Some("0xthis-server"));
+        for tail in [
+            binding(&["0xaa"], Some("0xnew-guardian")),
+            binding(&["0xaa"], None),
+        ] {
+            let state = app_state_with(network_binding(canonical.clone(), tail.clone()));
+            let err = ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail())
                 .await
                 .expect_err("a queued guardian switch is refused as a base");
-        assert!(
-            matches!(err, GuardianError::ConflictPendingDelta),
-            "{err:?}"
-        );
+            assert!(
+                matches!(err, GuardianError::ConflictPendingDelta),
+                "{tail:?}: {err:?}"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn an_unreadable_tail_is_a_server_fault() {
-        let network = MockNetworkClient::new()
-            .with_should_update_auth(Err("account version is 241".to_string()));
-        let state = app_state_with(network);
-        let err =
-            ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
+    async fn a_tail_with_the_same_binding_keeps_the_auth() {
+        // A multisig roster, and an account layout without one: both
+        // compare equal to themselves.
+        for same in [binding(&["0xaa", "0xbb"], Some("0xg")), binding(&[], None)] {
+            let network = network_binding(same.clone(), same.clone());
+            let state = app_state_with(network.clone());
+            ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail())
                 .await
-                .expect_err("a state the replay produced must decode");
-        assert!(matches!(err, GuardianError::StorageError(_)), "{err:?}");
+                .expect("an unchanged binding does not block the queue");
+            assert!(
+                network
+                    .account_auth_binding_responses
+                    .lock()
+                    .unwrap()
+                    .is_empty(),
+                "both states were read"
+            );
+        }
+    }
 
+    #[tokio::test]
+    async fn a_network_without_auth_bindings_has_nothing_to_compare() {
+        // The mock's default answer, and what an EVM client would say.
+        let state = app_state_with(MockNetworkClient::new());
+        ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail())
+            .await
+            .expect("no notion of a binding, no refusal");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_state_is_a_server_fault() {
         let network = MockNetworkClient::new()
-            .with_extract_guardian_commitment(Err("missing slot".to_string()));
+            .with_account_auth_binding(Err("account version is 241".to_string()));
         let state = app_state_with(network);
-        let err =
-            ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
-                .await
-                .expect_err("a guardian key that cannot be read is a fault");
+        let err = ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail())
+            .await
+            .expect_err("a state the replay produced must decode");
         assert!(matches!(err, GuardianError::StorageError(_)), "{err:?}");
     }
 }

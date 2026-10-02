@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 type StdResult<T, E> = std::result::Result<T, E>;
 type ApplyDeltaResult = StdResult<AppliedState, String>;
 type ShouldUpdateAuthResult = StdResult<Option<Auth>, String>;
+type AccountAuthBindingResult = StdResult<Option<crate::network::AuthBinding>, String>;
 type ExtractGuardianCommitmentResult = StdResult<Option<String>, String>;
 type OnChainGuardianBindingResult = StdResult<crate::network::OnChainGuardianBinding, String>;
 type TransactionSearchResult = StdResult<crate::network::TransactionSearch, String>;
@@ -40,6 +41,7 @@ pub struct MockNetworkClient {
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
+    pub account_auth_binding_responses: Arc<StdMutex<Vec<AccountAuthBindingResult>>>,
     pub extract_guardian_commitment_responses: Arc<StdMutex<Vec<ExtractGuardianCommitmentResult>>>,
     pub fetch_on_chain_guardian_binding_responses: Arc<StdMutex<Vec<OnChainGuardianBindingResult>>>,
     pub fetch_on_chain_guardian_binding_calls: Arc<StdMutex<Vec<String>>>,
@@ -165,6 +167,16 @@ impl MockNetworkClient {
 
     pub fn with_applied_state(self, response: StdResult<AppliedState, String>) -> Self {
         self.apply_delta_responses.lock().unwrap().push(response);
+        self
+    }
+
+    /// Queue one `account_auth_binding` answer. Answers pop LIFO, so queue
+    /// the answer for the state read last first.
+    pub fn with_account_auth_binding(self, response: AccountAuthBindingResult) -> Self {
+        self.account_auth_binding_responses
+            .lock()
+            .unwrap()
+            .push(response);
         self
     }
 
@@ -364,6 +376,16 @@ impl NetworkClient for MockNetworkClient {
         _current_auth: &Auth,
     ) -> StdResult<Option<Auth>, String> {
         self.should_update_auth_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(None))
+    }
+
+    fn account_auth_binding(&self, _state_json: &serde_json::Value) -> AccountAuthBindingResult {
+        // Default `Ok(None)` ("no notion of an auth binding") keeps the
+        // candidate-queue gate inert in tests that don't opt in.
+        self.account_auth_binding_responses
             .lock()
             .unwrap()
             .pop()

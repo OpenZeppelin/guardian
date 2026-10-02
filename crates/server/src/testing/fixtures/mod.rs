@@ -4,7 +4,7 @@ pub const COMMITMENTS_JSON: &str = include_str!("commitments.json");
 pub const DELTA_1_JSON: &str = include_str!("delta_1.json");
 pub const DELTA_2_JSON: &str = include_str!("delta_2.json");
 pub const DELTA_3_JSON: &str = include_str!("delta_3.json");
-/// A second chain from `account.json`, `queue_1` → `queue_2` → `queue_3`,
+/// A second chain from `account.json`, `queue_1` -> `queue_2` -> `queue_3`,
 /// of threshold-only deltas: the signer set and the guardian key stay as
 /// created, so these can be queued behind one another (issue #17). The
 /// `delta_N` chain cannot: `delta_1` and `delta_2` each add a signer, and

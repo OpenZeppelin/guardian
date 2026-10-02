@@ -287,6 +287,13 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.account_nonce(state_json)
     }
 
+    fn account_auth_binding(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<Option<crate::network::AuthBinding>, String> {
+        self.miden_client.account_auth_binding(state_json)
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,

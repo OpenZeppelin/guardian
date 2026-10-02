@@ -73,6 +73,10 @@ sequenceDiagram
       S-->>C: 400 CommitmentMismatch (expected = canonical)
     else prev_commitment is the queue tail
       S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
+      S->>N: account_auth_binding(canonical_state), account_auth_binding(tail_state)
+      alt the tail binds another signer set or guardian key
+        S-->>C: 409 ConflictPendingDelta
+      end
       S->>N: verify_delta(tail_commitment, tail_state, payload)
       S->>N: apply_delta(tail_state, payload)\n(new_state_json, new_commitment, new_nonce)
       S->>S: ack_delta(delta.new_commitment) -> ack_sig
@@ -181,7 +185,7 @@ sequenceDiagram
     S->>ST: pull_state_commitment(account_id)\n(a promotion may have raced the two reads)
     S->>ST: on a change: pull_state + pull_candidate_deltas again
   end
-  alt the queue is full, does not chain from the canonical state,\nor nonce does not exceed the newest queued candidate's
+  alt the queue is full, does not chain from the canonical state,\nor a queue exists and nonce is not the newest queued candidate's plus one
     S-->>C: 409 ConflictPendingDelta
   else
     S->>ST: pull_pending_proposals(account_id)
@@ -189,6 +193,10 @@ sequenceDiagram
       S-->>C: 409 PendingProposalsLimit
     else
       S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
+      S->>N: account_auth_binding(canonical_state), account_auth_binding(tail_state)
+      alt the tail binds another signer set or guardian key
+        S-->>C: 409 ConflictPendingDelta
+      end
       S->>N: verify_delta(tail_commitment, tail_state, tx_summary)
       S->>N: delta_proposal_id(account_id, nonce, tx_summary)
       S->>ST: submit_delta_proposal(id, pending_delta)\n(prev_commitment = tail commitment)
@@ -330,17 +338,22 @@ sequenceDiagram
   has not swept the orphans yet) refuses everything; a delta competing for
   a base another queued candidate already claimed, or whose nonce does not
   exceed the tail's, is refused; so is anything behind a tail that changes
-  who may act on the account (its signer set or guardian key, compared on
-  the replayed tail rather than on a proposal label, since a direct push
-  changes signers without one): requests stay authorized against the
-  canonical signer set until that candidate promotes, and a successor this
-  server acknowledges behind a queued guardian switch could never land —
-  all with `409 conflict_pending_delta`; a
-  delta building on a state the server does not know gets `400
-  commitment_mismatch` against the canonical commitment. Both storage
-  backends re-evaluate the same gate under the account lock, so two racing
-  submissions cannot both extend the tail and nothing is admitted behind
-  an orphan. The state and the queue are read separately, so a promotion
+  who may act on the account (the signer set or guardian key its state
+  binds differs from the canonical state's; both bindings are read in one
+  task on the reconstruction pool and compared on the replayed tail rather
+  than on a proposal label, since a direct push changes signers without
+  one): requests stay authorized against the canonical signer set until
+  that candidate promotes, and a successor this server acknowledges behind
+  a queued guardian switch could never land — all with `409
+  conflict_pending_delta`; a delta building on a state the server does not
+  know gets `400 commitment_mismatch` against the canonical commitment.
+  Both storage backends re-evaluate the chain-position rules under the
+  account lock, so two racing submissions cannot both extend the tail and
+  nothing is admitted behind an orphan; the binding rule is judged in the
+  request path only, which is safe because a successor can only name a
+  tail that exists once its candidate is admitted, and a candidate
+  admitted in between moves the tail, so the lock-side position check
+  refuses the successor as competing. The state and the queue are read separately, so a promotion
   can land between the two reads; admission re-reads the stored
   commitment when that would change its verdict (a queue that no longer
   chains, or an empty one that a delta on another base or a proposal is
@@ -359,12 +372,11 @@ sequenceDiagram
   candidate; every other cosigner is refused until it drains, as at depth
   one. The server cannot tell which state a summary was built on, so the
   nonce rule and, at execution, the SDKs keep a proposal from executing
-  anywhere but on the tail: the TypeScript SDK refuses to execute a
-  proposal pinned to a state its client does not hold (0.18.0-rc.2 and
-  earlier pushed the pinned base regardless; a switch proposal is checked
-  while the pre-switch GUARDIAN serves it), and the Rust SDK's push names
-  the state it executed on, which the delta gate refuses unless it is the
-  tail. Only viable proposals (pinned to the tail with a nonce above the
+  anywhere but on the tail: both SDKs refuse to execute a proposal pinned
+  to a state the client does not hold (TypeScript 0.18.0-rc.2 and earlier
+  pushed the pinned base regardless; a switch proposal is checked while
+  the pre-switch GUARDIAN serves it), and both push the state they
+  executed on, which the delta gate refuses unless it is the tail. Only viable proposals (pinned to the tail with a nonce above the
   tail's) count toward the pending-proposal limit, which is checked before
   the tail replay. Promotion of the oldest candidate
   moves the canonical state *along* the chain, so the tail commitment —
@@ -643,9 +655,10 @@ so the sweep is deliberately slow and rate-bounded.
      its label (the post-state's guardian key decides, not the
      client-written type) and whatever base it was recorded against: the
      candidate queue records a proposal against its tail. One built on
-     the stored state behind a queued candidate is refused when its
-     nonce does not extend the queue, but a summary does not name its
-     base, so one labelled past the tail is recorded there all the same.
+     the stored state behind a queued candidate is refused unless its
+     nonce is the tail's plus one, but a summary does not name its base,
+     so one labelled exactly so is recorded against the tail all the
+     same.
      A switch delta queued behind another candidate and parked with
      it does not chain from the stored base and is not matched yet
      (issue #504). The

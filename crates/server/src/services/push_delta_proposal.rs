@@ -184,8 +184,7 @@ pub async fn push_delta_proposal(
     }
 
     let tail = chain.reconstruct_tail(state, &current_state).await?;
-    candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail, &resolved.metadata.auth)
-        .await?;
+    candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail).await?;
 
     // Extract tx_summary and signatures from delta_payload
     let tx_summary = delta_payload
@@ -1190,6 +1189,17 @@ mod tests {
         queue: Vec<DeltaObject>,
         pending: Vec<DeltaObject>,
     ) -> QueuedProposalSetup {
+        queued_proposal_setup_with(depth, queue, pending, |network| network)
+    }
+
+    /// [`queued_proposal_setup`] with extra canned network answers, for
+    /// the checks that read the replayed tail.
+    fn queued_proposal_setup_with(
+        depth: usize,
+        queue: Vec<DeltaObject>,
+        pending: Vec<DeltaObject>,
+        configure_network: impl FnOnce(MockNetworkClient) -> MockNetworkClient,
+    ) -> QueuedProposalSetup {
         let (state, storage, network, metadata) = create_test_state();
         let mut state = state;
         state.canonicalization = Some(
@@ -1218,9 +1228,11 @@ mod tests {
             .with_pull_all_delta_proposals(Ok(pending));
         // One replay response: the assertions below tell from it whether
         // the tail was ever materialized.
-        let network = network
-            .with_validate_credential(Ok(()))
-            .with_apply_delta(Ok((account_json, "0xtail".to_string())));
+        let network = configure_network(
+            network
+                .with_validate_credential(Ok(()))
+                .with_apply_delta(Ok((account_json, "0xtail".to_string()))),
+        );
         QueuedProposalSetup {
             state,
             storage,
@@ -1785,25 +1797,27 @@ mod tests {
     }
 
     /// Nothing is recorded behind a candidate that changes who may act on
-    /// the account: judged on the replayed tail, so the refusal comes
-    /// after the replay and before anything is stored.
+    /// the account: judged on the replayed tail, so the refusal comes after
+    /// the replay and before anything is stored. The decision matrix lives
+    /// in `candidate_chain`; this proves the wiring.
     #[tokio::test]
     async fn test_push_delta_proposal_refused_behind_a_signer_changing_candidate() {
         let account_id = &fixture_account_id();
-        let setup = queued_proposal_setup(
+        let binding = |signers: &[&str]| crate::network::AuthBinding {
+            signers: signers.iter().map(|s| s.to_string()).collect(),
+            guardian: Some("0xguardian".to_string()),
+        };
+        let setup = queued_proposal_setup_with(
             4,
             vec![queued_candidate(account_id, 5, CANONICAL, "0xtail")],
             vec![],
+            // Bindings pop LIFO: the canonical state is read first.
+            |network| {
+                network
+                    .with_account_auth_binding(Ok(Some(binding(&["0xaa", "0xbb"]))))
+                    .with_account_auth_binding(Ok(Some(binding(&["0xaa"]))))
+            },
         );
-        setup
-            .network
-            .clone()
-            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
-                cosigner_commitments: vec![
-                    format!("0x{}", "11".repeat(32)),
-                    format!("0x{}", "22".repeat(32)),
-                ],
-            })));
         let result = propose(&setup, 6).await;
         assert!(
             matches!(result, Err(GuardianError::ConflictPendingDelta)),
@@ -1822,27 +1836,5 @@ mod tests {
                 .is_empty(),
             "judged on the replayed tail"
         );
-    }
-
-    #[tokio::test]
-    async fn test_push_delta_proposal_refused_behind_a_guardian_changing_candidate() {
-        let account_id = &fixture_account_id();
-        let setup = queued_proposal_setup(
-            4,
-            vec![queued_candidate(account_id, 5, CANONICAL, "0xtail")],
-            vec![],
-        );
-        // Guardian reads pop LIFO: the canonical state is read first.
-        setup
-            .network
-            .clone()
-            .with_extract_guardian_commitment(Ok(Some("0xnew-guardian".to_string())))
-            .with_extract_guardian_commitment(Ok(Some("0xthis-server".to_string())));
-        let result = propose(&setup, 6).await;
-        assert!(
-            matches!(result, Err(GuardianError::ConflictPendingDelta)),
-            "{result:?}"
-        );
-        assert!(setup.storage.get_submit_delta_proposal_calls().is_empty());
     }
 }

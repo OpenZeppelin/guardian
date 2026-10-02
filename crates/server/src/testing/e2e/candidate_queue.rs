@@ -353,7 +353,7 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
         "expected ConflictPendingDelta, got {refused:?}"
     );
     // ...and a proposal is refused up front for the same reason.
-    let proposal_payload =
+    let tail_proposal_payload =
         proposal_payload(&setup.queue_delta(3), "proposed against the queue tail");
     let creds = setup.credentials();
     let refused = push_delta_proposal(
@@ -361,7 +361,7 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
         PushDeltaProposalParams {
             account_id: setup.account_id.clone(),
             nonce: 3,
-            delta_payload: proposal_payload.clone(),
+            delta_payload: tail_proposal_payload.clone(),
             credentials: creds,
         },
     )
@@ -401,7 +401,7 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
         PushDeltaProposalParams {
             account_id: setup.account_id.clone(),
             nonce: 4,
-            delta_payload: proposal_payload,
+            delta_payload: tail_proposal_payload,
             credentials: creds,
         },
     )
@@ -678,11 +678,7 @@ async fn depth_one_is_the_single_candidate_gate() {
         PushDeltaProposalParams {
             account_id: setup.account_id.clone(),
             nonce: 2,
-            delta_payload: serde_json::json!({
-                "tx_summary": setup.fixture_delta(2).delta_payload,
-                "signatures": [],
-                "metadata": { "proposal_type": "custom", "description": "waits" }
-            }),
+            delta_payload: proposal_payload(&setup.fixture_delta(2), "waits"),
             credentials: creds,
         },
     )
