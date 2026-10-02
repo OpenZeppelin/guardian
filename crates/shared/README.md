@@ -10,6 +10,8 @@ This crate contains shared types and utilities for the GUARDIAN project.
 - `retry`: Transient-failure classification, jittered backoff, and the retry
   policy types shared by the Guardian server and the Miden SDK clients
 - `account_delta`: Applying a Miden `AccountDelta` to an account, with or
-  without an additional storage patch, and reconstructing an account from a
-  full-state delta. Shared so the server and the multisig client agree
+  without an additional storage patch, and reconstructing an account from the
+  delta that created it. A delta that carries account code creates an account
+  only while the account is new (nonce zero); on an existing account it is a
+  code upgrade. Shared so the server and the multisig client agree
   byte-for-byte on the resulting state commitment

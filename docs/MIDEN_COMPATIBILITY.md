@@ -20,7 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| unreleased (main) | 0.17 (rc) | `=0.17.0-rc.9` | `=0.17.0-rc.5` | `0.17.0-rc.5` (exact) |
+| 0.18.0-rc.3 | 0.17 (rc) | `=0.17.0-rc.9` | `=0.17.0-rc.5` | `0.17.0-rc.5` (exact) |
 | 0.18.0-rc.2 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.4` | `0.17.0-rc.4` (exact) |
 | 0.18.0-rc.1 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.3` | `0.17.0-rc.3` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
@@ -84,7 +84,7 @@ from, so it verifies and executes the same way. A 0.18.0-rc.1 client still re-ex
 the anchor and cannot verify a proposal older than the node's account history (about 50
 blocks on devnet).
 
-**Moving past 0.18.0-rc.2: the canonical-nonce sync pre-check** (issue #191) keeps the
+**Moving from 0.18.0-rc.2 to 0.18.0-rc.3: the canonical-nonce sync pre-check** (issue #191) keeps the
 protocol pins and stored data, but changes two SDK contracts and adds a server migration:
 
 - **Deploy the server first.** Both multisig SDKs ask GUARDIAN for the canonical nonce
@@ -105,7 +105,7 @@ protocol pins and stored data, but changes two SDK contracts and adds a server m
   is never served. Filesystem-backed deployments need no step: state files without a
   nonce are filled in the same way.
 
-**Moving past 0.18.0-rc.2: the TypeScript multisig SDK runs only on the supplied
+**Moving from 0.18.0-rc.2 to 0.18.0-rc.3: the TypeScript multisig SDK runs only on the supplied
 `MidenClient`** (issue #481) keeps the protocol pins, stored data and server, but changes
 TypeScript SDK signatures and behavior. The SDK no longer opens a second `WasmWebClient`
 on the store of the `MidenClient` it is given; every store read and write, chain sync
@@ -133,7 +133,7 @@ and transaction execution goes through that client:
 - **Browser clients need `useWorker: false`** until the web SDK fixes worker mode; see
   "Web SDK worker mode" under [Open upstream items](#open-upstream-items).
 
-**Moving past 0.18.0-rc.2: protocol 0.17.0-rc.9 and client 0.17.0-rc.5** is not a
+**Moving from 0.18.0-rc.2 to 0.18.0-rc.3: protocol 0.17.0-rc.9 and client 0.17.0-rc.5** is not a
 protocol-line change, but nothing created or stored under the rc.7 / rc.4 pins carries over:
 
 - **Procedure roots moved.** Standard account components now link their libraries
