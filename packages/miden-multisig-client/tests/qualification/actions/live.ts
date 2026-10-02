@@ -2356,17 +2356,6 @@ export async function createQueuedAccount(
   );
 }
 
-/**
- * The account's next nonce: what the Rust SDK and the shared browser helpers
- * (`examples/_shared/multisig-browser`) label a proposal with. This SDK's own
- * default is a timestamp, which no admission rule can relate to the candidate
- * queue, so the queue scenarios pass the nonce the way integrations do.
- */
-async function nextNonce(session: LiveSession): Promise<number> {
-  const account = await session.multisig!.getStoreAccount();
-  return Number(account.nonce().asInt()) + 1;
-}
-
 /** Matches the Rust driver's chained scenario. */
 const CHAINED_TRANSFERS = 3;
 
@@ -2423,12 +2412,12 @@ export async function sendChainedTransfers(
   const executed: { id: string; nonce: number; postState: string; admittedAt?: number }[] = [];
   for (let index = 1; index <= CHAINED_TRANSFERS; index += 1) {
     // Not `proposeWhenSettled`: waiting for the predecessor is exactly what this
-    // scenario must not do, so a refusal here is the failure.
+    // scenario must not do, so a refusal here is the failure. The SDK's
+    // default label (the store account's nonce plus one) is what must clear
+    // the queue's nonce rule here, so no nonce is passed.
     let proposal;
     try {
-      proposal = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT, {
-        nonce: await nextNonce(session),
-      });
+      proposal = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT);
     } catch (error) {
       return {
         kind: 'failed',
@@ -2572,25 +2561,26 @@ function isPendingDeltaConflict(error: unknown): boolean {
 
 /**
  * While a stranded head holds the queue, a proposal built on the canonical
- * state is refused at once, and one that gets past that refusal still cannot
- * be executed behind the head.
+ * state is refused at once, and one that GUARDIAN does record behind the head
+ * still cannot be executed by a client that does not hold the head's state.
  *
  * The head is the producer's prepared but never submitted transaction (the
  * `custom-proposal-prepare` step): acknowledged, so queued, and never going to
  * land. The account's local state never included it, so the next proposal is
- * built on the canonical state. Labelled with the account's next nonce, as the
- * Rust leg's proposals are, it is refused: here the head carries this SDK's
- * timestamp label, which that nonce is below, where on the Rust leg the head
- * already holds it. Its delta could never be admitted, and on a queue with room
- * it would otherwise have been stored for cosigners to sign, pinned behind the
- * head. Mirrors `assert_stranded_head_blocks_proposal` in the Rust driver.
+ * built on the canonical state and the SDK labels it with the account's next
+ * nonce, which is the head's own nonce (as on the Rust leg). GUARDIAN records a
+ * proposal behind the head only at the head's nonce plus one, so it is refused:
+ * its delta could never be admitted, and on a queue with room it would
+ * otherwise have been stored for cosigners to sign, pinned behind the head.
+ * Mirrors `assert_stranded_head_blocks_proposal` in the Rust driver.
  *
- * This leg then proposes with the SDK's default timestamp label, which clears
- * the nonce check, so the proposal is accepted and signed, pinned to the head's
- * post-state. This client never held that state, so the SDK refuses to execute
- * the proposal and nothing reaches GUARDIAN or the chain. An SDK that pushed the
- * pinned base regardless (0.18.0-rc.2 and earlier) had the execution admitted
- * behind the head while the transaction itself landed on the head's base.
+ * This leg then labels a proposal with the head's nonce plus one explicitly, as
+ * an integration computing its own nonces might, which GUARDIAN records pinned
+ * to the head's post-state. This client never held that state, so the SDK
+ * refuses to execute the proposal and nothing reaches GUARDIAN or the chain. An
+ * SDK that pushed the pinned base regardless (0.18.0-rc.2 and earlier) had the
+ * execution admitted behind the head while the transaction itself landed on the
+ * head's base.
  */
 export async function assertStrandedHeadBlocksProposal(
   _context: ActionContext,
@@ -2622,10 +2612,7 @@ export async function assertStrandedHeadBlocksProposal(
   }
 
   try {
-    const nonce = await nextNonce(session);
-    const proposal = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT, {
-      nonce,
-    });
+    const proposal = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT);
     return {
       kind: 'failed',
       classification: 'product',
@@ -2641,50 +2628,52 @@ export async function assertStrandedHeadBlocksProposal(
     }
   }
 
-  let timestamped;
+  let pastTheHead;
   let base: string;
   try {
     base = normalizeWord((await session.multisig.getStoreAccount()).to_commitment().toHex());
-    timestamped = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT);
-    await session.multisig.signProposal(timestamped.id);
+    pastTheHead = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT, {
+      nonce: head + 1,
+    });
+    await session.multisig.signProposal(pastTheHead.id);
   } catch (error) {
     return {
       kind: 'failed',
       classification: 'product',
-      reason: `a proposal labelled with the SDK's default timestamp, which clears the nonce check, was not accepted and signed behind the stranded head while the queue has room: ${String(error)}`,
+      reason: `a proposal labelled with the head's nonce plus one, which extends the queue, was not accepted and signed behind the stranded head while the queue has room: ${String(error)}`,
     };
   }
   try {
-    await session.multisig.executeProposal(timestamped.id);
+    await session.multisig.executeProposal(pastTheHead.id);
     return {
       kind: 'failed',
       classification: 'product',
-      reason: `the timestamp-labelled proposal (nonce ${timestamped.nonce}) behind the stranded head was executed, although it is pinned to the head's post-state and this client holds ${base}`,
+      reason: `the proposal labelled past the head (nonce ${pastTheHead.nonce}) was executed, although it is pinned to the head's post-state and this client holds ${base}`,
     };
   } catch (error) {
     if (!String(error).includes('was made for account state')) {
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `executing the timestamp-labelled proposal behind the stranded head failed, but not because it is pinned to a state this client does not hold: ${String(error)}`,
+        reason: `executing the proposal labelled past the head failed, but not because it is pinned to a state this client does not hold: ${String(error)}`,
       };
     }
   }
   // Refused before the push: GUARDIAN holds nothing at the proposal's nonce,
   // and the account did not move.
   try {
-    await session.cosigners[0].multisigClient.guardianClient.getDelta(session.accountId!, timestamped.nonce);
+    await session.cosigners[0].multisigClient.guardianClient.getDelta(session.accountId!, pastTheHead.nonce);
     return {
       kind: 'failed',
       classification: 'product',
-      reason: `GUARDIAN holds a delta at nonce ${timestamped.nonce}, although its execution was refused before anything was pushed`,
+      reason: `GUARDIAN holds a delta at nonce ${pastTheHead.nonce}, although its execution was refused before anything was pushed`,
     };
   } catch (error) {
     if ((error as { code?: unknown } | null)?.code !== 'delta_not_found') {
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `reading GUARDIAN at nonce ${timestamped.nonce} failed: ${String(error)}`,
+        reason: `reading GUARDIAN at nonce ${pastTheHead.nonce} failed: ${String(error)}`,
       };
     }
   }
@@ -2766,9 +2755,7 @@ export async function abandonStrandedHeadAndRecover(
   try {
     await session.cosigners[0].midenClient.sync();
     await session.multisig.syncState();
-    proposal = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT, {
-      nonce: await nextNonce(session),
-    });
+    proposal = await session.multisig.createP2idProposal(session.treasuryId, session.faucetId, P2ID_AMOUNT);
     await session.multisig.signProposal(proposal.id);
     await session.multisig.executeProposal(proposal.id);
     await session.multisig.syncState();

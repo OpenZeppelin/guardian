@@ -15,8 +15,12 @@ use serde_json::Value;
 /// must carry the matching acknowledgement identity.
 const FIXTURE_DIR: &str = "crates/server/src/testing/fixtures";
 
-/// One of the fixture account's chained deltas: `delta_1` builds on the
-/// registered state, and each later one on its predecessor's post-state.
+/// One of the fixture account's chained deltas: `queue_1` builds on the
+/// registered state, and each later one on its predecessor's post-state. They
+/// change only the threshold, so the signer set GUARDIAN authorizes against
+/// stays as created and they can be queued behind one another; `delta_1` and
+/// `delta_2` each add a signer, and nothing queues behind a signer change
+/// (issue #17).
 pub struct ChainedDelta {
     pub nonce: u64,
     pub prev_commitment: String,
@@ -33,7 +37,7 @@ pub struct Fixtures {
     pub initial_commitment: String,
     pub cosigner_commitments: Vec<String>,
     pub delta: Value,
-    /// `delta_1`, `delta_2` and `delta_3`, in nonce order.
+    /// `queue_1`, `queue_2` and `queue_3`, in nonce order.
     pub chained: Vec<ChainedDelta>,
     signer_key: SecretKey,
     /// The operator identity the allowlist grants `accounts:pause`, kept whole
@@ -68,24 +72,24 @@ impl Fixtures {
 
         let chained = (1..=3)
             .map(|index| -> anyhow::Result<ChainedDelta> {
-                let delta = read(&format!("delta_{index}.json"))?;
+                let delta = read(&format!("queue_{index}.json"))?;
                 let field = |name: &str| {
                     delta[name]
                         .as_str()
                         .map(str::to_string)
-                        .ok_or_else(|| anyhow!("delta_{index}.json has no {name}"))
+                        .ok_or_else(|| anyhow!("queue_{index}.json has no {name}"))
                 };
                 Ok(ChainedDelta {
                     nonce: delta["nonce"]
                         .as_u64()
-                        .ok_or_else(|| anyhow!("delta_{index}.json has no nonce"))?,
+                        .ok_or_else(|| anyhow!("queue_{index}.json has no nonce"))?,
                     prev_commitment: field("prev_commitment")?,
                     payload: delta["delta_payload"].clone(),
-                    post_commitment: commitments[format!("commitment_after_delta_{index}")]
+                    post_commitment: commitments[format!("commitment_after_queue_{index}")]
                         .as_str()
                         .map(str::to_string)
                         .ok_or_else(|| {
-                            anyhow!("commitments.json has no commitment_after_delta_{index}")
+                            anyhow!("commitments.json has no commitment_after_queue_{index}")
                         })?,
                 })
             })
@@ -240,7 +244,7 @@ mod tests {
         let mut base = fixtures.initial_commitment.clone();
         for (index, delta) in fixtures.chained.iter().enumerate() {
             assert_eq!(delta.nonce, index as u64 + 1);
-            assert_eq!(delta.prev_commitment, base, "delta_{} chains", index + 1);
+            assert_eq!(delta.prev_commitment, base, "queue_{} chains", index + 1);
             assert!(delta.payload.is_object());
             base = delta.post_commitment.clone();
         }
