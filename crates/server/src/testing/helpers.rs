@@ -500,6 +500,20 @@ pub fn load_fixture_delta(delta_num: u8) -> serde_json::Value {
     serde_json::from_str(fixture_contents).expect("Failed to parse delta fixture")
 }
 
+/// One of the roster-preserving `queue_N` fixtures (see
+/// [`crate::testing::fixtures::QUEUE_1_JSON`]), the chain the candidate-queue
+/// tests queue; `load_fixture_delta`'s chain changes the signer set.
+pub fn load_queue_fixture_delta(delta_num: u8) -> serde_json::Value {
+    let fixture_contents = match delta_num {
+        1 => crate::testing::fixtures::QUEUE_1_JSON,
+        2 => crate::testing::fixtures::QUEUE_2_JSON,
+        3 => crate::testing::fixtures::QUEUE_3_JSON,
+        _ => panic!("Invalid queue delta number: {}", delta_num),
+    };
+
+    serde_json::from_str(fixture_contents).expect("Failed to parse queue delta fixture")
+}
+
 // load_fixture_delta_old removed - use load_fixture_delta(1) instead
 
 pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {

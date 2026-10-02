@@ -40,7 +40,7 @@ use miden_confidential_contracts::multisig_guardian::{
 };
 use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::account::{
-    Account, AccountDelta, AccountStoragePatch, AccountType, AccountVaultDelta,
+    Account, AccountCodePatch, AccountDelta, AccountStoragePatch, AccountType, AccountVaultDelta,
 };
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
@@ -107,7 +107,7 @@ fn nonce_bump_summary(account: &Account) -> serde_json::Value {
         account.id(),
         AccountStoragePatch::default(),
         AccountVaultDelta::default(),
-        None,
+        AccountCodePatch::default(),
         Felt::ONE,
     )
     .expect("nonce-only delta");

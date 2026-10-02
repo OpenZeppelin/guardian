@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
+use crate::metadata::Auth;
 use crate::network::ReconstructError;
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -277,6 +278,90 @@ impl CandidateChain {
             nonce: Some(tail_nonce),
         })
     }
+}
+
+/// Refuse to chain behind a candidate that changes who may act on the
+/// account (issue #17). Requests are authorized against the canonical
+/// metadata until a candidate promotes, so while a signer-changing
+/// candidate is queued a signer it removes can still push and propose
+/// and a signer it adds is still refused; and a successor this server
+/// acknowledges behind a queued guardian switch is signed by a key the
+/// post-switch account does not accept, so it can never land. Nothing
+/// is admitted behind such a candidate until it promotes (which syncs
+/// the cosigner set) or leaves the queue: `409 conflict_pending_delta`,
+/// as for a full queue. The replayed tail is compared with the canonical
+/// state, not with the payload's label: a direct push changes signers
+/// without any proposal type. An empty queue has nothing to compare, the
+/// tail being the canonical state itself.
+pub async fn ensure_tail_keeps_auth(
+    state: &AppState,
+    current_state: &StateObject,
+    tail: &ChainTail,
+    auth: &Auth,
+) -> Result<()> {
+    let Some(tail_nonce) = tail.nonce else {
+        return Ok(());
+    };
+    let client = &state.network_client;
+    // The replay just produced this state, so a read that fails is an
+    // internal fault, never a property of the submission.
+    let read_failed = |what: &str, error: String| {
+        tracing::error!(
+            account_id = %current_state.account_id,
+            tail_nonce,
+            error = %error,
+            "Failed to read the {what} of the candidate queue tail"
+        );
+        GuardianError::StorageError(format!(
+            "Failed to read the {what} of the candidate queue tail: {error}"
+        ))
+    };
+
+    let tail_auth = client
+        .should_update_auth(&tail.state_json, auth)
+        .await
+        .map_err(|error| read_failed("signer set", error))?;
+    if let Some(tail_auth) = tail_auth
+        && !same_signer_set(
+            tail_auth.cosigner_commitments(),
+            auth.cosigner_commitments(),
+        )
+    {
+        tracing::info!(
+            account_id = %current_state.account_id,
+            tail_nonce,
+            "The newest queued candidate changes the account's signer set; \
+             refusing to chain behind it until it promotes"
+        );
+        return Err(GuardianError::ConflictPendingDelta);
+    }
+
+    let canonical_guardian = client
+        .extract_guardian_commitment(&current_state.state_json)
+        .map_err(|error| read_failed("guardian key", error))?;
+    let tail_guardian = client
+        .extract_guardian_commitment(&tail.state_json)
+        .map_err(|error| read_failed("guardian key", error))?;
+    if tail_guardian != canonical_guardian {
+        tracing::info!(
+            account_id = %current_state.account_id,
+            tail_nonce,
+            "The newest queued candidate changes the account's guardian; \
+             refusing to chain behind it"
+        );
+        return Err(GuardianError::ConflictPendingDelta);
+    }
+    Ok(())
+}
+
+/// Whether two signer rosters authorize the same keys. Order is storage
+/// order, which a membership change re-packs, so it carries no meaning.
+fn same_signer_set(left: &[String], right: &[String]) -> bool {
+    let mut left: Vec<&str> = left.iter().map(String::as_str).collect();
+    let mut right: Vec<&str> = right.iter().map(String::as_str).collect();
+    left.sort_unstable();
+    right.sort_unstable();
+    left == right
 }
 
 #[cfg(test)]
@@ -607,5 +692,134 @@ mod tests {
                 .with_max_pending_candidates_per_account(3),
         );
         assert_eq!(max_pending_candidates(&state), 3);
+    }
+
+    fn canonical_auth() -> Auth {
+        Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xaa".to_string(), "0xbb".to_string()],
+        }
+    }
+
+    fn queued_tail() -> ChainTail {
+        ChainTail {
+            commitment: "0xc1".to_string(),
+            state_json: serde_json::json!({"step": 1}),
+            nonce: Some(1),
+        }
+    }
+
+    fn app_state_with(network: MockNetworkClient) -> AppState {
+        create_test_app_state_with_mocks(
+            Arc::new(MockStorageBackend::new()),
+            Arc::new(network),
+            Arc::new(MockMetadataStore::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn an_empty_queue_has_no_tail_to_compare_with_the_canonical_auth() {
+        // The canned answer must stay unread: the tail is the canonical
+        // state itself, so there is nothing to read.
+        let network =
+            MockNetworkClient::new().with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xzz".to_string()],
+            })));
+        let state = app_state_with(network.clone());
+        let tail = ChainTail {
+            commitment: "0xbase".to_string(),
+            state_json: serde_json::json!({"step": 0}),
+            nonce: None,
+        };
+        ensure_tail_keeps_auth(&state, &stored_state(), &tail, &canonical_auth())
+            .await
+            .expect("nothing queued, nothing to refuse");
+        assert_eq!(
+            network.should_update_auth_responses.lock().unwrap().len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tail_that_changes_the_signer_set_is_a_pending_conflict() {
+        for roster in [
+            vec!["0xaa", "0xbb", "0xcc"], // a signer added
+            vec!["0xaa"],                 // a signer removed
+            vec!["0xaa", "0xdd"],         // a signer replaced
+        ] {
+            let network =
+                MockNetworkClient::new().with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                    cosigner_commitments: roster.iter().map(|c| c.to_string()).collect(),
+                })));
+            let state = app_state_with(network);
+            let err =
+                ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
+                    .await
+                    .expect_err("a signer change behind the tail is refused");
+            assert!(
+                matches!(err, GuardianError::ConflictPendingDelta),
+                "{roster:?}: {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tail_with_the_same_signers_keeps_the_auth_whatever_their_order() {
+        let network = MockNetworkClient::new()
+            .with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xbb".to_string(), "0xaa".to_string()],
+            })))
+            // Both guardian reads (canonical, then tail) see the same key.
+            .with_extract_guardian_commitment(Ok(Some("0xguardian".to_string())))
+            .with_extract_guardian_commitment(Ok(Some("0xguardian".to_string())));
+        let state = app_state_with(network.clone());
+        ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
+            .await
+            .expect("a re-packed roster is the same roster");
+        assert!(
+            network
+                .extract_guardian_commitment_responses
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "the guardian key of both states was compared"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tail_that_changes_the_guardian_is_a_pending_conflict() {
+        // Answers pop LIFO: the canonical state is read first.
+        let network = MockNetworkClient::new()
+            .with_extract_guardian_commitment(Ok(Some("0xnew-guardian".to_string())))
+            .with_extract_guardian_commitment(Ok(Some("0xthis-server".to_string())));
+        let state = app_state_with(network);
+        let err =
+            ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
+                .await
+                .expect_err("a queued guardian switch is refused as a base");
+        assert!(
+            matches!(err, GuardianError::ConflictPendingDelta),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_tail_is_a_server_fault() {
+        let network = MockNetworkClient::new()
+            .with_should_update_auth(Err("account version is 241".to_string()));
+        let state = app_state_with(network);
+        let err =
+            ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
+                .await
+                .expect_err("a state the replay produced must decode");
+        assert!(matches!(err, GuardianError::StorageError(_)), "{err:?}");
+
+        let network = MockNetworkClient::new()
+            .with_extract_guardian_commitment(Err("missing slot".to_string()));
+        let state = app_state_with(network);
+        let err =
+            ensure_tail_keeps_auth(&state, &stored_state(), &queued_tail(), &canonical_auth())
+                .await
+                .expect_err("a guardian key that cannot be read is a fault");
+        assert!(matches!(err, GuardianError::StorageError(_)), "{err:?}");
     }
 }

@@ -66,7 +66,11 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     //   commitment mismatch against the canonical commitment the client
     //   can resync to (400);
     // - its nonce must exceed the tail's: a lower one collides with a
-    //   queued candidate's slot (409, like the in-lock gate).
+    //   queued candidate's slot (409, like the in-lock gate);
+    // - the tail must not change who may act on the account: nothing
+    //   chains behind a candidate that changes the signer set or the
+    //   guardian key until it promotes (409; `ensure_tail_keeps_auth`,
+    //   judged on the replayed tail, so it runs after the replay).
     let chain = CandidateChain::load_for_admission(
         resolved.storage.as_ref(),
         &params.delta.account_id,
@@ -115,6 +119,8 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         return Err(GuardianError::ConflictPendingDelta);
     }
     let tail = chain.reconstruct_tail(state, &current_state).await?;
+    candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail, &resolved.metadata.auth)
+        .await?;
 
     let applied = {
         let client = state.network_client.clone();
@@ -692,6 +698,22 @@ mod tests {
         MockStorageBackend,
         MockNetworkClient,
     ) {
+        push_against_queue_with(max_pending_candidates, queue, delta, |network, _| network).await
+    }
+
+    /// [`push_against_queue`] with extra canned network answers, for the
+    /// checks that read the replayed tail; the closure also receives the
+    /// commitment of the signer the account's metadata authorizes.
+    async fn push_against_queue_with(
+        max_pending_candidates: usize,
+        queue: Vec<DeltaObject>,
+        delta: DeltaObject,
+        configure_network: impl FnOnce(MockNetworkClient, &str) -> MockNetworkClient,
+    ) -> (
+        Result<PushDeltaResult>,
+        MockStorageBackend,
+        MockNetworkClient,
+    ) {
         let account_id = delta.account_id.clone();
         let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
@@ -707,11 +729,14 @@ mod tests {
             .with_submit_delta(Ok(()));
         // Responses pop LIFO: the new delta's application is queued
         // first, the queue replay (candidate 1) last.
-        let network = MockNetworkClient::new()
-            .with_validate_credential(Ok(()))
-            .with_verify_delta(Ok(()))
-            .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())))
-            .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string())));
+        let network = configure_network(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_verify_delta(Ok(()))
+                .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())))
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string()))),
+            &signer_commitment,
+        );
         let metadata = MockMetadataStore::new()
             .with_get(Ok(Some(active_metadata(&account_id, &signer_commitment))))
             .with_get(Ok(Some(active_metadata(&account_id, &signer_commitment))));
@@ -822,6 +847,81 @@ mod tests {
                 "refused before any reconstruction"
             );
         }
+    }
+
+    /// Nothing chains behind a candidate that changes who may act on the
+    /// account: the signer set the replayed tail carries differs from the
+    /// canonical auth every request is still authorized against.
+    #[tokio::test]
+    async fn delta_behind_a_signer_changing_candidate_is_refused() {
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, network) = push_against_queue_with(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xc1"),
+            |network, signer| {
+                // The tail adds a signer beside the one the metadata knows.
+                network.with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![
+                        signer.to_string(),
+                        format!("0x{}", "22".repeat(32)),
+                    ],
+                })))
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+        assert_eq!(
+            network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "refused on the replayed tail, before the delta itself is applied"
+        );
+    }
+
+    #[tokio::test]
+    async fn delta_behind_a_guardian_changing_candidate_is_refused() {
+        // Guardian reads pop LIFO: the canonical state is read first.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, _) = push_against_queue_with(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xc1"),
+            |network, _| {
+                network
+                    .with_extract_guardian_commitment(Ok(Some("0xnew-guardian".to_string())))
+                    .with_extract_guardian_commitment(Ok(Some("0xthis-server".to_string())))
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delta_behind_a_candidate_that_keeps_the_signers_is_admitted() {
+        // The tail re-packs the same roster: the auth is unchanged, so the
+        // delta chains as usual.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, _, _) = push_against_queue_with(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xc1"),
+            |network, signer| {
+                network.with_should_update_auth(Ok(Some(Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![signer.to_string()],
+                })))
+            },
+        )
+        .await;
+        let result = result.expect("an unchanged signer set does not block the queue");
+        assert_eq!(result.delta.new_commitment.as_deref(), Some("0xc2"));
     }
 
     #[tokio::test]

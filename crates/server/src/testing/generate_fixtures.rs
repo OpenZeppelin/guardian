@@ -505,5 +505,153 @@ mod fixtures {
         println!("  ✓ delta_3.json (increase threshold to 3)");
         println!("  ✓ commitments.json (commitment history)");
         println!("  ✓ keys.json (secret keys for testing)");
+        println!("\nRe-derive queue_1..3.json next: generate_roster_preserving_queue_fixtures");
+    }
+
+    /// Derives `queue_1.json`, `queue_2.json` and `queue_3.json` from the
+    /// committed `account.json`: three chained deltas that change only the
+    /// threshold, so the signer set (GUARDIAN's auth) and the guardian key
+    /// stay what the account was created with. `delta_1` and `delta_2`
+    /// each add a signer, and nothing may chain behind a candidate that
+    /// changes the signer set (issue #17), so the candidate-queue tests
+    /// chain these instead. Deterministic: no new keys are drawn, so
+    /// `account.json`, `keys.json` and `delta_*.json` are left as they
+    /// are and `commitments.json` only gains `commitment_after_queue_N`.
+    /// Run after `generate_multisig_fixtures` whenever that regenerates
+    /// the account:
+    ///
+    /// ```text
+    /// cargo test -p server --features e2e generate_roster_preserving_queue_fixtures -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn generate_roster_preserving_queue_fixtures() {
+        let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("testing")
+            .join("fixtures");
+        let read = |name: &str| -> serde_json::Value {
+            serde_json::from_str(
+                &fs::read_to_string(fixtures_dir.join(name))
+                    .unwrap_or_else(|e| panic!("reading {name}: {e}")),
+            )
+            .unwrap_or_else(|e| panic!("parsing {name}: {e}"))
+        };
+        let account_json = read("account.json");
+        let mut commitments = match read("commitments.json") {
+            serde_json::Value::Object(map) => map,
+            other => panic!("commitments.json is not an object: {other}"),
+        };
+
+        let mut account_state = Account::from_json(&account_json).expect("account.json decodes");
+        let account_id = account_state.id();
+        let mut current_commitment = account_state.to_commitment();
+        assert_eq!(
+            format!("0x{}", hex::encode(current_commitment.as_bytes())),
+            commitments["initial_commitment"]
+                .as_str()
+                .expect("initial_commitment"),
+            "account.json must be the state commitments.json was derived from"
+        );
+
+        let threshold_config_name =
+            StorageSlotName::new(THRESHOLD_CONFIG_SLOT).expect("invalid slot name");
+        let executed_txs_name = StorageSlotName::new(EXECUTED_TXS_SLOT).expect("invalid slot name");
+        let threshold_config = account_state
+            .storage()
+            .get_item(&threshold_config_name)
+            .expect("the multisig threshold slot is present");
+        let signer_count = threshold_config[1].as_canonical_u64();
+        let initial_threshold = threshold_config[0].as_canonical_u64();
+        println!(
+            "\n🔧 Deriving roster-preserving queue fixtures from account {account_id} \
+             ({initial_threshold}/{signer_count} + GUARDIAN)\n"
+        );
+
+        // Threshold-only changes, each valid for the signer count the
+        // account keeps throughout.
+        let thresholds = [signer_count, 1, initial_threshold];
+        for (index, threshold) in thresholds.into_iter().enumerate() {
+            let nonce = index as u64 + 1;
+            assert!(
+                (1..=signer_count).contains(&threshold),
+                "threshold {threshold} is not valid for {signer_count} signers"
+            );
+            let storage_patch = AccountStoragePatch::from_entries([(
+                threshold_config_name.clone(),
+                StorageSlotPatch::Value(StorageValuePatch::Update {
+                    value: MidenWord::from([
+                        Felt::new_unchecked(threshold),
+                        Felt::new_unchecked(signer_count),
+                        ZERO,
+                        ZERO,
+                    ]),
+                }),
+            )])
+            .expect("threshold patch");
+            let delta = AccountDelta::new(
+                account_id,
+                storage_patch,
+                AccountVaultDelta::default(),
+                AccountCodePatch::default(),
+                Felt::new_unchecked(1),
+            )
+            .expect("threshold-only delta");
+            let tx_summary = TransactionSummary::new(
+                delta,
+                InputNotes::new(Vec::new()).unwrap(),
+                RawOutputNotes::new(Vec::new()).unwrap(),
+                miden_protocol::block::BlockNumber::from(0),
+                MidenWord::from([ZERO; 4]),
+                0,
+                TransactionSummaryUserParams::new([ZERO; 6]),
+            );
+
+            let prev_commitment = current_commitment;
+            guardian_shared::account_delta::apply_account_delta(
+                &mut account_state,
+                tx_summary.account_delta(),
+            )
+            .expect("delta applies");
+            // Replay protection, as the server's apply_delta records it.
+            account_state
+                .storage_mut()
+                .set_map_item(
+                    &executed_txs_name,
+                    StorageMapKey::new(tx_summary.to_commitment()),
+                    MidenWord::from([Felt::new_unchecked(1), ZERO, ZERO, ZERO]),
+                )
+                .expect("replay protection entry");
+            current_commitment = account_state.to_commitment();
+            let new_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
+
+            let fixture = serde_json::json!({
+                "account_id": format!("{}", account_id),
+                "nonce": nonce,
+                "prev_commitment": format!("0x{}", hex::encode(prev_commitment.as_bytes())),
+                "new_commitment": new_commitment_hex,
+                "delta_payload": tx_summary.to_json()
+            });
+            let file_name = format!("queue_{nonce}.json");
+            fs::write(
+                fixtures_dir.join(&file_name),
+                serde_json::to_string_pretty(&fixture).unwrap(),
+            )
+            .unwrap_or_else(|e| panic!("writing {file_name}: {e}"));
+            commitments.insert(
+                format!("commitment_after_queue_{nonce}"),
+                serde_json::json!(new_commitment_hex),
+            );
+            println!(
+                "✅ Saved {file_name} (threshold {threshold}/{signer_count}): {new_commitment_hex}"
+            );
+        }
+
+        fs::write(
+            fixtures_dir.join("commitments.json"),
+            serde_json::to_string_pretty(&serde_json::Value::Object(commitments)).unwrap(),
+        )
+        .expect("writing commitments.json");
+        println!("✅ Updated commitments.json");
     }
 }

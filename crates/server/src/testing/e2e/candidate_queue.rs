@@ -1,7 +1,10 @@
 //! End-to-end coverage of the per-account candidate queue (issue #17)
 //! over the real Miden delta-application path, driven by the fixture
-//! chain `account.json` → `delta_1` → `delta_2` → `delta_3` (whose
-//! post-state commitments are pinned in `commitments.json`).
+//! chain `account.json` → `queue_1` → `queue_2` → `queue_3` (threshold-only
+//! deltas whose post-state commitments are pinned in `commitments.json`).
+//! The `delta_1` → `delta_2` → `delta_3` chain adds a signer twice, and
+//! nothing chains behind a candidate that changes the signer set, so it
+//! drives the tests where that refusal is the point.
 //!
 //! `queued_chain_lands_and_canonicalizes_in_order`:
 //! 1. Push the three chained deltas back-to-back, never waiting for
@@ -33,6 +36,19 @@
 //! `depth_one_is_the_single_candidate_gate`: at the default depth, a
 //! second delta waits for the first whatever its base, and a proposal is
 //! refused, exactly as before the queue existed.
+//!
+//! `successor_behind_a_signer_changing_candidate_is_refused_until_it_promotes`:
+//! `delta_1` adds a signer. While it is queued nothing chains behind it,
+//! although the queue has room: the chained `delta_2` and a proposal at
+//! the next nonce are refused and nothing is stored. Once it lands and
+//! promotes, which syncs the cosigner set, `delta_2` is admitted on the
+//! new canonical state.
+//!
+//! `proposal_must_extend_the_queue_by_exactly_one_nonce`: with one
+//! candidate queued, a proposal is recorded only at the tail's nonce plus
+//! one, pinned to the tail; one labelled at or below the tail's nonce, or
+//! past the tail's nonce plus one (a timestamp, the TypeScript SDK's
+//! default through 0.18.0-rc.3), is refused.
 
 use std::sync::Arc;
 
@@ -85,7 +101,21 @@ struct QueueSetup {
     initial_commitment: String,
     /// Pinned post-state commitments of `delta_1..=3`, index 0 = delta 1.
     expected_commitments: Vec<String>,
+    /// Pinned post-state commitments of `queue_1..=3`, index 0 = queue 1.
+    expected_queue_commitments: Vec<String>,
     next_timestamp: i64,
+}
+
+/// A proposal payload carrying `delta`'s transaction summary.
+fn proposal_payload(delta: &DeltaObject, description: &str) -> serde_json::Value {
+    serde_json::json!({
+        "tx_summary": delta.delta_payload,
+        "signatures": [],
+        "metadata": {
+            "proposal_type": "custom",
+            "description": description
+        }
+    })
 }
 
 impl QueueSetup {
@@ -99,8 +129,18 @@ impl QueueSetup {
         )
     }
 
+    /// `delta_N`: the chain that adds a signer with its first two deltas.
     fn fixture_delta(&self, delta_num: u8) -> DeltaObject {
-        let fixture = crate::testing::helpers::load_fixture_delta(delta_num);
+        self.delta_from_fixture(crate::testing::helpers::load_fixture_delta(delta_num))
+    }
+
+    /// `queue_N`: the threshold-only chain, which keeps the signer set and
+    /// so can be queued behind itself.
+    fn queue_delta(&self, delta_num: u8) -> DeltaObject {
+        self.delta_from_fixture(crate::testing::helpers::load_queue_fixture_delta(delta_num))
+    }
+
+    fn delta_from_fixture(&self, fixture: serde_json::Value) -> DeltaObject {
         DeltaObject {
             account_id: self.account_id.clone(),
             nonce: fixture["nonce"].as_u64().expect("fixture nonce"),
@@ -182,14 +222,18 @@ async fn queue_setup(max_pending_candidates: usize) -> QueueSetup {
         .as_str()
         .expect("initial_commitment")
         .to_string();
-    let expected_commitments = (1..=3)
-        .map(|i| {
-            commitments[format!("commitment_after_delta_{i}")]
-                .as_str()
-                .expect("pinned commitment")
-                .to_string()
-        })
-        .collect();
+    let pinned = |name: &str| -> Vec<String> {
+        (1..=3)
+            .map(|i| {
+                commitments[format!("commitment_after_{name}_{i}")]
+                    .as_str()
+                    .expect("pinned commitment")
+                    .to_string()
+            })
+            .collect()
+    };
+    let expected_commitments = pinned("delta");
+    let expected_queue_commitments = pinned("queue");
 
     let keys: serde_json::Value = serde_json::from_str(fixtures::KEYS_JSON).expect("keys.json");
     // The fixture account's guardian key is the fixture guardian's: this
@@ -233,6 +277,7 @@ async fn queue_setup(max_pending_candidates: usize) -> QueueSetup {
         signer_pubkey_hex,
         initial_commitment,
         expected_commitments,
+        expected_queue_commitments,
         next_timestamp: chrono::Utc::now().timestamp_millis(),
     };
 
@@ -263,22 +308,22 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
     // the replayed tail and its server-computed post-state is the pinned
     // fixture commitment.
     let first = setup
-        .push(setup.fixture_delta(1))
+        .push(setup.queue_delta(1))
         .await
         .expect("delta 1 is admitted on the canonical base");
     assert!(first.status.is_candidate());
     assert_eq!(
         first.new_commitment.as_deref(),
-        Some(setup.expected_commitments[0].as_str())
+        Some(setup.expected_queue_commitments[0].as_str())
     );
     let second = setup
-        .push(setup.fixture_delta(2))
+        .push(setup.queue_delta(2))
         .await
         .expect("delta 2 is admitted on the queue tail without waiting");
     assert!(second.status.is_candidate());
     assert_eq!(
         second.new_commitment.as_deref(),
-        Some(setup.expected_commitments[1].as_str())
+        Some(setup.expected_queue_commitments[1].as_str())
     );
     assert_eq!(
         setup.stored_commitment().await,
@@ -287,7 +332,7 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
     );
 
     // Competing for the canonical base while delta 1 holds it.
-    let mut competing = setup.fixture_delta(1);
+    let mut competing = setup.queue_delta(1);
     competing.nonce = 7;
     let refused = setup
         .push(competing)
@@ -300,7 +345,7 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
 
     // Depth 2 is full: the correctly chained third delta must wait.
     let refused = setup
-        .push(setup.fixture_delta(3))
+        .push(setup.queue_delta(3))
         .await
         .expect_err("queue depth is enforced");
     assert!(
@@ -308,14 +353,8 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
         "expected ConflictPendingDelta, got {refused:?}"
     );
     // ...and a proposal is refused up front for the same reason.
-    let proposal_payload = serde_json::json!({
-        "tx_summary": setup.fixture_delta(3).delta_payload,
-        "signatures": [],
-        "metadata": {
-            "proposal_type": "custom",
-            "description": "proposed against the queue tail"
-        }
-    });
+    let proposal_payload =
+        proposal_payload(&setup.queue_delta(3), "proposed against the queue tail");
     let creds = setup.credentials();
     let refused = push_delta_proposal(
         &setup.state,
@@ -334,12 +373,12 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
     setup.state.canonicalization =
         Some(CanonicalizationConfig::default().with_max_pending_candidates_per_account(3));
     let third = setup
-        .push(setup.fixture_delta(3))
+        .push(setup.queue_delta(3))
         .await
         .expect("delta 3 is admitted once the depth allows");
     assert_eq!(
         third.new_commitment.as_deref(),
-        Some(setup.expected_commitments[2].as_str())
+        Some(setup.expected_queue_commitments[2].as_str())
     );
     let queue = setup
         .state
@@ -369,7 +408,7 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
     .await
     .expect("a proposal is accepted against the queue tail");
     assert_eq!(
-        proposal.delta.prev_commitment, setup.expected_commitments[2],
+        proposal.delta.prev_commitment, setup.expected_queue_commitments[2],
         "the proposal is pinned to the tail's post-state"
     );
 
@@ -389,7 +428,7 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
     // whole chain in order.
     setup
         .chain
-        .set_on_chain_commitment(&setup.account_id, &setup.expected_commitments[2]);
+        .set_on_chain_commitment(&setup.account_id, &setup.expected_queue_commitments[2]);
     let pass = process_canonicalizations_now(&setup.state)
         .await
         .expect("worker pass succeeds");
@@ -403,12 +442,12 @@ async fn queued_chain_lands_and_canonicalizes_in_order() {
         );
         assert_eq!(
             delta.new_commitment.as_deref(),
-            Some(setup.expected_commitments[index].as_str())
+            Some(setup.expected_queue_commitments[index].as_str())
         );
     }
     assert_eq!(
         setup.stored_commitment().await,
-        setup.expected_commitments[2],
+        setup.expected_queue_commitments[2],
         "the stored state ends at the chain tail"
     );
     assert!(
@@ -431,11 +470,11 @@ async fn abandoned_head_orphans_its_successor_and_the_chain_reconciles() {
     let mut setup = queue_setup(4).await;
 
     setup
-        .push(setup.fixture_delta(1))
+        .push(setup.queue_delta(1))
         .await
         .expect("delta 1 is admitted");
     setup
-        .push(setup.fixture_delta(2))
+        .push(setup.queue_delta(2))
         .await
         .expect("delta 2 is admitted on the tail");
 
@@ -474,7 +513,7 @@ async fn abandoned_head_orphans_its_successor_and_the_chain_reconciles() {
     // Released: a fresh delta on the canonical base is admitted again
     // (superseding the abandoned row at nonce 1)...
     let resubmitted = setup
-        .push(setup.fixture_delta(1))
+        .push(setup.queue_delta(1))
         .await
         .expect("the account accepts new work after the sweep");
     assert!(resubmitted.status.is_candidate());
@@ -501,7 +540,7 @@ async fn abandoned_head_orphans_its_successor_and_the_chain_reconciles() {
     // commitment and promotes them in order.
     setup
         .chain
-        .set_on_chain_commitment(&setup.account_id, &setup.expected_commitments[1]);
+        .set_on_chain_commitment(&setup.account_id, &setup.expected_queue_commitments[1]);
     let pass = process_canonicalizations_now(&setup.state)
         .await
         .expect("worker pass succeeds");
@@ -515,12 +554,12 @@ async fn abandoned_head_orphans_its_successor_and_the_chain_reconciles() {
         );
         assert_eq!(
             delta.new_commitment.as_deref(),
-            Some(setup.expected_commitments[index].as_str())
+            Some(setup.expected_queue_commitments[index].as_str())
         );
     }
     assert_eq!(
         setup.stored_commitment().await,
-        setup.expected_commitments[1]
+        setup.expected_queue_commitments[1]
     );
 }
 
@@ -528,7 +567,7 @@ async fn abandoned_head_orphans_its_successor_and_the_chain_reconciles() {
 async fn cosigner_on_the_canonical_state_is_refused_behind_a_queued_candidate() {
     let mut setup = queue_setup(4).await;
     let queued = setup
-        .push(setup.fixture_delta(1))
+        .push(setup.queue_delta(1))
         .await
         .expect("device A's delta is queued");
     assert_eq!(queued.nonce, 1);
@@ -537,23 +576,13 @@ async fn cosigner_on_the_canonical_state_is_refused_behind_a_queued_candidate() 
     // SDK labels the proposal with the canonical nonce + 1: device A's
     // queued slot. Its push could never succeed, so it is refused before
     // anyone signs it, and nothing is stored.
-    let proposal_payload = |delta: &DeltaObject| {
-        serde_json::json!({
-            "tx_summary": delta.delta_payload,
-            "signatures": [],
-            "metadata": {
-                "proposal_type": "custom",
-                "description": "built on the canonical state"
-            }
-        })
-    };
     let creds = setup.credentials();
     let refused = push_delta_proposal(
         &setup.state,
         PushDeltaProposalParams {
             account_id: setup.account_id.clone(),
             nonce: 1,
-            delta_payload: proposal_payload(&setup.fixture_delta(1)),
+            delta_payload: proposal_payload(&setup.queue_delta(1), "built on the canonical state"),
             credentials: creds,
         },
     )
@@ -578,7 +607,7 @@ async fn cosigner_on_the_canonical_state_is_refused_behind_a_queued_candidate() 
     // resyncs to the new canonical state and proposes on it.
     setup
         .chain
-        .set_on_chain_commitment(&setup.account_id, &setup.expected_commitments[0]);
+        .set_on_chain_commitment(&setup.account_id, &setup.expected_queue_commitments[0]);
     let pass = process_canonicalizations_now(&setup.state)
         .await
         .expect("worker pass succeeds");
@@ -590,21 +619,26 @@ async fn cosigner_on_the_canonical_state_is_refused_behind_a_queued_candidate() 
         PushDeltaProposalParams {
             account_id: setup.account_id.clone(),
             nonce: 2,
-            delta_payload: proposal_payload(&setup.fixture_delta(2)),
+            delta_payload: proposal_payload(
+                &setup.queue_delta(2),
+                "built on the new canonical state",
+            ),
             credentials: creds,
         },
     )
     .await
     .expect("the resynced proposal is accepted");
     assert_eq!(
-        accepted.delta.prev_commitment, setup.expected_commitments[0],
+        accepted.delta.prev_commitment, setup.expected_queue_commitments[0],
         "pinned to the new canonical state"
     );
 }
 
 #[tokio::test]
 async fn depth_one_is_the_single_candidate_gate() {
-    // The default depth: queueing is an opt-in.
+    // The default depth: queueing is an opt-in. The signer-changing chain
+    // is fine here: with one candidate in flight nothing is judged on
+    // what it changes, and after it promotes the queue is empty.
     let mut setup = queue_setup(1).await;
     assert_eq!(
         crate::canonicalization::CanonicalizationConfig::default()
@@ -670,5 +704,171 @@ async fn depth_one_is_the_single_candidate_gate() {
     assert_eq!(
         second.new_commitment.as_deref(),
         Some(setup.expected_commitments[1].as_str())
+    );
+}
+
+#[tokio::test]
+async fn successor_behind_a_signer_changing_candidate_is_refused_until_it_promotes() {
+    let mut setup = queue_setup(4).await;
+    let keys: serde_json::Value = serde_json::from_str(fixtures::KEYS_JSON).expect("keys.json");
+    let added_signer = keys["signer_4_commitment"]
+        .as_str()
+        .expect("signer 4 commitment")
+        .to_string();
+
+    // `delta_1` adds a fourth signer. It is admitted like any candidate...
+    let head = setup
+        .push(setup.fixture_delta(1))
+        .await
+        .expect("a signer-changing delta is admitted on the canonical base");
+    assert!(head.status.is_candidate());
+
+    // ...but while it is queued, requests are still authorized against the
+    // canonical signer set, so nothing chains behind it: not the delta
+    // built on its post-state, not a proposal at the next nonce, although
+    // the queue has room for three more.
+    let refused = setup
+        .push(setup.fixture_delta(2))
+        .await
+        .expect_err("a delta behind a signer-changing candidate is refused");
+    assert!(
+        matches!(refused, GuardianError::ConflictPendingDelta),
+        "expected ConflictPendingDelta, got {refused:?}"
+    );
+    let creds = setup.credentials();
+    let refused = push_delta_proposal(
+        &setup.state,
+        PushDeltaProposalParams {
+            account_id: setup.account_id.clone(),
+            nonce: 2,
+            delta_payload: proposal_payload(&setup.fixture_delta(2), "behind a signer change"),
+            credentials: creds,
+        },
+    )
+    .await
+    .expect_err("a proposal behind a signer-changing candidate is refused");
+    assert!(
+        matches!(refused, GuardianError::ConflictPendingDelta),
+        "expected ConflictPendingDelta, got {refused:?}"
+    );
+    assert_eq!(
+        setup
+            .state
+            .storage
+            .pull_candidate_deltas(&setup.account_id)
+            .await
+            .expect("queue readable")
+            .len(),
+        1,
+        "only the signer-changing candidate is queued"
+    );
+    assert!(
+        setup
+            .state
+            .storage
+            .pull_pending_proposals(&setup.account_id)
+            .await
+            .expect("proposals readable")
+            .is_empty(),
+        "nothing is stored for cosigners to sign"
+    );
+    let auth_before = setup
+        .state
+        .metadata
+        .get(&setup.account_id)
+        .await
+        .expect("metadata readable")
+        .expect("metadata present")
+        .auth;
+    assert_eq!(auth_before.cosigner_commitments().len(), 3);
+
+    // The change lands and promotes: the cosigner set is synced from the
+    // new canonical state, and the successor is admitted on it.
+    setup
+        .chain
+        .set_on_chain_commitment(&setup.account_id, &setup.expected_commitments[0]);
+    let pass = process_canonicalizations_now(&setup.state)
+        .await
+        .expect("worker pass succeeds");
+    assert_eq!(pass.failed_accounts, 0);
+    assert!(setup.delta(1).await.status.is_canonical());
+    let auth_after = setup
+        .state
+        .metadata
+        .get(&setup.account_id)
+        .await
+        .expect("metadata readable")
+        .expect("metadata present")
+        .auth;
+    assert_eq!(auth_after.cosigner_commitments().len(), 4);
+    assert!(auth_after.cosigner_commitments().contains(&added_signer));
+    let successor = setup
+        .push(setup.fixture_delta(2))
+        .await
+        .expect("the successor is admitted once the signer change is canonical");
+    assert_eq!(
+        successor.new_commitment.as_deref(),
+        Some(setup.expected_commitments[1].as_str())
+    );
+}
+
+#[tokio::test]
+async fn proposal_must_extend_the_queue_by_exactly_one_nonce() {
+    let mut setup = queue_setup(4).await;
+    let queued = setup
+        .push(setup.queue_delta(1))
+        .await
+        .expect("the head is queued");
+    assert_eq!(queued.nonce, 1);
+
+    // At the tail's nonce (built on the canonical state), past the tail's
+    // nonce plus one (a gap), and a timestamp label: none was derived from
+    // the tail, none is recorded.
+    for nonce in [1, 3, 1_790_941_600_874] {
+        let creds = setup.credentials();
+        let refused = push_delta_proposal(
+            &setup.state,
+            PushDeltaProposalParams {
+                account_id: setup.account_id.clone(),
+                nonce,
+                delta_payload: proposal_payload(&setup.queue_delta(2), "does not extend the queue"),
+                credentials: creds,
+            },
+        )
+        .await
+        .expect_err("a proposal that does not extend the queue by one is refused");
+        assert!(
+            matches!(refused, GuardianError::ConflictPendingDelta),
+            "nonce {nonce}: expected ConflictPendingDelta, got {refused:?}"
+        );
+    }
+    assert!(
+        setup
+            .state
+            .storage
+            .pull_pending_proposals(&setup.account_id)
+            .await
+            .expect("proposals readable")
+            .is_empty(),
+        "nothing is stored for cosigners to sign"
+    );
+
+    // The tail's nonce plus one is recorded, pinned to the tail.
+    let creds = setup.credentials();
+    let accepted = push_delta_proposal(
+        &setup.state,
+        PushDeltaProposalParams {
+            account_id: setup.account_id.clone(),
+            nonce: 2,
+            delta_payload: proposal_payload(&setup.queue_delta(2), "extends the queue"),
+            credentials: creds,
+        },
+    )
+    .await
+    .expect("the tail's nonce plus one is recorded");
+    assert_eq!(accepted.delta.nonce, 2);
+    assert_eq!(
+        accepted.delta.prev_commitment, setup.expected_queue_commitments[0],
+        "pinned to the tail"
     );
 }
