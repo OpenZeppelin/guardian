@@ -167,6 +167,38 @@ protocol-line change, but accounts created under the rc.7 / rc.4 pins do not car
   code-carrying delta as an account creation only when the account has not executed a
   transaction yet (nonce zero), and apply it as a code upgrade otherwise.
 
+**Moving past 0.18.0-rc.3: TypeScript proposals are labelled with the account's next
+nonce** keeps the protocol pins, stored data and server contracts, but changes a
+TypeScript SDK default and two admission rules of a server that queues chained
+candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
+
+- **`create*Proposal` defaults `nonce` to the store account's nonce plus one**, the
+  nonce the executed transaction will have, as the Rust SDK has since #72. Through
+  0.18.0-rc.3 the default was `Date.now()`. `options.nonce` still overrides it, and
+  an account nonce at or above `Number.MAX_SAFE_INTEGER` makes the default throw
+  rather than round. The delta and proposal nonce is GUARDIAN's storage key
+  (`UNIQUE(account_id, nonce)`), the order of `/delta/since`, the history and the
+  candidate queue, and the lookup key of `getDelta` and `abandonCandidate`. Rows this
+  SDK wrote before the change keep their timestamp keys, nothing is migrated: on such
+  an account `/delta/since` and the history list them after every nonce-keyed row (a
+  timestamp sorts after a small nonce), so a reader walking history by nonce must not
+  take that order for chain order across the switch, and `/delta/since?nonce=N` from a
+  nonce-keyed cursor returns the timestamp-keyed rows again.
+- **Mixed-version cosigners.** A cosigner still on 0.18.0-rc.3 or earlier labels with a
+  timestamp. A server at the default depth accepts that proposal as before; a queueing
+  server refuses it with `409 conflict_pending_delta` while a candidate is queued (next
+  item). Upgrade the proposing devices first; signing and executing a proposal another
+  device created is unchanged, and a proposal GUARDIAN already holds under a timestamp
+  key stays executable from the device that holds the state it is pinned to.
+- **A queueing server records a proposal behind a queued candidate only at that
+  candidate's nonce plus one**, and **admits nothing behind a candidate that changes the
+  account's signer set or guardian key** until it promotes, both `409
+  conflict_pending_delta`. At the default depth of one nothing changes: a queued
+  candidate already refuses every submission. The queue helps the device that pushed
+  the newest candidate; `/state` serves the canonical state, so every other cosigner
+  is refused until it drains, and serving the queue tail to cosigners is follow-up
+  work.
+
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
 

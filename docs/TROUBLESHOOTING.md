@@ -35,14 +35,13 @@ rejected submission leaves the delta pending on GUARDIAN as a candidate. The
 next transaction for the account builds on the state that candidate already
 claimed, so its acknowledgement is refused with `conflict_pending_delta`. A new
 proposal is refused the same way up front: at the default queue depth of one
-because the queue is full, and at any depth when its nonce does not exceed the
-stuck candidate's, which a proposal labelled with the account's next nonce (as
-Rust SDK proposals are) never does. A TypeScript SDK proposal with its default
-timestamp nonce is accepted on a deeper queue
-(`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1), pinned to the stuck
-candidate's post-state, and the SDK refuses to execute it after it has been
-signed, since no client holds that state (0.18.0-rc.2 and earlier executed it
-anyway; see [`CONFIGURATION.md`](./CONFIGURATION.md)). Release the candidate
+because the queue is full, and on a deeper queue
+(`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1) because its nonce is not
+the stuck candidate's plus one, which a proposal built on the canonical state
+(the one `/state` serves, labelled with the account's next nonce as both SDKs
+do) never carries; a TypeScript SDK proposal from 0.18.0-rc.3 or earlier carries
+a timestamp label and is refused there too (see
+[`CONFIGURATION.md`](./CONFIGURATION.md)). Release the candidate
 before proposing again, with `abandon_candidate(nonce)` /
 `abandonCandidate(nonce)` (see [`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait
 for the submission grace period to expire.
@@ -678,7 +677,7 @@ come from
 | Code | HTTP | First check |
 |---|---|---|
 | `account_already_exists` | 409 | `/configure` called twice for the same account. |
-| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's or proposal's nonce does not exceed the newest queued candidate's, or a queued candidate's predecessor left the queue and the worker has not swept it yet. Wait for the queue to drain and resync; with queueing enabled, a client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
+| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, the proposal's nonce is not the newest queued candidate's plus one, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
 | `conflict_pending_proposal` | 409 | Pending proposals exist; resolve before pushing a direct delta. |
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |

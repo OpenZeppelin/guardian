@@ -8,7 +8,7 @@
 - **get_canonical_nonce**: authenticates and returns the account nonce and commitment stored with the latest persisted account state, without loading the state blob, so a client can skip `get_state` when that nonce is below its local nonce, or equal to it at the same commitment (issue #191). A state stored before nonces were kept is decoded once, and its nonce is backfilled onto the row only while the row still holds that state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
 - **get_delta_since**: authenticates, fetches deltas after a given nonce (excluding discarded), merges their payloads via the network client, and returns a single merged delta snapshot.
-- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against the tail of the account's candidate queue (the canonical state when nothing is queued) and deriving IDs through the Miden network client. It is refused with `409 conflict_pending_delta` when its delta could never be admitted: while the queue is full, or when its nonce does not exceed the newest queued candidate's.
+- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against the tail of the account's candidate queue (the canonical state when nothing is queued) and deriving IDs through the Miden network client. It is refused with `409 conflict_pending_delta` when its delta could never be admitted: while the queue is full, when a queue exists and its nonce is not the newest queued candidate's plus one, or when the newest queued candidate changes the account's signer set or guardian key.
 - **sign_delta_proposal**: appends one signer signature to a pending Miden proposal.
 - **evm_session**: issues an EIP-712 wallet challenge, recovers the EOA with `ecrecover`, consumes the nonce once, and creates a cookie-backed session.
 - **evm_accounts**: registers EVM smart accounts under `/evm/accounts` by validating the cookie session signer, server-owned chain config, ERC-7579 validator installation, and signer snapshot before storing account metadata without state or acknowledgement data.
@@ -329,7 +329,13 @@ sequenceDiagram
   canonical state (a predecessor left it without promoting and the worker
   has not swept the orphans yet) refuses everything; a delta competing for
   a base another queued candidate already claimed, or whose nonce does not
-  exceed the tail's, is refused — all with `409 conflict_pending_delta`; a
+  exceed the tail's, is refused; so is anything behind a tail that changes
+  who may act on the account (its signer set or guardian key, compared on
+  the replayed tail rather than on a proposal label, since a direct push
+  changes signers without one): requests stay authorized against the
+  canonical signer set until that candidate promotes, and a successor this
+  server acknowledges behind a queued guardian switch could never land —
+  all with `409 conflict_pending_delta`; a
   delta building on a state the server does not know gets `400
   commitment_mismatch` against the canonical commitment. Both storage
   backends re-evaluate the same gate under the account lock, so two racing
@@ -341,20 +347,26 @@ sequenceDiagram
   judged against) and re-validates against the fresh state. Proposals are
   pinned to the tail as well (their `prev_commitment` is the tail
   commitment) and are refused up front when their delta could never be
-  admitted: while the queue is full, or when their nonce does not exceed
-  the tail's. The second case is a cosigner that synced the canonical
-  state (all `/state` serves) and proposes on it while another device's
-  candidate is queued, labelling the proposal with the account's next
-  nonce as the Rust SDK does. The TypeScript SDK labels proposals with a
-  timestamp by default, which clears that check, and refuses to execute a
-  proposal pinned to a state its client does not hold, so such a proposal
-  executes only from a device on the tail. The server cannot tell which
-  state a summary was built on, so it relies on the SDKs here: the Rust
-  SDK's push names the state it executed on, which the delta gate refuses
-  unless it is the tail; TypeScript SDK 0.18.0-rc.2 and earlier pushed the
-  pinned base regardless. Only viable proposals (pinned to the tail with a
-  nonce above the tail's) count toward the pending-proposal limit, which
-  is checked before the tail replay. Promotion of the oldest candidate
+  admitted: while the queue is full, when a queue exists and their nonce
+  is not the tail's plus one, or behind a tail that changes the signer set
+  or guardian key. Both SDKs label a proposal with the account's next
+  nonce (the TypeScript SDK since the release after 0.18.0-rc.3; earlier
+  releases used a timestamp, which the rule refuses), so a proposal built
+  on the tail carries the tail's nonce plus one, and one built on the
+  canonical state (all `/state` serves) carries the tail's nonce or less:
+  the cosigner on another device proposing while this device's candidate
+  is queued. The queue therefore serves the device that pushed the newest
+  candidate; every other cosigner is refused until it drains, as at depth
+  one. The server cannot tell which state a summary was built on, so the
+  nonce rule and, at execution, the SDKs keep a proposal from executing
+  anywhere but on the tail: the TypeScript SDK refuses to execute a
+  proposal pinned to a state its client does not hold (0.18.0-rc.2 and
+  earlier pushed the pinned base regardless; a switch proposal is checked
+  while the pre-switch GUARDIAN serves it), and the Rust SDK's push names
+  the state it executed on, which the delta gate refuses unless it is the
+  tail. Only viable proposals (pinned to the tail with a nonce above the
+  tail's) count toward the pending-proposal limit, which is checked before
+  the tail replay. Promotion of the oldest candidate
   moves the canonical state *along* the chain, so the tail commitment —
   and every proposal pinned to it — stays valid while the queue drains.
   A queued payload that no longer replays (an upgrade changed delta

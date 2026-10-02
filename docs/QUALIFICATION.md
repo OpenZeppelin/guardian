@@ -503,9 +503,11 @@ admitted by an executed add-signer is refused until `authorized_count` catches
 up. Proposing again immediately is refused too, with `There's already a pending
 change for this account`, while the change is a candidate on the main server,
 which runs the default of one in-flight candidate per account. On a server that
-queues chained candidates (issue #17) a proposal built on the pending change's
-post-state is queued behind it, and the refusal comes only when the queue is
-full or the proposal's nonce does not extend it.
+queues chained candidates (issue #17) the refusal is the same, because the
+pending change alters the signer set and nothing queues behind such a
+candidate; a proposal built on an ordinary candidate's post-state is queued
+behind it instead, and refused only when the queue is full or its nonce is not
+the newest queued candidate's plus one.
 These are races only a fast client hits: the Rust driver hit them where the
 TypeScript driver, about four times slower, did not. Both drivers poll against
 bounded deadlines rather than racing.
@@ -699,18 +701,17 @@ queued head leaves the queue only by timing out, once the submission grace
 period and the retry budget run out (about eighteen minutes as the server
 ships), far beyond any step budget.
 
-**Proposal nonces in the TypeScript SDK.** The SDK labels a proposal with
-`Date.now()` unless the caller passes a nonce, while the Rust SDK and the shared
-browser helpers use the account's next nonce. GUARDIAN refuses a proposal whose
-nonce does not exceed the newest queued candidate's, which is what stops a
-cosigner on the canonical state from proposing something doomed behind another
-device's candidate, and a timestamp clears that check. Such a proposal is caught
-at execution instead, after it has been signed: the SDK refuses to execute a
-proposal pinned to a state its client does not hold, before anything reaches
-GUARDIAN. The candidate-queue scenarios pass the account's next nonce on the
-TypeScript leg, as integrations do, and the stranded-head scenario's TypeScript
-leg also tries to execute a timestamp-labelled proposal behind the head to show
-that refusal and that GUARDIAN holds nothing at its nonce.
+**Proposal nonces.** Both SDKs label a proposal with the account's next nonce
+(the TypeScript SDK used `Date.now()` through 0.18.0-rc.3), and GUARDIAN records
+a proposal behind a queued candidate only at that candidate's nonce plus one,
+which is what stops a cosigner on the canonical state from proposing something
+doomed behind another device's candidate. The candidate-queue scenarios use the
+SDK defaults on both legs. The stranded-head scenario's TypeScript leg also
+labels a proposal past the head explicitly, as an integration computing its own
+nonces might, to show that a proposal GUARDIAN did record behind the head is
+still refused at execution by a client that does not hold the head's
+post-state, before anything reaches GUARDIAN, and that GUARDIAN holds nothing
+at its nonce.
 
 **Deterministic multisig coverage stops at submission.** GUARDIAN's request path
 never calls the chain, so the proposal API is testable without one and

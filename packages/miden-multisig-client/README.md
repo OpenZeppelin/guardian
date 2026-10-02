@@ -310,8 +310,10 @@ createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)
 createCustomProposal(requestBytes, label, { nonce }?)
 ```
 
-All methods accept `nonce` (identifies the proposal; defaults to
-`Date.now()`). `newThreshold` defaults to the current threshold on add and to
+All methods accept `nonce` (identifies the proposal; defaults to the store
+account's nonce plus one, the nonce the executed transaction will have, as the
+Rust SDK labels proposals; through 0.18.0-rc.3 the default was `Date.now()`).
+`newThreshold` defaults to the current threshold on add and to
 the min of the current threshold and the remaining signer count on remove.
 The option shapes are exported as `CreateProposalOptions`,
 `CreateSignerProposalOptions`, and `CreateP2idProposalOptions`.
@@ -370,7 +372,8 @@ If an approved transaction died client-side after guardian approval, the
 candidate keeps the account locked on GUARDIAN: proposals and deltas answer
 `conflict_pending_delta` while the account's candidate queue (one candidate
 by default) is full, when they build on the state that candidate already
-claimed, or when they carry its nonce, and any candidate queued behind it
+claimed, or when their nonce does not extend the queue (a proposal's must be
+the newest queued candidate's plus one), and any candidate queued behind it
 can never land. Record an abandon intent
 and poll for the resolution:
 
@@ -484,7 +487,10 @@ GUARDIAN pins every proposal to the account state its transaction must execute
 on. Execution (and `createTransactionProposalRequest` and
 `prepareCustomExecution`) refuses a proposal pinned to a state other than the one
 this client holds: sync with `syncState()` and retry, or create a new proposal if
-the account has moved past that state.
+the account has moved past that state. A `switch_guardian` proposal is checked
+the same way while the pre-switch GUARDIAN still serves it; one it never
+received (made offline) or cannot serve (unreachable) executes without the
+check, as its push back to that GUARDIAN is best-effort for the same reason.
 
 ### Export Proposal for Offline Signing
 
