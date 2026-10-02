@@ -504,6 +504,7 @@ impl MultisigClient {
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::account::{AccountId, AccountStoragePatch};
     use miden_protocol::asset::FungibleAsset;
@@ -697,7 +698,7 @@ mod tests {
             account_id,
             AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             miden_protocol::Felt::ZERO,
         )
         .unwrap();

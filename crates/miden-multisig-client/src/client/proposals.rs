@@ -888,6 +888,7 @@ fn warn_on_override_dilution(
 mod tests {
     use guardian_client::DeltaObject;
     use guardian_shared::ToJson;
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
@@ -906,7 +907,7 @@ mod tests {
             account_id,
             AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::ZERO,
         )
         .expect("valid delta");

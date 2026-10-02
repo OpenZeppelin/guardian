@@ -168,6 +168,7 @@ fn classify_note_tag(note: &Note) -> NoteTag {
         | Some(StandardNote::OWNER_CONFIG)
         | Some(StandardNote::RBAC_CONFIG)
         | Some(StandardNote::NETWORK_ACCOUNT_CONFIG)
+        | Some(StandardNote::UPGRADE)
         | Some(StandardNote::FEE_SPONSORSHIP)
         | Some(StandardNote::TX_FEE) => NoteTag::Custom,
         None => NoteTag::Custom,
@@ -337,6 +338,7 @@ fn project_storage_changes(
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]
 mod tests {
     use super::*;
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::delta::{
         AccountDelta, AccountVaultDelta, AssetDelta, AssetDeltaOperation,
@@ -378,7 +380,7 @@ mod tests {
             consumer,
             miden_protocol::account::AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::ZERO,
         )
         .expect("account delta");
@@ -458,7 +460,7 @@ mod tests {
             AccountId::from_hex(CONSUMER).expect("acct"),
             storage,
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::new_unchecked(1),
         )
         .expect("delta");
@@ -499,7 +501,7 @@ mod tests {
             AccountId::from_hex(CONSUMER).expect("acct"),
             storage,
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::new_unchecked(1),
         )
         .expect("delta");
@@ -529,7 +531,7 @@ mod tests {
             account_id,
             miden_protocol::account::AccountStoragePatch::default(),
             vault,
-            None,
+            AccountCodePatch::default(),
             Felt::ONE,
         )
         .expect("account delta");

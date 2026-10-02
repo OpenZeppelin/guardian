@@ -1039,6 +1039,7 @@ impl ProposalBuilder {
 mod tests {
     use super::*;
     use crate::transaction::build_p2id_transaction_request;
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::transaction::{
@@ -1096,7 +1097,7 @@ mod tests {
             account_id,
             AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::ZERO,
         )
         .expect("valid delta");

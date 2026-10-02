@@ -438,9 +438,8 @@ async function readRawCursor(): Promise<Uint8Array | undefined> {
  */
 describe('drainPrivateNoteBacklog (wasm mock client)', () => {
   it('recovers a transport-delivered private note into a fresh store, idempotently and tag-scoped', async () => {
-    const { MidenClient, Account, createP2IDNote, NoteVisibility } = await import(
-      '@miden-sdk/miden-sdk'
-    );
+    const { MidenClient, Account, createP2IDNote, NoteVisibility, NoteInclusionProof } =
+      await import('@miden-sdk/miden-sdk');
 
     // Device A: create the account and relay a private self-addressed note
     // via the (mock) transport.
@@ -458,9 +457,13 @@ describe('drainPrivateNoteBacklog (wasm mock client)', () => {
       assets: { token: '0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c', amount: 100 },
       type: NoteVisibility.Private,
     });
-    // The mock chain never commits the note, so any at-or-below-commitment
-    // hint works; 0 is always valid.
-    await deviceA.notes.sendPrivate({ note, to: account, scanAfterBlockNum: 0 });
+    // The mock chain never commits the note and the mock transport does not
+    // verify proofs, so a mock proof at genesis stands in for a real one.
+    await deviceA.notes.sendPrivate({
+      note,
+      to: account,
+      inclusionProof: NoteInclusionProof.mockAtBlock(0),
+    });
     const transportState = await deviceA.serializeMockNoteTransportNode();
 
     // Device B ("new device after loss"): fresh store sharing the same

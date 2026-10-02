@@ -61,7 +61,7 @@ PY
 
 account="{\"v1\":{\"prefix\":{\"value\":\"${prefix}\"},\"suffix\":{\"value\":\"${suffix}\"}}}"
 
-read -r version genesis <<<"$(grpcurl -max-time 30 -d '{}' "${rpc}" rpc.Api/Status | python3 -c '
+read -r version genesis <<<"$(grpcurl -max-time 30 -d '{}' "${rpc}" miden.node.v1.NodeService/Status | python3 -c '
 import base64, json, sys
 status = json.load(sys.stdin)
 print(status["version"], "0x" + base64.b64decode(status["genesisCommitment"]["encoded"]).hex())
@@ -73,7 +73,7 @@ echo "node:    ${rpc} (${version}, genesis ${genesis})"
 echo "account: 0x${id_hex}"
 
 echo "allowed before:"
-grpcurl -max-time 30 -d "{\"account_id\":${account}}" "${rpc}" rpc.Api/IsAccountAllowed
+grpcurl -max-time 30 -d "{\"account_id\":${account}}" "${rpc}" miden.node.v1.NodeService/IsAccountAllowed
 
 echo "register:"
-grpcurl -max-time 60 -H "${accept}" -d "{\"invitation_code\":\"${code}\",\"account_id\":${account}}" "${rpc}" rpc.Api/RegisterAccount
+grpcurl -max-time 60 -H "${accept}" -d "{\"invitation_code\":\"${code}\",\"account_id\":${account}}" "${rpc}" miden.node.v1.NodeService/RegisterAccount

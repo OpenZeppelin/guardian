@@ -23,23 +23,33 @@ fn main() {
 }
 
 /// Produces a wrapper file that exposes each generated `<package>.rs` file as a
-/// `pub mod <package>` so the library can `include!` a single stable path.
+/// module tree mirroring its package path (`miden.node.v1` becomes
+/// `miden::node::v1`), so the `super::` paths prost emits between packages
+/// resolve and the library can `include!` a single stable path.
 fn generate_wrapper(out_dir: &Path, rpc_out: &Path) {
-    let mut mod_names: Vec<String> = fs::read_dir(rpc_out)
+    let mut packages: Vec<String> = fs::read_dir(rpc_out)
         .expect("failed to read proto codegen directory")
         .filter_map(|entry| {
             let name = entry.ok()?.file_name().into_string().ok()?;
             name.strip_suffix(".rs").map(str::to_owned)
         })
         .collect();
-    mod_names.sort();
+    packages.sort();
 
     let mut wrapper = String::new();
-    for mod_name in &mod_names {
+    for package in &packages {
+        let segments: Vec<&str> = package.split('.').collect();
+        let (leaf, parents) = segments
+            .split_last()
+            .expect("a generated file is named after a non-empty package");
+        for parent in parents {
+            wrapper.push_str(&format!("pub mod {parent} {{\n"));
+        }
         wrapper.push_str(&format!(
             "#[allow(clippy::doc_markdown, clippy::struct_field_names, clippy::trivially_copy_pass_by_ref, clippy::large_enum_variant)]\n\
-             pub mod {mod_name} {{ include!(concat!(env!(\"OUT_DIR\"), \"/{RPC_SUBDIR}/{mod_name}.rs\")); }}\n"
+             pub mod {leaf} {{ include!(concat!(env!(\"OUT_DIR\"), \"/{RPC_SUBDIR}/{package}.rs\")); }}\n"
         ));
+        wrapper.push_str(&"}\n".repeat(parents.len()));
     }
 
     fs::write(out_dir.join(WRAPPER_NAME), wrapper).expect("failed to write proto wrapper");

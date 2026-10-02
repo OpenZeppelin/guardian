@@ -474,8 +474,8 @@ impl MultisigClient {
                 })?;
 
             let account_patch = tx_result.account_patch();
-            let rebuilt: Account = if account_patch.is_full_state() {
-                Account::try_from(account_patch).map_err(|e| {
+            let rebuilt: Account = if base_account.is_new() && !account_patch.code().is_empty() {
+                account_patch.try_to_new_account().map_err(|e| {
                     MultisigError::MidenClient(format!(
                         "failed to build account from full state patch: {}",
                         e
@@ -660,6 +660,7 @@ impl MultisigClient {
 mod tests {
     use guardian_shared::FromJson;
     use guardian_shared::ToJson;
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountId;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
@@ -676,7 +677,7 @@ mod tests {
             account_id,
             AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::ZERO,
         )
         .unwrap();
