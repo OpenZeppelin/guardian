@@ -103,7 +103,7 @@ if (info.serviceStatus === 'degraded') {
 }
 ```
 
-`info.releaseSweep` reports the chain-driven release sweep settings
+`info.backend.releaseSweep` reports the chain-driven release sweep settings
 (`rotationSeconds`, `maxRatePerSecond`, `recheckSeconds`, `confirmations`).
 It is `null` when the sweep is disabled and absent on servers that predate it.
 
