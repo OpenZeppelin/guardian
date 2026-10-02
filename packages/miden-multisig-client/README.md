@@ -488,9 +488,11 @@ on. Execution (and `createTransactionProposalRequest` and
 `prepareCustomExecution`) refuses a proposal pinned to a state other than the one
 this client holds: sync with `syncState()` and retry, or create a new proposal if
 the account has moved past that state. A `switch_guardian` proposal is checked
-the same way while the pre-switch GUARDIAN still serves it; one it never
-received (made offline) or cannot serve (unreachable) executes without the
-check, as its push back to that GUARDIAN is best-effort for the same reason.
+the same way while the pre-switch GUARDIAN serves it; one that GUARDIAN never
+received (made offline) or cannot be asked for (it is unreachable) executes
+without the check, while any other refusal from it fails the execution. After
+the switch the delta is pushed back to it best-effort, naming the state the
+switch executed on, as the Rust SDK does.
 
 ### Export Proposal for Offline Signing
 

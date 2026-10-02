@@ -180,10 +180,10 @@ candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
   (`UNIQUE(account_id, nonce)`), the order of `/delta/since`, the history and the
   candidate queue, and the lookup key of `getDelta` and `abandonCandidate`. Rows this
   SDK wrote before the change keep their timestamp keys, nothing is migrated: on such
-  an account `/delta/since` and the history list them after every nonce-keyed row (a
-  timestamp sorts after a small nonce), so a reader walking history by nonce must not
-  take that order for chain order across the switch, and `/delta/since?nonce=N` from a
-  nonce-keyed cursor returns the timestamp-keyed rows again.
+  an account a timestamp sorts after every account nonce, so `/delta/since` (ascending)
+  lists those rows last and the history (newest-first) lists them first, and neither
+  order is chain order across the switch; `/delta/since?nonce=N` from a nonce-keyed
+  cursor returns the timestamp-keyed rows every time.
 - **Mixed-version cosigners.** A cosigner still on 0.18.0-rc.3 or earlier labels with a
   timestamp. A server at the default depth accepts that proposal as before; a queueing
   server refuses it with `409 conflict_pending_delta` while a candidate is queued (next

@@ -293,8 +293,9 @@ If `execute_proposal` dies after guardian approval (RPC submit failure,
 prover timeout, crash), the approved candidate keeps the account locked on
 GUARDIAN: proposals and deltas answer `conflict_pending_delta` while the
 account's candidate queue (one candidate by default) is full, when they
-build on the state that candidate already claimed, or when they carry its
-nonce, and any candidate queued behind it can never land. Record an abandon intent and poll for the resolution:
+build on the state that candidate already claimed, or when their nonce does
+not extend the queue (a proposal's must be the newest queued candidate's plus
+one), and any candidate queued behind it can never land. Record an abandon intent and poll for the resolution:
 
 ```rust
 use miden_multisig_client::{AbandonRequestState, AbandonStatus};

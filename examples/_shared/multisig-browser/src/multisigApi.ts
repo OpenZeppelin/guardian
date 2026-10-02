@@ -86,12 +86,6 @@ function currentAccountNonce(multisig: Multisig): number | null {
   }
 }
 
-function proposalNonce(multisig: Multisig): number | undefined {
-  const nonce = currentAccountNonce(multisig);
-  // Proposal nonce is the account's next nonce (current + 1), matching the Rust
-  // client's `proposal.nonce <= account.nonce()` staleness filter.
-  return nonce === null ? undefined : nonce + 1;
-}
 
 export function filterVisibleProposals(
   multisig: Multisig,
@@ -264,7 +258,6 @@ export async function createAddSignerProposal(
   return createProposalResult(multisig, () => {
     const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
     return multisig.createAddSignerProposal(commitment, {
-      nonce: proposalNonce(multisig),
       newThreshold,
     });
   });
@@ -277,7 +270,6 @@ export async function createRemoveSignerProposal(
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createRemoveSignerProposal(signerToRemove, {
-      nonce: proposalNonce(multisig),
       newThreshold,
     }));
 }
@@ -287,7 +279,7 @@ export async function createChangeThresholdProposal(
   newThreshold: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createChangeThresholdProposal(newThreshold, { nonce: proposalNonce(multisig) }));
+    multisig.createChangeThresholdProposal(newThreshold));
 }
 
 export async function createUpdateProcedureThresholdProposal(
@@ -299,7 +291,6 @@ export async function createUpdateProcedureThresholdProposal(
     multisig.createUpdateProcedureThresholdProposal(
       procedure,
       threshold,
-      { nonce: proposalNonce(multisig) },
     ));
 }
 
@@ -308,7 +299,7 @@ export async function createConsumeNotesProposal(
   noteIds: string[],
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createConsumeNotesProposal(noteIds, { nonce: proposalNonce(multisig) }));
+    multisig.createConsumeNotesProposal(noteIds));
 }
 
 export async function createP2idProposal(
@@ -322,7 +313,6 @@ export async function createP2idProposal(
   return createProposalResult(multisig, () =>
     multisig.createP2idProposal(recipientId, faucetId, amount, {
       ...heights,
-      nonce: proposalNonce(multisig),
       noteType,
     }));
 }
@@ -338,7 +328,6 @@ export async function createSwitchGuardianProposal(
       multisig.createSwitchGuardianProposal(
         newGuardianEndpoint,
         newGuardianPubkey,
-        { nonce: proposalNonce(multisig) },
       ),
     async (currentMultisig) => listVisibleProposals(currentMultisig),
   );
@@ -446,7 +435,7 @@ export async function createCustomP2idProposal(
   );
 
   const created = await createProposalResult(multisig, () =>
-    multisig.createCustomProposal(request.serialize(), label, { nonce: proposalNonce(multisig) }));
+    multisig.createCustomProposal(request.serialize(), label));
 
   const recipe: CustomProposalRecipe = {
     proposalId: created.proposal.id,

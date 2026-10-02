@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { GuardianHttpClient, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, GuardianHttpError, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -457,19 +457,23 @@ export class Multisig {
    * filters compare with the account nonce, and what GUARDIAN's candidate
    * queue requires of a proposal built on its tail (issue #17). Through
    * 0.18.0-rc.3 the default was `Date.now()`, a key no admission rule
-   * could relate to the account's state.
+   * could relate to the account's state. The label is read after any sync
+   * the method performs (note authentication, the offline switch's node
+   * sync), on the account the summary is then built from; a caller that
+   * has just read that account passes it to save the store read.
    */
   private async resolveProposalNonce(
     method: string,
     options: CreateProposalOptions,
     legacyArgs: readonly unknown[] = [],
+    account?: Account | null,
   ): Promise<number> {
     assertProposalOptionsBag(method, options, legacyArgs);
-    if (options.nonce !== undefined) {
+    if (options.nonce !== undefined && options.nonce !== null) {
       return options.nonce;
     }
-    const account = await this.getStoreAccount();
-    const next = account.nonce().asInt() + 1n;
+    const labelled = account ?? (await this.getStoreAccount());
+    const next = labelled.nonce().asInt() + 1n;
     if (next > BigInt(Number.MAX_SAFE_INTEGER)) {
       throw new Error(
         `${method}: the account nonce ${next - 1n} is too large to label a proposal with as a number; pass options.nonce`,
@@ -490,9 +494,8 @@ export class Multisig {
    * behind that candidate while the transaction itself lands on the older
    * state, leaving GUARDIAN behind the chain.
    */
-  private async assertExecutesOnPinnedBase(proposalId: string, pinnedBase: string): Promise<void> {
-    const account = await this.getStoreAccount();
-    const local = normalizeHexWord(account.to_commitment().toHex());
+  private async assertExecutesOnPinnedBase(proposalId: string, pinnedBase: string): Promise<string> {
+    const local = await this.localAccountCommitment();
     const pinned = normalizeHexWord(pinnedBase);
     if (local !== pinned) {
       throw new Error(
@@ -500,6 +503,12 @@ export class Multisig {
           'sync the account (syncState) and retry, or create a new proposal if the account has moved past that state',
       );
     }
+    return local;
+  }
+
+  /** The commitment of this client's record of the account. */
+  private async localAccountCommitment(): Promise<string> {
+    return normalizeHexWord((await this.getStoreAccount()).to_commitment().toHex());
   }
 
   /**
@@ -1134,7 +1143,7 @@ export class Multisig {
     options: CreateSignerProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
-    const proposalNonce = await this.resolveProposalNonce('createAddSignerProposal', options, legacyArgs);
+    assertProposalOptionsBag('createAddSignerProposal', options, legacyArgs);
     const targetThreshold = options.newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
     // What `update_signers_and_threshold` rejects on-chain, and what the auth
@@ -1154,6 +1163,7 @@ export class Multisig {
       this.proposalRequestOptions(options),
     );
 
+    const proposalNonce = await this.resolveProposalNonce('createAddSignerProposal', options);
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1184,7 +1194,7 @@ export class Multisig {
     options: CreateSignerProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
-    const proposalNonce = await this.resolveProposalNonce('createRemoveSignerProposal', options, legacyArgs);
+    assertProposalOptionsBag('createRemoveSignerProposal', options, legacyArgs);
     const normalizedRemove = signerToRemove.toLowerCase();
     const targetSignerCommitments = this.signerCommitments.filter(
       (c) => c.toLowerCase() !== normalizedRemove
@@ -1212,6 +1222,7 @@ export class Multisig {
       this.proposalRequestOptions(options),
     );
 
+    const proposalNonce = await this.resolveProposalNonce('createRemoveSignerProposal', options);
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1240,7 +1251,7 @@ export class Multisig {
     newThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = await this.resolveProposalNonce('createChangeThresholdProposal', options);
+    assertProposalOptionsBag('createChangeThresholdProposal', options);
     if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${newThreshold}. Must be between 1 and ${this.signerCommitments.length}`
@@ -1258,6 +1269,7 @@ export class Multisig {
       this.proposalRequestOptions(options),
     );
 
+    const proposalNonce = await this.resolveProposalNonce('createChangeThresholdProposal', options);
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1281,7 +1293,7 @@ export class Multisig {
     targetThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = await this.resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
+    assertProposalOptionsBag('createUpdateProcedureThresholdProposal', options);
     if (targetThreshold < 0 || targetThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${targetThreshold}. Must be between 0 and ${this.signerCommitments.length}`
@@ -1306,6 +1318,7 @@ export class Multisig {
       this.proposalRequestOptions(options),
     );
 
+    const proposalNonce = await this.resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1339,7 +1352,7 @@ export class Multisig {
     newGuardianPubkey: string,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposal', options);
+    assertProposalOptionsBag('createSwitchGuardianProposal', options);
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
       newGuardianPubkey,
@@ -1349,6 +1362,7 @@ export class Multisig {
     // SwitchGuardian is a regular delta proposal; push it to GUARDIAN so
     // sign/execute (which fetch from GUARDIAN) can find it. To leave an
     // unreachable GUARDIAN, use createSwitchGuardianProposalOffline instead.
+    const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposal', options);
     return this.createProposal(proposalNonce, summaryBase64, metadata);
   }
 
@@ -1437,9 +1451,13 @@ export class Multisig {
     // to reject a stale delta at creation, a summary built from stale local
     // state — or a readiness threshold read from stale config — would only
     // fail at execution, after the whole side-channel cosigning ceremony.
-    // The nonce is read after the sync for the same reason.
-    await this.syncNetworkOnly();
-    const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposalOffline', options);
+    const synced = await this.syncNetworkOnly();
+    const proposalNonce = await this.resolveProposalNonce(
+      'createSwitchGuardianProposalOffline',
+      options,
+      [],
+      synced,
+    );
 
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
@@ -1474,7 +1492,7 @@ export class Multisig {
     noteIds: string[],
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = await this.resolveProposalNonce('createConsumeNotesProposal', options);
+    assertProposalOptionsBag('createConsumeNotesProposal', options);
     if (noteIds.length === 0) {
       throw new Error('At least one note ID is required');
     }
@@ -1492,6 +1510,7 @@ export class Multisig {
     // proposal signs must be the one every cosigner's rebuild reproduces, so
     // the notes are authenticated here first, before the anchor is captured.
     await this.ensureNotesAuthenticated(fetchedNotes);
+    const proposalNonce = await this.resolveProposalNonce('createConsumeNotesProposal', options);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
     const { request, salt } = await buildConsumeNotesTransactionRequestFromNotes(
@@ -1546,7 +1565,7 @@ export class Multisig {
     options: CreateP2idProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
-    const proposalNonce = await this.resolveProposalNonce('createP2idProposal', options, legacyArgs);
+    assertProposalOptionsBag('createP2idProposal', options, legacyArgs);
     if (amount <= 0n) {
       throw new Error('Amount must be greater than 0');
     }
@@ -1563,6 +1582,7 @@ export class Multisig {
       noteOptions,
     );
 
+    const proposalNonce = await this.resolveProposalNonce('createP2idProposal', options);
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -2105,7 +2125,7 @@ export class Multisig {
    * @param proposalId - The proposal commitment/ID
    */
   async executeProposal(proposalId: string): Promise<void> {
-    const { metadata, finalRequest, proposal, switchDelta } =
+    const { metadata, finalRequest, proposal, executedBase } =
       await this.prepareProposalExecution(proposalId);
 
     if (metadata.proposalType === 'switch_guardian') {
@@ -2127,25 +2147,26 @@ export class Multisig {
       // Canonicalize the executed delta on the pre-switch GUARDIAN (clears the
       // pending proposal). Must run before `this.guardian` is repointed below.
       // Best-effort: an unreachable old GUARDIAN must not block the switch, so
-      // errors are swallowed (mirrors the Rust execute path). When that
-      // GUARDIAN did not serve the proposal before the switch (see
-      // `assertSwitchExecutesOnPinnedBase`) there is nothing to push back.
-      if (switchDelta) {
-        try {
-          await this.guardian.pushDelta({
-            ...switchDelta,
-            deltaPayload: switchDelta.deltaPayload.txSummary,
-          });
-        } catch (error) {
-          // Best-effort — see above — but the failure must be visible: a
-          // silently lost push leaves the pre-switch GUARDIAN serving this
-          // account (split-brain, issue #305) with nothing to diagnose by.
-          console.warn(
-            'SwitchGuardian delta push to the pre-switch GUARDIAN failed; it ' +
-              'will keep serving this account until reconciliation',
-            error,
-          );
-        }
+      // errors are swallowed (mirrors the Rust execute path, which names the
+      // state it executed on and sends the summary it holds; GUARDIAN assigns
+      // the status).
+      try {
+        await this.guardian.pushDelta({
+          accountId: this._accountId,
+          nonce: proposal.nonce,
+          prevCommitment: executedBase,
+          deltaPayload: { data: proposal.txSummary },
+          status: { status: 'candidate', timestamp: new Date().toISOString() },
+        });
+      } catch (error) {
+        // Best-effort — see above — but the failure must be visible: a
+        // silently lost push leaves the pre-switch GUARDIAN serving this
+        // account (split-brain, issue #305) with nothing to diagnose by.
+        console.warn(
+          'SwitchGuardian delta push to the pre-switch GUARDIAN failed; it ' +
+            'will keep serving this account until reconciliation',
+          error,
+        );
       }
 
       try {
@@ -2245,7 +2266,7 @@ export class Multisig {
     proposalType: string,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
-    const proposalNonce = await this.resolveProposalNonce('createCustomProposal', options);
+    assertProposalOptionsBag('createCustomProposal', options);
     const label = proposalType.trim().toLowerCase();
     if (label.length === 0) {
       throw new Error('proposalType must not be empty');
@@ -2262,6 +2283,7 @@ export class Multisig {
     }
 
     const request = deserializeTransactionRequest(transactionRequestBytes);
+    const proposalNonce = await this.resolveProposalNonce('createCustomProposal', options);
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -2493,12 +2515,8 @@ export class Multisig {
     finalRequest: TransactionRequest;
     metadata: ProposalMetadata;
     proposal: Proposal;
-    /**
-     * A switch_guardian proposal as the pre-switch GUARDIAN serves it, when
-     * it does: its pinned base was checked, and the execute path pushes it
-     * back there after the switch.
-     */
-    switchDelta?: DeltaObject;
+    /** The account state the request was built on: this client's record. */
+    executedBase: string;
   }> {
     const proposal = this.getLocalProposal(proposalId);
     if (!proposal) {
@@ -2540,11 +2558,14 @@ export class Multisig {
 
     if (isSwitchGuardian) {
       txSummaryBase64 = proposal.txSummary;
+      delta = await this.servedSwitchProposal(normalizedProposalId);
     } else {
       delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
-      await this.assertExecutesOnPinnedBase(proposalId, delta.prevCommitment);
       txSummaryBase64 = delta.deltaPayload.txSummary.data;
     }
+    const executedBase = delta
+      ? await this.assertExecutesOnPinnedBase(proposalId, delta.prevCommitment)
+      : await this.localAccountCommitment();
 
     const txSummaryBytes = base64ToUint8Array(txSummaryBase64);
     const txSummary = TransactionSummary.deserialize(txSummaryBytes);
@@ -2653,10 +2674,8 @@ export class Multisig {
       adviceMap.insert(ackKey, new FeltArray(ackValues));
     }
 
-    let switchDelta: DeltaObject | undefined;
     if (metadata.proposalType === 'switch_guardian') {
       await this.verifyGuardianEndpointCommitment(metadata.newGuardianEndpoint, metadata.newGuardianPubkey);
-      switchDelta = await this.assertSwitchExecutesOnPinnedBase(proposalId, normalizedProposalId);
     }
 
     const anchor = this.requireProposalAnchor(proposalId, metadata);
@@ -2674,41 +2693,37 @@ export class Multisig {
       binding,
       adviceMap,
     );
-    return { finalRequest, metadata, proposal, switchDelta };
+    return { finalRequest, metadata, proposal, executedBase };
   }
 
   /**
-   * The pinned-base check for a switch_guardian proposal, which executes
-   * from its cached summary because the pre-switch GUARDIAN may already be
-   * gone. While that GUARDIAN still serves the proposal, the state it pinned
-   * the proposal to is checked against this client's account as for every
-   * other type, and the served delta is returned for the push that follows
-   * the switch. When it does not serve it (a proposal made offline that it
-   * never received, or a GUARDIAN that is unreachable, the case the offline
-   * path exists for) the switch proceeds without the check, as its push is
-   * best-effort for the same reason.
+   * A switch_guardian proposal as the pre-switch GUARDIAN serves it, so the
+   * state it pinned the proposal to is checked as for every other type, or
+   * `undefined` when that GUARDIAN cannot serve it: it never received the
+   * proposal (one made offline) or it is unreachable, the case the offline
+   * path exists for. The switch then executes from its cached summary
+   * without the check. Any other answer (it is up and refuses: an
+   * authentication failure, a paused or released account, rate limiting, a
+   * server fault) fails the execution, as it does for every other type:
+   * executing unchecked is what the pinned-base check exists to prevent.
    */
-  private async assertSwitchExecutesOnPinnedBase(
-    proposalId: string,
-    normalizedProposalId: string,
-  ): Promise<DeltaObject | undefined> {
-    let delta: DeltaObject;
+  private async servedSwitchProposal(normalizedProposalId: string): Promise<DeltaObject | undefined> {
     try {
-      delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
+      return await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
     } catch (error) {
-      // Visible for the same reason the push failure is: without the push
-      // that follows, the pre-switch GUARDIAN keeps serving this account
-      // until reconciliation (split-brain, issue #305).
+      if (error instanceof GuardianHttpError) {
+        if (error.code === 'proposal_not_found') {
+          return undefined;
+        }
+        throw error;
+      }
       console.warn(
-        'The pre-switch GUARDIAN does not serve this switch proposal; executing it ' +
-          'without checking the state it was pinned to, and without pushing the ' +
-          'switch delta back to it',
+        'The pre-switch GUARDIAN is unreachable; executing the switch proposal without ' +
+          'checking the state it was pinned to',
         error,
       );
       return undefined;
     }
-    await this.assertExecutesOnPinnedBase(proposalId, delta.prevCommitment);
-    return delta;
   }
 
   /**
