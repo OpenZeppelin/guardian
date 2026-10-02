@@ -88,18 +88,29 @@ async fn queue_server(fixtures: &Fixtures) -> Result<QueueServer, ActionOutcome>
     Ok(QueueServer { client, id })
 }
 
-/// What GUARDIAN holds at `nonce`: `None` when nothing is stored there.
-async fn status_at(server: &mut QueueServer, nonce: u64) -> Result<Option<Status>, ActionOutcome> {
+/// What GUARDIAN holds at `nonce`: its status and post-state commitment,
+/// or `None` when nothing is stored there.
+async fn stored_at(
+    server: &mut QueueServer,
+    nonce: u64,
+) -> Result<Option<(Status, String)>, ActionOutcome> {
     match server.client.get_delta(&server.id, nonce).await {
-        Ok(response) => Ok(response
-            .delta
-            .and_then(|delta| delta.status)
-            .and_then(|status| status.status)),
+        Ok(response) => Ok(response.delta.and_then(|delta| {
+            delta
+                .status
+                .and_then(|status| status.status)
+                .map(|status| (status, delta.new_commitment))
+        })),
         Err(error) if error.is_not_found() => Ok(None),
         Err(error) => Err(ActionOutcome::failed_product(format!(
             "reading the delta at nonce {nonce} failed: {error}"
         ))),
     }
+}
+
+/// The status of what GUARDIAN holds at `nonce`, if anything.
+async fn status_at(server: &mut QueueServer, nonce: u64) -> Result<Option<Status>, ActionOutcome> {
+    Ok(stored_at(server, nonce).await?.map(|(status, _)| status))
 }
 
 /// Makes sure `delta` is queued, pushing it when nothing is stored at its nonce
@@ -110,10 +121,25 @@ async fn ensure_queued(
     server: &mut QueueServer,
     delta: &ChainedDelta,
 ) -> Result<(), ActionOutcome> {
-    match status_at(server, delta.nonce).await? {
-        Some(Status::CandidateAt(_)) => return Ok(()),
-        None | Some(Status::RetainedAt(_)) => {}
-        Some(other) => {
+    match stored_at(server, delta.nonce).await? {
+        // A candidate at this nonce must be this delta: another chain's
+        // candidate there (an earlier driver queued the signer-changing
+        // `delta_1` at nonce 1) would stand in for a tail these actions
+        // assume keeps the signer set.
+        Some((Status::CandidateAt(_), stored))
+            if same_commitment(&stored, &delta.post_commitment) =>
+        {
+            return Ok(());
+        }
+        Some((Status::CandidateAt(_), stored)) => {
+            return Err(ActionOutcome::failed_setup(format!(
+                "nonce {} holds a queued candidate with post-state {stored}, not this chain's {}; \
+                 the queue server carries another run's candidates",
+                delta.nonce, delta.post_commitment
+            )));
+        }
+        None | Some((Status::RetainedAt(_), _)) => {}
+        Some((other, _)) => {
             return Err(ActionOutcome::failed_product(format!(
                 "nonce {} holds {other:?} rather than a queued or retained candidate; the stub \
                  chain confirms nothing, so it can only have left the queue through a defect",
